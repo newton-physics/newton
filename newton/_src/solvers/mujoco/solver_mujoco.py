@@ -2906,9 +2906,9 @@ class SolverMuJoCo(SolverBase):
         self.has_connect_constraints: bool = False
         """Whether the model contains any CONNECT equality constraints."""
         self.connect_constraint_q_rel: wp.array | None = None
-        """Relative rotation ``inv(q2) * q1`` at the reference pose per CONNECT constraint, ``wp.array(dtype=wp.quat)``, shape ``[equality_constraint_count]``."""
+        """Relative rotation ``inv(q2) * q1`` at the reference pose per CONNECT constraint, ``wp.array[wp.quat]``, shape ``[equality_constraint_count]``."""
         self.connect_constraint_t_rel: wp.array | None = None
-        """Relative translation [m] at the reference pose per CONNECT constraint, ``wp.array(dtype=wp.vec3)``, shape ``[equality_constraint_count]``."""
+        """Relative translation [m] at the reference pose per CONNECT constraint, ``wp.array[wp.vec3]``, shape ``[equality_constraint_count]``."""
 
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
@@ -5742,7 +5742,7 @@ class SolverMuJoCo(SolverBase):
 
         Returns:
             Reference joint coordinates [m or rad],
-            ``wp.array(dtype=wp.float32)``, shape ``[joint_coord_count]``.
+            ``wp.array[wp.float32]``, shape ``[joint_coord_count]``.
         """
 
         # Build the reference joint_q from dof_ref (for hinge/slide/D6) and
@@ -5779,11 +5779,11 @@ class SolverMuJoCo(SolverBase):
         Args:
             model: The Newton :class:`Model`.
             ref_q: Reference joint coordinates [m or rad],
-                ``wp.array(dtype=wp.float32)``, shape ``[joint_coord_count]``.
+                ``wp.array[wp.float32]``, shape ``[joint_coord_count]``.
 
         Returns:
             Body transforms at the reference pose [m],
-            ``wp.array(dtype=wp.transform)``, shape ``[body_count]``.
+            ``wp.array[wp.transform]``, shape ``[body_count]``.
         """
         ref_qd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
 
@@ -5829,12 +5829,12 @@ class SolverMuJoCo(SolverBase):
         Args:
             model: The Newton :class:`Model`.
             ref_body_q: Body transforms at the reference pose [m],
-                ``wp.array(dtype=wp.transform)``, shape ``[body_count]``.
+                ``wp.array[wp.transform]``, shape ``[body_count]``.
 
         Returns:
             Tuple of ``(q_rel, t_rel)`` where ``q_rel`` is
-            ``wp.array(dtype=wp.quat)`` and ``t_rel`` is
-            ``wp.array(dtype=wp.vec3)`` [m], each of
+            ``wp.array[wp.quat]`` and ``t_rel`` is
+            ``wp.array[wp.vec3]`` [m], each of
             shape ``[equality_constraint_count]``.
         """
         neq = model.equality_constraint_count
@@ -5877,8 +5877,8 @@ class SolverMuJoCo(SolverBase):
 
         Returns:
             Tuple of ``(q_rel, t_rel)`` where ``q_rel`` is
-            ``wp.array(dtype=wp.quat)`` and ``t_rel`` is
-            ``wp.array(dtype=wp.vec3)`` [m], each of
+            ``wp.array[wp.quat]`` and ``t_rel`` is
+            ``wp.array[wp.vec3]`` [m], each of
             shape ``[equality_constraint_count]``.
         """
         ref_q = SolverMuJoCo._copy_qpos0_to_qref(model)
@@ -5907,12 +5907,12 @@ class SolverMuJoCo(SolverBase):
             mjw_model: The MuJoCo Warp model (target for ``eq_data`` output).
             mjc_eq_to_newton_eq: Mapping from MuJoCo ``[world, eq]`` to
                 Newton equality constraint index,
-                ``wp.array2d(dtype=wp.int32)``.
+                ``wp.array2d[wp.int32]``.
             connect_anchor2_q: Precomputed relative rotation per constraint,
-                ``wp.array(dtype=wp.quat)``,
+                ``wp.array[wp.quat]``,
                 shape ``[equality_constraint_count]``.
             connect_anchor2_t: Precomputed relative translation [m] per
-                constraint, ``wp.array(dtype=wp.vec3)``,
+                constraint, ``wp.array[wp.vec3]``,
                 shape ``[equality_constraint_count]``.
         """
         if mjw_model.neq == 0:

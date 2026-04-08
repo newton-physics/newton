@@ -724,13 +724,13 @@ def sync_qpos0_kernel(
 
 @wp.kernel
 def build_ref_q_kernel(
-    joint_type: wp.array(dtype=wp.int32),
-    joint_q_start: wp.array(dtype=wp.int32),
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
-    dof_ref: wp.array(dtype=wp.float32),
+    joint_type: wp.array[wp.int32],
+    joint_q_start: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    joint_dof_dim: wp.array2d[wp.int32],
+    dof_ref: wp.array[wp.float32],
     # output
-    ref_q: wp.array(dtype=wp.float32),
+    ref_q: wp.array[wp.float32],
 ):
     """Build reference joint coordinates from joint types and ``dof_ref``.
 
@@ -783,13 +783,13 @@ def build_ref_q_kernel(
 
 @wp.kernel
 def update_connect_constraint_rel_body_poses_at_qref_kernel(
-    eq_constraint_type: wp.array(dtype=wp.int32),
-    eq_constraint_body1: wp.array(dtype=wp.int32),
-    eq_constraint_body2: wp.array(dtype=wp.int32),
-    ref_body_q: wp.array(dtype=wp.transform),
+    eq_constraint_type: wp.array[wp.int32],
+    eq_constraint_body1: wp.array[wp.int32],
+    eq_constraint_body2: wp.array[wp.int32],
+    ref_body_q: wp.array[wp.transform],
     # outputs
-    q_rel_out: wp.array(dtype=wp.quat),
-    t_rel_out: wp.array(dtype=wp.vec3),
+    q_rel_out: wp.array[wp.quat],
+    t_rel_out: wp.array[wp.vec3],
 ):
     """Compute relative body transforms for CONNECT constraints at the reference pose.
 
@@ -855,13 +855,13 @@ def update_connect_constraint_rel_body_poses_at_qref_kernel(
 
 @wp.kernel
 def update_connect_constraint_anchors_kernel(
-    mjc_eq_to_newton_eq: wp.array2d(dtype=wp.int32),
-    eq_constraint_type: wp.array(dtype=wp.int32),
-    eq_constraint_anchor: wp.array(dtype=wp.vec3),
-    connect_anchor2_q: wp.array(dtype=wp.quat),
-    connect_anchor2_t: wp.array(dtype=wp.vec3),
+    mjc_eq_to_newton_eq: wp.array2d[wp.int32],
+    eq_constraint_type: wp.array[wp.int32],
+    eq_constraint_anchor: wp.array[wp.vec3],
+    connect_anchor2_q: wp.array[wp.quat],
+    connect_anchor2_t: wp.array[wp.vec3],
     # output
-    eq_data_out: wp.array2d(dtype=vec11),
+    eq_data_out: wp.array2d[vec11],
 ):
     """Write CONNECT constraint anchors into MuJoCo ``eq_data``.
 
