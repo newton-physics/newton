@@ -306,6 +306,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         flat_initial_q = []
         flat_initial_qd = []
         flat_changed_connect_anchor_leafbody1 = []
+        flat_original_dof_ref = []
         flat_changed_dof_ref = []
         flat_changed_ref_q = []
         num_bodies = 5
@@ -327,10 +328,12 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                 flat_changed_connect_anchor_leafbody1.append(changed_connect_anchor_leafbody1[w][k])
             # Ball joint has 3 DOFs, all with ref = 0
             for _ in range(3):
+                flat_original_dof_ref.append(0.0)
                 flat_changed_dof_ref.append(0.0)
             for v in ball_q_identity:
                 flat_changed_ref_q.append(v)
             for k in range(3):
+                flat_original_dof_ref.append(joint_dof_refs[w][k])
                 flat_changed_dof_ref.append(changed_joint_dof_refs[w][k])
                 flat_changed_ref_q.append(changed_joint_dof_refs[w][k])
 
@@ -691,6 +694,51 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                             for k in range(6):
                                 self.assertAlmostEqual(
                                     float(measured_eq_data[w][0][k]), float(mj_eq_data[0][k]), places=4
+                                )
+
+                    ##############
+                    # TEST 5
+                    # Restore the original dof_ref via JOINT_PROPERTIES alone
+                    # and verify the connect constraint anchors are recomputed
+                    # correctly.  No simulation is run because JOINT_PROPERTIES
+                    # does not sync qpos0.
+                    ##############
+
+                    sim.model.mujoco.dof_ref.assign(np.array(flat_original_dof_ref, dtype=np.float32))
+                    sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+
+                    for w in range(num_worlds):
+                        original_ref_expected_leafbody2_anchor = self.compute_expected_leafbody2_anchor(
+                            joint_axes, joint_dof_refs[w], joint_types, changed_connect_anchor_leafbody1[w]
+                        )
+                        measured_eq_data = sim.solver.mjw_model.eq_data.numpy()
+                        original_ref_measured_leafbody1_anchor = wp.vec3(
+                            measured_eq_data[w][0][0], measured_eq_data[w][0][1], measured_eq_data[w][0][2]
+                        )
+                        original_ref_measured_leafbody2_anchor = wp.vec3(
+                            measured_eq_data[w][0][3], measured_eq_data[w][0][4], measured_eq_data[w][0][5]
+                        )
+                        for k in range(3):
+                            self.assertAlmostEqual(
+                                float(changed_connect_anchor_leafbody1[w][k]),
+                                float(original_ref_measured_leafbody1_anchor[k]),
+                                places=4,
+                            )
+                            self.assertAlmostEqual(
+                                float(original_ref_expected_leafbody2_anchor[k]),
+                                float(original_ref_measured_leafbody2_anchor[k]),
+                                places=4,
+                            )
+                        if use_mujoco_cpu:
+                            mj_eq_data = sim.solver.mj_model.eq_data
+                            for k in range(3):
+                                self.assertAlmostEqual(
+                                    float(changed_connect_anchor_leafbody1[w][k]), float(mj_eq_data[0][k]), places=4
+                                )
+                                self.assertAlmostEqual(
+                                    float(original_ref_expected_leafbody2_anchor[k]),
+                                    float(mj_eq_data[0][3 + k]),
+                                    places=4,
                                 )
 
     def test_connect_constraint(self):
