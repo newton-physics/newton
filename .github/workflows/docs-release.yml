@@ -93,13 +93,22 @@ jobs:
           cp docs/_static/gh-pages-404.html /tmp/gh-pages-404.html
 
           # Switch to gh-pages branch (check existence first to avoid masking other fetch errors)
-          if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
+          # Distinguish "branch not found" (exit 2) from fatal errors (exit 128)
+          # to prevent a transient failure from creating an orphan that overwrites
+          # all existing versioned docs on the force push below.
+          ls_remote_rc=0
+          git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1 || ls_remote_rc=$?
+
+          if [ "$ls_remote_rc" -eq 0 ]; then
             git fetch --depth=1 origin gh-pages:gh-pages
             git checkout gh-pages
-          else
+          elif [ "$ls_remote_rc" -eq 2 ]; then
             echo "Creating new gh-pages branch"
             git checkout --orphan gh-pages
             git rm -rf . || true
+          else
+            echo "::error::git ls-remote failed with exit code $ls_remote_rc — aborting to prevent data loss"
+            exit 1
           fi
 
           # Deploy version directory (remove old if rebuilding)
