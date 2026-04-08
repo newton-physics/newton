@@ -221,7 +221,6 @@ class ViewerGL(ViewerBase):
         self._scalar_accumulators: dict[str, list[float]] = {}
         self._scalar_smoothing: dict[str, int] = {}
         self._plot_history_size = plot_history_size
-        self._show_plots_window = True
 
         super().__init__()
 
@@ -1174,6 +1173,8 @@ class ViewerGL(ViewerBase):
             smoothing: Number of raw samples to average before committing
                 a point to the plot history.  Defaults to ``1`` (no smoothing).
         """
+        if smoothing < 1:
+            raise ValueError("smoothing must be >= 1")
         val = float(value.item() if hasattr(value, "item") else value)
         buf = self._scalar_buffers.get(name)
         if buf is None:
@@ -2240,7 +2241,7 @@ class ViewerGL(ViewerBase):
 
     def _render_scalar_plots(self):
         """Render an ImGui window with live line plots for all logged scalars."""
-        if not self._scalar_buffers or not self._show_plots_window:
+        if not self._scalar_buffers:
             return
 
         imgui = self.ui.imgui
@@ -2260,7 +2261,7 @@ class ViewerGL(ViewerBase):
             imgui.Cond_.appearing,
         )
 
-        expanded, self._show_plots_window = imgui.begin("Plots", self._show_plots_window)
+        expanded = imgui.begin("Plots")
         if expanded:
             graph_size = imgui.ImVec2(-1, 100)
             n = self._plot_history_size
