@@ -46,8 +46,8 @@ class TestShapeColors(unittest.TestCase):
         indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
         return newton.Mesh(vertices, indices, color=color)
 
-    def test_collision_shape_without_explicit_color_uses_default_palette(self):
-        """Verify collision shapes fall back to the default viewer palette."""
+    def test_collision_shape_without_explicit_color_uses_palette_by_default(self):
+        """Verify collision shapes use the per-shape palette sequence by default."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0)
         shape = builder.add_shape_box(body=body, hx=0.1, hy=0.2, hz=0.3)
@@ -57,6 +57,17 @@ class TestShapeColors(unittest.TestCase):
         expected = np.array(viewer._shape_color_map(shape), dtype=np.float32)
 
         np.testing.assert_allclose(model.shape_color.numpy()[shape], expected, atol=1e-6, rtol=1e-6)
+
+    def test_collision_shape_without_explicit_color_uses_fallback_when_configured(self):
+        """Verify configuring a fallback color overrides the per-shape palette sequence."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_color = (0.18, 0.18, 0.18)
+        body = builder.add_body(mass=1.0)
+        shape = builder.add_shape_box(body=body, hx=0.1, hy=0.2, hz=0.3)
+
+        model = builder.finalize(device=self.device)
+
+        np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.18, 0.18, 0.18], atol=1e-6, rtol=1e-6)
 
     def test_add_shape_mesh_uses_mesh_color_when_color_is_none(self):
         """Verify mesh shapes inherit embedded mesh colors when no override is given."""
