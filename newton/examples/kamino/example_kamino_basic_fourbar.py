@@ -10,6 +10,7 @@
 #
 ###########################################################################
 
+import argparse
 import os
 
 import numpy as np
@@ -18,6 +19,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
+from newton._src.solvers.kamino._src.models.builders import basics_newton
 from newton._src.solvers.kamino._src.utils import logger as msg
 
 
@@ -40,17 +42,23 @@ class Example:
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
 
-        # Load the basic four-bar USD and add it to the builder
-        msg.notif("Loading USD asset and adding it to the model builder...")
-        asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_fourbar.usda")
-        robot_builder.add_usd(
-            asset_file,
-            joint_ordering=None,
-            force_show_colliders=True,
-            force_position_velocity_actuation=True,
-            enable_self_collisions=False,
-            hide_collision_shapes=False,
-        )
+        # Load the basic four-bar mechanism either from USD or by manually building it
+        # with the builder API, depending on the command-line argument `--from-usd`
+        if args.from_usd:
+            # Load the basic four-bar USD and add it to the builder
+            msg.notif("Loading USD asset and adding it to the model builder...")
+            asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_fourbar.usda")
+            robot_builder.add_usd(
+                asset_file,
+                joint_ordering=None,
+                force_show_colliders=True,
+                force_position_velocity_actuation=True,
+                enable_self_collisions=False,
+                hide_collision_shapes=False,
+            )
+        else:
+            # Manually build the basic four-bar mechanism using the builder API
+            basics_newton.build_boxes_fourbar(builder=robot_builder)
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
@@ -174,6 +182,12 @@ class Example:
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
         parser.set_defaults(world_count=1)
+        parser.add_argument(
+            "--from-usd",
+            type=argparse.BooleanOptionalAction,
+            default=True,
+            help="Load the basic four-bar mechanism from USD.",
+        )
         return parser
 
 

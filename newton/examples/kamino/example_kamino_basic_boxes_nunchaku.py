@@ -10,14 +10,15 @@
 #
 ###########################################################################
 
+import argparse
 import os
 
-import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
 from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
+from newton._src.solvers.kamino._src.models.builders import basics_newton
 from newton._src.solvers.kamino._src.utils import logger as msg
 
 
@@ -40,17 +41,23 @@ class Example:
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
 
-        # Load the basic boxes nunchaku USD and add it to the builder
-        msg.notif("Loading USD asset and adding it to the model builder...")
-        asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_nunchaku.usda")
-        robot_builder.add_usd(
-            asset_file,
-            joint_ordering=None,
-            force_show_colliders=True,
-            force_position_velocity_actuation=True,
-            enable_self_collisions=False,
-            hide_collision_shapes=False,
-        )
+        # Load the basic boxes nunchaku either from USD or by manually building it
+        # with the builder API, depending on the command-line argument `--from-usd`
+        if args.from_usd:
+            # Load the basic boxes nunchaku USD and add it to the builder
+            msg.notif("Loading USD asset and adding it to the model builder...")
+            asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_nunchaku.usda")
+            robot_builder.add_usd(
+                asset_file,
+                joint_ordering=None,
+                force_show_colliders=True,
+                force_position_velocity_actuation=True,
+                enable_self_collisions=False,
+                hide_collision_shapes=False,
+            )
+        else:
+            # Manually build the basic boxes nunchaku using the builder API
+            basics_newton.build_boxes_nunchaku_vertical(builder=robot_builder, z_offset=1.0)
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
@@ -88,18 +95,6 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.contacts()
-
-        # Reset the simulation state to a valid initial configuration above the ground
-        msg.notif("Resetting the simulation state to a valid initial configuration above the ground...")
-        self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
-        q_b = wp.quat_identity(dtype=wp.float32)
-        q_base = wp.transformf((0.0, 0.0, 0.1), q_b)
-        q_base = np.array(q_base)
-        q_base = np.tile(q_base, (self.world_count, 1))
-        for w in range(self.world_count):
-            q_base[w, :3] += np.array([0.0, 0.0, 0.2]) * float(w)
-        self.base_q.assign(q_base)
-        self.solver.reset(state_out=self.state_0, base_q=self.base_q)
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -174,6 +169,12 @@ class Example:
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
         parser.set_defaults(world_count=1)
+        parser.add_argument(
+            "--from-usd",
+            type=argparse.BooleanOptionalAction,
+            default=False,
+            help="Load the basic four-bar mechanism from USD.",
+        )
         return parser
 
 
