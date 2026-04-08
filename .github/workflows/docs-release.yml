@@ -111,7 +111,8 @@ jobs:
           cp -r "$VERSION" stable
 
           # Update switcher.json (script is in the main branch, not gh-pages)
-          # Use origin/main because there's no local main branch on tag-triggered runs
+          # Fetch main ref so origin/main is available (shallow checkout only has the tag)
+          git fetch --depth=1 origin main
           git show origin/main:scripts/ci/update_docs_switcher.py > /tmp/update_docs_switcher.py
           uv run --no-project /tmp/update_docs_switcher.py "$VERSION"
           rm -f switcher.json.bak
