@@ -6,7 +6,7 @@
 #
 # Shows how to simulate Anymal D with multiple worlds using SolverKamino.
 #
-# Command: python -m newton.examples robot_anymal_d --num-worlds 16
+# Command: python -m newton.examples kamino_robot_anymal_d --world-count 16
 #
 ###########################################################################
 
@@ -24,7 +24,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
-        self.num_worlds = args.world_count
+        self.world_count = args.world_count if args else 1
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -48,7 +48,7 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        for _ in range(self.num_worlds):
+        for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
         # Add a global ground plane applied to all worlds
@@ -71,10 +71,10 @@ class Example:
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         # Reset the simulation state to a valid initial configuration above the ground
-        self.base_q = wp.zeros(shape=(self.num_worlds,), dtype=wp.transformf)
+        self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
         q_b = wp.quat_identity(dtype=wp.float32)
         q_base = wp.transformf((0.0, 0.0, 1.0), q_b)
-        self.base_q.assign([q_base] * self.num_worlds)
+        self.base_q.assign([q_base] * self.world_count)
         self.solver.reset(state_out=self.state_0, base_q=self.base_q)
 
         # Attach the model to the viewer for visualization
@@ -84,12 +84,9 @@ class Example:
         # NOTE: This only has an effect on GPU devices
         self.capture()
 
-        # Start paused to inspect the initial configuration
-        self.viewer._paused = True
-
         # If only a single-world is created, set initial
         # camera position for better view of the system
-        if self.num_worlds == 1 and hasattr(self.viewer, "set_camera"):
+        if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
             camera_pos = wp.vec3(5.0, 0.0, 2.0)
             pitch = -15.0
             yaw = -180.0
@@ -141,7 +138,7 @@ class Example:
                 self.state_0,
                 "body velocities are small",
                 lambda q, qd: max(abs(qd))
-                < 0.25,  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
+                < 0.25,  # Relaxed from 0.1 - collision pipeline has residual velocities up to ~0.2
             )
             # fmt: on
 

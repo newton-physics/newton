@@ -6,7 +6,7 @@
 #
 # Shows how to simulate a basic four-bar linkage with multiple worlds using SolverKamino.
 #
-# Command: python -m newton.examples example_fourbar --num-worlds 16
+# Command: python -m newton.examples kamino_basic_fourbar --world-count 16
 #
 ###########################################################################
 
@@ -22,14 +22,14 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=1, args=None):
+    def __init__(self, viewer, args=None):
         # Set simulation run-time configurations
         self.fps = 60
         self.sim_dt = 0.0025
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
-        self.num_worlds = num_worlds
+        self.world_count = args.world_count if args else 1
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -54,9 +54,9 @@ class Example:
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
-        msg.notif(f"Duplicating the model builder for {self.num_worlds} worlds and finalizing the model...")
+        msg.notif(f"Duplicating the model builder for {self.world_count} worlds and finalizing the model...")
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        for _ in range(self.num_worlds):
+        for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
         # Create the model from the builder
@@ -68,7 +68,7 @@ class Example:
         solver_config.use_collision_detector = True
         solver_config.use_fk_solver = True
         solver_config.collision_detector.pipeline = "unified"
-        solver_config.collision_detector.max_contacts = 32 * self.num_worlds
+        solver_config.collision_detector.max_contacts = 32 * self.world_count
         solver_config.dynamics.preconditioning = True
         solver_config.padmm.primal_tolerance = 1e-4
         solver_config.padmm.dual_tolerance = 1e-4
@@ -91,12 +91,12 @@ class Example:
 
         # Reset the simulation state to a valid initial configuration above the ground
         msg.notif("Resetting the simulation state to a valid initial configuration above the ground...")
-        self.base_q = wp.zeros(shape=(self.num_worlds,), dtype=wp.transformf)
+        self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
         q_b = wp.quat_identity(dtype=wp.float32)
         q_base = wp.transformf((0.0, 0.0, 0.1), q_b)
         q_base = np.array(q_base)
-        q_base = np.tile(q_base, (self.num_worlds, 1))
-        for w in range(self.num_worlds):
+        q_base = np.tile(q_base, (self.world_count, 1))
+        for w in range(self.world_count):
             q_base[w, :3] += np.array([0.0, 0.0, 0.2]) * float(w)
         self.base_q.assign(q_base)
         self.solver.reset(state_out=self.state_0, base_q=self.base_q)
@@ -107,6 +107,14 @@ class Example:
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
         self.capture()
+
+        # If only a single-world is created, set initial
+        # camera position for better view of the system
+        if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
+            camera_pos = wp.vec3(-0.5, -1.0, 0.2)
+            pitch = -5.0
+            yaw = 70.0
+            self.viewer.set_camera(camera_pos, pitch, yaw)
 
     def capture(self):
         self.graph = None
@@ -160,21 +168,18 @@ class Example:
                 ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
             )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        newton.examples.add_kamino_contacts_arg(parser)
+        parser.set_defaults(world_count=1)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=1, help="Total number of simulated worlds.")
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args.num_worlds, args)
-    example.viewer._paused = True  # Start paused to inspect the initial configuration
-
-    # If only a single-world is created, set initial
-    # camera position for better view of the system
-    if args.num_worlds == 1 and hasattr(example.viewer, "set_camera"):
-        camera_pos = wp.vec3(-0.5, -1.0, 0.2)
-        pitch = -5.0
-        yaw = 70.0
-        example.viewer.set_camera(camera_pos, pitch, yaw)
-
+    example = Example(viewer, args)
     msg.notif("Starting the simulation...")
     newton.examples.run(example, args)
