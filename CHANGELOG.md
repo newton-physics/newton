@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+> **Dependency changes:** This release requires `mujoco ~=3.6.0` and
+> `mujoco-warp ~=3.6.0` (previously 3.5.x), and replaces the `plyfile`
+> dependency with `open3d`. Users who depended on `plyfile` transitively
+> should install it separately. The Python build backend has switched from
+> `hatchling` to `uv_build`.
+
 ### Added
 
 - Add repeatable `--warp-config KEY=VALUE` CLI option for overriding `warp.config` attributes when running examples
@@ -67,9 +73,6 @@
 - Use `Literal` types for `SolverImplicitMPM.Config` string fields with fixed option sets (`solver`, `warmstart_mode`, `collider_velocity_mode`, `grid_type`, `transfer_scheme`, `integration_scheme`)
 - Migrate `wp.array(dtype=X)` type annotations to `wp.array[X]` bracket syntax (Warp 1.12+).
 - Align articulated `State.body_qd` / FK / IK / Jacobian / mass-matrix linear velocity with COM-referenced motion. If you were comparing `body_qd[:3]` against finite-differenced body-origin motion, recover origin velocity via `v_origin = v_com - omega x r_com_world`. Descendant `FREE` / `DISTANCE` `joint_qd` remains parent-frame and `joint_f` remains a world-frame COM wrench.
-- Replace `plyfile` dependency with `open3d` for mesh I/O. Users who depended on `plyfile` transitively should install it separately.
-- Require `mujoco ~=3.6.0` and `mujoco-warp ~=3.6.0` (previously 3.5.x)
-- Switch Python build backend from `hatchling` to `uv_build`
 
 ### Deprecated
 
