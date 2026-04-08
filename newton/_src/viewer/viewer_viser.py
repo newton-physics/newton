@@ -909,6 +909,8 @@ class ViewerViser(ViewerBase):
         Args:
             name: Unique path/name for the scalar signal.
             value: Scalar value to visualize.
+            clear: Ignored by this backend.
+            smoothing: Ignored by this backend.
         """
         pass
 

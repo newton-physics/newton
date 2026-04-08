@@ -240,6 +240,8 @@ class ViewerNull(ViewerBase):
         Args:
             name: Name of the scalar.
             value: The scalar value.
+            clear: Ignored by this backend.
+            smoothing: Ignored by this backend.
         """
         pass
 
