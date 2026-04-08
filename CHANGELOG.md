@@ -2,10 +2,11 @@
 
 ## [Unreleased]
 
-> **Dependency changes:**
-> - Require `mujoco ~=3.6.0` and `mujoco-warp ~=3.6.0` (previously 3.5.x)
-> - Replace `plyfile` dependency with `open3d` for mesh I/O. Users who depended on `plyfile` transitively should install it separately.
-> - Switch Python build backend from `hatchling` to `uv_build`
+### Dependency changes
+
+- Require `mujoco ~=3.6.0` and `mujoco-warp ~=3.6.0` (previously 3.5.x)
+- Replace `plyfile` dependency with `open3d` for mesh I/O. Users who depended on `plyfile` transitively should install it separately.
+- Switch Python build backend from `hatchling` to `uv_build`
 
 ### Added
 
