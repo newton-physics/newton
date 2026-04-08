@@ -1718,11 +1718,9 @@ def _get_bound_material(target_prim: Usd.Prim) -> UsdShade.Material | None:
     if not rels:
         return None
     rels.sort(
-        key=lambda rel: 0
-        if rel.GetName() == "material:binding"
-        else 1
-        if rel.GetName() == "material:binding:preview"
-        else 2
+        key=lambda rel: (
+            0 if rel.GetName() == "material:binding" else 1 if rel.GetName() == "material:binding:preview" else 2
+        )
     )
     for rel in rels:
         targets = rel.GetTargets()

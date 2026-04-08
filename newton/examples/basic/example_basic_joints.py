@@ -226,8 +226,10 @@ class Example:
             self.model,
             self.state_0,
             "linear motion on axis",
-            lambda q, qd: wp.length(abs(wp.cross(wp.spatial_top(qd), wp.vec3(0.0, 0.0, 1.0)))) < 1e-5
-            and wp.length(wp.spatial_bottom(qd)) < 1e-5,
+            lambda q, qd: (
+                wp.length(abs(wp.cross(wp.spatial_top(qd), wp.vec3(0.0, 0.0, 1.0)))) < 1e-5
+                and wp.length(wp.spatial_bottom(qd)) < 1e-5
+            ),
             indices=[self.model.body_label.index("b_prismatic")],
         )
 

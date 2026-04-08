@@ -147,8 +147,9 @@ class Example:
             self.model,
             self.state_0,
             "all body velocities are small",
-            lambda q, qd: max(abs(qd))
-            < 0.015,  # Relaxed from 0.005 - G1 has higher residual velocities with collision pipeline
+            lambda q, qd: (
+                max(abs(qd)) < 0.015
+            ),  # Relaxed from 0.005 - G1 has higher residual velocities with collision pipeline
         )
 
     @staticmethod
