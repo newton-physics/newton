@@ -25,7 +25,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
-          fetch-depth: 0  # Need full history for gh-pages branch
+          fetch-depth: 1
 
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
@@ -58,7 +58,7 @@ jobs:
 
           # Switch to gh-pages branch (check existence first to avoid masking other fetch errors)
           if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
-            git fetch origin gh-pages:gh-pages
+            git fetch --depth=1 origin gh-pages:gh-pages
             git checkout gh-pages
           else
             echo "Creating new gh-pages branch"
@@ -84,8 +84,13 @@ jobs:
             echo "::warning::gh-pages branch is ${SIZE_MB}MB, approaching GitHub Pages 1GB limit. Consider pruning old versions."
           fi
 
-          # Stage only the files we want deployed (avoid committing build artifacts
-          # like .venv/ that persist after switching branches)
+          # Stage new/modified files. git checkout --orphan below preserves the
+          # full index from gh-pages, so all previously tracked files (e.g.
+          # versioned release docs) are also included in the deploy commit.
           git add latest 404.html .nojekyll
-          git diff --cached --quiet || git commit -m "Update dev docs from main@${GITHUB_SHA::8}"
-          git push origin gh-pages
+
+          # Reset to an orphan commit to prevent unbounded history growth.
+          # gh-pages is a deployment target, not a historical record.
+          git checkout --orphan gh-pages-deploy
+          git commit -m "Deploy dev docs from main@${GITHUB_SHA::8}"
+          git push origin HEAD:gh-pages --force
