@@ -92,15 +92,17 @@ jobs:
           mv docs/_build/html /tmp/docs-release
           cp docs/_static/gh-pages-404.html /tmp/gh-pages-404.html
 
-          # Switch to gh-pages branch (check existence first to avoid masking other fetch errors)
+          # Fetch existing gh-pages content but deploy as orphan commit to prevent
+          # history bloat. Each deploy carries large binary files (environment.pickle
+          # ~11 MB), and accumulating normal commits inflates clone size (~418 MB
+          # over 433 deploys). Orphan commits keep only the latest snapshot.
           if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
-            git fetch origin gh-pages:gh-pages
-            git checkout gh-pages
-          else
-            echo "Creating new gh-pages branch"
-            git checkout --orphan gh-pages
-            git rm -rf . || true
+            git fetch origin gh-pages
+            # Save existing versioned content before creating orphan branch
+            git checkout origin/gh-pages -- . 2>/dev/null || true
           fi
+          # Create orphan branch (no parent commit = no history accumulation)
+          git checkout --orphan gh-pages
 
           # Deploy version directory (remove old if rebuilding)
           rm -rf "$VERSION"
@@ -150,4 +152,4 @@ jobs:
           # like .venv/ that persist after switching branches)
           git add "$VERSION" stable switcher.json index.html 404.html .nojekyll
           git diff --cached --quiet || git commit -m "Release v$VERSION documentation"
-          git push origin gh-pages
+          git push --force origin gh-pages

@@ -56,15 +56,12 @@ jobs:
           mv docs/_build/html /tmp/docs-latest
           cp docs/_static/gh-pages-404.html /tmp/gh-pages-404.html
 
-          # Switch to gh-pages branch (check existence first to avoid masking other fetch errors)
-          if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
-            git fetch origin gh-pages:gh-pages
-            git checkout gh-pages
-          else
-            echo "Creating new gh-pages branch"
-            git checkout --orphan gh-pages
-            git rm -rf . || true
-          fi
+          # Always create a fresh orphan gh-pages branch to prevent history bloat.
+          # Each deploy carries the full Sphinx build (~11 MB environment.pickle),
+          # and accumulating these as normal commits inflates clone size (~418 MB
+          # over 433 deploys). An orphan branch keeps only the latest build.
+          git checkout --orphan gh-pages
+          git rm -rf . || true
 
           # Remove old /latest/ and replace with new build
           rm -rf latest
@@ -88,4 +85,4 @@ jobs:
           # like .venv/ that persist after switching branches)
           git add latest 404.html .nojekyll
           git diff --cached --quiet || git commit -m "Update dev docs from main@${GITHUB_SHA::8}"
-          git push origin gh-pages
+          git push --force origin gh-pages
