@@ -82,12 +82,12 @@ ROBOT_CONFIGS = {
         "cone": "elliptic",
     },
     "kitchen": {
-        "setup_builder": lambda x: _setup_kitchen(x),
+        "setup_builder": _setup_kitchen,
         "njmax": 3800,
         "nconmax": 900,
     },
     "tabletop": {
-        "setup_builder": lambda x: _setup_tabletop(x),
+        "setup_builder": _setup_tabletop,
         "njmax": 100,
         "nconmax": 20,
     },

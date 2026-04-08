@@ -291,7 +291,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         Test that creating a default Kamino solver without a model raises an error.
         """
-        self.assertRaises(TypeError, lambda: SolverKaminoImpl())
+        self.assertRaises(TypeError, SolverKaminoImpl)
 
     def test_01_make_default_valid_with_limits_and_without_contacts(self):
         """
