@@ -17,14 +17,14 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=8, args=None):
+    def __init__(self, viewer, args=None):
         # Set simulation run-time configurations
         self.fps = 60
         self.sim_dt = 0.0025
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
-        self.num_worlds = num_worlds
+        self.num_worlds = args.world_count
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -84,6 +84,17 @@ class Example:
         # NOTE: This only has an effect on GPU devices
         self.capture()
 
+        # Start paused to inspect the initial configuration
+        self.viewer._paused = True
+
+        # If only a single-world is created, set initial
+        # camera position for better view of the system
+        if self.num_worlds == 1 and hasattr(self.viewer, "set_camera"):
+            camera_pos = wp.vec3(5.0, 0.0, 2.0)
+            pitch = -15.0
+            yaw = -180.0
+            self.viewer.set_camera(camera_pos, pitch, yaw)
+
     def capture(self):
         self.graph = None
         if self.device.is_cuda:
@@ -134,20 +145,17 @@ class Example:
             )
             # fmt: on
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        newton.examples.add_kamino_contacts_arg(parser)
+        parser.set_defaults(world_count=1)
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=1, help="Total number of simulated worlds.")
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args.num_worlds, args)
-    example.viewer._paused = True  # Start paused to inspect the initial configuration
-
-    # If only a single-world is created, set initial
-    # camera position for better view of the system
-    if args.num_worlds == 1 and hasattr(example.viewer, "set_camera"):
-        camera_pos = wp.vec3(5.0, 0.0, 2.0)
-        pitch = -15.0
-        yaw = -180.0
-        example.viewer.set_camera(camera_pos, pitch, yaw)
-
+    example = Example(viewer, args)
     newton.examples.run(example, args)
