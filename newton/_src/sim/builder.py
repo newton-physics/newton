@@ -9984,6 +9984,47 @@ class ModelBuilder:
             )
 
             # ---------------------
+            # mesh edges (packed array + per-shape slice)
+
+            shape_edge_ranges = []
+            edge_chunks = []
+            edge_offset = 0
+            edge_cache = {}  # mesh python id → (start, count)
+
+            for i in range(len(self.shape_type)):
+                if (
+                    self.shape_type[i] == GeoType.MESH
+                    and self.shape_source[i] is not None
+                    and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
+                ):
+                    mesh = self.shape_source[i]
+                    mesh_key = id(mesh)
+                    if mesh_key in edge_cache:
+                        shape_edge_ranges.append(edge_cache[mesh_key])
+                    else:
+                        edges = mesh.edges  # lazily computed and cached on the Mesh
+                        start = edge_offset
+                        count = len(edges)
+                        edge_chunks.append(edges)
+                        edge_offset += count
+                        entry = (start, count)
+                        edge_cache[mesh_key] = entry
+                        shape_edge_ranges.append(entry)
+                else:
+                    shape_edge_ranges.append((-1, 0))
+
+            m.shape_edge_range = wp.array(
+                shape_edge_ranges if shape_edge_ranges else [(-1, 0)],
+                dtype=wp.vec2i,
+                device=device,
+            )
+            m.mesh_edge_indices = (
+                wp.array(np.concatenate(edge_chunks), dtype=wp.vec2i, device=device)
+                if edge_chunks
+                else wp.zeros(1, dtype=wp.vec2i, device=device)
+            )
+
+            # ---------------------
             # springs
 
             def _to_wp_array(data, dtype, requires_grad):

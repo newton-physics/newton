@@ -169,6 +169,7 @@ class Mesh:
         self.maxhullvert = maxhullvert
         self._cached_hash = None
         self._texture_hash = None
+        self._edges = None
         self.sdf = sdf
 
         if compute_inertia:
@@ -776,6 +777,7 @@ class Mesh:
     def vertices(self, value):
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
         self._cached_hash = None
+        self._edges = None
 
     @property
     def indices(self):
@@ -785,6 +787,44 @@ class Mesh:
     def indices(self, value):
         self._indices = np.array(value, dtype=np.int32).flatten()
         self._cached_hash = None
+        self._edges = None  # invalidate cached edges
+
+    @property
+    def edges(self) -> np.ndarray:
+        """Unique edge vertex pairs, shape (N, 2), with geometric deduplication.
+
+        Computed lazily on first access and cached. Invalidated when vertices or
+        indices change.
+        """
+        if self._edges is None:
+            if self._indices.size == 0 or self._vertices.size == 0:
+                self._edges = np.empty((0, 2), dtype=np.int32)
+                return self._edges
+            tris = self._indices.reshape(-1, 3)
+            n = len(tris)
+            # Canonical vertex ids via quantized coordinates (overflow-safe)
+            q = np.round(self._vertices * 1e7).astype(np.int64)
+            q_contig = np.ascontiguousarray(q)
+            void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
+            _, canonical = np.unique(void_verts, return_inverse=True)
+            canonical = canonical.ravel()
+            # Build edges with (min, max) canonical ordering, keep original indices
+            c = canonical[tris]
+            canon_edges = np.empty((n * 3, 2), dtype=np.int64)
+            orig_edges = np.empty((n * 3, 2), dtype=np.int32)
+            for k, (a, b) in enumerate(((0, 1), (1, 2), (0, 2))):
+                ca, cb = c[:, a], c[:, b]
+                canon_edges[k::3, 0] = np.minimum(ca, cb)
+                canon_edges[k::3, 1] = np.maximum(ca, cb)
+                orig_edges[k::3, 0] = tris[:, a]
+                orig_edges[k::3, 1] = tris[:, b]
+            # Deduplicate via void view (fast 1-D unique)
+            canon_edges = np.ascontiguousarray(canon_edges)
+            void_edges = canon_edges.view(np.dtype((np.void, canon_edges.dtype.itemsize * 2)))
+            _, first_idx = np.unique(void_edges, return_index=True)
+            first_idx.sort()
+            self._edges = orig_edges[first_idx]
+        return self._edges
 
     @property
     def normals(self):
