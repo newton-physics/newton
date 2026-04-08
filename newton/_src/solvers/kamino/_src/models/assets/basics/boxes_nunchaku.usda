@@ -274,43 +274,44 @@ def Xform "boxes_nunchaku"
         }
     }
 
-    def Scope "Collisions"
-    {
-        def PhysicsCollisionGroup "World"
-        {
-            rel collection:colliders:includes = [
-                </boxes_nunchaku/StaticGeometry/plane>,
-            ]
-        }
-        def PhysicsCollisionGroup "Body1"
-        {
-            rel collection:colliders:includes = [
-                </boxes_nunchaku/RigidBodies/body_1>,
-                </boxes_nunchaku/StaticGeometry/plane>,
-            ]
-        }
-        def PhysicsCollisionGroup "Body2"
-        {
-            rel collection:colliders:includes = [
-                </boxes_nunchaku/RigidBodies/body_2>,
-                </boxes_nunchaku/StaticGeometry/plane>,
-            ]
-        }
-        def PhysicsCollisionGroup "Body3"
-        {
-            rel collection:colliders:includes = [
-                </boxes_nunchaku/RigidBodies/body_3>,
-                </boxes_nunchaku/StaticGeometry/plane>,
-            ]
-        }
-        def PhysicsCollisionGroup "Internal"
-        {
-            rel collection:colliders:includes = [
-                </boxes_nunchaku/RigidBodies/body_1>,
-                </boxes_nunchaku/RigidBodies/body_3>,
-            ]
-        }
-    }
+    # TODO: DEBUG THIS
+    # def Scope "Collisions"
+    # {
+    #     def PhysicsCollisionGroup "World"
+    #     {
+    #         rel collection:colliders:includes = [
+    #             </boxes_nunchaku/StaticGeometry/plane>,
+    #         ]
+    #     }
+    #     def PhysicsCollisionGroup "Body1"
+    #     {
+    #         rel collection:colliders:includes = [
+    #             </boxes_nunchaku/RigidBodies/body_1>,
+    #             </boxes_nunchaku/StaticGeometry/plane>,
+    #         ]
+    #     }
+    #     def PhysicsCollisionGroup "Body2"
+    #     {
+    #         rel collection:colliders:includes = [
+    #             </boxes_nunchaku/RigidBodies/body_2>,
+    #             </boxes_nunchaku/StaticGeometry/plane>,
+    #         ]
+    #     }
+    #     def PhysicsCollisionGroup "Body3"
+    #     {
+    #         rel collection:colliders:includes = [
+    #             </boxes_nunchaku/RigidBodies/body_3>,
+    #             </boxes_nunchaku/StaticGeometry/plane>,
+    #         ]
+    #     }
+    #     def PhysicsCollisionGroup "Internal"
+    #     {
+    #         rel collection:colliders:includes = [
+    #             </boxes_nunchaku/RigidBodies/body_1>,
+    #             </boxes_nunchaku/RigidBodies/body_3>,
+    #         ]
+    #     }
+    # }
 }
 
 
