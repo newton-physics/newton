@@ -1174,6 +1174,234 @@ def parse_usd(
 
         return joint_index
 
+    def parse_merged_joints(
+        joint_paths: list[str],
+        incoming_xform: wp.transform | None = None,
+    ) -> int | None:
+        """Combine multiple single-DOF joints between the same two bodies into one D6 joint.
+
+        This handles USD files where multi-DOF MuJoCo joints are represented as
+        separate PhysicsRevoluteJoint / PhysicsPrismaticJoint prims connecting the
+        same parent and child bodies.  The individual joints are merged into a
+        single :func:`~newton.ModelBuilder.add_joint_d6` call, following the same
+        pattern used by the MJCF importer.
+
+        Args:
+            joint_paths: Prim paths of the joints to merge (all must share the
+                same body pair).
+            incoming_xform: Optional world-space transform applied to the parent
+                frame of the first joint.
+
+        Returns:
+            The builder joint index of the newly created D6 joint, or ``None`` if
+            all joints in the group are disabled.
+        """
+        linear_axes: list[ModelBuilder.JointDofConfig] = []
+        angular_axes: list[ModelBuilder.JointDofConfig] = []
+        # Track prim paths and initial state separately for linear/angular DOFs
+        # because add_joint_d6 orders linear DOFs first, then angular
+        linear_prim_paths: list[str] = []
+        angular_prim_paths: list[str] = []
+        linear_initial_pos: list[float | None] = []
+        linear_initial_vel: list[float | None] = []
+        angular_initial_pos: list[float | None] = []
+        angular_initial_vel: list[float | None] = []
+        enabled_count = 0
+
+        # Use the first joint for parent/child transforms and shared params
+        first_desc = joint_descriptions[joint_paths[0]]
+        first_prim = stage.GetPrimAtPath(first_desc.primPath)
+
+        parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
+            first_desc, path_body_map, get_transforms=True
+        )
+        if incoming_xform is not None:
+            parent_tf = incoming_xform * parent_tf
+
+        # Collect joint-level custom attributes from the first prim
+        joint_custom_attrs = usd.get_custom_attribute_values(
+            first_prim, builder_custom_attr_joint, context={"builder": builder}
+        )
+
+        for jp in joint_paths:
+            jd = joint_descriptions[jp]
+            if not jd.jointEnabled and only_load_enabled_joints:
+                continue
+            jp_prim = stage.GetPrimAtPath(jd.primPath)
+            if collect_schema_attrs:
+                R.collect_prim_attrs(jp_prim)
+
+            key = jd.type
+            if key not in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint):
+                raise ValueError(
+                    f"Cannot merge joint {jp} of type {key} into a D6 joint. "
+                    "Only RevoluteJoint and PrismaticJoint are supported for merging."
+                )
+
+            is_revolute = key == UsdPhysics.ObjectType.RevoluteJoint
+            if is_revolute:
+                limit_gains_scaling = DegreesToRadian
+            else:
+                limit_gains_scaling = 1.0
+
+            j_armature = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
+            )
+            j_friction = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
+            )
+            j_velocity_limit = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
+            )
+
+            limit_ke = R.get_value(
+                jp_prim,
+                prim_type=PrimType.JOINT,
+                key="limit_angular_ke" if is_revolute else "limit_linear_ke",
+                default=default_joint_limit_ke * limit_gains_scaling,
+                verbose=verbose,
+            )
+            limit_kd = R.get_value(
+                jp_prim,
+                prim_type=PrimType.JOINT,
+                key="limit_angular_kd" if is_revolute else "limit_linear_kd",
+                default=default_joint_limit_kd * limit_gains_scaling,
+                verbose=verbose,
+            )
+
+            limit_lower = jd.limit.lower
+            limit_upper = jd.limit.upper
+
+            # Build drive params
+            target_pos = 0.0
+            target_vel = 0.0
+            target_ke = 0.0
+            target_kd = 0.0
+            effort_limit = 1e6
+            actuator_mode = JointTargetMode.NONE
+            if jd.drive.enabled:
+                target_vel = jd.drive.targetVelocity
+                target_pos = jd.drive.targetPosition
+                target_ke = jd.drive.stiffness
+                target_kd = jd.drive.damping
+                effort_limit = jd.drive.forceLimit
+                actuator_mode = JointTargetMode.from_gains(
+                    target_ke, target_kd, force_position_velocity_actuation, has_drive=True
+                )
+
+            # Read initial joint state
+            initial_position = None
+            initial_velocity = None
+            if is_revolute:
+                initial_position = R.get_value(
+                    jp_prim, PrimType.JOINT, "angular_position", default=None, verbose=verbose
+                )
+                initial_velocity = R.get_value(
+                    jp_prim, PrimType.JOINT, "angular_velocity", default=None, verbose=verbose
+                )
+            else:
+                initial_position = R.get_value(
+                    jp_prim, PrimType.JOINT, "linear_position", default=None, verbose=verbose
+                )
+                initial_velocity = R.get_value(
+                    jp_prim, PrimType.JOINT, "linear_velocity", default=None, verbose=verbose
+                )
+
+            # Unit conversion for revolute joints
+            if is_revolute:
+                limit_lower *= DegreesToRadian
+                limit_upper *= DegreesToRadian
+                limit_ke /= DegreesToRadian
+                limit_kd /= DegreesToRadian
+                if jd.drive.enabled:
+                    target_pos *= DegreesToRadian
+                    target_vel *= DegreesToRadian
+                    target_kd /= DegreesToRadian / joint_drive_gains_scaling
+                    target_ke /= DegreesToRadian / joint_drive_gains_scaling
+                if j_velocity_limit is not None:
+                    j_velocity_limit *= DegreesToRadian
+                if initial_position is not None:
+                    initial_position *= DegreesToRadian
+
+            ax = ModelBuilder.JointDofConfig(
+                axis=usd_axis_to_axis[jd.axis],
+                limit_lower=limit_lower,
+                limit_upper=limit_upper,
+                limit_ke=limit_ke,
+                limit_kd=limit_kd,
+                target_pos=target_pos,
+                target_vel=target_vel,
+                target_ke=target_ke,
+                target_kd=target_kd,
+                armature=j_armature,
+                friction=j_friction,
+                effort_limit=effort_limit,
+                velocity_limit=j_velocity_limit if j_velocity_limit is not None else 1e6,
+                actuator_mode=actuator_mode,
+            )
+
+            if is_revolute:
+                angular_axes.append(ax)
+                angular_prim_paths.append(jp)
+                angular_initial_pos.append(initial_position)
+                angular_initial_vel.append(initial_velocity)
+            else:
+                linear_axes.append(ax)
+                linear_prim_paths.append(jp)
+                linear_initial_pos.append(initial_position)
+                linear_initial_vel.append(initial_velocity)
+
+            enabled_count += 1
+
+        if enabled_count == 0:
+            return None
+
+        # D6 DOF order: linear first, then angular
+        dof_prim_paths = linear_prim_paths + angular_prim_paths
+        dof_initial_pos = linear_initial_pos + angular_initial_pos
+        dof_initial_vel = linear_initial_vel + angular_initial_vel
+
+        # Use first joint path as the D6 joint label
+        label = joint_paths[0]
+
+        # Register original prim paths as DOF labels so MjcActuator targets resolve correctly
+        if "mujoco:joint_dof_label" in builder.custom_attributes:
+            joint_custom_attrs["mujoco:joint_dof_label"] = dof_prim_paths
+
+        joint_index = builder.add_joint_d6(
+            parent=parent_id,
+            child=child_id,
+            linear_axes=linear_axes if linear_axes else None,
+            angular_axes=angular_axes if angular_axes else None,
+            parent_xform=parent_tf,
+            child_xform=child_tf,
+            label=label,
+            enabled=first_desc.jointEnabled,
+            custom_attributes=joint_custom_attrs,
+        )
+
+        # Register all original joint prim paths in path_joint_map
+        for jp in joint_paths:
+            path_joint_map[jp] = joint_index
+
+        # Apply initial positions/velocities
+        if joint_index is not None:
+            q_start = builder.joint_q_start[joint_index]
+            qd_start = builder.joint_qd_start[joint_index]
+            for dof_idx, (pos, vel) in enumerate(zip(dof_initial_pos, dof_initial_vel, strict=True)):
+                if pos is not None:
+                    builder.joint_q[q_start + dof_idx] = pos
+                if vel is not None:
+                    builder.joint_qd[qd_start + dof_idx] = vel
+
+        if verbose:
+            print(
+                f"Merged {len(joint_paths)} joints into D6 joint {joint_index}: "
+                f"{len(linear_axes)} linear + {len(angular_axes)} angular DOFs"
+            )
+
+        return joint_index
+
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
     physics_scene_prim = None
@@ -1518,6 +1746,11 @@ def parse_usd(
             joint_edges: list[tuple[int, int]] = []
             # keys of joints that are excluded from the articulation (loop joints)
             joint_excluded: set[str] = set()
+            # Groups of joints that share the same body pair (multi-DOF joints from MuJoCo USD).
+            # Maps the representative joint path (first encountered) to all joint paths in the group.
+            merged_joint_groups: dict[str, list[str]] = {}
+            # Track which body pair maps to which representative joint path
+            body_pair_to_representative: dict[tuple[int, int], str] = {}
             for p in desc.articulatedJoints:
                 joint_path = str(p)
                 joint_desc = joint_descriptions[joint_path]
@@ -1534,8 +1767,17 @@ def parse_usd(
                 if joint_desc.excludeFromArticulation:
                     joint_excluded.add(joint_path)
                 else:
-                    joint_edges.append((parent_id, child_id))
-                    joint_names.append(joint_path)
+                    body_pair = (parent_id, child_id)
+                    if body_pair in body_pair_to_representative:
+                        # Another joint between the same bodies — merge into existing group
+                        rep = body_pair_to_representative[body_pair]
+                        merged_joint_groups[rep].append(joint_path)
+                    else:
+                        # First joint for this body pair
+                        body_pair_to_representative[body_pair] = joint_path
+                        merged_joint_groups[joint_path] = [joint_path]
+                        joint_edges.append(body_pair)
+                        joint_names.append(joint_path)
 
             articulation_joint_indices = []
 
@@ -1758,17 +2000,30 @@ def parse_usd(
                             else wp.transform_identity()
                         )
                         root_incoming_xform = incoming_world_xform * root_frame_xform * world_body_xform
-                        joint = parse_joint(
-                            joint_descriptions[joint_names[i]],
-                            incoming_xform=root_incoming_xform,
-                        )
+                        group = merged_joint_groups.get(joint_names[i])
+                        if group is not None and len(group) > 1:
+                            joint = parse_merged_joints(group, incoming_xform=root_incoming_xform)
+                        else:
+                            joint = parse_joint(
+                                joint_descriptions[joint_names[i]],
+                                incoming_xform=root_incoming_xform,
+                            )
                     else:
-                        joint = parse_joint(
-                            joint_descriptions[joint_names[i]],
-                        )
+                        group = merged_joint_groups.get(joint_names[i])
+                        if group is not None and len(group) > 1:
+                            joint = parse_merged_joints(group)
+                        else:
+                            joint = parse_joint(
+                                joint_descriptions[joint_names[i]],
+                            )
                     if joint is not None:
                         articulation_joint_indices.append(joint)
                         processed_joints.add(joint_names[i])
+                        # Mark all paths in the group as processed
+                        group = merged_joint_groups.get(joint_names[i])
+                        if group is not None:
+                            for gp in group:
+                                processed_joints.add(gp)
 
                 # insert loop joints
                 for joint_path in joint_excluded:
