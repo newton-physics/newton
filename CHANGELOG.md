@@ -36,6 +36,7 @@
 - Add `total_force_friction` and `force_matrix_friction` to `SensorContact` for tangential (friction) force decomposition
 - Add `compute_normals` and `compute_uvs` optional arguments to `Mesh.create_heightfield()` and `Mesh.create_terrain()`
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
+- Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
 - Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
 
 ### Changed
@@ -129,10 +130,14 @@
 - Fix heightfield bounding-sphere radius underestimating Z extent for asymmetric height ranges (e.g. `min_z=0, max_z=10`)
 - Fix VBD self-contact barrier C2 discontinuity at `d = tau` caused by a factor-of-two error in the log-barrier coefficient
 - Fix fast inertia validation treating near-symmetric tensors within `np.allclose()` default tolerances as corrections, aligning CPU and GPU validation warnings
+- Fix connect constraint anchor computation to account for joint reference positions when `SolverMuJoCo` is the chosen solver.
 - Fix forward-kinematics child-origin linear velocity for articulated translated joints
 - Fix URDF joint dynamics friction import so specified friction values are preserved during simulation
 - Fix duplicate Reset button in brick stacking example when using the example browser
+- Fix mesh-convex back-face contacts generating inverted normals that trap shapes inside meshes and cause solver divergence (NaN)
+- Fix MPR convergence failure on large and extreme-aspect-ratio mesh triangles by projecting the starting point onto the triangle nearest the convex center
 - Cap `cbor2` dependency to `<6` to prevent recorder test failures caused by breaking deserialization changes in cbor2 6.0
+- Fix O(W²·S²) memory explosion in `CollisionPipeline` shape-pair buffer allocation for NXN and SAP broad phase modes by computing per-world pair counts instead of a global N²
 
 ## [1.0.0] - 2026-03-10
 

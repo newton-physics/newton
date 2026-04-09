@@ -88,6 +88,11 @@ class Mesh:
     and utility methods for simulation. Meshes are typically used for collision detection,
     visualization, and inertia computation in physics simulation.
 
+    Triangle indices must use counter-clockwise (CCW) winding when viewed from
+    the outside of the surface. The collision pipeline derives face normals from
+    the winding order and culls back-face contacts, so incorrect winding may
+    cause convex shapes to pass through the mesh.
+
     Attributes:
         mass [kg]: Mesh mass in local coordinates, computed with density 1.0 when
             ``compute_inertia`` is ``True``.

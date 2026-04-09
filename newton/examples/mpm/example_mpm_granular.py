@@ -157,7 +157,7 @@ class Example:
         positions = self.state_0.particle_q.numpy()
         velocities = self.state_0.particle_qd.numpy()
         centroid = np.mean(positions, axis=0)
-        bbox = np.max(np.ptp(positions, axis=0))
+        bbox = np.max(np.max(positions, axis=0) - np.min(positions, axis=0))
         max_vel = np.max(np.linalg.norm(velocities, axis=1))
 
         assert abs(centroid[0] - (-0.31)) < max(0.02, 0.31 * 0.05), f"Centroid X out of range: {centroid[0]}"

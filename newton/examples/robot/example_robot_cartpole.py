@@ -125,6 +125,7 @@ class Example:
             lambda q, qd: q[2] == 0.0 and newton.math.vec_allclose(q.q, wp.quat_identity()),
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -159,6 +160,7 @@ class Example:
             and qd[5] == 0.0,
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
+        # fmt: on
         qd = self.state_0.body_qd.numpy()
         world0_cart_vel = wp.spatial_vector(*qd[0])
         world0_pole1_vel = wp.spatial_vector(*qd[1])

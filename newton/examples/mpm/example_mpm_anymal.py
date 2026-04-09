@@ -302,7 +302,7 @@ class Example:
         # Empirical centroid, bbox, and velocity checks (100 frames)
         positions = self.state_0.particle_q.numpy()
         centroid = np.mean(positions, axis=0)
-        bbox = np.max(np.ptp(positions, axis=0))
+        bbox = np.max(np.max(positions, axis=0) - np.min(positions, axis=0))
 
         assert abs(centroid[0] - (-0.001)) < max(0.02, 0.001 * 0.05), f"Centroid X out of range: {centroid[0]}"
         assert abs(centroid[1] - 1.012) < max(0.02, 1.012 * 0.05), f"Centroid Y out of range: {centroid[1]}"

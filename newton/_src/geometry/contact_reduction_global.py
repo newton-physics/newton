@@ -78,7 +78,7 @@ from .contact_reduction import (
     get_spatial_direction_2d,
     project_point_to_plane,
 )
-from .support_function import extract_shape_data
+from .support_function import GeoTypeEx, extract_shape_data
 from .types import GeoType
 
 # Fixed beta threshold for contact reduction - small positive value to avoid flickering
@@ -1274,9 +1274,24 @@ def mesh_triangle_contacts_to_reducer_kernel(
             shape_source,
         )
 
-        # Set pos_a to be vertex A (origin of triangle in local frame)
+        # Triangle position is vertex A in world space.
+        # For heightfield prisms, edges are in heightfield-local space
+        # so we pass the heightfield rotation to let MPR/GJK work in
+        # that frame (where -Z is always the down axis).
         pos_a = v0_world
-        quat_a = wp.quat_identity()  # Triangle has no orientation
+        if type_a == GeoType.HFIELD:
+            quat_a = wp.transform_get_rotation(shape_transform[shape_a])
+        else:
+            quat_a = wp.quat_identity()
+
+        # Back-face culling: skip when the convex center is behind the
+        # triangle face.  TRIANGLE_PRISM (heightfields) handles this
+        # via its extruded support function.
+        if shape_data_a.shape_type == int(GeoTypeEx.TRIANGLE):
+            face_normal = wp.cross(shape_data_a.scale, shape_data_a.auxiliary)
+            center_dist = wp.dot(face_normal, pos_b - pos_a)
+            if center_dist < 0.0:
+                continue
 
         # Extract margin offset for shape A (signed distance padding)
         margin_offset_a = shape_data[shape_a][3]

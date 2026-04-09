@@ -143,12 +143,14 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > -0.01,
         )
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "all body velocities are small",
             lambda q, qd: max(abs(qd)) < 0.002,
         )
+        # fmt: on
 
     @staticmethod
     def create_parser():

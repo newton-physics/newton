@@ -13,6 +13,7 @@ from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
 from ..geometry.contact_data import ContactData
 from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
+from ..geometry.flags import ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
@@ -368,6 +369,47 @@ def _estimate_rigid_contact_max(model: Model) -> int:
     return max(1000, total_contacts)
 
 
+def _compute_per_world_shape_pairs_max(model: Model) -> int:
+    """Compute the maximum number of candidate shape pairs using per-world counts.
+
+    For multi-world scenes the global formula ``N*(N-1)/2`` is O(W^2 * S^2)
+    where W is the number of worlds and S is shapes per world.  The correct
+    upper bound is the sum of per-world lower-triangular counts which is
+    O(W * S^2).
+
+    The result mirrors the segment layout produced by
+    :func:`precompute_world_map`: each regular world's segment contains the
+    world's local shapes **plus** all global shapes (world == -1), and a
+    dedicated final segment contains only the global shapes.  Each segment
+    contributes ``n*(n-1)/2`` candidate pairs independently.
+    """
+    shape_world = getattr(model, "shape_world", None)
+    shape_count = model.shape_count
+    if shape_world is None or shape_count <= 1:
+        return max(0, (shape_count * (shape_count - 1)) // 2)
+
+    sw = shape_world.numpy()
+    shape_flags = getattr(model, "shape_flags", None)
+    if shape_flags is not None:
+        sf = shape_flags.numpy()
+        colliding = (sf & int(ShapeFlags.COLLIDE_SHAPES)) != 0
+    else:
+        colliding = np.ones(len(sw), dtype=bool)
+
+    global_count = int(np.count_nonzero((sw == -1) & colliding))
+    world_ids = np.unique(sw[(sw >= 0) & colliding])
+
+    total = 0
+    for wid in world_ids:
+        n = int(np.count_nonzero((sw == wid) & colliding)) + global_count
+        total += (n * (n - 1)) // 2
+
+    # Dedicated global-vs-global segment (appended by precompute_world_map).
+    total += (global_count * (global_count - 1)) // 2
+
+    return max(0, total)
+
+
 BROAD_PHASE_MODES = ("nxn", "sap", "explicit")
 
 
@@ -531,7 +573,7 @@ class CollisionPipeline:
                 self.shape_pairs_excluded_count = 0
             else:
                 self.shape_pairs_filtered = None
-                self.shape_pairs_max = (shape_count * (shape_count - 1)) // 2
+                self.shape_pairs_max = _compute_per_world_shape_pairs_max(model)
                 self.shape_pairs_excluded = self._build_excluded_pairs(model)
                 self.shape_pairs_excluded_count = (
                     self.shape_pairs_excluded.shape[0] if self.shape_pairs_excluded is not None else 0
@@ -565,7 +607,7 @@ class CollisionPipeline:
                     raise ValueError("model.shape_world is required for broad_phase=NXN")
                 self.broad_phase = BroadPhaseAllPairs(shape_world, shape_flags=shape_flags, device=device)
                 self.shape_pairs_filtered = None
-                self.shape_pairs_max = (shape_count * (shape_count - 1)) // 2
+                self.shape_pairs_max = _compute_per_world_shape_pairs_max(model)
                 self.shape_pairs_excluded = self._build_excluded_pairs(model)
                 self.shape_pairs_excluded_count = (
                     self.shape_pairs_excluded.shape[0] if self.shape_pairs_excluded is not None else 0
@@ -575,7 +617,7 @@ class CollisionPipeline:
                     raise ValueError("model.shape_world is required for broad_phase=SAP")
                 self.broad_phase = BroadPhaseSAP(shape_world, shape_flags=shape_flags, device=device)
                 self.shape_pairs_filtered = None
-                self.shape_pairs_max = (shape_count * (shape_count - 1)) // 2
+                self.shape_pairs_max = _compute_per_world_shape_pairs_max(model)
                 self.shape_pairs_excluded = self._build_excluded_pairs(model)
                 self.shape_pairs_excluded_count = (
                     self.shape_pairs_excluded.shape[0] if self.shape_pairs_excluded is not None else 0
