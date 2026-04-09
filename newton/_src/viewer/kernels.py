@@ -107,6 +107,13 @@ def apply_picking_force_kernel(
         pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world)
         - (pick_state[0].pick_damping * vel_at_offset)
     )
+
+    # Clamp force magnitude to prevent runaway divergence on light objects (#2361).
+    max_force = 5.0 * 9.81 * body_mass[pick_body]
+    force_mag = wp.length(force_at_offset)
+    if force_mag > max_force:
+        force_at_offset = force_at_offset * (max_force / force_mag)
+
     # Compute the resulting torque given the offset from COM to the picked point.
     torque_at_offset = wp.cross(offset, force_at_offset)
 
