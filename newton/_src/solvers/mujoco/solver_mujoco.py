@@ -5945,6 +5945,21 @@ class SolverMuJoCo(SolverBase):
         update_anchor_rel_xform_at_ref_pose: bool,
         update_anchors: bool,
     ):
+        """Update CONNECT constraint anchors in response to model changes.
+
+        Optionally recomputes the relative body transforms at the reference
+        pose, then writes the resulting anchors into ``mjw_model.eq_data``
+        (and ``mj_model.eq_data`` on the CPU path).
+
+        Must be called **after** other model updates (``mj_setConst``,
+        ``set_const_0``, etc.) because it overwrites ``eq_data``.
+
+        Args:
+            update_anchor_rel_xform_at_ref_pose: Recompute ``(q_rel, t_rel)``
+                from ``dof_ref`` / joint properties.
+            update_anchors: Recompute anchors from
+                ``equality_constraint_anchor``.
+        """
         if update_anchor_rel_xform_at_ref_pose:
             self.connect_constraint_q_rel, self.connect_constraint_t_rel = (
                 SolverMuJoCo._update_connect_constraint_anchor_rel_xform_at_ref_pose(self.model)
