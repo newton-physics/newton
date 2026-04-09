@@ -461,7 +461,7 @@ Newton defines collision primitives with consistent conventions across all shape
    * - **Mesh**
      - User-defined
      - Vertex and triangle arrays
-     - General triangle mesh (can be non-convex)
+     - General triangle mesh (can be non-convex); CCW winding defines outward face normal
 
 **Shape Orientation and Alignment**
 

@@ -1180,13 +1180,24 @@ class ViewerBase(ABC):
         pass
 
     @abstractmethod
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(
+        self,
+        name: str,
+        value: int | float | bool | np.number,
+        *,
+        clear: bool = False,
+        smoothing: int = 1,
+    ):
         """
         Log a scalar signal for backend-specific visualization utilities.
 
         Args:
             name: Unique path/name for the scalar signal.
             value: Scalar value to record.
+            clear: If ``True``, discard previously recorded samples for
+                *name* before logging the new value.
+            smoothing: Number of raw samples to average before committing
+                a point to the plot history.  Defaults to ``1`` (no smoothing).
         """
         pass
 

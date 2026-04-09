@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import collections
 import ctypes
 import re
 import time
@@ -192,6 +193,7 @@ class ViewerGL(ViewerBase):
         height: int = 1080,
         vsync: bool = False,
         headless: bool = False,
+        plot_history_size: int = 250,
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -201,10 +203,24 @@ class ViewerGL(ViewerBase):
             height: Window height in pixels.
             vsync: Enable vertical sync.
             headless: Run in headless mode (no window).
+            plot_history_size: Maximum number of samples kept per
+                :meth:`log_scalar` signal for the live time-series plots.
         """
+        if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
+            raise TypeError("plot_history_size must be an integer")
+        if plot_history_size <= 0:
+            raise ValueError("plot_history_size must be > 0")
+
         # Pre-initialize callback registry; clear_model() (called from
         # super().__init__()) resets the "side" slot on each model change.
         self._ui_callbacks = {"side": [], "stats": [], "free": [], "panel": []}
+
+        # Rolling buffers for log_scalar() time-series plots.
+        self._scalar_buffers: dict[str, collections.deque] = {}
+        self._scalar_arrays: dict[str, np.ndarray | None] = {}
+        self._scalar_accumulators: dict[str, list[float]] = {}
+        self._scalar_smoothing: dict[str, int] = {}
+        self._plot_history_size = plot_history_size
 
         super().__init__()
 
@@ -415,6 +431,12 @@ class ViewerGL(ViewerBase):
         # Clear example-specific UI callbacks; panel/stats persist
         self._ui_callbacks["side"] = []
         self._ui_callbacks["free"] = []
+
+        # Clear scalar plot buffers
+        self._scalar_buffers.clear()
+        self._scalar_arrays.clear()
+        self._scalar_accumulators.clear()
+        self._scalar_smoothing.clear()
 
         super().clear_model()
 
@@ -1128,15 +1150,54 @@ class ViewerGL(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(
+        self,
+        name: str,
+        value: int | float | bool | np.number,
+        *,
+        clear: bool = False,
+        smoothing: int = 1,
+    ):
         """
-        Log a scalar value for visualization (not implemented).
+        Log a scalar value as a live time-series plot.
+
+        Each unique *name* creates a separate line plot displayed in an
+        auto-generated "Plots" window.  Values are stored in a rolling
+        buffer of the last ``plot_history_size`` samples.
 
         Args:
             name: Unique path/name for the scalar signal.
-            value: Scalar value to visualize.
+            value: Scalar value to record.
+            clear: If ``True``, discard previously recorded samples for
+                *name* before logging the new value.
+            smoothing: Number of raw samples to average before committing
+                a point to the plot history.  Defaults to ``1`` (no smoothing).
         """
-        pass
+        if smoothing < 1:
+            raise ValueError("smoothing must be >= 1")
+        val = float(value.item() if hasattr(value, "item") else value)
+        buf = self._scalar_buffers.get(name)
+        if buf is None:
+            buf = collections.deque(maxlen=self._plot_history_size)
+            self._scalar_buffers[name] = buf
+        elif clear:
+            buf.clear()
+            self._scalar_accumulators.pop(name, None)
+
+        self._scalar_smoothing[name] = smoothing
+        if smoothing <= 1:
+            buf.append(val)
+        else:
+            acc = self._scalar_accumulators.get(name)
+            if acc is None:
+                acc = []
+                self._scalar_accumulators[name] = acc
+            acc.append(val)
+            if len(acc) >= smoothing:
+                buf.append(sum(acc) / len(acc))
+                acc.clear()
+
+        self._scalar_arrays[name] = None
 
     @override
     def log_state(self, state: nt.State):
@@ -1982,6 +2043,9 @@ class ViewerGL(ViewerBase):
         # Render top-right stats overlay
         self._render_stats_overlay()
 
+        # Render scalar time-series plots (from log_scalar calls)
+        self._render_scalar_plots()
+
         # allow users to create custom windows
         for callback in self._ui_callbacks["free"]:
             callback(self.ui.imgui)
@@ -2173,6 +2237,48 @@ class ViewerGL(ViewerBase):
             # Selection API section
             self._render_selection_panel()
 
+        imgui.end()
+
+    def _render_scalar_plots(self):
+        """Render an ImGui window with live line plots for all logged scalars."""
+        if not self._scalar_buffers:
+            return
+
+        imgui = self.ui.imgui
+        io = self.ui.io
+
+        window_width = 400
+        window_height = min(
+            io.display_size[1] - 20,
+            len(self._scalar_buffers) * 140 + 60,
+        )
+        imgui.set_next_window_pos(
+            imgui.ImVec2(io.display_size[0] - window_width - 10, 10),
+            imgui.Cond_.appearing,
+        )
+        imgui.set_next_window_size(
+            imgui.ImVec2(window_width, window_height),
+            imgui.Cond_.appearing,
+        )
+
+        expanded = imgui.begin("Plots")
+        if expanded:
+            graph_size = imgui.ImVec2(-1, 100)
+            n = self._plot_history_size
+            for name, buf in self._scalar_buffers.items():
+                arr = self._scalar_arrays.get(name)
+                if arr is None:
+                    # Pad with NaN on the left so the x-axis scale is fixed
+                    # but pre-history values are not drawn.
+                    arr = np.full(n, np.nan, dtype=np.float32)
+                    arr[n - len(buf) :] = np.array(buf, dtype=np.float32)
+                    self._scalar_arrays[name] = arr
+                overlay = f"{buf[-1]:.4g}" if buf else ""
+                if imgui.collapsing_header(
+                    name,
+                    imgui.TreeNodeFlags_.default_open.value,
+                ):
+                    imgui.plot_lines(f"##{name}", arr, graph_size=graph_size, overlay_text=overlay)
         imgui.end()
 
     def _render_stats_overlay(self):

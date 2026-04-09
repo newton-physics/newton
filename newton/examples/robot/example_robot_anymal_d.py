@@ -148,6 +148,7 @@ class Example:
         # Only check velocities on CUDA where we run 500 frames (enough time to settle)
         # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
         if self.device.is_cuda:
+            # fmt: off
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
@@ -155,6 +156,7 @@ class Example:
                 lambda q, qd: max(abs(qd))
                 < 0.25,  # Relaxed from 0.1 - collision pipeline has residual velocities up to ~0.2
             )
+            # fmt: on
 
     @staticmethod
     def create_parser():

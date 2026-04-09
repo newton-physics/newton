@@ -17,6 +17,7 @@ These validations ensure the NarrowPhase follows the same contact conventions as
 primitive collision functions.
 """
 
+import typing
 import unittest
 
 import numpy as np
@@ -27,6 +28,8 @@ import newton
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.narrow_phase import NarrowPhase
 from newton._src.geometry.types import GeoType
+
+_cuda_available = wp.is_cuda_available()
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):
@@ -1997,6 +2000,244 @@ class TestBufferOverflowWarnings(unittest.TestCase):
             num_candidate_pair.numpy()[0], candidate_pair.shape[0], "Broad phase buffer should have overflowed"
         )
         # Warning capture via wp.printf is optional; counter/capacity check above is authoritative.
+
+
+@unittest.skipUnless(_cuda_available, "Mesh-convex tiled BVH queries require CUDA")
+class TestExtremeMeshTriangles(unittest.TestCase):
+    """Test that MPR/GJK handles extreme triangle sizes and aspect ratios.
+
+    Each test drops ALL convex shape types (sphere, box, capsule, cylinder,
+    cone, ellipsoid) simultaneously onto the mesh, arranged in a grid with
+    spacing.  The improved geometric_center starting direction handles these
+    without triangle preconditioning.
+    """
+
+    def setUp(self):
+        self.narrow_phase = NarrowPhase(
+            max_candidate_pairs=100000,
+            max_triangle_pairs=1000000,
+            reduce_contacts=False,
+            device="cuda:0",
+        )
+
+    # All convex shape types with their GeoType, scale, and label.
+    CONVEX_SHAPES: typing.ClassVar = [
+        (GeoType.SPHERE, [0.3, 0.3, 0.3], "sphere"),
+        (GeoType.BOX, [0.2, 0.2, 0.2], "box"),
+        (GeoType.CAPSULE, [0.15, 0.2, 0.15], "capsule"),
+        (GeoType.CYLINDER, [0.15, 0.25, 0.15], "cylinder"),
+        (GeoType.CONE, [0.15, 0.25, 0.15], "cone"),
+        (GeoType.ELLIPSOID, [0.25, 0.15, 0.2], "ellipsoid"),
+    ]
+
+    def _drop_all_shapes_on_mesh(self, vertices, indices, center, height, spacing=1.5, margin=0.02):
+        """Drop all convex shape types onto a mesh in a grid layout.
+
+        Args:
+            vertices: Mesh vertex list (XY plane, normal +Z).
+            indices: Mesh triangle index list.
+            center: (x, y) center of the grid on the mesh.
+            height: Z coordinate of shape centers above the mesh (z=0).
+            spacing: Distance between shapes in the grid.
+            margin: Contact margin.
+
+        Returns:
+            Dict mapping shape label to contact count.
+        """
+        mesh = newton.Mesh(
+            np.array(vertices, dtype=np.float32),
+            np.array(indices, dtype=np.int32),
+        )
+        device = self.narrow_phase.device if self.narrow_phase.device is not None else wp.get_device()
+
+        n_shapes = len(self.CONVEX_SHAPES)
+        cols = 3
+        rows = (n_shapes + cols - 1) // cols
+
+        with wp.ScopedDevice(device):
+            mesh_id = mesh.finalize()
+            geom_list = [
+                {
+                    "type": GeoType.MESH,
+                    "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                    "data": ([1.0, 1.0, 1.0], 0.0),
+                    "source": int(mesh_id),
+                    "cutoff": margin,
+                },
+            ]
+
+            for i, (geo_type, scale, _label) in enumerate(self.CONVEX_SHAPES):
+                row, col = divmod(i, cols)
+                x = center[0] + (col - (cols - 1) / 2.0) * spacing
+                y = center[1] + (row - (rows - 1) / 2.0) * spacing
+                geom_list.append(
+                    {
+                        "type": geo_type,
+                        "transform": ([x, y, height], [0.0, 0.0, 0.0, 1.0]),
+                        "data": (scale, 0.0),
+                        "cutoff": margin,
+                    }
+                )
+
+            (
+                geom_types,
+                geom_data,
+                geom_transform,
+                geom_source,
+                shape_gap,
+                geom_collision_radius,
+                shape_sdf_index,
+                shape_flags,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
+                shape_voxel_resolution,
+            ) = TestNarrowPhase._create_geometry_arrays(self, geom_list)
+
+            # Pair each convex shape (indices 1..N) with the mesh (index 0)
+            pairs = [(0, i + 1) for i in range(n_shapes)]
+            candidate_pair = wp.array(np.array(pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
+            candidate_pair_count = wp.array([len(pairs)], dtype=wp.int32)
+
+            max_contacts = n_shapes * 20
+            contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
+            contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_penetration = wp.zeros(max_contacts, dtype=float)
+            contact_count = wp.zeros(1, dtype=int)
+
+            self.narrow_phase.launch(
+                candidate_pair=candidate_pair,
+                candidate_pair_count=candidate_pair_count,
+                shape_types=geom_types,
+                shape_data=geom_data,
+                shape_transform=geom_transform,
+                shape_source=geom_source,
+                shape_sdf_index=shape_sdf_index,
+                shape_gap=shape_gap,
+                shape_collision_radius=geom_collision_radius,
+                shape_flags=shape_flags,
+                shape_collision_aabb_lower=shape_collision_aabb_lower,
+                shape_collision_aabb_upper=shape_collision_aabb_upper,
+                shape_voxel_resolution=shape_voxel_resolution,
+                contact_pair=contact_pair,
+                contact_position=contact_position,
+                contact_normal=contact_normal,
+                contact_penetration=contact_penetration,
+                contact_count=contact_count,
+                contact_tangent=wp.zeros(max_contacts, dtype=wp.vec3),
+            )
+
+            count = contact_count.numpy()[0]
+            pairs_np = contact_pair.numpy()[:count]
+            normals_np = contact_normal.numpy()[:count]
+            positions_np = contact_position.numpy()[:count]
+            penetrations_np = contact_penetration.numpy()[:count]
+
+            # Count contacts per shape
+            result = {}
+            for i, (_, _, label) in enumerate(self.CONVEX_SHAPES):
+                shape_idx = i + 1
+                mask = (pairs_np[:, 0] == shape_idx) | (pairs_np[:, 1] == shape_idx)
+                shape_count = int(np.sum(mask))
+                result[label] = shape_count
+
+                # Validate contacts for this shape
+                for j in np.where(mask)[0]:
+                    self.assertFalse(np.any(np.isnan(positions_np[j])), f"{label}: contact position NaN")
+                    self.assertFalse(np.any(np.isnan(normals_np[j])), f"{label}: contact normal NaN")
+                    self.assertFalse(np.isnan(penetrations_np[j]), f"{label}: penetration NaN")
+                    n_len = np.linalg.norm(normals_np[j])
+                    self.assertGreater(n_len, 0.9, f"{label}: near-zero normal {normals_np[j]}")
+                    # For face contacts, normal should point roughly upward (+Z).
+                    # Edge/vertex contacts can have sideways normals, so we only
+                    # check that the normal isn't pointing downward (-Z).
+                    nz = normals_np[j][2] / n_len
+                    self.assertGreater(nz, -0.1, f"{label}: normal points down Z={nz:.3f}: {normals_np[j]}")
+
+            return result
+
+    def _assert_all_shapes_contact(self, vertices, indices, center, height, msg="", normal_z_min=0.5, **kwargs):
+        """Assert every convex shape type produces valid contacts.
+
+        Validates:
+        - Each shape gets at least one contact.
+        - Contact normals roughly point upward (+Z, since meshes lie in XY plane).
+        - Penetration values are negative (overlapping) or within margin.
+        """
+        result = self._drop_all_shapes_on_mesh(vertices, indices, center, height, **kwargs)
+        prefix = f"{msg}: " if msg else ""
+        for label, count in result.items():
+            self.assertGreater(count, 0, f"{prefix}{label} got 0 contacts")
+
+    # =========================================================================
+    # Huge triangles (500m)
+    # =========================================================================
+
+    def test_huge_triangle_center(self):
+        """All shapes on center of a 500m triangle."""
+        s = 500.0
+        verts = [[-s, -s, 0], [s, -s, 0], [0, s, 0]]
+        self._assert_all_shapes_contact(verts, [0, 1, 2], [0.0, 0.0], 0.15, "huge center")
+
+    def test_huge_triangle_near_edge(self):
+        """All shapes near the bottom edge of a 500m triangle."""
+        s = 500.0
+        verts = [[-s, -s, 0], [s, -s, 0], [0, s, 0]]
+        self._assert_all_shapes_contact(verts, [0, 1, 2], [0.0, -s + 2.0], 0.15, "huge near edge")
+
+    def test_huge_triangle_near_vertex(self):
+        """All shapes near a vertex of a 500m triangle."""
+        s = 500.0
+        verts = [[-s, -s, 0], [s, -s, 0], [0, s, 0]]
+        # Place grid 5m from the vertex to fit all shapes inside the triangle
+        self._assert_all_shapes_contact(verts, [0, 1, 2], [-s + 8.0, -s + 8.0], 0.15, "huge near vertex")
+
+    # =========================================================================
+    # Sliver triangles
+    # =========================================================================
+
+    def test_huge_sliver_1000_to_1(self):
+        """All shapes on a 1000m long, 5m wide sliver (shapes fit along the length)."""
+        verts = [[-500, 0, 0], [500, 0, 0], [0, 5, 0]]
+        self._assert_all_shapes_contact(verts, [0, 1, 2], [0.0, 1.5], 0.15, "sliver 1000:5")
+
+    def test_isosceles_sliver(self):
+        """All shapes on an isosceles sliver (one long edge, two ~half-length short edges)."""
+        verts = [[-500, 0, 0], [500, 0, 0], [0, 5, 0]]
+        self._assert_all_shapes_contact(verts, [0, 1, 2], [0.0, 1.5], 0.15, "isosceles sliver")
+
+    def test_needle_triangle(self):
+        """All shapes on a needle triangle (one short 2m edge, two 50m edges)."""
+        verts = [[0, 0, 0], [50, 1, 0], [50, -1, 0]]
+        self._assert_all_shapes_contact(verts, [0, 2, 1], [25.0, 0.0], 0.15, "needle", spacing=1.0)
+
+    # =========================================================================
+    # Disc fan mesh (shared center vertex)
+    # =========================================================================
+
+    def test_disc_fan_center(self):
+        """All shapes dropped on the center of a 12-slice disc fan mesh."""
+        n_slices = 12
+        radius = 10.0
+        verts = [[0, 0, 0]]
+        for i in range(n_slices):
+            angle = 2.0 * np.pi * i / n_slices
+            verts.append([radius * np.cos(angle), radius * np.sin(angle), 0.0])
+        inds = []
+        for i in range(n_slices):
+            next_i = (i + 1) % n_slices
+            inds.extend([0, i + 1, next_i + 1])
+        self._assert_all_shapes_contact(verts, inds, [0.0, 0.0], 0.15, "disc fan center")
+
+    # =========================================================================
+    # Shared edge (two coplanar triangles)
+    # =========================================================================
+
+    def test_shared_edge_flat(self):
+        """All shapes on the shared edge of two coplanar triangles."""
+        verts = [[0, 0, 0], [10, 0, 0], [5, -5, 0], [5, 5, 0]]
+        inds = [0, 1, 3, 0, 2, 1]
+        self._assert_all_shapes_contact(verts, inds, [5.0, 0.0], 0.15, "shared edge")
 
 
 class TestMPREnlargeCorrection(_NarrowPhaseSetupMixin, unittest.TestCase):

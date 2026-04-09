@@ -49,6 +49,7 @@ from ..geometry.sdf_contact import (
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_texture import TextureSDFData
 from ..geometry.support_function import (
+    GeoTypeEx,
     SupportMapDataProvider,
     extract_shape_data,
     support_map_lean,
@@ -928,9 +929,25 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
                 shape_source,
             )
 
-            # Set pos_a to be vertex A (origin of triangle in local frame)
+            # Triangle position is vertex A in world space.
+            # For heightfield prisms, edges are in heightfield-local space
+            # so we pass the heightfield rotation to let MPR/GJK work in
+            # that frame (where -Z is always the down axis).
             pos_a = v0_world
-            quat_a = wp.quat_identity()  # Triangle has no orientation, use identity
+            if type_a == GeoType.HFIELD:
+                quat_a = wp.transform_get_rotation(X_ws_a)
+            else:
+                quat_a = wp.quat_identity()
+
+            # Back-face culling: skip when the entire convex shape is behind
+            # the triangle face.  TRIANGLE_PRISM (heightfields) handles
+            # this via its extruded support function.
+            if shape_data_a.shape_type == int(GeoTypeEx.TRIANGLE):
+                face_normal = wp.cross(shape_data_a.scale, shape_data_a.auxiliary)
+                # Signed distance of shape B's center from triangle plane
+                center_dist = wp.dot(face_normal, pos_b - pos_a)
+                if center_dist < 0.0:
+                    continue
 
             # Extract margin offset for shape A (signed distance padding)
             margin_offset_a = shape_data[shape_a][3]

@@ -222,6 +222,7 @@ class Example:
             indices=[self.model.body_label.index("b_rev")],
         )
 
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -230,6 +231,7 @@ class Example:
             and wp.length(wp.spatial_bottom(qd)) < 1e-5,
             indices=[self.model.body_label.index("b_prismatic")],
         )
+        # fmt: on
 
         newton.examples.test_body_state(
             self.model,
