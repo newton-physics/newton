@@ -338,10 +338,12 @@ void main()
     if (up_axis == 2) up = vec3(0.0, 0.0, 1.0);
     float sky_fac = dot(N, up) * 0.5 + 0.5;
     vec3 ambient = mix(ground_color, sky_color, sky_fac) * albedo * 0.7;
-    // Fresnel-weighted ambient specular for metallics
+    // Fresnel-weighted ambient specular — only significant for metals
+    // (dielectrics need a prefiltered IBL for correct ambient specular)
     vec3 F_ambient = F0 + (F_max - F0) * pow(1.0 - NdotV, 5.0);
     vec3 kD_ambient = (1.0 - F_ambient) * (1.0 - metallic);
-    ambient = kD_ambient * ambient + F_ambient * mix(ground_color, sky_color, sky_fac) * 0.35;
+    vec3 ambient_spec = F_ambient * mix(ground_color, sky_color, sky_fac) * 0.35;
+    ambient = kD_ambient * ambient + ambient_spec * metallic;
 
     // shadows
     float shadow = ShadowCalculation();
