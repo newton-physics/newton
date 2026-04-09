@@ -41,6 +41,7 @@
 - Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
 - Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
 - Add `ViewerBase.log_arrows()` for arrow rendering (wide line + arrowhead) in the GL viewer with a dedicated geometry shader
+- Add `ViewerViser.log_scalar()` for live scalar time-series plots via uPlot
 
 ### Changed
 
