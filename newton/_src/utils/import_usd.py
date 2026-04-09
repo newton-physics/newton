@@ -1311,7 +1311,7 @@ def parse_usd(
             target_vel = 0.0
             target_ke = 0.0
             target_kd = 0.0
-            effort_limit = 1e6
+            effort_limit = np.inf
             actuator_mode = JointTargetMode.NONE
             if jd.drive.enabled:
                 target_vel = jd.drive.targetVelocity
@@ -1393,7 +1393,7 @@ def parse_usd(
                 armature=j_armature,
                 friction=j_friction,
                 effort_limit=effort_limit,
-                velocity_limit=j_velocity_limit if j_velocity_limit is not None else 1e6,
+                velocity_limit=j_velocity_limit if j_velocity_limit is not None else default_joint_velocity_limit,
                 actuator_mode=actuator_mode,
             )
 
@@ -1444,14 +1444,13 @@ def parse_usd(
             merged_dof_offset[dof_path] = dof_idx
 
         # Apply initial positions/velocities
-        if joint_index is not None:
-            q_start = builder.joint_q_start[joint_index]
-            qd_start = builder.joint_qd_start[joint_index]
-            for dof_idx, (pos, vel) in enumerate(zip(dof_initial_pos, dof_initial_vel, strict=True)):
-                if pos is not None:
-                    builder.joint_q[q_start + dof_idx] = pos
-                if vel is not None:
-                    builder.joint_qd[qd_start + dof_idx] = vel
+        q_start = builder.joint_q_start[joint_index]
+        qd_start = builder.joint_qd_start[joint_index]
+        for dof_idx, (pos, vel) in enumerate(zip(dof_initial_pos, dof_initial_vel, strict=True)):
+            if pos is not None:
+                builder.joint_q[q_start + dof_idx] = pos
+            if vel is not None:
+                builder.joint_qd[qd_start + dof_idx] = vel
 
         if verbose:
             print(
