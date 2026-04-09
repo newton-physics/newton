@@ -65,6 +65,12 @@ class Picking:
 
         self._default_on_mouse_drag = None
 
+        # Pre-compute effective mass per body for picking force clamping.
+        # For articulated bodies, use the total articulation mass so that
+        # picking a light link (e.g. fingertip) still allows enough force
+        # to move the whole chain. Free bodies use their own mass.
+        self._pick_effective_mass = self._compute_effective_mass(model)
+
     def _apply_picking_force(self, state: newton.State) -> None:
         """
         Applies a force to the picked body.
@@ -88,9 +94,50 @@ class Picking:
                 self.model.body_flags,
                 self.model.body_com,
                 self.model.body_mass,
+                self._pick_effective_mass,
             ],
             device=self.model.device,
         )
+
+    @staticmethod
+    def _compute_effective_mass(model: newton.Model) -> wp.array:
+        """Compute per-body effective mass for picking force clamping.
+
+        For bodies in an articulation, returns the total mass of that
+        articulation so that picking a light link still allows enough
+        force to move the whole chain.  Free bodies get their own mass.
+        """
+        if model is None:
+            return wp.zeros(1, dtype=float)
+
+        body_mass_np = model.body_mass.numpy()
+        effective = body_mass_np.copy()
+
+        if model.joint_count > 0:
+            joint_child_np = model.joint_child.numpy()
+            joint_art_np = model.joint_articulation.numpy()
+
+            # Map each body to its articulation index (-1 if free)
+            body_art = np.full(model.body_count, -1, dtype=np.int32)
+            for j in range(model.joint_count):
+                child = joint_child_np[j]
+                if child >= 0:
+                    body_art[child] = joint_art_np[j]
+
+            # Sum mass per articulation
+            art_mass = {}
+            for b in range(model.body_count):
+                a = body_art[b]
+                if a >= 0:
+                    art_mass[a] = art_mass.get(a, 0.0) + body_mass_np[b]
+
+            # Assign total articulation mass to each body in that articulation
+            for b in range(model.body_count):
+                a = body_art[b]
+                if a >= 0:
+                    effective[b] = art_mass[a]
+
+        return wp.array(effective, dtype=float, device=model.device)
 
     def is_picking(self) -> bool:
         """Checks if picking is active.

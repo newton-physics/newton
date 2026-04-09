@@ -139,6 +139,7 @@
 - Cap `cbor2` dependency to `<6` to prevent recorder test failures caused by breaking deserialization changes in cbor2 6.0
 - Fix O(W²·S²) memory explosion in `CollisionPipeline` shape-pair buffer allocation for NXN and SAP broad phase modes by computing per-world pair counts instead of a global N²
 - Clamp viewer picking force to 5g of body weight to prevent explosion when picking light objects near stiff contacts
+- Clamp viewer picking force to 5g of effective mass (total articulation mass for linked bodies, own mass for free bodies) to prevent explosion when picking light objects near stiff contacts
 
 ## [1.0.0] - 2026-03-10
 

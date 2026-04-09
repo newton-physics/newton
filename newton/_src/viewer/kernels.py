@@ -71,6 +71,7 @@ def apply_picking_force_kernel(
     body_flags: wp.array[int],
     body_com: wp.array[wp.vec3],
     body_mass: wp.array[float],
+    pick_effective_mass: wp.array[float],
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
@@ -109,7 +110,10 @@ def apply_picking_force_kernel(
     )
 
     # Clamp force magnitude to prevent runaway divergence on light objects (#2361).
-    max_force = 5.0 * 9.81 * body_mass[pick_body]
+    # Uses the effective mass (total articulation mass for linked bodies,
+    # own mass for free bodies) so picking a light robot link still allows
+    # enough force to move the whole chain.
+    max_force = 5.0 * 9.81 * pick_effective_mass[pick_body]
     force_mag = wp.length(force_at_offset)
     if force_mag > max_force:
         force_at_offset = force_at_offset * (max_force / force_mag)
