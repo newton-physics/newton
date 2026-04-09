@@ -28,7 +28,6 @@ import newton.examples
 import newton.usd
 import newton.utils
 from newton import Model, ModelBuilder, State, eval_fk
-from newton.math import transform_twist
 from newton.solvers import SolverFeatherstone, SolverVBD
 
 
@@ -66,72 +65,6 @@ def compute_ee_delta(
     ang_diff = rot_des * wp.quat_inverse(rot)
     # compute pose difference between end effector and target
     ee_delta[world_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
-
-
-def compute_body_jacobian(
-    model: Model,
-    joint_q: wp.array,
-    joint_qd: wp.array,
-    body_id: int | str,  # Can be either body index or body name
-    offset: wp.transform | None = None,
-    velocity: bool = True,
-    include_rotation: bool = False,
-):
-    if isinstance(body_id, str):
-        body_id = model.body_name.get(body_id)
-    if offset is None:
-        offset = wp.transform_identity()
-
-    joint_q.requires_grad = True
-    joint_qd.requires_grad = True
-
-    if velocity:
-
-        @wp.kernel
-        def compute_body_out(body_qd: wp.array[wp.spatial_vector], body_out: wp.array[float]):
-            mv = transform_twist(offset, body_qd[body_id])
-            if wp.static(include_rotation):
-                for i in range(6):
-                    body_out[i] = mv[i]
-            else:
-                for i in range(3):
-                    body_out[i] = mv[3 + i]
-
-        in_dim = model.joint_dof_count
-        out_dim = 6 if include_rotation else 3
-    else:
-
-        @wp.kernel
-        def compute_body_out(body_q: wp.array[wp.transform], body_out: wp.array[float]):
-            tf = body_q[body_id] * offset
-            if wp.static(include_rotation):
-                for i in range(7):
-                    body_out[i] = tf[i]
-            else:
-                for i in range(3):
-                    body_out[i] = tf[i]
-
-        in_dim = model.joint_coord_count
-        out_dim = 7 if include_rotation else 3
-
-    out_state = model.state(requires_grad=True)
-    body_out = wp.empty(out_dim, dtype=float, requires_grad=True)
-    tape = wp.Tape()
-    with tape:
-        eval_fk(model, joint_q, joint_qd, out_state)
-        wp.launch(compute_body_out, 1, inputs=[out_state.body_qd if velocity else out_state.body_q], outputs=[body_out])
-
-    def onehot(i):
-        x = np.zeros(out_dim, dtype=np.float32)
-        x[i] = 1.0
-        return wp.array(x)
-
-    J = np.empty((out_dim, in_dim), dtype=wp.float32)
-    for i in range(out_dim):
-        tape.backward(grads={body_out: onehot(i)})
-        J[i] = joint_qd.grad.numpy() if velocity else joint_q.grad.numpy()
-        tape.zero()
-    return J.astype(np.float32)
 
 
 class Example:
