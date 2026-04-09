@@ -5964,6 +5964,13 @@ class SolverMuJoCo(SolverBase):
             self.connect_constraint_q_rel, self.connect_constraint_t_rel = (
                 SolverMuJoCo._update_connect_constraint_anchor_rel_xform_at_ref_pose(self.model)
             )
+        # connect_constraint_q_rel is guaranteed non-None when update_anchors
+        # is True because _convert_to_mjc calls notify_model_changed(ALL),
+        # which includes JOINT_DOF_PROPERTIES and therefore always computes
+        # q_rel before any CONSTRAINT_PROPERTIES-only notification can occur.
+        # The None check is a defensive guard for the case where the model
+        # has no connect constraints (has_connect_constraints is False and
+        # both flags are False, so this branch is unreachable).
         if (update_anchor_rel_xform_at_ref_pose or update_anchors) and self.connect_constraint_q_rel is not None:
             SolverMuJoCo._update_connect_constraint_anchors(
                 self.model,
