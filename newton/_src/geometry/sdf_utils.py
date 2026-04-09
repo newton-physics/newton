@@ -319,6 +319,7 @@ class SDF:
         max_resolution: int | None = None,
         margin: float = 0.05,
         shape_margin: float = 0.0,
+        invert_sign: bool = False,
         scale: tuple[float, float, float] | None = None,
         texture_format: str = "uint16",
     ) -> "SDF":
@@ -339,6 +340,9 @@ class SDF:
                 When non-zero, the SDF surface is effectively shrunk inward by
                 this amount. Useful for modeling compliant layers in hydroelastic
                 collision. Defaults to ``0.0``.
+            invert_sign: If ``True``, flip the final SDF sign convention
+                (outside/inside). Useful for non-watertight scan meshes whose
+                winding-based sign is globally inverted.
             scale: Scale factors ``(sx, sy, sz)`` [unitless] to bake into the
                 SDF. When provided, mesh vertices are scaled before SDF
                 generation and ``scale_baked`` is set to ``True`` in the
@@ -366,6 +370,7 @@ class SDF:
             target_voxel_size=target_voxel_size,
             max_resolution=effective_max_resolution if effective_max_resolution is not None else 64,
             bake_scale=bake_scale,
+            invert_sign=invert_sign,
             device=device,
         )
 
@@ -394,6 +399,10 @@ class SDF:
 
                 signed_volume = compute_mesh_signed_volume(pos, indices)
                 winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
+                if invert_sign:
+                    # Encode explicit sign flip by shifting threshold magnitude
+                    # above 1.0. get_distance_to_mesh() decodes this sentinel.
+                    winding_threshold = winding_threshold + np.sign(winding_threshold)
 
                 res = effective_max_resolution if effective_max_resolution is not None else 64
                 texture_data, coarse_texture, subgrid_texture, tex_block_coords = create_texture_sdf_from_mesh(
@@ -514,14 +523,23 @@ def compute_mesh_signed_volume(points: wp.array, indices: wp.array) -> float:
 
 @wp.func
 def get_distance_to_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32, winding_threshold: wp.float32):
-    res = wp.mesh_query_point_sign_winding_number(mesh, point, max_dist, 2.0, winding_threshold)
+    # Optional explicit sign flip is encoded by shifting the absolute threshold
+    # above 1.0 (e.g. +/-1.5). Decode to +/-0.5 for query, then invert sign.
+    flip_sign = wp.abs(winding_threshold) > 1.0
+    threshold = winding_threshold
+    if flip_sign:
+        threshold = winding_threshold - wp.sign(winding_threshold)
+
+    res = wp.mesh_query_point_sign_winding_number(mesh, point, max_dist, 2.0, threshold)
     if res.result:
         closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
         vec_to_surface = closest - point
         sign = res.sign
         # For inverted meshes (threshold < 0), the winding > threshold comparison
         # gives inverted signs, so we flip them back
-        if winding_threshold < 0.0:
+        if threshold < 0.0:
+            sign = -sign
+        if flip_sign:
             sign = -sign
         return sign * wp.length(vec_to_surface)
     return max_dist
@@ -689,6 +707,7 @@ def _compute_sdf_from_shape_impl(
     target_voxel_size: float | None = None,
     max_resolution: int = 64,
     bake_scale: bool = False,
+    invert_sign: bool = False,
     verbose: bool = False,
     device: Devicelike | None = None,
 ) -> tuple[SDFData, wp.Volume | None, wp.Volume | None, Sequence[wp.vec3us]]:
@@ -708,6 +727,7 @@ def _compute_sdf_from_shape_impl(
         target_voxel_size: Target voxel size for sparse SDF grid. If None, computed as max_extent/max_resolution.
         max_resolution: Maximum dimension for sparse SDF grid when target_voxel_size is None. Must be divisible by 8.
         bake_scale: If True, bake shape_scale into the SDF. If False, use (1,1,1) scale.
+        invert_sign: If True, flip the final SDF sign convention.
         verbose: Print debug info.
         device: CUDA device for all GPU allocations. When ``None``, uses the
             current :class:`wp.ScopedDevice` or the Warp default device.
@@ -756,6 +776,10 @@ def _compute_sdf_from_shape_impl(
             # Positive volume = correct winding (threshold 0.5), negative = inverted (threshold -0.5)
             signed_volume = compute_mesh_signed_volume(pos, indices)
             winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
+            if invert_sign:
+                # Encode explicit sign flip by shifting threshold magnitude
+                # above 1.0. get_distance_to_mesh() decodes this sentinel.
+                winding_threshold = winding_threshold + np.sign(winding_threshold)
             if verbose and signed_volume < 0:
                 print("Mesh has inverted winding (negative volume), using threshold -0.5")
 

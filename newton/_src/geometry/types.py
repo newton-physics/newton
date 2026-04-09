@@ -701,6 +701,7 @@ class Mesh:
         max_resolution: int | None = None,
         margin: float | None = None,
         shape_margin: float = 0.0,
+        invert_sign: bool = False,
         scale: tuple[float, float, float] | None = None,
         texture_format: str = "uint16",
     ) -> "SDF":
@@ -722,6 +723,9 @@ class Mesh:
                 When non-zero, the SDF surface is effectively shrunk inward by
                 this amount. Useful for modeling compliant layers in hydroelastic
                 collision. Defaults to ``0.0``.
+            invert_sign: If ``True``, flip the final SDF sign convention
+                (outside/inside). Useful for non-watertight scan meshes whose
+                winding-based sign is globally inverted.
             scale: Scale factors ``(sx, sy, sz)`` to bake into the SDF. When
                 provided, the mesh vertices are scaled before SDF generation
                 and ``scale_baked`` is set to ``True`` in the resulting SDF.
@@ -756,6 +760,7 @@ class Mesh:
             max_resolution=max_resolution,
             margin=margin if margin is not None else 0.05,
             shape_margin=shape_margin,
+            invert_sign=invert_sign,
             scale=scale,
             texture_format=texture_format,
         )
