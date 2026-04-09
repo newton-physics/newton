@@ -220,7 +220,26 @@ def print_fps_results(results: dict[tuple[str, tuple[int, int, int]], float]):
 
 
 if __name__ == "__main__":
+    import argparse
+
     from newton.utils import run_benchmark
 
-    results = run_benchmark(SensorTiledCameraBenchmark)
-    print_fps_results(results)
+    benchmark_list = {
+        "SensorTiledCameraBenchmark": SensorTiledCameraBenchmark,
+    }
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument(
+        "-b", "--bench", default=None, action="append", choices=benchmark_list.keys(), help="Run a single benchmark."
+    )
+    args = parser.parse_known_args()[0]
+
+    if args.bench is None:
+        benchmarks = benchmark_list.keys()
+    else:
+        benchmarks = args.bench
+
+    for key in benchmarks:
+        benchmark = benchmark_list[key]
+        result = run_benchmark(benchmark)
+        print_fps_results(result)
