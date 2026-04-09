@@ -24,6 +24,7 @@ class Picking:
         model: newton.Model,
         pick_stiffness: float = 50.0,
         pick_damping: float = 5.0,
+        pick_max_acceleration: float = 5.0,
         world_offsets: wp.array | None = None,
     ) -> None:
         """
@@ -33,6 +34,9 @@ class Picking:
             model: The model to pick from.
             pick_stiffness: The stiffness that will be used to compute the force applied to the picked body.
             pick_damping: The damping that will be used to compute the force applied to the picked body.
+            pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
+                Clamps the picking force to prevent runaway divergence on light objects
+                near stiff contacts.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
         """
         self.model = model
@@ -58,12 +62,19 @@ class Picking:
         pick_state_np = np.empty(1, dtype=PickingState.numpy_dtype())
         pick_state_np[0]["pick_stiffness"] = pick_stiffness
         pick_state_np[0]["pick_damping"] = pick_damping
+        pick_state_np[0]["pick_max_acceleration"] = pick_max_acceleration
         self.pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device if model else "cpu", ndim=1)
 
         self.pick_dist = 0.0
         self.picking_active = False
 
         self._default_on_mouse_drag = None
+
+        # Pre-compute effective mass per body for picking force clamping.
+        # For articulated bodies, use the total articulation mass so that
+        # picking a light link (e.g. fingertip) still allows enough force
+        # to move the whole chain. Free bodies use their own mass.
+        self._pick_effective_mass = self._compute_effective_mass(model)
 
     def _apply_picking_force(self, state: newton.State) -> None:
         """
@@ -88,9 +99,50 @@ class Picking:
                 self.model.body_flags,
                 self.model.body_com,
                 self.model.body_mass,
+                self._pick_effective_mass,
             ],
             device=self.model.device,
         )
+
+    @staticmethod
+    def _compute_effective_mass(model: newton.Model) -> wp.array:
+        """Compute per-body effective mass for picking force clamping.
+
+        For bodies in an articulation, returns the total mass of that
+        articulation so that picking a light link still allows enough
+        force to move the whole chain.  Free bodies get their own mass.
+        """
+        if model is None:
+            return wp.zeros(1, dtype=float)
+
+        body_mass_np = model.body_mass.numpy()
+        effective = body_mass_np.copy()
+
+        if model.joint_count > 0:
+            joint_child_np = model.joint_child.numpy()
+            joint_art_np = model.joint_articulation.numpy()
+
+            # Map each body to its articulation index (-1 if free)
+            body_art = np.full(model.body_count, -1, dtype=np.int32)
+            for j in range(model.joint_count):
+                child = joint_child_np[j]
+                if child >= 0:
+                    body_art[child] = joint_art_np[j]
+
+            # Sum mass per articulation
+            art_mass = {}
+            for b in range(model.body_count):
+                a = body_art[b]
+                if a >= 0:
+                    art_mass[a] = art_mass.get(a, 0.0) + body_mass_np[b]
+
+            # Assign total articulation mass to each body in that articulation
+            for b in range(model.body_count):
+                a = body_art[b]
+                if a >= 0:
+                    effective[b] = art_mass[a]
+
+        return wp.array(effective, dtype=float, device=model.device)
 
     def is_picking(self) -> bool:
         """Checks if picking is active.

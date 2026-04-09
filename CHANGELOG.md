@@ -136,6 +136,8 @@
 - Fix `requires_grad` not being preserved in `ArticulationView` attribute getters, breaking gradient propagation through selection queries
 - Fix duplicate Reset button in brick stacking example when using the example browser
 - Cap `cbor2` dependency to `<6` to prevent recorder test failures caused by breaking deserialization changes in cbor2 6.0
+- Clamp viewer picking force to prevent explosion when picking light objects near stiff contacts, configurable via `pick_max_acceleration` parameter on the `Picking` class (default 5g of effective articulation mass)
+- Fix `cloth_franka` example Jacobian broken by COM-referenced `body_qd` convention change; adjust robot base height, gripper orientations, and grasp targets for improved reachability (a follow-up PR will migrate the example to `newton.ik`)
 
 ## [1.0.0] - 2026-03-10
 
