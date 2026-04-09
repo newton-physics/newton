@@ -5868,7 +5868,7 @@ class SolverMuJoCo(SolverBase):
     def _update_connect_constraint_anchor_rel_xform_at_ref_pose(
         model: Model,
     ) -> tuple[wp.array, wp.array]:
-        """Compute relative body transforms for CONNECT constraints at the reference pose.
+        """Per-CONNECT constraint, recompute relative transforms from scratch via FK at the reference pose.
 
         High-level orchestrator that calls ``_copy_dof_ref_to_qref``,
         ``_compute_body_poses_at_qref``, and
