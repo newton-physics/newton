@@ -274,13 +274,13 @@ class Example:
             self.model,
             self.state_0,
             "all bodies are above the ground",
-            lambda q, qd: q[2] > 0.1,
+            lambda q, qd: q[2] > 0.15,
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "the robot went in the right direction",
-            lambda q, qd: q[1] > 0.9,  # This threshold assumes 100 frames
+            lambda q, qd: q[1] > 0.95,  # This threshold assumes 100 frames
         )
 
         forward_vel_min = wp.spatial_vector(-0.2, 0.9, -0.2, -0.8, -1.5, -0.5)
@@ -298,6 +298,16 @@ class Example:
             "all particles are above the ground",
             lambda q, qd: q[2] > -1.1 * voxel_size,
         )
+
+        # Empirical centroid, bbox, and velocity checks (100 frames)
+        positions = self.state_0.particle_q.numpy()
+        centroid = np.mean(positions, axis=0)
+        bbox = np.max(np.ptp(positions, axis=0))
+
+        assert abs(centroid[0] - (-0.001)) < max(0.02, 0.001 * 0.05), f"Centroid X out of range: {centroid[0]}"
+        assert abs(centroid[1] - 1.012) < max(0.02, 1.012 * 0.05), f"Centroid Y out of range: {centroid[1]}"
+        assert abs(centroid[2] - 0.059) < max(0.02, 0.059 * 0.05), f"Centroid Z out of range: {centroid[2]}"
+        assert bbox < 3.42 + max(0.05, 3.42 * 0.05), f"Bounding box too large: {bbox}"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

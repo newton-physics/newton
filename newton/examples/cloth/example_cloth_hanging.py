@@ -11,6 +11,7 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -183,21 +184,40 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        if self.solver_type != "style3d":
-            newton.examples.test_particle_state(
-                self.state_0,
-                "particles are above the ground",
-                lambda q, qd: q[2] > 0.0,
-            )
+        particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
 
-        min_x = -float(self.sim_width) * 0.11
-        p_lower = wp.vec3(min_x, -4.0, -1.8)
-        p_upper = wp.vec3(0.1, 7.0, 4.0)
-        newton.examples.test_particle_state(
-            self.state_0,
-            "particles are within a reasonable volume",
-            lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
-        )
+        centroid = np.mean(particle_q, axis=0)
+        bbox_size = np.max(np.max(particle_q, axis=0) - np.min(particle_q, axis=0))
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+
+        if wp.get_device().is_cuda:
+            # Tight CUDA checks (full-duration runs)
+            if self.solver_type == "style3d":
+                # Style3D: observed centroid [-1.60, -0.43, 1.34]
+                assert np.allclose(centroid, [-1.60, -0.43, 1.34], atol=[0.30, 0.30, 0.30]), (
+                    f"Centroid drift (style3d): {centroid}"
+                )
+            else:
+                # VBD: observed centroid [-1.80, 0.35, 1.20], min_z=0.049
+                min_z = np.min(particle_q[:, 2])
+                assert min_z > 0.02, f"Ground penetration: min_z={min_z}"
+                assert np.allclose(centroid, [-1.80, 0.35, 1.20], atol=[0.30, 0.30, 0.30]), (
+                    f"Centroid drift (vbd): {centroid}"
+                )
+
+            # Bounding box check: observed 3.95
+            assert bbox_size < 4.20, f"Bbox too large: {bbox_size}"
+
+            # Velocity check: observed max_vel=5.46 (still draping)
+            assert max_vel < 8.19, f"Excessive velocity: {max_vel}"
+        else:
+            # CPU tests run with fewer frames; cloth may barely have moved.
+            # Only check that the simulation didn't explode.
+            assert np.all(np.isfinite(particle_q)), "Non-finite particle positions"
+            assert np.all(np.isfinite(particle_qd)), "Non-finite particle velocities"
+            assert bbox_size < 10.0, f"Bbox too large: {bbox_size}"
+            assert max_vel < 50.0, f"Excessive velocity: {max_vel}"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

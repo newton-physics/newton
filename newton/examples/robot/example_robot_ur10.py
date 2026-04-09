@@ -193,7 +193,31 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass
+        # All bodies above ground
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.0,
+        )
+        if self.device.is_cuda:
+            # After 500 frames the robot follows its trajectory smoothly
+            newton.examples.test_body_state(
+                self.model,
+                self.state_0,
+                "all body velocities are bounded",
+                lambda q, qd: max(abs(qd)) < 5.0,
+            )
+        else:
+            # CPU runs only 10 frames; the robot is still accelerating from
+            # random initial configs, so velocities can be large.  Only check
+            # the simulation hasn't diverged.
+            newton.examples.test_body_state(
+                self.model,
+                self.state_0,
+                "all body velocities are finite",
+                lambda q, qd: max(abs(qd)) < 100.0,
+            )
 
     @staticmethod
     def create_parser():

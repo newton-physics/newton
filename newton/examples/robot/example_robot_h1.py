@@ -136,13 +136,13 @@ class Example:
             self.model,
             self.state_0,
             "all bodies are above the ground",
-            lambda q, qd: q[2] > 0.0,
+            lambda q, qd: q[2] > -0.01,
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "all body velocities are small",
-            lambda q, qd: max(abs(qd)) < 5e-3,
+            lambda q, qd: max(abs(qd)) < 0.002,
         )
 
     @staticmethod

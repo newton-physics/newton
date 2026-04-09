@@ -153,6 +153,20 @@ class Example:
             max_z = np.max(self.state_0.particle_q.numpy()[:, 2])
             assert max_z > 0.8, "All particles have collapsed"
 
+        # Empirical centroid, bbox, and velocity checks (100 frames, cube collider)
+        positions = self.state_0.particle_q.numpy()
+        velocities = self.state_0.particle_qd.numpy()
+        centroid = np.mean(positions, axis=0)
+        bbox = np.max(np.ptp(positions, axis=0))
+        max_vel = np.max(np.linalg.norm(velocities, axis=1))
+
+        assert abs(centroid[0] - (-0.31)) < max(0.02, 0.31 * 0.05), f"Centroid X out of range: {centroid[0]}"
+        assert abs(centroid[1] - 0.0) < 0.02, f"Centroid Y out of range: {centroid[1]}"
+        assert abs(centroid[2] - 0.28) < max(0.02, 0.28 * 0.05), f"Centroid Z out of range: {centroid[2]}"
+        assert bbox < 8.97 + max(0.05, 8.97 * 0.05), f"Bounding box too large: {bbox}"
+        assert max_vel < max(0.002, 5.26 * 1.5), f"Max velocity too high: {max_vel}"
+        assert np.min(positions[:, 2]) > -0.001 - 0.02, f"Min Z too low: {np.min(positions[:, 2])}"
+
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)

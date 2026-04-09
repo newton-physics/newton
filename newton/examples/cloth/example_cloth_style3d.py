@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import numpy as np
 import warp as wp
 from pxr import Usd
 
@@ -166,12 +167,31 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        p_lower = wp.vec3(-0.5, -0.2, 0.9)
-        p_upper = wp.vec3(0.5, 0.2, 1.6)
-        newton.examples.test_particle_state(
+        particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
+
+        # Centroid check: observed [0.0, 0.0, 1.20]
+        centroid = np.mean(particle_q, axis=0)
+        assert np.allclose(centroid, [0.0, 0.0, 1.20], atol=[0.02, 0.02, 0.06]), f"Centroid drift: {centroid}"
+
+        # Bounding box check: observed 0.88
+        bbox_size = np.max(np.max(particle_q, axis=0) - np.min(particle_q, axis=0))
+        assert bbox_size < 0.93, f"Bbox too large: {bbox_size}"
+
+        # Ground penetration check: observed min_z=0.94
+        min_z = np.min(particle_q[:, 2])
+        assert min_z > 0.92, f"Ground penetration: min_z={min_z}"
+
+        # Velocity check: observed max_vel=0.18-0.29
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+        assert max_vel < 0.45, f"Excessive velocity: {max_vel}"
+
+        # Body state check (1 avatar body)
+        newton.examples.test_body_state(
+            self.model,
             self.state_0,
-            "particles are within a reasonable volume",
-            lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
+            "body velocities are within a reasonable range",
+            lambda q, qd: max(abs(qd)) < 1.0,
         )
 
     def render(self):

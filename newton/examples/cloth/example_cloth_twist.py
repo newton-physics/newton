@@ -282,18 +282,24 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        p_lower = wp.vec3(-0.6, -0.9, -0.6)
-        p_upper = wp.vec3(0.6, 0.9, 0.6)
-        newton.examples.test_particle_state(
-            self.state_0,
-            "particles are within a reasonable volume",
-            lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
-        )
-        newton.examples.test_particle_state(
-            self.state_0,
-            "particle velocities are within a reasonable range",
-            lambda q, qd: max(abs(qd)) < 1.0,
-        )
+        particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
+
+        # Centroid check: observed [0.0, 0.0, 0.0]
+        centroid = np.mean(particle_q, axis=0)
+        assert np.allclose(centroid, [0.0, 0.0, 0.0], atol=0.02), f"Centroid drift: {centroid}"
+
+        # Bounding box check: observed 1.50
+        bbox_size = np.max(np.max(particle_q, axis=0) - np.min(particle_q, axis=0))
+        assert bbox_size < 1.58, f"Bbox too large: {bbox_size}"
+
+        # Min Z check (no ground plane, twisted): observed min_z=-0.086
+        min_z = np.min(particle_q[:, 2])
+        assert min_z > -0.11, f"Min Z too low: min_z={min_z}"
+
+        # Velocity check: observed max_vel=0.65
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+        assert max_vel < 0.98, f"Excessive velocity: {max_vel}"
 
 
 if __name__ == "__main__":

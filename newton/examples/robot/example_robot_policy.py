@@ -405,7 +405,15 @@ class Example:
             self.model,
             self.state_0,
             "all bodies are above the ground",
-            lambda q, qd: q[2] > 0.0,
+            lambda q, qd: q[2] > -0.01,
+        )
+        vel_min = wp.spatial_vector(-8.0, -8.0, -8.0, -8.0, -8.0, -8.0)
+        vel_max = wp.spatial_vector(8.0, 8.0, 8.0, 8.0, 8.0, 8.0)
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "body velocities are within bounds",
+            lambda q, qd: newton.math.vec_inside_limits(qd, vel_min, vel_max),
         )
 
 

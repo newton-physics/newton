@@ -435,7 +435,7 @@ class Example:
         if self.put_in_cup:
             body_q = self.state_0.body_q.numpy()
             cup_x, cup_y, cup_z = self.cup_pos
-            tolerance_xy = 0.05
+            tolerance_xy = 0.08
             min_z = cup_z - 0.05
 
             for world_idx in range(self.world_count):

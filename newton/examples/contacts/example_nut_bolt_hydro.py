@@ -372,7 +372,7 @@ class Example:
         body_q = self.state_0.body_q.numpy()
 
         # Check bolts stayed in place
-        max_bolt_displacement = 0.02  # 2 cm tolerance
+        max_bolt_displacement = 0.015  # 1.5 cm tolerance (non-deterministic contact sim)
         for i, bolt_idx in enumerate(self.bolt_body_indices):
             current_pos = body_q[bolt_idx][:3]
             initial_pos = self.bolt_initial_transforms[i][:3]

@@ -175,6 +175,20 @@ class Example:
             np.testing.assert_allclose(np.linalg.norm(acc[i]), gravity_mag, rtol=0.05)
             assert abs(acc[i][expected_axis]) > gravity_mag * 0.95
 
+        # Verify cubes have settled at rest on the ground
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "cubes resting at correct height",
+            lambda q, qd: wp.abs(q[2] - 0.2) < 0.05,
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "cubes have zero velocity",
+            lambda q, qd: wp.length(qd) < 1e-3,
+        )
+
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)

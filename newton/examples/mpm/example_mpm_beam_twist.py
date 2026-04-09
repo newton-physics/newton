@@ -251,6 +251,20 @@ class Example:
             lambda q, qd: wp.length(q) < 10.0,
         )
 
+        # Empirical centroid, bbox, and velocity checks (100 frames)
+        positions = self.state_0.particle_q.numpy()
+        velocities = self.state_0.particle_qd.numpy()
+        centroid = np.mean(positions, axis=0)
+        bbox = np.max(np.ptp(positions, axis=0))
+        max_vel = np.max(np.linalg.norm(velocities, axis=1))
+
+        assert abs(centroid[0] - 2.46) < max(0.02, 2.46 * 0.05), f"Centroid X out of range: {centroid[0]}"
+        assert abs(centroid[1] - 0.46) < max(0.02, 0.46 * 0.05), f"Centroid Y out of range: {centroid[1]}"
+        assert abs(centroid[2] - 0.42) < max(0.02, 0.42 * 0.05), f"Centroid Z out of range: {centroid[2]}"
+        assert bbox < 4.92 + max(0.05, 4.92 * 0.05), f"Bounding box too large: {bbox}"
+        assert max_vel < max(0.002, 1.05 * 1.5), f"Max velocity too high: {max_vel}"
+        assert np.min(positions[:, 2]) > -0.20 - 0.02, f"Min Z too low: {np.min(positions[:, 2])}"
+
     def render_ui(self, imgui):
         _changed, self.show_stress = imgui.checkbox("Show Stress", self.show_stress)
 

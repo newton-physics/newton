@@ -429,6 +429,20 @@ class Example:
         assert depth_image.shape == (24, 1, self.sensor_render_height, self.sensor_render_width)
         assert depth_image.min() < depth_image.max()
 
+        # Verify all bodies are above the ground and fully settled
+        newton.examples.test_body_state(
+            self.model,
+            self.state,
+            "all bodies above ground",
+            lambda q, qd: q[2] >= 0.0,
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state,
+            "all bodies have zero velocity",
+            lambda q, qd: wp.length(qd) < 1e-3,
+        )
+
     def gui(self, ui):
         show_compile_kernel_info = False
 

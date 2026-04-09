@@ -372,23 +372,51 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        p_lower = wp.vec3(-0.5, -1.0, -0.05)
-        p_upper = wp.vec3(0.5, 0.0, 0.6)
+        # Empirical state at 1000 frames (CUDA):
+        #   duck particles: centroid=[-0.001, -0.500, 0.228], bbox_diag=0.117
+        #   min_pos=[-0.031, -0.538, 0.201], max_pos=[0.034, -0.455, 0.252]
+        #   max_vel=0.021, max_body_vel=4.6e-5
+        particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
+
+        centroid = np.mean(particle_q, axis=0)
+        min_pos = np.min(particle_q, axis=0)
+        max_pos = np.max(particle_q, axis=0)
+        bbox_size = np.linalg.norm(max_pos - min_pos)
+
+        # Centroid check: observed [-0.001, -0.500, 0.228]
+        expected_centroid = np.array([-0.001, -0.500, 0.228])
+        centroid_tol = np.maximum(0.02, np.abs(expected_centroid) * 0.05)
+        for i, axis in enumerate("xyz"):
+            assert abs(centroid[i] - expected_centroid[i]) < centroid_tol[i], (
+                f"Duck centroid {axis} drifted: {centroid[i]:.4f} vs expected {expected_centroid[i]:.4f}"
+            )
+
+        # Bounding box diagonal check: observed 0.117, allow up to 0.17
+        assert bbox_size < 0.17, f"Duck bounding box too large: {bbox_size:.4f}"
+
+        # Min Z check: observed 0.201, allow down to 0.18
+        assert min_pos[2] > 0.18, f"Duck ground penetration: z_min={min_pos[2]:.4f}"
+
+        # Tightened particle position bounds (duck sits on table near origin)
+        p_lower = wp.vec3(-0.05, -0.56, 0.18)
+        p_upper = wp.vec3(0.06, -0.44, 0.28)
         newton.examples.test_particle_state(
             self.state_0,
-            "particles are within a reasonable volume",
+            "duck particles are within the expected volume",
             lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
         )
-        newton.examples.test_particle_state(
-            self.state_0,
-            "particle velocities are within a reasonable range",
-            lambda q, qd: max(abs(qd)) < 2.0,
-        )
+
+        # Particle velocity check: observed max 0.021, allow up to 0.06
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+        assert max_vel < 0.06, f"Particle velocity too high: {max_vel:.4f}"
+
+        # Body velocity check: observed max 4.6e-5, allow up to 0.002
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "body velocities are within a reasonable range",
-            lambda q, qd: max(abs(qd)) < 0.7,
+            "robot body velocities are within expected range",
+            lambda q, qd: max(abs(qd)) < 0.002,
         )
 
 

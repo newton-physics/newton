@@ -15,6 +15,7 @@
 # Command: python -m newton.examples ik_custom
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -299,7 +300,32 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        pass
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
+
+        body_q = self.state.body_q.numpy()
+        body_qd = self.state.body_qd.numpy()
+
+        # Verify end-effector reached target
+        ee_pos = body_q[self.ee_index, :3]
+        ee_target = np.array([0.095, 0.0, 0.903])
+        assert np.allclose(ee_pos, ee_target, atol=0.01), (
+            f"End-effector position {ee_pos} too far from target {ee_target}"
+        )
+
+        # Verify collision avoidance: check that all monitored links maintain
+        # clearance from the obstacle sphere
+        obstacle_center = np.array([self.obstacle_center[0], self.obstacle_center[1], self.obstacle_center[2]])
+        for name, link_idx, link_radius in self.links_to_check_collision:
+            link_pos = body_q[link_idx, :3]
+            dist = np.linalg.norm(link_pos - obstacle_center)
+            min_clearance = self.obstacle_radius + link_radius
+            assert dist >= min_clearance - 0.02, (
+                f"Link {name} (body {link_idx}) at {link_pos} too close to obstacle: "
+                f"dist={dist:.4f}, min_clearance={min_clearance:.4f}"
+            )
+
+        # Verify all body velocities are zero
+        assert np.allclose(body_qd, 0.0, atol=1e-10), "Non-zero body velocities in IK example"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

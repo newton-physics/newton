@@ -264,17 +264,30 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        # Test that bounding box size is reasonable (not exploding)
+        # Empirical state at 200 frames (CUDA, non-deterministic due to tumbling):
+        #   5 runs: bbox_diag in [6.6, 7.3], min_z in [0.09, 3.9], max_vel in [3.8, 11.0]
+        #   centroid z in [2.0, 5.9] (blocks always above ground)
         particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
+
         min_pos = np.min(particle_q, axis=0)
         max_pos = np.max(particle_q, axis=0)
+        centroid = np.mean(particle_q, axis=0)
         bbox_size = np.linalg.norm(max_pos - min_pos)
 
-        # Check bbox size is reasonable
-        assert bbox_size < 10.0, f"Bounding box exploded: size={bbox_size:.2f}"
+        # Bounding box diagonal check: observed max 7.3, allow up to 8.0
+        assert bbox_size < 8.0, f"Bounding box too large: {bbox_size:.2f}"
 
-        # Check no excessive penetration
-        assert min_pos[2] > -0.5, f"Excessive penetration: z_min={min_pos[2]:.4f}"
+        # Min Z check: observed min 0.09 across runs, allow down to -0.1
+        assert min_pos[2] > -0.1, f"Excessive ground penetration: z_min={min_pos[2]:.4f}"
+
+        # Centroid Z check: blocks always settle above ground, observed [2.0, 5.9]
+        assert centroid[2] > 1.5, f"Centroid z too low (collapsed): {centroid[2]:.3f}"
+        assert centroid[2] < 7.0, f"Centroid z too high (exploding): {centroid[2]:.3f}"
+
+        # Velocity check: observed max 11.0, allow up to 16.5
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+        assert max_vel < 16.5, f"Particle velocity too high: {max_vel:.2f}"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

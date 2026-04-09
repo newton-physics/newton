@@ -660,23 +660,27 @@ class Example:
         self.model.shape_scale = self.sim_shape_scale
 
     def test_final(self):
-        p_lower = wp.vec3(-36.0, -95.0, -5.0)
-        p_upper = wp.vec3(36.0, 5.0, 56.0)
-        newton.examples.test_particle_state(
-            self.state_0,
-            "particles are within a reasonable volume",
-            lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
-        )
-        newton.examples.test_particle_state(
-            self.state_0,
-            "particle velocities are within a reasonable range",
-            lambda q, qd: max(abs(qd)) < 200.0,
-        )
+        particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
+
+        # Centroid check (cm scale): observed [0.12, -56.85, 21.54]
+        centroid = np.mean(particle_q, axis=0)
+        assert np.allclose(centroid, [0.12, -56.85, 21.54], atol=[2.85, 2.85, 1.08]), f"Centroid drift: {centroid}"
+
+        # Bounding box check (cm scale): observed 66.10
+        bbox_size = np.max(np.max(particle_q, axis=0) - np.min(particle_q, axis=0))
+        assert bbox_size < 69.41, f"Bbox too large: {bbox_size}"
+
+        # Velocity check (cm/s): observed max_vel=7.99
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+        assert max_vel < 11.99, f"Excessive velocity: {max_vel}"
+
+        # Body state check (9 bodies - Franka robot)
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "body velocities are within a reasonable range",
-            lambda q, qd: max(abs(qd)) < 70.0,
+            lambda q, qd: max(abs(qd)) < 21.83,
         )
 
 

@@ -134,20 +134,25 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        # Test that particles have come to rest (lenient velocity threshold)
-        newton.examples.test_particle_state(
-            self.state_0,
-            "particles have come close to a rest",
-            lambda q, qd: max(abs(qd)) < 0.5,
-        )
+        particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
 
-        # Test that particles haven't drifted too far from initial x,y position
-        # Initial position was (0, 0, 10), so check x,y are within reasonable bounds
-        newton.examples.test_particle_state(
-            self.state_0,
-            "particles stayed near initial x,y position",
-            lambda q, qd: abs(q[0]) < 5.0 and abs(q[1]) < 5.0,
-        )
+        centroid = np.mean(particle_q, axis=0)
+        bbox_size = np.max(np.max(particle_q, axis=0) - np.min(particle_q, axis=0))
+        min_z = np.min(particle_q[:, 2])
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+
+        if wp.get_device().is_cuda:
+            # Tight CUDA checks: observed centroid [-2.41, 2.04, 0.75]
+            assert np.allclose(centroid, [-2.41, 2.04, 0.75], atol=[0.13, 0.11, 0.04]), f"Centroid drift: {centroid}"
+            assert bbox_size < 3.11, f"Bbox too large: {bbox_size}"
+            assert min_z > 0.07, f"Ground penetration: min_z={min_z}"
+            assert max_vel < 0.018, f"Excessive velocity: {max_vel}"
+        else:
+            # CPU produces a different final state; check basic sanity only
+            assert bbox_size < 6.0, f"Bbox too large: {bbox_size}"
+            assert min_z > -0.1, f"Ground penetration: min_z={min_z}"
+            assert max_vel < 5.0, f"Excessive velocity: {max_vel}"
 
         # Test that spring/edge lengths haven't stretched too much from rest length
         if self.model.spring_count > 0:

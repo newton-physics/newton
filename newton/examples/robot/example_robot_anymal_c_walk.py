@@ -331,7 +331,7 @@ class Example:
             self.model,
             self.state_0,
             "all bodies are above the ground",
-            lambda q, qd: q[2] > 0.1,
+            lambda q, qd: q[2] > 0.2,
         )
 
         newton.examples.test_body_state(

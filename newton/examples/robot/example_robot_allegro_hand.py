@@ -212,8 +212,8 @@ class Example:
             world_pos = wp.vec3(*self.initial_world_positions[i])
 
             # Test hand bodies - must stay near initial position
-            hand_lower = world_pos - wp.vec3(0.5, 0.5, 0.5)
-            hand_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
+            hand_lower = world_pos - wp.vec3(0.3, 0.3, 0.3)
+            hand_upper = world_pos + wp.vec3(0.3, 0.3, 0.3)
             hand_body_indices = np.arange(num_bodies_per_world - 1, dtype=np.int32) + world_offset
             newton.examples.test_body_state(
                 self.model,
