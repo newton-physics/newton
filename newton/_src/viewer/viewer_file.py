@@ -1011,9 +1011,10 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
                 return cache.try_get_value(idx) if cache is not None else obj
             # Recurse into mapping; always return a plain dict
             return {k: _resolve_cache_refs(v) for k, v in obj.items()}
-        # cbor2 6.x returns tuple instead of list for arrays; handle both
-        if isinstance(obj, (list, tuple)):
+        if isinstance(obj, list):
             return [_resolve_cache_refs(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(_resolve_cache_refs(v) for v in obj)
         if isinstance(obj, set):
             return {_resolve_cache_refs(v) for v in obj}
         return obj
