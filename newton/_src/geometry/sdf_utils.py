@@ -332,7 +332,8 @@ class SDF:
             narrow_band_range: Signed narrow-band distance range [m] as
                 ``(inner, outer)``.
             target_voxel_size: Target sparse-grid voxel size [m]. If provided,
-                takes precedence over ``max_resolution``.
+                takes precedence over ``max_resolution`` for both sparse SDF and
+                texture-SDF generation.
             max_resolution: Maximum sparse-grid dimension [voxel]. Used when
                 ``target_voxel_size`` is not provided.
             margin: Extra AABB padding [m] added before discretization.
@@ -410,6 +411,7 @@ class SDF:
                     margin=margin,
                     narrow_band_range=narrow_band_range,
                     max_resolution=res,
+                    target_voxel_size=target_voxel_size,
                     quantization_mode=qmode,
                     winding_threshold=winding_threshold,
                     scale_baked=bake_scale,
