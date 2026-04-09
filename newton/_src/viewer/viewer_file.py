@@ -235,7 +235,7 @@ def _get_serialization_format(file_path: str) -> str:
         return "json"
     elif ext == ".bin":
         if not HAS_CBOR2:
-            raise ImportError("cbor2 library is required for .bin files. Install with: pip install cbor2")
+            raise ImportError("cbor2 library is required for .bin files. Install with: pip install 'cbor2>=5.7.0,<6'")
         return "cbor2"
     else:
         raise ValueError(f"Unsupported file extension '{ext}'. Supported extensions: .json, .bin")

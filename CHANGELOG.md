@@ -134,6 +134,8 @@
 - Fix fast inertia validation treating near-symmetric tensors within `np.allclose()` default tolerances as corrections, aligning CPU and GPU validation warnings
 - Fix URDF joint dynamics friction import so specified friction values are preserved during simulation
 - Fix `requires_grad` not being preserved in `ArticulationView` attribute getters, breaking gradient propagation through selection queries
+- Fix duplicate Reset button in brick stacking example when using the example browser
+- Cap `cbor2` dependency to `<6` to prevent recorder test failures caused by breaking deserialization changes in cbor2 6.0
 
 ## [1.0.0] - 2026-03-10
 
