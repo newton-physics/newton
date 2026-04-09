@@ -24,6 +24,7 @@ class Picking:
         model: newton.Model,
         pick_stiffness: float = 50.0,
         pick_damping: float = 5.0,
+        pick_max_acceleration: float = 5.0,
         world_offsets: wp.array | None = None,
     ) -> None:
         """
@@ -33,6 +34,9 @@ class Picking:
             model: The model to pick from.
             pick_stiffness: The stiffness that will be used to compute the force applied to the picked body.
             pick_damping: The damping that will be used to compute the force applied to the picked body.
+            pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
+                Clamps the picking force to prevent runaway divergence on light objects
+                near stiff contacts.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
         """
         self.model = model
@@ -58,6 +62,7 @@ class Picking:
         pick_state_np = np.empty(1, dtype=PickingState.numpy_dtype())
         pick_state_np[0]["pick_stiffness"] = pick_stiffness
         pick_state_np[0]["pick_damping"] = pick_damping
+        pick_state_np[0]["pick_max_acceleration"] = pick_max_acceleration
         self.pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device if model else "cpu", ndim=1)
 
         self.pick_dist = 0.0

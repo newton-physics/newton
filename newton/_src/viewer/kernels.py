@@ -21,6 +21,7 @@ class PickingState:
     picking_target_world: wp.vec3
     pick_stiffness: float
     pick_damping: float
+    pick_max_acceleration: float
 
 
 @wp.kernel
@@ -113,7 +114,7 @@ def apply_picking_force_kernel(
     # Uses the effective mass (total articulation mass for linked bodies,
     # own mass for free bodies) so picking a light robot link still allows
     # enough force to move the whole chain.
-    max_force = 5.0 * 9.81 * pick_effective_mass[pick_body]
+    max_force = pick_state[0].pick_max_acceleration * 9.81 * pick_effective_mass[pick_body]
     force_mag = wp.length(force_at_offset)
     if force_mag > max_force:
         force_at_offset = force_at_offset * (max_force / force_mag)
