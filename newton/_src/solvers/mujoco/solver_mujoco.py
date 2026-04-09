@@ -5738,8 +5738,9 @@ class SolverMuJoCo(SolverBase):
         """Build reference joint coordinates from model data and ``dof_ref``.
 
         Launches ``build_ref_q_kernel`` to produce joint coordinates in
-        Newton convention (xyzw quaternions for free/ball joints, ``dof_ref``
-        values for hinge/slide/D6 joints).
+        Newton convention (xyzw quaternions). FREE/DISTANCE joints source
+        position and orientation from ``body_q`` of the child body, BALL
+        joints use identity, and hinge/slide/D6 joints use ``dof_ref``.
 
         Args:
             model: The Newton :class:`Model`.
@@ -5748,9 +5749,6 @@ class SolverMuJoCo(SolverBase):
             Reference joint coordinates [m or rad],
             ``wp.array[wp.float32]``, shape ``[joint_coord_count]``.
         """
-
-        # Build the reference joint_q from dof_ref (for hinge/slide/D6) and
-        # identity (for free/ball joints), matching what sync_qpos0_kernel produces.
         mujoco_attrs = getattr(model, "mujoco", None)
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
 
@@ -5763,6 +5761,8 @@ class SolverMuJoCo(SolverBase):
                 model.joint_q_start,
                 model.joint_qd_start,
                 model.joint_dof_dim,
+                model.joint_child,
+                model.body_q,
                 dof_ref,
             ],
             outputs=[

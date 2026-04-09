@@ -730,6 +730,8 @@ def build_ref_q_kernel(
     joint_q_start: wp.array[wp.int32],
     joint_qd_start: wp.array[wp.int32],
     joint_dof_dim: wp.array2d[wp.int32],
+    joint_child: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
     dof_ref: wp.array[wp.float32],
     # output
     ref_q: wp.array[wp.float32],
@@ -740,7 +742,8 @@ def build_ref_q_kernel(
     convention (xyzw quaternions) suitable for ``eval_articulation_fk``.
     Per joint type:
 
-    - **FREE / DISTANCE**: identity quaternion [xyzw]; position left as zero.
+    - **FREE / DISTANCE**: position and quaternion [xyzw] from ``body_q``
+      of the child body.
     - **BALL**: identity quaternion [xyzw].
     - **PRISMATIC / REVOLUTE / D6**: copies ``dof_ref`` values [m or rad]
       (or zero when ``dof_ref`` is ``None``).
@@ -754,6 +757,9 @@ def build_ref_q_kernel(
             shape ``[joint_count]``.
         joint_dof_dim: Positional and rotational DOF counts per joint,
             shape ``[joint_count, 2]``.
+        joint_child: Child body index per joint, shape ``[joint_count]``.
+        body_q: Body transforms [m], shape ``[body_count]``,
+            dtype ``wp.transform``.
         dof_ref: Reference DOF values [m or rad], shape ``[joint_dof_count]``.
             May be ``None``, in which case zeros are used.
         ref_q: *(output)* Reference joint coordinates [m or rad],
@@ -765,10 +771,17 @@ def build_ref_q_kernel(
     qd_start = joint_qd_start[j]
 
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
-        ref_q[q_start + 3] = 0.0
-        ref_q[q_start + 4] = 0.0
-        ref_q[q_start + 5] = 0.0
-        ref_q[q_start + 6] = 1.0
+        child = joint_child[j]
+        bq = body_q[child]
+        pos = wp.transform_get_translation(bq)
+        rot = wp.transform_get_rotation(bq)
+        ref_q[q_start + 0] = pos[0]
+        ref_q[q_start + 1] = pos[1]
+        ref_q[q_start + 2] = pos[2]
+        ref_q[q_start + 3] = rot[0]
+        ref_q[q_start + 4] = rot[1]
+        ref_q[q_start + 5] = rot[2]
+        ref_q[q_start + 6] = rot[3]
     elif jtype == JointType.BALL:
         ref_q[q_start + 0] = 0.0
         ref_q[q_start + 1] = 0.0
