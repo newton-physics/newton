@@ -1585,6 +1585,8 @@ def parse_usd(
             "collision_rigid_contact_max",
             "collision_max_triangle_pairs",
             "collision_broad_phase",
+            "collision_soft_contact_max",
+            "collision_soft_contact_margin",
         ):
             _cp_val = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key=_cp_key, verbose=verbose)
             if _cp_val is not None:
@@ -2606,6 +2608,8 @@ def parse_usd(
                 if sdf_texture_format is None:
                     sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
 
+                sdf_margin = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_margin", verbose=verbose)
+
                 # Hydroelastic: presence of newton:kh signals NewtonHydroelasticCollisionAPI
                 kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
                 is_hydroelastic = kh is not None or builder.default_shape_cfg.is_hydroelastic
@@ -2725,7 +2729,9 @@ def parse_usd(
                             sdf_kwargs["max_resolution"] = sdf_max_resolution
                         if sdf_target_voxel_size is not None:
                             sdf_kwargs["target_voxel_size"] = sdf_target_voxel_size
-                        if gap_val is not None and gap_val != float("-inf"):
+                        if sdf_margin is not None:
+                            sdf_kwargs["margin"] = sdf_margin
+                        elif gap_val is not None and gap_val != float("-inf"):
                             sdf_kwargs["margin"] = gap_val
                         sdf_kwargs["scale"] = tuple(shape_spec.meshScale)
                         sdf_kwargs["texture_format"] = sdf_texture_format

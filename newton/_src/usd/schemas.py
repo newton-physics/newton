@@ -56,6 +56,8 @@ class SchemaResolverNewton(SchemaResolver):
             "collision_rigid_contact_max": SchemaAttribute("newton:collision:rigidContactMax", None),
             "collision_max_triangle_pairs": SchemaAttribute("newton:collision:maxTrianglePairs", None),
             "collision_broad_phase": SchemaAttribute("newton:collision:broadPhase", None),
+            "collision_soft_contact_max": SchemaAttribute("newton:collision:softContactMax", None),
+            "collision_soft_contact_margin": SchemaAttribute("newton:collision:softContactMargin", None),
             # Hydroelastic pipeline configuration
             "hydro_reduce_contacts": SchemaAttribute("newton:hydro:reduceContacts", None),
             "hydro_pre_prune_contacts": SchemaAttribute("newton:hydro:prePruneContacts", None),
@@ -111,6 +113,7 @@ class SchemaResolverNewton(SchemaResolver):
             "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", None),
             "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", None),
             "sdf_texture_format": SchemaAttribute("newton:sdfTextureFormat", None),
+            "sdf_margin": SchemaAttribute("newton:sdfMargin", None),
             # Hydroelastic contacts — from NewtonHydroelasticCollisionAPI
             # Presence of newton:kh signals hydroelastic opt-in (no separate bool flag)
             "kh": SchemaAttribute("newton:kh", None),
