@@ -1544,7 +1544,7 @@ class ViewerBase(ABC):
                 if geo_src is not None and geo_src._uvs is not None:
                     has_texture = getattr(geo_src, "texture", None) is not None
                     if has_texture:
-                        texture_color_space = getattr(geo_src, "_texture_color_space", "auto")
+                        texture_color_space = geo_src.texture_color_space
                         texture_mode = 2.0 if texture_color_space == "raw" else 1.0
                         material = wp.vec4(material.x, material.y, material.z, texture_mode)
 

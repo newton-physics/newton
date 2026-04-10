@@ -698,7 +698,7 @@ class RenderContext:
         for shape in model.shape_source:
             if isinstance(shape, Mesh):
                 if shape.texture is not None and load_textures:
-                    texture_key = (shape.texture_hash, getattr(shape, "_texture_color_space", "auto"))
+                    texture_key = (shape.texture_hash, shape.texture_color_space)
                     if texture_key not in texture_hashes:
                         pixels = load_texture(shape.texture)
                         if pixels is None:
@@ -722,7 +722,7 @@ class RenderContext:
                             device=self.device,
                         )
                         data.repeat = wp.vec2f(1.0, 1.0)
-                        data.color_space = texture_color_space_to_id(getattr(shape, "_texture_color_space", "auto"))
+                        data.color_space = texture_color_space_to_id(shape.texture_color_space)
                         self.__texture_data.append(data)
 
                     texture_data_ids.append(texture_hashes[texture_key])

@@ -6720,7 +6720,7 @@ def Xform "BodyWithoutVisuals" (
         mesh = builder.shape_source[collision_shape]
         self.assertIsNotNone(mesh)
         self.assertEqual(mesh.texture, "dummy.png")
-        self.assertEqual(mesh._texture_color_space, "auto")
+        self.assertEqual(mesh.texture_color_space, "auto")
         self.assertIsNotNone(mesh.uvs)
         np.testing.assert_allclose(mesh.vertices, render_mesh.vertices, atol=1e-6, rtol=1e-6)
         self.assertAlmostEqual(mesh.mass, physics_mesh.mass, places=6)
@@ -6772,7 +6772,7 @@ def Xform "BodyWithoutVisuals" (
 
         self.assertIsNotNone(mesh)
         self.assertEqual(mesh.texture, "dummy.png")
-        self.assertEqual(mesh._texture_color_space, "raw")
+        self.assertEqual(mesh.texture_color_space, "raw")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_overrides_visual_material(self):

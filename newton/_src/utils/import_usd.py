@@ -429,7 +429,7 @@ def parse_usd(
             mesh = physics_mesh.copy(recompute_inertia=False)
         if texture:
             mesh.texture = texture
-            mesh._texture_color_space = material_props.get("texture_color_space", "auto")
+            mesh.texture_color_space = material_props.get("texture_color_space", "auto")
         if mesh.texture is not None and mesh.uvs is None:
             warnings.warn(
                 f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",

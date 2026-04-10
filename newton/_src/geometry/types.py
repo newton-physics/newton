@@ -690,7 +690,7 @@ class Mesh:
             roughness=self._roughness,
             metallic=self._metallic,
         )
-        m._texture_color_space = self._texture_color_space
+        m.texture_color_space = self.texture_color_space
         if not recompute_inertia:
             m.inertia = self.inertia
             m.mass = self.mass
@@ -862,6 +862,20 @@ class Mesh:
         self._texture_color_space = "auto"
         self._texture_hash = None
         self._cached_hash = None
+
+    @property
+    def texture_color_space(self) -> str:
+        """Source color space of the assigned texture.
+
+        One of ``"auto"`` (assume sRGB for the raytracer), ``"raw"`` (linear /
+        data), or ``"srgb"`` (explicit sRGB). Reset to ``"auto"`` whenever
+        :attr:`texture` is reassigned.
+        """
+        return self._texture_color_space
+
+    @texture_color_space.setter
+    def texture_color_space(self, value: str):
+        self._texture_color_space = value
 
     @property
     def texture_hash(self) -> int:
