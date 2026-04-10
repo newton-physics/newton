@@ -33,6 +33,8 @@
 - Add `total_force_friction` and `force_matrix_friction` to `SensorContact` for tangential (friction) force decomposition
 - Add `compute_normals` and `compute_uvs` optional arguments to `Mesh.create_heightfield()` and `Mesh.create_terrain()`
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
+- Add `ModelBuilder.default_shape_color` fallback so shapes without an explicit or imported color can use a user-configured default instead of the per-shape palette
+- Import per-shape authored color and OmniPBR diffuse tint from USD stages into `ModelBuilder.shape_color`
 
 ### Changed
 
@@ -94,6 +96,7 @@
 - Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
 - Fix `hide_collision_shapes=True` not hiding collision meshes that have bound PBR materials
 - Fix USD import to honor authored `visibility = "invisible"` when deciding whether visual and collider shapes are rendered
+- Fix standalone Gaussian splat world-matrix lookup to use the Gaussian prim instead of the parent prim
 - Filter inactive particles in viewer so only particles with `ParticleFlags.ACTIVE` are rendered
 - Fix concurrent asset download races on Windows by using content-addressed cache directories
 - Show prismatic joints in the GL viewer when "Show Joints" is enabled
