@@ -5527,7 +5527,8 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional linear RGB color with values in [0, 1]. If `None`,
-                uses the default per-shape color.
+                uses :attr:`default_shape_color` when set, otherwise the
+                per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5617,7 +5618,8 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional linear RGB color with values in [0, 1]. If `None`,
-                uses the default per-shape color.
+                uses :attr:`default_shape_color` when set, otherwise the
+                per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5666,7 +5668,8 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional linear RGB color with values in [0, 1]. If `None`,
-                uses the default per-shape color.
+                uses :attr:`default_shape_color` when set, otherwise the
+                per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5720,7 +5723,8 @@ class ModelBuilder:
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional linear RGB color with values in [0, 1]. If `None`,
-                uses the default per-shape color.
+                uses :attr:`default_shape_color` when set, otherwise the
+                per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5775,7 +5779,8 @@ class ModelBuilder:
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional linear RGB color with values in [0, 1]. If `None`,
-                uses the default per-shape color.
+                uses :attr:`default_shape_color` when set, otherwise the
+                per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5911,7 +5916,8 @@ class ModelBuilder:
             scale: The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional linear RGB color with values in [0, 1]. If `None`,
-                uses the default per-shape color.
+                uses :attr:`default_shape_color` when set, otherwise the
+                per-shape palette color.
             label: An optional label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5968,7 +5974,8 @@ class ModelBuilder:
                 - ``"convex_hull"``: auto-generate convex hull from Gaussian positions.
                 - A :class:`Mesh` instance: use the provided mesh as collision proxy.
             color: Optional linear RGB color with values in [0, 1]. If `None`,
-                uses the default per-shape color.
+                uses :attr:`default_shape_color` when set, otherwise the
+                per-shape palette color.
             label: Optional unique label for identifying the shape.
             custom_attributes: Dictionary of custom attribute values for SHAPE
                 frequency attributes.
