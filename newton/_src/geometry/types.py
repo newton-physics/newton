@@ -164,7 +164,8 @@ class Mesh:
         self.color = color
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
-        self._texture_color_space = "auto"
+        self.texture_color_space: str = "auto"
+        """Source color space of :attr:`texture`: ``"auto"``, ``"srgb"``, or ``"raw"``."""
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -859,7 +860,7 @@ class Mesh:
     def texture(self, value: str | np.ndarray | None):
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(value)
-        self._texture_color_space = "auto"
+        self.texture_color_space = "auto"
         self._texture_hash = None
         self._cached_hash = None
 
