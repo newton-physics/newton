@@ -1502,6 +1502,26 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _is_omni_pbr_shader(shader: UsdShade.Shader | None) -> bool:
+    """Return whether *shader* uses an OmniPBR MDL source asset."""
+    if shader is None:
+        return False
+    try:
+        prim = shader.GetPrim()
+        if not prim.IsValid():
+            return False
+        attr = prim.GetAttribute("info:mdl:sourceAsset")
+        if attr:
+            ap = attr.Get()
+            if isinstance(ap, Sdf.AssetPath) and ap.authoredPath.endswith("OmniPBR.mdl"):
+                return True
+        # Fall back to shader identifier for stages that omit the MDL asset path.
+        shader_id = shader.GetIdAttr().Get()
+        return shader_id == "OmniPBR"
+    except Exception:
+        return False
+
+
 def _multiply_colors(
     color: tuple[float, float, float] | None,
     tint: tuple[float, float, float] | None,
@@ -1682,7 +1702,18 @@ def _extract_shader_properties(
                     properties["texture"] = _resolve_asset_path(asset, prim, inp.GetAttr())
                     break
 
-    properties["color"] = _multiply_colors(properties["color"], _resolve_diffuse_tint(shader, material))
+    tint = _resolve_diffuse_tint(shader, material)
+    color = properties["color"]
+
+    if _is_omni_pbr_shader(shader):
+        if tint is not None:
+            if color is None:
+                color = (0.2, 0.2, 0.2)
+            color = tuple(float(c * t) for c, t in zip(color, tint, strict=True))
+    else:
+        color = _multiply_colors(color, tint)
+
+    properties["color"] = color
 
     return properties
 
