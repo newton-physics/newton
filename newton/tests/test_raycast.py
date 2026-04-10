@@ -340,12 +340,12 @@ def test_ray_intersect_plane(test: TestRaycast, device: str):
     size = wp.vec3(0.0, 0.0, 0.0)
 
     with test.subTest("hit_from_above"):
-        ray_origin = wp.vec3(0.0, 0.0, 5.0)
-        ray_direction = wp.vec3(0.0, 0.0, -1.0)
+        ray_origin = wp.vec3(0.0, 0.0, 4.0)
+        ray_direction = wp.vec3(3.0, 0.0, -4.0)  # 3-4-5 triple
         wp.launch(
             kernel_test_plane, dim=1, inputs=[out_t, geom_to_world, ray_origin, ray_direction, size], device=device
         )
-        test.assertAlmostEqual(out_t.numpy()[0], 5.0, delta=1e-5)
+        test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
 
     with test.subTest("parallel_miss"):
         ray_origin = wp.vec3(0.0, 0.0, 2.0)
@@ -365,29 +365,44 @@ def test_ray_intersect_plane(test: TestRaycast, device: str):
 
     with test.subTest("translated_plane"):
         geom_to_world = wp.transform(wp.vec3(0.0, 0.0, 3.0), wp.quat_identity())
-        ray_origin = wp.vec3(0.0, 0.0, 8.0)
-        ray_direction = wp.vec3(0.0, 0.0, -1.0)
+        ray_origin = wp.vec3(0.0, 0.0, 7.0)
+        ray_direction = wp.vec3(3.0, 0.0, -4.0)  # 3-4-5 triple, local z-offset = 4
         wp.launch(
             kernel_test_plane, dim=1, inputs=[out_t, geom_to_world, ray_origin, ray_direction, size], device=device
         )
-        test.assertAlmostEqual(out_t.numpy()[0], 5.0, delta=1e-5)
+        test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
 
     with test.subTest("finite_hit"):
+        geom_to_world = wp.transform_identity()
         size_finite = wp.vec3(4.0, 4.0, 0.0)
-        ray_origin = wp.vec3(3.0, 0.0, 3.0)
-        ray_direction = wp.vec3(0.0, 0.0, -1.0)
+        ray_origin = wp.vec3(0.0, 0.0, 4.0)
+        ray_direction = wp.vec3(3.0, 0.0, -4.0)  # 3-4-5 triple, hits at (3, 0, 0)
         wp.launch(
             kernel_test_plane,
             dim=1,
             inputs=[out_t, geom_to_world, ray_origin, ray_direction, size_finite],
             device=device,
         )
-        test.assertAlmostEqual(out_t.numpy()[0], 3.0, delta=1e-5)
+        test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
 
-    with test.subTest("finite_miss"):
-        size_finite = wp.vec3(4.0, 4.0, 0.0)
-        ray_origin = wp.vec3(5.0, 0.0, 3.0)
-        ray_direction = wp.vec3(0.0, 0.0, -1.0)
+    with test.subTest("finite_miss_x"):
+        geom_to_world = wp.transform_identity()
+        size_finite = wp.vec3(2.0, 2.0, 0.0)
+        ray_origin = wp.vec3(0.0, 0.0, 4.0)
+        ray_direction = wp.vec3(3.0, 0.0, -4.0)  # 3-4-5 triple, hits at (3, 0, 0) -- |3| > 2
+        wp.launch(
+            kernel_test_plane,
+            dim=1,
+            inputs=[out_t, geom_to_world, ray_origin, ray_direction, size_finite],
+            device=device,
+        )
+        test.assertAlmostEqual(out_t.numpy()[0], -1.0, delta=1e-5)
+
+    with test.subTest("finite_miss_y"):
+        geom_to_world = wp.transform_identity()
+        size_finite = wp.vec3(10.0, 2.0, 0.0)
+        ray_origin = wp.vec3(0.0, 0.0, 4.0)
+        ray_direction = wp.vec3(0.0, 3.0, -4.0)  # 3-4-5 triple, hits at (0, 3, 0) -- |3| > 2
         wp.launch(
             kernel_test_plane,
             dim=1,
@@ -397,12 +412,13 @@ def test_ray_intersect_plane(test: TestRaycast, device: str):
         test.assertAlmostEqual(out_t.numpy()[0], -1.0, delta=1e-5)
 
     with test.subTest("hit_from_below"):
-        ray_origin = wp.vec3(0.0, 0.0, -5.0)
-        ray_direction = wp.vec3(0.0, 0.0, 1.0)
+        geom_to_world = wp.transform_identity()
+        ray_origin = wp.vec3(0.0, 0.0, -4.0)
+        ray_direction = wp.vec3(0.0, 3.0, 4.0)  # 3-4-5 triple
         wp.launch(
             kernel_test_plane, dim=1, inputs=[out_t, geom_to_world, ray_origin, ray_direction, size], device=device
         )
-        test.assertAlmostEqual(out_t.numpy()[0], 5.0, delta=1e-5)
+        test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
 
     with test.subTest("rotated_plane"):
         q_rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 3.14159265 / 2.0)
@@ -422,77 +438,77 @@ def test_geom_ray_intersect(test: TestRaycast, device: str):
     ray_direction = wp.vec3(1.0, 0.0, 0.0)
     mesh_id = wp.uint64(0)  # No mesh for primitive shapes
 
-    # Plane (infinite ground plane at z=0, ray from above)
-    size = wp.vec3(0.0, 0.0, 0.0)
-    ray_origin_plane = wp.vec3(0.0, 0.0, 5.0)
-    ray_direction_plane = wp.vec3(0.0, 0.0, -1.0)
-    wp.launch(
-        kernel_test_geom,
-        dim=1,
-        inputs=[out_t, geom_to_world, size, GeoType.PLANE, ray_origin_plane, ray_direction_plane, mesh_id],
-        device=device,
-    )
-    test.assertAlmostEqual(out_t.numpy()[0], 5.0, delta=1e-5)
+    with test.subTest("plane"):
+        size = wp.vec3(0.0, 0.0, 0.0)
+        ray_origin_plane = wp.vec3(0.0, 0.0, 5.0)
+        ray_direction_plane = wp.vec3(0.0, 0.0, -1.0)
+        wp.launch(
+            kernel_test_geom,
+            dim=1,
+            inputs=[out_t, geom_to_world, size, GeoType.PLANE, ray_origin_plane, ray_direction_plane, mesh_id],
+            device=device,
+        )
+        test.assertAlmostEqual(out_t.numpy()[0], 5.0, delta=1e-5)
 
-    # Sphere
-    size = wp.vec3(1.0, 0.0, 0.0)  # r
-    wp.launch(
-        kernel_test_geom,
-        dim=1,
-        inputs=[out_t, geom_to_world, size, GeoType.SPHERE, ray_origin, ray_direction, mesh_id],
-        device=device,
-    )
-    test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
+    with test.subTest("sphere"):
+        size = wp.vec3(1.0, 0.0, 0.0)  # r
+        wp.launch(
+            kernel_test_geom,
+            dim=1,
+            inputs=[out_t, geom_to_world, size, GeoType.SPHERE, ray_origin, ray_direction, mesh_id],
+            device=device,
+        )
+        test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
 
-    # Box
-    size = wp.vec3(1.0, 1.0, 1.0)  # half-extents
-    wp.launch(
-        kernel_test_geom,
-        dim=1,
-        inputs=[out_t, geom_to_world, size, GeoType.BOX, ray_origin, ray_direction, mesh_id],
-        device=device,
-    )
-    test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
+    with test.subTest("box"):
+        size = wp.vec3(1.0, 1.0, 1.0)  # half-extents
+        wp.launch(
+            kernel_test_geom,
+            dim=1,
+            inputs=[out_t, geom_to_world, size, GeoType.BOX, ray_origin, ray_direction, mesh_id],
+            device=device,
+        )
+        test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
 
-    # Capsule
-    size = wp.vec3(0.5, 1.0, 0.0)  # r, h
-    wp.launch(
-        kernel_test_geom,
-        dim=1,
-        inputs=[out_t, geom_to_world, size, GeoType.CAPSULE, ray_origin, ray_direction, mesh_id],
-        device=device,
-    )
-    test.assertAlmostEqual(out_t.numpy()[0], 1.5, delta=1e-5)
+    with test.subTest("capsule"):
+        size = wp.vec3(0.5, 1.0, 0.0)  # r, h
+        wp.launch(
+            kernel_test_geom,
+            dim=1,
+            inputs=[out_t, geom_to_world, size, GeoType.CAPSULE, ray_origin, ray_direction, mesh_id],
+            device=device,
+        )
+        test.assertAlmostEqual(out_t.numpy()[0], 1.5, delta=1e-5)
 
-    # Cylinder
-    size = wp.vec3(0.5, 1.0, 0.0)  # r, h
-    wp.launch(
-        kernel_test_geom,
-        dim=1,
-        inputs=[out_t, geom_to_world, size, GeoType.CYLINDER, ray_origin, ray_direction, mesh_id],
-        device=device,
-    )
-    test.assertAlmostEqual(out_t.numpy()[0], 1.5, delta=1e-5)
+    with test.subTest("cylinder"):
+        size = wp.vec3(0.5, 1.0, 0.0)  # r, h
+        wp.launch(
+            kernel_test_geom,
+            dim=1,
+            inputs=[out_t, geom_to_world, size, GeoType.CYLINDER, ray_origin, ray_direction, mesh_id],
+            device=device,
+        )
+        test.assertAlmostEqual(out_t.numpy()[0], 1.5, delta=1e-5)
 
-    # Cone
-    size = wp.vec3(1.0, 1.0, 0.0)  # r, h
-    wp.launch(
-        kernel_test_geom,
-        dim=1,
-        inputs=[out_t, geom_to_world, size, GeoType.CONE, ray_origin, ray_direction, mesh_id],
-        device=device,
-    )
-    test.assertAlmostEqual(out_t.numpy()[0], 1.5, delta=1e-3)
+    with test.subTest("cone"):
+        size = wp.vec3(1.0, 1.0, 0.0)  # r, h
+        wp.launch(
+            kernel_test_geom,
+            dim=1,
+            inputs=[out_t, geom_to_world, size, GeoType.CONE, ray_origin, ray_direction, mesh_id],
+            device=device,
+        )
+        test.assertAlmostEqual(out_t.numpy()[0], 1.5, delta=1e-3)
 
-    # Ellipsoid
-    size = wp.vec3(1.0, 0.5, 0.5)  # semi-axes (rx, ry, rz)
-    wp.launch(
-        kernel_test_geom,
-        dim=1,
-        inputs=[out_t, geom_to_world, size, GeoType.ELLIPSOID, ray_origin, ray_direction, mesh_id],
-        device=device,
-    )
-    test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
+    with test.subTest("ellipsoid"):
+        size = wp.vec3(1.0, 0.5, 0.5)  # semi-axes (rx, ry, rz)
+        wp.launch(
+            kernel_test_geom,
+            dim=1,
+            inputs=[out_t, geom_to_world, size, GeoType.ELLIPSOID, ray_origin, ray_direction, mesh_id],
+            device=device,
+        )
+        test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
 
 
 def test_ray_intersect_mesh(test: TestRaycast, device: str):

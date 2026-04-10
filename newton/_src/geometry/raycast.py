@@ -11,7 +11,7 @@ from .types import (
 
 # A small constant to avoid division by zero and other numerical issues
 MINVAL = 1e-15
-# Float32 epsilon for near-degenerate checks (e.g. ray parallel to plane)
+# float32 epsilon for near-zero checks (e.g. ray parallel to plane)
 EPSILON = 1e-6
 
 
@@ -540,7 +540,7 @@ def ray_intersect_plane(geom_to_world: wp.transform, ray_origin: wp.vec3, ray_di
     ro = wp.transform_point(world_to_geom, ray_origin)
     rd = wp.transform_vector(world_to_geom, ray_direction)
 
-    # Ray parallel to the plane (also covers zero-length direction since rd[2] == 0)
+    # Ray parallel to the plane (or degenerate)
     if wp.abs(rd[2]) < EPSILON:
         return -1.0
 
@@ -549,7 +549,8 @@ def ray_intersect_plane(geom_to_world: wp.transform, ray_origin: wp.vec3, ray_di
     if t < 0.0:
         return -1.0
 
-    # Check finite bounds (0 = infinite in that axis)
+    # Check finite bounds (0 = infinite in that axis).  For planes, size stores (half_width, half_length, 0)
+    # some code paths treat it as full extents; tracked in GH-2410.
     hit_x = ro[0] + t * rd[0]
     hit_y = ro[1] + t * rd[1]
 
@@ -577,7 +578,7 @@ def ray_intersect_geom(
     Computes the intersection of a ray with a geometry.
 
     Args:
-        geom_to_world: The world-to-shape transform.
+        geom_to_world: The world transform of the shape.
         size: The size of the geometry.
         geomtype: The type of the geometry.
         ray_origin: The origin of the ray.
