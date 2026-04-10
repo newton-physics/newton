@@ -903,7 +903,7 @@ class SolverImplicitMPM(SolverBase):
                 self.solver = "gs-batched"
             else:
                 self.solver = "gs"
-        self.coloring = "gauss-seidel" in self.solver or self.solver.startswith("gs")
+        self.coloring = "gauss-seidel" in self.solver or "gs" in self.solver
         self.apic = config.transfer_scheme == "apic"
         self.gimp = config.integration_scheme == "gimp"
         self.max_active_cell_count = config.max_active_cell_count

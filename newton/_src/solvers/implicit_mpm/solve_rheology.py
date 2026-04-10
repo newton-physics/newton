@@ -23,26 +23,26 @@ from .contact_solver_kernels import (
 )
 from .rheology_solver_kernels import (
     YieldParamVec,
-    _build_flat_color_offsets,
-    _build_flat_offsets,
-    _build_sc_transpose_offsets,
-    _build_strain_to_supercolor,
-    _compute_sc_base_offsets,
-    _globalize_sc_offsets,
-    _compute_sc_sharing_counts,
-    _compute_vel_node_multiplicity,
-    _expand_flat_ids,
-    _fill_sc_transpose,
-    _reorder_strain_mat,
+    build_flat_color_offsets,
+    build_flat_offsets,
+    build_batch_transpose_offsets,
+    build_strain_to_batch,
+    compute_batch_base_offsets,
+    globalize_batch_offsets,
+    compute_batch_sharing_counts,
+    compute_vel_node_multiplicity,
+    expand_flat_ids,
+    fill_batch_transpose,
+    reorder_strain_mat,
     apply_stress_delta_jacobi,
     apply_stress_gs,
     apply_velocity_delta,
     compute_delassus_diagonal,
     evaluate_strain_residual,
-    hybrid_scatter,
+    batched_scatter,
     jacobi_preconditioner,
     make_gs_solve_kernel,
-    make_hybrid_solve_kernel,
+    make_batched_solve_kernel,
     make_jacobi_solve_kernel,
     make_reordered_gs_solve_kernel,
     mat13,
@@ -315,7 +315,7 @@ class _DelassusOperator:
     def compute_diagonal_factorization(
         self,
         split_mass: bool = False,
-        strain_super_color: wp.array | None = None,
+        strain_batch: wp.array | None = None,
         mass_multiplicity: wp.array | None = None,
     ):
         """Compute or recompute the Delassus diagonal eigendecomposition.
@@ -323,12 +323,12 @@ class _DelassusOperator:
         Args:
             split_mass: If ``True`` and no *mass_multiplicity* is provided,
                 compute per-velocity-node multiplicity from the transposed
-                strain matrix (standard Jacobi mass splitting with n_super=1).
-            strain_super_color: Per-strain-node super-color assignment
+                strain matrix (standard Jacobi mass splitting with n_batches=1).
+            strain_batch: Per-strain-node batch assignment
                 (int array, length n_strain).  Required when
                 *mass_multiplicity* is provided.
-            mass_multiplicity: Pre-computed per-super-color per-velocity-node
-                multiplicity (float 2D array, shape ``[n_super, n_vel]``).
+            mass_multiplicity: Pre-computed per-batch per-velocity-node
+                multiplicity (float 2D array, shape ``[n_batches, n_vel]``).
                 Overrides *split_mass* when provided.
         """
         if mass_multiplicity is None and self._computed and self._split_mass == split_mass:
@@ -337,29 +337,29 @@ class _DelassusOperator:
         device = self.momentum.velocity.device
 
         if mass_multiplicity is not None:
-            # Caller-provided multiplicity (hybrid mode)
-            sc_map = strain_super_color
+            # Caller-provided multiplicity (batched mode)
+            batch_map = strain_batch
             mult = mass_multiplicity
         elif split_mass:
-            # Jacobi: n_super=1, all strain nodes in super-color 0
+            # Jacobi: n_batches=1, all strain nodes in batch 0
             self.require_strain_mat_transpose()
             n_vel = self.momentum.velocity.shape[0]
-            sc_map = wp.zeros(shape=(self.size,), dtype=int, device=device)  # all zeros = SC 0
+            batch_map = wp.zeros(shape=(self.size,), dtype=int, device=device)  # all zeros = batch 0
             mult = wp.zeros(shape=(1, n_vel), dtype=float, device=device)
             wp.launch(
-                kernel=_compute_vel_node_multiplicity,
+                kernel=compute_vel_node_multiplicity,
                 dim=n_vel,
                 inputs=[
                     self.rheology.transposed_strain_mat.offsets,
                     self.rheology.transposed_strain_mat.columns,
-                    sc_map,
+                    batch_map,
                     1,
                 ],
                 outputs=[mult],
             )
         else:
             # GS mode: empty arrays → multiplicity of 1
-            sc_map = wp.zeros(shape=(0,), dtype=int, device=device)
+            batch_map = wp.zeros(shape=(0,), dtype=int, device=device)
             mult = wp.zeros(shape=(0, 0), dtype=float, device=device)
 
         strain_mat_values = self.rheology.strain_mat.values.view(dtype=mat13)
@@ -374,7 +374,7 @@ class _DelassusOperator:
                 self.rheology.compliance_mat.offsets,
                 self.rheology.compliance_mat.columns,
                 self.rheology.compliance_mat.values,
-                sc_map,
+                batch_map,
                 mult,
             ],
             outputs=[
@@ -673,7 +673,7 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
         # Flat offsets: prefix sum over color-block sizes
         block_flat_offsets = wp.zeros(shape=(num_blocks_capacity + 1,), dtype=int, device=self.device)
         wp.launch(
-            kernel=_build_flat_offsets,
+            kernel=build_flat_offsets,
             dim=1,
             inputs=[self.rheology.color_blocks, self.rheology.color_offsets],
             outputs=[block_flat_offsets],
@@ -683,7 +683,7 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
         # Flat color offsets
         self._flat_color_offsets = wp.zeros(shape=(self.color_count + 1,), dtype=int, device=self.device)
         wp.launch(
-            kernel=_build_flat_color_offsets,
+            kernel=build_flat_color_offsets,
             dim=self.color_count + 1,
             inputs=[self.rheology.color_offsets, block_flat_offsets],
             outputs=[self._flat_color_offsets],
@@ -693,7 +693,7 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
         # Expand color blocks into flat constraint IDs
         self._flat_constraint_ids = wp.zeros(shape=(n_total,), dtype=int, device=self.device)
         wp.launch(
-            kernel=_expand_flat_ids,
+            kernel=expand_flat_ids,
             dim=num_blocks_capacity,
             inputs=[self.rheology.color_blocks, self.rheology.color_offsets, block_flat_offsets],
             outputs=[self._flat_constraint_ids],
@@ -707,7 +707,7 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
         self._reordered_vals_y = wp.zeros(shape=(max_entries, n_total), dtype=float, device=self.device)
         self._reordered_vals_z = wp.zeros(shape=(max_entries, n_total), dtype=float, device=self.device)
         wp.launch(
-            kernel=_reorder_strain_mat,
+            kernel=reorder_strain_mat,
             dim=n_total,
             inputs=[
                 self._flat_constraint_ids,
@@ -812,13 +812,13 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
             self.solve_local_launch.launch()
 
 
-class _HybridGaussSeidelSolver(_RheologySolver):
-    """Hybrid GS-Jacobi solver with super-color grouping.
+class _BatchedGaussSeidelSolver(_RheologySolver):
+    """Batched GS-Jacobi solver with batch grouping.
 
-    Merges the original colors into fewer super-colors.  Within each
-    super-color, constraints are solved in parallel (Jacobi-like) with a
+    Merges the original colors into fewer batchs.  Within each
+    batch, constraints are solved in parallel (Jacobi-like) with a
     mass-split Delassus diagonal and atomic velocity scatter.  Between
-    super-colors, GS ordering applies.  Gives 3–4× wall-clock speedup
+    batchs, GS ordering applies.  Gives 3–4× wall-clock speedup
     over the reordered GS solver for higher-order bases (B2/P1d) at
     moderate tolerances.
     """
@@ -827,14 +827,14 @@ class _HybridGaussSeidelSolver(_RheologySolver):
         self,
         delassus_operator: _DelassusOperator,
         temporary_store: fem.TemporaryStore | None = None,
-        n_super: int = 16,
+        n_batches: int = 16,
     ) -> None:
-        # split_mass=False — we compute the diagonal ourselves with per-SC mass splitting
+        # split_mass=False — we compute the diagonal ourselves with per-batch mass splitting
         super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store)
 
         self.color_count = self.rheology.color_offsets.shape[0] - 1
-        self.n_super = min(n_super, self.color_count)
-        self.colors_per_super = self.color_count // self.n_super
+        self.n_batches = min(n_batches, self.color_count)
+        self.colors_per_batch = self.color_count // self.n_batches
 
         # ── Determine max_entries ────────────────────────────────────────
 
@@ -852,7 +852,7 @@ class _HybridGaussSeidelSolver(_RheologySolver):
 
         block_flat_offsets = wp.zeros(shape=(num_blocks_capacity + 1,), dtype=int, device=self.device)
         wp.launch(
-            kernel=_build_flat_offsets,
+            kernel=build_flat_offsets,
             dim=1,
             inputs=[self.rheology.color_blocks, self.rheology.color_offsets],
             outputs=[block_flat_offsets],
@@ -861,7 +861,7 @@ class _HybridGaussSeidelSolver(_RheologySolver):
 
         self._flat_color_offsets = wp.zeros(shape=(self.color_count + 1,), dtype=int, device=self.device)
         wp.launch(
-            kernel=_build_flat_color_offsets,
+            kernel=build_flat_color_offsets,
             dim=self.color_count + 1,
             inputs=[self.rheology.color_offsets, block_flat_offsets],
             outputs=[self._flat_color_offsets],
@@ -870,7 +870,7 @@ class _HybridGaussSeidelSolver(_RheologySolver):
 
         self._flat_constraint_ids = wp.zeros(shape=(n_total,), dtype=int, device=self.device)
         wp.launch(
-            kernel=_expand_flat_ids,
+            kernel=expand_flat_ids,
             dim=num_blocks_capacity,
             inputs=[self.rheology.color_blocks, self.rheology.color_offsets, block_flat_offsets],
             outputs=[self._flat_constraint_ids],
@@ -883,7 +883,7 @@ class _HybridGaussSeidelSolver(_RheologySolver):
         self._reordered_vals_y = wp.zeros(shape=(max_entries, n_total), dtype=float, device=self.device)
         self._reordered_vals_z = wp.zeros(shape=(max_entries, n_total), dtype=float, device=self.device)
         wp.launch(
-            kernel=_reorder_strain_mat,
+            kernel=reorder_strain_mat,
             dim=n_total,
             inputs=[
                 self._flat_constraint_ids,
@@ -899,40 +899,40 @@ class _HybridGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        # ── Build per-super-color mass-split Delassus diagonal ───────────
+        # ── Build per-batch mass-split Delassus diagonal ───────────
 
-        # Step 1: strain → super-color mapping
-        self._strain_super_color = wp.zeros(shape=(n_total,), dtype=int, device=self.device)
-        self._strain_super_color.fill_(-1)
+        # Step 1: strain → batch mapping
+        self._strain_batch = wp.zeros(shape=(n_total,), dtype=int, device=self.device)
+        self._strain_batch.fill_(-1)
         wp.launch(
-            kernel=_build_strain_to_supercolor,
+            kernel=build_strain_to_batch,
             dim=n_total,
-            inputs=[self._flat_color_offsets, self._flat_constraint_ids, self.colors_per_super, self.n_super],
-            outputs=[self._strain_super_color],
+            inputs=[self._flat_color_offsets, self._flat_constraint_ids, self.colors_per_batch, self.n_batches],
+            outputs=[self._strain_batch],
             device=self.device,
         )
 
-        # Step 2: per-velocity-node per-super-color sharing counts
+        # Step 2: per-velocity-node per-batch sharing counts
         self.delassus_operator.require_strain_mat_transpose()
         n_vel = self.momentum.velocity.shape[0]
-        self._sc_sharing = wp.zeros(shape=(self.n_super, n_vel), dtype=float, device=self.device)
+        self._batch_sharing = wp.zeros(shape=(self.n_batches, n_vel), dtype=float, device=self.device)
         wp.launch(
-            kernel=_compute_sc_sharing_counts,
+            kernel=compute_batch_sharing_counts,
             dim=n_vel,
             inputs=[
                 self.rheology.transposed_strain_mat.offsets,
                 self.rheology.transposed_strain_mat.columns,
-                self._strain_super_color,
-                self.n_super,
+                self._strain_batch,
+                self.n_batches,
             ],
-            outputs=[self._sc_sharing],
+            outputs=[self._batch_sharing],
             device=self.device,
         )
 
-        # Step 3: compute Delassus diagonal with per-SC mass splitting
+        # Step 3: compute Delassus diagonal with per-batch mass splitting
         self.delassus_operator.compute_diagonal_factorization(
-            strain_super_color=self._strain_super_color,
-            mass_multiplicity=self._sc_sharing,
+            strain_batch=self._strain_batch,
+            mass_multiplicity=self._batch_sharing,
         )
 
         # ── Launch config ────────────────────────────────────────────────
@@ -944,10 +944,10 @@ class _HybridGaussSeidelSolver(_RheologySolver):
         color_block_dim = 64
         color_launch_dim = color_block_count * color_block_dim
 
-        # (apply_stress_launch is set up after the per-SC transposed matrices)
+        # (apply_stress_launch is set up after the per-batch transposed matrices)
 
         # Phase 1: solve kernel
-        solve_kernel = make_hybrid_solve_kernel(
+        solve_kernel = make_batched_solve_kernel(
             has_viscosity=self.rheology.has_viscosity,
             has_dilatancy=self.rheology.has_dilatancy,
             has_compliance_mat=self.rheology.compliance_mat.nnz > 0,
@@ -959,9 +959,8 @@ class _HybridGaussSeidelSolver(_RheologySolver):
             inputs=[
                 0,
                 self._flat_color_offsets,
-                self.colors_per_super,
+                self.colors_per_batch,
                 self._flat_constraint_ids,
-                self._reordered_n_entries,
                 self._reordered_cols,
                 self._reordered_vals_x,
                 self._reordered_vals_y,
@@ -985,82 +984,81 @@ class _HybridGaussSeidelSolver(_RheologySolver):
             record_cmd=True,
         )
 
-        # ── Precompute per-super-color transposed matrices (all on device) ─
+        # ── Precompute per-batch transposed matrices (all on device) ─
 
         n_vel = self.momentum.velocity.shape[0]
         t_mat = self.rheology.transposed_strain_mat
-        total_nnz = t_mat.nnz  # total entries across all super-colors
+        total_nnz = t_mat.nnz  # total entries across all batchs
 
-        # Step 1: count entries per (super-color, velocity-node)
-        sc_counts = wp.zeros(shape=(self.n_super, n_vel), dtype=int, device=self.device)
+        # Step 1: count entries per (batch, velocity-node)
+        batch_counts = wp.zeros(shape=(self.n_batches, n_vel), dtype=int, device=self.device)
         wp.launch(
-            kernel=_build_sc_transpose_offsets,
+            kernel=build_batch_transpose_offsets,
             dim=n_vel,
-            inputs=[t_mat.offsets, t_mat.columns, self._strain_super_color, self.n_super],
-            outputs=[sc_counts],
+            inputs=[t_mat.offsets, t_mat.columns, self._strain_batch, self.n_batches],
+            outputs=[batch_counts],
             device=self.device,
         )
 
-        # Step 2: per-row exclusive prefix scan (local offsets per SC)
-        sc_local_offsets = wp.zeros(shape=(self.n_super, n_vel), dtype=int, device=self.device)
-        for sc in range(self.n_super):
-            wp.utils.array_scan(sc_counts[sc], sc_local_offsets[sc], inclusive=False)
+        # Step 2: per-row exclusive prefix scan (local offsets per batch)
+        batch_local_offsets = wp.zeros(shape=(self.n_batches, n_vel), dtype=int, device=self.device)
+        for bi in range(self.n_batches):
+            wp.utils.array_scan(batch_counts[bi], batch_local_offsets[bi], inclusive=False)
 
-        # Step 3: compute per-SC base offsets (single-threaded kernel)
-        sc_bases = wp.zeros(shape=(self.n_super,), dtype=int, device=self.device)
+        # Step 3: compute per-batch base offsets (single-threaded kernel)
+        sc_bases = wp.zeros(shape=(self.n_batches,), dtype=int, device=self.device)
         wp.launch(
-            kernel=_compute_sc_base_offsets,
+            kernel=compute_batch_base_offsets,
             dim=1,
-            inputs=[sc_counts, sc_local_offsets],
+            inputs=[batch_counts, batch_local_offsets],
             outputs=[sc_bases],
             device=self.device,
         )
 
-        # Step 4: globalize local offsets → sc_global_offsets[n_super, n_vel+1]
-        self._sc_global_offsets = wp.zeros(shape=(self.n_super, n_vel + 1), dtype=int, device=self.device)
+        # Step 4: globalize local offsets → sc_global_offsets[n_batches, n_vel+1]
+        self._batch_global_offsets = wp.zeros(shape=(self.n_batches, n_vel + 1), dtype=int, device=self.device)
         wp.launch(
-            kernel=_globalize_sc_offsets,
+            kernel=globalize_batch_offsets,
             dim=n_vel,
-            inputs=[sc_counts, sc_local_offsets, sc_bases],
-            outputs=[self._sc_global_offsets],
+            inputs=[batch_counts, batch_local_offsets, sc_bases],
+            outputs=[self._batch_global_offsets],
             device=self.device,
         )
 
         # Step 5: allocate flat arrays and fill all SCs in one pass
-        self._sc_columns = wp.zeros(shape=(total_nnz,), dtype=int, device=self.device)
-        self._sc_values = wp.zeros(shape=(total_nnz,), dtype=mat13, device=self.device)
+        self._batch_columns = wp.zeros(shape=(total_nnz,), dtype=int, device=self.device)
+        self._batch_values = wp.zeros(shape=(total_nnz,), dtype=mat13, device=self.device)
         # Write cursors: copy of global offsets, incremented during fill
-        sc_write_cursors = wp.clone(self._sc_global_offsets)
+        batch_write_cursors = wp.clone(self._batch_global_offsets)
         wp.launch(
-            kernel=_fill_sc_transpose,
+            kernel=fill_batch_transpose,
             dim=n_vel,
             inputs=[
                 t_mat.offsets,
                 t_mat.columns,
                 t_mat.values.view(dtype=mat13),
-                self._strain_super_color,
-                self._sc_global_offsets,
-                sc_write_cursors,
+                self._strain_batch,
+                batch_write_cursors,
             ],
-            outputs=[self._sc_columns, self._sc_values],
+            outputs=[self._batch_columns, self._batch_values],
             device=self.device,
         )
 
-        # Phase 2: scatter launches (one recorded launch per super-color)
-        # Each SC uses its row of sc_global_offsets as CSR offsets into the
-        # shared flat columns/values arrays.
+        # Phase 2: scatter launches (one recorded launch per batch)
+        # Each batch uses its row of batch_global_offsets as CSR offsets into
+        # the shared flat columns/values arrays.
         self._scatter_launches = []
         self._initial_guess_launches = []
-        for sc in range(self.n_super):
+        for bi in range(self.n_batches):
             scatter_inputs = [
-                self._sc_global_offsets[sc],
-                self._sc_columns,
-                self._sc_values,
+                self._batch_global_offsets[bi],
+                self._batch_columns,
+                self._batch_values,
                 self.momentum.inv_volume,
             ]
             self._scatter_launches.append(
                 wp.launch(
-                    kernel=hybrid_scatter,
+                    kernel=batched_scatter,
                     dim=n_vel,
                     inputs=[*scatter_inputs, self.delta_stress],
                     outputs=[self.momentum.velocity],
@@ -1070,7 +1068,7 @@ class _HybridGaussSeidelSolver(_RheologySolver):
             # Initial guess: same scatter but reads stress instead of delta_stress
             self._initial_guess_launches.append(
                 wp.launch(
-                    kernel=hybrid_scatter,
+                    kernel=batched_scatter,
                     dim=n_vel,
                     inputs=[*scatter_inputs, self.rheology.stress],
                     outputs=[self.momentum.velocity],
@@ -1080,21 +1078,21 @@ class _HybridGaussSeidelSolver(_RheologySolver):
 
     @property
     def name(self):
-        return "Gauss-Seidel (hybrid)"
+        return "Gauss-Seidel (batched)"
 
     @property
     def solve_granularity(self):
         return 25
 
     def apply_initial_guess(self):
-        for sc in range(self.n_super):
-            self._initial_guess_launches[sc].launch()
+        for bi in range(self.n_batches):
+            self._initial_guess_launches[bi].launch()
 
     def solve(self):
-        for sc in range(self.n_super):
-            self._solve_launch.set_param_at_index(0, sc)
+        for bi in range(self.n_batches):
+            self._solve_launch.set_param_at_index(0, bi)
             self._solve_launch.launch()
-            self._scatter_launches[sc].launch()
+            self._scatter_launches[bi].launch()
 
 
 class _JacobiSolver(_RheologySolver):
@@ -1171,12 +1169,12 @@ _ITERATIVE_LINEAR_SOLVERS = {
 _RHEOLOGY_SOLVERS = {
     "gauss-seidel": _GaussSeidelSolver,
     "gauss-seidel-soa": _ReorderedGaussSeidelSolver,
-    "gauss-seidel-batched": _HybridGaussSeidelSolver,
+    "gauss-seidel-batched": _BatchedGaussSeidelSolver,
     "jacobi": _JacobiSolver,
     # short aliases
     "gs": _GaussSeidelSolver,
     "gs-soa": _ReorderedGaussSeidelSolver,
-    "gs-batched": _HybridGaussSeidelSolver,
+    "gs-batched": _BatchedGaussSeidelSolver,
 }
 
 
@@ -1583,8 +1581,8 @@ def solve_rheology(
             ``"gauss-seidel-soa"`` uses an entry-major SoA strain
             matrix layout for improved memory coalescing.
             ``"gauss-seidel-batched"`` additionally merges colors into
-            super-colors with Jacobi-style mass splitting within each
-            super-color. Good for wide velocity stencils (B2/B3).
+            batchs with Jacobi-style mass splitting within each
+            batch. Good for wide velocity stencils (B2/B3).
             The iterative linear solvers (``"cg"``, ``"cr"``, ``"gmres"``)
             only support solid materials without contacts.
         max_iterations: Maximum number of nonlinear iterations.
