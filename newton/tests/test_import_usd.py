@@ -6584,6 +6584,37 @@ def Xform "BodyWithoutVisuals" (
         np.testing.assert_allclose(builder.shape_color[shape], [0.8, 0.6, 0.4], atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_non_omnipbr_shader_ignores_diffuse_tint(self):
+        """Non-OmniPBR shaders must not have diffuse_tint applied to their base color."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        cube = UsdGeom.Cube.Define(stage, "/Body/Cube")
+        cube_prim = cube.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(cube_prim)
+
+        material = UsdShade.Material.Define(stage, "/Materials/Custom")
+        shader = UsdShade.Shader.Define(stage, "/Materials/Custom/Shader")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.8, 0.6, 0.4))
+        shader.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f).Set((0.5, 1.0, 0.25))
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(cube_prim).Bind(material)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        shape = result["path_shape_map"]["/Body/Cube"]
+
+        # Base color must be preserved — tint should NOT be applied for non-OmniPBR.
+        np.testing.assert_allclose(builder.shape_color[shape], [0.8, 0.6, 0.4], atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visible_collision_mesh_inherits_visual_material_properties(self):
         """Visible fallback collider meshes should carry resolved visual material data."""
         stage = self._create_stage_with_pbr_collision_mesh(color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75)

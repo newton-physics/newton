@@ -1702,18 +1702,14 @@ def _extract_shader_properties(
                     properties["texture"] = _resolve_asset_path(asset, prim, inp.GetAttr())
                     break
 
-    tint = _resolve_diffuse_tint(shader, material)
-    color = properties["color"]
-
     if _is_omni_pbr_shader(shader):
+        tint = _resolve_diffuse_tint(shader, material)
+        color = properties["color"]
         if tint is not None:
             if color is None:
                 color = (0.2, 0.2, 0.2)
-            color = tuple(float(c * t) for c, t in zip(color, tint, strict=True))
-    else:
-        color = _multiply_colors(color, tint)
-
-    properties["color"] = color
+            color = _multiply_colors(color, tint)
+        properties["color"] = color
 
     return properties
 
