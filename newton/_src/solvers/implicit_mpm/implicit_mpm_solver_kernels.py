@@ -548,23 +548,14 @@ def mass_form(
 
 @wp.kernel(module="unique")
 def compute_eigenvalues(
-<<<<<<< HEAD
     offsets: wp.array[int],
     columns: wp.array[int],
     values: wp.array[Any],
+    ones: wp.array2d[float],
     yield_parameters: wp.array[YieldParamVec],
     eigenvalues: wp.array2d[float],
     eigenvectors: wp.array3d[float],
-=======
-    offsets: wp.array(dtype=int),
-    columns: wp.array(dtype=int),
-    values: wp.array(dtype=Any),
-    ones: wp.array2d(dtype=float),
-    yield_parameters: wp.array(dtype=YieldParamVec),
-    eigenvalues: wp.array2d(dtype=float),
-    eigenvectors: wp.array3d(dtype=float),
-    rotated_volume: wp.array2d(dtype=float),
->>>>>>> e35a4a80 (More accurate interpolation of yiel dparameters for P1d/Q1d basis)
+    rotated_volume: wp.array2d[float],
 ):
     row = wp.tid()
 

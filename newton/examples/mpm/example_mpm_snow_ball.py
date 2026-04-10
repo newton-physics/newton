@@ -388,7 +388,6 @@ class Example:
             "-s",
             type=str,
             default="cg+gauss-seidel",
-            choices=["auto", "gauss-seidel", "gs", "gs-soa", "gs-batched", "gauss-seidel-soa", "gauss-seidel-batched", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
         )
 
         parser.add_argument("--strain-basis", "-sb", type=str, default="P0")

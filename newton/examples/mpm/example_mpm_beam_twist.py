@@ -274,7 +274,6 @@ class Example:
             "-s",
             type=str,
             default="cg",
-            choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
         )
         parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])
 
