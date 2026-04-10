@@ -635,6 +635,7 @@ def parse_usd(
                     scale=scale,
                     mesh=mesh,
                     cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     label=path_name,
                 )
             elif type_name == "particlefield3dgaussiansplat":
@@ -645,6 +646,7 @@ def parse_usd(
                     xform=xform,
                     scale=scale,
                     cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     label=path_name,
                 )
             elif len(type_name) > 0 and type_name != "xform" and verbose:
@@ -653,7 +655,7 @@ def parse_usd(
             if shape_id >= 0:
                 path_shape_map[path_name] = shape_id
                 path_shape_scale[path_name] = scale
-                if not is_site:
+                if not is_site and visual_shape_cfg_for_prim.is_visible:
                     bodies_with_visual_shapes.add(parent_body_id)
                 if verbose:
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
@@ -2137,18 +2139,10 @@ def parse_usd(
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = _get_material_props_cached(prim)
-                primitive_or_mesh_shape_keys = {
-                    UsdPhysics.ObjectType.CubeShape,
-                    UsdPhysics.ObjectType.SphereShape,
-                    UsdPhysics.ObjectType.CapsuleShape,
-                    UsdPhysics.ObjectType.CylinderShape,
-                    UsdPhysics.ObjectType.ConeShape,
-                    UsdPhysics.ObjectType.PlaneShape,
-                    UsdPhysics.ObjectType.MeshShape,
-                }
-                collider_has_visual_material = key in primitive_or_mesh_shape_keys and _has_visual_material_properties(
-                    material_props
-                )
+                # The outer ``key in {...}`` guard already limits us to
+                # primitive/mesh shape types, so no need for a redundant set
+                # membership check here.
+                collider_has_visual_material = _has_visual_material_properties(material_props)
 
                 # Explicit hide_collision_shapes overrides material-based visibility:
                 # if the body already has visual shapes, hide its colliders unconditionally.
@@ -2426,12 +2420,14 @@ def parse_usd(
             gaussian = usd.get_gaussian(gaussian_prim)
             splat_cfg = copy.copy(visual_shape_cfg)
             splat_cfg.is_visible = _is_effectively_visible(gaussian_prim)
+            splat_material_props = _get_material_props_cached(gaussian_prim)
             shape_id = builder.add_shape_gaussian(
                 body_id,
                 gaussian=gaussian,
                 xform=wp.transform(g_pos, g_rot),
                 scale=g_scale,
                 cfg=splat_cfg,
+                color=splat_material_props.get("color"),
                 label=gaussian_path,
             )
             path_shape_map[gaussian_path] = shape_id
