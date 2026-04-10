@@ -1011,6 +1011,7 @@ def build_boxes_fourbar(
 
 
 def make_basics_heterogeneous_builder(
+    builder: ModelBuilder | None = None,
     ground: bool = True,
     dynamic_joints: bool = False,
     implicit_pd: bool = False,
@@ -1020,8 +1021,12 @@ def make_basics_heterogeneous_builder(
 
     Each scene is added with :meth:`ModelBuilder.add_world`.
     """
-    builder = ModelBuilder()
-    builder.add_world(
+    if builder is None:
+        _builder = ModelBuilder()
+    else:
+        _builder = builder
+
+    _builder.add_world(
         build_boxes_fourbar(
             ground=ground,
             dynamic_joints=dynamic_joints,
@@ -1029,8 +1034,8 @@ def make_basics_heterogeneous_builder(
             new_world=True,
         )
     )
-    builder.add_world(build_boxes_nunchaku(ground=ground, new_world=True))
-    builder.add_world(
+    _builder.add_world(build_boxes_nunchaku(ground=ground, new_world=True))
+    _builder.add_world(
         build_boxes_hinged(
             ground=ground,
             dynamic_joints=dynamic_joints,
@@ -1038,7 +1043,7 @@ def make_basics_heterogeneous_builder(
             new_world=True,
         )
     )
-    builder.add_world(
+    _builder.add_world(
         build_box_pendulum(
             ground=ground,
             dynamic_joints=dynamic_joints,
@@ -1046,6 +1051,6 @@ def make_basics_heterogeneous_builder(
             new_world=True,
         )
     )
-    builder.add_world(build_box_on_plane(ground=ground, new_world=True))
-    builder.add_world(build_cartpole(z_offset=0.5, ground=ground, new_world=True))
-    return builder
+    _builder.add_world(build_box_on_plane(ground=ground, new_world=True))
+    _builder.add_world(build_cartpole(z_offset=0.5, ground=ground, new_world=True))
+    return _builder
