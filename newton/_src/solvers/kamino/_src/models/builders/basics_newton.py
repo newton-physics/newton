@@ -387,8 +387,9 @@ def build_cartpole(
         hy=half_dims_rail[1],
         hz=half_dims_rail[2],
         xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
-        cfg=_shape_cfg_basic(),
+        cfg=ModelBuilder.ShapeConfig(margin=0.0, gap=0.0, collision_group=0),
     )
+
     if ground:
         _builder.add_shape_box(
             label="ground",
