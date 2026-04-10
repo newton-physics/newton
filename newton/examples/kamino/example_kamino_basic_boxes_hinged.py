@@ -13,7 +13,6 @@
 import argparse
 import os
 
-import numpy as np
 import warp as wp
 
 import newton
@@ -74,9 +73,7 @@ class Example:
         # Create and configure settings for SolverKamino and the collision detector
         solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
         solver_config.use_collision_detector = True
-        solver_config.use_fk_solver = True
-        solver_config.collision_detector.pipeline = "unified"
-        solver_config.collision_detector.max_contacts = 32 * self.world_count
+        solver_config.use_fk_solver = False
         solver_config.dynamics.preconditioning = True
         solver_config.padmm.primal_tolerance = 1e-4
         solver_config.padmm.dual_tolerance = 1e-4
@@ -96,18 +93,6 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.contacts()
-
-        # Reset the simulation state to a valid initial configuration above the ground
-        msg.notif("Resetting the simulation state to a valid initial configuration above the ground...")
-        self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
-        q_b = wp.quat_identity(dtype=wp.float32)
-        q_base = wp.transformf((0.0, 0.0, 0.1), q_b)
-        q_base = np.array(q_base)
-        q_base = np.tile(q_base, (self.world_count, 1))
-        for w in range(self.world_count):
-            q_base[w, :3] += np.array([0.0, 0.0, 0.2]) * float(w)
-        self.base_q.assign(q_base)
-        self.solver.reset(state_out=self.state_0, base_q=self.base_q)
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)

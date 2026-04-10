@@ -73,9 +73,7 @@ class Example:
         # Create and configure settings for SolverKamino and the collision detector
         solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
         solver_config.use_collision_detector = True
-        solver_config.use_fk_solver = True
-        solver_config.collision_detector.pipeline = "unified"
-        solver_config.collision_detector.max_contacts = 32 * self.world_count
+        solver_config.use_fk_solver = False
         solver_config.dynamics.preconditioning = True
         solver_config.padmm.primal_tolerance = 1e-4
         solver_config.padmm.dual_tolerance = 1e-4
