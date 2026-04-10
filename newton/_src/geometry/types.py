@@ -164,6 +164,7 @@ class Mesh:
         self.color = color
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
+        self._texture_color_space = "auto"
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -689,6 +690,7 @@ class Mesh:
             roughness=self._roughness,
             metallic=self._metallic,
         )
+        m._texture_color_space = self._texture_color_space
         if not recompute_inertia:
             m.inertia = self.inertia
             m.mass = self.mass
@@ -841,7 +843,7 @@ class Mesh:
 
     @property
     def color(self) -> Vec3 | None:
-        """Optional display RGB color with values in [0, 1]."""
+        """Optional linear RGB color with values in [0, 1]."""
         return self._color
 
     @color.setter
@@ -857,6 +859,7 @@ class Mesh:
     def texture(self, value: str | np.ndarray | None):
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(value)
+        self._texture_color_space = "auto"
         self._texture_hash = None
         self._cached_hash = None
 

@@ -535,10 +535,9 @@ def load_meshes_from_file(
                                 values = [float(x) for x in col.text.strip().split()]
                                 if len(values) >= 3:
                                     # DAE diffuse colors are commonly authored in linear space.
-                                    # Convert to sRGB for the viewer shader (which converts to linear).
+                                    # Preserve that space so Model.shape_color can stay linear.
                                     diffuse = np.clip(values[:3], 0.0, 1.0)
-                                    srgb = np.power(diffuse, 1.0 / 2.2)
-                                    diffuse_color = (float(srgb[0]), float(srgb[1]), float(srgb[2]))
+                                    diffuse_color = (float(diffuse[0]), float(diffuse[1]), float(diffuse[2]))
                                     break
                         continue
                     if tag == "specular":

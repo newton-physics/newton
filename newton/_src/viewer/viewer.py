@@ -18,6 +18,7 @@ import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
 from ..core.types import MAXVAL, Axis
+from ..utils.color import srgb_to_linear_rgb
 from .kernels import (
     build_active_particle_mask,
     compact,
@@ -1529,7 +1530,7 @@ class ViewerBase(ABC):
                 # Use shape index for color to ensure each collision shape has a different color
                 color = wp.vec3(self._shape_color_map(s))
 
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
+            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_mode
 
             if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
                 scale = np.asarray(geo_scale, dtype=np.float32)
@@ -1543,7 +1544,9 @@ class ViewerBase(ABC):
                 if geo_src is not None and geo_src._uvs is not None:
                     has_texture = getattr(geo_src, "texture", None) is not None
                     if has_texture:
-                        material = wp.vec4(material.x, material.y, material.z, 1.0)
+                        texture_color_space = getattr(geo_src, "_texture_color_space", "auto")
+                        texture_mode = 2.0 if texture_color_space == "raw" else 1.0
+                        material = wp.vec4(material.x, material.y, material.z, texture_mode)
 
             # Planes keep their checkerboard material even when model.shape_color
             # is populated with resolved default colors.
@@ -1691,7 +1694,7 @@ class ViewerBase(ABC):
 
             # Use distinct collision color palette (different from visual shapes)
             color = wp.vec3(self._collision_color_map(s))
-            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
+            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_mode
 
             batch.add(
                 parent=parent,
@@ -1710,8 +1713,9 @@ class ViewerBase(ABC):
     def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
         """
         Set colors for a set of shapes at runtime.
+
         Args:
-            shape_colors: mapping from shape index -> color
+            shape_colors: Mapping from shape index to linear RGB color.
         """
         warnings.warn(
             "Viewer.update_shape_colors() is deprecated. Write to model.shape_color instead.",
@@ -2137,7 +2141,7 @@ class ViewerBase(ABC):
     @staticmethod
     def _shape_color_map(i: int) -> list[float]:
         color = newton.ModelBuilder._SHAPE_COLOR_PALETTE[i % len(newton.ModelBuilder._SHAPE_COLOR_PALETTE)]
-        return [c / 255.0 for c in color]
+        return list(srgb_to_linear_rgb([c / 255.0 for c in color]))
 
     @staticmethod
     def _collision_color_map(i: int) -> list[float]:
@@ -2156,7 +2160,7 @@ class ViewerBase(ABC):
         ]
 
         num_colors = len(colors)
-        return [c / 255.0 for c in colors[i % num_colors]]
+        return list(srgb_to_linear_rgb([c / 255.0 for c in colors[i % num_colors]]))
 
 
 def is_jupyter_notebook():

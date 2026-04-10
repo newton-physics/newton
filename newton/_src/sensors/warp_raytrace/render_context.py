@@ -14,6 +14,7 @@ from ...core import MAXVAL
 from ...geometry import Gaussian, GeoType, Mesh, ShapeFlags
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
+from ...utils.color import texture_color_space_to_id
 from .bvh import (
     compute_bvh_group_roots,
     compute_particle_bvh_bounds,
@@ -697,7 +698,8 @@ class RenderContext:
         for shape in model.shape_source:
             if isinstance(shape, Mesh):
                 if shape.texture is not None and load_textures:
-                    if shape.texture_hash not in texture_hashes:
+                    texture_key = (shape.texture_hash, getattr(shape, "_texture_color_space", "auto"))
+                    if texture_key not in texture_hashes:
                         pixels = load_texture(shape.texture)
                         if pixels is None:
                             raise ValueError(f"Failed to load texture: {shape.texture}")
@@ -707,7 +709,7 @@ class RenderContext:
                         if pixels.dtype != np.uint8:
                             pixels = pixels.astype(np.uint8, copy=False)
 
-                        texture_hashes[shape.texture_hash] = len(self.__texture_data)
+                        texture_hashes[texture_key] = len(self.__texture_data)
 
                         data = TextureData()
                         data.texture = wp.Texture2D(
@@ -720,9 +722,10 @@ class RenderContext:
                             device=self.device,
                         )
                         data.repeat = wp.vec2f(1.0, 1.0)
+                        data.color_space = texture_color_space_to_id(getattr(shape, "_texture_color_space", "auto"))
                         self.__texture_data.append(data)
 
-                    texture_data_ids.append(texture_hashes[shape.texture_hash])
+                    texture_data_ids.append(texture_hashes[texture_key])
                 else:
                     texture_data_ids.append(-1)
 

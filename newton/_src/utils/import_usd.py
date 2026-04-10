@@ -429,6 +429,7 @@ def parse_usd(
             mesh = physics_mesh.copy(recompute_inertia=False)
         if texture:
             mesh.texture = texture
+            mesh._texture_color_space = material_props.get("texture_color_space", "auto")
         if mesh.texture is not None and mesh.uvs is None:
             warnings.warn(
                 f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
@@ -524,6 +525,7 @@ def parse_usd(
             return
 
         if path_name not in path_shape_map:
+            shape_color = _get_material_props_cached(prim).get("color")
             if type_name == "cube":
                 size = usd.get_float(prim, "size", 2.0)
                 side_lengths = scale * size
@@ -535,6 +537,7 @@ def parse_usd(
                     hz=side_lengths[2] / 2,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=shape_color,
                     label=path_name,
                 )
             elif type_name == "sphere":
@@ -547,6 +550,7 @@ def parse_usd(
                     radius,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=shape_color,
                     label=path_name,
                 )
             elif type_name == "plane":
@@ -562,6 +566,7 @@ def parse_usd(
                     width=width,
                     length=length,
                     cfg=visual_shape_cfg,
+                    color=shape_color,
                     label=path_name,
                 )
             elif type_name == "capsule":
@@ -577,6 +582,7 @@ def parse_usd(
                     half_height,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=shape_color,
                     label=path_name,
                 )
             elif type_name == "cylinder":
@@ -592,6 +598,7 @@ def parse_usd(
                     half_height,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=shape_color,
                     label=path_name,
                 )
             elif type_name == "cone":
@@ -607,6 +614,7 @@ def parse_usd(
                     half_height,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=shape_color,
                     label=path_name,
                 )
             elif type_name == "mesh":
@@ -2173,6 +2181,7 @@ def parse_usd(
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
                     ),
+                    "color": _get_material_props_cached(prim).get("color"),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
                 }

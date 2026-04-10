@@ -4,6 +4,7 @@
 import warp as wp
 
 from ...geometry import GeoType
+from ...utils.color import TEXTURE_COLOR_SPACE_RAW_ID, srgb_to_linear_wp
 from .types import MeshData, TextureData
 
 
@@ -15,7 +16,10 @@ def flip_v(uv: wp.vec2f) -> wp.vec2f:
 @wp.func
 def sample_texture_2d(uv: wp.vec2f, texture_data: TextureData) -> wp.vec3f:
     color = wp.texture_sample(texture_data.texture, uv, dtype=wp.vec4f)
-    return wp.vec3f(color[0], color[1], color[2])
+    rgb = wp.vec3f(color[0], color[1], color[2])
+    if texture_data.color_space != TEXTURE_COLOR_SPACE_RAW_ID:
+        rgb = srgb_to_linear_wp(rgb)
+    return rgb
 
 
 @wp.func
