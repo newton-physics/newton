@@ -7733,6 +7733,63 @@ def Mesh "JustAMesh" ()
         self.assertIsNone(tm.k_lambda)
         self.assertIsNone(tm.density)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_add_usd_imports_tetmesh(self):
+        """Test that add_usd imports TetMesh prims as soft meshes."""
+        asset_path = os.path.join(os.path.dirname(__file__), "assets", "tetmesh_with_material.usda")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(asset_path)
+
+        self.assertEqual(len(builder.particle_q), 4)
+        self.assertEqual(len(builder.tet_indices), 1)
+        self.assertEqual(len(builder.tri_indices), 4)
+        self.assertAlmostEqual(builder.tet_materials[0][0], 300000.0 / (2.0 * 1.3), places=0)
+        self.assertAlmostEqual(builder.tet_materials[0][1], 300000.0 * 0.3 / (1.3 * 0.4), places=0)
+        self.assertAlmostEqual(sum(builder.particle_mass), 40.0 / 6.0, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_add_usd_imports_tetmesh_with_transforms(self):
+        """Test that add_usd applies TetMesh prim and import transforms."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    double3 xformOp:translate = (1, 2, 3)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def TetMesh "SoftBody" ()
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform((4.0, 5.0, 6.0), wp.quat_identity()))
+
+        positions = np.array(builder.particle_q, dtype=np.float32)
+        expected = np.array(
+            [
+                [5.0, 7.0, 9.0],
+                [6.0, 7.0, 9.0],
+                [5.0, 8.0, 9.0],
+                [5.0, 7.0, 10.0],
+            ],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(positions, expected)
+
     def test_tetmesh_save_load_npz(self):
         """Test TetMesh round-trip save/load via .npz."""
 

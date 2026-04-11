@@ -118,6 +118,7 @@
 - Decompose loop joint constraints by DOF type (WELD for fixed, CONNECT-pair for revolute, single CONNECT for ball) instead of always emitting 2x CONNECT
 - Fix inertia box wireframe rotation for isotropic and axisymmetric bodies in viewer
 - Implicit MPM solver now uses `mass=0` for kinematic particles instead of `ACTIVE` flag
+- Import `UsdGeom.TetMesh` prims through `ModelBuilder.add_usd()` as soft meshes
 - Suppress macOS OpenGL warning about unloadable textures by binding a 1x1 white fallback texture when no albedo or environment texture is set
 - Fix MuJoCo solver freeze when immovable bodies (kinematic, static, or fixed-root) generate contacts with degenerate invweight
 - Fix forward-kinematics child-origin linear velocity for articulated translated joints
