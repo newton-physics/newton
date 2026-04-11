@@ -34,7 +34,7 @@
 - Add `compute_normals` and `compute_uvs` optional arguments to `Mesh.create_heightfield()` and `Mesh.create_terrain()`
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
 - Add `ModelBuilder.default_shape_color` fallback so shapes without an explicit or imported color can use a user-configured default instead of the per-shape palette
-- Import per-shape authored color and OmniPBR diffuse tint from USD stages into `ModelBuilder.shape_color`
+- Import per-shape authored color from USD stages into `ModelBuilder.shape_color`
 
 ### Changed
 
