@@ -2389,6 +2389,8 @@ def parse_usd(
                 continue
 
             path = str(prim.GetPath())
+            if path.startswith("/Prototypes/"):
+                continue
             if any(re.match(pattern, path) for pattern in ignore_paths):
                 continue
 
@@ -2410,6 +2412,13 @@ def parse_usd(
                 add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
             else:
                 add_soft_mesh_kwargs["vertices"] = tetmesh.vertices * np.array(soft_mesh_scale, dtype=np.float32)
+
+            # Filter custom attributes to only those registered in the builder,
+            # matching the behavior of the rigid-body/joint import paths.
+            if tetmesh.custom_attributes:
+                tetmesh.custom_attributes = {
+                    k: v for k, v in tetmesh.custom_attributes.items() if k in builder.custom_attributes
+                }
 
             builder.add_soft_mesh(**add_soft_mesh_kwargs)
 
