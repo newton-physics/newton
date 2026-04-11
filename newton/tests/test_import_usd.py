@@ -6739,6 +6739,61 @@ def Xform "Body" (
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags & ShapeFlags.VISIBLE)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_primitive_collider_with_roughness_only_material_stays_hidden(self):
+        """Primitive (non-mesh) colliders must not become visible from roughness-only materials.
+
+        When a body already has visual shapes, ``show_collider_by_policy`` is
+        ``False``. Only ``collider_has_visual_material`` can promote a collider
+        to visible, and that promotion is restricted to mesh colliders only.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        usd_content = """#usda 1.0
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        # Add a collision box with a roughness-only PBR material.
+        box_prim = UsdGeom.Cube.Define(stage, "/Body/CollisionBox").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(box_prim)
+        material = UsdShade.Material.Define(stage, "/Materials/RoughnessOnly")
+        shader = UsdShade.Shader.Define(stage, "/Materials/RoughnessOnly/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.8)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(box_prim).Bind(material)
+
+        builder = newton.ModelBuilder()
+        # Default hide_collision_shapes=False so the MeshShape guard
+        # is the deciding factor, not the unconditional hide override.
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        collision_shape = path_shape_map["/Body/CollisionBox"]
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        # Primitive colliders should NOT be promoted to visible just because
+        # they have roughness metadata — only mesh colliders qualify.
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+
 
 class TestImportUsdMimicJoint(unittest.TestCase):
     """Tests for PhysxMimicJointAPI parsing during USD import."""

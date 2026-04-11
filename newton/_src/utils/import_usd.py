@@ -2139,10 +2139,10 @@ def parse_usd(
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = _get_material_props_cached(prim)
-                # The outer ``key in {...}`` guard already limits us to
-                # primitive/mesh shape types, so no need for a redundant set
-                # membership check here.
-                collider_has_visual_material = _has_visual_material_properties(material_props)
+                collider_has_visual_material = (
+                    key == UsdPhysics.ObjectType.MeshShape
+                    and _has_visual_material_properties(material_props)
+                )
 
                 # Explicit hide_collision_shapes overrides material-based visibility:
                 # if the body already has visual shapes, hide its colliders unconditionally.
