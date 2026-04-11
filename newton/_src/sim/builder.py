@@ -192,7 +192,7 @@ class ModelBuilder:
         return (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
 
     @staticmethod
-    def _normalize_shape_color(color: Vec3 | None) -> tuple[float, float, float] | None:
+    def _coerce_shape_color(color: Vec3 | None) -> tuple[float, float, float] | None:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
@@ -5288,11 +5288,11 @@ class ModelBuilder:
                 ~ShapeFlags.HYDROELASTIC
             )  # Falling back to mesh/primitive collisions for plane and hfield shapes
 
-        resolved_color = ModelBuilder._normalize_shape_color(color)
+        resolved_color = ModelBuilder._coerce_shape_color(color)
         if resolved_color is None and src is not None:
-            resolved_color = ModelBuilder._normalize_shape_color(getattr(src, "color", None))
+            resolved_color = ModelBuilder._coerce_shape_color(getattr(src, "color", None))
         if resolved_color is None:
-            resolved_color = ModelBuilder._normalize_shape_color(self.default_shape_color)
+            resolved_color = ModelBuilder._coerce_shape_color(self.default_shape_color)
         if resolved_color is None:
             resolved_color = ModelBuilder._shape_palette_color(shape)
 
