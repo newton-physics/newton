@@ -198,14 +198,27 @@ def build_model_randomized(n_worlds: int, seed: int = 42) -> newton.Model:
     return model
 
 
-def make_solver(model: newton.Model, tol: float = TOL) -> newton.solvers.SolverMuJoCoCENIC:
-    """CENIC solver with canonical contact-demo parameters."""
+def make_solver(
+    model: newton.Model,
+    tol: float = TOL,
+    dt_mode: str = "per_world",
+) -> newton.solvers.SolverMuJoCoCENIC:
+    """CENIC solver with canonical contact-demo parameters.
+
+    Args:
+        model: The model to simulate.
+        tol: Inf-norm error tolerance on joint_q per world.
+        dt_mode: ``"per_world"`` (default) or ``"global"``.  ``"global"`` forces
+            every world to share a single dt driven by the worst-case error,
+            used as a baseline for measuring the value of per-world adaptivity.
+    """
     return newton.solvers.SolverMuJoCoCENIC(
         model,
         tol=tol,
         dt_inner_init=DT_OUTER,
         dt_inner_min=DT_INNER_MIN,
         dt_inner_max=DT_OUTER,
+        dt_mode=dt_mode,
         nconmax=128,
         njmax=640,
     )

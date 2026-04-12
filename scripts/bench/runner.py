@@ -78,13 +78,13 @@ def _run_benchmark_subprocess(
         cmd.extend(["--steps", str(args["steps"])])
     if "warmup" in args and bench_name in ("scaling", "components", "initial_conditions"):
         cmd.extend(["--warmup", str(args["warmup"])])
-    if "trials" in args and bench_name == "accuracy":
+    if "trials" in args and bench_name in ("accuracy", "initial_conditions"):
         cmd.extend(["--trials", str(args["trials"])])
-    if "epsilons" in args and bench_name == "initial_conditions":
-        cmd.append("--epsilons")
-        cmd.extend(str(e) for e in args["epsilons"])
-    if "epsilon_sweep_n" in args and bench_name == "initial_conditions":
-        cmd.extend(["--epsilon-sweep-n", str(args["epsilon_sweep_n"])])
+    if "tols" in args and bench_name == "initial_conditions":
+        cmd.append("--tols")
+        cmd.extend(str(t) for t in args["tols"])
+    if "seed" in args and bench_name == "initial_conditions":
+        cmd.extend(["--seed", str(args["seed"])])
 
     print(f"\n{'=' * 60}", flush=True)
     print(f"Running benchmark: {bench_name}", flush=True)

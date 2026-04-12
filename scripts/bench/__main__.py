@@ -37,11 +37,11 @@ def main():
     parser.add_argument("--warmup", type=int, default=None,
                         help="Override warmup steps for scaling/components")
     parser.add_argument("--trials", type=int, default=None,
-                        help="Override trial count for accuracy")
-    parser.add_argument("--epsilons", type=float, nargs="+", default=None,
-                        help="Epsilon values for IC perturbation sweep")
-    parser.add_argument("--epsilon-sweep-n", type=int, default=None,
-                        help="Fixed N for epsilon sweep experiment")
+                        help="Override trial count for accuracy/initial_conditions")
+    parser.add_argument("--tols", type=float, nargs="+", default=None,
+                        help="Tolerance curves for initial_conditions sweep")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="RNG seed for randomized ICs in initial_conditions")
 
     args = parser.parse_args()
 
@@ -58,10 +58,10 @@ def main():
         bench_args["warmup"] = args.warmup
     if args.trials is not None:
         bench_args["trials"] = args.trials
-    if args.epsilons is not None:
-        bench_args["epsilons"] = sorted(args.epsilons)
-    if args.epsilon_sweep_n is not None:
-        bench_args["epsilon_sweep_n"] = args.epsilon_sweep_n
+    if args.tols is not None:
+        bench_args["tols"] = sorted(args.tols, reverse=True)
+    if args.seed is not None:
+        bench_args["seed"] = args.seed
 
     run(only=args.only, skip=args.skip, args=bench_args)
 

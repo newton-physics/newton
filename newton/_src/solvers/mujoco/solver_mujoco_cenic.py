@@ -242,6 +242,23 @@ def _status_sentinel_reset(out: wp.array(dtype=wp.float32)):
 
 
 @wp.kernel
+def _reset_error_scalar(out: wp.array(dtype=wp.float32)):
+    out[0] = wp.float32(0.0)
+
+
+@wp.kernel
+def _reduce_max_error(src: wp.array(dtype=wp.float32), out: wp.array(dtype=wp.float32)):
+    i = wp.tid()
+    wp.atomic_max(out, 0, src[i])
+
+
+@wp.kernel
+def _broadcast_error(scalar: wp.array(dtype=wp.float32), dst: wp.array(dtype=wp.float32)):
+    i = wp.tid()
+    dst[i] = scalar[0]
+
+
+@wp.kernel
 def _status_summary_kernel(
     sim_time: wp.array(dtype=wp.float32),
     last_error: wp.array(dtype=wp.float32),
@@ -294,6 +311,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         dt_inner_init: float = 0.01,
         dt_inner_min: float = 1e-6,
         dt_inner_max: float | None = None,
+        dt_mode: str = "per_world",
         **kwargs,
     ):
         """
@@ -306,8 +324,16 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             dt_inner_max: Maximum allowed inner timestep [s].  If None, clamped
                 to the ``dt_outer`` argument of each :meth:`step_dt` call
                 automatically so the inner step never overshoots the boundary.
+            dt_mode: ``"per_world"`` (default) lets each world pick its own dt
+                based on its own error.  ``"global"`` reduces error to the
+                worst-case (max) across worlds before the Drake controller,
+                forcing all worlds to march at a single shared dt.  Used to
+                measure the value of per-world adaptivity vs naive batched
+                adaptive stepping.
             **kwargs: Forwarded to :class:`SolverMuJoCo`.
         """
+        if dt_mode not in ("per_world", "global"):
+            raise ValueError(f"dt_mode must be 'per_world' or 'global', got {dt_mode!r}")
         super().__init__(model, separate_worlds=True, use_mujoco_cpu=False, **kwargs)
 
         world_count = model.world_count
@@ -324,6 +350,8 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._tol = float(tol)
         self._dt_min = float(dt_inner_min)
         self._dt_max = float(dt_inner_max) if dt_inner_max is not None else float("inf")
+        self._dt_mode = dt_mode
+        self._error_scalar = wp.zeros(1, dtype=wp.float32, device=device)
 
         self._scratch_full = model.state()
         self._scratch_mid = model.state()
@@ -409,6 +437,17 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             outputs=[self._last_error],
             device=dev,
         )
+
+        # Global dt mode: collapse per-world error to the worst case, broadcast
+        # back so the Drake controller produces one shared dt and one shared
+        # accept/reject decision for every world.
+        if self._dt_mode == "global":
+            wp.launch(_reset_error_scalar, dim=1,
+                      inputs=[self._error_scalar], device=dev)
+            wp.launch(_reduce_max_error, dim=n,
+                      inputs=[self._last_error, self._error_scalar], device=dev)
+            wp.launch(_broadcast_error, dim=n,
+                      inputs=[self._error_scalar, self._last_error], device=dev)
 
         wp.launch(
             _calc_adjusted_step,

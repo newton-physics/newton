@@ -1,0 +1,21 @@
+{
+    "contact_points": [
+        {
+            "id": [0, 1],
+            "description": "On the handle of the basket.",
+            "usage": "Used to hold or grip the basket."
+        }
+    ],
+    "functional_points": [
+        {
+            "id": 0,
+            "description": "Above one side of the basket.",
+            "usage": "Used to indicate other objects' positions when placed on the basket."
+        },
+        {
+            "id": 1,
+            "description": "Above the other side of the basket.",
+            "usage": "Used to indicate other objects' positions when placed on the basket."
+        }
+    ]
+}
