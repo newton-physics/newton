@@ -128,6 +128,22 @@ Deliverable:
 - Bench/test/supporting code on the private API branch reflects the single-path
   implementation instead of the old ablation-heavy surface.
 
+Progress update (2026-04-13, pass 3):
+- Searched the branch for leftover private FeatherPGS callers and stale
+  constructor knobs (`pgs_mode`, per-stage kernel selectors). No branch-local
+  tests, helpers, or docs outside the focused private test and PR draft still
+  referenced the removed surface.
+- Milestone 3 therefore closes as a support-surface verification pass rather
+  than a broad code-edit pass: the earlier solver cleanup already left the
+  private branch with one surviving test entry point in
+  `newton/tests/test_feather_pgs.py`, and no extra helper or benchmark cleanup
+  was required on this branch.
+- Validation:
+  - `uv run --extra dev -m newton.tests -k test_feather_pgs` -> passed
+    (`Ran 2 tests in 14.754s`, `OK`).
+  - `uvx pre-commit run -a` -> passed (`ruff`, `ruff format`, `uv-lock`,
+    `typos`, and `check warp array syntax`).
+
 Required work:
 - Update any tests, helper code, or branch-local references that still assume
   mode or kernel multiplicity.
@@ -199,6 +215,12 @@ Checkpoint:
   kernel commentary so the private branch reflects one coherent articulated +
   free-rigid winner path. After that push, stop before Milestone 3 and leave
   supporting-surface cleanup plus final validation recording for later passes.
+- Replan update (2026-04-13, pass 3):
+  A branch-wide search found no remaining private FeatherPGS callers or
+  support-code references to the removed constructor knobs outside the focused
+  private test and PR draft already added in prior passes. This pass therefore
+  closes Milestone 3 by recording that no further branch-local support-surface
+  edits are needed, then stops before the final validation milestone.
 - If a milestone is too large to finish cleanly, begin the pass by tightening
   this ExecPlan with a short replan note and then complete one reviewable slice
   of that milestone.
