@@ -104,3 +104,17 @@ __all__ += [
     "load_texture",
     "normalize_texture",
 ]
+
+# ==================================================================================
+# color utils
+# ==================================================================================
+
+from ._src.utils.color import (  # noqa: E402
+    linear_to_srgb_rgb,
+    srgb_to_linear_rgb,
+)
+
+__all__ += [
+    "linear_to_srgb_rgb",
+    "srgb_to_linear_rgb",
+]

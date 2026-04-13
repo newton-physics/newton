@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian, GeoType
+from ...utils.color import linear_to_srgb_wp
 from . import lighting, raytrace, textures, tiling
 from .types import MeshData, RenderOrder, TextureData
 
@@ -194,7 +195,10 @@ def create_kernel(
                     albedo_color = wp.cw_mul(albedo_color, tex_color)
 
         if wp.static(state.render_albedo):
-            out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo_color, 1.0)
+            packed_albedo = albedo_color
+            if wp.static(config.encode_output_srgb):
+                packed_albedo = linear_to_srgb_wp(packed_albedo)
+            out_albedo[out_index] = tiling.pack_rgba_to_uint32(packed_albedo, 1.0)
 
         if not wp.static(state.render_color):
             return
@@ -243,6 +247,9 @@ def create_kernel(
                 )
                 shaded_color = shaded_color + albedo_color * light_contribution
 
-        out_color[out_index] = tiling.pack_rgba_to_uint32(shaded_color, 1.0)
+        packed_color = shaded_color
+        if wp.static(config.encode_output_srgb):
+            packed_color = linear_to_srgb_wp(packed_color)
+        out_color[out_index] = tiling.pack_rgba_to_uint32(packed_color, 1.0)
 
     return render_megakernel

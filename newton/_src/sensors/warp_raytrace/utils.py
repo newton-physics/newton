@@ -160,7 +160,10 @@ class Utils:
             camera_count: Number of cameras.
 
         Returns:
-            Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
+            Array of shape ``(world_count, camera_count, height, width)``,
+            dtype ``uint32``. Each pixel stores packed RGBA bytes in either
+            display/sRGB or linear space depending on
+            ``render_config.encode_output_srgb``.
         """
         return wp.zeros(
             (self.__render_context.world_count, camera_count, height, width),
@@ -228,7 +231,10 @@ class Utils:
             camera_count: Number of cameras.
 
         Returns:
-            Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
+            Array of shape ``(world_count, camera_count, height, width)``,
+            dtype ``uint32``. Each pixel stores packed RGBA bytes in either
+            display/sRGB or linear space depending on
+            ``render_config.encode_output_srgb``.
         """
         return wp.zeros(
             (self.__render_context.world_count, camera_count, height, width),
@@ -338,7 +344,10 @@ class Utils:
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
         Args:
-            image: Color output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
+            image: Color output from :meth:`~SensorTiledCamera.update`, shape
+                ``(world_count, camera_count, height, width)``. The packed
+                bytes are copied as-is; no additional color-space conversion is
+                performed here.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """

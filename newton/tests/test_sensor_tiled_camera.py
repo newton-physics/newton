@@ -9,10 +9,30 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.utils.color import linear_to_srgb_rgb
 from newton.sensors import SensorTiledCamera
 
 
 class TestSensorTiledCamera(unittest.TestCase):
+    @staticmethod
+    def _unpack_rgba(pixel: np.uint32) -> np.ndarray:
+        value = int(pixel)
+        return np.array(
+            [
+                value & 0xFF,
+                (value >> 8) & 0xFF,
+                (value >> 16) & 0xFF,
+                (value >> 24) & 0xFF,
+            ],
+            dtype=np.uint8,
+        )
+
+    def _build_single_sphere_scene(self, color: tuple[float, float, float]):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()), label="sphere")
+        builder.add_shape_sphere(body, radius=0.75, color=color)
+        return builder.finalize(device="cpu")
+
     def __build_scene(self):
         from pxr import Usd, UsdGeom
 
@@ -164,6 +184,35 @@ class TestSensorTiledCamera(unittest.TestCase):
         tiled_camera_sensor.update(model.state(), camera_transforms, camera_rays, color_image=None, depth_image=None)
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
+
+    def test_albedo_output_can_remain_linear(self):
+        color = (0.25, 0.5, 0.75)
+        model = self._build_single_sphere_scene(color)
+
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+
+        for encode_output_srgb in (True, False):
+            sensor = SensorTiledCamera(
+                model=model,
+                config=SensorTiledCamera.RenderConfig(encode_output_srgb=encode_output_srgb),
+            )
+            camera_rays = sensor.utils.compute_pinhole_camera_rays(1, 1, math.radians(30.0))
+            albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=1)
+            sensor.update(model.state(), camera_transforms, camera_rays, albedo_image=albedo_image)
+
+            packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
+            expected_rgb = (
+                np.clip(np.asarray(linear_to_srgb_rgb(color)) * 255.0, 0.0, 255.0).astype(np.uint8)
+                if encode_output_srgb
+                else np.clip(np.asarray(color) * 255.0, 0.0, 255.0).astype(np.uint8)
+            )
+
+            np.testing.assert_array_equal(packed[:3], expected_rgb)
+            self.assertEqual(packed[3], 255)
 
 
 if __name__ == "__main__":
