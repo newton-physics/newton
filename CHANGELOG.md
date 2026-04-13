@@ -151,6 +151,7 @@
 - Fix SDF hydroelastic broadphase scatter kernel using a grid-stride loop with binary search instead of per-pair thread launch
 - Fix `SensorRaycast` ignoring `PLANE` geometry
 - Fix box support-map sign flips from quaternion rotation noise (~1e-14) producing invalid GJK/MPR contacts for face-touching boxes with non-trivial base rotations
+- Fix multi-world coordinate conversion using the wrong body center of mass for replicated worlds
 
 ## [1.0.0] - 2026-03-10
 
