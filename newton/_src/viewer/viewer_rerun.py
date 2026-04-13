@@ -167,6 +167,7 @@ class ViewerRerun(ViewerBase):
 
         # Store mesh data for instances
         self._meshes = {}
+        self._visible_meshes = set()
         self._instances = {}
 
         # Store scalar data for logging
@@ -258,6 +259,7 @@ class ViewerRerun(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
     ):
         """
         Log a mesh to rerun for visualization.
@@ -277,6 +279,7 @@ class ViewerRerun(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
         """
         name = self._qualify(name)
 
@@ -337,6 +340,9 @@ class ViewerRerun(ViewerBase):
         }
 
         if hidden:
+            if name in self._visible_meshes:
+                rr.log(name, rr.Clear(recursive=False))
+                self._visible_meshes.discard(name)
             return
 
         mesh_kwargs = {
@@ -356,6 +362,7 @@ class ViewerRerun(ViewerBase):
         mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)
 
         rr.log(name, mesh_3d, static=static)
+        self._visible_meshes.add(name)
 
     @override
     def log_instances(
@@ -435,6 +442,7 @@ class ViewerRerun(ViewerBase):
 
             # hide the reference mesh
             rr.log(mesh, rr.Clear(recursive=False))
+            self._visible_meshes.discard(mesh)
 
         # Convert transforms and properties to numpy
         if xforms is not None:

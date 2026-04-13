@@ -158,7 +158,7 @@ def fill_line_vertex_data(
 class MeshGL:
     """Encapsulates mesh data and OpenGL buffers for a shape."""
 
-    def __init__(self, num_points, num_indices, device, hidden=False, backface_culling=True):
+    def __init__(self, num_points, num_indices, device, hidden=False, backface_culling=True, dynamic=False):
         """Initialize mesh data with vertices and indices."""
         gl = RendererGL.gl
 
@@ -169,6 +169,7 @@ class MeshGL:
         self.device = device
         self.hidden = hidden
         self.backface_culling = backface_culling
+        self.dynamic = dynamic
 
         self.vertices = wp.zeros(num_points, dtype=RenderVertex, device=self.device)
         self.indices = None
@@ -181,6 +182,8 @@ class MeshGL:
 
         self.vbo_size = self.vertex_byte_size * num_points
         self.ebo_size = self.index_byte_size * num_indices
+
+        ebo_usage = gl.GL_DYNAMIC_DRAW if dynamic else gl.GL_STATIC_DRAW
 
         # Create OpenGL buffers
         self.vao = gl.GLuint()
@@ -195,7 +198,7 @@ class MeshGL:
         self.ebo = gl.GLuint()
         gl.glGenBuffers(1, self.ebo)
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
-        gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo_size, None, gl.GL_STATIC_DRAW)
+        gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo_size, None, ebo_usage)
 
         # positions (location 0)
         gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, self.vertex_byte_size, ctypes.c_void_p(0))
@@ -270,16 +273,14 @@ class MeshGL:
 
         self._points = points
 
-        # only update indices the first time (no topology changes)
-        if self.indices is None:
+        if self.indices is None or self.dynamic:
             self.indices = wp.clone(indices).view(dtype=wp.uint32)
             self.num_indices = int(len(self.indices))
 
+            ebo_usage = gl.GL_DYNAMIC_DRAW if self.dynamic else gl.GL_STATIC_DRAW
             host_indices = self.indices.numpy()
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
-            gl.glBufferData(
-                gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, gl.GL_STATIC_DRAW
-            )
+            gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, ebo_usage)
 
         # If normals are missing, compute them before packing vertex data.
         if points is not None and normals is None:
