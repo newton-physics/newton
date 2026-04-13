@@ -50,7 +50,6 @@ from .kernels import (
     compute_com_transforms,
     compute_composite_inertia,
     compute_contact_linear_force_from_impulses,
-    compute_delta_and_accumulate,
     compute_mf_body_Hinv,
     compute_mf_effective_mass_and_rhs,
     compute_mf_world_dof_offsets,
@@ -89,16 +88,15 @@ from .kernels import (
     update_articulation_root_com_offsets,
     update_body_qd_from_featherstone,
     update_qdd_from_velocity,
-    vector_add_inplace,
 )
 
 
 @wp.kernel
 def localize_parent_indices(
-    counts: wp.array(dtype=int),
+    counts: wp.array[int],
     max_constraints: int,
-    parent_arr: wp.array(dtype=int),
-    parent_local_arr: wp.array(dtype=int),
+    parent_arr: wp.array[int],
+    parent_local_arr: wp.array[int],
 ):
     art = wp.tid()
     m = counts[art]
@@ -117,6 +115,9 @@ class SolverFeatherPGS(SolverBase):
     """A semi-implicit integrator using symplectic Euler that operates
     on reduced (also called generalized) coordinates to simulate articulated rigid body dynamics
     based on Featherstone's composite rigid body algorithm (CRBA).
+
+    This private solver branch keeps only the matrix-free contact solve path and
+    the current winner kernel strategy.
 
     See: Featherstone, Roy. Rigid Body Dynamics Algorithms. Springer US, 2014.
 
@@ -173,19 +174,7 @@ class SolverFeatherPGS(SolverBase):
         pgs_omega: float = 1.0,
         dense_max_constraints: int = 32,
         pgs_warmstart: bool = False,
-        pgs_mode: str = "split",
         mf_max_constraints: int = 512,
-        # Kernel selection per operation
-        cholesky_kernel: str = "auto",
-        trisolve_kernel: str = "auto",
-        hinv_jt_kernel: str = "auto",
-        delassus_kernel: str = "auto",
-        pgs_kernel: str = "tiled_row",
-        # Streaming kernel chunk sizes (None = auto-select)
-        delassus_chunk_size: int | None = None,
-        pgs_chunk_size: int | None = None,
-        # Auto selection threshold
-        small_dof_threshold: int = 12,
         # Parallelism options
         use_parallel_streams: bool = True,
         double_buffer: bool = True,
@@ -200,9 +189,7 @@ class SolverFeatherPGS(SolverBase):
             friction_smoothing (float, optional): The delta value for the Huber norm (see :func:`warp.math.norm_huber`) used for the friction velocity normalization. Defaults to 1.0.
             enable_contact_friction (bool, optional): Enables Coulomb friction contacts inside the PGS solve. Defaults to True.
             enable_joint_limits (bool, optional): Enforce joint position limits as unilateral PGS
-                constraints.  Each violated limit adds one constraint row.  Supported with
-                ``pgs_kernel="loop"`` and ``pgs_kernel="tiled_row"``; the ``"tiled_contact"``
-                and ``"streaming"`` PGS kernels are *not* compatible.  Defaults to False.
+                constraints. Each violated limit adds one constraint row. Defaults to False.
             pgs_iterations (int, optional): Number of Gauss-Seidel iterations to apply per frame. Defaults to 12.
             pgs_beta (float, optional): ERP style position correction factor. Defaults to 0.2.
             pgs_cfm (float, optional): Compliance/regularization added to the Delassus diagonal. Defaults to 1.0e-6.
@@ -210,39 +197,13 @@ class SolverFeatherPGS(SolverBase):
                 only to dense articulated contact rows. Converted to an impulse-space diagonal
                 term using ``compliance / dt^2``. Defaults to 0.0.
             pgs_omega (float, optional): Successive over-relaxation factor for the PGS sweep. Defaults to 1.0.
-            dense_max_constraints (int, optional): Maximum number of dense (articulation) contact constraint
+            dense_max_constraints (int, optional): Maximum number of articulated contact constraint
                 rows stored per world. Free rigid body contacts are stored separately, bounded by
                 mf_max_constraints. Defaults to 32.
             pgs_warmstart (bool, optional): Re-use impulses from the previous frame when contacts persist. Defaults to False.
-            pgs_mode (str, optional): PGS mode. "dense" builds the full Delassus matrix C = J*H^{-1}*J^T
-                and solves in impulse space (Gauss-Seidel) for all contacts. "split" uses the dense
-                path for articulated bodies and a cheaper matrix-free PGS path for free rigid body
-                contacts. "matrix_free" skips C entirely, recomputes J*v each iteration, and uses only
-                the diagonal for preconditioning — O(max_constraints) memory instead of
-                O(max_constraints^2). Defaults to "split".
             mf_max_constraints (int, optional): Maximum number of matrix-free constraints per world. Defaults to 512.
-            cholesky_kernel (str, optional): "tiled", "loop", or "auto" for Cholesky factorization. Defaults to "auto".
-            trisolve_kernel (str, optional): "tiled", "loop", or "auto" for triangular solve. Defaults to "auto".
-            hinv_jt_kernel (str, optional): "tiled", "par_row", or "auto" for H^{-1}J^T. Defaults to "auto".
-            delassus_kernel (str, optional): "tiled", "par_row_col", or "auto" for Delassus accumulation
-                (C = J * H^{-1} * J^T). "tiled" uses a streaming CUDA kernel that chunks shared memory
-                and scales to any constraint count. "par_row_col" launches one thread per matrix element.
-                "auto" selects "tiled" when DOFs exceed the threshold. Defaults to "auto".
-            pgs_kernel (str, optional): "loop", "tiled_row", or "tiled_contact" for PGS solve. Defaults to "tiled_row".
-            delassus_chunk_size (int, optional): Chunk size (in constraint rows) for the streaming Delassus
-                kernel. Controls how many rows of J and Y are loaded into shared memory at once.
-                None selects automatically based on shared memory heuristics. Defaults to None.
-            pgs_chunk_size (int, optional): Chunk size (in contacts, i.e. groups of 3 constraint rows)
-                for the streaming PGS kernel. Controls how many block-rows of the Delassus matrix are
-                preloaded into shared memory at once. 1 = current streaming behavior (one block-row
-                at a time). None defaults to 1. Defaults to None.
-            small_dof_threshold (int, optional): DOF threshold for "auto" kernel selection. Defaults to 12.
             use_parallel_streams (bool, optional): Dispatch size groups on separate CUDA streams.
                 Defaults to True.
-        Auto selection behavior:
-            - auto: size > threshold -> tiled, else loop/par_row.
-            - Delassus auto/tiled: streaming kernel (handles any constraint count via chunking).
-
         """
         super().__init__(model)
 
@@ -258,42 +219,15 @@ class SolverFeatherPGS(SolverBase):
         self.pgs_omega = pgs_omega
         self.dense_max_constraints = dense_max_constraints
         self.pgs_warmstart = pgs_warmstart
-        if pgs_mode not in ("dense", "split", "matrix_free"):
-            raise ValueError(f"pgs_mode must be 'dense', 'split', or 'matrix_free', got {pgs_mode!r}")
-        self.pgs_mode = pgs_mode
         self.mf_max_constraints = mf_max_constraints
         self._double_buffer = double_buffer
         self._nvtx = nvtx
         self.pgs_debug = pgs_debug
         self._pgs_convergence_log: list[np.ndarray] = []
-        valid_cholesky = {"tiled", "loop", "auto"}
-        if cholesky_kernel not in valid_cholesky:
-            raise ValueError(f"cholesky_kernel must be one of {sorted(valid_cholesky)}")
-
-        valid_trisolve = {"tiled", "loop", "auto"}
-        if trisolve_kernel not in valid_trisolve:
-            raise ValueError(f"trisolve_kernel must be one of {sorted(valid_trisolve)}")
-
-        valid_hinv_jt = {"tiled", "par_row", "auto"}
-        if hinv_jt_kernel not in valid_hinv_jt:
-            raise ValueError(f"hinv_jt_kernel must be one of {sorted(valid_hinv_jt)}")
-
-        valid_delassus = {"tiled", "par_row_col", "auto"}
-        if delassus_kernel not in valid_delassus:
-            raise ValueError(f"delassus_kernel must be one of {sorted(valid_delassus)}")
-
-        valid_pgs = {"loop", "tiled_row", "tiled_contact", "streaming"}
-        if pgs_kernel not in valid_pgs:
-            raise ValueError(f"pgs_kernel must be one of {sorted(valid_pgs)}")
-
-        self.cholesky_kernel = cholesky_kernel
-        self.trisolve_kernel = trisolve_kernel
-        self.hinv_jt_kernel = hinv_jt_kernel
-        self.delassus_kernel = delassus_kernel
-        self.pgs_kernel = pgs_kernel
-        self.delassus_chunk_size = delassus_chunk_size
-        self.pgs_chunk_size = pgs_chunk_size if pgs_chunk_size is not None else 1
-        self.small_dof_threshold = small_dof_threshold
+        self.small_dof_threshold = 12
+        self.delassus_chunk_size = None
+        self.pgs_chunk_size = 1
+        self.pgs_kernel = "tiled_row"
         self.use_parallel_streams = use_parallel_streams
 
         self._step = 0
@@ -807,34 +741,20 @@ class SolverFeatherPGS(SolverBase):
         requires_grad = model.requires_grad
         max_constraints = self.dense_max_constraints
 
-        # Per-world constraint matrices and vectors
-        if self.pgs_mode != "matrix_free":
-            self.C = wp.zeros(
-                (self.world_count, max_constraints, max_constraints),
-                dtype=wp.float32,
-                device=device,
-                requires_grad=requires_grad,
-            )
-        else:
-            self.C = None
-
-        if self.pgs_mode == "matrix_free":
-            self._compute_world_dof_mapping(model)
-            self.J_world = wp.zeros(
-                (self.world_count, max_constraints, self.max_world_dofs),
-                dtype=wp.float32,
-                device=device,
-                requires_grad=requires_grad,
-            )
-            self.Y_world = wp.zeros(
-                (self.world_count, max_constraints, self.max_world_dofs),
-                dtype=wp.float32,
-                device=device,
-                requires_grad=requires_grad,
-            )
-        else:
-            self.J_world = None
-            self.Y_world = None
+        self.C = None
+        self._compute_world_dof_mapping(model)
+        self.J_world = wp.zeros(
+            (self.world_count, max_constraints, self.max_world_dofs),
+            dtype=wp.float32,
+            device=device,
+            requires_grad=requires_grad,
+        )
+        self.Y_world = wp.zeros(
+            (self.world_count, max_constraints, self.max_world_dofs),
+            dtype=wp.float32,
+            device=device,
+            requires_grad=requires_grad,
+        )
 
         self.rhs = wp.zeros(
             (self.world_count, max_constraints), dtype=wp.float32, device=device, requires_grad=requires_grad
@@ -876,7 +796,7 @@ class SolverFeatherPGS(SolverBase):
 
     def _allocate_mf_buffers(self, model):
         """Allocate buffers for matrix-free PGS path for free rigid body contacts."""
-        if self.pgs_mode == "dense" or (not self._has_free_rigid_bodies and self.pgs_mode != "matrix_free"):
+        if not self._has_free_rigid_bodies:
             return
 
         device = model.device
@@ -1074,9 +994,7 @@ class SolverFeatherPGS(SolverBase):
         with wp.ScopedTimer("S2_Cholesky", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
             for size, ctx in self._for_sizes(enabled=self.use_parallel_streams):
                 with ctx:
-                    use_tiled = (self.cholesky_kernel == "tiled") or (
-                        self.cholesky_kernel == "auto" and size > self.small_dof_threshold
-                    )
+                    use_tiled = size > self.small_dof_threshold
                     if use_tiled:
                         self._stage2_cholesky_tiled(size)
                     else:
@@ -1088,9 +1006,7 @@ class SolverFeatherPGS(SolverBase):
             self._stage3_zero_qdd(state_aug)
             for size, ctx in self._for_sizes(enabled=self.use_parallel_streams):
                 with ctx:
-                    use_tiled = (self.trisolve_kernel == "tiled") or (
-                        self.trisolve_kernel == "auto" and size > self.small_dof_threshold
-                    )
+                    use_tiled = size > self.small_dof_threshold
                     if use_tiled:
                         self._stage3_trisolve_tiled(size, state_aug)
                     else:
@@ -1107,95 +1023,45 @@ class SolverFeatherPGS(SolverBase):
         with wp.ScopedTimer("S4_ContactBuild", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
             self._stage4_build_rows(state_in, state_aug, contacts)
 
-        if self.pgs_mode == "matrix_free":
-            # Compute Y = H^-1 * J^T only (no Delassus C)
-            with wp.ScopedTimer("S4_HinvJt_Diag_RHS", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
-                for size, ctx in self._for_sizes(enabled=self.use_parallel_streams):
-                    with ctx:
-                        use_tiled = (self.hinv_jt_kernel == "tiled") or (
-                            self.hinv_jt_kernel == "auto" and size > self.small_dof_threshold
-                        )
-                        if use_tiled:
-                            self._stage4_hinv_jt_tiled(size)
-                        else:
-                            self._stage4_hinv_jt_par_row(size)
-
-                # Diagonal from J*Y (no full Delassus)
-                self.diag.zero_()
-                for size in self.size_groups:
-                    self._stage4_diag_from_JY(size)
-                self._stage4_finalize_world_diag_cfm()
-                self._stage4_add_dense_contact_compliance(dt)
-
-                # RHS = bias only (J*v recomputed per iteration)
-                self._stage4_compute_rhs_world(dt)
-                # NOTE: skip _stage4_accumulate_rhs_world — J*v_hat not baked into rhs
-
-            # MF: compute mf_MiJt, mf_rhs, mf_eff_mass_inv, body maps
-            if self._has_free_rigid_bodies:
-                with wp.ScopedTimer("S4_MF_Setup", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
-                    self._mf_pgs_setup(state_aug, dt)
-
-                    # MF: compute world-relative DOF offsets for two-phase GS kernel
-                    wp.launch(
-                        compute_mf_world_dof_offsets,
-                        dim=self.world_count * self.mf_max_constraints,
-                        inputs=[
-                            self.mf_constraint_count,
-                            self.mf_body_a,
-                            self.mf_body_b,
-                            self.body_to_articulation,
-                            self.articulation_dof_start,
-                            self.world_dof_start,
-                            self.mf_max_constraints,
-                        ],
-                        outputs=[self.mf_dof_a, self.mf_dof_b],
-                        device=self.model.device,
-                    )
-
-        else:
-            # Existing Delassus path (unchanged)
-            fused_ok = (
-                self._is_one_art_per_world
-                and self.hinv_jt_kernel != "par_row"
-                and all(
-                    (self.hinv_jt_kernel == "tiled")
-                    or (self.hinv_jt_kernel == "auto" and size > self.small_dof_threshold)
-                    for size in self.size_groups
-                )
-            )
-
-            if fused_ok:
-                for size, ctx in self._for_sizes(enabled=self.use_parallel_streams):
-                    with ctx:
-                        self._stage4_hinv_jt_tiled_fused(size)
-            else:
-                self._stage4_zero_world_C()
-
-                for size, ctx in self._for_sizes(enabled=self.use_parallel_streams):
-                    with ctx:
-                        use_tiled = (self.hinv_jt_kernel == "tiled") or (
-                            self.hinv_jt_kernel == "auto" and size > self.small_dof_threshold
-                        )
-                        if use_tiled:
-                            self._stage4_hinv_jt_tiled(size)
-                        else:
-                            self._stage4_hinv_jt_par_row(size)
-
-                for size in self.size_groups:
-                    use_tiled_delassus = self.delassus_kernel != "par_row_col"
-                    if use_tiled_delassus:
-                        self._stage4_delassus_tiled(size)
+        with wp.ScopedTimer("S4_HinvJt_Diag_RHS", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
+            for size, ctx in self._for_sizes(enabled=self.use_parallel_streams):
+                with ctx:
+                    use_tiled = size > self.small_dof_threshold
+                    if use_tiled:
+                        self._stage4_hinv_jt_tiled(size)
                     else:
-                        self._stage4_delassus_par_row_col(size)
+                        self._stage4_hinv_jt_par_row(size)
 
-                self._stage4_finalize_world_diag_cfm()
-
-            self._stage4_add_dense_contact_compliance(dt)
-            self._stage4_compute_rhs_world(dt)
-
+            # Diagonal from J*Y (no full Delassus)
+            self.diag.zero_()
             for size in self.size_groups:
-                self._stage4_accumulate_rhs_world(size)
+                self._stage4_diag_from_JY(size)
+            self._stage4_finalize_world_diag_cfm()
+            self._stage4_add_dense_contact_compliance(dt)
+
+            # RHS = bias only (J*v recomputed per iteration)
+            self._stage4_compute_rhs_world(dt)
+            # NOTE: skip _stage4_accumulate_rhs_world — J*v_hat not baked into rhs
+
+        if self._has_free_rigid_bodies:
+            with wp.ScopedTimer("S4_MF_Setup", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
+                self._mf_pgs_setup(state_aug, dt)
+
+                wp.launch(
+                    compute_mf_world_dof_offsets,
+                    dim=self.world_count * self.mf_max_constraints,
+                    inputs=[
+                        self.mf_constraint_count,
+                        self.mf_body_a,
+                        self.mf_body_b,
+                        self.body_to_articulation,
+                        self.articulation_dof_start,
+                        self.world_dof_start,
+                        self.mf_max_constraints,
+                    ],
+                    outputs=[self.mf_dof_a, self.mf_dof_b],
+                    device=self.model.device,
+                )
 
         # ══════════════════════════════════════════════════════════════
         # STAGE 5+6: PGS solve
@@ -1203,155 +1069,67 @@ class SolverFeatherPGS(SolverBase):
         with wp.ScopedTimer("S5_PGS_Prep", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
             self._stage5_prepare_impulses_world()
 
-        if self.pgs_mode == "matrix_free":
-            with wp.ScopedTimer("S5_GatherJY", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
-                # Gather J/Y from per-size-group arrays into world-indexed arrays
-                # No J_world/Y_world zeroing needed: gather writes all DOFs unconditionally
-                for size in self.size_groups:
-                    n_arts = self.n_arts_by_size[size]
-                    wp.launch(
-                        gather_JY_to_world,
-                        dim=int(n_arts * self.dense_max_constraints * size),
-                        inputs=[
-                            self.group_to_art[size],
-                            self.art_to_world,
-                            self.articulation_dof_start,
-                            self.constraint_count,
-                            self.world_dof_start,
-                            self.J_by_size[size],
-                            self.Y_by_size[size],
-                            size,
-                            self.dense_max_constraints,
-                            n_arts,
-                        ],
-                        outputs=[self.J_world, self.Y_world],
-                        device=self.model.device,
-                    )
-
-                # Initialize v_out = v_hat before GS loop
-                self._stage6_prepare_world_velocity()
-
-                # Pack MF metadata into int4 structs for coalesced 128-bit loads
-                pack_kernel = TiledKernelFactory.get_pack_mf_meta_kernel(self.mf_max_constraints, self.model.device)
-                wp.launch_tiled(
-                    pack_kernel,
-                    dim=[self.world_count],
+        with wp.ScopedTimer("S5_GatherJY", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
+            for size in self.size_groups:
+                n_arts = self.n_arts_by_size[size]
+                wp.launch(
+                    gather_JY_to_world,
+                    dim=int(n_arts * self.dense_max_constraints * size),
                     inputs=[
-                        self.mf_constraint_count,
-                        self.mf_dof_a,
-                        self.mf_dof_b,
-                        self.mf_eff_mass_inv,
-                        self.mf_rhs,
-                        self.mf_row_type,
-                        self.mf_row_parent,
+                        self.group_to_art[size],
+                        self.art_to_world,
+                        self.articulation_dof_start,
+                        self.constraint_count,
+                        self.world_dof_start,
+                        self.J_by_size[size],
+                        self.Y_by_size[size],
+                        size,
+                        self.dense_max_constraints,
+                        n_arts,
                     ],
-                    outputs=[self.mf_meta_packed],
-                    block_dim=32,
+                    outputs=[self.J_world, self.Y_world],
                     device=self.model.device,
                 )
 
-            # Two-phase GS kernel: split-style dense + MF in one pass
-            with wp.ScopedTimer("S6_PGS_Solve", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
-                mf_gs_kernel = TiledKernelFactory.get_pgs_solve_mf_gs_kernel(
-                    self.dense_max_constraints,
-                    self.mf_max_constraints,
-                    self.max_world_dofs,
-                    self.model.device,
-                )
+            self._stage6_prepare_world_velocity()
 
-                if self.pgs_debug:
-                    self._pgs_convergence_log.append([])
-                    for _pgs_dbg_iter in range(self.pgs_iterations):
-                        # Snapshot impulses before this iteration
-                        wp.copy(self._diag_prev_impulses, self.impulses)
-                        if self._diag_prev_mf_impulses is not None:
-                            wp.copy(self._diag_prev_mf_impulses, self.mf_impulses)
+            pack_kernel = TiledKernelFactory.get_pack_mf_meta_kernel(self.mf_max_constraints, self.model.device)
+            wp.launch_tiled(
+                pack_kernel,
+                dim=[self.world_count],
+                inputs=[
+                    self.mf_constraint_count,
+                    self.mf_dof_a,
+                    self.mf_dof_b,
+                    self.mf_eff_mass_inv,
+                    self.mf_rhs,
+                    self.mf_row_type,
+                    self.mf_row_parent,
+                ],
+                outputs=[self.mf_meta_packed],
+                block_dim=32,
+                device=self.model.device,
+            )
 
-                        # Run 1 iteration
-                        wp.launch_tiled(
-                            mf_gs_kernel,
-                            dim=[self.world_count],
-                            inputs=[
-                                self.constraint_count,
-                                self.world_dof_start,
-                                self.rhs,
-                                self.diag,
-                                self.impulses,
-                                self.J_world,
-                                self.Y_world,
-                                self.row_type,
-                                self.row_parent,
-                                self.row_mu,
-                                self.mf_constraint_count,
-                                self.mf_meta_packed,
-                                self.mf_impulses,
-                                self.mf_J_a,
-                                self.mf_J_b,
-                                self.mf_MiJt_a,
-                                self.mf_MiJt_b,
-                                self.mf_row_mu,
-                                1,  # iterations=1
-                                self.pgs_omega,
-                            ],
-                            outputs=[self.v_out],
-                            block_dim=32,
-                            device=self.model.device,
-                        )
+        with wp.ScopedTimer("S6_PGS_Solve", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
+            mf_gs_kernel = TiledKernelFactory.get_pgs_solve_mf_gs_kernel(
+                self.dense_max_constraints,
+                self.mf_max_constraints,
+                self.max_world_dofs,
+                self.model.device,
+            )
 
-                        # Diagnostic kernel
-                        wp.launch(
-                            pgs_convergence_diagnostic_velocity,
-                            dim=self.world_count,
-                            inputs=[
-                                self.constraint_count,
-                                self.world_dof_start,
-                                self.rhs,
-                                self.impulses,
-                                self._diag_prev_impulses,
-                                self.row_type,
-                                self.row_parent,
-                                self.row_mu,
-                                self.J_world,
-                                self.dense_max_constraints,
-                                self.max_world_dofs,
-                                self.mf_constraint_count,
-                                self.mf_rhs,
-                                self.mf_impulses,
-                                self._diag_prev_mf_impulses,
-                                self.mf_row_type,
-                                self.mf_row_parent,
-                                self.mf_row_mu,
-                                self.mf_J_a,
-                                self.mf_J_b,
-                                self.mf_dof_a,
-                                self.mf_dof_b,
-                                self.mf_max_constraints,
-                                self.v_out,
-                            ],
-                            outputs=[self._diag_metrics],
-                            device=self.model.device,
-                        )
+            if self.pgs_debug:
+                self._pgs_convergence_log.append([])
+                for _pgs_dbg_iter in range(self.pgs_iterations):
+                    wp.copy(self._diag_prev_impulses, self.impulses)
+                    if self._diag_prev_mf_impulses is not None:
+                        wp.copy(self._diag_prev_mf_impulses, self.mf_impulses)
 
-                        # Sync and reduce across worlds
-                        metrics_np = self._diag_metrics.numpy()
-                        row = np.array(
-                            [
-                                np.max(metrics_np[:, 0]),  # max|delta_lambda|
-                                np.sum(metrics_np[:, 1]),  # complementarity gap
-                                np.sum(metrics_np[:, 2]),  # tangent residual
-                                np.sum(metrics_np[:, 3]),  # FB merit
-                            ]
-                        )
-                        self._pgs_convergence_log[-1].append(row)
-
-                    self._pgs_convergence_log[-1] = np.array(self._pgs_convergence_log[-1])
-
-                else:
                     wp.launch_tiled(
                         mf_gs_kernel,
                         dim=[self.world_count],
                         inputs=[
-                            # Dense
                             self.constraint_count,
                             self.world_dof_start,
                             self.rhs,
@@ -1362,7 +1140,6 @@ class SolverFeatherPGS(SolverBase):
                             self.row_type,
                             self.row_parent,
                             self.row_mu,
-                            # MF
                             self.mf_constraint_count,
                             self.mf_meta_packed,
                             self.mf_impulses,
@@ -1371,90 +1148,90 @@ class SolverFeatherPGS(SolverBase):
                             self.mf_MiJt_a,
                             self.mf_MiJt_b,
                             self.mf_row_mu,
-                            # Shared
-                            self.pgs_iterations,
+                            1,
                             self.pgs_omega,
                         ],
                         outputs=[self.v_out],
                         block_dim=32,
                         device=self.model.device,
                     )
-        elif self.pgs_mode == "split" and self._has_mixed_contacts:
-            # Split mode with mixed contacts: interleaved dense and MF, 1 iteration each
-            self._mf_pgs_setup(state_aug, dt)
-            self.v_mf_accum.zero_()
 
-            for _pgs_iter in range(self.pgs_iterations):
-                # Dense PGS (1 iteration, impulse space)
-                self._dispatch_dense_pgs_solve(iterations=1)
-
-                # Rebuild v_out = v_hat + Y*impulses + MF_corrections
-                self._stage6_prepare_world_velocity()
-                for size in self.size_groups:
-                    self._stage6_apply_impulses_world(size)
-                wp.launch(
-                    vector_add_inplace,
-                    dim=self.v_out.size,
-                    inputs=[self.v_out, self.v_mf_accum],
-                    device=self.model.device,
-                )
-
-                # Snapshot v_out, run MF, compute delta
-                wp.copy(self.v_out_snap, self.v_out)
-                self._mf_pgs_solve(iterations=1)
-
-                # v_mf_accum += (v_out - v_out_snap); v_out_snap = delta
-                wp.launch(
-                    compute_delta_and_accumulate,
-                    dim=self.v_out.size,
-                    inputs=[self.v_out, self.v_out_snap, self.v_mf_accum],
-                    device=self.model.device,
-                )
-
-                # Update dense rhs: world_rhs += J * delta_v_mf
-                for size in self.size_groups:
-                    n_arts = self.n_arts_by_size[size]
                     wp.launch(
-                        rhs_accum_world_par_art,
-                        dim=n_arts,
+                        pgs_convergence_diagnostic_velocity,
+                        dim=self.world_count,
                         inputs=[
                             self.constraint_count,
+                            self.world_dof_start,
+                            self.rhs,
+                            self.impulses,
+                            self._diag_prev_impulses,
+                            self.row_type,
+                            self.row_parent,
+                            self.row_mu,
+                            self.J_world,
                             self.dense_max_constraints,
-                            self.art_to_world,
-                            self.art_size,
-                            self.art_group_idx,
-                            self.articulation_dof_start,
-                            self.v_out_snap,
-                            self.group_to_art[size],
-                            self.J_by_size[size],
-                            size,
+                            self.max_world_dofs,
+                            self.mf_constraint_count,
+                            self.mf_rhs,
+                            self.mf_impulses,
+                            self._diag_prev_mf_impulses,
+                            self.mf_row_type,
+                            self.mf_row_parent,
+                            self.mf_row_mu,
+                            self.mf_J_a,
+                            self.mf_J_b,
+                            self.mf_dof_a,
+                            self.mf_dof_b,
+                            self.mf_max_constraints,
+                            self.v_out,
                         ],
-                        outputs=[self.rhs],
+                        outputs=[self._diag_metrics],
                         device=self.model.device,
                     )
 
-            # v_out is already final (includes both dense and MF corrections)
+                    metrics_np = self._diag_metrics.numpy()
+                    row = np.array(
+                        [
+                            np.max(metrics_np[:, 0]),
+                            np.sum(metrics_np[:, 1]),
+                            np.sum(metrics_np[:, 2]),
+                            np.sum(metrics_np[:, 3]),
+                        ]
+                    )
+                    self._pgs_convergence_log[-1].append(row)
 
-        else:
-            # Dense or split without mixed contacts: dense PGS, then optional MF
-            if self.pgs_debug:
-                self._pgs_convergence_log.append([])
-                for _pgs_dbg_iter in range(self.pgs_iterations):
-                    prev_np = self.impulses.numpy().copy()
-                    self._dispatch_dense_pgs_solve(iterations=1)
-                    cur_np = self.impulses.numpy()
-                    max_delta = float(np.max(np.abs(cur_np - prev_np)))
-                    self._pgs_convergence_log[-1].append(np.array([max_delta, 0.0, 0.0, 0.0]))
                 self._pgs_convergence_log[-1] = np.array(self._pgs_convergence_log[-1])
+
             else:
-                self._dispatch_dense_pgs_solve(iterations=self.pgs_iterations)
-
-            self._stage6_prepare_world_velocity()
-            for size in self.size_groups:
-                self._stage6_apply_impulses_world(size)
-
-            if self.pgs_mode == "split" and self._has_free_rigid_bodies:
-                self._stage6b_mf_pgs(state_aug, dt)
+                wp.launch_tiled(
+                    mf_gs_kernel,
+                    dim=[self.world_count],
+                    inputs=[
+                        self.constraint_count,
+                        self.world_dof_start,
+                        self.rhs,
+                        self.diag,
+                        self.impulses,
+                        self.J_world,
+                        self.Y_world,
+                        self.row_type,
+                        self.row_parent,
+                        self.row_mu,
+                        self.mf_constraint_count,
+                        self.mf_meta_packed,
+                        self.mf_impulses,
+                        self.mf_J_a,
+                        self.mf_J_b,
+                        self.mf_MiJt_a,
+                        self.mf_MiJt_b,
+                        self.mf_row_mu,
+                        self.pgs_iterations,
+                        self.pgs_omega,
+                    ],
+                    outputs=[self.v_out],
+                    block_dim=32,
+                    device=self.model.device,
+                )
 
         # ══════════════════════════════════════════════════════════════
         # STAGE 7: Update qdd + integrate
@@ -2078,7 +1855,7 @@ class SolverFeatherPGS(SolverBase):
     def _stage4_build_rows(self, state_in: State, state_aug: State, contacts: Contacts):
         model = self.model
         max_constraints = self.dense_max_constraints
-        mf_active = self._has_free_rigid_bodies and self.pgs_mode != "dense"
+        mf_active = self._has_free_rigid_bodies
 
         # Zero world-level buffers (only arrays that require it)
         self.slot_counter.zero_()  # atomic-add counter
@@ -2948,13 +2725,13 @@ class TiledKernelFactory:
         TILE_CONSTRAINTS_LOCAL = wp.constant(int(max_constraints))
 
         def hinv_jt_tiled_template(
-            L_group: wp.array3d(dtype=float),  # [n_arts, n_dofs, n_dofs]
-            J_group: wp.array3d(dtype=float),  # [n_arts, max_c, n_dofs]
-            group_to_art: wp.array(dtype=int),
-            art_to_world: wp.array(dtype=int),
-            world_constraint_count: wp.array(dtype=int),
+            L_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
+            J_group: wp.array3d[float],  # [n_arts, max_c, n_dofs]
+            group_to_art: wp.array[int],
+            art_to_world: wp.array[int],
+            world_constraint_count: wp.array[int],
             # output
-            Y_group: wp.array3d(dtype=float),  # [n_arts, max_c, n_dofs]
+            Y_group: wp.array3d[float],  # [n_arts, max_c, n_dofs]
         ):
             idx = wp.tid()
             art = group_to_art[idx]
@@ -2992,16 +2769,16 @@ class TiledKernelFactory:
         TILE_CONSTRAINTS_LOCAL = wp.constant(int(max_constraints))
 
         def hinv_jt_tiled_fused_template(
-            L_group: wp.array3d(dtype=float),  # [n_arts, n_dofs, n_dofs]
-            J_group: wp.array3d(dtype=float),  # [n_arts, max_c, n_dofs]
-            group_to_art: wp.array(dtype=int),
-            art_to_world: wp.array(dtype=int),
-            world_constraint_count: wp.array(dtype=int),
-            row_cfm: wp.array2d(dtype=float),
+            L_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
+            J_group: wp.array3d[float],  # [n_arts, max_c, n_dofs]
+            group_to_art: wp.array[int],
+            art_to_world: wp.array[int],
+            world_constraint_count: wp.array[int],
+            row_cfm: wp.array2d[float],
             # outputs
-            world_C: wp.array3d(dtype=float),  # [world_count, max_c, max_c]
-            world_diag: wp.array2d(dtype=float),  # [world_count, max_c]
-            Y_group: wp.array3d(dtype=float),  # [n_arts, max_c, n_dofs]
+            world_C: wp.array3d[float],  # [world_count, max_c, max_c]
+            world_diag: wp.array2d[float],  # [world_count, max_c]
+            Y_group: wp.array3d[float],  # [n_arts, max_c, n_dofs]
         ):
             idx, thread = wp.tid()
             art = group_to_art[idx]
@@ -3112,24 +2889,24 @@ class TiledKernelFactory:
         @wp.func_native(snippet)
         def delassus_native(
             idx: int,
-            J_group: wp.array3d(dtype=float),
-            Y_group: wp.array3d(dtype=float),
-            group_to_art: wp.array(dtype=int),
-            art_to_world: wp.array(dtype=int),
-            world_constraint_count: wp.array(dtype=int),
-            world_C: wp.array3d(dtype=float),
-            world_diag: wp.array2d(dtype=float),
+            J_group: wp.array3d[float],
+            Y_group: wp.array3d[float],
+            group_to_art: wp.array[int],
+            art_to_world: wp.array[int],
+            world_constraint_count: wp.array[int],
+            world_C: wp.array3d[float],
+            world_diag: wp.array2d[float],
         ): ...
 
         def delassus_template(
-            J_group: wp.array3d(dtype=float),
-            Y_group: wp.array3d(dtype=float),
-            group_to_art: wp.array(dtype=int),
-            art_to_world: wp.array(dtype=int),
-            world_constraint_count: wp.array(dtype=int),
+            J_group: wp.array3d[float],
+            Y_group: wp.array3d[float],
+            group_to_art: wp.array[int],
+            art_to_world: wp.array[int],
+            world_constraint_count: wp.array[int],
             n_arts: int,
-            world_C: wp.array3d(dtype=float),
-            world_diag: wp.array2d(dtype=float),
+            world_C: wp.array3d[float],
+            world_diag: wp.array2d[float],
         ):
             idx, _lane = wp.tid()
             if idx < n_arts:
@@ -3159,12 +2936,12 @@ class TiledKernelFactory:
         TILE_DOF_LOCAL = wp.constant(int(n_dofs))
 
         def cholesky_tiled_template(
-            H_group: wp.array3d(dtype=float),  # [n_arts, n_dofs, n_dofs]
-            R_group: wp.array2d(dtype=float),  # [n_arts, n_dofs] armature
-            group_to_art: wp.array(dtype=int),
-            mass_update_mask: wp.array(dtype=int),
+            H_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
+            R_group: wp.array2d[float],  # [n_arts, n_dofs] armature
+            group_to_art: wp.array[int],
+            mass_update_mask: wp.array[int],
             # output
-            L_group: wp.array3d(dtype=float),  # [n_arts, n_dofs, n_dofs]
+            L_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
         ):
             idx = wp.tid()
             art = group_to_art[idx]
@@ -3206,9 +2983,9 @@ class TiledKernelFactory:
         TILE_DOF_LOCAL = wp.constant(int(n_dofs))
 
         def trisolve_tiled_template(
-            L_group: wp.array3d(dtype=float),  # [n_arts, n_dofs, n_dofs]
-            tau_group: wp.array3d(dtype=float),  # [n_arts, n_dofs, 1]
-            qdd_group: wp.array3d(dtype=float),  # [n_arts, n_dofs, 1]
+            L_group: wp.array3d[float],  # [n_arts, n_dofs, n_dofs]
+            tau_group: wp.array3d[float],  # [n_arts, n_dofs, 1]
+            qdd_group: wp.array3d[float],  # [n_arts, n_dofs, 1]
         ):
             idx = wp.tid()
             L_tile = wp.tile_load(L_group[idx], shape=(TILE_DOF_LOCAL, TILE_DOF_LOCAL), bounds_check=False)
@@ -3410,29 +3187,29 @@ class TiledKernelFactory:
         @wp.func_native(snippet)
         def pgs_solve_native(
             world: int,
-            world_constraint_count: wp.array(dtype=int),
-            world_diag: wp.array2d(dtype=float),
-            world_C: wp.array3d(dtype=float),
-            world_rhs: wp.array2d(dtype=float),
-            world_impulses: wp.array2d(dtype=float),
+            world_constraint_count: wp.array[int],
+            world_diag: wp.array2d[float],
+            world_C: wp.array3d[float],
+            world_rhs: wp.array2d[float],
+            world_impulses: wp.array2d[float],
             iterations: int,
             omega: float,
-            world_row_type: wp.array2d(dtype=int),
-            world_row_parent: wp.array2d(dtype=int),
-            world_row_mu: wp.array2d(dtype=float),
+            world_row_type: wp.array2d[int],
+            world_row_parent: wp.array2d[int],
+            world_row_mu: wp.array2d[float],
         ): ...
 
         def pgs_solve_tiled_template(
-            world_constraint_count: wp.array(dtype=int),
-            world_diag: wp.array2d(dtype=float),
-            world_C: wp.array3d(dtype=float),
-            world_rhs: wp.array2d(dtype=float),
-            world_impulses: wp.array2d(dtype=float),
+            world_constraint_count: wp.array[int],
+            world_diag: wp.array2d[float],
+            world_C: wp.array3d[float],
+            world_rhs: wp.array2d[float],
+            world_impulses: wp.array2d[float],
             iterations: int,
             omega: float,
-            world_row_type: wp.array2d(dtype=int),
-            world_row_parent: wp.array2d(dtype=int),
-            world_row_mu: wp.array2d(dtype=float),
+            world_row_type: wp.array2d[int],
+            world_row_parent: wp.array2d[int],
+            world_row_mu: wp.array2d[float],
         ):
             world, _lane = wp.tid()
             pgs_solve_native(
@@ -3675,23 +3452,23 @@ class TiledKernelFactory:
         @wp.func_native(snippet)
         def pgs_solve_contact_native(
             world: int,
-            world_constraint_count: wp.array(dtype=int),
-            world_C: wp.array3d(dtype=float),
-            world_rhs: wp.array2d(dtype=float),
-            world_impulses: wp.array2d(dtype=float),
+            world_constraint_count: wp.array[int],
+            world_C: wp.array3d[float],
+            world_rhs: wp.array2d[float],
+            world_impulses: wp.array2d[float],
             iterations: int,
             omega: float,
-            world_row_mu: wp.array2d(dtype=float),
+            world_row_mu: wp.array2d[float],
         ): ...
 
         def pgs_solve_tiled_contact_template(
-            world_constraint_count: wp.array(dtype=int),
-            world_C: wp.array3d(dtype=float),
-            world_rhs: wp.array2d(dtype=float),
-            world_impulses: wp.array2d(dtype=float),
+            world_constraint_count: wp.array[int],
+            world_C: wp.array3d[float],
+            world_rhs: wp.array2d[float],
+            world_impulses: wp.array2d[float],
             iterations: int,
             omega: float,
-            world_row_mu: wp.array2d(dtype=float),
+            world_row_mu: wp.array2d[float],
         ):
             world, _lane = wp.tid()
             pgs_solve_contact_native(
@@ -3953,23 +3730,23 @@ class TiledKernelFactory:
         @wp.func_native(snippet)
         def pgs_solve_streaming_native(
             world: int,
-            world_constraint_count: wp.array(dtype=int),
-            world_C: wp.array3d(dtype=float),
-            world_rhs: wp.array2d(dtype=float),
-            world_impulses: wp.array2d(dtype=float),
+            world_constraint_count: wp.array[int],
+            world_C: wp.array3d[float],
+            world_rhs: wp.array2d[float],
+            world_impulses: wp.array2d[float],
             iterations: int,
             omega: float,
-            world_row_mu: wp.array2d(dtype=float),
+            world_row_mu: wp.array2d[float],
         ): ...
 
         def pgs_solve_streaming_template(
-            world_constraint_count: wp.array(dtype=int),
-            world_C: wp.array3d(dtype=float),
-            world_rhs: wp.array2d(dtype=float),
-            world_impulses: wp.array2d(dtype=float),
+            world_constraint_count: wp.array[int],
+            world_C: wp.array3d[float],
+            world_rhs: wp.array2d[float],
+            world_impulses: wp.array2d[float],
             iterations: int,
             omega: float,
-            world_row_mu: wp.array2d(dtype=float),
+            world_row_mu: wp.array2d[float],
         ):
             world, _lane = wp.tid()
             pgs_solve_streaming_native(
@@ -4203,43 +3980,43 @@ class TiledKernelFactory:
         @wp.func_native(snippet)
         def pgs_solve_mf_native(
             world: int,
-            mf_constraint_count: wp.array(dtype=int),
-            mf_body_count: wp.array(dtype=int),
-            mf_body_dof_start: wp.array2d(dtype=int),
-            mf_local_body_a: wp.array2d(dtype=int),
-            mf_local_body_b: wp.array2d(dtype=int),
-            mf_J_a: wp.array3d(dtype=float),
-            mf_J_b: wp.array3d(dtype=float),
-            mf_MiJt_a: wp.array3d(dtype=float),
-            mf_MiJt_b: wp.array3d(dtype=float),
-            mf_eff_mass_inv: wp.array2d(dtype=float),
-            mf_rhs: wp.array2d(dtype=float),
-            mf_row_type: wp.array2d(dtype=int),
-            mf_row_parent: wp.array2d(dtype=int),
-            mf_row_mu: wp.array2d(dtype=float),
-            mf_impulses: wp.array2d(dtype=float),
-            v_out: wp.array(dtype=float),
+            mf_constraint_count: wp.array[int],
+            mf_body_count: wp.array[int],
+            mf_body_dof_start: wp.array2d[int],
+            mf_local_body_a: wp.array2d[int],
+            mf_local_body_b: wp.array2d[int],
+            mf_J_a: wp.array3d[float],
+            mf_J_b: wp.array3d[float],
+            mf_MiJt_a: wp.array3d[float],
+            mf_MiJt_b: wp.array3d[float],
+            mf_eff_mass_inv: wp.array2d[float],
+            mf_rhs: wp.array2d[float],
+            mf_row_type: wp.array2d[int],
+            mf_row_parent: wp.array2d[int],
+            mf_row_mu: wp.array2d[float],
+            mf_impulses: wp.array2d[float],
+            v_out: wp.array[float],
             iterations: int,
             omega: float,
         ): ...
 
         def pgs_solve_mf_template(
-            mf_constraint_count: wp.array(dtype=int),
-            mf_body_count: wp.array(dtype=int),
-            mf_body_dof_start: wp.array2d(dtype=int),
-            mf_local_body_a: wp.array2d(dtype=int),
-            mf_local_body_b: wp.array2d(dtype=int),
-            mf_J_a: wp.array3d(dtype=float),
-            mf_J_b: wp.array3d(dtype=float),
-            mf_MiJt_a: wp.array3d(dtype=float),
-            mf_MiJt_b: wp.array3d(dtype=float),
-            mf_eff_mass_inv: wp.array2d(dtype=float),
-            mf_rhs: wp.array2d(dtype=float),
-            mf_row_type: wp.array2d(dtype=int),
-            mf_row_parent: wp.array2d(dtype=int),
-            mf_row_mu: wp.array2d(dtype=float),
-            mf_impulses: wp.array2d(dtype=float),
-            v_out: wp.array(dtype=float),
+            mf_constraint_count: wp.array[int],
+            mf_body_count: wp.array[int],
+            mf_body_dof_start: wp.array2d[int],
+            mf_local_body_a: wp.array2d[int],
+            mf_local_body_b: wp.array2d[int],
+            mf_J_a: wp.array3d[float],
+            mf_J_b: wp.array3d[float],
+            mf_MiJt_a: wp.array3d[float],
+            mf_MiJt_b: wp.array3d[float],
+            mf_eff_mass_inv: wp.array2d[float],
+            mf_rhs: wp.array2d[float],
+            mf_row_type: wp.array2d[int],
+            mf_row_parent: wp.array2d[int],
+            mf_row_mu: wp.array2d[float],
+            mf_impulses: wp.array2d[float],
+            v_out: wp.array[float],
             iterations: int,
             omega: float,
         ):
@@ -4316,25 +4093,25 @@ class TiledKernelFactory:
         @wp.func_native(snippet)
         def pack_mf_meta_native(
             world: int,
-            mf_constraint_count: wp.array(dtype=int),
-            mf_dof_a: wp.array2d(dtype=int),
-            mf_dof_b: wp.array2d(dtype=int),
-            mf_eff_mass_inv: wp.array2d(dtype=float),
-            mf_rhs: wp.array2d(dtype=float),
-            mf_row_type: wp.array2d(dtype=int),
-            mf_row_parent: wp.array2d(dtype=int),
-            mf_meta: wp.array2d(dtype=int),
+            mf_constraint_count: wp.array[int],
+            mf_dof_a: wp.array2d[int],
+            mf_dof_b: wp.array2d[int],
+            mf_eff_mass_inv: wp.array2d[float],
+            mf_rhs: wp.array2d[float],
+            mf_row_type: wp.array2d[int],
+            mf_row_parent: wp.array2d[int],
+            mf_meta: wp.array2d[int],
         ): ...
 
         def pack_mf_meta_template(
-            mf_constraint_count: wp.array(dtype=int),
-            mf_dof_a: wp.array2d(dtype=int),
-            mf_dof_b: wp.array2d(dtype=int),
-            mf_eff_mass_inv: wp.array2d(dtype=float),
-            mf_rhs: wp.array2d(dtype=float),
-            mf_row_type: wp.array2d(dtype=int),
-            mf_row_parent: wp.array2d(dtype=int),
-            mf_meta: wp.array2d(dtype=int),
+            mf_constraint_count: wp.array[int],
+            mf_dof_a: wp.array2d[int],
+            mf_dof_b: wp.array2d[int],
+            mf_eff_mass_inv: wp.array2d[float],
+            mf_rhs: wp.array2d[float],
+            mf_row_type: wp.array2d[int],
+            mf_row_parent: wp.array2d[int],
+            mf_meta: wp.array2d[int],
         ):
             world, _lane = wp.tid()
             pack_mf_meta_native(
@@ -4736,58 +4513,58 @@ class TiledKernelFactory:
         def pgs_solve_mf_gs_native(
             world: int,
             # Dense
-            world_constraint_count: wp.array(dtype=int),
-            world_dof_start: wp.array(dtype=int),
-            rhs_bias: wp.array2d(dtype=float),
-            world_diag: wp.array2d(dtype=float),
-            world_impulses: wp.array2d(dtype=float),
-            J_world: wp.array3d(dtype=float),
-            Y_world: wp.array3d(dtype=float),
-            world_row_type: wp.array2d(dtype=int),
-            world_row_parent: wp.array2d(dtype=int),
-            world_row_mu: wp.array2d(dtype=float),
+            world_constraint_count: wp.array[int],
+            world_dof_start: wp.array[int],
+            rhs_bias: wp.array2d[float],
+            world_diag: wp.array2d[float],
+            world_impulses: wp.array2d[float],
+            J_world: wp.array3d[float],
+            Y_world: wp.array3d[float],
+            world_row_type: wp.array2d[int],
+            world_row_parent: wp.array2d[int],
+            world_row_mu: wp.array2d[float],
             # MF
-            mf_constraint_count: wp.array(dtype=int),
-            mf_meta: wp.array2d(dtype=int),
-            mf_impulses: wp.array2d(dtype=float),
-            mf_J_a: wp.array3d(dtype=float),
-            mf_J_b: wp.array3d(dtype=float),
-            mf_MiJt_a: wp.array3d(dtype=float),
-            mf_MiJt_b: wp.array3d(dtype=float),
-            mf_row_mu: wp.array2d(dtype=float),
+            mf_constraint_count: wp.array[int],
+            mf_meta: wp.array2d[int],
+            mf_impulses: wp.array2d[float],
+            mf_J_a: wp.array3d[float],
+            mf_J_b: wp.array3d[float],
+            mf_MiJt_a: wp.array3d[float],
+            mf_MiJt_b: wp.array3d[float],
+            mf_row_mu: wp.array2d[float],
             # Shared
             iterations: int,
             omega: float,
             # Output
-            v_out: wp.array(dtype=float),
+            v_out: wp.array[float],
         ): ...
 
         def pgs_solve_mf_gs_template(
             # Dense
-            world_constraint_count: wp.array(dtype=int),
-            world_dof_start: wp.array(dtype=int),
-            rhs_bias: wp.array2d(dtype=float),
-            world_diag: wp.array2d(dtype=float),
-            world_impulses: wp.array2d(dtype=float),
-            J_world: wp.array3d(dtype=float),
-            Y_world: wp.array3d(dtype=float),
-            world_row_type: wp.array2d(dtype=int),
-            world_row_parent: wp.array2d(dtype=int),
-            world_row_mu: wp.array2d(dtype=float),
+            world_constraint_count: wp.array[int],
+            world_dof_start: wp.array[int],
+            rhs_bias: wp.array2d[float],
+            world_diag: wp.array2d[float],
+            world_impulses: wp.array2d[float],
+            J_world: wp.array3d[float],
+            Y_world: wp.array3d[float],
+            world_row_type: wp.array2d[int],
+            world_row_parent: wp.array2d[int],
+            world_row_mu: wp.array2d[float],
             # MF
-            mf_constraint_count: wp.array(dtype=int),
-            mf_meta: wp.array2d(dtype=int),
-            mf_impulses: wp.array2d(dtype=float),
-            mf_J_a: wp.array3d(dtype=float),
-            mf_J_b: wp.array3d(dtype=float),
-            mf_MiJt_a: wp.array3d(dtype=float),
-            mf_MiJt_b: wp.array3d(dtype=float),
-            mf_row_mu: wp.array2d(dtype=float),
+            mf_constraint_count: wp.array[int],
+            mf_meta: wp.array2d[int],
+            mf_impulses: wp.array2d[float],
+            mf_J_a: wp.array3d[float],
+            mf_J_b: wp.array3d[float],
+            mf_MiJt_a: wp.array3d[float],
+            mf_MiJt_b: wp.array3d[float],
+            mf_row_mu: wp.array2d[float],
             # Shared
             iterations: int,
             omega: float,
             # Output
-            v_out: wp.array(dtype=float),
+            v_out: wp.array[float],
         ):
             world, _lane = wp.tid()
             pgs_solve_mf_gs_native(
