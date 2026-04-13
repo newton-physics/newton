@@ -1413,6 +1413,26 @@ def parse_usd(
         if enabled_count == 0:
             return None
 
+        # Verify that all axes within each group are approximately orthogonal.
+        # Non-orthogonal or duplicate axes (e.g. MuJoCo backlash joints) cannot
+        # be faithfully represented as a single D6 joint.
+        for group_name, axes_list, paths_list in [
+            ("angular", angular_axes, angular_prim_paths),
+            ("linear", linear_axes, linear_prim_paths),
+        ]:
+            for i in range(len(axes_list)):
+                ax_i = np.array(axes_list[i].axis, dtype=float)
+                for j in range(i + 1, len(axes_list)):
+                    ax_j = np.array(axes_list[j].axis, dtype=float)
+                    dot = abs(float(np.dot(ax_i, ax_j)))
+                    if dot > 0.1:
+                        raise ValueError(
+                            f"Cannot merge {group_name} joints {paths_list[i]} and {paths_list[j]} "
+                            f"into a D6 joint: axes are not orthogonal (|dot|={dot:.3f}). "
+                            f"Non-orthogonal or duplicate axes (e.g. MuJoCo backlash joints) "
+                            f"are not supported."
+                        )
+
         # D6 DOF order: linear first, then angular
         dof_prim_paths = linear_prim_paths + angular_prim_paths
         dof_initial_pos = linear_initial_pos + angular_initial_pos
