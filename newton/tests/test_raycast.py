@@ -372,24 +372,24 @@ def test_ray_intersect_plane(test: TestRaycast, device: str):
         )
         test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
 
-    with test.subTest("finite_hit"):
+    with test.subTest("finite_miss_half_extent"):
         geom_to_world = wp.transform_identity()
-        size_finite = wp.vec3(4.0, 4.0, 0.0)
+        size_finite = wp.vec3(4.0, 4.0, 0.0)  # full width 4, half-extent 2
         ray_origin = wp.vec3(0.0, 0.0, 4.0)
-        ray_direction = wp.vec3(3.0, 0.0, -4.0)  # 3-4-5 triple, hits at (3, 0, 0)
+        ray_direction = wp.vec3(3.0, 0.0, -4.0)  # 3-4-5 triple, crosses plane at (3, 0, 0) -- |3| > 2
         wp.launch(
             kernel_test_plane,
             dim=1,
             inputs=[out_t, geom_to_world, ray_origin, ray_direction, size_finite],
             device=device,
         )
-        test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-5)
+        test.assertAlmostEqual(out_t.numpy()[0], -1.0, delta=1e-5)
 
     with test.subTest("finite_miss_x"):
         geom_to_world = wp.transform_identity()
-        size_finite = wp.vec3(2.0, 2.0, 0.0)
+        size_finite = wp.vec3(2.0, 2.0, 0.0)  # full width 2, half-extent 1
         ray_origin = wp.vec3(0.0, 0.0, 4.0)
-        ray_direction = wp.vec3(3.0, 0.0, -4.0)  # 3-4-5 triple, hits at (3, 0, 0) -- |3| > 2
+        ray_direction = wp.vec3(3.0, 0.0, -4.0)  # 3-4-5 triple, hits at (3, 0, 0) -- |3| > 1
         wp.launch(
             kernel_test_plane,
             dim=1,
@@ -402,7 +402,7 @@ def test_ray_intersect_plane(test: TestRaycast, device: str):
         geom_to_world = wp.transform_identity()
         size_finite = wp.vec3(10.0, 2.0, 0.0)
         ray_origin = wp.vec3(0.0, 0.0, 4.0)
-        ray_direction = wp.vec3(0.0, 3.0, -4.0)  # 3-4-5 triple, hits at (0, 3, 0) -- |3| > 2
+        ray_direction = wp.vec3(0.0, 3.0, -4.0)  # 3-4-5 triple, hits at (0, 3, 0) -- |3| > half 2 = 1
         wp.launch(
             kernel_test_plane,
             dim=1,

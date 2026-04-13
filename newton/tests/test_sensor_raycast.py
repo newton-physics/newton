@@ -403,7 +403,7 @@ def test_sensor_raycast_ground_plane(test: unittest.TestCase, device: str):
 
     state = model.state()
 
-    # Camera at z=5 looking straight down — should see ground at z=0
+    # Camera at z=5 looking straight down -- should see ground at z=0
     sensor = SensorRaycast(
         model=model,
         camera_position=(0.0, 0.0, 5.0),

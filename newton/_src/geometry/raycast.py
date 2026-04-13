@@ -11,8 +11,8 @@ from .types import (
 
 # A small constant to avoid division by zero and other numerical issues
 MINVAL = 1e-15
-# float32 epsilon for near-zero checks (e.g. ray parallel to plane)
-EPSILON = 1e-6
+# Tolerance for near-parallel ray rejection (e.g. ray vs plane)
+PARALLEL_TOL = 1e-6
 
 
 @wp.func
@@ -522,15 +522,15 @@ def ray_intersect_mesh(
 def ray_intersect_plane(geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3):
     """Computes ray-plane intersection.
 
-    The plane lies at z = 0 in local space with normal along +Z.  ``size`` holds ``(half_width, half_length, 0)``:
-    the half-extents along local X and Y.  A value of ``0`` means infinite in that axis.  The plane is double-sided:
+    The plane lies at z = 0 in local space with normal along +Z.  ``size`` holds ``(width, length, 0)``:
+    the full extents along local X and Y.  A value of ``0`` means infinite in that axis.  The plane is double-sided:
     rays approaching from either side register intersections.
 
     Args:
         geom_to_world: The world transform of the plane.
         ray_origin: The origin of the ray in world space.
         ray_direction: The direction of the ray in world space.
-        size: ``(half_width, half_length, 0)`` -- half-extents; ``0`` = infinite.
+        size: ``(width, length, 0)`` -- full extents; ``0`` = infinite.
 
     Returns:
         The distance along the ray to the intersection point, or -1.0 if there is no intersection.
@@ -541,7 +541,7 @@ def ray_intersect_plane(geom_to_world: wp.transform, ray_origin: wp.vec3, ray_di
     rd = wp.transform_vector(world_to_geom, ray_direction)
 
     # Ray parallel to the plane (or degenerate)
-    if wp.abs(rd[2]) < EPSILON:
+    if wp.abs(rd[2]) < PARALLEL_TOL:
         return -1.0
 
     # t where the ray crosses z = 0
