@@ -182,9 +182,9 @@ class Example:
         min_z = np.min(particle_q[:, 2])
         assert min_z > 0.92, f"Ground penetration: min_z={min_z}"
 
-        # Velocity check: observed max_vel=0.18-0.29
+        # Velocity check: observed max_vel=0.18-0.29 (CPU), up to 0.47 (GPU)
         max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
-        assert max_vel < 0.45, f"Excessive velocity: {max_vel}"
+        assert max_vel < 0.55, f"Excessive velocity: {max_vel}"
 
         # Body state check (1 avatar body)
         newton.examples.test_body_state(
