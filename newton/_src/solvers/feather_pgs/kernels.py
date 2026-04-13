@@ -2629,7 +2629,7 @@ def clamp_joint_tau(
 TILE_DOF = wp.constant(49)
 
 # Max constraints per articulation we support in the tiled path.
-# dense_max_constraints must be <= TILE_CONSTRAINTS or we use fall back
+# max_constraints must be <= TILE_CONSTRAINTS or we use fall back
 TILE_CONSTRAINTS = wp.constant(128)
 
 # Threads per tile/block for tile kernels
@@ -2773,7 +2773,7 @@ def prepare_world_impulses(
 
 
 @wp.kernel
-def diag_from_JY_par_art(
+def extract_diag_from_JY_par_art(
     J_group: wp.array3d[float],  # [n_arts_of_size, max_constraints, n_dofs]
     Y_group: wp.array3d[float],  # [n_arts_of_size, max_constraints, n_dofs]
     group_to_art: wp.array[int],
@@ -3623,19 +3623,19 @@ def finalize_world_diag_cfm(
 
 
 @wp.kernel
-def add_dense_contact_compliance_to_diag(
+def add_contact_compliance_to_diag(
     world_constraint_count: wp.array[int],
     world_row_type: wp.array2d[int],
     contact_alpha: float,
     # in/out
     world_diag: wp.array2d[float],
 ):
-    """Add normal-contact compliance to the dense PGS diagonal.
+    """Add normal-contact compliance to the articulated-row PGS diagonal.
 
-    The dense articulated contact path uses a Delassus diagonal in impulse
-    space. A compliance ``alpha = compliance / dt^2`` contributes an additional
-    diagonal term for normal contact rows only, yielding a softer normal
-    response without changing friction or joint-limit rows.
+    The matrix-free articulated contact path still extracts a Delassus diagonal
+    in impulse space. A compliance ``alpha = compliance / dt^2`` contributes an
+    additional diagonal term for normal contact rows only, yielding a softer
+    normal response without changing friction or joint-limit rows.
     """
     world = wp.tid()
     m = world_constraint_count[world]

@@ -106,6 +106,19 @@ Progress update (2026-04-13, pass 2):
 - Milestone 2 is now functionally complete on the private solver surface; any
   leftover cleanup is supporting-surface polish tracked in Milestone 3.
 
+Progress update (2026-04-13, pass 5):
+- Rebased the branch onto `upstream/main` and resolved the shared
+  `featherstone/kernels.py` conflict by keeping upstream's newer FK/twist
+  writeback behavior while preserving the helper this branch needs.
+- Removed the last stale dense-path presentation from the private FeatherPGS
+  surface: `SolverFeatherPGS` now exposes `contact_compliance` and
+  `max_constraints` instead of `dense_contact_compliance` and
+  `dense_max_constraints`, and the live stage-4 helpers/kernel entry points now
+  use matrix-free/articulated-row names rather than `dense_*`.
+- Expanded the focused signature test to lock in the absence of the old
+  `dense_*` constructor knobs alongside the already-removed mode and
+  kernel-selection knobs.
+
 Required work:
 - Remove `dense` and `split` support from the private API implementation.
 - Remove retained kernel-selection and intra-mode multi-path knobs whose only
@@ -193,14 +206,20 @@ Progress update (2026-04-13, pass 4):
   checks, then updated this ExecPlan to reflect the shipped end state.
 - Milestone 5 is closed. No milestone items remain on this ExecPlan.
 
+Progress update (2026-04-13, pass 5):
+- Reopened this milestone after judge review found stale dense-path naming and
+  validation evidence. Rebased onto the current `upstream/main`, applied the
+  remaining matrix-free-only naming cleanup, and refreshed the review artifacts
+  to match the rebased branch state.
+
 Validation:
-- `git rev-list --left-right --count upstream/main...HEAD` -> `28 4`.
-  This confirms the branch is rebased onto `upstream/main` and now sits 4
-  commits ahead with no missing upstream-main commits.
+- `git rev-list --left-right --count upstream/main...HEAD` -> `0 6`.
+  This confirms the branch is rebased onto the current `upstream/main` and now
+  sits 6 commits ahead with no missing upstream-main commits.
 - `uv run --extra dev -m newton.tests -k test_feather_pgs` -> passed
-  (`Ran 2 tests in 14.586s`, `OK`).
-- `uvx pre-commit run -a` -> passed (`ruff`, `ruff format`, `uv-lock`,
-  `typos`, and `check warp array syntax`).
+  (`Ran 2 tests in 15.157s`, `OK`).
+- `uvx pre-commit run -a` -> passed
+  (`ruff`, `ruff format`, `uv-lock`, `typos`, and `check warp array syntax`).
 - `git status --short --branch` after upstream fix ->
   `## dturpin/fpgs-private-api-matrix-free...origin/dturpin/fpgs-private-api-matrix-free`
 
@@ -243,6 +262,16 @@ Checkpoint:
   stale local tracking branch so the pushed review state is obvious from
   `git status`, and rewrite Milestone 5 as shipped state with exact results and
   the one remaining non-verifiable GitHub PR-description note.
+- Replan update (2026-04-13, pass 5):
+  Judge review found the private line still presented dense-path leftovers via
+  `dense_contact_compliance`, `dense_max_constraints`, and helper names such as
+  `_stage4_add_dense_contact_compliance()`, even though the live solver no
+  longer materializes a full Delassus matrix. This pass tightens Milestone 2's
+  final reviewable slice on top of a fresh rebase onto `upstream/main`: remove
+  the stale `dense_*` public surface, rename the surviving articulated-row
+  diagonal/compliance helpers to match the matrix-free implementation, refresh
+  focused tests to guard that constructor surface, and then rerun validation,
+  update the PR draft, and rewrite the stale final-validation evidence.
 - If a milestone is too large to finish cleanly, begin the pass by tightening
   this ExecPlan with a short replan note and then complete one reviewable slice
   of that milestone.

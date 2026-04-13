@@ -20,11 +20,15 @@ class TestFeatherPGS(unittest.TestCase):
         params = inspect.signature(SolverFeatherPGS).parameters
 
         self.assertNotIn("pgs_mode", params)
+        self.assertNotIn("dense_contact_compliance", params)
+        self.assertNotIn("dense_max_constraints", params)
         self.assertNotIn("cholesky_kernel", params)
         self.assertNotIn("trisolve_kernel", params)
         self.assertNotIn("hinv_jt_kernel", params)
         self.assertNotIn("delassus_kernel", params)
         self.assertNotIn("pgs_kernel", params)
+        self.assertIn("contact_compliance", params)
+        self.assertIn("max_constraints", params)
 
     def test_step_smoke_runs_matrix_free_solver(self):
         model = self._make_model()

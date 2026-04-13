@@ -5,14 +5,17 @@
 Simplify the private FeatherPGS API line to the current matrix-free path.
 
 This branch stops presenting the private solver as a bundle of retained
-ablations. Instead, it bakes in the current matrix-free contact solve path and
+ablations. Instead, it bakes in the current matrix-free contact solve path,
 removes obsolete top-level mode selection and kernel-selection API knobs from
-`SolverFeatherPGS`.
+`SolverFeatherPGS`, and drops the stale `dense_*` constructor naming that made
+the private line still look like a dense-mode fork.
 
 ## What Changed
 
 - Remove the private solver constructor knobs for `pgs_mode` and per-stage
   kernel selection.
+- Rename the remaining articulated-row tuning surface from `dense_*` to
+  mode-neutral `contact_compliance` and `max_constraints`.
 - Run the private FeatherPGS step path as matrix-free only.
 - Add focused unit coverage for the stripped-down constructor surface and a
   minimal step smoke test.
@@ -53,6 +56,10 @@ Interpretation:
 
 - `uv run --extra dev -m newton.tests -k test_feather_pgs`
 - `uvx pre-commit run -a`
+
+Current branch state after rebasing onto `upstream/main`:
+
+- `git rev-list --left-right --count upstream/main...HEAD` -> `0 6`
 
 ## Notes For Review
 

@@ -35,7 +35,7 @@ from ..semi_implicit.kernels_particle import (
 from ..solver import SolverBase
 from .kernels import (
     TILE_THREADS,
-    add_dense_contact_compliance_to_diag,
+    add_contact_compliance_to_diag,
     allocate_joint_limit_slots,
     allocate_world_contact_slots,
     apply_augmented_joint_tau,
@@ -61,11 +61,11 @@ from .kernels import (
     crba_fill_par_dof,
     delassus_par_row_col,
     detect_limit_count_changes,
-    diag_from_JY_par_art,
     eval_rigid_fk,
     eval_rigid_id,
     eval_rigid_mass,
     eval_rigid_tau,
+    extract_diag_from_JY_par_art,
     finalize_mf_constraint_counts,
     finalize_world_constraint_counts,
     finalize_world_diag_cfm,
@@ -167,9 +167,9 @@ class SolverFeatherPGS(SolverBase):
         pgs_iterations: int = 12,
         pgs_beta: float = 0.2,
         pgs_cfm: float = 1.0e-6,
-        dense_contact_compliance: float = 0.0,
+        contact_compliance: float = 0.0,
         pgs_omega: float = 1.0,
-        dense_max_constraints: int = 32,
+        max_constraints: int = 32,
         pgs_warmstart: bool = False,
         mf_max_constraints: int = 512,
         # Parallelism options
@@ -190,11 +190,11 @@ class SolverFeatherPGS(SolverBase):
             pgs_iterations (int, optional): Number of Gauss-Seidel iterations to apply per frame. Defaults to 12.
             pgs_beta (float, optional): ERP style position correction factor. Defaults to 0.2.
             pgs_cfm (float, optional): Compliance/regularization added to the Delassus diagonal. Defaults to 1.0e-6.
-            dense_contact_compliance (float, optional): Normal contact compliance [m/N] applied
-                only to dense articulated contact rows. Converted to an impulse-space diagonal
-                term using ``compliance / dt^2``. Defaults to 0.0.
+            contact_compliance (float, optional): Normal contact compliance [m/N] applied
+                to articulated contact rows. Converted to an impulse-space diagonal term using
+                ``compliance / dt^2``. Defaults to 0.0.
             pgs_omega (float, optional): Successive over-relaxation factor for the PGS sweep. Defaults to 1.0.
-            dense_max_constraints (int, optional): Maximum number of articulated contact constraint
+            max_constraints (int, optional): Maximum number of articulated contact constraint
                 rows stored per world. Free rigid body contacts are stored separately, bounded by
                 mf_max_constraints. Defaults to 32.
             pgs_warmstart (bool, optional): Re-use impulses from the previous frame when contacts persist. Defaults to False.
@@ -212,9 +212,9 @@ class SolverFeatherPGS(SolverBase):
         self.pgs_iterations = pgs_iterations
         self.pgs_beta = pgs_beta
         self.pgs_cfm = pgs_cfm
-        self.dense_contact_compliance = dense_contact_compliance
+        self.contact_compliance = contact_compliance
         self.pgs_omega = pgs_omega
-        self.dense_max_constraints = dense_max_constraints
+        self.max_constraints = max_constraints
         self.pgs_warmstart = pgs_warmstart
         self.mf_max_constraints = mf_max_constraints
         self._double_buffer = double_buffer
@@ -636,7 +636,7 @@ class SolverFeatherPGS(SolverBase):
 
         device = model.device
         requires_grad = model.requires_grad
-        max_constraints = self.dense_max_constraints
+        max_constraints = self.max_constraints
 
         self.L_by_size = {}
         self.Y_by_size = {}
@@ -734,7 +734,7 @@ class SolverFeatherPGS(SolverBase):
 
         device = model.device
         requires_grad = model.requires_grad
-        max_constraints = self.dense_max_constraints
+        max_constraints = self.max_constraints
 
         self.C = None
         self._compute_world_dof_mapping(model)
@@ -854,7 +854,7 @@ class SolverFeatherPGS(SolverBase):
             return
         device = model.device
         worlds = self.world_count
-        max_c = self.dense_max_constraints
+        max_c = self.max_constraints
         mf_max_c = self.mf_max_constraints
 
         self._diag_metrics = wp.zeros((worlds, 4), dtype=wp.float32, device=device)
@@ -1027,12 +1027,12 @@ class SolverFeatherPGS(SolverBase):
                     else:
                         self._stage4_hinv_jt_par_row(size)
 
-            # Diagonal from J*Y (no full Delassus)
+            # Extract only the world diagonal from J*Y; do not assemble the full Delassus matrix.
             self.diag.zero_()
             for size in self.size_groups:
-                self._stage4_diag_from_JY(size)
+                self._stage4_extract_diag_from_JY(size)
             self._stage4_finalize_world_diag_cfm()
-            self._stage4_add_dense_contact_compliance(dt)
+            self._stage4_add_contact_compliance(dt)
 
             # RHS = bias only (J*v recomputed per iteration)
             self._stage4_compute_rhs_world(dt)
@@ -1069,7 +1069,7 @@ class SolverFeatherPGS(SolverBase):
                 n_arts = self.n_arts_by_size[size]
                 wp.launch(
                     gather_JY_to_world,
-                    dim=int(n_arts * self.dense_max_constraints * size),
+                    dim=int(n_arts * self.max_constraints * size),
                     inputs=[
                         self.group_to_art[size],
                         self.art_to_world,
@@ -1079,7 +1079,7 @@ class SolverFeatherPGS(SolverBase):
                         self.J_by_size[size],
                         self.Y_by_size[size],
                         size,
-                        self.dense_max_constraints,
+                        self.max_constraints,
                         n_arts,
                     ],
                     outputs=[self.J_world, self.Y_world],
@@ -1108,7 +1108,7 @@ class SolverFeatherPGS(SolverBase):
 
         with wp.ScopedTimer("S6_PGS_Solve", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
             mf_gs_kernel = TiledKernelFactory.get_pgs_solve_mf_gs_kernel(
-                self.dense_max_constraints,
+                self.max_constraints,
                 self.mf_max_constraints,
                 self.max_world_dofs,
                 self.model.device,
@@ -1164,7 +1164,7 @@ class SolverFeatherPGS(SolverBase):
                             self.row_parent,
                             self.row_mu,
                             self.J_world,
-                            self.dense_max_constraints,
+                            self.max_constraints,
                             self.max_world_dofs,
                             self.mf_constraint_count,
                             self.mf_rhs,
@@ -1849,7 +1849,7 @@ class SolverFeatherPGS(SolverBase):
 
     def _stage4_build_rows(self, state_in: State, state_aug: State, contacts: Contacts):
         model = self.model
-        max_constraints = self.dense_max_constraints
+        max_constraints = self.max_constraints
         mf_active = self._has_free_rigid_bodies
 
         # Zero world-level buffers (only arrays that require it)
@@ -2167,7 +2167,7 @@ class SolverFeatherPGS(SolverBase):
     def _stage4_hinv_jt_tiled(self, size: int):
         model = self.model
         n_arts = self.n_arts_by_size[size]
-        hinv_jt_kernel = TiledKernelFactory.get_hinv_jt_kernel(size, self.dense_max_constraints, model.device)
+        hinv_jt_kernel = TiledKernelFactory.get_hinv_jt_kernel(size, self.max_constraints, model.device)
         wp.launch_tiled(
             hinv_jt_kernel,
             dim=[n_arts],
@@ -2186,7 +2186,7 @@ class SolverFeatherPGS(SolverBase):
     def _stage4_hinv_jt_tiled_fused(self, size: int):
         model = self.model
         n_arts = self.n_arts_by_size[size]
-        hinv_jt_kernel = TiledKernelFactory.get_hinv_jt_fused_kernel(size, self.dense_max_constraints, model.device)
+        hinv_jt_kernel = TiledKernelFactory.get_hinv_jt_fused_kernel(size, self.max_constraints, model.device)
         wp.launch_tiled(
             hinv_jt_kernel,
             dim=[n_arts],
@@ -2208,7 +2208,7 @@ class SolverFeatherPGS(SolverBase):
         n_arts = self.n_arts_by_size[size]
         wp.launch(
             hinv_jt_par_row,
-            dim=n_arts * self.dense_max_constraints,
+            dim=n_arts * self.max_constraints,
             inputs=[
                 self.L_by_size[size],
                 self.J_by_size[size],
@@ -2216,7 +2216,7 @@ class SolverFeatherPGS(SolverBase):
                 self.art_to_world,
                 self.constraint_count,
                 size,
-                self.dense_max_constraints,
+                self.max_constraints,
                 n_arts,
             ],
             outputs=[self.Y_by_size[size]],
@@ -2228,7 +2228,7 @@ class SolverFeatherPGS(SolverBase):
         n_arts = self.n_arts_by_size[size]
         wp.launch(
             delassus_par_row_col,
-            dim=n_arts * self.dense_max_constraints * self.dense_max_constraints,
+            dim=n_arts * self.max_constraints * self.max_constraints,
             inputs=[
                 self.J_by_size[size],
                 self.Y_by_size[size],
@@ -2236,7 +2236,7 @@ class SolverFeatherPGS(SolverBase):
                 self.art_to_world,
                 self.constraint_count,
                 size,
-                self.dense_max_constraints,
+                self.max_constraints,
                 n_arts,
             ],
             outputs=[self.C, self.diag],
@@ -2247,7 +2247,7 @@ class SolverFeatherPGS(SolverBase):
         model = self.model
         n_arts = self.n_arts_by_size[size]
         delassus_kernel = TiledKernelFactory.get_delassus_kernel(
-            size, self.dense_max_constraints, model.device, chunk_size=self.delassus_chunk_size
+            size, self.max_constraints, model.device, chunk_size=self.delassus_chunk_size
         )
         wp.launch_tiled(
             delassus_kernel,
@@ -2275,24 +2275,24 @@ class SolverFeatherPGS(SolverBase):
             device=model.device,
         )
 
-    def _stage4_add_dense_contact_compliance(self, dt: float):
-        if self.dense_contact_compliance <= 0.0:
+    def _stage4_add_contact_compliance(self, dt: float):
+        if self.contact_compliance <= 0.0:
             return
 
-        contact_alpha = float(self.dense_contact_compliance / (dt * dt))
+        contact_alpha = float(self.contact_compliance / (dt * dt))
         wp.launch(
-            add_dense_contact_compliance_to_diag,
+            add_contact_compliance_to_diag,
             dim=self.world_count,
             inputs=[self.constraint_count, self.row_type, contact_alpha],
             outputs=[self.diag],
             device=self.model.device,
         )
 
-    def _stage4_diag_from_JY(self, size: int):
+    def _stage4_extract_diag_from_JY(self, size: int):
         n_arts = self.n_arts_by_size[size]
         wp.launch(
-            diag_from_JY_par_art,
-            dim=n_arts * self.dense_max_constraints,
+            extract_diag_from_JY_par_art,
+            dim=n_arts * self.max_constraints,
             inputs=[
                 self.J_by_size[size],
                 self.Y_by_size[size],
@@ -2300,7 +2300,7 @@ class SolverFeatherPGS(SolverBase):
                 self.art_to_world,
                 self.constraint_count,
                 size,
-                self.dense_max_constraints,
+                self.max_constraints,
                 n_arts,
             ],
             outputs=[self.diag],
@@ -2314,7 +2314,7 @@ class SolverFeatherPGS(SolverBase):
             dim=self.world_count,
             inputs=[
                 self.constraint_count,
-                self.dense_max_constraints,
+                self.max_constraints,
                 self.phi,
                 self.row_beta,
                 self.row_type,
@@ -2333,7 +2333,7 @@ class SolverFeatherPGS(SolverBase):
             dim=n_arts,
             inputs=[
                 self.constraint_count,
-                self.dense_max_constraints,
+                self.max_constraints,
                 self.art_to_world,
                 self.art_size,
                 self.art_group_idx,
@@ -2352,7 +2352,7 @@ class SolverFeatherPGS(SolverBase):
         wp.launch(
             prepare_world_impulses,
             dim=self.world_count,
-            inputs=[self.constraint_count, self.dense_max_constraints, warmstart_flag],
+            inputs=[self.constraint_count, self.max_constraints, warmstart_flag],
             outputs=[self.impulses],
             device=self.model.device,
         )
@@ -2373,7 +2373,7 @@ class SolverFeatherPGS(SolverBase):
                 size,
                 n_arts,
                 self.constraint_count,
-                self.dense_max_constraints,
+                self.max_constraints,
                 self.Y_by_size[size],
                 self.impulses,
                 self.v_hat,

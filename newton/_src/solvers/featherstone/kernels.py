@@ -8,10 +8,8 @@ import warp as wp
 from ...math import transform_twist
 from ...sim import BodyFlags, JointType, Model, State
 from ...sim.articulation import (
-    com_twist_to_point_velocity,
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
-    origin_twist_to_com_twist,
 )
 from ..semi_implicit.kernels_body import joint_force
 
@@ -2078,6 +2076,8 @@ def eval_fk_with_velocity_conversion(
         ],
         device=model.device,
     )
+
+
 def eval_fk_with_velocity_conversion_from_joint_starts(
     model: Model,
     articulation_indices: wp.array[int],
