@@ -43,6 +43,11 @@
 - Add `BODY_F`, `PARTICLE_F`, and `JOINT_F` to `StateFlags`.
 - Add `newton.usd.get_mesh()` support for USD stages, file paths, and URLs.
 - Add opt-in full-surface rigid-soft contact generation via `enable_rigid_soft_full_surface_contact` on `Model.collide` and `CollisionPipeline`, with the required rigid-mesh volume SDFs provisioned per-shape through `ModelBuilder.ShapeConfig.configure_sdf(force_sdf=True)` before `finalize()`. When enabled, soft-triangle edges and faces (not just vertices) that cross a rigid shape's signed-distance field are detected by local SDF optimization and written as unified, self-describing records — `Contacts.soft_contact_indices` (a `vec3i` of soft particle ids, `-1` padded: `(p, -1, -1)` particle, `(v0, v1, -1)` edge, `(v0, v1, v2)` face) plus `soft_contact_barycentric` — catching soft edge/face contacts the per-particle path misses. Rigid shape types that cannot supply an edge/face SDF (heightfields, finite planes) warn and fall back to per-particle soft contact rather than disabling the whole pass, while a participating mesh/convex without a provisioned SDF is an error. Consumed by `SolverVBD` (standalone; not yet supported with `SolverCoupledProxy` two-way coupling, which raises); other solvers raise on such contacts. Default off reproduces the per-particle behavior.
+- Add fixed-grid `ParticleSurface.configure_field_grid()` and `update_field()` APIs for CUDA graph-capturable particle density/SDF field extraction.
+- Add public `newton.geometry.ParticleSurface` and `extract_particle_surface()` APIs for particle surface extraction, with optional SDF redistancing and MPM collider extrapolation support.
+- Add particle surface extraction for MPM and general particle sets through the public `newton.geometry.ParticleSurface` and `extract_particle_surface()` APIs.
+- Add opt-in `validate_mesh` parameter to `ModelBuilder.add_cloth_mesh()`, `ModelBuilder.add_soft_mesh()`, and `style3d.add_cloth_mesh()` that warns on degenerate geometry; add public `newton.utils.validate_triangle_mesh()` and `newton.utils.validate_tet_mesh()` utilities
+- Add `ViewerGL.show_loading_splash()` / `ViewerGL.hide_loading_splash()` displaying a stylized Newton's-cradle overlay while the GL viewer waits on Warp kernel compilation; raised automatically by `newton.examples.init()` for visible GL viewers
 
 ### Changed
 
@@ -87,6 +92,14 @@
 - Deprecate implicit render-config updates in `SensorTiledCamera.utils.create_default_light()` and `SensorTiledCamera.utils.assign_checkerboard_material()`; set `sensor.default_render_config.enable_shadows` or `sensor.default_render_config.enable_textures` explicitly instead.
 - Deprecate `SensorTiledCamera(..., config=...)` in favor of `SensorTiledCamera(..., default_render_config=...)`; migrate constructor calls that pass a render config to the new keyword.
 - Deprecate `SensorTiledCamera.render_config` in favor of `SensorTiledCamera.default_render_config`; migrate `sensor.render_config.enable_shadows = True` to `sensor.default_render_config.enable_shadows = True`.
+- `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
+- Rename the MPM grain rendering example to `mpm_particle_rendering` and render separate particle groups with grains and extracted surfaces; run `python -m newton.examples mpm_particle_rendering` instead of `mpm_grain_rendering`.
+- Lower the default particle surface extraction density threshold and smoothing strength, use a slightly finer default MPM surface voxel size, add a direct particle SDF union surface method, and expose droplet-oriented smoothing plus descriptive anisotropy controls in the MPM examples; pass `threshold=0.5`, `smooth_lambda=0.9`, `field_smooth_iterations=1`, `field_smooth_radius=2`, and `voxel_size=0.5 * solver_voxel_size` to restore the previous defaults.
+- Replace paper-style particle surface parameters with descriptive names and tie anisotropic kernel scale to the base `kernel_scale`; use `kernel_scale`, `anisotropy_ratio`, `anisotropy_scale`, `anisotropy_min_neighbors`, and `surface_method` instead of `k_n`, `k_r`, `k_s`, `n_epsilon`, and `field_source`.
+- Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
+
+### Deprecated
+
 - Deprecate `SensorTiledCamera.utils.compute_pinhole_camera_rays()` in favor of `SensorTiledCamera.utils.compute_camera_rays_pinhole()`.
 
 ### Fixed

@@ -462,8 +462,8 @@ If you run the examples from a source checkout with uv, use
   </tr>
   <tr>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_grain_rendering.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_grain_rendering.jpg" alt="MPM Grain Rendering">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_particle_rendering.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_particle_rendering.jpg" alt="MPM Particle Rendering and Surface Extraction">
       </a>
     </td>
     <td align="center" width="33%">
@@ -479,7 +479,7 @@ If you run the examples from a source checkout with uv, use
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>python -m newton.examples mpm_grain_rendering</code>
+      <code>python -m newton.examples mpm_particle_rendering</code>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples mpm_multi_material</code>
@@ -499,8 +499,6 @@ If you run the examples from a source checkout with uv, use
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_snow_ball.jpg" alt="MPM Snow Ball">
       </a>
     </td>
-    <td align="center" width="33%">
-    </td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -508,8 +506,6 @@ If you run the examples from a source checkout with uv, use
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples mpm_snow_ball</code>
-    </td>
-    <td align="center" width="33%">
     </td>
   </tr>
   <tr>

@@ -18,6 +18,7 @@ newton.geometry
    BroadPhaseSAP
    HydroelasticSDF
    NarrowPhase
+   ParticleSurface
 
 .. rubric:: Functions
 
@@ -42,6 +43,7 @@ newton.geometry
    compute_inertia_shape
    compute_offset_mesh
    create_empty_sdf_data
+   extract_particle_surface
    refit_bvh_particle
    refit_bvh_shape
    sdf_box
