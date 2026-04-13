@@ -20,8 +20,8 @@ removes obsolete top-level mode selection and kernel-selection API knobs from
 ## Why Matrix-Free Only
 
 The published nightly ablations already show that the matrix-free path is the
- winner for the private line, while the dense/split modes mostly preserve
- research history rather than current product intent.
+winner for the private line, while the dense/split modes mostly preserve
+research history rather than current product intent.
 
 Using the published nightly run `2026-04-01T20-49-30Z` (`summary.json`,
 commit `53b3188`) from the `gh-pages` artifacts:

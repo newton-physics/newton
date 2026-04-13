@@ -95,8 +95,16 @@ Progress update (2026-04-13, pass 1):
   solve only.
 - Added focused unit coverage for the stripped-down constructor surface and a
   minimal matrix-free smoke step in `newton/tests/test_feather_pgs.py`.
-- Remaining cleanup for later passes: remove dead dense/split-only helper code
-  and supporting branch-local references that are no longer reachable.
+
+Progress update (2026-04-13, pass 2):
+- Removed the remaining dead dense-only and standalone matrix-free solve
+  helpers from `solver_feather_pgs.py`, including obsolete dense kernel
+  factory entries and branch-local solver state that the private line no longer
+  reaches.
+- Reworded the surviving GS kernel comments/docstrings to describe the unified
+  winner path rather than an ablation-era "dense + matrix-free" split.
+- Milestone 2 is now functionally complete on the private solver surface; any
+  leftover cleanup is supporting-surface polish tracked in Milestone 3.
 
 Required work:
 - Remove `dense` and `split` support from the private API implementation.
@@ -185,6 +193,12 @@ Checkpoint:
   constructor behavior. Dense/split-only helper code that becomes unreachable in
   that slice should be removed when practical; broader supporting cleanup stays
   in Milestone 3.
+- Replan update (2026-04-13, pass 2):
+  The next slice tightens Milestone 2 itself instead of jumping ahead: remove
+  the now-dead dense-only / standalone-MF helper paths and rewrite the live GS
+  kernel commentary so the private branch reflects one coherent articulated +
+  free-rigid winner path. After that push, stop before Milestone 3 and leave
+  supporting-surface cleanup plus final validation recording for later passes.
 - If a milestone is too large to finish cleanly, begin the pass by tightening
   this ExecPlan with a short replan note and then complete one reviewable slice
   of that milestone.
