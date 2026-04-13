@@ -63,7 +63,7 @@ jobs:
 
       - name: Start EC2 runner
         id: start-ec2-runner
-        uses: machulav/ec2-github-runner@a00f575a87f3a96ec6de9413d16eeb828a3cc0a8  # v2.5.2
+        uses: machulav/ec2-github-runner@ba8ae6b519e4cde083bc7fc3372577b53acc7572  # v2.6.0
         with:
           mode: start
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
@@ -189,7 +189,7 @@ jobs:
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
 
       - name: Stop EC2 runner
-        uses: machulav/ec2-github-runner@a00f575a87f3a96ec6de9413d16eeb828a3cc0a8  # v2.5.2
+        uses: machulav/ec2-github-runner@ba8ae6b519e4cde083bc7fc3372577b53acc7572  # v2.6.0
         with:
           mode: stop
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
