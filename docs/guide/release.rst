@@ -97,13 +97,10 @@ Code freeze and release branch creation
        run ``uv run docs/generate_api.py``.
    * - ☐
      - On **release-X.Y**: update dependencies in ``pyproject.toml`` from dev
-       to RC versions where applicable, then regenerate ``uv.lock``
-       (``uv lock``) and commit it.
-   * - ☐
-     - On **release-X.Y**: remove the NVIDIA package index
-       (``[[tool.uv.index]]`` entry for ``nvidia``) from ``pyproject.toml``
-       so the release wheel installs purely from PyPI, then regenerate
-       ``uv.lock`` (``uv lock``) and commit.
+       to RC versions where applicable and remove the NVIDIA package index
+       (``[[tool.uv.index]]`` entry for ``nvidia``) so the release wheel
+       installs purely from PyPI, then regenerate ``uv.lock`` (``uv lock``)
+       and commit.
    * - ☐
      - Push tag ``vX.Y.Zrc1``.  This triggers the ``release.yml`` workflow
        (build wheel → PyPI publish with manual approval).
