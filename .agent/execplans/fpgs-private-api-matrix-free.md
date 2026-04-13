@@ -10,7 +10,7 @@ the GitHub PR description directly.
 ## Branch and Workspace
 
 - Working branch: `dturpin/fpgs-private-api-matrix-free`
-- Tracking branch: `origin/fpgs-private-api`
+- Tracking branch: `origin/dturpin/fpgs-private-api-matrix-free`
 - Workspace root: repository root of this worktree
 
 ## Constraints
@@ -185,17 +185,34 @@ Checkpoint:
 Deliverable:
 - Reviewable branch state with validation evidence and no pending plan items.
 
-Required work:
-- Re-run the final focused test set.
-- Re-run `uvx pre-commit run -a`.
-- Update this ExecPlan to reflect what shipped and any intentional omissions.
+Progress update (2026-04-13, pass 4):
+- Repointed the local branch to track
+  `origin/dturpin/fpgs-private-api-matrix-free`, removing the stale
+  `origin/fpgs-private-api` tracking ambiguity from `git status`.
+- Re-ran the final focused solver validation and repository-wide pre-commit
+  checks, then updated this ExecPlan to reflect the shipped end state.
+- Milestone 5 is closed. No milestone items remain on this ExecPlan.
 
 Validation:
-- Record exact commands run and results.
+- `git rev-list --left-right --count upstream/main...HEAD` -> `28 4`.
+  This confirms the branch is rebased onto `upstream/main` and now sits 4
+  commits ahead with no missing upstream-main commits.
+- `uv run --extra dev -m newton.tests -k test_feather_pgs` -> passed
+  (`Ran 2 tests in 14.586s`, `OK`).
+- `uvx pre-commit run -a` -> passed (`ruff`, `ruff format`, `uv-lock`,
+  `typos`, and `check warp array syntax`).
+- `git status --short --branch` after upstream fix ->
+  `## dturpin/fpgs-private-api-matrix-free...origin/dturpin/fpgs-private-api-matrix-free`
+
+Intentional omissions / review notes:
+- The actual GitHub PR description was not edited in this workflow; only the
+  local human-review draft at
+  `.agent/review/fpgs-private-api-pr-description-draft.md` was maintained.
+  That non-edit is a process guarantee from this workspace flow rather than a
+  property that can be independently verified from local files alone.
 
 Checkpoint:
-- Commit and push the final polishing pass.
-- Stop and wait for human review.
+- Commit and push the final closeout state, then stop for human review.
 
 ## Notes for the Implementor
 
@@ -221,6 +238,11 @@ Checkpoint:
   private test and PR draft already added in prior passes. This pass therefore
   closes Milestone 3 by recording that no further branch-local support-surface
   edits are needed, then stops before the final validation milestone.
+- Replan update (2026-04-13, pass 4):
+  The remaining work is strictly closeout: rerun the final validation, fix the
+  stale local tracking branch so the pushed review state is obvious from
+  `git status`, and rewrite Milestone 5 as shipped state with exact results and
+  the one remaining non-verifiable GitHub PR-description note.
 - If a milestone is too large to finish cleanly, begin the pass by tightening
   this ExecPlan with a short replan note and then complete one reviewable slice
   of that milestone.
