@@ -549,14 +549,11 @@ def ray_intersect_plane(geom_to_world: wp.transform, ray_origin: wp.vec3, ray_di
     if t < 0.0:
         return -1.0
 
-    # Check finite bounds (0 = infinite in that axis).  For planes, size stores (half_width, half_length, 0)
-    # some code paths treat it as full extents; tracked in GH-2410.
     hit_x = ro[0] + t * rd[0]
     hit_y = ro[1] + t * rd[1]
 
     half_w = size[0] * 0.5
     half_l = size[1] * 0.5
-    half_l = size[1]
 
     if half_w > 0.0 and wp.abs(hit_x) > half_w:
         return -1.0
