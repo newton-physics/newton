@@ -812,9 +812,9 @@ add_example_test(
 
 add_example_test(
     TestMPMExamples,
-    name="mpm.example_mpm_grain_rendering",
+    name="mpm.example_mpm_particle_rendering",
     devices=cuda_test_devices,
-    test_options={"num-frames": 10},
+    test_options={"num-frames": 6},
     use_viewer=True,
 )
 

@@ -39,6 +39,11 @@
   - Add standalone multiphysics examples and regression coverage for MuJoCo/Kamino, VBD, XPBD, MPM, and ADMM contacts.
   - Add `--coupled-view` to coupled multiphysics examples and expose `SolverCoupled` entry view/state helpers for rendering individual sub-solver views.
 - Add `BODY_F`, `PARTICLE_F`, and `JOINT_F` to `StateFlags`.
+- Add fixed-grid `ParticleSurface.configure_field_grid()` and `update_field()` APIs for CUDA graph-capturable particle density/SDF field extraction.
+- Add public `newton.geometry.ParticleSurface` and `extract_particle_surface()` APIs for particle surface extraction, with optional SDF redistancing and MPM collider extrapolation support.
+- Add particle surface extraction for MPM and general particle sets through the public `newton.geometry.ParticleSurface` and `extract_particle_surface()` APIs.
+- Add opt-in `validate_mesh` parameter to `ModelBuilder.add_cloth_mesh()`, `ModelBuilder.add_soft_mesh()`, and `style3d.add_cloth_mesh()` that warns on degenerate geometry; add public `newton.utils.validate_triangle_mesh()` and `newton.utils.validate_tet_mesh()` utilities
+- Add `ViewerGL.show_loading_splash()` / `ViewerGL.hide_loading_splash()` displaying a stylized Newton's-cradle overlay while the GL viewer waits on Warp kernel compilation; raised automatically by `newton.examples.init()` for visible GL viewers
 
 ### Changed
 
@@ -75,6 +80,14 @@
 - Deprecate reading legacy vendor-namespaced deformable material attributes (`omniphysics:`, `physxDeformableBody:`) off any bound material in `newton.usd.get_tetmesh()`, `newton.TetMesh.create_from_usd()`, and `ModelBuilder.add_usd()`. They are still read during the deprecation window, with a `DeprecationWarning`; a future release will read only canonical `physics:` attributes from a material applying `PhysicsVolumeDeformableMaterialAPI`. Migrate by authoring the canonical attributes, or keep the old behavior without the warning via `compat_namespaces=newton.usd.DEFORMABLE_LEGACY_NAMESPACES` (`get_tetmesh` / `create_from_usd`) or `schema_resolvers=[..., SchemaResolverPhysx()]` (`add_usd`). `compat_namespaces` is now keyword-only; pass `()` to opt into the canonical-only behavior today.
 - Deprecate the `indices` argument of `MeshAdjacency` in favor of `tri_indices`
 - Deprecate `MeshAdjacency.add_edge`; construct a `MeshAdjacency` with `edge_indices` (`[o0, o1, v0, v1]` rows) instead
+- `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
+- Rename the MPM grain rendering example to `mpm_particle_rendering` and render separate particle groups with grains and extracted surfaces; run `python -m newton.examples mpm_particle_rendering` instead of `mpm_grain_rendering`.
+- Lower the default particle surface extraction density threshold and smoothing strength, use a slightly finer default MPM surface voxel size, add a direct particle SDF union surface method, and expose droplet-oriented smoothing plus descriptive anisotropy controls in the MPM examples; pass `threshold=0.5`, `smooth_lambda=0.9`, `field_smooth_iterations=1`, `field_smooth_radius=2`, and `voxel_size=0.5 * solver_voxel_size` to restore the previous defaults.
+- Replace paper-style particle surface parameters with descriptive names and tie anisotropic kernel scale to the base `kernel_scale`; use `kernel_scale`, `anisotropy_ratio`, `anisotropy_scale`, `anisotropy_min_neighbors`, and `surface_method` instead of `k_n`, `k_r`, `k_s`, `n_epsilon`, and `field_source`.
+- Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
+
+### Deprecated
+
 - Deprecate `SensorTiledCamera.utils.compute_pinhole_camera_rays()` in favor of `SensorTiledCamera.utils.compute_camera_rays_pinhole()`.
 
 ### Fixed

@@ -20,8 +20,10 @@ from ...core.types import override
 from ...sim import ModelFlags, StateFlags
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
+from ...geometry.particle_surface import ParticleSurface
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
+from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
 from .rasterized_collisions import (
     Collider,
     build_rigidity_operator,
@@ -1450,6 +1452,75 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """
 
         return update_render_grains(state_prev, state, grains, self._mpm_model.particle_radius, dt)
+
+    def create_particle_surface(self, voxel_size: float | None = None, **kwargs) -> ParticleSurface:
+        """Create a reusable particle surface extraction context.
+
+        Args:
+            voxel_size: Voxel size for the density grid [m].
+                Defaults to ``0.45 * solver_voxel_size``.
+            **kwargs: Forwarded to :class:`newton.geometry.ParticleSurface`.
+
+        Returns:
+            A :class:`newton.geometry.ParticleSurface` context for use with
+            :meth:`extract_particle_surface`.
+        """
+        if voxel_size is None:
+            voxel_size = self._mpm_model.voxel_size * 0.45
+        return ParticleSurface(voxel_size=voxel_size, **kwargs)
+
+    def extract_particle_surface(
+        self,
+        state: newton.State,
+        surface: ParticleSurface,
+        compute_normals: bool = True,
+        extrapolate_into_colliders: bool = False,
+        collider_extrapolation_depth: float | None = None,
+        collider_extrapolation_onset: float = 0.0,
+        particle_flags: wp.array[wp.int32] | None = None,
+    ) -> tuple[wp.array | None, wp.array | None, wp.array | None]:
+        """Extract a triangle mesh from the current particle state.
+
+        Args:
+            state: Current simulation state.
+            surface: Reusable extraction context from
+                :meth:`create_particle_surface`.
+            compute_normals: Whether to compute per-vertex normals.
+            extrapolate_into_colliders: Mirror-extrapolate the particle SDF
+                into collider interiors before meshing.  Requires
+                ``surface.field_mode == "sdf"``.
+            collider_extrapolation_depth: Maximum distance [m] to extrapolate
+                into colliders.  Defaults to ``4 * surface.voxel_size``.
+            collider_extrapolation_onset: Signed collider distance [m] where
+                extrapolation starts.  ``0`` starts at the collider surface.
+            particle_flags: Optional per-particle flags selecting the active
+                particles to surface.  Defaults to the model particle flags.
+
+        Returns:
+            Tuple of ``(vertices, indices, normals)``.  All ``None`` when
+            no surface can be extracted.
+        """
+        if particle_flags is None:
+            particle_flags = self.model.particle_flags
+
+        verts, indices, normals = surface.extract(
+            state.particle_q,
+            radii=self._mpm_model.particle_radius,
+            compute_normals=compute_normals,
+            particle_flags=particle_flags,
+        )
+        if verts is None or not extrapolate_into_colliders:
+            return verts, indices, normals
+
+        return extrapolate_surface_sdf_into_colliders(
+            surface,
+            self._mpm_model.collider,
+            state.body_q,
+            state.body_qd,
+            max_depth=collider_extrapolation_depth,
+            onset=collider_extrapolation_onset,
+            compute_normals=compute_normals,
+        )
 
     def _allocate_grid(
         self,
