@@ -108,9 +108,18 @@ Code freeze and release branch creation
      - Push tag ``vX.Y.Zrc1``.  This triggers the ``release.yml`` workflow
        (build wheel → PyPI publish with manual approval).
    * - ☐
-     - Manually trigger the **minspec** and **multi-GPU** CI workflows on the
-       ``release-X.Y`` branch (these do not run automatically on new
-       branches).  Verify they pass before announcing the RC.
+     - Manually trigger the **minimum-dependency** and **multi-GPU** CI
+       workflows on the ``release-X.Y`` branch (the nightly orchestrator
+       only runs on ``main``).  Verify both pass before announcing the RC.
+
+       .. code-block:: bash
+
+          # Minimum-dependency tests (lowest compatible PyPI versions)
+          gh workflow run minimum_deps_tests.yml --ref release-X.Y
+
+          # Multi-GPU tests (g7e.12xlarge = 4× L40S GPUs)
+          gh workflow run aws_gpu_tests.yml --ref release-X.Y \
+              -f instance-type=g7e.12xlarge
    * - ☐
      - RC1 published to PyPI (approve in GitHub environment).
 
