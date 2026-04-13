@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import collections
+import copy
 import datetime
 import inspect
 import itertools
@@ -17,6 +18,8 @@ from urllib.parse import urljoin
 
 if TYPE_CHECKING:
     from pxr import Usd
+
+    from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
 else:
@@ -354,7 +357,7 @@ def parse_usd(
     # cache for mesh data loaded from USD prims
     mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
     # cache for TetMesh data loaded from USD prims
-    tetmesh_cache: dict[str, Any] = {}
+    tetmesh_cache: dict[str, TetMesh] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -445,7 +448,7 @@ def parse_usd(
             mesh.metallic = material_props["metallic"]
         return mesh
 
-    def _get_tetmesh_cached(prim: Usd.Prim):
+    def _get_tetmesh_cached(prim: Usd.Prim) -> TetMesh:
         """Load and cache TetMesh data to avoid repeated USD extraction."""
         prim_path = str(prim.GetPath())
         if prim_path not in tetmesh_cache:
@@ -2398,6 +2401,17 @@ def parse_usd(
                 R.collect_prim_attrs(prim)
 
             tetmesh = _get_tetmesh_cached(prim)
+            tetmesh_for_builder = tetmesh
+            if tetmesh.custom_attributes:
+                filtered_custom_attributes = {
+                    k: v for k, v in tetmesh.custom_attributes.items() if k in builder.custom_attributes
+                }
+                if len(filtered_custom_attributes) != len(tetmesh.custom_attributes):
+                    # Preserve the cached TetMesh while keeping add_usd's
+                    # current behavior of dropping unregistered import attrs.
+                    tetmesh_for_builder = copy.copy(tetmesh)
+                    tetmesh_for_builder.custom_attributes = filtered_custom_attributes
+
             soft_mesh_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
             soft_mesh_pos, soft_mesh_rot, soft_mesh_scale = wp.transform_decompose(soft_mesh_mat)
 
@@ -2406,19 +2420,12 @@ def parse_usd(
                 "rot": soft_mesh_rot,
                 "scale": 1.0,
                 "vel": wp.vec3(0.0, 0.0, 0.0),
-                "mesh": tetmesh,
+                "mesh": tetmesh_for_builder,
             }
             if _is_uniform_scale(soft_mesh_scale):
                 add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
             else:
                 add_soft_mesh_kwargs["vertices"] = tetmesh.vertices * np.array(soft_mesh_scale, dtype=np.float32)
-
-            # Filter custom attributes to only those registered in the builder,
-            # matching the behavior of the rigid-body/joint import paths.
-            if tetmesh.custom_attributes:
-                tetmesh.custom_attributes = {
-                    k: v for k, v in tetmesh.custom_attributes.items() if k in builder.custom_attributes
-                }
 
             builder.add_soft_mesh(**add_soft_mesh_kwargs)
 
