@@ -137,6 +137,7 @@ url = "https://pypi.nvidia.com/"
 explicit = true
 
 [tool.uv]
+prerelease = "allow"
 conflicts = [
     [
         { extra = "torch-cu12" },
