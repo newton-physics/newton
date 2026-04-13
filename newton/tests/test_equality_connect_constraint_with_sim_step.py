@@ -1311,14 +1311,20 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
         """
         body_inertia = 1.0
         inertia_mat = wp.mat33(
-            body_inertia, 0.0, 0.0,
-            0.0, body_inertia, 0.0,
-            0.0, 0.0, body_inertia,
+            body_inertia,
+            0.0,
+            0.0,
+            0.0,
+            body_inertia,
+            0.0,
+            0.0,
+            0.0,
+            body_inertia,
         )
 
         all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
 
-        for w in range(num_worlds):
+        for _w in range(num_worlds):
             builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 

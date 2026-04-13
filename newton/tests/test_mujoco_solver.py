@@ -6388,7 +6388,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         j1 = builder.add_joint_revolute(b0, b1)
         builder.add_articulation([j0, j1])
         # add a loop joint with asymmetric xforms to exercise relpose computation
-        loop_joint = builder.add_joint_fixed(
+        builder.add_joint_fixed(
             b1,
             b0,
             parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
@@ -6435,7 +6435,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # add one equality constraint before the loop joint
         builder.add_equality_constraint_connect(body1=b0, body2=b1, anchor=wp.vec3(0.0, 0.0, 1.0))
         # add a loop joint
-        loop_joint = builder.add_joint_fixed(
+        builder.add_joint_fixed(
             b0,
             b2,
             # note these offset transforms here are important to ensure valid anchor points for the equality constraints are used
