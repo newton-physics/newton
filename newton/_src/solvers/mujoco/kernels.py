@@ -644,17 +644,19 @@ def convert_warp_coords_to_mj_kernel(
 ):
     worldid, jntid = wp.tid()
 
+    joint_id = joints_per_world * worldid + jntid
+
     # Skip loop joints — they have no MuJoCo qpos/qvel entries
     q_i = mj_q_start[jntid]
     if q_i < 0:
         return
 
     qd_i = mj_qd_start[jntid]
-    type = joint_type[jntid]
-    wq_i = joint_q_start[joints_per_world * worldid + jntid]
-    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    jtype = joint_type[joint_id]
+    wq_i = joint_q_start[joint_id]
+    wqd_i = joint_qd_start[joint_id]
 
-    if type == JointType.FREE:
+    if jtype == JointType.FREE:
         # convert position components
         for i in range(3):
             qpos[worldid, q_i + i] = joint_q[wq_i + i]
@@ -683,7 +685,7 @@ def convert_warp_coords_to_mj_kernel(
         w_world = wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5])
 
         # Get CoM offset in world frame
-        child = joint_child[jntid]
+        child = joint_child[joint_id]
         com_local = body_com[child]
         com_world = wp.quat_rotate(rot, com_local)
 
@@ -702,7 +704,7 @@ def convert_warp_coords_to_mj_kernel(
         qvel[worldid, qd_i + 4] = w_body[1]
         qvel[worldid, qd_i + 5] = w_body[2]
 
-    elif type == JointType.BALL:
+    elif jtype == JointType.BALL:
         # change quaternion order from xyzw to wxyz
         ball_q = wp.quat(joint_q[wq_i], joint_q[wq_i + 1], joint_q[wq_i + 2], joint_q[wq_i + 3])
         ball_q_wxyz = quat_xyzw_to_wxyz(ball_q)
@@ -714,7 +716,7 @@ def convert_warp_coords_to_mj_kernel(
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
     else:
-        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
         for i in range(axis_count):
             ref = float(0.0)
             if dof_ref:
