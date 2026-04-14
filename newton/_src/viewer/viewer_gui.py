@@ -436,6 +436,7 @@ class ViewerGui:
         self._render_gizmos()
         self._render_left_panel()
         self._render_stats_overlay()
+        self._render_scalar_plots()
 
         for callback in self._viewer._ui_callbacks["free"]:
             callback(self.ui.imgui)
@@ -468,7 +469,6 @@ class ViewerGui:
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Model Information", flags=header_flags):
                     imgui.separator()
-                    imgui.text(f"Worlds: {viewer.model.world_count}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[viewer.model.up_axis]}")
                     gravity = viewer.model.gravity.numpy()[0]
@@ -480,15 +480,35 @@ class ViewerGui:
                     imgui.separator()
                     _changed, viewer.show_joints = imgui.checkbox("Show Joints", viewer.show_joints)
                     _changed, viewer.show_contacts = imgui.checkbox("Show Contacts", viewer.show_contacts)
+                    if viewer.show_contacts:
+                        renderer = getattr(viewer, "renderer", None)
+                        if renderer is not None and hasattr(renderer, "arrow_scale"):
+                            _, renderer.arrow_scale = imgui.slider_float("Arrow Scale", renderer.arrow_scale, 0.25, 5.0)
                     _changed, viewer.show_particles = imgui.checkbox("Show Particles", viewer.show_particles)
                     _changed, viewer.show_springs = imgui.checkbox("Show Springs", viewer.show_springs)
                     _changed, viewer.show_com = imgui.checkbox("Show Center of Mass", viewer.show_com)
                     _changed, viewer.show_triangles = imgui.checkbox("Show Cloth", viewer.show_triangles)
                     _changed, viewer.show_collision = imgui.checkbox("Show Collision", viewer.show_collision)
+                    sdf_margin_mode = getattr(viewer, "sdf_margin_mode", None)
+                    SDFMarginMode = getattr(type(viewer), "SDFMarginMode", None)
+                    if sdf_margin_mode is not None and SDFMarginMode is not None:
+                        renderer = getattr(viewer, "renderer", None)
+                        _sdf_margin_labels = ["Off", "Margin", "Margin + Gap"]
+                        _, new_sdf_idx = imgui.combo("Gap + Margin", int(sdf_margin_mode), _sdf_margin_labels)
+                        viewer.sdf_margin_mode = SDFMarginMode(new_sdf_idx)
+                        if viewer.sdf_margin_mode != SDFMarginMode.OFF and renderer is not None:
+                            _, renderer.wireframe_line_width = imgui.slider_float(
+                                "Wireframe Width (px)", renderer.wireframe_line_width, 0.5, 5.0
+                            )
                     _changed, viewer.show_visual = imgui.checkbox("Show Visual", viewer.show_visual)
                     _changed, viewer.show_inertia_boxes = imgui.checkbox(
                         "Show Inertia Boxes", viewer.show_inertia_boxes
                     )
+
+            imgui.set_next_item_open(True, imgui.Cond_.appearing)
+            if imgui.collapsing_header("Example Options"):
+                for callback in viewer._ui_callbacks["side"]:
+                    callback(self.ui.imgui)
 
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Rendering Options"):
@@ -498,13 +518,27 @@ class ViewerGui:
                 for callback in viewer._ui_callbacks.get("rendering", []):
                     callback(self.ui.imgui)
 
-            imgui.set_next_item_open(True, imgui.Cond_.appearing)
-            if imgui.collapsing_header("Example Options"):
-                for callback in viewer._ui_callbacks["side"]:
-                    callback(self.ui.imgui)
+            wind = getattr(viewer, "wind", None)
+            if wind is not None:
+                imgui.set_next_item_open(False, imgui.Cond_.once)
+                if imgui.collapsing_header("Wind"):
+                    imgui.separator()
+                    changed, amplitude = imgui.slider_float("Wind Amplitude", wind.amplitude, -2.0, 2.0, "%.2f")
+                    if changed:
+                        wind.amplitude = amplitude
+                    changed, period = imgui.slider_float("Wind Period", wind.period, 1.0, 30.0, "%.2f")
+                    if changed:
+                        wind.period = period
+                    changed, frequency = imgui.slider_float("Wind Frequency", wind.frequency, 0.1, 5.0, "%.2f")
+                    if changed:
+                        wind.frequency = frequency
+                    direction = [wind.direction[0], wind.direction[1], wind.direction[2]]
+                    changed, direction = imgui.slider_float3("Wind Direction", direction, -1.0, 1.0, "%.2f")
+                    if changed:
+                        wind.direction = direction
 
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
-            if imgui.collapsing_header("Camera"):
+            if imgui.collapsing_header("Controls"):
                 imgui.separator()
                 self._render_camera_info()
 
@@ -581,6 +615,7 @@ class ViewerGui:
 
             if viewer.model is not None:
                 imgui.separator()
+                imgui.text(f"Worlds: {viewer.model.world_count}")
                 imgui.text(f"Bodies: {viewer.model.body_count}")
                 imgui.text(f"Shapes: {viewer.model.shape_count}")
                 imgui.text(f"Joints: {viewer.model.joint_count}")
@@ -601,6 +636,38 @@ class ViewerGui:
         imgui.end()
         if pushed_window_bg:
             imgui.pop_style_color()
+
+    def _render_scalar_plots(self):
+        """Render floating time-series plot window for log_scalar() data."""
+        viewer = self._viewer
+        scalar_buffers = getattr(viewer, "_scalar_buffers", None)
+        if not scalar_buffers:
+            return
+        imgui = self.ui.imgui
+        io = self.ui.io
+        scalar_arrays = getattr(viewer, "_scalar_arrays", {})
+        plot_history_size = getattr(viewer, "_plot_history_size", 250)
+        window_width = 400
+        window_height = min(io.display_size[1] - 20, len(scalar_buffers) * 140 + 60)
+        imgui.set_next_window_pos(
+            imgui.ImVec2(io.display_size[0] - window_width - 10, 10),
+            imgui.Cond_.appearing,
+        )
+        imgui.set_next_window_size(imgui.ImVec2(window_width, window_height), imgui.Cond_.appearing)
+        n = plot_history_size
+        expanded = imgui.begin("Plots")
+        if expanded:
+            graph_size = imgui.ImVec2(-1, 100)
+            for name, buf in scalar_buffers.items():
+                arr = scalar_arrays.get(name)
+                if arr is None:
+                    arr = np.full(n, np.nan, dtype=np.float32)
+                    arr[n - len(buf) :] = np.array(buf, dtype=np.float32)
+                    scalar_arrays[name] = arr
+                overlay = f"{buf[-1]:.4g}" if buf else ""
+                if imgui.collapsing_header(name, imgui.TreeNodeFlags_.default_open.value):
+                    imgui.plot_lines(f"##{name}", arr, graph_size=graph_size, overlay_text=overlay)
+        imgui.end()
 
     def _render_selection_panel(self):
         """Render the articulation selection panel."""
