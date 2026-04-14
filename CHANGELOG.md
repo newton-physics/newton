@@ -151,6 +151,7 @@
 - Fix `SensorRaycast` ignoring `PLANE` geometry
 - Fix box support-map sign flips from quaternion rotation noise (~1e-14) producing invalid GJK/MPR contacts for face-touching boxes with non-trivial base rotations
 - Fix finite plane geometry 2x too large in collision, bounding sphere, and raytrace sensor
+- Fix MJCF importer creating finite planes from MuJoCo visual half-sizes instead of infinite planes
 
 ## [1.0.0] - 2026-03-10
 

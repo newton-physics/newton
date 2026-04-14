@@ -7485,6 +7485,24 @@ class TestContypeConaffinityZero(unittest.TestCase):
         self.assertGreater(solver.mj_data.ncon, 0, "Explicit <pair> should generate contacts")
 
 
+class TestMjcfPlaneInfinite(unittest.TestCase):
+    """Verify MJCF plane geoms are imported as infinite planes."""
+
+    def test_plane_scale_is_zero(self):
+        """MuJoCo plane size is visual-only; imported plane should have zero extents (infinite)."""
+        mjcf = """<mujoco><worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        scale = model.shape_scale.numpy()[0]
+        np.testing.assert_allclose(
+            scale, [0.0, 0.0, 0.0], atol=1e-7, err_msg="MJCF plane should be infinite (zero extents)"
+        )
+
+
 class TestJointFrictionloss(unittest.TestCase):
     """Verify MJCF joint frictionloss is parsed into Newton's joint_friction."""
 
