@@ -250,6 +250,48 @@ class TestSDFUSDParsing(unittest.TestCase):
             mesh1 = builder.shape_source[s1]
             self.assertIsNotNone(mesh1.sdf, "Expected SDF built with sdfMargin")
 
+    def test_physx_sdf_fraction_conversion(self, device=None):
+        """PhysX fractional SDF params are converted to absolute meters via bbox diagonal."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("SDF tests require CUDA device")
+
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_physx_sdf.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
+            p1 = m1.GetPrim()
+            # Set PhysX SDF attributes (fractional, dimensionless)
+            p1.CreateAttribute("physxSDFMeshCollision:sdfResolution", Sdf.ValueTypeNames.Int, custom=True).Set(128)
+            p1.CreateAttribute(
+                "physxSDFMeshCollision:sdfNarrowBandThickness", Sdf.ValueTypeNames.Float, custom=True
+            ).Set(0.5)
+            p1.CreateAttribute("physxSDFMeshCollision:sdfMargin", Sdf.ValueTypeNames.Float, custom=True).Set(0.1)
+            p1.CreateAttribute(
+                "physxSDFMeshCollision:sdfBitsPerSubgridPixel", Sdf.ValueTypeNames.Token, custom=True
+            ).Set("BitsPerPixel32")
+
+            stage.Save()
+
+            # Parse with PhysX resolver
+            from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx
+
+            builder = newton.ModelBuilder()
+            result = parse_usd(
+                builder,
+                str(usd_path),
+                schema_resolvers=[SchemaResolverPhysx(), SchemaResolverNewton()],
+            )
+            s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
+
+            # SDF should have been built from PhysX resolution
+            mesh1 = builder.shape_source[s1]
+            self.assertIsNotNone(mesh1.sdf, "Expected SDF built from PhysX sdfResolution")
+
 
 devices = get_selected_cuda_test_devices()
 add_function_test(
@@ -272,6 +314,12 @@ add_function_test(
     TestSDFUSDParsing,
     "test_usd_sdf_margin",
     TestSDFUSDParsing.test_usd_sdf_margin,
+    devices=devices,
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_physx_sdf_fraction_conversion",
+    TestSDFUSDParsing.test_physx_sdf_fraction_conversion,
     devices=devices,
 )
 
