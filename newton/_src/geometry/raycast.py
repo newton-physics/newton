@@ -11,6 +11,8 @@ from .types import (
 
 # A small constant to avoid division by zero and other numerical issues
 MINVAL = 1e-15
+# Tolerance for near-parallel ray rejection (e.g. ray vs plane)
+PARALLEL_TOL = 1e-6
 
 
 @wp.func
@@ -517,6 +519,51 @@ def ray_intersect_mesh(
 
 
 @wp.func
+def ray_intersect_plane(geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3):
+    """Computes ray-plane intersection.
+
+    The plane lies at z = 0 in local space with normal along +Z.  ``size`` holds ``(width, length, 0)``:
+    the full extents along local X and Y.  A value of ``0`` means infinite in that axis.  The plane is double-sided:
+    rays approaching from either side register intersections.
+
+    Args:
+        geom_to_world: The world transform of the plane.
+        ray_origin: The origin of the ray in world space.
+        ray_direction: The direction of the ray in world space.
+        size: ``(width, length, 0)`` -- full extents; ``0`` = infinite.
+
+    Returns:
+        The distance along the ray to the intersection point, or -1.0 if there is no intersection.
+    """
+    # transform ray to local frame
+    world_to_geom = wp.transform_inverse(geom_to_world)
+    ro = wp.transform_point(world_to_geom, ray_origin)
+    rd = wp.transform_vector(world_to_geom, ray_direction)
+
+    # Ray parallel to the plane (or degenerate)
+    if wp.abs(rd[2]) < PARALLEL_TOL:
+        return -1.0
+
+    # t where the ray crosses z = 0
+    t = -ro[2] / rd[2]
+    if t < 0.0:
+        return -1.0
+
+    hit_x = ro[0] + t * rd[0]
+    hit_y = ro[1] + t * rd[1]
+
+    half_w = size[0] * 0.5
+    half_l = size[1] * 0.5
+
+    if half_w > 0.0 and wp.abs(hit_x) > half_w:
+        return -1.0
+    if half_l > 0.0 and wp.abs(hit_y) > half_l:
+        return -1.0
+
+    return t
+
+
+@wp.func
 def ray_intersect_geom(
     geom_to_world: wp.transform,
     size: wp.vec3,
@@ -529,7 +576,7 @@ def ray_intersect_geom(
     Computes the intersection of a ray with a geometry.
 
     Args:
-        geom_to_world: The world-to-shape transform.
+        geom_to_world: The world transform of the shape.
         size: The size of the geometry.
         geomtype: The type of the geometry.
         ray_origin: The origin of the ray.
@@ -541,7 +588,10 @@ def ray_intersect_geom(
     """
     t_hit = -1.0
 
-    if geomtype == GeoType.SPHERE:
+    if geomtype == GeoType.PLANE:
+        t_hit = ray_intersect_plane(geom_to_world, ray_origin, ray_direction, size)
+
+    elif geomtype == GeoType.SPHERE:
         r = size[0]
         t_hit = ray_intersect_sphere(geom_to_world, ray_origin, ray_direction, r)
 
@@ -593,6 +643,7 @@ def raycast_kernel(
     # Optional: world offsets for multi-world picking
     shape_world: wp.array[int],
     world_offsets: wp.array[wp.vec3],
+    visible_worlds_mask: wp.array[int],
 ):
     """
     Computes the intersection of a ray with all geometries in the scene.
@@ -612,8 +663,16 @@ def raycast_kernel(
         min_body_index: A single-element array to store the body index of the closest geometry. Expected to be initialized to -1.
         shape_world: Optional array mapping shape index to world index. Can be empty to disable world offsets.
         world_offsets: Optional array of world offsets. Can be empty to disable world offsets.
+        visible_worlds_mask: Optional mask array (1=visible, 0=hidden per world). Can be empty to disable filtering.
     """
     shape_idx = wp.tid()
+
+    # Skip shapes from non-visible worlds
+    if visible_worlds_mask and shape_world.shape[0] > 0:
+        world_idx = shape_world[shape_idx]
+        if world_idx >= 0:
+            if visible_worlds_mask[world_idx] == 0:
+                return
 
     # compute shape transform
     b = shape_body[shape_idx]

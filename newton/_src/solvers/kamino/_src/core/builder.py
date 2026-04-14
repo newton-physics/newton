@@ -25,7 +25,7 @@ from .joints import (
 from .materials import MaterialDescriptor, MaterialManager, MaterialPairProperties, MaterialPairsModel, MaterialsModel
 from .math import FLOAT32_EPS
 from .model import ModelKamino, ModelKaminoInfo
-from .shapes import ShapeDescriptorType, is_explicit_geo_type, max_contacts_for_shape_pair
+from .shapes import ShapeDescriptorType, max_contacts_for_shape_pair
 from .size import SizeKamino
 from .time import TimeModel
 from .types import Axis, float32, int32, mat33f, transformf, vec2i, vec3f, vec4f, vec6f
@@ -1130,7 +1130,7 @@ class ModelBuilderKamino:
         # NOTE: This also finalizes the mesh/SDF/HField data on the device
         def make_geometry_source_pointer(geom: GeometryDescriptor, mesh_geoms: dict, device) -> int:
             # Append to data pointers array of the shape has a Mesh, SDF or HField source
-            if is_explicit_geo_type(geom.shape.type):
+            if geom.shape.type.is_explicit:
                 geom_uid = geom.uid
                 # If the geometry has a Mesh, SDF or HField source,
                 # finalize it and retrieve the mesh pointer/index

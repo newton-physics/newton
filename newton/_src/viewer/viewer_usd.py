@@ -649,7 +649,7 @@ class ViewerUSD(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False, smoothing: int = 1):
         """
         Log scalar value (not implemented for USD backend).
 
@@ -658,6 +658,8 @@ class ViewerUSD(ViewerBase):
         Args:
             name: Unique path/name for the scalar signal.
             value: Scalar value to visualize.
+            clear: Ignored by this backend.
+            smoothing: Ignored by this backend.
         """
         pass
 

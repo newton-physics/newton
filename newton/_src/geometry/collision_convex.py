@@ -39,7 +39,6 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
         orientation_b: wp.quat,
         position_a: wp.vec3,
         position_b: wp.vec3,
-        combined_margin: float,
         data_provider: Any,
         contact_threshold: float,
         skip_multi_contact: bool,
@@ -50,31 +49,48 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
         relative_orientation_b = wp.quat_inverse(orientation_a) * orientation_b
         relative_position_b = wp.quat_rotate_inv(orientation_a, position_b - position_a)
 
-        # Enlarge a little bit to avoid contact flickering when the signed distance is close to 0.
-        # This ensures MPR consistently detects resting contacts, preventing alternation between
-        # MPR and GJK across frames for near-touching shapes.
-        enlarge = 1e-4
-        # MPR with small inflate for overlapping shapes.
+        # MPR inflate to prevent MPR/GJK flickering for resting contacts.
+        # The switchover must never coincide with the resting signed distance
+        # (which equals margin_sum when bodies are in stable contact):
+        #   - margin == 0:       enlarge = 1e-4  (resting at 0, switch at 1e-4)
+        #   - 0 < margin < 1e-4: enlarge = 2e-4  (resting < 1e-4, switch at 2e-4)
+        #   - margin >= 1e-4:    enlarge = 0      (resting far from 0, no trick needed)
+        margin_sum = contact_template.margin_a + contact_template.margin_b
+        eps = 1.0e-4
+        if margin_sum <= 0.0:
+            enlarge = eps
+        elif margin_sum < eps:
+            enlarge = 2.0 * eps
+        else:
+            enlarge = 0.0
+
+        # MPR with inflate for overlapping shapes.
         # Exits early (few support queries) when shapes are separated.
         collision, point_a, point_b, normal, penetration = wp.static(solve_mpr.core)(
             geom_a,
             geom_b,
             relative_orientation_b,
             relative_position_b,
-            combined_margin + enlarge,
+            enlarge,
             data_provider,
         )
 
         if collision:
             signed_distance = -penetration + enlarge
+            # Undo the inflate on the witness points so downstream consumers
+            # (manifold builder, contact writer) see true-surface positions.
+            # The midpoint 0.5*(point_a + point_b) is unchanged (corrections cancel).
+            half_enlarge = enlarge * 0.5
+            point_a = point_a - normal * half_enlarge
+            point_b = point_b + normal * half_enlarge
         else:
-            # GJK fallback for separated shapes -- proven accurate normals/distances.
+            # GJK fallback for separated shapes -- no Minkowski inflate; accurate normals/distances.
             _separated, point_a, point_b, normal, signed_distance = wp.static(solve_gjk.core)(
                 geom_a,
                 geom_b,
                 relative_orientation_b,
                 relative_position_b,
-                combined_margin,
+                0.0,
                 data_provider,
             )
 
@@ -134,7 +150,6 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
         orientation_b: wp.quat,
         position_a: wp.vec3,
         position_b: wp.vec3,
-        combined_margin: float,
         data_provider: Any,
         contact_threshold: float,
         writer_data: Any,
@@ -144,30 +159,40 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
         relative_orientation_b = wp.quat_inverse(orientation_a) * orientation_b
         relative_position_b = wp.quat_rotate_inv(orientation_a, position_b - position_a)
 
-        # Enlarge a little bit to avoid contact flickering when the signed distance is close to 0.
-        # This ensures MPR consistently detects resting contacts, preventing alternation between
-        # MPR and GJK across frames for near-touching shapes.
-        enlarge = 1e-4
-        # MPR with small inflate for overlapping shapes.
+        # MPR inflate to prevent MPR/GJK flickering for resting contacts.
+        # See create_solve_convex_multi_contact for detailed explanation.
+        margin_sum = contact_template.margin_a + contact_template.margin_b
+        eps = 1.0e-4
+        if margin_sum <= 0.0:
+            enlarge = eps
+        elif margin_sum < eps:
+            enlarge = 2.0 * eps
+        else:
+            enlarge = 0.0
+
+        # MPR with inflate for overlapping shapes.
         collision, point_a, point_b, normal, penetration = wp.static(solve_mpr.core)(
             geom_a,
             geom_b,
             relative_orientation_b,
             relative_position_b,
-            combined_margin + enlarge,
+            enlarge,
             data_provider,
         )
 
         if collision:
             signed_distance = -penetration + enlarge
+            half_enlarge = enlarge * 0.5
+            point_a = point_a - normal * half_enlarge
+            point_b = point_b + normal * half_enlarge
         else:
-            # GJK fallback for separated shapes.
+            # GJK fallback for separated shapes -- no Minkowski inflate; accurate normals/distances.
             _separated, point_a, point_b, normal, signed_distance = wp.static(solve_gjk.core)(
                 geom_a,
                 geom_b,
                 relative_orientation_b,
                 relative_position_b,
-                combined_margin,
+                0.0,
                 data_provider,
             )
 

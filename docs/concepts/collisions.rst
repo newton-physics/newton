@@ -821,6 +821,18 @@ Mesh collisions use different strategies depending on the pair type:
 
 Uses BVH (Bounding Volume Hierarchy) queries to find nearby triangles, then generates contacts between primitive vertices and triangle surfaces, plus triangle vertices against the primitive.
 
+.. important::
+   **Triangle winding order matters.** Newton uses counter-clockwise (CCW) winding
+   to determine the outward face normal of each triangle. The collision pipeline
+   performs back-face culling: when a convex shape is on the back side of a
+   triangle (behind the face normal), the contact is discarded. This prevents
+   shapes that tunnel through a mesh surface from being trapped by inverted
+   contact normals.
+
+   Supply mesh indices in CCW order when viewed from the outside of the surface.
+   If your mesh has inconsistent or clockwise winding, convex shapes may pass
+   through the surface without generating contacts.
+
 **Mesh vs Plane**
 
 Projects mesh vertices onto the plane and generates contacts for vertices below the plane surface.
@@ -1270,7 +1282,15 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - Attribute
      - Description
    * - :attr:`~Contacts.force`
-     - Contact spatial forces (used by :class:`~sensors.SensorContact`)
+     - Contact spatial forces (used by :class:`~sensors.SensorContact`).
+       Populated by :meth:`~solvers.SolverBase.update_contacts`.
+
+.. note::
+
+   :class:`~solvers.SolverXPBD` with ``rigid_contact_con_weighting`` enabled
+   (the default) does not conserve momentum at contacts.  The per-contact
+   forces written by :meth:`~solvers.SolverXPBD.update_contacts` are
+   approximate -- see that method's documentation for details.
 
 Example usage:
 

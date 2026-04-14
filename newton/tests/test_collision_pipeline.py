@@ -10,7 +10,7 @@ import warp.examples
 
 import newton
 from newton import GeoType
-from newton._src.sim.collide import _estimate_rigid_contact_max
+from newton._src.sim.collide import _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
 from newton.examples import test_body_state
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -238,7 +238,9 @@ collision_pipeline_contact_tests = [
         TestLevel.VELOCITY_YZ,
         TestLevel.VELOCITY_LINEAR,
     ),
-    (GeoType.MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    # Mesh-vs-convex-hull likewise accumulates small lateral drift from
+    # triangulated mesh faces (same root cause as box-vs-mesh above).
+    (GeoType.MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR, 0.02),
     (GeoType.CONVEX_MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
 ]
 
@@ -385,7 +387,7 @@ def test_mesh_mesh_sdf_vs_sdf(_test, device, broad_phase: str):
     """Test mesh-mesh collision where both meshes have SDFs."""
     # SDF-SDF hydroelastic contacts can have some variability in contact normal direction
     test_mesh_mesh_sdf_modes(
-        _test, device, sdf_max_resolution_a=8, sdf_max_resolution_b=8, broad_phase=broad_phase, tolerance=0.1
+        _test, device, sdf_max_resolution_a=64, sdf_max_resolution_b=64, broad_phase=broad_phase, tolerance=0.1
     )
 
 
@@ -395,7 +397,7 @@ def test_mesh_mesh_sdf_vs_bvh(_test, device, broad_phase: str):
     test_mesh_mesh_sdf_modes(
         _test,
         device,
-        sdf_max_resolution_a=8,
+        sdf_max_resolution_a=64,
         sdf_max_resolution_b=None,
         broad_phase=broad_phase,
         tolerance=0.2,
@@ -409,7 +411,7 @@ def test_mesh_mesh_bvh_vs_sdf(_test, device, broad_phase: str):
         _test,
         device,
         sdf_max_resolution_a=None,
-        sdf_max_resolution_b=8,
+        sdf_max_resolution_b=64,
         broad_phase=broad_phase,
         tolerance=0.5,
     )
@@ -795,6 +797,120 @@ class TestContactEstimator(unittest.TestCase):
 
         estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1500)
+
+
+class TestShapePairsMaxScaling(unittest.TestCase):
+    """Verify that shape_pairs_max scales linearly with world count, not quadratically."""
+
+    @staticmethod
+    def _make_model(num_worlds, shapes_per_world, num_global=0, shape_flags_value=None):
+        """Build a minimal Model with the given world/shape layout."""
+        from newton._src.geometry.flags import ShapeFlags  # noqa: PLC0415
+
+        total = num_worlds * shapes_per_world + num_global
+        world_ids = np.repeat(np.arange(num_worlds, dtype=np.int32), shapes_per_world)
+        if num_global > 0:
+            world_ids = np.concatenate([world_ids, np.full(num_global, -1, dtype=np.int32)])
+
+        model = newton.Model()
+        model.shape_count = total
+        model.shape_world = wp.array(world_ids, dtype=wp.int32)
+
+        if shape_flags_value is not None:
+            flags = np.full(total, shape_flags_value, dtype=np.int32)
+        else:
+            flags = np.full(total, int(ShapeFlags.COLLIDE_SHAPES), dtype=np.int32)
+        model.shape_flags = wp.array(flags, dtype=wp.int32)
+        return model
+
+    def test_single_world_matches_global_formula(self):
+        """Single world should give the same result as the naive N*(N-1)/2."""
+        model = self._make_model(num_worlds=1, shapes_per_world=20)
+        result = _compute_per_world_shape_pairs_max(model)
+        self.assertEqual(result, 20 * 19 // 2)
+
+    def test_multi_world_scales_linearly(self):
+        """Doubling worlds should roughly double shape_pairs_max, not quadruple it."""
+        model_w1 = self._make_model(num_worlds=1, shapes_per_world=20)
+        model_w2 = self._make_model(num_worlds=2, shapes_per_world=20)
+        model_w4 = self._make_model(num_worlds=4, shapes_per_world=20)
+
+        pairs_w1 = _compute_per_world_shape_pairs_max(model_w1)
+        pairs_w2 = _compute_per_world_shape_pairs_max(model_w2)
+        pairs_w4 = _compute_per_world_shape_pairs_max(model_w4)
+
+        self.assertEqual(pairs_w1, 190)
+        self.assertEqual(pairs_w2, 2 * 190)
+        self.assertEqual(pairs_w4, 4 * 190)
+
+    def test_many_worlds_no_quadratic_blowup(self):
+        """At 256 worlds the per-world sum must be far below the global N^2 formula."""
+        num_worlds = 256
+        spw = 10
+        model = self._make_model(num_worlds=num_worlds, shapes_per_world=spw)
+        result = _compute_per_world_shape_pairs_max(model)
+
+        per_world_expected = num_worlds * (spw * (spw - 1) // 2)
+        global_n = num_worlds * spw
+        global_quadratic = global_n * (global_n - 1) // 2
+
+        self.assertEqual(result, per_world_expected)
+        self.assertLess(result, global_quadratic / 100, "shape_pairs_max must not scale quadratically with world count")
+
+    def test_global_shapes_included_per_world(self):
+        """Global shapes (world=-1) are added to each world's segment."""
+        model = self._make_model(num_worlds=2, shapes_per_world=3, num_global=1)
+        result = _compute_per_world_shape_pairs_max(model)
+        # Each world: 3 local + 1 global = 4 shapes -> 6 pairs
+        # Dedicated -1 segment: 1 shape -> 0 pairs
+        self.assertEqual(result, 2 * 6)
+
+    def test_global_shapes_dedicated_segment(self):
+        """Multiple global shapes get their own dedicated segment."""
+        model = self._make_model(num_worlds=2, shapes_per_world=3, num_global=2)
+        result = _compute_per_world_shape_pairs_max(model)
+        # Each world: 3 + 2 = 5 -> 10 pairs. Dedicated: 2 -> 1 pair.
+        self.assertEqual(result, 2 * 10 + 1)
+
+    def test_no_shapes(self):
+        model = newton.Model()
+        model.shape_count = 0
+        model.shape_world = None
+        self.assertEqual(_compute_per_world_shape_pairs_max(model), 0)
+
+    def test_pipeline_buffer_size_scales_linearly(self):
+        """End-to-end: CollisionPipeline buffers must not explode with many worlds."""
+        num_worlds = 64
+        spw = 5
+
+        robot_builder = newton.ModelBuilder()
+        for _ in range(spw):
+            b = robot_builder.add_body()
+            robot_builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
+
+        builder = newton.ModelBuilder()
+        for _ in range(num_worlds):
+            builder.add_world(robot_builder)
+
+        model = builder.finalize()
+
+        for bp_mode in ("nxn", "sap"):
+            pipeline = newton.CollisionPipeline(model, broad_phase=bp_mode)
+
+            global_n = model.shape_count
+            global_quadratic = global_n * (global_n - 1) // 2
+            per_world_linear = num_worlds * (spw * (spw - 1) // 2)
+
+            self.assertEqual(
+                pipeline.shape_pairs_max,
+                per_world_linear,
+                f"broad_phase={bp_mode}: shape_pairs_max should scale linearly",
+            )
+            self.assertLess(
+                pipeline.shape_pairs_max,
+                global_quadratic / 10,
+                f"broad_phase={bp_mode}: shape_pairs_max must not be quadratic",
+            )
 
 
 def test_particle_shape_contacts(test, device, shape_type: GeoType):

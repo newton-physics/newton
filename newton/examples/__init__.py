@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import importlib
 import os
 import warnings
@@ -469,6 +470,19 @@ def create_parser():
         metavar="SECONDS",
         help="Run in benchmark mode: measure FPS after a warmup period. If SECONDS is given, stop after that many seconds or --num-frames, whichever comes first.",
     )
+    parser.add_argument(
+        "--warp-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a warp.config attribute (repeatable).",
+    )
+    parser.add_argument(
+        "--realtime",
+        action="store_true",
+        default=False,
+        help="Use the most aggressive process priority in benchmark mode.",
+    )
 
     return parser
 
@@ -532,6 +546,80 @@ def default_args(parser=None):
     return parser.parse_known_args([])[0]
 
 
+def _apply_warp_config(parser, args):
+    """Apply ``--warp-config`` overrides to :obj:`warp.config`.
+
+    Each entry in ``args.warp_config`` must have the form ``KEY=VALUE``.  The
+    key is validated to be an existing attribute of :obj:`warp.config`.  The
+    value is parsed with :func:`ast.literal_eval`; if that fails the raw
+    string is kept.
+
+    Args:
+        parser: The argument parser, used for error reporting.
+        args: Parsed argument namespace containing ``warp_config``.
+    """
+    if not args.warp_config:
+        return
+
+    for entry in args.warp_config:
+        if "=" not in entry:
+            parser.error(f"invalid --warp-config format '{entry}': expected KEY=VALUE")
+
+        key, value_str = entry.split("=", 1)
+
+        if not hasattr(wp.config, key):
+            parser.error(f"invalid --warp-config key '{key}': not a recognized warp.config setting")
+
+        try:
+            value = ast.literal_eval(value_str)
+        except (ValueError, SyntaxError):
+            value = value_str
+
+        setattr(wp.config, key, value)
+
+
+def _raise_benchmark_priority(realtime=False):
+    """Raise process/thread priority for stable benchmark measurements.
+
+    When *realtime* is True, try to use the most aggressive process priority; failure to raise priority is a fatal error.
+    """
+    import sys  # noqa: PLC0415
+
+    def _fail(msg):
+        if realtime:
+            raise SystemExit(f"Error: {msg}")
+        print(f"Warning: Benchmark running at default process priority. Results may vary. {msg}")
+
+    if sys.platform == "win32":
+        try:
+            import psutil  # noqa: PLC0415
+
+            priority = psutil.REALTIME_PRIORITY_CLASS if realtime else psutil.HIGH_PRIORITY_CLASS
+            psutil.Process().nice(priority)
+        except ModuleNotFoundError:
+            _fail("Install 'psutil' to automatically raise priority.")
+    elif sys.platform == "linux":
+        try:
+            os.nice(-20 if realtime else -15)
+        except PermissionError:
+            _fail("Run with elevated privileges to automatically raise priority.")
+    elif sys.platform == "darwin":
+        import ctypes  # noqa: PLC0415
+        import ctypes.util  # noqa: PLC0415
+
+        try:
+            libsystem = ctypes.CDLL(ctypes.util.find_library("System"))
+            # From <sys/qos.h>
+            QOS_CLASS_USER_INITIATED = 0x19
+            QOS_CLASS_USER_INTERACTIVE = 0x21
+            qos = QOS_CLASS_USER_INTERACTIVE if realtime else QOS_CLASS_USER_INITIATED
+            rc = libsystem.pthread_set_qos_class_self_np(qos, 0)
+            if rc != 0:
+                _fail(f"Failed to automatically raise priority (error {rc}).")
+        except OSError as e:
+            _fail(f"Failed to automatically raise priority: {e}")
+
+
 def init(parser=None):
     """Initialize Newton example components from parsed arguments.
 
@@ -559,6 +647,9 @@ def init(parser=None):
         # When parser is provided, use parse_args() to properly handle --help
         args = parser.parse_args()
 
+    # Apply --warp-config overrides before any Warp API calls
+    _apply_warp_config(parser, args)
+
     # Suppress Warp compilation messages if requested
     if args.quiet:
         wp.config.quiet = True
@@ -567,9 +658,10 @@ def init(parser=None):
     if args.device:
         wp.set_device(args.device)
 
-    # Benchmark mode forces null viewer
+    # Benchmark mode forces null viewer and raises process/thread priority
     if args.benchmark is not False:
         args.viewer = "null"
+        _raise_benchmark_priority(realtime=args.realtime)
 
     # Create viewer based on type
     if args.viewer == "gl":

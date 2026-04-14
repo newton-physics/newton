@@ -41,6 +41,7 @@ def is_discrete_shape(shape_type: int) -> bool:
         shape_type == GeoType.BOX
         or shape_type == GeoType.CONVEX_MESH
         or shape_type == GeoTypeEx.TRIANGLE
+        or shape_type == GeoTypeEx.TRIANGLE_PRISM
         or shape_type == GeoType.PLANE
     )
 
@@ -362,7 +363,6 @@ def create_compute_gjk_mpr_contacts(
                 rot_b,
                 pos_a_adjusted,
                 pos_b_adjusted,
-                0.0,  # combined_margin
                 data_provider,
                 rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 type_a == GeoType.SPHERE
@@ -380,7 +380,6 @@ def create_compute_gjk_mpr_contacts(
                 rot_b,
                 pos_a_adjusted,
                 pos_b_adjusted,
-                0.0,  # combined_margin
                 data_provider,
                 rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 writer_data,

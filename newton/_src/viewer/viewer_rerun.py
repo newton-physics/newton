@@ -559,7 +559,7 @@ class ViewerRerun(ViewerBase):
         rr.log(name, rr.Scalars(array_np), static=not self.keep_historical_data)
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False, smoothing: int = 1):
         """
         Log a scalar value for visualization.
 

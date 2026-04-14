@@ -272,14 +272,15 @@ def get_triangle_shape_from_heightfield(
 
     # Transform to world space
     v0_world = wp.transform_point(X_ws, v0_local)
-    v1_world = wp.transform_point(X_ws, v1_local)
-    v2_world = wp.transform_point(X_ws, v2_local)
 
-    # Create triangle shape data (same convention as get_triangle_shape_from_mesh)
+    # Create triangle prism shape data with edges in heightfield-LOCAL space.
+    # The narrow phase passes orientation_a = heightfield rotation, so the
+    # support function operates in the heightfield's local frame where -Z
+    # is always the down direction — no extra arguments needed.
     shape_data = GenericShapeData()
-    shape_data.shape_type = int(GeoTypeEx.TRIANGLE)
-    shape_data.scale = v1_world - v0_world  # B - A
-    shape_data.auxiliary = v2_world - v0_world  # C - A
+    shape_data.shape_type = int(GeoTypeEx.TRIANGLE_PRISM)
+    shape_data.scale = v1_local - v0_local  # B - A in local space
+    shape_data.auxiliary = v2_local - v0_local  # C - A in local space
 
     return shape_data, v0_world
 
