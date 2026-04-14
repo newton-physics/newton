@@ -207,6 +207,7 @@ class ViewerRTX(ViewerUSD):
         # Per-frame pending data (cleared each begin_frame)
         self._pending_xforms: dict[str, tuple[Any, Any]] = {}
         self._pending_mesh_points: dict[str, np.ndarray] = {}
+        self._pending_mesh_normals: dict[str, np.ndarray] = {}
 
         # Build-time line instancers plus runtime-authored capsule layers
 
@@ -1255,6 +1256,7 @@ void main() {
             super().begin_frame(time)
             self._pending_xforms.clear()
             self._pending_mesh_points.clear()
+            self._pending_mesh_normals.clear()
             self._pending_line_batches.clear()
             self._pending_point_batches.clear()
             self._gizmo_log = {}
@@ -1307,6 +1309,12 @@ void main() {
                 else np.asarray(points, dtype=np.float32)
             )
             self._pending_mesh_points[name] = pts
+            if normals is not None:
+                self._pending_mesh_normals[name] = (
+                    normals.numpy().astype(np.float32)
+                    if isinstance(normals, wp.array)
+                    else np.asarray(normals, dtype=np.float32)
+                )
 
     @override
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
@@ -1485,7 +1493,7 @@ void main() {
         return ViewerRTX._make_laned_array_dltensor(np.asarray(points_np, dtype=np.float32), lanes=3)
 
     def _update_ovrtx_mesh_points(self):
-        if self._rtx is None or not self._pending_mesh_points:
+        if self._rtx is None or (not self._pending_mesh_points and not self._pending_mesh_normals):
             return
         with wp.ScopedTimer("ViewerRTX::update_mesh_points", active=PROFILE_ENABLED, use_nvtx=True):
             for mesh_name, points_np in self._pending_mesh_points.items():
@@ -1496,6 +1504,16 @@ void main() {
                 self._rtx.write_array_attribute(
                     prim_paths=[prim_path],
                     attribute_name="points",
+                    tensors=[dl],
+                )
+            for mesh_name, normals_np in self._pending_mesh_normals.items():
+                prim_path = self._mesh_prim_paths.get(mesh_name)
+                if prim_path is None:
+                    continue
+                dl = self._make_point3f_dltensor(normals_np)
+                self._rtx.write_array_attribute(
+                    prim_paths=[prim_path],
+                    attribute_name="normals",
                     tensors=[dl],
                 )
 
