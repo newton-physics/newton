@@ -73,6 +73,9 @@ from .kernels import (
     update_tendon_properties_kernel,
 )
 
+HINGE_CONNECT_AXIS_OFFSET = 0.1
+"""Distance [m] along the hinge axis for the second CONNECT constraint point of a revolute loop joint."""
+
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
     from mujoco_warp import Data as MjWarpData
@@ -4824,7 +4827,7 @@ class SolverMuJoCo(SolverBase):
                 # Rotate axis into the parent body frame (anchor data[0:3] is
                 # in the parent body frame, so the offset must be too).
                 hinge_axis = wp.quat_rotate(parent_xform_tf.q, hinge_axis_local)
-                offset = 0.1  # offset along axis for second constraint point
+                offset = HINGE_CONNECT_AXIS_OFFSET
 
                 self.has_connect_constraints = True
                 self.has_jnt_connect_constraints = True
@@ -5983,6 +5986,7 @@ class SolverMuJoCo(SolverBase):
             inputs=[
                 self.mjc_eq_to_newton_jnt,
                 self.jnt_eq_anchor1_has_axis_offset,
+                HINGE_CONNECT_AXIS_OFFSET,
                 self.model.joint_X_p,
                 self.model.joint_axis,
                 self.model.joint_qd_start,
