@@ -471,6 +471,12 @@ def create_parser():
         metavar="KEY=VALUE",
         help="Override a warp.config attribute (repeatable).",
     )
+    parser.add_argument(
+        "--realtime",
+        action="store_true",
+        default=False,
+        help="Use the most aggressive process priority in benchmark mode.",
+    )
 
     return parser
 
@@ -566,6 +572,48 @@ def _apply_warp_config(parser, args):
         setattr(wp.config, key, value)
 
 
+def _raise_benchmark_priority(realtime=False):
+    """Raise process/thread priority for stable benchmark measurements.
+
+    When *realtime* is True, try to use the most aggressive process priority; failure to raise priority is a fatal error.
+    """
+    import sys  # noqa: PLC0415
+
+    def _fail(msg):
+        if realtime:
+            raise SystemExit(f"Error: {msg}")
+        print(f"Warning: Benchmark running at default process priority. Results may vary. {msg}")
+
+    if sys.platform == "win32":
+        try:
+            import psutil  # noqa: PLC0415
+
+            priority = psutil.REALTIME_PRIORITY_CLASS if realtime else psutil.HIGH_PRIORITY_CLASS
+            psutil.Process().nice(priority)
+        except ModuleNotFoundError:
+            _fail("Install 'psutil' to automatically raise priority.")
+    elif sys.platform == "linux":
+        try:
+            os.nice(-20 if realtime else -15)
+        except PermissionError:
+            _fail("Run with elevated privileges to automatically raise priority.")
+    elif sys.platform == "darwin":
+        import ctypes  # noqa: PLC0415
+        import ctypes.util  # noqa: PLC0415
+
+        try:
+            libsystem = ctypes.CDLL(ctypes.util.find_library("System"))
+            # From <sys/qos.h>
+            QOS_CLASS_USER_INITIATED = 0x19
+            QOS_CLASS_USER_INTERACTIVE = 0x21
+            qos = QOS_CLASS_USER_INTERACTIVE if realtime else QOS_CLASS_USER_INITIATED
+            rc = libsystem.pthread_set_qos_class_self_np(qos, 0)
+            if rc != 0:
+                _fail(f"Failed to automatically raise priority (error {rc}).")
+        except OSError as e:
+            _fail(f"Failed to automatically raise priority: {e}")
+
+
 def init(parser=None):
     """Initialize Newton example components from parsed arguments.
 
@@ -604,9 +652,10 @@ def init(parser=None):
     if args.device:
         wp.set_device(args.device)
 
-    # Benchmark mode forces null viewer
+    # Benchmark mode forces null viewer and raises process/thread priority
     if args.benchmark is not False:
         args.viewer = "null"
+        _raise_benchmark_priority(realtime=args.realtime)
 
     # Create viewer based on type
     if args.viewer == "gl":

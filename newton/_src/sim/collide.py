@@ -155,13 +155,18 @@ def compute_shape_aabbs(
     # outputs
     aabb_lower: wp.array[wp.vec3],
     aabb_upper: wp.array[wp.vec3],
+    geom_data: wp.array[wp.vec4],
+    geom_xform: wp.array[wp.transform],
 ):
-    """Compute axis-aligned bounding boxes for each shape in world space.
+    """Compute AABBs and narrow-phase geometry data for each shape.
 
-    Uses support function for most shapes. Meshes and heightfields use the pre-computed
-    local AABB transformed to world frame. Infinite planes use bounding sphere fallback.
-    AABBs are enlarged by per-shape effective gap for contact detection.
-    Effective expansion is ``shape_margin + shape_gap``.
+    Fuses AABB computation with narrow-phase data preparation so the
+    world transform (``body_q * shape_transform``) is computed once.
+
+    Uses support function for most shapes. Meshes and heightfields use the
+    pre-computed local AABB transformed to world frame. Infinite planes use
+    bounding sphere fallback.  AABBs are enlarged by per-shape effective gap
+    for contact detection.  Effective expansion is ``shape_margin + shape_gap``.
     """
     shape_id = wp.tid()
 
@@ -177,8 +182,10 @@ def compute_shape_aabbs(
     pos = wp.transform_get_translation(X_ws)
     orientation = wp.transform_get_rotation(X_ws)
 
+    margin = shape_margin[shape_id]
+
     # Enlarge AABB by per-shape effective gap for contact detection
-    effective_gap = shape_margin[shape_id] + shape_gap[shape_id]
+    effective_gap = margin + shape_gap[shape_id]
     margin_vec = wp.vec3(effective_gap, effective_gap, effective_gap)
 
     # Check if this is an infinite plane, mesh, or heightfield
@@ -239,33 +246,9 @@ def compute_shape_aabbs(
         aabb_lower[shape_id] = aabb_min_world - margin_vec
         aabb_upper[shape_id] = aabb_max_world + margin_vec
 
-
-@wp.kernel(enable_backward=False)
-def prepare_geom_data_kernel(
-    shape_transform: wp.array[wp.transform],
-    shape_body: wp.array[int],
-    shape_type: wp.array[int],
-    shape_scale: wp.array[wp.vec3],
-    shape_margin: wp.array[float],
-    body_q: wp.array[wp.transform],
-    # Outputs
-    geom_data: wp.array[wp.vec4],  # scale xyz, margin w
-    geom_transform: wp.array[wp.transform],  # world space transform
-):
-    """Prepare geometry data arrays for NarrowPhase API."""
-    idx = wp.tid()
-
-    # Pack scale and margin into geom_data
-    scale = shape_scale[idx]
-    margin = shape_margin[idx]
-    geom_data[idx] = wp.vec4(scale[0], scale[1], scale[2], margin)
-
-    # Compute world space transform
-    body_idx = shape_body[idx]
-    if body_idx >= 0:
-        geom_transform[idx] = wp.transform_multiply(body_q[body_idx], shape_transform[idx])
-    else:
-        geom_transform[idx] = shape_transform[idx]
+    # Narrow-phase geometry data (reuses X_ws and scale already computed above)
+    geom_data[shape_id] = wp.vec4(scale[0], scale[1], scale[2], margin)
+    geom_xform[shape_id] = X_ws
 
 
 def _estimate_rigid_contact_max(model: Model) -> int:
@@ -821,6 +804,8 @@ class CollisionPipeline:
             outputs=[
                 self.narrow_phase.shape_aabb_lower,
                 self.narrow_phase.shape_aabb_upper,
+                self.geom_data,
+                self.geom_transform,
             ],
             device=self.device,
             record_tape=False,
@@ -866,26 +851,6 @@ class CollisionPipeline:
                 self.broad_phase_pair_count,
                 device=self.device,
             )
-
-        # Prepare geometry data arrays for NarrowPhase API
-        wp.launch(
-            kernel=prepare_geom_data_kernel,
-            dim=model.shape_count,
-            inputs=[
-                model.shape_transform,
-                model.shape_body,
-                model.shape_type,
-                model.shape_scale,
-                model.shape_margin,
-                state.body_q,
-            ],
-            outputs=[
-                self.geom_data,
-                self.geom_transform,
-            ],
-            device=self.device,
-            record_tape=False,
-        )
 
         # Create ContactWriterData struct for custom contact writing
         writer_data = ContactWriterData()

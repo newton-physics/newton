@@ -597,8 +597,11 @@ class ViewerBase(ABC):
         self._log_com(state)
 
     def log_contacts(self, contacts: newton.Contacts, state: newton.State):
-        """
-        Creates line segments along contact normals for rendering.
+        """Render contact normals as arrows.
+
+        Each active rigid contact is drawn as an arrow from the contact point
+        along the contact normal.  When ``show_contacts`` is ``False`` the
+        arrow batch is cleared.
 
         Args:
             contacts: The contacts to render.
@@ -606,8 +609,7 @@ class ViewerBase(ABC):
         """
 
         if not self.show_contacts:
-            # Pass None to hide joints - renderer will handle creating empty arrays
-            self.log_lines("/contacts", None, None, None)
+            self.log_arrows("/contacts", None, None, None)
             return
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
@@ -647,7 +649,7 @@ class ViewerBase(ABC):
                 device=self.device,
             )
 
-        # Always call log_lines to update the renderer (handles zero contacts gracefully)
+        # Always call log_arrows to update the renderer (handles zero contacts gracefully)
         if num_contacts > 0:
             # Slice arrays to only include active contacts
             starts = self._contact_points0[:num_contacts]
@@ -657,10 +659,9 @@ class ViewerBase(ABC):
             starts = wp.array([], dtype=wp.vec3, device=self.device)
             ends = wp.array([], dtype=wp.vec3, device=self.device)
 
-        # Use green color for contact normals
         colors = (0.0, 1.0, 0.0)
 
-        self.log_lines("/contacts", starts, ends, colors)
+        self.log_arrows("/contacts", starts, ends, colors)
 
     def log_hydro_contact_surface(
         self,
@@ -1085,18 +1086,51 @@ class ViewerBase(ABC):
         width: float = 0.01,
         hidden: bool = False,
     ):
-        """
-        Log line segments for rendering.
+        """Log line segments for rendering.
+
+        Lines are rendered as screen-space quads whose pixel width is
+        controlled by the renderer (e.g. ``RendererGL.line_width``).
+        The *width* parameter is currently unused and reserved for
+        future world-space width support.
 
         Args:
             name: Unique path/name for the line batch.
             starts: Optional line start points as a Warp vec3 array.
             ends: Optional line end points as a Warp vec3 array.
             colors: Per-line colors as a Warp array, or a single RGB triplet.
-            width: Line width in rendered scene units.
+            width: Reserved for future use (world-space line width).
+                Currently ignored; line width is set in screen-space pixels
+                via the renderer.
             hidden: Whether the line batch should be hidden.
         """
         pass
+
+    def log_arrows(
+        self,
+        name: str,
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
+        width: float = 0.01,
+        hidden: bool = False,
+    ):
+        """Log arrow segments (line + arrowhead) for rendering.
+
+        The GL viewer renders these with a dedicated arrow shader that draws
+        a screen-space quad line body plus a triangular arrowhead per segment.
+        Other backends fall back to :meth:`log_lines`.
+
+        Args:
+            name: Unique path/name for the arrow batch.
+            starts: Optional arrow start points as a Warp vec3 array.
+            ends: Optional arrow end points (arrowhead tip) as a Warp vec3 array.
+            colors: Per-arrow colors as a Warp array, or a single RGB triplet.
+            width: Reserved for future use (world-space line width).
+                Currently ignored; arrow size is set in screen-space pixels
+                via the renderer (e.g. ``RendererGL.arrow_scale``).
+            hidden: Whether the arrow batch should be hidden.
+        """
+        self.log_lines(name, starts, ends, colors, width=width, hidden=hidden)
 
     def log_wireframe_shape(  # noqa: B027
         self,
@@ -2004,7 +2038,6 @@ class ViewerBase(ABC):
             state: Current simulation state
         """
         if not self.show_joints:
-            # Pass None to hide joints - renderer will handle creating empty arrays
             self.log_lines("/model/joints", None, None, None)
             return
 

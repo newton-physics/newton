@@ -2078,6 +2078,7 @@ def solve_body_contact_positions(
     # outputs
     deltas: wp.array[wp.spatial_vector],
     contact_inv_weight: wp.array[float],
+    contact_impulse: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 
@@ -2284,6 +2285,104 @@ def solve_body_contact_positions(
         wp.atomic_add(deltas, body_a, wp.spatial_vector(lin_delta_a, ang_delta_a))
     if body_b >= 0:
         wp.atomic_add(deltas, body_b, wp.spatial_vector(lin_delta_b, ang_delta_b))
+
+    if contact_impulse:
+        wp.atomic_add(contact_impulse, tid, wp.spatial_vector(lin_delta_a, ang_delta_a))
+
+
+@wp.kernel
+def accumulate_weighted_contact_impulse(
+    contact_count: wp.array[int],
+    contact_impulse_iter: wp.array[wp.spatial_vector],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_body: wp.array[int],
+    constraint_inv_weight: wp.array[float],
+    # output (accumulated across iterations)
+    contact_impulse: wp.array[wp.spatial_vector],
+):
+    """Scale per-contact impulse from one iteration by 1/N and accumulate.
+
+    ``constraint_inv_weight[body]`` holds the number of active contacts on
+    each body for the current iteration.  ``apply_body_deltas`` divides the
+    positional correction by that count, so the raw impulse stored per contact
+    is N times too large relative to what was actually applied.
+
+    When only one body is dynamic (the other is kinematic / ground), the
+    weight is simply ``1/N_dynamic``.  When both bodies are dynamic the
+    solver applies ``1/N_a`` to body A and ``1/N_b`` to body B, so there is
+    no single exact scalar.  We use the harmonic mean ``2/(N_a + N_b)`` which
+    is symmetric with respect to body ordering and reduces to ``1/N`` when
+    both counts are equal.
+    """
+    tid = wp.tid()
+    count = contact_count[0]
+    if tid >= count:
+        return
+
+    impulse = contact_impulse_iter[tid]
+
+    weight = 1.0
+    if constraint_inv_weight:
+        n_a = 0.0
+        n_b = 0.0
+        shape_a = contact_shape0[tid]
+        if shape_a >= 0:
+            body_a = shape_body[shape_a]
+            if body_a >= 0:
+                n_a = constraint_inv_weight[body_a]
+        shape_b = contact_shape1[tid]
+        if shape_b >= 0:
+            body_b = shape_body[shape_b]
+            if body_b >= 0:
+                n_b = constraint_inv_weight[body_b]
+        n_sum = n_a + n_b
+        if n_sum > 0.0:
+            if n_a == 0.0:
+                weight = 1.0 / n_b
+            elif n_b == 0.0:
+                weight = 1.0 / n_a
+            else:
+                weight = 2.0 / n_sum
+
+    scaled = wp.spatial_vector(
+        wp.spatial_top(impulse) * weight,
+        wp.spatial_bottom(impulse) * weight,
+    )
+    wp.atomic_add(contact_impulse, tid, scaled)
+
+
+@wp.kernel
+def convert_contact_impulse_to_force(
+    contact_count: wp.array[int],
+    contact_impulse: wp.array[wp.spatial_vector],
+    dt: float,
+    # output
+    contact_force: wp.array[wp.spatial_vector],
+):
+    """Convert accumulated per-contact spatial impulse to ``contacts.force`` spatial vectors.
+
+    The XPBD lambda convention used in this solver already absorbs one power
+    of ``dt`` (see ``compute_contact_constraint_delta``), so dividing the
+    accumulated impulse by the substep ``dt`` yields force [N] and torque [N·m].
+    The linear component includes normal and friction forces; the angular
+    component includes torsional and rolling friction torques.
+
+    The impulse is expected to already include the 1/N contact-weighting
+    correction (applied by ``accumulate_weighted_contact_impulse`` each
+    iteration).
+    """
+    tid = wp.tid()
+    count = contact_count[0]
+    if tid >= count:
+        contact_force[tid] = wp.spatial_vector()
+        return
+
+    inv_dt = 1.0 / dt
+    impulse = contact_impulse[tid]
+    f = wp.spatial_top(impulse) * inv_dt
+    tau = wp.spatial_bottom(impulse) * inv_dt
+    contact_force[tid] = wp.spatial_vector(f, tau)
 
 
 @wp.kernel
