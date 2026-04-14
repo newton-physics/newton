@@ -26,7 +26,7 @@ COLLAPSE_FIXED_JOINTS = False
 
 
 @wp.kernel
-def randomize_states_kernel(joint_q: wp.array3d(dtype=float), seed: int):
+def randomize_states_kernel(joint_q: wp.array3d[float], seed: int):
     tid = wp.tid()
     rng = wp.rand_init(seed, tid)
     joint_q[tid, 0, 0] = 2.0 - 4.0 * wp.randf(rng)
@@ -35,7 +35,7 @@ def randomize_states_kernel(joint_q: wp.array3d(dtype=float), seed: int):
 
 
 @wp.kernel
-def apply_forces_kernel(joint_q: wp.array3d(dtype=float), joint_f: wp.array3d(dtype=float)):
+def apply_forces_kernel(joint_q: wp.array3d[float], joint_f: wp.array3d[float]):
     tid = wp.tid()
     if joint_q[tid, 0, 0] > 0.0:
         joint_f[tid, 0, 0] = -20.0
@@ -57,6 +57,7 @@ class Example:
         verbose = True
 
         world = newton.ModelBuilder()
+        world.default_joint_cfg.armature = 0.1
         world.add_usd(
             newton.examples.get_asset("cartpole.usda"),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
@@ -181,6 +182,7 @@ class Example:
             lambda q, qd: q[2] == 0.0 and newton.math.vec_allclose(q.q, wp.quat_identity()),
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -215,6 +217,7 @@ class Example:
             and qd[5] == 0.0,
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
+        # fmt: on
 
     @staticmethod
     def create_parser():

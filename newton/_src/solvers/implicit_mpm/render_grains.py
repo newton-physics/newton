@@ -11,9 +11,9 @@ __all__ = ["sample_render_grains", "update_render_grains"]
 
 @wp.kernel
 def sample_grains(
-    particles: wp.array(dtype=wp.vec3),
-    radius: wp.array(dtype=float),
-    positions: wp.array2d(dtype=wp.vec3),
+    particles: wp.array[wp.vec3],
+    radius: wp.array[float],
+    positions: wp.array2d[wp.vec3],
 ):
     pid, k = wp.tid()
 
@@ -25,11 +25,11 @@ def sample_grains(
 
 @wp.kernel
 def transform_grains(
-    particle_pos_prev: wp.array(dtype=wp.vec3),
-    particle_transform_prev: wp.array(dtype=wp.mat33),
-    particle_pos: wp.array(dtype=wp.vec3),
-    particle_transform: wp.array(dtype=wp.mat33),
-    positions: wp.array2d(dtype=wp.vec3),
+    particle_pos_prev: wp.array[wp.vec3],
+    particle_transform_prev: wp.array[wp.mat33],
+    particle_pos: wp.array[wp.vec3],
+    particle_transform: wp.array[wp.mat33],
+    positions: wp.array2d[wp.vec3],
 ):
     pid, k = wp.tid()
 
@@ -52,7 +52,7 @@ def advect_grains(
     domain: fem.Domain,
     grid_vel: fem.Field,
     dt: float,
-    positions: wp.array(dtype=wp.vec3),
+    positions: wp.array[wp.vec3],
 ):
     x = domain(s)
     vel = grid_vel(s)
@@ -63,10 +63,10 @@ def advect_grains(
 @wp.kernel
 def advect_grains_from_particles(
     dt: float,
-    particle_pos_prev: wp.array(dtype=wp.vec3),
-    particle_pos: wp.array(dtype=wp.vec3),
-    particle_vel_grad: wp.array(dtype=wp.mat33),
-    positions: wp.array2d(dtype=wp.vec3),
+    particle_pos_prev: wp.array[wp.vec3],
+    particle_pos: wp.array[wp.vec3],
+    particle_vel_grad: wp.array[wp.mat33],
+    positions: wp.array2d[wp.vec3],
 ):
     pid, k = wp.tid()
 
@@ -83,10 +83,10 @@ def advect_grains_from_particles(
 
 @wp.kernel
 def project_grains(
-    radius: wp.array(dtype=float),
-    particle_pos: wp.array(dtype=wp.vec3),
-    particle_frames: wp.array(dtype=wp.mat33),
-    positions: wp.array2d(dtype=wp.vec3),
+    radius: wp.array[float],
+    particle_pos: wp.array[wp.vec3],
+    particle_frames: wp.array[wp.mat33],
+    positions: wp.array2d[wp.vec3],
 ):
     pid, k = wp.tid()
 
@@ -94,13 +94,6 @@ def project_grains(
 
     p_pos = particle_pos[pid]
     p_frame = particle_frames[pid]
-
-    # keep within source particle
-    # pos_loc = wp.inverse(p_frame) @ (pos_adv - p_pos)
-    # dist = wp.max(wp.abs(pos_loc))
-    # if dist > radius:
-    #     pos_loc = pos_loc / dist * radius
-    # p_pos_adv = p_frame @ pos_loc + p_pos
 
     p_frame = (radius[pid] * radius[pid]) * p_frame * wp.transpose(p_frame)
     pos_loc = pos_adv - p_pos

@@ -28,8 +28,6 @@ import newton.examples
 
 
 class Example:
-    GUI_WINDOW = 250  # show last N steps in the GUI plots
-
     def __init__(self, viewer, args):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -128,6 +126,11 @@ class Example:
 
         self._read_status()
 
+        self.viewer.log_scalar("Solver Iterations", self.log_iterations[-1])
+        self.viewer.log_scalar("Kinetic Energy", self.log_energy_kinetic[-1])
+        self.viewer.log_scalar("Potential Energy", self.log_energy_potential[-1])
+        self.viewer.log_scalar("Active Constraints", self.log_nefc[-1])
+
     def test_final(self):
         # Verify the humanoid hasn't exploded or fallen through the ground
         newton.examples.test_body_state(
@@ -199,27 +202,6 @@ class Example:
         ui.text(f"Kinetic E: {self.log_energy_kinetic[-1]:.4f}")
         ui.text(f"Potential E: {self.log_energy_potential[-1]:.4f}")
         ui.text(f"Constraints: {int(self.log_nefc[-1])}")
-        ui.separator()
-
-        w = self.GUI_WINDOW
-        graph_size = ui.ImVec2(-1, 80)
-
-        def padded(data):
-            """Return a fixed-width array, zero-padded on the left if shorter than the window."""
-            arr = np.array(data[-w:], dtype=np.float32)
-            if len(arr) < w:
-                arr = np.pad(arr, (w - len(arr), 0))
-            return arr
-
-        ui.text("Solver Iterations")
-        ui.plot_lines("##iters", padded(self.log_iterations), graph_size=graph_size)
-
-        ui.text("Energy")
-        ui.plot_lines("##ke", padded(self.log_energy_kinetic), graph_size=graph_size, overlay_text="kinetic")
-        ui.plot_lines("##pe", padded(self.log_energy_potential), graph_size=graph_size, overlay_text="potential")
-
-        ui.text("Active Constraints")
-        ui.plot_lines("##nefc", padded(self.log_nefc), graph_size=graph_size)
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

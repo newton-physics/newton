@@ -28,18 +28,17 @@ import newton.examples
 import newton.usd
 import newton.utils
 from newton import Model, ModelBuilder, State, eval_fk
-from newton.math import transform_twist
 from newton.solvers import SolverFeatherstone, SolverVBD
 
 
 @wp.kernel
-def scale_positions(src: wp.array(dtype=wp.vec3), scale: float, dst: wp.array(dtype=wp.vec3)):
+def scale_positions(src: wp.array[wp.vec3], scale: float, dst: wp.array[wp.vec3]):
     i = wp.tid()
     dst[i] = src[i] * scale
 
 
 @wp.kernel
-def scale_body_transforms(src: wp.array(dtype=wp.transform), scale: float, dst: wp.array(dtype=wp.transform)):
+def scale_body_transforms(src: wp.array[wp.transform], scale: float, dst: wp.array[wp.transform]):
     i = wp.tid()
     p = wp.transform_get_translation(src[i])
     q = wp.transform_get_rotation(src[i])
@@ -48,13 +47,13 @@ def scale_body_transforms(src: wp.array(dtype=wp.transform), scale: float, dst: 
 
 @wp.kernel
 def compute_ee_delta(
-    body_q: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
     offset: wp.transform,
     body_id: int,
     bodies_per_world: int,
     target: wp.transform,
     # outputs
-    ee_delta: wp.array(dtype=wp.spatial_vector),
+    ee_delta: wp.array[wp.spatial_vector],
 ):
     world_id = wp.tid()
     tf = body_q[bodies_per_world * world_id + body_id] * offset
@@ -66,72 +65,6 @@ def compute_ee_delta(
     ang_diff = rot_des * wp.quat_inverse(rot)
     # compute pose difference between end effector and target
     ee_delta[world_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
-
-
-def compute_body_jacobian(
-    model: Model,
-    joint_q: wp.array,
-    joint_qd: wp.array,
-    body_id: int | str,  # Can be either body index or body name
-    offset: wp.transform | None = None,
-    velocity: bool = True,
-    include_rotation: bool = False,
-):
-    if isinstance(body_id, str):
-        body_id = model.body_name.get(body_id)
-    if offset is None:
-        offset = wp.transform_identity()
-
-    joint_q.requires_grad = True
-    joint_qd.requires_grad = True
-
-    if velocity:
-
-        @wp.kernel
-        def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
-            mv = transform_twist(offset, body_qd[body_id])
-            if wp.static(include_rotation):
-                for i in range(6):
-                    body_out[i] = mv[i]
-            else:
-                for i in range(3):
-                    body_out[i] = mv[3 + i]
-
-        in_dim = model.joint_dof_count
-        out_dim = 6 if include_rotation else 3
-    else:
-
-        @wp.kernel
-        def compute_body_out(body_q: wp.array(dtype=wp.transform), body_out: wp.array(dtype=float)):
-            tf = body_q[body_id] * offset
-            if wp.static(include_rotation):
-                for i in range(7):
-                    body_out[i] = tf[i]
-            else:
-                for i in range(3):
-                    body_out[i] = tf[i]
-
-        in_dim = model.joint_coord_count
-        out_dim = 7 if include_rotation else 3
-
-    out_state = model.state(requires_grad=True)
-    body_out = wp.empty(out_dim, dtype=float, requires_grad=True)
-    tape = wp.Tape()
-    with tape:
-        eval_fk(model, joint_q, joint_qd, out_state)
-        wp.launch(compute_body_out, 1, inputs=[out_state.body_qd if velocity else out_state.body_q], outputs=[body_out])
-
-    def onehot(i):
-        x = np.zeros(out_dim, dtype=np.float32)
-        x[i] = 1.0
-        return wp.array(x)
-
-    J = np.empty((out_dim, in_dim), dtype=wp.float32)
-    for i in range(out_dim):
-        tape.backward(grads={body_out: onehot(i)})
-        J[i] = joint_qd.grad.numpy() if velocity else joint_q.grad.numpy()
-        tape.zero()
-    return J.astype(np.float32)
 
 
 class Example:
@@ -384,11 +317,31 @@ class Example:
         self.Jacobian_one_hots = [onehot(i, out_dim) for i in range(out_dim)]
 
         @wp.kernel
-        def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
-            # TODO verify transform twist
-            mv = transform_twist(wp.static(self.endeffector_offset), body_qd[wp.static(self.endeffector_id)])
-            for i in range(6):
-                body_out[i] = mv[i]
+        def compute_body_out(
+            body_q: wp.array[wp.transform],
+            body_qd: wp.array[wp.spatial_vector],
+            body_com: wp.array[wp.vec3],
+            body_out: wp.array[float],
+        ):
+            # body_qd is COM-referenced (linear velocity at body COM, world
+            # frame).  Compute EE tip velocity in world frame, consistent with
+            # compute_ee_delta which measures the tip position as
+            # transform_point(body_q, ee_offset).
+            ee_id = wp.static(self.endeffector_id)
+            ee_offset = wp.static(wp.vec3(*self.endeffector_offset.p))
+            X_wb = body_q[ee_id]
+            # Vector from COM to EE tip, rotated to world frame
+            r_world = wp.transform_vector(X_wb, ee_offset - body_com[ee_id])
+            qd = body_qd[ee_id]
+            omega = wp.spatial_bottom(qd)
+            v_com = wp.spatial_top(qd)
+            v_tip = v_com + wp.cross(omega, r_world)
+            body_out[0] = v_tip[0]
+            body_out[1] = v_tip[1]
+            body_out[2] = v_tip[2]
+            body_out[3] = omega[0]
+            body_out[4] = omega[1]
+            body_out[5] = omega[2]
 
         self.compute_body_out_kernel = compute_body_out
         self.temp_state_for_jacobian = self.model.state(requires_grad=True)
@@ -414,7 +367,7 @@ class Example:
         builder.add_urdf(
             str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
             xform=wp.transform(
-                (-50.0, -50.0, -10.0),
+                (-50.0, -50.0, 0.0),
                 wp.quat_identity(),
             ),
             floating=False,
@@ -431,43 +384,45 @@ class Example:
         self.robot_key_poses = np.array(
             [
                 # translation_duration, gripper transform (3D position [cm], 4D quaternion), gripper activation
+                # descend to working height before approaching the cloth
+                [4, 31.0, -60.0, 40.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_open_activation_val],
                 # top left
-                [2.5, 31.0, -60.0, 23.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, 31.0, -60.0, 23.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, 26.0, -60.0, 26.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, 12.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [3, -6.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1, -6.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 31.0, -60.0, 20.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_open_activation_val],
+                [2, 31.0, -60.0, 20.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_close_activation_val],
+                [2, 26.0, -60.0, 26.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_close_activation_val],
+                [2, 12.0, -60.0, 31.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_close_activation_val],
+                [3, -6.0, -60.0, 31.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_close_activation_val],
+                [1, -6.0, -60.0, 31.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_open_activation_val],
                 # bottom left
-                [2, 15.0, -33.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [3, 15.0, -33.0, 21.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [3, 15.0, -33.0, 21.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, 15.0, -33.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [3, -2.0, -33.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1, -2.0, -33.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 15.0, -33.0, 31.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_open_activation_val],
+                [3, 15.0, -33.0, 21.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_open_activation_val],
+                [3, 15.0, -33.0, 21.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_close_activation_val],
+                [2, 15.0, -33.0, 28.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_close_activation_val],
+                [3, -2.0, -33.0, 28.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_close_activation_val],
+                [1, -2.0, -33.0, 28.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_open_activation_val],
                 # top right
-                [2, -28.0, -60.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, -28.0, -60.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, -28.0, -60.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, -18.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [3, 5.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1, 5.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -28.0, -60.0, 28.0, 0.9239, -0.3827, 0.0, 0.0, clamp_open_activation_val],
+                [2, -28.0, -60.0, 20.0, 0.9239, -0.3827, 0.0, 0.0, clamp_open_activation_val],
+                [2, -28.0, -60.0, 20.0, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [2, -18.0, -60.0, 31.0, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [3, 5.0, -60.0, 31.0, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [1, 5.0, -60.0, 31.0, 0.9239, -0.3827, 0.0, 0.0, clamp_open_activation_val],
                 # bottom right
-                [3, -18.0, -30.0, 20.5, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [3, -18.0, -30.0, 20.5, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [3, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [3, -18.0, -30.0, 20.5, 0.9239, -0.3827, 0.0, 0.0, clamp_open_activation_val],
+                [3, -18.0, -30.0, 20.5, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [2, -3.0, -30.0, 31.0, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [3, -3.0, -30.0, 31.0, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [2, -3.0, -30.0, 31.0, 0.9239, -0.3827, 0.0, 0.0, clamp_open_activation_val],
                 # bottom
-                [2, 0.0, -20.0, 30.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, 0.0, -20.0, 19.5, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, 0.0, -20.0, 19.5, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, 0.0, -20.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1.5, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1.5, 0.0, -40.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1.5, 0.0, -40.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, -28.0, -60.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -20.0, 30.0, 0.9239, -0.3827, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -20.0, 19.5, 0.9239, -0.3827, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -20.0, 19.5, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.0, -20.0, 35.0, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [1, 0.0, -30.0, 35.0, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [1.5, 0.0, -30.0, 35.0, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [1.5, 0.0, -40.0, 35.0, 0.9239, -0.3827, 0.0, 0.0, clamp_close_activation_val],
+                [1.5, 0.0, -40.0, 35.0, 0.9239, -0.3827, 0.0, 0.0, clamp_open_activation_val],
+                [2, -28.0, -60.0, 28.0, 0.9239, -0.3827, 0.0, 0.0, clamp_open_activation_val],
             ],
             dtype=np.float32,
         )
@@ -508,7 +463,14 @@ class Example:
         with tape:
             eval_fk(model, joint_q, joint_qd, self.temp_state_for_jacobian)
             wp.launch(
-                self.compute_body_out_kernel, 1, inputs=[self.temp_state_for_jacobian.body_qd], outputs=[self.body_out]
+                self.compute_body_out_kernel,
+                1,
+                inputs=[
+                    self.temp_state_for_jacobian.body_q,
+                    self.temp_state_for_jacobian.body_qd,
+                    self.model.body_com,
+                ],
+                outputs=[self.body_out],
             )
 
         for i in range(out_dim):

@@ -4,6 +4,7 @@
 newton.viewer
 =============
 
+.. py:module:: newton.viewer
 .. currentmodule:: newton.viewer
 
 .. rubric:: Classes
@@ -12,6 +13,7 @@ newton.viewer
    :toctree: _generated
    :nosignatures:
 
+   ViewerBase
    ViewerFile
    ViewerGL
    ViewerNull

@@ -26,6 +26,7 @@ Example usage:
     ```
 """
 
+from .viewer import ViewerBase
 from .viewer_file import ViewerFile
 from .viewer_gl import ViewerGL
 from .viewer_null import ViewerNull
@@ -34,6 +35,7 @@ from .viewer_usd import ViewerUSD
 from .viewer_viser import ViewerViser
 
 __all__ = [
+    "ViewerBase",
     "ViewerFile",
     "ViewerGL",
     "ViewerNull",

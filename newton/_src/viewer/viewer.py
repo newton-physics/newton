@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import enum
 import os
 import sys
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
@@ -15,11 +17,29 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
-from ..core.types import MAXVAL, Axis, nparray
-from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
+from ..core.types import MAXVAL, Axis
+from .kernels import (
+    build_active_particle_mask,
+    compact,
+    compute_hydro_contact_surface_lines,
+    estimate_world_extents,
+    repack_shape_colors,
+)
 
 
 class ViewerBase(ABC):
+    class SDFMarginMode(enum.IntEnum):
+        """Controls which offset surface is visualized for SDF debug wireframes."""
+
+        OFF = 0
+        """Do not draw SDF margin debug wireframes."""
+
+        MARGIN = 1
+        """Wireframe at ``shape_margin`` only."""
+
+        MARGIN_GAP = 2
+        """Wireframe at ``shape_margin`` + ``shape_gap`` (outer contact threshold), not gap alone."""
+
     def __init__(self):
         """Initialize shared viewer state and rendering caches."""
         self.time = 0.0
@@ -92,7 +112,9 @@ class ViewerBase(ABC):
 
         # World offset support
         self.world_offsets = None
-        self.max_worlds = None
+        self._user_spacing: tuple[float, float, float] | None = None
+        self._visible_worlds: set[int] | None = None
+        self._visible_worlds_mask: wp.array | None = None
 
         # Picking
         self.picking_enabled = True
@@ -110,6 +132,7 @@ class ViewerBase(ABC):
         self.show_static = False
         self.show_inertia_boxes = False
         self.show_hydro_contact_surface = False
+        self.sdf_margin_mode: ViewerBase.SDFMarginMode = ViewerBase.SDFMarginMode.OFF
 
         self.gaussians_max_points = 100_000  # Max number of points to visualize per gaussian
 
@@ -119,8 +142,10 @@ class ViewerBase(ABC):
         self._hydro_surface_line_colors: wp.array | None = None
 
         # Per-shape color buffer and indexing
-        self.model_shape_color: wp.array(dtype=wp.vec3) = None
-        self._shape_to_slot: nparray | None = None
+        self.model_shape_color: wp.array[wp.vec3] = None
+        self._shape_to_slot: np.ndarray | None = None
+        self._slot_to_shape: np.ndarray | None = None
+        self._slot_to_shape_wp: wp.array | None = None
         self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
 
         # Isomesh cache for SDF collision visualization
@@ -131,26 +156,50 @@ class ViewerBase(ABC):
         self._gaussian_instances: list[tuple[str, newton.Gaussian, int, wp.transform, int, int, bool]] = []
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
         self._sdf_isomesh_populated: bool = False
-        self._shape_sdf_index_host: nparray | None = None
+        self._shape_sdf_index_host: np.ndarray | None = None
+
+        # SDF margin visualization (wireframe edges).
+        # Mesh cache: keyed by (geo_type, geo_scale, geo_src_id, offset).
+        # Vertex-data cache: keyed by (id(mesh), color) — avoids redundant
+        #   edge extraction when the same mesh appears on multiple shapes.
+        # Edge caches: per-mode dict of
+        #   {shape_idx: (vertex_data, body_idx, shape_xf, world_idx)}.
+        # Keeping separate per-mode caches lets mode toggling reuse GPU VBOs.
+        self._sdf_margin_mesh_cache: dict[tuple, newton.Mesh | None] = {}
+        self._sdf_margin_vdata_cache: dict[tuple, np.ndarray] = {}
+        self._sdf_margin_edge_caches: dict[
+            ViewerBase.SDFMarginMode, dict[int, tuple[np.ndarray, int, np.ndarray, int]]
+        ] = {}
 
     def set_model(self, model: newton.Model | None, max_worlds: int | None = None):
-        """
-        Set the model to be visualized.
+        """Set the model to be visualized.
 
         Args:
             model: The Newton model to visualize.
             max_worlds: Maximum number of worlds to render (None = all).
-                        Useful for performance when training with many environments.
+
+                .. deprecated::
+                    Use :meth:`set_visible_worlds` instead.
         """
         if self.model is not None:
             self.clear_model()
 
         self.model = model
-        self.max_worlds = max_worlds
+
+        if max_worlds is not None:
+            warnings.warn(
+                "max_worlds is deprecated, use set_visible_worlds() instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._visible_worlds = set(range(max_worlds))
+        else:
+            self._visible_worlds = None
 
         if model is not None:
             self.device = model.device
             self._shape_sdf_index_host = model.shape_sdf_index.numpy() if model.shape_sdf_index is not None else None
+            self._build_visible_worlds_mask()
             self._populate_shapes()
 
             # Auto-compute world offsets if not already set
@@ -158,20 +207,78 @@ class ViewerBase(ABC):
                 self._auto_compute_world_offsets()
 
     def _should_render_world(self, world_idx: int) -> bool:
-        """Check if a world should be rendered based on max_worlds limit."""
+        """Check if a world should be rendered based on visible worlds."""
         if world_idx == -1:  # Global entities always rendered
             return True
-        if self.max_worlds is None:
+        if self._visible_worlds is None:
             return True
-        return world_idx < self.max_worlds
+        return world_idx in self._visible_worlds
 
     def _get_render_world_count(self) -> int:
         """Get the number of worlds to render."""
         if self.model is None:
             return 0
-        if self.max_worlds is None:
+        if self._visible_worlds is None:
             return self.model.world_count
-        return min(self.max_worlds, self.model.world_count)
+        return len(self._visible_worlds)
+
+    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
+        """Set which worlds are rendered.
+
+        Only shapes, joints, contacts, and other visualization elements
+        belonging to the specified worlds will be sent to the viewer backend.
+        Call with ``None`` to show all worlds (the default).
+
+        This method can be called between frames to dynamically change which
+        worlds are visualized without recreating the model.
+
+        Args:
+            worlds: Sequence of world indices to render, or ``None`` for all.
+
+        Raises:
+            RuntimeError: If the model has not been set yet.
+        """
+        if self.model is None:
+            raise RuntimeError("Model must be set before calling set_visible_worlds()")
+
+        if worlds is not None:
+            wc = self.model.world_count
+            self._visible_worlds = {w for w in worlds if 0 <= w < wc}
+        else:
+            self._visible_worlds = None
+        self._build_visible_worlds_mask()
+
+        # Clear shape instance batches but preserve geometry cache
+        self._shape_instances = {}
+        self._gaussian_instances = []
+        self._sdf_isomesh_instances = {}
+        self._sdf_isomesh_populated = False
+        self.model_shape_color = None
+        self._shape_to_slot = None
+        self._slot_to_shape = None
+        self._slot_to_shape_wp = None
+        self._shape_to_batch = None
+
+        self._populate_shapes()
+        if self._user_spacing is not None:
+            self.set_world_offsets(self._user_spacing)
+        else:
+            self._auto_compute_world_offsets()
+        self.model_changed = True
+
+    def _build_visible_worlds_mask(self) -> None:
+        """Build a GPU mask array from :attr:`_visible_worlds`."""
+        if self.model is None:
+            self._visible_worlds_mask = None
+            return
+        if self._visible_worlds is None:
+            self._visible_worlds_mask = None
+            return
+        mask = np.zeros(self.model.world_count, dtype=np.int32)
+        for w in self._visible_worlds:
+            if 0 <= w < self.model.world_count:
+                mask[w] = 1
+        self._visible_worlds_mask = wp.array(mask, dtype=int, device=self.device)
 
     def _get_shape_isomesh(self, shape_idx: int) -> newton.Mesh | None:
         """Get the isomesh for a collision shape with a texture SDF.
@@ -227,17 +334,20 @@ class ViewerBase(ABC):
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
         """Set world offsets for visual separation of multiple worlds.
 
+        When :meth:`set_visible_worlds` restricts rendering to a subset, only
+        the visible worlds receive compact grid positions.
+
         Args:
             spacing: Spacing between worlds along each axis as a tuple, list, or wp.vec3.
                      Example: (5.0, 5.0, 0.0) for 5 units spacing in X and Y.
 
         Raises:
-            RuntimeError: If model has not been set yet
+            RuntimeError: If model has not been set yet.
         """
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_world_offsets()")
 
-        world_count = self._get_render_world_count()
+        render_count = self._get_render_world_count()
 
         # Get up axis from model
         up_axis = self.model.up_axis
@@ -246,11 +356,22 @@ class ViewerBase(ABC):
         if isinstance(spacing, (list, wp.vec3)):
             spacing = (float(spacing[0]), float(spacing[1]), float(spacing[2]))
 
-        # Compute offsets using the shared utility function
-        world_offsets = compute_world_offsets(world_count, spacing, up_axis)
+        self._user_spacing = spacing
+
+        # Compute compact grid offsets for the visible world count
+        compact_offsets = compute_world_offsets(render_count, spacing, up_axis)
+
+        # Map compact grid positions back to original world indices
+        full_offsets = np.zeros((self.model.world_count, 3), dtype=np.float32)
+        if self._visible_worlds is None:
+            full_offsets = compact_offsets
+        else:
+            for grid_idx, world_idx in enumerate(sorted(self._visible_worlds)):
+                if world_idx < self.model.world_count and grid_idx < len(compact_offsets):
+                    full_offsets[world_idx] = compact_offsets[grid_idx]
 
         # Convert to warp array
-        self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
+        self.world_offsets = wp.array(full_offsets, dtype=wp.vec3, device=self.device)
 
     def _get_world_extents(self) -> tuple[float, float, float] | None:
         """Get the maximum extents of all worlds in the model."""
@@ -343,6 +464,8 @@ class ViewerBase(ABC):
         if self.model is None:
             return
 
+        self._sync_shape_colors_from_model()
+
         # compute shape transforms and render
         for shapes in self._shape_instances.values():
             visible = self._should_show_shape(shapes.flags, shapes.static)
@@ -383,6 +506,32 @@ class ViewerBase(ABC):
         self._log_non_shape_state(state)
         self.model_changed = False
 
+    def _sync_shape_colors_from_model(self):
+        """Propagate model-owned shape colors into viewer batches.
+
+        Always launches a GPU kernel to repack colors from model order into
+        viewer batch order.  This is cheaper than a D2H transfer + host-side
+        comparison every frame.
+        """
+        if (
+            self.model is None
+            or self.model.shape_color is None
+            or self.model_shape_color is None
+            or self._slot_to_shape_wp is None
+        ):
+            return
+
+        wp.launch(
+            kernel=repack_shape_colors,
+            dim=len(self.model_shape_color),
+            inputs=[self.model.shape_color, self._slot_to_shape_wp],
+            outputs=[self.model_shape_color],
+            device=self.device,
+            record_tape=False,
+        )
+        for batch_ref in self._shape_instances.values():
+            batch_ref.colors_changed = True
+
     def _log_gaussian_shapes(self, state: newton.State):
         """Render Gaussian shapes as point clouds with current body transforms."""
         if not self._gaussian_instances:
@@ -392,7 +541,7 @@ class ViewerBase(ABC):
         offsets_np = None
 
         for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
-            visible = self._should_show_shape(flags, is_static)
+            visible = self._should_show_shape(flags, is_static) and self._should_render_world(world_idx)
             if not visible or not self.show_gaussians:
                 self.log_gaussian(gname, gaussian, hidden=True)
                 continue
@@ -440,6 +589,7 @@ class ViewerBase(ABC):
             )
 
         self._log_inertia_boxes(state)
+        self._log_sdf_margin_wireframes(state)
 
         self._log_triangles(state)
         self._log_particles(state)
@@ -447,8 +597,11 @@ class ViewerBase(ABC):
         self._log_com(state)
 
     def log_contacts(self, contacts: newton.Contacts, state: newton.State):
-        """
-        Creates line segments along contact normals for rendering.
+        """Render contact normals as arrows.
+
+        Each active rigid contact is drawn as an arrow from the contact point
+        along the contact normal.  When ``show_contacts`` is ``False`` the
+        arrow batch is cleared.
 
         Args:
             contacts: The contacts to render.
@@ -456,8 +609,7 @@ class ViewerBase(ABC):
         """
 
         if not self.show_contacts:
-            # Pass None to hide joints - renderer will handle creating empty arrays
-            self.log_lines("/contacts", None, None, None)
+            self.log_arrows("/contacts", None, None, None)
             return
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
@@ -481,11 +633,12 @@ class ViewerBase(ABC):
                     self.model.shape_body,
                     self.model.shape_world,
                     self.world_offsets,
+                    self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
-                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_offset0,
                     contacts.rigid_contact_normal,
                     0.1,  # line length scale factor
                 ],
@@ -496,7 +649,7 @@ class ViewerBase(ABC):
                 device=self.device,
             )
 
-        # Always call log_lines to update the renderer (handles zero contacts gracefully)
+        # Always call log_arrows to update the renderer (handles zero contacts gracefully)
         if num_contacts > 0:
             # Slice arrays to only include active contacts
             starts = self._contact_points0[:num_contacts]
@@ -506,10 +659,9 @@ class ViewerBase(ABC):
             starts = wp.array([], dtype=wp.vec3, device=self.device)
             ends = wp.array([], dtype=wp.vec3, device=self.device)
 
-        # Use green color for contact normals
         colors = (0.0, 1.0, 0.0)
 
-        self.log_lines("/contacts", starts, ends, colors)
+        self.log_arrows("/contacts", starts, ends, colors)
 
     def log_hydro_contact_surface(
         self,
@@ -565,6 +717,7 @@ class ViewerBase(ABC):
                 shape_pairs,
                 self.model.shape_world,
                 self.world_offsets,
+                self._visible_worlds_mask,
                 num_contacts,
                 0.0,
                 0.0005,
@@ -586,10 +739,10 @@ class ViewerBase(ABC):
         self,
         name: str,
         geo_type: int,
-        geo_scale: float | tuple[float, ...] | list[float] | nparray,
-        xforms: wp.array(dtype=wp.transform),
-        colors: wp.array(dtype=wp.vec3) | None = None,
-        materials: wp.array(dtype=wp.vec4) | None = None,
+        geo_scale: float | tuple[float, ...] | list[float] | np.ndarray,
+        xforms: wp.array[wp.transform],
+        colors: wp.array[wp.vec3] | None = None,
+        materials: wp.array[wp.vec4] | None = None,
         geo_thickness: float = 0.0,
         geo_is_solid: bool = True,
         geo_src: newton.Mesh | newton.Heightfield | None = None,
@@ -607,12 +760,12 @@ class ViewerBase(ABC):
                 - Capsule/Cylinder/Cone: (radius, height)
                 - Plane: (width, length) or float for both
                 - Box: (x_extent, y_extent, z_extent) or float for all
-            xforms: wp.array(dtype=wp.transform) of instance transforms
-            colors: wp.array(dtype=wp.vec3) or None (broadcasted if length 1)
-            materials: wp.array(dtype=wp.vec4) or None (broadcasted if length 1)
+            xforms: wp.array[wp.transform] of instance transforms
+            colors: wp.array[wp.vec3] or None (broadcasted if length 1)
+            materials: wp.array[wp.vec4] or None (broadcasted if length 1)
             geo_thickness: Optional thickness used for hashing and solidification.
             geo_is_solid: If False, use shell-thickening for mesh-based geometry.
-            geo_src: Source geometry to use only when :paramref:`geo_type` is
+            geo_src: Source geometry to use only when ``geo_type`` is
                 :attr:`newton.GeoType.MESH`.
             hidden: If True, the shape will not be rendered
         """
@@ -697,7 +850,7 @@ class ViewerBase(ABC):
             geo_is_solid: Whether to render mesh geometry as a solid.
             geo_src: Source :class:`newton.Mesh` or
                 :class:`newton.Heightfield` data when required
-                by :paramref:`geo_type`.
+                by ``geo_type``.
             hidden: Whether the created mesh should be hidden.
         """
 
@@ -848,10 +1001,10 @@ class ViewerBase(ABC):
     def log_mesh(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3),
-        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
-        normals: wp.array(dtype=wp.vec3) | None = None,
-        uvs: wp.array(dtype=wp.vec2) | None = None,
+        points: wp.array[wp.vec3],
+        indices: wp.array[wp.int32] | wp.array[wp.uint32],
+        normals: wp.array[wp.vec3] | None = None,
+        uvs: wp.array[wp.vec2] | None = None,
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
@@ -876,10 +1029,10 @@ class ViewerBase(ABC):
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
     ):
         """
@@ -900,10 +1053,10 @@ class ViewerBase(ABC):
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
     ):
         """
@@ -927,36 +1080,89 @@ class ViewerBase(ABC):
     def log_lines(
         self,
         name: str,
-        starts: wp.array(dtype=wp.vec3) | None,
-        ends: wp.array(dtype=wp.vec3) | None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ),
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
         width: float = 0.01,
         hidden: bool = False,
     ):
-        """
-        Log line segments for rendering.
+        """Log line segments for rendering.
+
+        Lines are rendered as screen-space quads whose pixel width is
+        controlled by the renderer (e.g. ``RendererGL.line_width``).
+        The *width* parameter is currently unused and reserved for
+        future world-space width support.
 
         Args:
             name: Unique path/name for the line batch.
             starts: Optional line start points as a Warp vec3 array.
             ends: Optional line end points as a Warp vec3 array.
             colors: Per-line colors as a Warp array, or a single RGB triplet.
-            width: Line width in rendered scene units.
+            width: Reserved for future use (world-space line width).
+                Currently ignored; line width is set in screen-space pixels
+                via the renderer.
             hidden: Whether the line batch should be hidden.
         """
+        pass
+
+    def log_arrows(
+        self,
+        name: str,
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
+        width: float = 0.01,
+        hidden: bool = False,
+    ):
+        """Log arrow segments (line + arrowhead) for rendering.
+
+        The GL viewer renders these with a dedicated arrow shader that draws
+        a screen-space quad line body plus a triangular arrowhead per segment.
+        Other backends fall back to :meth:`log_lines`.
+
+        Args:
+            name: Unique path/name for the arrow batch.
+            starts: Optional arrow start points as a Warp vec3 array.
+            ends: Optional arrow end points (arrowhead tip) as a Warp vec3 array.
+            colors: Per-arrow colors as a Warp array, or a single RGB triplet.
+            width: Reserved for future use (world-space line width).
+                Currently ignored; arrow size is set in screen-space pixels
+                via the renderer (e.g. ``RendererGL.arrow_scale``).
+            hidden: Whether the arrow batch should be hidden.
+        """
+        self.log_lines(name, starts, ends, colors, width=width, hidden=hidden)
+
+    def log_wireframe_shape(  # noqa: B027
+        self,
+        name: str,
+        vertex_data: np.ndarray | None,
+        world_matrix: np.ndarray | None,
+        hidden: bool = False,
+    ):
+        """Log a wireframe shape for rendering via the geometry-shader line pipeline.
+
+        Args:
+            name: Unique path/name for the wireframe shape.
+            vertex_data: ``(N, 6)`` float32 array of interleaved ``[px,py,pz, cr,cg,cb]``
+                line-segment vertices (pairs).  Pass ``None`` to keep existing
+                geometry and only update the transform.
+            world_matrix: 4x4 float32 model-to-world matrix, or ``None`` to
+                keep the current matrix.
+            hidden: Whether the wireframe shape should be hidden.
+        """
+        pass
+
+    def clear_wireframe_vbo_cache(self):  # noqa: B027
+        """Clear the shared wireframe VBO cache (overridden by GL viewer)."""
         pass
 
     @abstractmethod
     def log_points(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3) | None,
-        radii: wp.array(dtype=wp.float32) | float | None = None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ) = None,
+        points: wp.array[wp.vec3] | None,
+        radii: wp.array[wp.float32] | float | None = None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
     ):
         """
@@ -997,7 +1203,7 @@ class ViewerBase(ABC):
         return
 
     @abstractmethod
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
         """
         Log a numeric array for backend-specific visualization utilities.
 
@@ -1008,13 +1214,24 @@ class ViewerBase(ABC):
         pass
 
     @abstractmethod
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(
+        self,
+        name: str,
+        value: int | float | bool | np.number,
+        *,
+        clear: bool = False,
+        smoothing: int = 1,
+    ):
         """
         Log a scalar signal for backend-specific visualization utilities.
 
         Args:
             name: Unique path/name for the scalar signal.
             value: Scalar value to record.
+            clear: If ``True``, discard previously recorded samples for
+                *name* before logging the new value.
+            smoothing: Number of raw samples to average before committing
+                a point to the plot history.  Defaults to ``1`` (no smoothing).
         """
         pass
 
@@ -1067,9 +1284,9 @@ class ViewerBase(ABC):
             self.world_xforms = None
             self.colors_changed: bool = False
             """Indicates that finalized
-            :attr:`ShapeInstances.colors` changed and
+            ``ShapeInstances.colors`` changed and
             should be included in
-            :meth:`log_instances`.
+            :meth:`~newton.viewer.ViewerBase.log_instances`.
             """
 
         def add(
@@ -1102,7 +1319,7 @@ class ViewerBase(ABC):
             self.worlds.append(world)
             self.model_shapes.append(shape_index)
 
-        def finalize(self, shape_colors: wp.array(dtype=wp.vec3) | None = None):
+        def finalize(self, shape_colors: wp.array[wp.vec3] | None = None):
             """
             Allocates the batch of shape instances as Warp arrays.
 
@@ -1122,7 +1339,7 @@ class ViewerBase(ABC):
 
             self.world_xforms = wp.zeros_like(self.xforms)
 
-        def update(self, state: newton.State, world_offsets: wp.array(dtype=wp.vec3)):
+        def update(self, state: newton.State, world_offsets: wp.array[wp.vec3]):
             """
             Update the world transforms of the shape instances.
 
@@ -1248,12 +1465,13 @@ class ViewerBase(ABC):
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
+        shape_display_color = self.model.shape_color.numpy() if self.model.shape_color is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
 
         # loop over shapes
         for s in range(shape_count):
-            # skip shapes from worlds beyond max_worlds limit
+            # skip shapes from non-visible worlds
             if not self._should_render_world(shape_world[s]):
                 continue
 
@@ -1337,7 +1555,9 @@ class ViewerBase(ABC):
             xform = wp.transform_expand(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
 
-            if (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
+            if shape_display_color is not None:
+                color = wp.vec3(shape_display_color[s])
+            elif (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
                 color = wp.vec3(0.5, 0.5, 0.5)
             else:
                 # Use shape index for color to ensure each collision shape has a different color
@@ -1348,7 +1568,7 @@ class ViewerBase(ABC):
             if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
                 scale = np.asarray(geo_scale, dtype=np.float32)
 
-                if geo_src.color is not None:
+                if shape_display_color is None and geo_src.color is not None:
                     color = wp.vec3(geo_src.color[0:3])
                 if getattr(geo_src, "roughness", None) is not None:
                     material = wp.vec4(float(geo_src.roughness), material.y, material.z, material.w)
@@ -1359,9 +1579,11 @@ class ViewerBase(ABC):
                     if has_texture:
                         material = wp.vec4(material.x, material.y, material.z, 1.0)
 
-            # plane appearance: checkerboard + gray
+            # Planes keep their checkerboard material even when model.shape_color
+            # is populated with resolved default colors.
             if geo_type == newton.GeoType.PLANE:
-                color = wp.vec3(0.125, 0.125, 0.15)
+                if shape_display_color is None:
+                    color = wp.vec3(0.125, 0.125, 0.15)
                 material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
             # add render instance
@@ -1398,9 +1620,17 @@ class ViewerBase(ABC):
             for local_idx, s_idx in enumerate(batch.model_shapes):
                 shape_to_slot[s_idx] = start + local_idx
         self._shape_to_slot = shape_to_slot
+        slot_to_shape = np.empty(total_instances, dtype=np.int32)
+        for s_idx, slot in enumerate(shape_to_slot):
+            if slot >= 0:
+                slot_to_shape[slot] = s_idx
+        self._slot_to_shape = slot_to_shape
+        self._slot_to_shape_wp = (
+            wp.array(slot_to_shape, dtype=wp.int32, device=self.device) if total_instances else None
+        )
 
         # Build shape -> batch reference mapping for change signalling
-        shape_to_batch = [None] * shape_count
+        shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count
         for batch in batches:
             for s_idx in batch.model_shapes:
                 shape_to_batch[s_idx] = batch
@@ -1428,7 +1658,7 @@ class ViewerBase(ABC):
         shape_count = len(shape_body)
 
         for s in range(shape_count):
-            # skip shapes from worlds beyond max_worlds limit
+            # skip shapes from non-visible worlds
             if not self._should_render_world(shape_world[s]):
                 continue
 
@@ -1517,16 +1747,27 @@ class ViewerBase(ABC):
         Args:
             shape_colors: mapping from shape index -> color
         """
-        if self.model_shape_color is None or self._shape_to_slot is None or self._shape_to_batch is None:
+        warnings.warn(
+            "Viewer.update_shape_colors() is deprecated. Write to model.shape_color instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+
+        if self._shape_to_slot is None or self._shape_to_batch is None:
             return
 
         for s_idx, col in shape_colors.items():
             if s_idx < 0 or s_idx >= len(self._shape_to_slot):
                 raise ValueError(f"Shape index {s_idx} out of bounds")
+
+            if self.model is not None and self.model.shape_color is not None:
+                self.model.shape_color[s_idx : s_idx + 1].fill_(wp.vec3(col))
+
             slot = int(self._shape_to_slot[s_idx])
             if slot < 0:
                 continue
-            self.model_shape_color[slot : slot + 1].fill_(wp.vec3(col))
+            if self.model_shape_color is not None:
+                self.model_shape_color[slot : slot + 1].fill_(wp.vec3(col))
             batch_ref = self._shape_to_batch[s_idx]
             if batch_ref is not None:
                 batch_ref.colors_changed = True
@@ -1561,7 +1802,7 @@ class ViewerBase(ABC):
                 self.model.body_inv_mass,
                 self.model.body_world,
                 self.world_offsets,
-                self.max_worlds if self.max_worlds is not None else -1,
+                self._visible_worlds_mask,
                 wp.vec3(0.5, 0.5, 0.5),  # color
             ],
             outputs=[
@@ -1576,6 +1817,220 @@ class ViewerBase(ABC):
             "/model/inertia_boxes", self._inertia_box_points0, self._inertia_box_points1, self._inertia_box_colors
         )
 
+    def _compute_shape_offset_mesh(
+        self,
+        shape_idx: int,
+        mode: ViewerBase.SDFMarginMode,
+        margin_np: np.ndarray,
+        gap_np: np.ndarray,
+        type_np: np.ndarray,
+        scale_np: np.ndarray,
+    ) -> newton.Mesh | None:
+        """Compute the offset isosurface mesh for a collision shape.
+
+        Args:
+            shape_idx: Index of the shape in the model.
+            mode: Which offset to use (MARGIN or MARGIN_GAP).
+            margin_np: Pre-snapshotted ``shape_margin`` host array.
+            gap_np: Pre-snapshotted ``shape_gap`` host array.
+            type_np: Pre-snapshotted ``shape_type`` host array.
+            scale_np: Pre-snapshotted ``shape_scale`` host array.
+
+        Returns:
+            Mesh for the offset surface, or ``None`` if unavailable.
+        """
+        if self.model is None or mode == self.SDFMarginMode.OFF:
+            return None
+
+        shape_margin_val = float(margin_np[shape_idx])
+
+        if mode == self.SDFMarginMode.MARGIN:
+            offset = shape_margin_val
+        else:
+            offset = shape_margin_val + float(gap_np[shape_idx])
+
+        if offset < 0.0:
+            return None
+
+        geo_type = int(type_np[shape_idx])
+        geo_scale = [float(v) for v in scale_np[shape_idx]]
+        geo_src = self.model.shape_source[shape_idx]
+
+        # Replicated meshes share the same SDF object via Mesh.__deepcopy__,
+        # so keying on id(sdf) deduplicates across worlds.
+        geo_identity = id(getattr(geo_src, "sdf", None) or geo_src) if geo_src is not None else 0
+        cache_key = (geo_type, tuple(geo_scale), geo_identity, offset)
+
+        if cache_key in self._sdf_margin_mesh_cache:
+            return self._sdf_margin_mesh_cache[cache_key]
+
+        from ..geometry.sdf_utils import compute_offset_mesh  # noqa: PLC0415
+
+        mesh = compute_offset_mesh(
+            shape_type=geo_type,
+            shape_geo=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
+            shape_scale=geo_scale,
+            offset=offset,
+            device=self.device,
+        )
+        self._sdf_margin_mesh_cache[cache_key] = mesh
+        return mesh
+
+    @staticmethod
+    def _extract_wireframe_edges(mesh: newton.Mesh, color: tuple[float, float, float]) -> np.ndarray:
+        """Extract deduplicated edges from a mesh and return interleaved vertex data.
+
+        Args:
+            mesh: Source mesh.
+            color: RGB colour tuple applied to every vertex.
+
+        Returns:
+            ``(E*2, 6)`` float32 array — pairs of ``[px, py, pz, cr, cg, cb]``.
+        """
+        verts = np.asarray(mesh.vertices, dtype=np.float32).reshape(-1, 3)
+        indices = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
+
+        edge_set: set[tuple[int, int]] = set()
+        for tri in indices:
+            i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
+            edge_set.add((min(i0, i1), max(i0, i1)))
+            edge_set.add((min(i1, i2), max(i1, i2)))
+            edge_set.add((min(i2, i0), max(i2, i0)))
+
+        num_edges = len(edge_set)
+        data = np.empty((num_edges * 2, 6), dtype=np.float32)
+        cr, cg, cb = color
+        idx = 0
+        for a, b in edge_set:
+            pa = verts[a]
+            pb = verts[b]
+            data[idx] = [pa[0], pa[1], pa[2], cr, cg, cb]
+            data[idx + 1] = [pb[0], pb[1], pb[2], cr, cg, cb]
+            idx += 2
+        return data
+
+    def _populate_sdf_margin_edges(
+        self,
+        mode: ViewerBase.SDFMarginMode,
+        target: dict[int, tuple[np.ndarray, int, np.ndarray, int]],
+    ):
+        """Compute offset meshes and extract wireframe edge data for every collision shape.
+
+        Results are written into *target* (keyed by shape index).
+        """
+        if self.model is None:
+            return
+
+        if mode == self.SDFMarginMode.MARGIN:
+            color_rgb = (1.0, 0.9, 0.0)
+        else:
+            color_rgb = (1.0, 0.5, 0.0)
+
+        shape_body = self.model.shape_body.numpy()
+        shape_flags = self.model.shape_flags.numpy()
+        shape_world = self.model.shape_world.numpy()
+        shape_transform = self.model.shape_transform.numpy()
+        margin_np = self.model.shape_margin.numpy()
+        gap_np = self.model.shape_gap.numpy()
+        type_np = self.model.shape_type.numpy()
+        scale_np = self.model.shape_scale.numpy()
+        shape_count = len(shape_body)
+
+        for s in range(shape_count):
+            if not self._should_render_world(shape_world[s]):
+                continue
+            if not (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)):
+                continue
+
+            offset_mesh = self._compute_shape_offset_mesh(s, mode, margin_np, gap_np, type_np, scale_np)
+            if offset_mesh is None:
+                continue
+
+            vd_key = (id(offset_mesh), color_rgb)
+            vertex_data = self._sdf_margin_vdata_cache.get(vd_key)
+            if vertex_data is None:
+                vertex_data = self._extract_wireframe_edges(offset_mesh, color_rgb)
+                self._sdf_margin_vdata_cache[vd_key] = vertex_data
+
+            body_idx = int(shape_body[s])
+            world_idx = int(shape_world[s])
+            shape_xf = shape_transform[s].copy()
+            target[s] = (vertex_data, body_idx, shape_xf, world_idx)
+
+    @staticmethod
+    def _transform_to_mat44(tf: np.ndarray) -> np.ndarray:
+        """Convert a 7-element Warp transform ``[tx,ty,tz, qx,qy,qz,qw]`` to a flat column-major 4x4 matrix.
+
+        Returns a shape ``(16,)`` float32 array laid out column-by-column
+        (OpenGL convention), matching the format used by pyglet ``Mat4``.
+        """
+        px, py, pz = float(tf[0]), float(tf[1]), float(tf[2])
+        qx, qy, qz, qw = float(tf[3]), float(tf[4]), float(tf[5]), float(tf[6])
+        x2, y2, z2 = 2 * qx * qx, 2 * qy * qy, 2 * qz * qz
+        xy, xz, yz = 2 * qx * qy, 2 * qx * qz, 2 * qy * qz
+        wx, wy, wz = 2 * qw * qx, 2 * qw * qy, 2 * qw * qz
+        # fmt: off
+        return np.array([
+            1 - y2 - z2,  xy + wz,      xz - wy,      0,   # column 0
+            xy - wz,      1 - x2 - z2,  yz + wx,       0,   # column 1
+            xz + wy,      yz - wx,       1 - x2 - y2,  0,   # column 2
+            px,            py,            pz,            1,   # column 3
+        ], dtype=np.float32)
+        # fmt: on
+
+    def _log_sdf_margin_wireframes(self, state: newton.State):
+        """Update and render SDF margin wireframe edges."""
+        mode = self.sdf_margin_mode
+        visible = mode != self.SDFMarginMode.OFF
+
+        if self.model_changed:
+            self._sdf_margin_edge_caches.clear()
+            self._sdf_margin_mesh_cache.clear()
+            self._sdf_margin_vdata_cache.clear()
+            self.clear_wireframe_vbo_cache()
+
+        if visible:
+            edge_cache = self._sdf_margin_edge_caches.get(mode)
+            if edge_cache is None:
+                edge_cache = {}
+                self._populate_sdf_margin_edges(mode, edge_cache)
+                self._sdf_margin_edge_caches[mode] = edge_cache
+
+                identity = np.eye(4, dtype=np.float32).ravel(order="F")
+                for s, (vertex_data, _body_idx, _shape_xf, _world_idx) in edge_cache.items():
+                    name = f"/model/sdf_margin_wf/{mode.value}/{s}"
+                    self.log_wireframe_shape(name, vertex_data, identity, hidden=False)
+
+        # Hide inactive modes, show active mode
+        for cached_mode, cached_edges in self._sdf_margin_edge_caches.items():
+            hidden = not visible or cached_mode != mode
+            for s in cached_edges:
+                name = f"/model/sdf_margin_wf/{cached_mode.value}/{s}"
+                self.log_wireframe_shape(name, None, None, hidden=hidden)
+
+        if not visible:
+            return
+
+        # Update world transforms for the active mode
+        body_q = state.body_q.numpy() if state is not None and state.body_q is not None else None
+        offsets_np = self.world_offsets.numpy() if self.world_offsets is not None else None
+
+        for s, (_vertex_data, body_idx, shape_xf, world_idx) in edge_cache.items():
+            name = f"/model/sdf_margin_wf/{mode.value}/{s}"
+            shape_mat = self._transform_to_mat44(shape_xf)
+            if body_idx >= 0 and body_q is not None:
+                body_mat = self._transform_to_mat44(body_q[body_idx])
+                bm = body_mat.reshape(4, 4, order="F")
+                sm = shape_mat.reshape(4, 4, order="F")
+                world_mat = (bm @ sm).ravel(order="F")
+            else:
+                world_mat = shape_mat.copy()
+            if offsets_np is not None and world_idx >= 0:
+                world_mat[12] += offsets_np[world_idx][0]
+                world_mat[13] += offsets_np[world_idx][1]
+                world_mat[14] += offsets_np[world_idx][2]
+            self.log_wireframe_shape(name, None, world_mat, hidden=False)
+
     def _log_joints(self, state: newton.State):
         """
         Creates line segments for joint basis vectors for rendering.
@@ -1583,7 +2038,6 @@ class ViewerBase(ABC):
             state: Current simulation state
         """
         if not self.show_joints:
-            # Pass None to hide joints - renderer will handle creating empty arrays
             self.log_lines("/model/joints", None, None, None)
             return
 
@@ -1616,6 +2070,7 @@ class ViewerBase(ABC):
                 state.body_q,
                 self.model.body_world,
                 self.world_offsets,
+                self._visible_worlds_mask,
                 self.model.shape_collision_radius,
                 self.model.shape_body,
                 0.1,  # line scale factor
@@ -1651,6 +2106,7 @@ class ViewerBase(ABC):
                 self.model.body_com,
                 self.model.body_world,
                 self.world_offsets,
+                self._visible_worlds_mask,
             ],
             outputs=[self._com_positions],
             device=self.device,
@@ -1670,37 +2126,51 @@ class ViewerBase(ABC):
 
     def _log_particles(self, state: newton.State):
         if self.model.particle_count:
-            # just set colors on first frame
+            points = state.particle_q
+            radii = self.model.particle_radius
+
+            # Filter out inactive particles so emitters/culled particles are not rendered.
+            # Uses Warp stream compaction to stay on device and avoid GPU→CPU→GPU roundtrips.
+            if self.model.particle_flags is not None:
+                n = self.model.particle_count
+                mask = wp.zeros(n, dtype=wp.int32, device=self.device)
+                wp.launch(
+                    build_active_particle_mask, dim=n, inputs=[self.model.particle_flags, mask], device=self.device
+                )
+                offsets = wp.empty(n, dtype=wp.int32, device=self.device)
+                wp.utils.array_scan(mask, offsets, inclusive=False)
+
+                # Slice to transfer only the last element instead of the full array.
+                active_count = int(offsets[-1:].numpy()[0]) + int(mask[-1:].numpy()[0])
+                if active_count == 0:
+                    self.log_points(name="/model/particles", points=None, hidden=True)
+                    return
+                if active_count < n:
+                    points_out = wp.empty(active_count, dtype=wp.vec3, device=self.device)
+                    wp.launch(compact, dim=n, inputs=[points, mask, offsets, points_out], device=self.device)
+                    points = points_out
+                    if isinstance(radii, wp.array):
+                        radii_out = wp.empty(active_count, dtype=wp.float32, device=self.device)
+                        wp.launch(compact, dim=n, inputs=[radii, mask, offsets, radii_out], device=self.device)
+                        radii = radii_out
+
             if self.model_changed:
-                colors = wp.full(shape=self.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
+                colors = wp.full(shape=len(points), value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
             else:
                 colors = None
 
             self.log_points(
                 name="/model/particles",
-                points=state.particle_q,
-                radii=self.model.particle_radius,
+                points=points,
+                radii=radii,
                 colors=colors,
                 hidden=not self.show_particles,
             )
 
     @staticmethod
     def _shape_color_map(i: int) -> list[float]:
-        # Paul Tol - Bright 9
-        colors = [
-            [68, 119, 170],  # blue
-            [102, 204, 238],  # cyan
-            [34, 136, 51],  # green
-            [204, 187, 68],  # yellow
-            [238, 102, 119],  # red
-            [170, 51, 119],  # magenta
-            [187, 187, 187],  # grey
-            [238, 153, 51],  # orange
-            [0, 153, 136],  # teal
-        ]
-
-        num_colors = len(colors)
-        return [c / 255.0 for c in colors[i % num_colors]]
+        color = newton.ModelBuilder._SHAPE_COLOR_PALETTE[i % len(newton.ModelBuilder._SHAPE_COLOR_PALETTE)]
+        return [c / 255.0 for c in color]
 
     @staticmethod
     def _collision_color_map(i: int) -> list[float]:

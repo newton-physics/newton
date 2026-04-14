@@ -6,9 +6,12 @@ Warp kernels for simplified Newton viewers.
 These kernels handle mesh operations and transformations.
 """
 
+from typing import Any
+
 import warp as wp
 
 import newton
+from newton._src.math import orthonormal_basis
 
 
 @wp.struct
@@ -18,17 +21,18 @@ class PickingState:
     picking_target_world: wp.vec3
     pick_stiffness: float
     pick_damping: float
+    pick_max_acceleration: float
 
 
 @wp.kernel
 def compute_pick_state_kernel(
-    body_q: wp.array(dtype=wp.transform),
-    body_flags: wp.array(dtype=int),
+    body_q: wp.array[wp.transform],
+    body_flags: wp.array[int],
     body_index: int,
     hit_point_world: wp.vec3,
     # output
-    pick_body: wp.array(dtype=int),
-    pick_state: wp.array(dtype=PickingState),
+    pick_body: wp.array[int],
+    pick_state: wp.array[PickingState],
 ):
     """
     Initialize the pick state when a body is first picked.
@@ -60,14 +64,15 @@ def compute_pick_state_kernel(
 
 @wp.kernel
 def apply_picking_force_kernel(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_f: wp.array(dtype=wp.spatial_vector),
-    pick_body_arr: wp.array(dtype=int),
-    pick_state: wp.array(dtype=PickingState),
-    body_flags: wp.array(dtype=int),
-    body_com: wp.array(dtype=wp.vec3),
-    body_mass: wp.array(dtype=float),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+    pick_body_arr: wp.array[int],
+    pick_state: wp.array[PickingState],
+    body_flags: wp.array[int],
+    body_com: wp.array[wp.vec3],
+    body_mass: wp.array[float],
+    pick_effective_mass: wp.array[float],
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
@@ -104,6 +109,16 @@ def apply_picking_force_kernel(
         pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world)
         - (pick_state[0].pick_damping * vel_at_offset)
     )
+
+    # Clamp force magnitude to prevent runaway divergence on light objects (#2361).
+    # Uses the effective mass (total articulation mass for linked bodies,
+    # own mass for free bodies) so picking a light robot link still allows
+    # enough force to move the whole chain.
+    max_force = pick_state[0].pick_max_acceleration * 9.81 * pick_effective_mass[pick_body]
+    force_mag = wp.length(force_at_offset)
+    if force_mag > max_force:
+        force_at_offset = force_at_offset * (max_force / force_mag)
+
     # Compute the resulting torque given the offset from COM to the picked point.
     torque_at_offset = wp.cross(offset, force_at_offset)
 
@@ -116,7 +131,7 @@ def update_pick_target_kernel(
     d: wp.vec3,
     world_offset: wp.vec3,
     # read-write
-    pick_state: wp.array(dtype=PickingState),
+    pick_state: wp.array[PickingState],
 ):
     # get original mouse cursor target (in physics space)
     original_target = pick_state[0].picking_target_world
@@ -139,12 +154,12 @@ def update_pick_target_kernel(
 
 @wp.kernel
 def update_shape_xforms(
-    shape_xforms: wp.array(dtype=wp.transform),
-    shape_parents: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    shape_worlds: wp.array(dtype=int, ndim=1),
-    world_offsets: wp.array(dtype=wp.vec3, ndim=1),
-    world_xforms: wp.array(dtype=wp.transform),
+    shape_xforms: wp.array[wp.transform],
+    shape_parents: wp.array[int],
+    body_q: wp.array[wp.transform],
+    shape_worlds: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    world_xforms: wp.array[wp.transform],
 ):
     tid = wp.tid()
 
@@ -166,16 +181,27 @@ def update_shape_xforms(
 
 
 @wp.kernel
+def repack_shape_colors(
+    shape_colors: wp.array[wp.vec3],
+    slot_to_shape: wp.array[wp.int32],
+    packed_shape_colors: wp.array[wp.vec3],
+):
+    """Repack model-order shape colors into viewer batch order."""
+    tid = wp.tid()
+    packed_shape_colors[tid] = shape_colors[slot_to_shape[tid]]
+
+
+@wp.kernel
 def estimate_world_extents(
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    shape_collision_radius: wp.array(dtype=float),
-    shape_world: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_collision_radius: wp.array[float],
+    shape_world: wp.array[int],
+    body_q: wp.array[wp.transform],
     world_count: int,
     # outputs (world_count x 3 arrays for min/max xyz per world)
-    world_bounds_min: wp.array(dtype=float, ndim=2),
-    world_bounds_max: wp.array(dtype=float, ndim=2),
+    world_bounds_min: wp.array2d[float],
+    world_bounds_max: wp.array2d[float],
 ):
     tid = wp.tid()
 
@@ -225,53 +251,60 @@ def estimate_world_extents(
 
 @wp.kernel
 def compute_contact_lines(
-    body_q: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    shape_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    contact_count: wp.array(dtype=int),
-    contact_shape0: wp.array(dtype=int),
-    contact_shape1: wp.array(dtype=int),
-    contact_point0: wp.array(dtype=wp.vec3),
-    contact_point1: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    visible_worlds_mask: wp.array[int],
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
     line_scale: float,
     # outputs
-    line_start: wp.array(dtype=wp.vec3),
-    line_end: wp.array(dtype=wp.vec3),
+    line_start: wp.array[wp.vec3],
+    line_end: wp.array[wp.vec3],
 ):
     """Create line segments along contact normals for visualization."""
     tid = wp.tid()
+    nan_line = wp.vec3(wp.nan, wp.nan, wp.nan)
     count = contact_count[0]
     if tid >= count:
-        line_start[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_end[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_start[tid] = nan_line
+        line_end[tid] = nan_line
         return
     shape_a = contact_shape0[tid]
     shape_b = contact_shape1[tid]
     if shape_a == shape_b:
-        line_start[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_end[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+        line_start[tid] = nan_line
+        line_end[tid] = nan_line
         return
+
+    # Filter by visible worlds
+    world_a = shape_world[shape_a]
+    world_b = shape_world[shape_b]
+    if visible_worlds_mask:
+        w = world_a if world_a >= 0 else world_b
+        if w >= 0:
+            if visible_worlds_mask[w] == 0:
+                line_start[tid] = nan_line
+                line_end[tid] = nan_line
+                return
 
     # Get world transforms for both shapes
     body_a = shape_body[shape_a]
-    body_b = shape_body[shape_b]
     X_wb_a = wp.transform_identity()
-    X_wb_b = wp.transform_identity()
     if body_a >= 0:
         X_wb_a = body_q[body_a]
-    if body_b >= 0:
-        X_wb_b = body_q[body_b]
 
     # Compute world space contact positions
-    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid])
-    world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid])
-    # Use the midpoint of the contact as the line start
-    contact_center = (world_pos0 + world_pos1) * 0.5
+    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid] + contact_offset0[tid])
+    # Anchor the debug normal at shape 0's contact point.
+    contact_center = world_pos0
 
     # Apply world offset
-    world_a, world_b = shape_world[shape_a], shape_world[shape_b]
     if world_a >= 0 or world_b >= 0:
         contact_center += world_offsets[world_a if world_a >= 0 else world_b]
 
@@ -286,26 +319,29 @@ def compute_contact_lines(
 
 @wp.kernel
 def compute_joint_basis_lines(
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_transform: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
-    body_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    shape_collision_radius: wp.array(dtype=float),
-    shape_body: wp.array(dtype=int),
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_transform: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    visible_worlds_mask: wp.array[int],
+    shape_collision_radius: wp.array[float],
+    shape_body: wp.array[int],
     line_scale: float,
     # outputs - unified buffers for all joint lines
-    line_starts: wp.array(dtype=wp.vec3),
-    line_ends: wp.array(dtype=wp.vec3),
-    line_colors: wp.array(dtype=wp.vec3),
+    line_starts: wp.array[wp.vec3],
+    line_ends: wp.array[wp.vec3],
+    line_colors: wp.array[wp.vec3],
 ):
     """Create line segments for joint basis vectors for visualization.
     Each joint produces 3 lines (x, y, z axes).
     Thread ID maps to line index: joint_id * 3 + axis_id
     """
     tid = wp.tid()
+    nan_line = wp.vec3(wp.nan, wp.nan, wp.nan)
+    zero_color = wp.vec3(0.0, 0.0, 0.0)
 
     # Determine which joint and which axis this thread handles
     joint_id = tid // 3
@@ -313,9 +349,9 @@ def compute_joint_basis_lines(
 
     # Check if this is a supported joint type
     if joint_id >= len(joint_type):
-        line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_colors[tid] = wp.vec3(0.0, 0.0, 0.0)
+        line_starts[tid] = nan_line
+        line_ends[tid] = nan_line
+        line_colors[tid] = zero_color
         return
 
     joint_t = joint_type[joint_id]
@@ -327,10 +363,24 @@ def compute_joint_basis_lines(
         and joint_t != int(newton.JointType.BALL)
     ):
         # Set NaN for unsupported joints to hide them
-        line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_colors[tid] = wp.vec3(0.0, 0.0, 0.0)
+        line_starts[tid] = nan_line
+        line_ends[tid] = nan_line
+        line_colors[tid] = zero_color
         return
+
+    # Filter by visible worlds (fall back to child body for ground-attached joints)
+    parent_body = joint_parent[joint_id]
+    child_body = joint_child[joint_id]
+    filter_body = parent_body if parent_body >= 0 else child_body
+    if visible_worlds_mask:
+        if filter_body >= 0:
+            world_idx = body_world[filter_body]
+            if world_idx >= 0:
+                if visible_worlds_mask[world_idx] == 0:
+                    line_starts[tid] = nan_line
+                    line_ends[tid] = nan_line
+                    line_colors[tid] = zero_color
+                    return
 
     # Get joint transform
     joint_tf = joint_transform[joint_id]
@@ -338,7 +388,6 @@ def compute_joint_basis_lines(
     joint_rot = wp.transform_get_rotation(joint_tf)
 
     # Get parent body transform
-    parent_body = joint_parent[joint_id]
     if parent_body >= 0:
         parent_tf = body_q[parent_body]
         # Transform joint to world space
@@ -374,16 +423,25 @@ def compute_joint_basis_lines(
 
 @wp.kernel
 def compute_com_positions(
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    body_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    com_positions: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    visible_worlds_mask: wp.array[int],
+    com_positions: wp.array[wp.vec3],
 ):
     tid = wp.tid()
+
+    # Filter by visible worlds
+    world_idx = body_world[tid]
+    if visible_worlds_mask:
+        if world_idx >= 0:
+            if visible_worlds_mask[world_idx] == 0:
+                com_positions[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
+                return
+
     body_tf = body_q[tid]
     world_com = wp.transform_point(body_tf, body_com[tid])
-    world_idx = body_world[tid]
     if world_offsets and world_idx >= 0 and world_idx < world_offsets.shape[0]:
         world_com = world_com + world_offsets[world_idx]
     com_positions[tid] = world_com
@@ -391,18 +449,18 @@ def compute_com_positions(
 
 @wp.kernel
 def compute_inertia_box_lines(
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    body_inertia: wp.array(dtype=wp.mat33),
-    body_inv_mass: wp.array(dtype=float),
-    body_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    max_worlds: int,
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    visible_worlds_mask: wp.array[int],
     color: wp.vec3,
     # outputs: 12 lines per body
-    line_starts: wp.array(dtype=wp.vec3),
-    line_ends: wp.array(dtype=wp.vec3),
-    line_colors: wp.array(dtype=wp.vec3),
+    line_starts: wp.array[wp.vec3],
+    line_ends: wp.array[wp.vec3],
+    line_colors: wp.array[wp.vec3],
 ):
     """Compute wireframe edges for inertia boxes. 12 edges per body."""
     tid = wp.tid()
@@ -412,13 +470,15 @@ def compute_inertia_box_lines(
     nan_line = wp.vec3(wp.nan, wp.nan, wp.nan)
     zero_color = wp.vec3(0.0, 0.0, 0.0)
 
-    # Skip bodies from worlds beyond max_worlds limit
+    # Skip bodies from non-visible worlds
     world_idx = body_world[body_id]
-    if max_worlds >= 0 and world_idx >= 0 and world_idx >= max_worlds:
-        line_starts[tid] = nan_line
-        line_ends[tid] = nan_line
-        line_colors[tid] = zero_color
-        return
+    if visible_worlds_mask:
+        if world_idx >= 0:
+            if visible_worlds_mask[world_idx] == 0:
+                line_starts[tid] = nan_line
+                line_ends[tid] = nan_line
+                line_colors[tid] = zero_color
+                return
 
     inv_m = body_inv_mass[body_id]
     if inv_m == 0.0:
@@ -429,6 +489,49 @@ def compute_inertia_box_lines(
 
     # Compute principal inertia axes and extents
     rot, principal_inertia = wp.eig3(body_inertia[body_id])
+
+    # Skip eigenvector rotation for near-isotropic inertia (e.g., cubes, spheres).
+    # When eigenvalues are nearly equal, eig3 returns arbitrary eigenvectors
+    # causing the wireframe box to appear randomly rotated.
+    max_eig = wp.max(principal_inertia)
+    min_eig = wp.min(principal_inertia)
+    if min_eig > 0.0 and max_eig < 1.01 * min_eig:  # within 1% -> isotropic
+        rot = wp.identity(3, float)
+    elif min_eig > 0.0:
+        # Stabilize for axisymmetric inertia (2 of 3 eigenvalues nearly equal, e.g. cylinders).
+        # The two degenerate eigenvectors are arbitrary; rebuild a deterministic frame
+        # from the unique eigenvector.
+        d01 = wp.abs(principal_inertia[0] - principal_inertia[1])
+        d02 = wp.abs(principal_inertia[0] - principal_inertia[2])
+        d12 = wp.abs(principal_inertia[1] - principal_inertia[2])
+        min_diff = wp.min(d01, wp.min(d02, d12))
+        if min_diff < 0.01 * max_eig:  # within 1% -> axisymmetric
+            # Identify unique eigenvector (column not in degenerate pair)
+            if d12 <= d01 and d12 <= d02:  # e1 approx eq e2, unique = col 0
+                u = wp.vec3(rot[0, 0], rot[1, 0], rot[2, 0])
+            elif d02 <= d01:  # e0 approx eq e2, unique = col 1
+                u = wp.vec3(rot[0, 1], rot[1, 1], rot[2, 1])
+            else:  # e0 approx eq e1, unique = col 2
+                u = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
+            u = wp.normalize(u)
+
+            # Deterministic orthonormal basis from unique axis
+            v1, v2 = orthonormal_basis(u)
+
+            # Assign columns as cyclic permutation of (u, v1, v2) to keep det=+1
+            c0 = v1
+            c1 = v2
+            c2 = u
+            if d12 <= d01 and d12 <= d02:  # unique col 0
+                c0 = u
+                c1 = v1
+                c2 = v2
+            elif d02 <= d01:  # unique col 1
+                c0 = v2
+                c1 = u
+                c2 = v1
+            # mat33(*v) unpacks vectors as rows; transpose to place them as columns
+            rot = wp.transpose(wp.mat33(*c0, *c1, *c2))
 
     box_inertia = principal_inertia * inv_m * (12.0 / 8.0)
     sx = wp.sqrt(wp.abs(box_inertia[2] + box_inertia[1] - box_inertia[0]))
@@ -584,23 +687,45 @@ def depth_to_color(depth: float, min_depth: float, max_depth: float) -> wp.vec3:
 
 @wp.kernel(enable_backward=False)
 def compute_hydro_contact_surface_lines(
-    triangle_vertices: wp.array(dtype=wp.vec3),
-    face_depths: wp.array(dtype=wp.float32),
-    face_shape_pairs: wp.array(dtype=wp.vec2i),
-    shape_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
+    triangle_vertices: wp.array[wp.vec3],
+    face_depths: wp.array[wp.float32],
+    face_shape_pairs: wp.array[wp.vec2i],
+    shape_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    visible_worlds_mask: wp.array[int],
     num_faces: int,
     min_depth: float,
     max_depth: float,
     penetrating_only: bool,
-    line_starts: wp.array(dtype=wp.vec3),
-    line_ends: wp.array(dtype=wp.vec3),
-    line_colors: wp.array(dtype=wp.vec3),
+    line_starts: wp.array[wp.vec3],
+    line_ends: wp.array[wp.vec3],
+    line_colors: wp.array[wp.vec3],
 ):
     """Convert hydroelastic contact surface triangle vertices to line segments for wireframe rendering."""
     tid = wp.tid()
     if tid >= num_faces:
         return
+
+    zero = wp.vec3(0.0, 0.0, 0.0)
+
+    # Filter by visible worlds
+    if visible_worlds_mask and shape_world:
+        shape_pair = face_shape_pairs[tid]
+        world_a = shape_world[shape_pair[0]]
+        world_b = shape_world[shape_pair[1]]
+        w = world_a if world_a >= 0 else world_b
+        if w >= 0:
+            if visible_worlds_mask[w] == 0:
+                line_starts[tid * 3 + 0] = zero
+                line_ends[tid * 3 + 0] = zero
+                line_colors[tid * 3 + 0] = zero
+                line_starts[tid * 3 + 1] = zero
+                line_ends[tid * 3 + 1] = zero
+                line_colors[tid * 3 + 1] = zero
+                line_starts[tid * 3 + 2] = zero
+                line_ends[tid * 3 + 2] = zero
+                line_colors[tid * 3 + 2] = zero
+                return
 
     # Get the 3 vertices of this triangle
     v0 = triangle_vertices[tid * 3 + 0]
@@ -612,7 +737,6 @@ def compute_hydro_contact_surface_lines(
 
     # Skip non-penetrating contacts if requested (only render depth < 0)
     if penetrating_only and depth >= 0.0:
-        zero = wp.vec3(0.0, 0.0, 0.0)
         line_starts[tid * 3 + 0] = zero
         line_ends[tid * 3 + 0] = zero
         line_colors[tid * 3 + 0] = zero
@@ -658,3 +782,30 @@ def compute_hydro_contact_surface_lines(
     line_starts[tid * 3 + 2] = v2
     line_ends[tid * 3 + 2] = v0
     line_colors[tid * 3 + 2] = color
+
+
+PARTICLE_ACTIVE = wp.constant(wp.int32(newton.ParticleFlags.ACTIVE))
+
+
+@wp.kernel
+def build_active_particle_mask(
+    flags: wp.array[wp.int32],
+    mask: wp.array[wp.int32],
+):
+    i = wp.tid()
+    if (flags[i] & PARTICLE_ACTIVE) != wp.int32(0):
+        mask[i] = wp.int32(1)
+    else:
+        mask[i] = wp.int32(0)
+
+
+@wp.kernel
+def compact(
+    src: wp.array[Any],
+    mask: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    dst: wp.array[Any],
+):
+    i = wp.tid()
+    if mask[i] == wp.int32(1):
+        dst[offsets[i]] = src[i]

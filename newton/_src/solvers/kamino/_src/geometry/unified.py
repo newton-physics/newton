@@ -11,6 +11,7 @@ contacts data directly into Kamino's respective format.
 
 from typing import Literal
 
+import numpy as np
 import warp as wp
 
 # Newton imports
@@ -28,7 +29,6 @@ from .....geometry.types import GeoType
 from ..core.data import DataKamino
 from ..core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION, make_get_material_pair_properties
 from ..core.model import ModelKamino
-from ..core.shapes import ShapeType
 from ..core.state import StateKamino
 from ..core.types import float32, int32, quatf, transformf, uint32, uint64, vec2f, vec2i, vec3f, vec4f
 from ..geometry.contacts import (
@@ -99,103 +99,31 @@ class ContactWriterDataKamino:
 
 
 @wp.func
-def convert_kamino_shape_to_newton_geo(shape_type: int32, params: vec4f) -> tuple[int32, vec3f]:
+def convert_geom_params_to_newton_scale(geo_type: int32, params: vec4f) -> vec3f:
     """
-    Converts Kamino :class:`ShapeType` and parameters to Newton :class:`GeoType` and scale.
+    Convert geometry params to Newton shape scale.
 
-    Shape parameter formats:
-    - BOX:
-        - Newton: half-extents as `scale := (x, y, z)`
-        - Kamino: dimensions as `params := (depth, width, height, _)`
-
-    - SPHERE:
-        - Newton: radius as `scale := (radius, _, _)`
-        - Kamino: radius as `params := (radius, _, _, _)`
-
-    - CAPSULE:
-        - Newton: radius and half-height as `scale := (radius, half_height, _)`
-        - Kamino: radius and height as `params := (radius, height, _, _)`
-
-    - CYLINDER:
-        - Newton: radius and half-height as `scale := (radius, half_height, _)`
-        - Kamino: radius and height as `params := (radius, height, _, _)`
-
-    - CONE:
-        - Newton: radius and half-height as `scale := (radius, half_height, _)`
-        - Kamino: radius and height as `params := (radius, height, _, _)`
-
-    - ELLIPSOID:
-        - Newton: semi-axes as `scale := (x, y, z)`
-        - Kamino: radii as `params := (a, b, c, _)`
-
-    - PLANE:
-        - Newton: half-width in x, half-length in y
-        - Kamino: normal and distance as `params := (normal_x, normal_y, normal_z, distance)`
-
-    See :class:`GenericShapeData` in :file:`support_function.py` for further details.
+    Since Kamino now stores Newton's :class:`GeoType` and parameter convention
+    directly, this is mostly a passthrough.  Special cases are
+    :attr:`GeoType.PLANE` (params hold the plane normal, not a scale) and
+    :attr:`GeoType.MESH` / :attr:`GeoType.HFIELD` (scale is unused).
+    :attr:`GeoType.CONVEX_MESH` retains its per-mesh scale from params.
 
     Args:
-        shape_type (int32):
-            The Kamino ShapeType as :class:`int32`, i.e. the shape index.
-        params(vec4f):
-            Kamino shape parameters as :class:`vec4f`.
+        geo_type: The Newton :class:`GeoType` integer value.
+        params: Shape parameters as :class:`vec4f` (Newton convention).
 
     Returns:
-        (int32, vec3f):
-            A tuple containing the corresponding Newton :class:`GeoType`
-            as an :class:`int32`, and the shape scale as a :class:`vec3f`.
+        The Newton shape scale as :class:`vec3f`.
     """
-    geo_type = int32(GeoType.NONE)
-    scale = vec3f(0.0)
+    scale = vec3f(params[0], params[1], params[2])
 
-    if shape_type == ShapeType.SPHERE:
-        # Kamino: (radius, 0, 0, 0) -> Newton: (radius, ?, ?)
-        geo_type = GeoType.SPHERE
-        scale = vec3f(params[0], 0.0, 0.0)
-
-    elif shape_type == ShapeType.BOX:
-        # Kamino: (depth, width, height) full size -> Newton: half-extents
-        geo_type = GeoType.BOX
-        scale = vec3f(params[0] * 0.5, params[1] * 0.5, params[2] * 0.5)
-
-    elif shape_type == ShapeType.CAPSULE:
-        # Kamino: (radius, height) full height -> Newton: (radius, half-height, ?)
-        geo_type = GeoType.CAPSULE
-        scale = vec3f(params[0], params[1] * 0.5, 0.0)
-
-    elif shape_type == ShapeType.CYLINDER:
-        # Kamino: (radius, height) full height -> Newton: (radius, half-height, ?)
-        geo_type = GeoType.CYLINDER
-        scale = vec3f(params[0], params[1] * 0.5, 0.0)
-
-    elif shape_type == ShapeType.CONE:
-        # Kamino: (radius, height) full height -> Newton: (radius, half-height, ?)
-        geo_type = GeoType.CONE
-        scale = vec3f(params[0], params[1] * 0.5, 0.0)
-
-    elif shape_type == ShapeType.ELLIPSOID:
-        # Kamino: (a, b, c) semi-axes -> Newton: same
-        geo_type = GeoType.ELLIPSOID
-        scale = vec3f(params[0], params[1], params[2])
-
-    elif shape_type == ShapeType.PLANE:
-        # NOTE: For an infinite plane, we use (0, 0, _) to signal an infinite extents
-        geo_type = GeoType.PLANE
-        scale = vec3f(0.0, 0.0, 0.0)  # Infinite plane
-
-    elif shape_type == ShapeType.MESH:
-        geo_type = GeoType.MESH
+    if geo_type == GeoType.PLANE:
+        scale = vec3f(0.0, 0.0, 0.0)
+    elif geo_type == GeoType.MESH or geo_type == GeoType.HFIELD:
         scale = vec3f(0.0, 0.0, 0.0)
 
-    elif shape_type == ShapeType.CONVEX:
-        geo_type = GeoType.CONVEX_MESH
-        scale = vec3f(0.0, 0.0, 0.0)
-
-    elif shape_type == ShapeType.HFIELD:
-        geo_type = GeoType.HFIELD
-        scale = vec3f(0.0, 0.0, 0.0)
-
-    return geo_type, scale
+    return scale
 
 
 @wp.func
@@ -364,10 +292,10 @@ def _convert_geom_data_kamino_to_newton(
     """
     Converts Kamino geometry data to Newton-compatible format.
 
-    Converts :class:`ShapeType` and parameters to :class:`GeoType` and scale,
-    stores the per-geometry surface margin offset in ``geom_data.w``, applies
-    a default floor to the per-geometry detection gap, and computes the
-    bounding-sphere radius used for AABB fallback (planes, meshes, heightfields).
+    Converts geometry params to Newton scale, stores the per-geometry surface
+    margin offset in ``geom_data.w``, applies a default floor to the
+    per-geometry detection gap, and computes the bounding-sphere radius used
+    for AABB fallback (planes, meshes, heightfields).
     """
     # Retrieve the geometry index from the thread grid
     gid = wp.tid()
@@ -378,16 +306,16 @@ def _convert_geom_data_kamino_to_newton(
     margin = geom_margin[gid]
     gap = geom_gap[gid]
 
-    # Convert Kamino ShapeType to Newton GeoType and transform params to Newton scale
-    geo_type, scale = convert_kamino_shape_to_newton_geo(sid, params)
+    # Convert params to Newton scale (identity for most types; special-cased for planes/meshes)
+    scale = convert_geom_params_to_newton_scale(sid, params)
 
     # Store converted geometry data
     # NOTE: the per-geom margin is overridden because
     # the unified pipeline needs it during narrow-phase
-    geom_type[gid] = geo_type
+    geom_type[gid] = sid
     geom_data[gid] = vec4f(scale[0], scale[1], scale[2], margin)
     geom_gap[gid] = wp.max(default_gap, gap)
-    shape_collision_radius[gid] = _compute_collision_radius(geo_type, scale)
+    shape_collision_radius[gid] = _compute_collision_radius(sid, scale)
 
 
 @wp.kernel
@@ -537,8 +465,23 @@ class CollisionPipelineUnifiedKamino:
         # Get geometry count from model
         self._num_geoms: int = self._model.geoms.num_geoms
 
-        # Compute the maximum possible number of geom pairs (worst-case, needed for NXN/SAP)
-        self._max_shape_pairs: int = (self._num_geoms * (self._num_geoms - 1)) // 2
+        # Compute the maximum possible number of geom pairs per world and sum
+        # them.  The naive global formula N*(N-1)/2 is O(W^2 * S^2) for W
+        # worlds with S shapes each; the per-world sum is O(W * S^2).
+        # Global geoms (wid == -1) participate in every regular-world slice
+        # plus a dedicated global-only segment, matching precompute_world_map.
+        if self._model.geoms.wid is not None:
+            wid_np = self._model.geoms.wid.numpy()
+            global_count = int(np.count_nonzero(wid_np == -1))
+            regular_wids = np.unique(wid_np[wid_np >= 0])
+            per_world_pairs = 0
+            for uid in regular_wids:
+                n = int(np.count_nonzero(wid_np == uid)) + global_count
+                per_world_pairs += (n * (n - 1)) // 2
+            per_world_pairs += (global_count * (global_count - 1)) // 2
+            self._max_shape_pairs: int = per_world_pairs
+        else:
+            self._max_shape_pairs: int = (self._num_geoms * (self._num_geoms - 1)) // 2
         self._max_contacts: int = self._max_shape_pairs * self._max_contacts_per_pair
 
         # Override max contacts if specified explicitly

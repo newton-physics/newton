@@ -11,8 +11,6 @@ from urllib.request import urlopen
 
 import numpy as np
 
-from ..core.types import nparray
-
 _texture_url_cache: dict[str, bytes] = {}
 
 
@@ -41,7 +39,7 @@ def _download_texture_from_file_bytes(url: str) -> bytes | None:
         return None
 
 
-def load_texture_from_file(texture_path: str | None) -> nparray | None:
+def load_texture_from_file(texture_path: str | None) -> np.ndarray | None:
     """Load a texture image from disk or URL into a numpy array.
 
     Args:
@@ -72,7 +70,7 @@ def load_texture_from_file(texture_path: str | None) -> nparray | None:
         return None
 
 
-def load_texture(texture: str | os.PathLike[str] | nparray | None) -> nparray | None:
+def load_texture(texture: str | os.PathLike[str] | np.ndarray | None) -> np.ndarray | None:
     """Normalize a texture input into a contiguous image array.
 
     Args:
@@ -97,12 +95,12 @@ def load_texture(texture: str | os.PathLike[str] | nparray | None) -> nparray | 
 
 
 def normalize_texture(
-    texture_image: nparray | None,
+    texture_image: np.ndarray | None,
     *,
     flip_vertical: bool = False,
     require_channels: bool = False,
     scale_unit_range: bool = True,
-) -> nparray | None:
+) -> np.ndarray | None:
     """Normalize a texture array for rendering.
 
     Args:
@@ -138,7 +136,7 @@ def normalize_texture(
     return np.ascontiguousarray(image)
 
 
-def compute_texture_hash(texture: str | os.PathLike[str] | nparray | None) -> int:
+def compute_texture_hash(texture: str | os.PathLike[str] | np.ndarray | None) -> int:
     """Compute a stable hash for a texture (path or array).
 
     Args:

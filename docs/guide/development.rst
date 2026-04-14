@@ -187,6 +187,16 @@ not installed. In order to run these tests, include the ``torch-cu12`` or
             # run tests
             python -m newton.tests
 
+.. note::
+
+    The ``torch-cu12`` extra requires PyTorch built against CUDA 12.8. If your
+    driver only supports CUDA 12.4 or 12.5 (check with ``nvidia-smi``), install
+    PyTorch 2.6.0 manually instead of using the ``torch-cu12`` extra:
+
+    .. code-block:: console
+
+        pip install torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cu124
+
 Specific Newton examples can be tested in isolation via the ``-k`` argument:
 
 .. tab-set::
@@ -300,18 +310,39 @@ When typos reports a word that is valid within the Newton codebase, you can add 
 License headers
 ---------------
 
-Every source file in the repository must carry an `SPDX <https://spdx.dev/>`_ license header.
-A CI check (``pr_license_check.yml``) enforces this on every pull request using
-`Apache SkyWalking Eyes <https://github.com/apache/skywalking-eyes>`_.
+Every source file in the repository must carry a 2-line `SPDX <https://spdx.dev/>`_ license
+header. The project's Apache-2.0 license is in ``LICENSE.md`` at the repository root, and additional and third-party license texts are available in the ``newton/licenses`` directory, so no further
+boilerplate is required in individual files.
 
 The required headers depend on the file type:
 
-- **Python files** (``.py``) — Apache-2.0. See ``.licenserc.yaml`` for the exact template.
-- **Documentation files** (``.rst``) — CC-BY-4.0. See ``.licenserc-docs.yaml`` for the exact template.
-- **Jupyter notebooks** (``.ipynb``) — CC-BY-4.0. Copy the header from an existing notebook.
+- **Python files** (``.py``):
 
-When adding a new file, copy the header from an existing file of the same type. If the
-license check fails on your PR, add the appropriate header to the top of each flagged file.
+  .. code-block:: python
+
+      # SPDX-FileCopyrightText: Copyright (c) <year> The Newton Developers
+      # SPDX-License-Identifier: Apache-2.0
+
+- **Documentation files** (``.rst``) — CC-BY-4.0:
+
+  .. code-block:: rst
+
+      .. SPDX-FileCopyrightText: Copyright (c) <year> The Newton Developers
+      .. SPDX-License-Identifier: CC-BY-4.0
+
+- **Jupyter notebooks** (``.ipynb``) — CC-BY-4.0 (plain text in the first cell, no comment prefix):
+
+  .. code-block:: text
+
+      SPDX-FileCopyrightText: Copyright (c) <year> The Newton Developers
+      SPDX-License-Identifier: CC-BY-4.0
+
+Use the year the file was **first created**. Do not update the year when modifying an
+existing file, and do not use year ranges — git history is the authoritative record of
+when changes were made.
+
+A CI check (``pr_license_check.yml``) enforces headers on every pull request using
+`Apache SkyWalking Eyes <https://github.com/apache/skywalking-eyes>`_.
 
 To run the license checks locally with Docker before pushing:
 
@@ -649,6 +680,33 @@ New examples must also be registered in the examples ``README.md`` with a
             # run in headless test mode (used by CI)
             python -m newton.examples basic_pendulum --viewer null --test
 
+Asset version pinning
+---------------------
+
+Several Newton tests and examples rely on external assets hosted in separate Git
+repositories.  To ensure that any given Newton commit always downloads the same
+asset versions, each repository is pinned to a specific commit SHA.  The pinned
+revisions are defined as constants in ``newton/_src/utils/download_assets.py``:
+
+- ``NEWTON_ASSETS_REF`` — pinned SHA for the ``newton-assets`` repository
+- ``MENAGERIE_REF`` — pinned SHA for the ``mujoco_menagerie`` repository
+
+Updating pinned revisions
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When upstream assets change and the new versions need to be adopted:
+
+1. Look up the new commit SHA from the asset repository.
+2. Update the corresponding ``*_REF`` constant in ``download_assets.py``.
+3. Run the full test suite to verify that no tests break with the new assets.
+4. Commit the SHA update together with any test adjustments.
+
+Overriding the pinned revision
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``download_asset()`` function accepts a ``ref`` parameter that overrides the
+default pinned SHA.
+
 Roadmap and Future Work
 -----------------------
 
@@ -715,7 +773,7 @@ benchmark code from the ``asv/benchmarks`` directory against the code state of t
 the benchmark definitions themselves are not checked out from different branches—only the code being
 benchmarked is.
 
-Benchmarks can also be run against a range of commits using the ``commit1...commit2`` syntax.
+Benchmarks can also be run against a range of commits using the ``commit1..commit2`` syntax.
 This is useful for comparing performance across several recent changes:
 
 .. tab-set::
@@ -735,6 +793,7 @@ This is useful for comparing performance across several recent changes:
 
             asv run --launch-method spawn HEAD~4..HEAD
 
+Note that the older commit has to come first.
 Commit hashes can be used instead of relative references:
 
 .. tab-set::
@@ -863,3 +922,15 @@ also ensuring that the benchmark is run a sufficient number of times to get a st
 The ``--durations all`` flag can be passed to the ``asv run`` command to show the durations of all benchmarks,
 which is helpful for ensuring that a single benchmark is not requiring an abnormally long amount of time compared
 to the other benchmarks.
+
+
+Release process
+---------------
+
+See :doc:`release` for the full release workflow, including versioning,
+branching strategy, testing criteria, and publication steps.
+
+.. toctree::
+   :hidden:
+
+   release

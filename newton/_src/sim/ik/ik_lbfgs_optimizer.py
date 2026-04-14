@@ -5,21 +5,24 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 import warp as wp
 
+from ..model import Model
 from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
+from .ik_objectives import IKObjective
 
 
 @wp.kernel
 def _scale_negate(
-    src: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+    src: wp.array2d[wp.float32],  # (n_batch, n_dofs)
     scale: float,
     # outputs
-    dst: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+    dst: wp.array2d[wp.float32],  # (n_batch, n_dofs)
 ):
     row, dof_idx = wp.tid()
     dst[row, dof_idx] = -scale * src[row, dof_idx]
@@ -27,8 +30,8 @@ def _scale_negate(
 
 @wp.kernel
 def _fan_out_problem_idx(
-    batch_problem_idx: wp.array1d(dtype=wp.int32),
-    out_indices: wp.array2d(dtype=wp.int32),
+    batch_problem_idx: wp.array[wp.int32],
+    out_indices: wp.array2d[wp.int32],
 ):
     row_idx, candidate_idx = wp.tid()
     out_indices[row_idx, candidate_idx] = batch_problem_idx[row_idx]
@@ -36,12 +39,12 @@ def _fan_out_problem_idx(
 
 @wp.kernel
 def _generate_candidates_velocity(
-    joint_q: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-    search_direction: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
-    line_search_alphas: wp.array1d(dtype=wp.float32),  # (n_steps)
+    joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
+    search_direction: wp.array2d[wp.float32],  # (n_batch, n_dofs)
+    line_search_alphas: wp.array[wp.float32],  # (n_steps)
     # outputs
-    candidate_q: wp.array3d(dtype=wp.float32),  # (n_batch, n_steps, n_coords)
-    candidate_dq: wp.array3d(dtype=wp.float32),  # (n_batch, n_steps, n_dofs)
+    candidate_q: wp.array3d[wp.float32],  # (n_batch, n_steps, n_coords)
+    candidate_dq: wp.array3d[wp.float32],  # (n_batch, n_steps, n_dofs)
 ):
     row, step_idx = wp.tid()
     alpha = line_search_alphas[step_idx]
@@ -57,9 +60,9 @@ def _generate_candidates_velocity(
 
 @wp.kernel
 def _apply_residual_mask(
-    residuals: wp.array2d(dtype=wp.float32),
-    mask: wp.array2d(dtype=wp.float32),
-    seeds_out: wp.array2d(dtype=wp.float32),
+    residuals: wp.array2d[wp.float32],
+    mask: wp.array2d[wp.float32],
+    seeds_out: wp.array2d[wp.float32],
 ):
     row, residual_idx = wp.tid()
     seeds_out[row, residual_idx] = residuals[row, residual_idx] * mask[row, residual_idx]
@@ -67,8 +70,8 @@ def _apply_residual_mask(
 
 @wp.kernel
 def _accumulate_gradients(
-    base_grad: wp.array2d(dtype=wp.float32),
-    add_grad: wp.array2d(dtype=wp.float32),
+    base_grad: wp.array2d[wp.float32],
+    add_grad: wp.array2d[wp.float32],
 ):
     row, dof_idx = wp.tid()
     base_grad[row, dof_idx] += add_grad[row, dof_idx]
@@ -76,66 +79,52 @@ def _accumulate_gradients(
 
 @dataclass(slots=True)
 class BatchCtx:
-    joint_q: wp.array2d
-    residuals: wp.array2d
-    fk_body_q: wp.array2d
-    problem_idx: wp.array1d
+    joint_q: wp.array2d[wp.float32]
+    residuals: wp.array2d[wp.float32]
+    fk_body_q: wp.array2d[wp.transform]
+    problem_idx: wp.array[wp.int32]
 
     # AUTODIFF and MIXED
-    fk_body_qd: wp.array2d | None = None
-    dq_dof: wp.array2d | None = None
-    joint_q_proposed: wp.array2d | None = None
-    joint_qd: wp.array2d | None = None
+    fk_body_qd: wp.array2d[wp.spatial_vector] | None = None
+    dq_dof: wp.array2d[wp.float32] | None = None
+    joint_q_proposed: wp.array2d[wp.float32] | None = None
+    joint_qd: wp.array2d[wp.float32] | None = None
 
     # ANALYTIC and MIXED
-    jacobian_out: wp.array3d | None = None
-    motion_subspace: wp.array2d | None = None
-    fk_qd_zero: wp.array2d | None = None
-    fk_X_local: wp.array2d | None = None
+    jacobian_out: wp.array3d[wp.float32] | None = None
+    motion_subspace: wp.array2d[wp.spatial_vector] | None = None
+    fk_qd_zero: wp.array2d[wp.float32] | None = None
+    fk_X_local: wp.array2d[wp.transform] | None = None
 
     # MIXED-only helpers
-    gradient_tmp: wp.array2d | None = None
-    autodiff_mask: wp.array2d | None = None
-    autodiff_seed: wp.array2d | None = None
+    gradient_tmp: wp.array2d[wp.float32] | None = None
+    autodiff_mask: wp.array2d[wp.float32] | None = None
+    autodiff_seed: wp.array2d[wp.float32] | None = None
 
 
 class IKOptimizerLBFGS:
-    """
-    L-BFGS inverse-kinematics solver with a parallel Wolfe-conditions line search.
+    """L-BFGS optimizer for batched inverse kinematics.
 
-    This solver uses L-BFGS with a parallel line search that seeks to satisfy the
-    strong Wolfe conditions for robust step selection. It supports the same three
-    Jacobian back-ends as the LM solver:
+    The optimizer maintains a limited-memory quasi-Newton approximation and
+    chooses step sizes with a parallel strong-Wolfe line search. It supports
+    the same Jacobian backends as :class:`~newton.ik.IKOptimizerLM`.
 
-    * **AUTODIFF**   — Warp's reverse-mode autodiff for every objective
-    * **ANALYTIC**   — objective-specific analytic Jacobians only
-    * **MIXED**      — analytic where available, autodiff fallback elsewhere
-
-    Parameters
-    ----------
-    model : newton.Model
-        Singleton articulation shared by all problems.
-    n_batch : int
-        Number of rows processed in parallel (e.g., `n_problems * n_seeds`).
-    objectives : Sequence[IKObjective]
-        Ordered list of objectives shared by _all_ problems.
-    jacobian_mode : IKJacobianType, default IKJacobianType.AUTODIFF
-        Backend used in `compute_jacobian`.
-    history_len : int, default 10
-        L-BFGS memory length (number of {s,y} pairs to remember).
-    h0_scale : float, default 1.0
-        Initial Hessian approximation scale factor.
-    line_search_alphas : list[float], default [0.1, 0.2, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0]
-        Parallel step sizes to try in line search.
-    wolfe_c1 : float, default 1e-4
-        Wolfe condition parameter for sufficient decrease (Armijo condition).
-    wolfe_c2 : float, default 0.9
-        Wolfe condition parameter for curvature condition (strong Wolfe).
-
-    Batch structure
-    ---------------
-    Same as the LM solver - handles a batch of independent IK problems that all
-    reference the same articulation and objectives.
+    Args:
+        model: Shared articulation model.
+        n_batch: Number of evaluation rows solved in parallel. This is
+            typically ``n_problems * n_seeds`` after any sampling expansion.
+        objectives: Ordered IK objectives applied to every batch row.
+        jacobian_mode: Jacobian backend to use.
+        history_len: Number of ``(s, y)`` correction pairs retained in the
+            L-BFGS history.
+        h0_scale: Scalar used for the initial inverse-Hessian
+            approximation.
+        line_search_alphas: Candidate step sizes tested in parallel during
+            the line search.
+        wolfe_c1: Armijo sufficient-decrease constant.
+        wolfe_c2: Strong-Wolfe curvature constant.
+        problem_idx: Optional mapping from batch rows to base problem indices
+            for per-problem objective data.
     """
 
     TILE_N_DOFS = None
@@ -144,7 +133,14 @@ class IKOptimizerLBFGS:
     TILE_N_LINE_STEPS = None
     _cache: ClassVar[dict[tuple[int, int, int, int, str], type]] = {}
 
-    def __new__(cls, model, n_batch, objectives, *a, **kw):
+    def __new__(
+        cls,
+        model: Model,
+        n_batch: int,
+        objectives: Sequence[IKObjective],
+        *a: Any,
+        **kw: Any,
+    ) -> IKOptimizerLBFGS:
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)
         history_len = kw.get("history_len", 10)
@@ -162,18 +158,18 @@ class IKOptimizerLBFGS:
 
     def __init__(
         self,
-        model,
-        n_batch,
-        objectives,
-        jacobian_mode=IKJacobianType.AUTODIFF,
-        history_len=10,
-        h0_scale=1.0,
-        line_search_alphas=None,
-        wolfe_c1=1e-4,
-        wolfe_c2=0.9,
+        model: Model,
+        n_batch: int,
+        objectives: Sequence[IKObjective],
+        jacobian_mode: IKJacobianType = IKJacobianType.AUTODIFF,
+        history_len: int = 10,
+        h0_scale: float = 1.0,
+        line_search_alphas: Sequence[float] | None = None,
+        wolfe_c1: float = 1e-4,
+        wolfe_c2: float = 0.9,
         *,
-        problem_idx: wp.array | None = None,
-    ):
+        problem_idx: wp.array[wp.int32] | None = None,
+    ) -> None:
         if line_search_alphas is None:
             line_search_alphas = [0.1, 0.2, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0]
 
@@ -234,7 +230,7 @@ class IKOptimizerLBFGS:
         self._init_objectives()
         self._init_cuda_streams()
 
-    def _alloc_solver_buffers(self, grad: bool):
+    def _alloc_solver_buffers(self, grad: bool) -> None:
         device = self.device
         model = self.model
 
@@ -271,7 +267,7 @@ class IKOptimizerLBFGS:
         else:
             self.joint_S_s = None
 
-    def _alloc_line_search_buffers(self, grad: bool, line_search_alphas):
+    def _alloc_line_search_buffers(self, grad: bool, line_search_alphas: Sequence[float]) -> None:
         device = self.device
         model = self.model
 
@@ -348,7 +344,7 @@ class IKOptimizerLBFGS:
         else:
             self.cand_qd_zero = None
 
-    def _alloc_line_search_analytic_buffers(self):
+    def _alloc_line_search_analytic_buffers(self) -> None:
         device = self.device
 
         if self.n_line_search > 0:
@@ -378,7 +374,7 @@ class IKOptimizerLBFGS:
         else:
             self.cand_X_local = None
 
-    def _alloc_mixed_buffers(self):
+    def _alloc_mixed_buffers(self) -> None:
         device = self.device
 
         self.gradient_tmp = wp.zeros((self.n_batch, self.n_dofs), dtype=wp.float32, device=device)
@@ -419,14 +415,19 @@ class IKOptimizerLBFGS:
             self.autodiff_residual_mask_candidates = None
             self.candidate_autodiff_residual_grads = None
 
-    def _build_residual_offsets(self):
+    def _build_residual_offsets(self) -> None:
         self.residual_offsets = []
         off = 0
         for obj in self.objectives:
             self.residual_offsets.append(off)
             off += obj.residual_dim()
 
-    def _ctx_solver(self, joint_q, *, residuals=None) -> BatchCtx:
+    def _ctx_solver(
+        self,
+        joint_q: wp.array2d[wp.float32],
+        *,
+        residuals: wp.array2d[wp.float32] | None = None,
+    ) -> BatchCtx:
         """Build a context for operations on the solver batch."""
         ctx = BatchCtx(
             joint_q=joint_q,
@@ -566,7 +567,7 @@ class IKOptimizerLBFGS:
             joined = ", ".join(missing)
             raise RuntimeError(f"{label} context missing required buffers: {joined}")
 
-    def _gradient_at(self, ctx: BatchCtx, out_grad: wp.array2d):
+    def _gradient_at(self, ctx: BatchCtx, out_grad: wp.array2d[wp.float32]) -> None:
         mode = self.jacobian_mode
 
         if mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED):
@@ -577,7 +578,7 @@ class IKOptimizerLBFGS:
         elif mode == IKJacobianType.MIXED and self.has_analytic_objective:
             self._grad_analytic(ctx, out_grad, accumulate=True)
 
-    def _grad_autodiff(self, ctx: BatchCtx, out_grad: wp.array2d):
+    def _grad_autodiff(self, ctx: BatchCtx, out_grad: wp.array2d[wp.float32]) -> None:
         batch = ctx.joint_q.shape[0]
 
         self.tape.reset()
@@ -621,7 +622,13 @@ class IKOptimizerLBFGS:
         wp.copy(out_grad, self.tape.gradients[ctx.dq_dof])
         self.tape.zero()
 
-    def _grad_analytic(self, ctx: BatchCtx, out_grad: wp.array2d, *, accumulate: bool):
+    def _grad_analytic(
+        self,
+        ctx: BatchCtx,
+        out_grad: wp.array2d[wp.float32],
+        *,
+        accumulate: bool,
+    ) -> None:
         if not accumulate:
             self._residuals_analytic(ctx)
 
@@ -670,7 +677,7 @@ class IKOptimizerLBFGS:
                 device=self.device,
             )
 
-    def _for_objectives_residuals(self, ctx: BatchCtx):
+    def _for_objectives_residuals(self, ctx: BatchCtx) -> None:
         def _do(obj, offset, body_q_view, joint_q_view, model, output_residuals, base_idx_array):
             obj.compute_residuals(
                 body_q_view,
@@ -690,7 +697,7 @@ class IKOptimizerLBFGS:
             ctx.problem_idx,
         )
 
-    def _residuals_autodiff(self, ctx: BatchCtx):
+    def _residuals_autodiff(self, ctx: BatchCtx) -> None:
         eval_fk_batched(
             self.model,
             ctx.joint_q,
@@ -702,7 +709,7 @@ class IKOptimizerLBFGS:
         ctx.residuals.zero_()
         self._for_objectives_residuals(ctx)
 
-    def _residuals_analytic(self, ctx: BatchCtx):
+    def _residuals_analytic(self, ctx: BatchCtx) -> None:
         self._fk_two_pass(
             self.model,
             ctx.joint_q,
@@ -714,8 +721,8 @@ class IKOptimizerLBFGS:
         ctx.residuals.zero_()
         self._for_objectives_residuals(ctx)
 
-    def _init_objectives(self):
-        """Allocate any per-objective buffers that must live on `self.device`."""
+    def _init_objectives(self) -> None:
+        """Allocate any per-objective buffers that must live on ``self.device``."""
         for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
             obj.set_batch_layout(self.n_residuals, offset, self.n_batch)
             obj.bind_device(self.device)
@@ -725,7 +732,7 @@ class IKOptimizerLBFGS:
                 mode = self.jacobian_mode
             obj.init_buffers(model=self.model, jacobian_mode=mode)
 
-    def _init_cuda_streams(self):
+    def _init_cuda_streams(self) -> None:
         """Allocate per-objective Warp streams and sync events."""
         self.objective_streams = []
         self.sync_events = []
@@ -740,7 +747,7 @@ class IKOptimizerLBFGS:
             self.objective_streams = [None] * len(self.objectives)
             self.sync_events = [None] * len(self.objectives)
 
-    def _parallel_for_objectives(self, fn, *extra):
+    def _parallel_for_objectives(self, fn: Callable[..., None], *extra: Any) -> None:
         """Run <fn(obj, offset, *extra)> across objectives on parallel CUDA streams."""
         if self.device.is_cuda:
             main = wp.get_stream(self.device)
@@ -758,8 +765,21 @@ class IKOptimizerLBFGS:
             for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
                 fn(obj, offset, *extra)
 
-    def step(self, joint_q_in, joint_q_out, iterations=50):
-        """Run L-BFGS iterations using the provided joint buffers."""
+    def step(
+        self,
+        joint_q_in: wp.array2d[wp.float32],
+        joint_q_out: wp.array2d[wp.float32],
+        iterations: int = 50,
+    ) -> None:
+        """Run several L-BFGS iterations on a batch of joint configurations.
+
+        Args:
+            joint_q_in: Input joint coordinates, shape [n_batch, joint_coord_count].
+            joint_q_out: Output buffer for the optimized coordinates, shape
+                [n_batch, joint_coord_count]. It may alias ``joint_q_in`` for
+                in-place updates.
+            iterations: Number of L-BFGS iterations to execute.
+        """
         if joint_q_in.shape != (self.n_batch, self.n_coords):
             raise ValueError("joint_q_in has incompatible shape")
         if joint_q_out.shape != (self.n_batch, self.n_coords):
@@ -773,7 +793,8 @@ class IKOptimizerLBFGS:
         for i in range(iterations):
             self._step(joint_q, iteration=i)
 
-    def reset(self):
+    def reset(self) -> None:
+        """Clear L-BFGS history and cached line-search state."""
         self.history_count.zero_()
         self.history_start.zero_()
         self.s_history.zero_()
@@ -789,7 +810,15 @@ class IKOptimizerLBFGS:
         if self.cand_step_dq is not None:
             self.cand_step_dq.zero_()
 
-    def compute_costs(self, joint_q):
+    def compute_costs(self, joint_q: wp.array2d[wp.float32]) -> wp.array[wp.float32]:
+        """Evaluate squared residual costs for a batch of joint configurations.
+
+        Args:
+            joint_q: Joint coordinates to evaluate, shape [n_batch, joint_coord_count].
+
+        Returns:
+            Costs for each batch row, shape [n_batch].
+        """
         self._compute_residuals(joint_q)
         wp.launch(
             compute_costs,
@@ -800,7 +829,11 @@ class IKOptimizerLBFGS:
         )
         return self.costs
 
-    def _compute_residuals(self, joint_q, residuals_out=None):
+    def _compute_residuals(
+        self,
+        joint_q: wp.array2d[wp.float32],
+        residuals_out: wp.array2d[wp.float32] | None = None,
+    ) -> wp.array2d[wp.float32]:
         residuals = residuals_out if residuals_out is not None else self.residuals
         ctx = self._ctx_solver(joint_q, residuals=residuals)
 
@@ -811,7 +844,13 @@ class IKOptimizerLBFGS:
 
         return ctx.residuals
 
-    def _compute_motion_subspace(self, *, body_q, joint_S_s_out, joint_qd_in):
+    def _compute_motion_subspace(
+        self,
+        *,
+        body_q: wp.array2d[wp.transform],
+        joint_S_s_out: wp.array2d[wp.spatial_vector],
+        joint_qd_in: wp.array2d[wp.float32],
+    ) -> None:
         n_joints = self.model.joint_count
         batch = body_q.shape[0]
         wp.launch(
@@ -835,13 +874,13 @@ class IKOptimizerLBFGS:
 
     def _integrate_dq(
         self,
-        joint_q,
+        joint_q: wp.array2d[wp.float32],
         *,
-        dq_in,
-        joint_q_out,
-        joint_qd_out,
-        step_size=1.0,
-    ):
+        dq_in: wp.array2d[wp.float32],
+        joint_q_out: wp.array2d[wp.float32],
+        joint_qd_out: wp.array2d[wp.float32],
+        step_size: float = 1.0,
+    ) -> None:
         batch = joint_q.shape[0]
 
         wp.launch(
@@ -849,9 +888,13 @@ class IKOptimizerLBFGS:
             dim=[batch, self.model.joint_count],
             inputs=[
                 self.model.joint_type,
+                self.model.joint_parent,
+                self.model.joint_child,
                 self.model.joint_q_start,
                 self.model.joint_qd_start,
                 self.model.joint_dof_dim,
+                self.model.joint_X_c,
+                self.model.body_com,
                 joint_q,
                 dq_in,
                 joint_qd_out,
@@ -865,7 +908,7 @@ class IKOptimizerLBFGS:
         )
         joint_qd_out.zero_()
 
-    def _step(self, joint_q, iteration=0):
+    def _step(self, joint_q: wp.array2d[wp.float32], iteration: int = 0) -> None:
         """Execute one L-BFGS iteration."""
         self.compute_costs(joint_q)
 
@@ -900,7 +943,7 @@ class IKOptimizerLBFGS:
         self._line_search(joint_q)
         self._line_search_select_best(joint_q)
 
-    def _compute_initial_slope(self):
+    def _compute_initial_slope(self) -> None:
         """Compute and store dot(gradient, search_direction) for the current state."""
         wp.launch_tiled(
             self._compute_slope_tiled,
@@ -911,7 +954,7 @@ class IKOptimizerLBFGS:
             device=self.device,
         )
 
-    def _compute_search_direction(self):
+    def _compute_search_direction(self) -> None:
         """Compute L-BFGS search direction using two-loop recursion."""
         wp.launch_tiled(
             self._compute_search_direction_tiled,
@@ -933,7 +976,7 @@ class IKOptimizerLBFGS:
             device=self.device,
         )
 
-    def _update_history(self):
+    def _update_history(self) -> None:
         """Update L-BFGS history with new s_k and y_k pairs."""
         # if self.device.is_cuda:
         wp.launch_tiled(
@@ -956,7 +999,7 @@ class IKOptimizerLBFGS:
             device=self.device,
         )
 
-    def _line_search(self, joint_q):
+    def _line_search(self, joint_q: wp.array2d[wp.float32]) -> None:
         """
         Generate candidate configurations and compute their costs and gradients
         to check the Wolfe conditions.
@@ -1018,7 +1061,7 @@ class IKOptimizerLBFGS:
             device=self.device,
         )
 
-    def _line_search_select_best(self, joint_q):
+    def _line_search_select_best(self, joint_q: wp.array2d[wp.float32]) -> None:
         """Select the best step size based on Wolfe conditions and update joint_q."""
         if self.n_line_search == 0:
             return
@@ -1055,16 +1098,16 @@ class IKOptimizerLBFGS:
         )
 
     @classmethod
-    def _build_specialized(cls, key):
+    def _build_specialized(cls, key: tuple[int, int, int, int, str]) -> type[IKOptimizerLBFGS]:
         """Build a specialized IKOptimizerLBFGS subclass with tiled kernels for given dimensions."""
         C, R, M_HIST, N_LINE_SEARCH, _ARCH = key
 
         def _compute_slope_template(
             # inputs
-            gradient: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
-            search_direction: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+            gradient: wp.array2d[wp.float32],  # (n_batch, n_dofs)
+            search_direction: wp.array2d[wp.float32],  # (n_batch, n_dofs)
             # outputs
-            slope_out: wp.array1d(dtype=wp.float32),  # (n_batch,)
+            slope_out: wp.array[wp.float32],  # (n_batch,)
         ):
             row = wp.tid()
             DOF = _Specialized.TILE_N_DOFS
@@ -1078,10 +1121,10 @@ class IKOptimizerLBFGS:
 
         def _compute_slope_candidates_template(
             # inputs
-            candidate_gradient: wp.array3d(dtype=wp.float32),  # (n_batch, n_line_steps, n_dofs)
-            search_direction: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+            candidate_gradient: wp.array3d[wp.float32],  # (n_batch, n_line_steps, n_dofs)
+            search_direction: wp.array2d[wp.float32],  # (n_batch, n_dofs)
             # outputs
-            slope_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_line_steps)
+            slope_out: wp.array2d[wp.float32],  # (n_batch, n_line_steps)
         ):
             row, step_idx = wp.tid()
             DOF = _Specialized.TILE_N_DOFS
@@ -1095,10 +1138,10 @@ class IKOptimizerLBFGS:
 
         def _compute_gradient_jtr_template(
             # inputs
-            jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
-            residuals: wp.array2d(dtype=wp.float32),  # (n_batch, n_residuals)
+            jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
+            residuals: wp.array2d[wp.float32],  # (n_batch, n_residuals)
             # outputs
-            gradient: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+            gradient: wp.array2d[wp.float32],  # (n_batch, n_dofs)
         ):
             row = wp.tid()
 
@@ -1117,16 +1160,16 @@ class IKOptimizerLBFGS:
 
         def _compute_search_direction_template(
             # inputs
-            gradient: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
-            s_history: wp.array3d(dtype=wp.float32),  # (n_batch, history_len, n_dofs)
-            y_history: wp.array3d(dtype=wp.float32),  # (n_batch, history_len, n_dofs)
-            rho_history: wp.array2d(dtype=wp.float32),  # (n_batch, history_len)
-            alpha_history: wp.array2d(dtype=wp.float32),  # (n_batch, history_len)
-            history_count: wp.array1d(dtype=wp.int32),  # (n_batch)
-            history_start: wp.array1d(dtype=wp.int32),  # (n_batch)
+            gradient: wp.array2d[wp.float32],  # (n_batch, n_dofs)
+            s_history: wp.array3d[wp.float32],  # (n_batch, history_len, n_dofs)
+            y_history: wp.array3d[wp.float32],  # (n_batch, history_len, n_dofs)
+            rho_history: wp.array2d[wp.float32],  # (n_batch, history_len)
+            alpha_history: wp.array2d[wp.float32],  # (n_batch, history_len)
+            history_count: wp.array[wp.int32],  # (n_batch)
+            history_start: wp.array[wp.int32],  # (n_batch)
             h0_scale: float,  # scalar
             # outputs
-            search_direction: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+            search_direction: wp.array2d[wp.float32],  # (n_batch, n_dofs)
         ):
             row = wp.tid()
             DOF = _Specialized.TILE_N_DOFS
@@ -1178,16 +1221,16 @@ class IKOptimizerLBFGS:
 
         def _update_history_template(
             # inputs
-            last_step: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
-            gradient: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
-            gradient_prev: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+            last_step: wp.array2d[wp.float32],  # (n_batch, n_dofs)
+            gradient: wp.array2d[wp.float32],  # (n_batch, n_dofs)
+            gradient_prev: wp.array2d[wp.float32],  # (n_batch, n_dofs)
             history_len: int,
             # outputs
-            s_history: wp.array3d(dtype=wp.float32),
-            y_history: wp.array3d(dtype=wp.float32),
-            rho_history: wp.array2d(dtype=wp.float32),
-            history_count: wp.array1d(dtype=wp.int32),
-            history_start: wp.array1d(dtype=wp.int32),
+            s_history: wp.array3d[wp.float32],
+            y_history: wp.array3d[wp.float32],
+            rho_history: wp.array2d[wp.float32],
+            history_count: wp.array[wp.int32],
+            history_start: wp.array[wp.int32],
         ):
             row = wp.tid()
             DOF = _Specialized.TILE_N_DOFS
@@ -1220,17 +1263,17 @@ class IKOptimizerLBFGS:
 
         def _select_best_step_template(
             # inputs
-            candidate_costs: wp.array2d(dtype=wp.float32),  # (n_batch, n_line_steps)
-            candidate_step: wp.array3d(dtype=wp.float32),  # (n_batch, n_line_steps, n_dofs)
-            cost_initial: wp.array1d(dtype=wp.float32),  # (n_batch)
-            slope_initial: wp.array1d(dtype=wp.float32),  # (n_batch)
-            candidate_slopes: wp.array2d(dtype=wp.float32),  # (n_batch, n_line_steps)
-            line_search_alphas: wp.array1d(dtype=wp.float32),  # (n_line_steps)
+            candidate_costs: wp.array2d[wp.float32],  # (n_batch, n_line_steps)
+            candidate_step: wp.array3d[wp.float32],  # (n_batch, n_line_steps, n_dofs)
+            cost_initial: wp.array[wp.float32],  # (n_batch)
+            slope_initial: wp.array[wp.float32],  # (n_batch)
+            candidate_slopes: wp.array2d[wp.float32],  # (n_batch, n_line_steps)
+            line_search_alphas: wp.array[wp.float32],  # (n_line_steps)
             wolfe_c1: float,  # scalar
             wolfe_c2: float,  # scalar
             # outputs
-            best_step_idx_out: wp.array1d(dtype=wp.int32),  # (n_batch)
-            last_step_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+            best_step_idx_out: wp.array[wp.int32],  # (n_batch)
+            last_step_out: wp.array2d[wp.float32],  # (n_batch, n_dofs)
         ):
             row = wp.tid()
             N_STEPS = _Specialized.TILE_N_LINE_STEPS
@@ -1316,33 +1359,39 @@ class IKOptimizerLBFGS:
         @wp.kernel
         def _integrate_dq_dof(
             # model-wide
-            joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
-            joint_q_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-            joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-            joint_dof_dim: wp.array2d(dtype=wp.int32),  # (n_joints, 2)  → (lin, ang)
+            joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_parent: wp.array[wp.int32],  # (n_joints)
+            joint_child: wp.array[wp.int32],  # (n_joints)
+            joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)  → (lin, ang)
+            joint_X_c: wp.array[wp.transform],  # (n_joints)
+            body_com: wp.array[wp.vec3],  # (n_bodies)
             # per-row
-            joint_q_curr: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-            joint_qd_curr: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)  (typically all-zero)
-            dq_dof: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)  ← LM update (q̇)
-            dt: float,  # LM step (usually 1.0)
+            joint_q_curr: wp.array2d[wp.float32],  # (n_batch, n_coords)
+            joint_qd_curr: wp.array2d[wp.float32],  # (n_batch, n_dofs)  (typically all-zero)
+            dq_dof: wp.array2d[wp.float32],  # (n_batch, n_dofs)  ← update direction (q̇)
+            dt: float,  # step scale (usually 1.0)
             # outputs
-            joint_q_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-            joint_qd_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+            joint_q_out: wp.array2d[wp.float32],  # (n_batch, n_coords)
+            joint_qd_out: wp.array2d[wp.float32],  # (n_batch, n_dofs)
         ):
             """
-            Integrate the candidate update `dq_dof` (interpreted as a joint-space
-            velocity times `dt`) into a new configuration.
+            Integrate the candidate update ``dq_dof`` (interpreted as a
+            joint-space velocity times ``dt``) into a new configuration.
 
             q_out  = integrate(q_curr, dq_dof)
 
-            One thread handles one joint of one batch row. All joint types supported by
-            `jcalc_integrate` (revolute, prismatic, ball, free, D6, ...) work out of the
-            box.
+            One thread handles one joint of one batch row. All joint types
+            supported by ``jcalc_integrate`` (revolute, prismatic, ball,
+            free, D6, ...) work out of the box.
             """
             row, joint_idx = wp.tid()
 
             # Static joint metadata
             t = joint_type[joint_idx]
+            parent = joint_parent[joint_idx]
+            child = joint_child[joint_idx]
             coord_start = joint_q_start[joint_idx]
             dof_start = joint_qd_start[joint_idx]
             lin_axes = joint_dof_dim[joint_idx, 0]
@@ -1360,6 +1409,9 @@ class IKOptimizerLBFGS:
             #   qd_new = 0 + delta           (qd ← delta)
             #   q_new  = q + qd_new * dt     (q ← q + delta)
             jcalc_integrate(
+                parent,
+                joint_X_c[joint_idx],
+                body_com[child],
                 t,
                 q_row,
                 qd_row,
@@ -1375,16 +1427,16 @@ class IKOptimizerLBFGS:
 
         @wp.kernel(module="unique")
         def _compute_motion_subspace_2d(
-            joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
-            joint_parent: wp.array1d(dtype=wp.int32),  # (n_joints)
-            joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-            joint_qd: wp.array2d(dtype=wp.float32),  # (n_batch, n_joint_dof_count)
-            joint_axis: wp.array1d(dtype=wp.vec3),  # (n_joint_dof_count)
-            joint_dof_dim: wp.array2d(dtype=wp.int32),  # (n_joints, 2)
-            body_q: wp.array2d(dtype=wp.transform),  # (n_batch, n_bodies)
-            joint_X_p: wp.array1d(dtype=wp.transform),  # (n_joints)
+            joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_parent: wp.array[wp.int32],  # (n_joints)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_qd: wp.array2d[wp.float32],  # (n_batch, n_joint_dof_count)
+            joint_axis: wp.array[wp.vec3],  # (n_joint_dof_count)
+            joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)
+            body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
+            joint_X_p: wp.array[wp.transform],  # (n_joints)
             # outputs
-            joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_batch, n_joint_dof_count)
+            joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_joint_dof_count)
         ):
             row, joint_idx = wp.tid()
 
@@ -1416,16 +1468,16 @@ class IKOptimizerLBFGS:
 
         @wp.kernel(module="unique")
         def _fk_local(
-            joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
-            joint_q: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-            joint_q_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-            joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-            joint_axis: wp.array1d(dtype=wp.vec3),  # (n_axes)
-            joint_dof_dim: wp.array2d(dtype=wp.int32),  # (n_joints, 2)  → (lin, ang)
-            joint_X_p: wp.array1d(dtype=wp.transform),  # (n_joints)
-            joint_X_c: wp.array1d(dtype=wp.transform),  # (n_joints)
+            joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
+            joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_axis: wp.array[wp.vec3],  # (n_axes)
+            joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)  → (lin, ang)
+            joint_X_p: wp.array[wp.transform],  # (n_joints)
+            joint_X_c: wp.array[wp.transform],  # (n_joints)
             # outputs
-            X_local_out: wp.array2d(dtype=wp.transform),  # (n_batch, n_joints)
+            X_local_out: wp.array2d[wp.transform],  # (n_batch, n_joints)
         ):
             row, local_joint_idx = wp.tid()
 
@@ -1449,8 +1501,7 @@ class IKOptimizerLBFGS:
             X_local_out[row, local_joint_idx] = X_rel
 
         def _fk_two_pass(model, joint_q, body_q, X_local, n_batch):
-            """
-            Compute forward kinematics using two-pass algorithm.
+            """Compute forward kinematics using two-pass algorithm.
 
             Args:
                 model: newton.Model instance

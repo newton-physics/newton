@@ -24,11 +24,11 @@ from newton.selection import ArticulationView
 
 @wp.kernel
 def update_joint_target_trajectory_kernel(
-    joint_target_trajectory: wp.array3d(dtype=wp.float32),
-    time: wp.array(dtype=wp.float32),
+    joint_target_trajectory: wp.array3d[wp.float32],
+    time: wp.array[wp.float32],
     dt: wp.float32,
     # output
-    joint_target: wp.array3d(dtype=wp.float32),
+    joint_target: wp.array3d[wp.float32],
 ):
     world_idx = wp.tid()
     t = time[world_idx]

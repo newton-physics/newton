@@ -16,13 +16,13 @@ def triangle_deformation_gradient(x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, inv_dm:
 
 @wp.kernel
 def eval_stretch_kernel(
-    pos: wp.array(dtype=wp.vec3),
-    face_areas: wp.array(dtype=float),
-    inv_dms: wp.array(dtype=wp.mat22),
-    faces: wp.array(dtype=wp.int32, ndim=2),
-    aniso_ke: wp.array(dtype=wp.vec3),
+    pos: wp.array[wp.vec3],
+    face_areas: wp.array[float],
+    inv_dms: wp.array[wp.mat22],
+    faces: wp.array2d[wp.int32],
+    aniso_ke: wp.array[wp.vec3],
     # outputs
-    forces: wp.array(dtype=wp.vec3),
+    forces: wp.array[wp.vec3],
 ):
     """
     Ref. Large Steps in Cloth Simulation, Baraff & Witkin in 1998.
@@ -59,13 +59,13 @@ def eval_stretch_kernel(
 
 @wp.kernel
 def eval_bend_kernel(
-    pos: wp.array(dtype=wp.vec3),
-    edge_rest_area: wp.array(dtype=float),
-    edge_bending_cot: wp.array(dtype=wp.vec4),
-    edges: wp.array(dtype=wp.int32, ndim=2),
-    edge_bending_properties: wp.array(dtype=float, ndim=2),
+    pos: wp.array[wp.vec3],
+    edge_rest_area: wp.array[float],
+    edge_bending_cot: wp.array[wp.vec4],
+    edges: wp.array2d[wp.int32],
+    edge_bending_properties: wp.array2d[float],
     # outputs
-    forces: wp.array(dtype=wp.vec3),
+    forces: wp.array[wp.vec3],
 ):
     eid = wp.tid()
     if edges[eid][0] < 0 or edges[eid][1] < 0:
@@ -88,13 +88,13 @@ def eval_bend_kernel(
 @wp.kernel
 def eval_drag_force_kernel(
     spring_stiff: float,
-    face_index: wp.array(dtype=int),
-    drag_pos: wp.array(dtype=wp.vec3),
-    drag_bary_coord: wp.array(dtype=wp.vec3),
-    faces: wp.array(dtype=wp.int32, ndim=2),
-    vert_pos: wp.array(dtype=wp.vec3),
+    face_index: wp.array[int],
+    drag_pos: wp.array[wp.vec3],
+    drag_bary_coord: wp.array[wp.vec3],
+    faces: wp.array2d[wp.int32],
+    vert_pos: wp.array[wp.vec3],
     # outputs
-    forces: wp.array(dtype=wp.vec3),
+    forces: wp.array[wp.vec3],
 ):
     fid = face_index[0]
     if fid != -1:
@@ -123,12 +123,12 @@ def eval_drag_force_kernel(
 @wp.kernel
 def accumulate_dragging_pd_diag_kernel(
     spring_stiff: float,
-    face_index: wp.array(dtype=int),
-    drag_bary_coord: wp.array(dtype=wp.vec3),
-    faces: wp.array(dtype=wp.int32, ndim=2),
-    particle_flags: wp.array(dtype=wp.int32),
+    face_index: wp.array[int],
+    drag_bary_coord: wp.array[wp.vec3],
+    faces: wp.array2d[wp.int32],
+    particle_flags: wp.array[wp.int32],
     # outputs
-    pd_diags: wp.array(dtype=float),
+    pd_diags: wp.array[float],
 ):
     fid = face_index[0]
     if fid != -1:
@@ -148,19 +148,19 @@ def accumulate_dragging_pd_diag_kernel(
 @wp.kernel
 def init_step_kernel(
     dt: float,
-    gravity: wp.array(dtype=wp.vec3),
-    particle_world: wp.array(dtype=wp.int32),
-    f_ext: wp.array(dtype=wp.vec3),
-    v_curr: wp.array(dtype=wp.vec3),
-    x_curr: wp.array(dtype=wp.vec3),
-    x_prev: wp.array(dtype=wp.vec3),
-    pd_diags: wp.array(dtype=float),
-    particle_masses: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
+    gravity: wp.array[wp.vec3],
+    particle_world: wp.array[wp.int32],
+    f_ext: wp.array[wp.vec3],
+    v_curr: wp.array[wp.vec3],
+    x_curr: wp.array[wp.vec3],
+    x_prev: wp.array[wp.vec3],
+    pd_diags: wp.array[float],
+    particle_masses: wp.array[float],
+    particle_flags: wp.array[wp.int32],
     # outputs
-    x_inertia: wp.array(dtype=wp.vec3),
-    static_A_diags: wp.array(dtype=float),
-    dx: wp.array(dtype=wp.vec3),
+    x_inertia: wp.array[wp.vec3],
+    static_A_diags: wp.array[float],
+    dx: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     x_last = x_curr[tid]
@@ -186,11 +186,11 @@ def init_step_kernel(
 @wp.kernel
 def init_rhs_kernel(
     dt: float,
-    x_curr: wp.array(dtype=wp.vec3),
-    x_inertia: wp.array(dtype=wp.vec3),
-    particle_masses: wp.array(dtype=float),
+    x_curr: wp.array[wp.vec3],
+    x_inertia: wp.array[wp.vec3],
+    particle_masses: wp.array[float],
     # outputs
-    rhs: wp.array(dtype=wp.vec3),
+    rhs: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     rhs[tid] = (x_inertia[tid] - x_curr[tid]) * particle_masses[tid] / (dt * dt)
@@ -198,11 +198,11 @@ def init_rhs_kernel(
 
 @wp.kernel
 def prepare_jacobi_preconditioner_kernel(
-    static_A_diags: wp.array(dtype=float),
-    contact_hessian_diags: wp.array(dtype=wp.mat33),
-    particle_flags: wp.array(dtype=wp.int32),
+    static_A_diags: wp.array[float],
+    contact_hessian_diags: wp.array[wp.mat33],
+    particle_flags: wp.array[wp.int32],
     # outputs
-    inv_A_diags: wp.array(dtype=wp.mat33),
+    inv_A_diags: wp.array[wp.mat33],
 ):
     tid = wp.tid()
     diag = wp.identity(3, float) * static_A_diags[tid]
@@ -213,9 +213,9 @@ def prepare_jacobi_preconditioner_kernel(
 
 @wp.kernel
 def prepare_jacobi_preconditioner_no_contact_hessian_kernel(
-    static_A_diags: wp.array(dtype=float),
+    static_A_diags: wp.array[float],
     # outputs
-    inv_A_diags: wp.array(dtype=wp.mat33),
+    inv_A_diags: wp.array[wp.mat33],
 ):
     tid = wp.tid()
     diag = wp.identity(3, float) * static_A_diags[tid]
@@ -224,11 +224,11 @@ def prepare_jacobi_preconditioner_no_contact_hessian_kernel(
 
 @wp.kernel
 def PD_jacobi_step_kernel(
-    rhs: wp.array(dtype=wp.vec3),
-    x_in: wp.array(dtype=wp.vec3),
-    inv_diags: wp.array(dtype=wp.mat33),
+    rhs: wp.array[wp.vec3],
+    x_in: wp.array[wp.vec3],
+    inv_diags: wp.array[wp.mat33],
     # outputs
-    x_out: wp.array(dtype=wp.vec3),
+    x_out: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     x_out[tid] = x_in[tid] + inv_diags[tid] * rhs[tid]
@@ -236,10 +236,10 @@ def PD_jacobi_step_kernel(
 
 @wp.kernel
 def nonlinear_step_kernel(
-    x_in: wp.array(dtype=wp.vec3),
+    x_in: wp.array[wp.vec3],
     # outputs
-    x_out: wp.array(dtype=wp.vec3),
-    dx: wp.array(dtype=wp.vec3),
+    x_out: wp.array[wp.vec3],
+    dx: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     x_out[tid] = x_in[tid] + dx[tid]
@@ -249,9 +249,9 @@ def nonlinear_step_kernel(
 @wp.kernel
 def update_velocity(
     dt: float,
-    prev_pos: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    vel: wp.array(dtype=wp.vec3),
+    prev_pos: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    vel: wp.array[wp.vec3],
 ):
     particle = wp.tid()
     vel[particle] = 0.998 * (pos[particle] - prev_pos[particle]) / dt

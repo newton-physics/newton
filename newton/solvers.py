@@ -360,7 +360,7 @@ control, or model arrays. In practice, this starts by calling
     import newton
 
     @wp.kernel
-    def loss_kernel(particle_q: wp.array(dtype=wp.vec3), target: wp.vec3, loss: wp.array(dtype=float)):
+    def loss_kernel(particle_q: wp.array[wp.vec3], target: wp.vec3, loss: wp.array[float]):
         delta = particle_q[0] - target
         loss[0] = wp.dot(delta, delta)
 

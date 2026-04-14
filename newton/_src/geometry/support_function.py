@@ -37,6 +37,7 @@ from .types import GeoType
 # Is not allowed to share values with GeoType
 class GeoTypeEx(enum.IntEnum):
     TRIANGLE = 1000
+    TRIANGLE_PRISM = 1001
 
 
 @wp.struct
@@ -89,6 +90,7 @@ class GenericShapeData:
       - CONE: radius in x, half-height in y (axis +Z, apex at +Z)
       - PLANE: half-width in x, half-length in y (lies in XY plane at z=0, normal along +Z)
       - TRIANGLE: vertex B-A stored in scale, vertex C-A stored in auxiliary
+      - TRIANGLE_PRISM: same as TRIANGLE; support function extrudes 1 m along -Z
     """
 
     shape_type: int
@@ -138,7 +140,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
                 best_idx = i
         result = wp.cw_mul(mesh.points[best_idx], mesh_scale)
 
-    elif geom.shape_type == GeoTypeEx.TRIANGLE:
+    elif geom.shape_type == GeoTypeEx.TRIANGLE or geom.shape_type == GeoTypeEx.TRIANGLE_PRISM:
         # Triangle vertices: a at origin, b at scale, c at auxiliary
         tri_a = wp.vec3(0.0, 0.0, 0.0)
         tri_b = geom.scale
@@ -156,6 +158,15 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
             result = tri_b
         else:
             result = tri_c
+
+        # TRIANGLE_PRISM: extrude 1 m along -Z to form a solid prism so
+        # that GJK/MPR naturally resolves shapes on the back side.
+        # The support function is queried in the heightfield's local
+        # frame (orientation_a = heightfield rotation), where -Z is
+        # always the heightfield's down direction.
+        if geom.shape_type == GeoTypeEx.TRIANGLE_PRISM:
+            if direction[2] < 0.0:
+                result = result + wp.vec3(0.0, 0.0, -1.0)
     elif geom.shape_type == GeoType.BOX:
         sx = 1.0 if direction[0] >= 0.0 else -1.0
         sy = 1.0 if direction[1] >= 0.0 else -1.0
@@ -326,10 +337,10 @@ def support_map_lean(geom: GenericShapeData, direction: wp.vec3, data_provider: 
 @wp.func
 def extract_shape_data(
     shape_idx: int,
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_types: wp.array(dtype=int),
-    shape_data: wp.array(dtype=wp.vec4),  # scale (xyz), margin_offset (w) or other data
-    shape_source: wp.array(dtype=wp.uint64),
+    shape_transform: wp.array[wp.transform],
+    shape_types: wp.array[int],
+    shape_data: wp.array[wp.vec4],  # scale (xyz), margin_offset (w) or other data
+    shape_source: wp.array[wp.uint64],
 ):
     """
     Extract shape data from the narrow phase API arrays.
@@ -367,3 +378,89 @@ def extract_shape_data(
         result.auxiliary = pack_mesh_ptr(shape_source[shape_idx])
 
     return position, orientation, result, scale, margin_offset
+
+
+@wp.func
+def closest_point_on_triangle(
+    p: wp.vec3,
+    tri_a: wp.vec3,
+    tri_b: wp.vec3,
+    tri_c: wp.vec3,
+) -> wp.vec3:
+    """
+    Closest point on a triangle to a query point.
+
+    Uses Voronoi-region tests with barycentric coordinates to handle
+    vertex, edge, and face regions without branching on degenerate normals.
+
+    Args:
+        p: Query point
+        tri_a: Triangle vertex A
+        tri_b: Triangle vertex B
+        tri_c: Triangle vertex C
+
+    Returns:
+        The closest point on the triangle to *p*.
+    """
+    ab = tri_b - tri_a
+    ac = tri_c - tri_a
+
+    # Guard degenerate triangles: if the triangle has near-zero area, fall
+    # back to the closest point on the longest non-degenerate edge (or the
+    # nearest vertex when fully collapsed).
+    ab_sq = wp.dot(ab, ab)
+    ac_sq = wp.dot(ac, ac)
+    EPS2 = 1.0e-20
+    if wp.dot(wp.cross(ab, ac), wp.cross(ab, ac)) < EPS2:
+        bc = tri_c - tri_b
+        bc_sq = wp.dot(bc, bc)
+        if ab_sq >= ac_sq and ab_sq >= bc_sq:
+            if ab_sq < EPS2:
+                return tri_a
+            t = wp.clamp(wp.dot(p - tri_a, ab) / ab_sq, 0.0, 1.0)
+            return tri_a + t * ab
+        elif ac_sq >= bc_sq:
+            t = wp.clamp(wp.dot(p - tri_a, ac) / ac_sq, 0.0, 1.0)
+            return tri_a + t * ac
+        else:
+            t = wp.clamp(wp.dot(p - tri_b, bc) / bc_sq, 0.0, 1.0)
+            return tri_b + t * bc
+
+    ap = p - tri_a
+
+    d1 = wp.dot(ab, ap)
+    d2 = wp.dot(ac, ap)
+    if d1 <= 0.0 and d2 <= 0.0:
+        return tri_a
+
+    bp = p - tri_b
+    d3 = wp.dot(ab, bp)
+    d4 = wp.dot(ac, bp)
+    if d3 >= 0.0 and d4 <= d3:
+        return tri_b
+
+    cp = p - tri_c
+    d5 = wp.dot(ab, cp)
+    d6 = wp.dot(ac, cp)
+    if d6 >= 0.0 and d5 <= d6:
+        return tri_c
+
+    vc = d1 * d4 - d3 * d2
+    if vc <= 0.0 and d1 >= 0.0 and d3 <= 0.0:
+        v = d1 / (d1 - d3)
+        return tri_a + v * ab
+
+    vb = d5 * d2 - d1 * d6
+    if vb <= 0.0 and d2 >= 0.0 and d6 <= 0.0:
+        w = d2 / (d2 - d6)
+        return tri_a + w * ac
+
+    va = d3 * d6 - d5 * d4
+    if va <= 0.0 and (d4 - d3) >= 0.0 and (d5 - d6) >= 0.0:
+        w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        return tri_b + w * (tri_c - tri_b)
+
+    denom = 1.0 / (va + vb + vc)
+    v = vb * denom
+    w = vc * denom
+    return tri_a + v * ab + w * ac

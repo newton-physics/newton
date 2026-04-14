@@ -13,8 +13,8 @@ from enum import IntEnum
 
 import warp as wp
 
+from ......geometry.types import GeoType
 from ...core.geometry import GeometriesData, GeometriesModel
-from ...core.shapes import ShapeType
 from ...core.types import float32, int32, override, transformf, vec2i, vec3f, vec4f, vec6f, vec8f
 
 ###
@@ -42,13 +42,13 @@ wp.set_module_options({"enable_backward": False})
 ###
 
 
-PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES: list[ShapeType] = [
-    ShapeType.SPHERE,
-    ShapeType.CYLINDER,
-    ShapeType.CONE,
-    ShapeType.CAPSULE,
-    ShapeType.BOX,
-    ShapeType.ELLIPSOID,
+PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES: list[GeoType] = [
+    GeoType.SPHERE,
+    GeoType.CYLINDER,
+    GeoType.CONE,
+    GeoType.CAPSULE,
+    GeoType.BOX,
+    GeoType.ELLIPSOID,
 ]
 """
 List of primitive shape combinations supported by the primitive narrow-phase collider.
@@ -221,18 +221,18 @@ def bs_sphere(radius: float32) -> float32:
 
 
 @wp.func
-def bs_cylinder(radius: float32, height: float32) -> float32:
-    return wp.sqrt(0.25 * height * height + radius * radius)
+def bs_cylinder(radius: float32, half_height: float32) -> float32:
+    return wp.sqrt(half_height * half_height + radius * radius)
 
 
 @wp.func
-def bs_cone(radius: float32, height: float32) -> float32:
-    return wp.sqrt(0.25 * height * height + radius * radius)
+def bs_cone(radius: float32, half_height: float32) -> float32:
+    return wp.sqrt(half_height * half_height + radius * radius)
 
 
 @wp.func
-def bs_capsule(radius: float32, height: float32) -> float32:
-    return 0.5 * height + radius
+def bs_capsule(radius: float32, half_height: float32) -> float32:
+    return half_height + radius
 
 
 @wp.func
@@ -241,10 +241,9 @@ def bs_ellipsoid(abc: vec3f) -> float32:
 
 
 @wp.func
-def bs_box(size: vec3f) -> float32:
-    d, w, h = size[0], size[1], size[2]
-    radius = 0.5 * wp.sqrt(d * d + w * w + h * h)
-    return radius
+def bs_box(half_extents: vec3f) -> float32:
+    hx, hy, hz = half_extents[0], half_extents[1], half_extents[2]
+    return wp.sqrt(hx * hx + hy * hy + hz * hz)
 
 
 # TODO: Implement proper BS for planes
@@ -266,17 +265,17 @@ def bs_geom(sid: int32, params: vec4f, margin: float32) -> float32:
         float32: The radius of the BS of the geometry element.
     """
     r = float32(0.0)
-    if sid == ShapeType.SPHERE:
+    if sid == GeoType.SPHERE:
         r = bs_sphere(params[0] + margin)
-    elif sid == ShapeType.CYLINDER:
+    elif sid == GeoType.CYLINDER:
         r = bs_cylinder(params[0] + margin, params[1] + margin)
-    elif sid == ShapeType.CONE:
+    elif sid == GeoType.CONE:
         r = bs_cone(params[0] + margin, params[1] + margin)
-    elif sid == ShapeType.CAPSULE:
+    elif sid == GeoType.CAPSULE:
         r = bs_capsule(params[0] + margin, params[1] + margin)
-    elif sid == ShapeType.ELLIPSOID:
+    elif sid == GeoType.ELLIPSOID:
         r = bs_ellipsoid(vec3f(params[0] + margin, params[1] + margin, params[2] + margin))
-    elif sid == ShapeType.BOX:
+    elif sid == GeoType.BOX:
         r = bs_box(vec3f(params[0] + margin, params[1] + margin, params[2] + margin))
     return r
 
@@ -347,20 +346,20 @@ def aabb_sphere(pose: transformf, radius: float32, margin: float32) -> vec6f:
 
 
 @wp.func
-def aabb_cylinder(pose: transformf, radius: float32, height: float32, margin: float32) -> vec6f:
-    extents = vec3f(radius, radius, 0.5 * height)
+def aabb_cylinder(pose: transformf, radius: float32, half_height: float32, margin: float32) -> vec6f:
+    extents = vec3f(radius, radius, half_height)
     return compute_tight_aabb_from_local_extents(pose, extents, margin)
 
 
 @wp.func
-def aabb_cone(pose: transformf, radius: float32, height: float32, margin: float32) -> vec6f:
-    extents = vec3f(radius, radius, 0.5 * height)
+def aabb_cone(pose: transformf, radius: float32, half_height: float32, margin: float32) -> vec6f:
+    extents = vec3f(radius, radius, half_height)
     return compute_tight_aabb_from_local_extents(pose, extents, margin)
 
 
 @wp.func
-def aabb_capsule(pose: transformf, radius: float32, height: float32, margin: float32) -> vec6f:
-    extents = vec3f(radius, radius, 0.5 * height + radius)
+def aabb_capsule(pose: transformf, radius: float32, half_height: float32, margin: float32) -> vec6f:
+    extents = vec3f(radius, radius, half_height + radius)
     return compute_tight_aabb_from_local_extents(pose, extents, margin)
 
 
@@ -371,9 +370,8 @@ def aabb_ellipsoid(pose: transformf, abc: vec3f, margin: float32) -> vec6f:
 
 
 @wp.func
-def aabb_box(pose: transformf, size: vec3f, margin: float32) -> vec6f:
-    extents = 0.5 * size
-    return compute_tight_aabb_from_local_extents(pose, extents, margin)
+def aabb_box(pose: transformf, half_extents: vec3f, margin: float32) -> vec6f:
+    return compute_tight_aabb_from_local_extents(pose, half_extents, margin)
 
 
 # TODO: Implement proper AABB for planes
@@ -396,19 +394,19 @@ def aabb_geom(sid: int32, params: vec4f, margin: float32, pose: transformf) -> v
         vec6f: The vertices of the AABB of the geometry element.
     """
     aabb = vec6f(0.0)
-    if sid == ShapeType.SPHERE:
+    if sid == GeoType.SPHERE:
         aabb = aabb_sphere(pose, params[0], margin)
-    elif sid == ShapeType.CYLINDER:
+    elif sid == GeoType.CYLINDER:
         aabb = aabb_cylinder(pose, params[0], params[1], margin)
-    elif sid == ShapeType.CONE:
+    elif sid == GeoType.CONE:
         aabb = aabb_cone(pose, params[0], params[1], margin)
-    elif sid == ShapeType.CAPSULE:
+    elif sid == GeoType.CAPSULE:
         aabb = aabb_capsule(pose, params[0], params[1], margin)
-    elif sid == ShapeType.ELLIPSOID:
+    elif sid == GeoType.ELLIPSOID:
         aabb = aabb_ellipsoid(pose, vec3f(params[0], params[1], params[2]), margin)
-    elif sid == ShapeType.BOX:
+    elif sid == GeoType.BOX:
         aabb = aabb_box(pose, vec3f(params[0], params[1], params[2]), margin)
-    elif sid == ShapeType.PLANE:
+    elif sid == GeoType.PLANE:
         aabb = aabb_plane(pose, vec3f(params[0], params[1], params[2]), params[3], margin)
     return aabb
 
