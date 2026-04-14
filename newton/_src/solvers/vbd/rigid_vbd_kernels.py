@@ -1454,9 +1454,7 @@ def evaluate_joint_force_hessian(
             dkappa_dt = compute_kappa_dot(J_world, omega_p, omega_c)
             dtheta_dt = wp.dot(dkappa_dt, a)
 
-            _mode, err_pos = resolve_drive_limit_mode(
-                theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
-            )
+            mode, err_pos = resolve_drive_limit_mode(theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits)
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
@@ -1567,7 +1565,7 @@ def evaluate_joint_force_hessian(
             dC_dt = (C_vec - C_vec_prev) * inv_dt
             dd_dt = wp.dot(dC_dt, axis_w)
 
-            _mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
@@ -1724,7 +1722,7 @@ def evaluate_joint_force_hessian(
                         d_along = wp.dot(C_vec, axis_w)
                         dd_dt = wp.dot(dC_dt, axis_w)
 
-                        _mode, err_pos = resolve_drive_limit_mode(
+                        mode, err_pos = resolve_drive_limit_mode(
                             d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits
                         )
                         f_scalar = float(0.0)
@@ -1789,7 +1787,7 @@ def evaluate_joint_force_hessian(
                         theta_abs = theta + joint_rest_angle[dof_idx]
                         dtheta_dt = wp.dot(dkappa_dt, a)
 
-                        _mode, err_pos = resolve_drive_limit_mode(
+                        mode, err_pos = resolve_drive_limit_mode(
                             theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
                         )
                         f_scalar = float(0.0)
@@ -3715,7 +3713,7 @@ def update_duals_joint(
                     axis_w_dl = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[dof_idx]))
                     d_along = wp.dot(C_vec, axis_w_dl)
                     target_pos_dl = joint_target_pos[dof_idx]
-                    __mode, err_pos = resolve_drive_limit_mode(
+                    _mode, err_pos = resolve_drive_limit_mode(
                         d_along, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
                     )
                     i_dl = c_start + 2 + li
@@ -3737,7 +3735,7 @@ def update_duals_joint(
                     theta = wp.dot(kappa, a_dl)
                     theta_abs = theta + joint_rest_angle[dof_idx]
                     target_pos_dl = joint_target_pos[dof_idx]
-                    __mode, err_pos = resolve_drive_limit_mode(
+                    _mode, err_pos = resolve_drive_limit_mode(
                         theta_abs, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
                     )
                     i_dl = c_start + 2 + lin_count + ai
