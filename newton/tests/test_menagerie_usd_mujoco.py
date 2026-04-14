@@ -1279,7 +1279,6 @@ class TestMenagerieUSD_H1(TestMenagerieUSD):
     usd_asset_folder = "unitree_h1"
     usd_scene_file = "usd_structured/h1.usda"
 
-    num_worlds = 2
     num_steps = 20
     fk_enabled = True
     backfill_model = True
@@ -1396,7 +1395,6 @@ class TestMenagerieUSD_UR5e(TestMenagerieUSD):
     usd_asset_folder = "universal_robots_ur5e"
     usd_scene_file = "usd_structured/ur5e.usda"
 
-    num_worlds = 2
     num_steps = 20
     fk_enabled = True
     backfill_model = True
