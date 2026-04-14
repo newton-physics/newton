@@ -368,18 +368,10 @@ void main() {
 
         @self._window.event
         def on_key_press(symbol, modifiers):
-            if self.gui and self.gui.should_ignore_keyboard_input():
-                return
-            self._keys_down.add(symbol)
-            if symbol == pyglet.window.key.ESCAPE:
-                self._window.close()
-            elif symbol == pyglet.window.key.SPACE:
-                self._paused = not self._paused
-            elif symbol == pyglet.window.key.H:
-                if self.gui:
-                    self.gui.show_ui = not self.gui.show_ui
-            elif symbol == pyglet.window.key.F:
-                self._frame_camera_on_model()
+            if not (self.gui and self.gui.should_ignore_keyboard_input()):
+                self._keys_down.add(symbol)
+            if self.gui:
+                self.gui.handle_key_press(symbol, close_fn=self._window.close)
 
         @self._window.event
         def on_key_release(symbol, modifiers):

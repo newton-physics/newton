@@ -334,6 +334,26 @@ class ViewerGui:
         ):
             self.update_picking_from_screen(x, y, to_framebuffer_coords)
 
+    def handle_key_press(self, symbol: int, close_fn=None) -> None:
+        """Handle common key bindings shared by all viewer backends.
+
+        Args:
+            symbol: Pyglet key symbol.
+            close_fn: Callable that closes the viewer window, or None.
+        """
+        if self.is_keyboard_capturing():
+            return
+        import pyglet
+
+        if symbol == pyglet.window.key.SPACE:
+            self._viewer._paused = not self._viewer._paused
+        elif symbol == pyglet.window.key.H:
+            self.show_ui = not self.show_ui
+        elif symbol == pyglet.window.key.F:
+            self.frame_camera_on_model()
+        elif symbol == pyglet.window.key.ESCAPE and close_fn is not None:
+            close_fn()
+
     def _update_fps(self):
         """Update FPS counter; called once per rendered frame."""
         current_time = perf_counter()

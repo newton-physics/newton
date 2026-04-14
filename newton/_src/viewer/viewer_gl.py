@@ -1725,14 +1725,6 @@ class ViewerGL(ViewerBase):
         """
         pass
 
-    def _ui_is_capturing_mouse(self) -> bool:
-        """Return whether the UI wants to consume mouse input this frame."""
-        return self.gui.is_mouse_capturing() if self.gui else False
-
-    def _ui_is_capturing_keyboard(self) -> bool:
-        """Return whether the UI wants to consume keyboard input this frame."""
-        return self.gui.is_keyboard_capturing() if self.gui else False
-
     def on_key_press(self, symbol: int, modifiers: int):
         """
         Handle key press events for UI and simulation control.
@@ -1741,25 +1733,8 @@ class ViewerGL(ViewerBase):
             symbol: Key symbol.
             modifiers: Modifier keys.
         """
-        if self._ui_is_capturing_keyboard():
-            return
-
-        try:
-            import pyglet
-        except Exception:
-            return
-
-        if symbol == pyglet.window.key.H:
-            self.show_ui = not self.show_ui
-        elif symbol == pyglet.window.key.SPACE:
-            # Toggle pause with space key
-            self._paused = not self._paused
-        elif symbol == pyglet.window.key.F:
-            # Frame camera around model bounds
-            self._frame_camera_on_model()
-        elif symbol == pyglet.window.key.ESCAPE:
-            # Exit with Escape key
-            self.renderer.close()
+        if self.gui:
+            self.gui.handle_key_press(symbol, close_fn=self.renderer.close)
 
     def on_key_release(self, symbol: int, modifiers: int):
         """
