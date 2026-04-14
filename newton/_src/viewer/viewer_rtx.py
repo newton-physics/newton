@@ -124,6 +124,7 @@ class ViewerRTX(ViewerUSD):
         paused=False,
         environment="default",
         vsync=False,
+        async_rendering=False,
     ):
         # FIXME: Disable USD checks in OVRTX that refuse to load the library if `usd-core` is present.
         # This is a temporary workaround until OVRTX is shipped with namespaced USD libs.
@@ -151,6 +152,7 @@ class ViewerRTX(ViewerUSD):
 
         # Pre-initialize fields that clear_model() (called from super().__init__) touches
         self._ui_callbacks: dict[str, list] = {"side": [], "stats": [], "free": [], "panel": [], "rendering": []}
+        self._ui_callbacks["rendering"].append(self._ui_populate_rendering_panel)
         self._paused = paused
         self._rtx = None
         self._pending_line_batches: dict[str, tuple[Any, Any, Any, float, bool]] = {}
@@ -233,6 +235,8 @@ class ViewerRTX(ViewerUSD):
 
         # initial value for vsync (applied once window is created)
         self._vsync_init = vsync
+
+        self._async = async_rendering
 
     # ------------------------------------------------------------------ window
 
@@ -1631,9 +1635,17 @@ void main() {
         with wp.ScopedTimer("ViewerRTX::render_and_display", active=PROFILE_ENABLED, use_nvtx=True):
             from ovrtx import Device
 
-            # wait for async rendering to complete
-            with wp.ScopedTimer("ViewerRTX::rtx_wait", active=PROFILE_ENABLED, use_nvtx=True):
-                products = self._render_result.wait() if self._render_result is not None else None
+            if self._async:
+                # wait for async rendering to complete
+                with wp.ScopedTimer("ViewerRTX::rtx_wait", active=PROFILE_ENABLED, use_nvtx=True):
+                    products = self._render_result.wait() if self._render_result is not None else None
+            else:
+                # render synchronously
+                with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
+                    products = self._rtx.step(
+                        render_products={self._render_product_path},
+                        delta_time=1.0 / self.fps,
+                    )
 
             # blit to window if not headless
             if products is not None and self._window is not None and self._window.context is not None:
@@ -1649,12 +1661,13 @@ void main() {
                                         self._blit_to_window(pixels)
                                     mapping.unmap(stream=pixels.device.stream.cuda_stream)
 
-            # kick off next async rendering frame
-            with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
-                self._render_result = self._rtx.step_async(
-                    render_products={self._render_product_path},
-                    delta_time=1.0 / self.fps,
-                )
+            if self._async:
+                # kick off next async rendering frame
+                with wp.ScopedTimer("ViewerRTX::rtx_step_async", active=PROFILE_ENABLED, use_nvtx=True):
+                    self._render_result = self._rtx.step_async(
+                        render_products={self._render_product_path},
+                        delta_time=1.0 / self.fps,
+                    )
 
     def _blit_to_window(self, pixels: wp.array | wp.Texture2D):
         """Upload *pixels* to a GL texture and draw a fullscreen triangle (GPU sRGB + flip)."""
@@ -1784,6 +1797,10 @@ void main() {
         self._last_state = None
         self._last_control = None
         super().clear_model()
+
+    def _ui_populate_rendering_panel(self, imgui):
+        """Render RTX-specific items inside the Rendering Options panel section."""
+        _changed, self._async = imgui.checkbox("Asynchronous Rendering", self._async)
 
     @override
     def is_paused(self) -> bool:
