@@ -2869,8 +2869,8 @@ class SolverMuJoCo(SolverBase):
         """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton's equality constraints.
-        A value of -1 indicates the entry is unmapped -- the MuJoCo constraint was synthesized from a loop-closure 
-        joint (CONNECT or WELD) rather than from an explicit Newton equality constraint. For CONNECT-only 
+        A value of -1 indicates the entry is unmapped -- the MuJoCo constraint was synthesized from a loop-closure
+        joint (CONNECT or WELD) rather than from an explicit Newton equality constraint. For CONNECT-only
         entries see :attr:mjc_eq_to_newton_jnt.
 
         Shape [nworld, neq], dtype int32."""
@@ -6041,7 +6041,11 @@ class SolverMuJoCo(SolverBase):
         # has no connect constraints (has_connect_constraints is False and
         # both flags are False, so this branch is unreachable).
         wrote_eq_data = False
-        if (update_anchor_rel_xform_at_ref_pose or update_anchors) and self.connect_constraint_q_rel is not None:
+        if (
+            self.has_connect_constraints
+            and (update_anchor_rel_xform_at_ref_pose or update_anchors)
+            and self.connect_constraint_q_rel is not None
+        ):
             SolverMuJoCo._update_connect_constraint_anchors(
                 self.model,
                 self.mjw_model,
