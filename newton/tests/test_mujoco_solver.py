@@ -6377,6 +6377,16 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.iterations, 5, "Constructor value should override custom attribute")
         self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
 
+    def test_enable_multiccd_passed_to_mujoco(self):
+        """Verify that enable_multiccd sets mjENBL_MULTICCD on the MuJoCo model."""
+        model = self._create_multiworld_model(world_count=1)
+        solver = SolverMuJoCo(model, enable_multiccd=True)
+        mujoco = SolverMuJoCo._mujoco
+        self.assertTrue(
+            solver.mj_model.opt.enableflags & mujoco.mjtEnableBit.mjENBL_MULTICCD,
+            "mjENBL_MULTICCD should be set on mj_model.opt.enableflags",
+        )
+
 
 class TestMuJoCoArticulationConversion(unittest.TestCase):
     def test_loop_joints_only(self):
