@@ -92,9 +92,9 @@ def Xform "World"
             uniform token physics:axis = "Y"
         }
 
-        # Actuator for Joint 1 (PD Controller)
+        # Actuator for Joint 1 (PD Controller + MaxForce clamping)
         def Actuator "Joint1Actuator" (
-            prepend apiSchemas = ["PDControllerAPI"]
+            prepend apiSchemas = ["ControllerPDAPI", "ClampingMaxForceAPI"]
         )
         {
             rel newton:actuator:target = </World/Robot/Joint1>
@@ -105,7 +105,7 @@ def Xform "World"
 
         # Actuator for Joint 2 (PD Controller with Delay)
         def Actuator "Joint2Actuator" (
-            prepend apiSchemas = ["PDControllerAPI", "DelayAPI"]
+            prepend apiSchemas = ["ControllerPDAPI", "DelayAPI"]
         )
         {
             rel newton:actuator:target = </World/Robot/Joint2>

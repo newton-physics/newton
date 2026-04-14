@@ -2752,35 +2752,40 @@ def parse_usd(
         )
 
     # Parse Newton actuator prims from the USD stage.
-    try:
-        from newton_actuators import parse_actuator_prim  # noqa: PLC0415
-    except ImportError:
-        parse_actuator_prim = None
+    from ..actuators.delay import Delay  # noqa: PLC0415
+    from ..actuators.usd_parser import parse_actuator_prim  # noqa: PLC0415
 
     actuator_count = 0
-    if parse_actuator_prim is not None:
-        path_to_dof = {
-            path: builder.joint_qd_start[idx]
-            for path, idx in path_joint_map.items()
-            if idx < len(builder.joint_qd_start)
-        }
-        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
-            parsed = parse_actuator_prim(prim)
-            if parsed is None:
-                continue
-            dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
-            if dof_indices:
-                builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
-                actuator_count += 1
-    else:
-        # TODO: Replace this string-based type name check with a proper schema query
-        # once the Newton actuator USD schema is merged
-        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
-            if prim.GetTypeName() == "Actuator":
-                raise ImportError(
-                    f"USD stage contains actuator prims (e.g. {prim.GetPath()}) but newton-actuators is not installed. "
-                    "Install with: pip install newton[sim]"
-                )
+    path_to_dof = {
+        path: builder.joint_qd_start[idx]
+        for path, idx in path_joint_map.items()
+        if idx < len(builder.joint_qd_start)
+    }
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        parsed = parse_actuator_prim(prim)
+        if parsed is None:
+            continue
+        dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
+        if not dof_indices:
+            continue
+
+        # Separate Delay from Clamping components in the parsed spec
+        delay_val = None
+        clamping_specs = []
+        for comp_class, comp_kwargs in parsed.component_specs:
+            if comp_class is Delay:
+                delay_val = comp_kwargs.get("delay")
+            else:
+                clamping_specs.append((comp_class, comp_kwargs))
+
+        builder.add_actuator(
+            parsed.controller_class,
+            indices=dof_indices,
+            clamping=clamping_specs if clamping_specs else None,
+            delay=delay_val,
+            **parsed.controller_kwargs,
+        )
+        actuator_count += 1
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
 

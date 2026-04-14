@@ -66,9 +66,11 @@ from .graph_coloring import (
 from .model import Model
 
 if TYPE_CHECKING:
-    from newton_actuators import Actuator
     from pxr import Usd
 
+    from ..actuators.actuator import Actuator
+    from ..actuators.clamping.base import Clamping
+    from ..actuators.controllers.base import Controller
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -193,16 +195,25 @@ class ModelBuilder:
 
     @dataclass
     class ActuatorEntry:
-        """Stores accumulated indices and arguments for one actuator type + scalar params combo.
+        """Stores accumulated specs for one group of compatible composed actuators.
 
-        Each element in input_indices/output_indices represents one actuator.
-        For single-input actuators: [[idx1], [idx2], ...] → flattened to 1D array
-        For multi-input actuators: [[idx1, idx2], [idx3, idx4], ...] → 2D array
+        Each element in ``indices`` represents one actuator's DOF indices.
+        For single-DOF actuators: [[idx1], [idx2], ...] → flattened to 1D array
+        For multi-DOF actuators: [[idx1, idx2], [idx3, idx4], ...] → 2D array
+
+        The entry key is ``(controller_class, delay, clamping_key, ctrl_shared_key)``
+        where shared params (e.g. ``delay``, ``network_path``, lookup tables) must be
+        identical across all actuators in a group.
         """
 
-        input_indices: list[list[int]]  # Per-actuator input indices
-        output_indices: list[list[int]]  # Per-actuator output indices
-        args: list[dict[str, Any]]  # Per-actuator array params (scalar params in dict key)
+        controller_class: type  # Controller subclass (e.g. ControllerPD)
+        delay: int | None  # Scalar delay steps, or None
+        clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
+        clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
+        controller_shared_kwargs: dict  # Shared controller kwargs (e.g. network_path)
+        indices: list[list[int]]  # Per-actuator DOF indices
+        controller_args: list[dict[str, Any]]  # Per-actuator controller array params
+        clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
     @dataclass
     class ShapeConfig:
@@ -1217,9 +1228,9 @@ class ModelBuilder:
         """Running counts for custom string frequencies used to size custom attribute arrays."""
 
         # Actuator entries (accumulated during add_actuator calls)
-        # Key is (actuator_class, scalar_params_tuple) to separate instances with different scalar params
-        self.actuator_entries: dict[tuple[type[Actuator], tuple[Any, ...]], ModelBuilder.ActuatorEntry] = {}
-        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by class and scalar parameters."""
+        # Key is (controller_class, delay, clamping_key, ctrl_shared_key) to group compatible actuators
+        self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
+        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
@@ -1676,67 +1687,94 @@ class ModelBuilder:
 
     def add_actuator(
         self,
-        actuator_class: type[Actuator],
-        input_indices: list[int],
-        output_indices: list[int] | None = None,
-        **kwargs: Any,
+        controller_class: type[Controller],
+        indices: list[int],
+        clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
+        delay: int | None = None,
+        **controller_kwargs: Any,
     ) -> None:
         """Add an external actuator, independent of any ``UsdPhysics`` joint drives.
 
-        External actuators (e.g. :class:`newton_actuators.ActuatorPD`) apply
-        forces computed outside the physics engine. Multiple calls with the same
-        *actuator_class* and identical scalar parameters are accumulated into one
-        entry; the actuator instance is created during :meth:`finalize <ModelBuilder.finalize>`.
+        External actuators apply forces computed outside the physics engine.
+        Multiple calls with the same *controller_class*, *delay*, *clamping*
+        types, and identical shared parameters are accumulated into one entry;
+        the :class:`~newton.actuators.Actuator` instance is created during
+        :meth:`finalize <ModelBuilder.finalize>`.
 
         Args:
-            actuator_class: The actuator class (must derive from
-                :class:`newton_actuators.Actuator`).
-            input_indices: DOF indices this actuator reads from. Length 1 for single-input,
-                length > 1 for multi-input actuators.
-            output_indices: DOF indices for writing output. Defaults to *input_indices*.
-            **kwargs: Actuator parameters (e.g., ``kp``, ``kd``, ``max_force``).
+            controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
+            indices: DOF indices this actuator reads from and writes to.
+                Length 1 for single-DOF, length > 1 for multi-DOF actuators.
+            clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
+                post-controller. E.g. ``[(ClampingMaxForce, {'max_force': 50.0})]``.
+            delay: Optional integer number of timesteps to delay inputs.
+            **controller_kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
         """
-        if output_indices is None:
-            output_indices = input_indices.copy()
+        clamping = clamping or []
 
-        resolved = actuator_class.resolve_arguments(kwargs)
+        # --- Resolve controller kwargs and separate shared from per-DOF ---
+        resolved_ctrl = controller_class.resolve_arguments(controller_kwargs)
+        ctrl_shared_names = getattr(controller_class, "SHARED_PARAMS", set())
+        ctrl_shared = {k: resolved_ctrl[k] for k in ctrl_shared_names if k in resolved_ctrl}
+        ctrl_array_params = {k: v for k, v in resolved_ctrl.items() if k not in ctrl_shared_names}
 
-        # Extract scalar params to form the entry key
-        scalar_param_names = getattr(actuator_class, "SCALAR_PARAMS", set())
-        scalar_key = tuple(sorted((k, resolved[k]) for k in scalar_param_names if k in resolved))
+        # --- Resolve per-clamping kwargs and separate shared from per-DOF ---
+        clamping_classes = tuple(cc for cc, _ in clamping)
+        clamping_shared_list = []
+        clamping_array_params_list = []
+        for comp_class, comp_kwargs in clamping:
+            resolved_comp = comp_class.resolve_arguments(comp_kwargs)
+            comp_shared_names = getattr(comp_class, "SHARED_PARAMS", set())
+            comp_shared = {k: resolved_comp[k] for k in comp_shared_names if k in resolved_comp}
+            comp_array = {k: v for k, v in resolved_comp.items() if k not in comp_shared_names}
+            clamping_shared_list.append(comp_shared)
+            clamping_array_params_list.append(comp_array)
 
-        # Key is (class, scalar_params) so different scalar values create separate entries
-        entry_key = (actuator_class, scalar_key)
+        clamping_shared_kwargs = tuple(clamping_shared_list)
+
+        # --- Build entry key: identifies a group of compatible actuators ---
+        # Groups differ when controller class, delay value, clamping types/shared-params, or
+        # controller shared params (e.g. network_path) differ.
+        def _make_hashable(v: Any) -> Any:
+            if isinstance(v, list):
+                return tuple(v)
+            return v
+
+        ctrl_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in ctrl_shared.items()))
+        clamping_key = tuple(
+            (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
+            for cc, shared in zip(clamping_classes, clamping_shared_list)
+        )
+        entry_key = (controller_class, delay, clamping_key, ctrl_shared_key)
+
         entry = self.actuator_entries.setdefault(
             entry_key,
-            ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+            ModelBuilder.ActuatorEntry(
+                controller_class=controller_class,
+                delay=delay,
+                clamping_classes=clamping_classes,
+                clamping_shared_kwargs=clamping_shared_kwargs,
+                controller_shared_kwargs=ctrl_shared,
+                indices=[],
+                controller_args=[],
+                clamping_args=[],
+            ),
         )
 
-        # Filter out scalar params from args (they're already in the key)
-        array_params = {k: v for k, v in resolved.items() if k not in scalar_param_names}
-
         # Validate dimension consistency before appending
-        if entry.input_indices:
-            expected_input_dim = len(entry.input_indices[0])
-            if len(input_indices) != expected_input_dim:
+        if entry.indices:
+            expected_dim = len(entry.indices[0])
+            if len(indices) != expected_dim:
                 raise ValueError(
-                    f"Input indices dimension mismatch for {actuator_class.__name__}: "
-                    f"expected {expected_input_dim}, got {len(input_indices)}. "
-                    f"All actuators of the same type must have the same number of inputs."
-                )
-        if entry.output_indices:
-            expected_output_dim = len(entry.output_indices[0])
-            if len(output_indices) != expected_output_dim:
-                raise ValueError(
-                    f"Output indices dimension mismatch for {actuator_class.__name__}: "
-                    f"expected {expected_output_dim}, got {len(output_indices)}. "
-                    f"All actuators of the same type must have the same number of outputs."
+                    f"Indices dimension mismatch for {controller_class.__name__}: "
+                    f"expected {expected_dim}, got {len(indices)}. "
+                    f"All actuators of the same type must have the same number of DOFs."
                 )
 
-        # Each call adds one actuator with its input/output indices
-        entry.input_indices.append(input_indices)
-        entry.output_indices.append(output_indices)
-        entry.args.append(array_params)
+        # Each call adds one actuator with its indices and per-DOF params
+        entry.indices.append(indices)
+        entry.controller_args.append(ctrl_array_params)
+        entry.clamping_args.append(clamping_array_params_list)
 
     def _stack_args_to_arrays(
         self,
@@ -3266,14 +3304,22 @@ class ModelBuilder:
         for entry_key, sub_entry in builder.actuator_entries.items():
             entry = self.actuator_entries.setdefault(
                 entry_key,
-                ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+                ModelBuilder.ActuatorEntry(
+                    controller_class=sub_entry.controller_class,
+                    delay=sub_entry.delay,
+                    clamping_classes=sub_entry.clamping_classes,
+                    clamping_shared_kwargs=sub_entry.clamping_shared_kwargs,
+                    controller_shared_kwargs=sub_entry.controller_shared_kwargs,
+                    indices=[],
+                    controller_args=[],
+                    clamping_args=[],
+                ),
             )
             # Offset indices by start_joint_dof_idx (each actuator's indices are a list)
-            for idx_list in sub_entry.input_indices:
-                entry.input_indices.append([idx + start_joint_dof_idx for idx in idx_list])
-            for idx_list in sub_entry.output_indices:
-                entry.output_indices.append([idx + start_joint_dof_idx for idx in idx_list])
-            entry.args.extend(sub_entry.args)
+            for idx_list in sub_entry.indices:
+                entry.indices.append([idx + start_joint_dof_idx for idx in idx_list])
+            entry.controller_args.extend(sub_entry.controller_args)
+            entry.clamping_args.extend(sub_entry.clamping_args)
 
     @staticmethod
     def _coerce_mat33(value: Any) -> wp.mat33:
@@ -10297,17 +10343,38 @@ class ModelBuilder:
             )
 
             # Create actuators from accumulated entries
+            from ..actuators.actuator import Actuator  # noqa: PLC0415
+            from ..actuators.delay import Delay  # noqa: PLC0415
+
             m.actuators = []
-            for (actuator_class, scalar_key), entry in self.actuator_entries.items():
-                input_indices = self._build_index_array(entry.input_indices, device)
-                output_indices = self._build_index_array(entry.output_indices, device)
-                param_arrays = self._stack_args_to_arrays(entry.args, device=device, requires_grad=requires_grad)
-                scalar_params = dict(scalar_key)
-                actuator = actuator_class(
-                    input_indices=input_indices,
-                    output_indices=output_indices,
-                    **param_arrays,
-                    **scalar_params,
+            for entry in self.actuator_entries.values():
+                indices = self._build_index_array(entry.indices, device)
+
+                # Build controller from stacked per-DOF arrays + shared kwargs
+                ctrl_arrays = self._stack_args_to_arrays(
+                    entry.controller_args, device=device, requires_grad=requires_grad
+                )
+                controller = entry.controller_class(**ctrl_arrays, **entry.controller_shared_kwargs)
+
+                # Build delay object (scalar, shared across the group)
+                delay_obj = Delay(entry.delay) if entry.delay is not None else None
+
+                # Build clamping objects from per-DOF arrays + shared kwargs
+                clamping_objs = []
+                for i, (comp_class, shared_kw) in enumerate(
+                    zip(entry.clamping_classes, entry.clamping_shared_kwargs)
+                ):
+                    comp_args_per_actuator = [per_act[i] for per_act in entry.clamping_args]
+                    comp_arrays = self._stack_args_to_arrays(
+                        comp_args_per_actuator, device=device, requires_grad=requires_grad
+                    )
+                    clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
+
+                actuator = Actuator(
+                    indices=indices,
+                    controller=controller,
+                    delay=delay_obj,
+                    clamping=clamping_objs if clamping_objs else None,
                 )
                 m.actuators.append(actuator)
 

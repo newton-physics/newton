@@ -12,7 +12,7 @@ from warp.types import is_array
 from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
 
 if TYPE_CHECKING:
-    from newton_actuators import Actuator
+    from ..actuators.actuator import Actuator
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -1643,7 +1643,7 @@ class ArticulationView:
         Build mapping from view DOF positions to actuator parameter indices.
 
         Note:
-            For selection we assume that input_indices is 1D (one input per actuator),
+            For selection we assume that indices is 1D (one input per actuator),
             not the general 2D case (multiple inputs per actuator) which is supported
             by the library.
 
@@ -1651,7 +1651,7 @@ class ArticulationView:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
-        num_actuators = actuator.input_indices.shape[0]
+        num_actuators = actuator.indices.shape[0]
         actuators_per_world = num_actuators // self.world_count
 
         dof_layout = self.frequency_layouts[AttributeFrequency.JOINT_DOF]
@@ -1668,7 +1668,7 @@ class ArticulationView:
                 build_actuator_dof_mapping_slice_kernel,
                 dim=actuators_per_world,
                 inputs=[
-                    actuator.input_indices,
+                    actuator.indices,
                     actuators_per_world,
                     dof_layout.offset,
                     dof_layout.slice.start,
@@ -1687,7 +1687,7 @@ class ArticulationView:
                 build_actuator_dof_mapping_indices_kernel,
                 dim=actuators_per_world,
                 inputs=[
-                    actuator.input_indices,
+                    actuator.indices,
                     dof_layout.indices,
                     dof_layout.offset,
                     dof_layout.stride_within_worlds,
@@ -1709,7 +1709,10 @@ class ArticulationView:
         if len(mapping) == 0:
             return wp.empty((self.world_count, 0), dtype=float, device=self.device)
 
-        src = getattr(actuator, name)
+        # Look up the param: check top-level first, then fall through to controller/clamping
+        src = getattr(actuator, name, None)
+        if not isinstance(src, wp.array):
+            src = actuator.get_param(name)
         dofs_per_world = len(mapping) // self.world_count
 
         dst = wp.zeros(len(mapping), dtype=src.dtype, device=self.device)
@@ -1729,7 +1732,7 @@ class ArticulationView:
         Get actuator parameter values for actuators corresponding to this view's DOFs.
 
         Args:
-            actuator: An actuator instance with input_indices and parameter arrays.
+            actuator: An actuator instance with indices and parameter arrays.
             name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
 
         Returns:
@@ -1744,7 +1747,7 @@ class ArticulationView:
         Set actuator parameter values for actuators corresponding to this view's DOFs.
 
         Args:
-            actuator: An actuator instance with input_indices and parameter arrays.
+            actuator: An actuator instance with indices and parameter arrays.
             name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
             values: New parameter values shaped (world_count, dofs_per_world). Non-actuated DOFs are ignored.
             mask (array, optional): Per-world mask (world_count,). Only masked worlds are updated.
@@ -1753,7 +1756,9 @@ class ArticulationView:
         if len(mapping) == 0:
             return
 
-        dst = getattr(actuator, name)
+        dst = getattr(actuator, name, None)
+        if not isinstance(dst, wp.array):
+            dst = actuator.get_param(name)
         dofs_per_world = len(mapping) // self.world_count
         expected_shape = (self.world_count, dofs_per_world, *dst.shape[1:])
 
