@@ -424,6 +424,48 @@ def test_sensor_raycast_ground_plane(test: unittest.TestCase, device: str):
     test.assertAlmostEqual(float(depth[4, 4]), 5.0, delta=0.1)
 
 
+def test_sensor_raycast_finite_plane_boundary(test: unittest.TestCase, device: str):
+    """Rays inside a finite plane boundary hit; rays outside miss."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    # Finite plane: full extents 4x4 -> half-extents 2x2
+    builder.add_shape_plane(xform=wp.transform_identity(), width=4.0, length=4.0)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+
+    # Ray straight down at center (x=0) -> should hit
+    sensor_center = SensorRaycast(
+        model=model,
+        camera_position=(0.0, 0.0, 5.0),
+        camera_direction=(0.0, 0.0, -1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.01,
+        width=1,
+        height=1,
+        max_distance=100.0,
+    )
+    sensor_center.update(state)
+    depth_center = sensor_center.get_depth_image_numpy()
+    test.assertAlmostEqual(float(depth_center[0, 0]), 5.0, delta=0.1, msg="Center ray should hit finite plane")
+
+    # Ray straight down at x=3 (outside half-extent 2) -> should miss
+    sensor_outside = SensorRaycast(
+        model=model,
+        camera_position=(3.0, 0.0, 5.0),
+        camera_direction=(0.0, 0.0, -1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.01,
+        width=1,
+        height=1,
+        max_distance=100.0,
+    )
+    sensor_outside.update(state)
+    depth_outside = sensor_outside.get_depth_image_numpy()
+    test.assertLess(float(depth_outside[0, 0]), 0.0, msg="Ray outside finite plane boundary should miss")
+
+
 def test_sensor_raycast_ellipsoid(test: unittest.TestCase, device: str):
     """Test that SensorRaycast detects an ellipsoid shape."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -515,6 +557,12 @@ add_function_test(
     TestSensorRaycast,
     "test_sensor_raycast_ellipsoid",
     test_sensor_raycast_ellipsoid,
+    devices=devices,
+)
+add_function_test(
+    TestSensorRaycast,
+    "test_sensor_raycast_finite_plane_boundary",
+    test_sensor_raycast_finite_plane_boundary,
     devices=devices,
 )
 

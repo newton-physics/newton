@@ -270,7 +270,7 @@ def _compute_collision_radius(geo_type: int32, scale: vec3f) -> float32:
         radius = wp.max(wp.max(scale[0], scale[1]), scale[2])
     elif geo_type == GeoType.PLANE:
         if scale[0] > 0.0 and scale[1] > 0.0:
-            radius = wp.length(scale)
+            radius = wp.length(scale) * 0.5
         else:
             radius = float32(1.0e6)
     elif geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH or geo_type == GeoType.HFIELD:

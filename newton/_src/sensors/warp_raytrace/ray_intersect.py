@@ -87,7 +87,7 @@ def ray_intersect_plane(
     )
 
     # accept only within rendered rectangle
-    if (size[0] <= 0.0 or wp.abs(p[0]) <= size[0]) and (size[1] <= 0.0 or wp.abs(p[1]) <= size[1]):
+    if (size[0] <= 0.0 or wp.abs(p[0]) <= size[0] * 0.5) and (size[1] <= 0.0 or wp.abs(p[1]) <= size[1] * 0.5):
         return t_hit
     return -1.0
 
