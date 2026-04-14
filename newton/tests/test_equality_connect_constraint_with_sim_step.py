@@ -807,7 +807,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
             Articulation: world -> fixed -> root_body -> joint0 -> body_a -> joint1 -> body_b
             Loop joint: revolute from body_b (parent) to root_body (child), not in articulation
 
-        Bodies per world (5 total): root_body(0), body_a(1), body_b(2)
+        Bodies per world (3 total): root_body(0), body_a(1), body_b(2)
         Joints per world (4 total): root_fixed(0), joint0(1), joint1(2), loop_joint(3)
 
         Args:
