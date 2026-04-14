@@ -1152,6 +1152,15 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
                     self.assertAlmostEqual(float(anchor1_b[k]), float(measured_a1_1[k]), places=4)
                     self.assertAlmostEqual(float(anchor2_b[k]), float(measured_a2_1[k]), places=4)
 
+                # CPU-path: mj_model.eq_data is synced from world 0 only
+                if sim.solver.use_mujoco_cpu and w == 0:
+                    mj_eq_data = sim.solver.mj_model.eq_data
+                    for k in range(3):
+                        self.assertAlmostEqual(float(anchor1_a[k]), float(mj_eq_data[0][k]), places=4)
+                        self.assertAlmostEqual(float(anchor2_a[k]), float(mj_eq_data[0][3 + k]), places=4)
+                        self.assertAlmostEqual(float(anchor1_b[k]), float(mj_eq_data[1][k]), places=4)
+                        self.assertAlmostEqual(float(anchor2_b[k]), float(mj_eq_data[1][3 + k]), places=4)
+
             ##############
             # TEST: Change dof_ref and verify CONNECT anchors are recomputed
             ##############
@@ -1202,6 +1211,15 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
                     self.assertAlmostEqual(float(anchor1_b[k]), float(measured_a1_1[k]), places=4)
                     self.assertAlmostEqual(float(anchor2_b[k]), float(measured_a2_1[k]), places=4)
 
+                # CPU-path: mj_model.eq_data is synced from world 0 only
+                if sim.solver.use_mujoco_cpu and w == 0:
+                    mj_eq_data = sim.solver.mj_model.eq_data
+                    for k in range(3):
+                        self.assertAlmostEqual(float(anchor1_a[k]), float(mj_eq_data[0][k]), places=4)
+                        self.assertAlmostEqual(float(anchor2_a[k]), float(mj_eq_data[0][3 + k]), places=4)
+                        self.assertAlmostEqual(float(anchor1_b[k]), float(mj_eq_data[1][k]), places=4)
+                        self.assertAlmostEqual(float(anchor2_b[k]), float(mj_eq_data[1][3 + k]), places=4)
+
             ##############
             # TEST: Change joint_X_p of the loop joint and verify CONNECT anchors are recomputed
             ##############
@@ -1250,6 +1268,15 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
                     self.assertAlmostEqual(float(anchor2_a[k]), float(measured_a2_0[k]), places=4)
                     self.assertAlmostEqual(float(anchor1_b[k]), float(measured_a1_1[k]), places=4)
                     self.assertAlmostEqual(float(anchor2_b[k]), float(measured_a2_1[k]), places=4)
+
+                # CPU-path: mj_model.eq_data is synced from world 0 only
+                if sim.solver.use_mujoco_cpu and w == 0:
+                    mj_eq_data = sim.solver.mj_model.eq_data
+                    for k in range(3):
+                        self.assertAlmostEqual(float(anchor1_a[k]), float(mj_eq_data[0][k]), places=4)
+                        self.assertAlmostEqual(float(anchor2_a[k]), float(mj_eq_data[0][3 + k]), places=4)
+                        self.assertAlmostEqual(float(anchor1_b[k]), float(mj_eq_data[1][k]), places=4)
+                        self.assertAlmostEqual(float(anchor2_b[k]), float(mj_eq_data[1][3 + k]), places=4)
 
     def test_loop_joint_connect_constraint(self):
         self._test_loop_joint_connect_constraint()
