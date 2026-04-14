@@ -1,0 +1,4 @@
+interface:
+  display_name: "Newton Upstream Sync"
+  short_description: "Safely sync and rebase Newton branches"
+  default_prompt: "Use $newton-upstream-sync to sync main with upstream and rebase the pressure-field branch safely."
