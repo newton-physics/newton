@@ -403,6 +403,14 @@ void main() {
             self._keys_down.discard(symbol)
 
         @self._window.event
+        def on_resize(width, height):
+            # OVRTX render resolution is fixed; only update the camera aspect ratio
+            # so that F-key framing stays correct. The blit uses a letterbox viewport.
+            if width != self._width or height != self._height:
+                self.camera.width = width
+                self.camera.height = height
+
+        @self._window.event
         def on_close():
             self._should_close = True
 
@@ -1681,9 +1689,29 @@ void main() {
 
         self._window.switch_to()
         fb_w, fb_h = self._window.get_framebuffer_size()
-        gl.glViewport(0, 0, fb_w, fb_h)
+
+        # Compute a letterbox viewport that preserves the OVRTX render aspect ratio.
+        render_aspect = self._width / max(self._height, 1)
+        window_aspect = fb_w / max(fb_h, 1)
+        if window_aspect >= render_aspect:
+            # Window is wider than render — pillarbox (black bars left/right)
+            vp_h = fb_h
+            vp_w = int(fb_h * render_aspect)
+            vp_x = (fb_w - vp_w) // 2
+            vp_y = 0
+        else:
+            # Window is taller than render — letterbox (black bars top/bottom)
+            vp_w = fb_w
+            vp_h = int(fb_w / render_aspect)
+            vp_x = 0
+            vp_y = (fb_h - vp_h) // 2
 
         with wp.ScopedTimer("ViewerRTX::gl_draw", active=PROFILE_ENABLED, use_nvtx=True):
+            # Clear the full window to black, then draw into the letterbox region
+            gl.glViewport(0, 0, fb_w, fb_h)
+            gl.glClearColor(0.0, 0.0, 0.0, 1.0)
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+            gl.glViewport(vp_x, vp_y, vp_w, vp_h)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self._gl_texture)
             gl.glUseProgram(self._gl_program)
             gl.glBindVertexArray(self._gl_vao)
@@ -1691,6 +1719,9 @@ void main() {
             gl.glBindVertexArray(0)
             gl.glUseProgram(0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+            # Restore full viewport for ImGui (which spans the entire window)
+            gl.glViewport(0, 0, fb_w, fb_h)
 
         if self.gui:
             with wp.ScopedTimer("ViewerRTX::gui_render", active=PROFILE_ENABLED, use_nvtx=True):
