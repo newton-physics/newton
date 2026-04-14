@@ -805,9 +805,7 @@ def _compute_body_particle_contact_force(
         force = force - damping_hessian * relative_translation
 
     eps_u = friction_epsilon * dt
-    friction_force, friction_hessian = compute_projected_isotropic_friction(
-        mu, f_n, n, relative_translation, eps_u
-    )
+    friction_force, friction_hessian = compute_projected_isotropic_friction(mu, f_n, n, relative_translation, eps_u)
     force = force + friction_force
     hessian = hessian + friction_hessian
 
@@ -876,9 +874,14 @@ def _eval_body_particle_contact(
         relative_translation = dx - bv * dt
 
         return _compute_body_particle_contact_force(
-            penetration_depth, n, relative_translation,
-            body_particle_contact_ke, body_particle_contact_kd, friction_mu,
-            friction_epsilon, dt,
+            penetration_depth,
+            n,
+            relative_translation,
+            body_particle_contact_ke,
+            body_particle_contact_kd,
+            friction_mu,
+            friction_epsilon,
+            dt,
         )
     else:
         return wp.vec3(0.0), wp.mat33(0.0)
@@ -1451,7 +1454,9 @@ def evaluate_joint_force_hessian(
             dkappa_dt = compute_kappa_dot(J_world, omega_p, omega_c)
             dtheta_dt = wp.dot(dkappa_dt, a)
 
-            mode, err_pos = resolve_drive_limit_mode(theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            _mode, err_pos = resolve_drive_limit_mode(
+                theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
+            )
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
@@ -1562,7 +1567,7 @@ def evaluate_joint_force_hessian(
             dC_dt = (C_vec - C_vec_prev) * inv_dt
             dd_dt = wp.dot(dC_dt, axis_w)
 
-            mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            _mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
@@ -1719,7 +1724,7 @@ def evaluate_joint_force_hessian(
                         d_along = wp.dot(C_vec, axis_w)
                         dd_dt = wp.dot(dC_dt, axis_w)
 
-                        mode, err_pos = resolve_drive_limit_mode(
+                        _mode, err_pos = resolve_drive_limit_mode(
                             d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits
                         )
                         f_scalar = float(0.0)
@@ -1784,7 +1789,7 @@ def evaluate_joint_force_hessian(
                         theta_abs = theta + joint_rest_angle[dof_idx]
                         dtheta_dt = wp.dot(dkappa_dt, a)
 
-                        mode, err_pos = resolve_drive_limit_mode(
+                        _mode, err_pos = resolve_drive_limit_mode(
                             theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
                         )
                         f_scalar = float(0.0)
@@ -3012,11 +3017,14 @@ def accumulate_body_particle_contacts_per_body(
         relative_translation = dx - bv * dt
 
         force_on_particle, hessian_particle = _compute_body_particle_contact_force(
-            penetration_depth, n, relative_translation,
+            penetration_depth,
+            n,
+            relative_translation,
             body_particle_contact_penalty_k[contact_idx],
             body_particle_contact_material_kd[contact_idx],
             body_particle_contact_material_mu[contact_idx],
-            friction_epsilon, dt,
+            friction_epsilon,
+            dt,
         )
 
         f_body = -force_on_particle
@@ -3574,12 +3582,12 @@ def update_duals_joint(
             theta = wp.dot(kappa, a)
             theta_abs = theta + joint_rest_angle[dof_idx]
             target_pos = joint_target_pos[dof_idx]
-            mode, err_pos = resolve_drive_limit_mode(theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            _mode, err_pos = resolve_drive_limit_mode(
+                theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
+            )
             i_dl = c_start + 2
             C_dl = wp.abs(err_pos)
-            joint_penalty_k[i_dl] = wp.min(
-                joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_ang * C_dl
-            )
+            joint_penalty_k[i_dl] = wp.min(joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_ang * C_dl)
         return
 
     # PRISMATIC joint: perpendicular linear + isotropic angular penalties (2 scalars).
@@ -3639,12 +3647,10 @@ def update_duals_joint(
             axis_w_dl = wp.normalize(wp.quat_rotate(q_wp, axis_local))
             d_along = wp.dot(C_vec, axis_w_dl)
             target_pos = joint_target_pos[dof_idx]
-            mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            _mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
             i_dl = c_start + 2
             C_dl = wp.abs(err_pos)
-            joint_penalty_k[i_dl] = wp.min(
-                joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_lin * C_dl
-            )
+            joint_penalty_k[i_dl] = wp.min(joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_lin * C_dl)
         return
 
     # D6 joint: projected linear + projected angular penalties (2 scalars).
@@ -3709,14 +3715,12 @@ def update_duals_joint(
                     axis_w_dl = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[dof_idx]))
                     d_along = wp.dot(C_vec, axis_w_dl)
                     target_pos_dl = joint_target_pos[dof_idx]
-                    mode, err_pos = resolve_drive_limit_mode(
+                    __mode, err_pos = resolve_drive_limit_mode(
                         d_along, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
                     )
                     i_dl = c_start + 2 + li
                     C_dl = wp.abs(err_pos)
-                    joint_penalty_k[i_dl] = wp.min(
-                        joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_lin * C_dl
-                    )
+                    joint_penalty_k[i_dl] = wp.min(joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_lin * C_dl)
 
         for ai in range(3):
             if ai < ang_count:
@@ -3733,14 +3737,12 @@ def update_duals_joint(
                     theta = wp.dot(kappa, a_dl)
                     theta_abs = theta + joint_rest_angle[dof_idx]
                     target_pos_dl = joint_target_pos[dof_idx]
-                    mode, err_pos = resolve_drive_limit_mode(
+                    __mode, err_pos = resolve_drive_limit_mode(
                         theta_abs, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
                     )
                     i_dl = c_start + 2 + lin_count + ai
                     C_dl = wp.abs(err_pos)
-                    joint_penalty_k[i_dl] = wp.min(
-                        joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_ang * C_dl
-                    )
+                    joint_penalty_k[i_dl] = wp.min(joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_ang * C_dl)
         return
 
 

@@ -125,7 +125,7 @@ class SolverVBD(SolverBase):
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
           https://doi.org/10.1145/3658179
-        - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block Descent. ACM Trans. Graph. 44, 4, Article 90 (August 2025), 12 pages. 
+        - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block Descent. ACM Trans. Graph. 44, 4, Article 90 (August 2025), 12 pages.
           https://doi.org/10.1145/3731195
     Note:
         `SolverVBD` requires coloring information for both particles and rigid bodies:
@@ -203,7 +203,8 @@ class SolverVBD(SolverBase):
         # Rigid body parameters — AVBD hyperparameters
         rigid_avbd_alpha: float = 0.95,  # C0 stabilization strength (C_stab = C - alpha * C0)
         rigid_avbd_joint_alpha: float | None = None,  # Joint alpha override; None uses rigid_avbd_alpha
-        rigid_avbd_contact_alpha: float | None = None,  # Contact alpha override; None uses avbd_alpha (history+hard) or 0
+        rigid_avbd_contact_alpha: float
+        | None = None,  # Contact alpha override; None uses avbd_alpha (history+hard) or 0
         rigid_avbd_beta: float = 0.0,  # Penalty ramp rate per iteration (0 = fixed-k)
         rigid_avbd_linear_beta: float | None = None,  # Linear beta override; None uses rigid_avbd_beta
         rigid_avbd_angular_beta: float | None = None,  # Angular beta override; None uses rigid_avbd_beta
@@ -894,27 +895,37 @@ class SolverVBD(SolverBase):
                 elif jt[j] == JointType.BALL:
                     c0 = int(jc_start[j])
                     joint_k_max_np[c0] = structural_linear_ke
-                    joint_k_init_np[c0] = structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    joint_k_init_np[c0] = (
+                        structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    )
                     joint_kd_np[c0] = self.rigid_joint_linear_kd
                     is_hard_np[c0] = int(j_is_hard[j])
                 elif jt[j] == JointType.FIXED:
                     c0 = int(jc_start[j])
                     joint_k_max_np[c0 + 0] = structural_linear_ke
-                    joint_k_init_np[c0 + 0] = structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    joint_k_init_np[c0 + 0] = (
+                        structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    )
                     joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
                     is_hard_np[c0 + 0] = int(j_is_hard[j])
                     joint_k_max_np[c0 + 1] = structural_angular_ke
-                    joint_k_init_np[c0 + 1] = structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    joint_k_init_np[c0 + 1] = (
+                        structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    )
                     joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
                     is_hard_np[c0 + 1] = int(j_is_hard[j])
                 elif jt[j] == JointType.REVOLUTE:
                     c0 = int(jc_start[j])
                     joint_k_max_np[c0 + 0] = structural_linear_ke
-                    joint_k_init_np[c0 + 0] = structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    joint_k_init_np[c0 + 0] = (
+                        structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    )
                     joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
                     is_hard_np[c0 + 0] = int(j_is_hard[j])
                     joint_k_max_np[c0 + 1] = structural_angular_ke
-                    joint_k_init_np[c0 + 1] = structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    joint_k_init_np[c0 + 1] = (
+                        structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    )
                     joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
                     is_hard_np[c0 + 1] = int(j_is_hard[j])
                     dof0 = int(jdofs[j])
@@ -926,11 +937,15 @@ class SolverVBD(SolverBase):
                 elif jt[j] == JointType.PRISMATIC:
                     c0 = int(jc_start[j])
                     joint_k_max_np[c0 + 0] = structural_linear_ke
-                    joint_k_init_np[c0 + 0] = structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    joint_k_init_np[c0 + 0] = (
+                        structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    )
                     joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
                     is_hard_np[c0 + 0] = int(j_is_hard[j])
                     joint_k_max_np[c0 + 1] = structural_angular_ke
-                    joint_k_init_np[c0 + 1] = structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    joint_k_init_np[c0 + 1] = (
+                        structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    )
                     joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
                     is_hard_np[c0 + 1] = int(j_is_hard[j])
                     dof0 = int(jdofs[j])
@@ -945,11 +960,15 @@ class SolverVBD(SolverBase):
                     lc = int(jdof_dim[j, 0])
                     ac = int(jdof_dim[j, 1])
                     joint_k_max_np[c0 + 0] = structural_linear_ke
-                    joint_k_init_np[c0 + 0] = structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    joint_k_init_np[c0 + 0] = (
+                        structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    )
                     joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
                     is_hard_np[c0 + 0] = int(j_is_hard[j])
                     joint_k_max_np[c0 + 1] = structural_angular_ke
-                    joint_k_init_np[c0 + 1] = structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    joint_k_init_np[c0 + 1] = (
+                        structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    )
                     joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
                     is_hard_np[c0 + 1] = int(j_is_hard[j])
                     for li in range(lc):
@@ -1824,7 +1843,9 @@ class SolverVBD(SolverBase):
             # Per-step k decay + lambda decay + C0 (body_q is still collide frame here).
             if contacts is not None and contacts.rigid_contact_max > 0:
                 contact_launch_dim = contacts.rigid_contact_max
-                gamma_lambda = self.rigid_avbd_gamma if (self.rigid_contact_history and self.rigid_contact_hard) else 0.0
+                gamma_lambda = (
+                    self.rigid_avbd_gamma if (self.rigid_contact_history and self.rigid_contact_hard) else 0.0
+                )
                 wp.launch(
                     kernel=step_body_body_contact_C0_lambda,
                     dim=contact_launch_dim,
