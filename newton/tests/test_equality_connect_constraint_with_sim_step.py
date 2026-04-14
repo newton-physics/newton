@@ -1443,15 +1443,8 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
 
         weld_eq_idx = 2
 
-        # Ground truth: mj_model.eq_data is set by spec.compile() and is NOT
-        # modified by the GPU CONNECT kernels (on the Warp backend the CPU
-        # model is not touched by GPU kernel launches; on the CPU backend the
-        # CPU sync only copies from mjw_model back to mj_model, but we
-        # re-derive the expected values from a fresh mj_forward below).
-        # Re-derive ground truth by calling mj_forward on a fresh mj_data so
-        # that mj_model.eq_data reflects the current body poses.
-        mj_data_fresh = mujoco.MjData(sim.solver.mj_model)
-        mujoco.mj_forward(sim.solver.mj_model, mj_data_fresh)
+        # Ground truth: mj_model.eq_data is set by spec.compile() and is not
+        # modified by GPU kernel launches. Use it as the reference for the WELD relpose.
         expected_weld_data = np.array(sim.solver.mj_model.eq_data[weld_eq_idx], dtype=np.float32)
 
         # The WELD relpose translation (data[3:6]) must be non-trivial
