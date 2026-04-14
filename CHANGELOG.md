@@ -148,6 +148,7 @@
 - Fix `cloth_franka` example Jacobian broken by COM-referenced `body_qd` convention change; adjust robot base height, gripper orientations, and grasp targets for improved reachability (a follow-up PR will migrate the example to `newton.ik`)
 - Fix SDF hydroelastic broadphase scatter kernel using a grid-stride loop with binary search instead of per-pair thread launch
 - Fix `SensorRaycast` ignoring `PLANE` geometry
+- Fix multi-world coordinate conversion using the wrong body center of mass for replicated worlds
 
 ## [1.0.0] - 2026-03-10
 
