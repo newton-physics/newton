@@ -1651,11 +1651,8 @@ class ViewerGL(ViewerBase):
             scroll_x: Horizontal scroll delta.
             scroll_y: Vertical scroll delta.
         """
-        if self._ui_is_capturing_mouse():
-            return
-
         if self.gui:
-            self.gui.adjust_camera_fov_from_scroll(scroll_y)
+            self.gui.handle_mouse_scroll(scroll_y)
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
         """Convert window coordinates to framebuffer coordinates."""
@@ -1677,13 +1674,8 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self._ui_is_capturing_mouse():
-            return
-
-        import pyglet
-
-        if button == pyglet.window.mouse.RIGHT and self.gui:
-            self.gui.start_picking_from_screen(x, y, self._to_framebuffer_coords)
+        if self.gui:
+            self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords)
 
     def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
         """
@@ -1696,7 +1688,7 @@ class ViewerGL(ViewerBase):
             modifiers: Modifier keys.
         """
         if self.gui:
-            self.gui.release_picking()
+            self.gui.handle_mouse_release(x, y, button)
 
     def on_mouse_drag(
         self,
@@ -1718,19 +1710,8 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self._ui_is_capturing_mouse():
-            return
-
-        if not self.gui:
-            return
-
-        import pyglet
-
-        if buttons & pyglet.window.mouse.LEFT:
-            self.gui.rotate_camera_from_drag(dx, dy)
-
-        if buttons & pyglet.window.mouse.RIGHT:
-            self.gui.update_picking_from_screen(x, y, self._to_framebuffer_coords)
+        if self.gui:
+            self.gui.handle_mouse_drag(x, y, dx, dy, buttons, self._to_framebuffer_coords)
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
         """

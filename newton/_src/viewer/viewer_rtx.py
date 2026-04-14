@@ -348,40 +348,23 @@ void main() {
         # ---- input callbacks ------------------------------------------------
         @self._window.event
         def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
-            allow_active_pick_drag = (
-                bool(buttons & pyglet.window.mouse.RIGHT)
-                and self.picking_enabled
-                and self.gui is not None
-                and self.gui.is_pick_active()
-            )
-            if self.gui and self.gui.should_ignore_mouse_input(allow_active_pick_drag=allow_active_pick_drag):
-                return
-            if buttons & pyglet.window.mouse.LEFT and self.gui:
-                self.gui.rotate_camera_from_drag(dx, dy, sensitivity=0.1)
-            if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled and self.picking is not None:
-                if self.gui:
-                    self.gui.update_picking_from_screen(x, y, self._to_framebuffer_coords)
+            if self.gui:
+                self.gui.handle_mouse_drag(x, y, dx, dy, buttons, self._to_framebuffer_coords)
 
         @self._window.event
         def on_mouse_press(x, y, button, modifiers):
-            if self.gui and self.gui.should_ignore_mouse_input():
-                return
-            if button == pyglet.window.mouse.RIGHT and self.picking_enabled and self.picking is not None:
-                if self.gui:
-                    self.gui.start_picking_from_screen(x, y, self._to_framebuffer_coords)
+            if self.gui:
+                self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords)
 
         @self._window.event
         def on_mouse_release(x, y, button, modifiers):
-            if button == pyglet.window.mouse.RIGHT and self.picking is not None:
-                if self.gui:
-                    self.gui.release_picking()
+            if self.gui:
+                self.gui.handle_mouse_release(x, y, button)
 
         @self._window.event
         def on_mouse_scroll(x, y, scroll_x, scroll_y):
-            if self.gui and self.gui.should_ignore_mouse_input():
-                return
             if self.gui:
-                self.gui.adjust_camera_fov_from_scroll(scroll_y, scale=2.0)
+                self.gui.handle_mouse_scroll(scroll_y)
 
         @self._window.event
         def on_key_press(symbol, modifiers):

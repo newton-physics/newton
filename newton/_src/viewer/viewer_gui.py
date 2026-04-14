@@ -278,6 +278,62 @@ class ViewerGui:
         if picking is not None:
             picking.release()
 
+    def handle_mouse_scroll(self, scroll_y: float) -> None:
+        """Handle scroll wheel: adjust camera FOV unless UI is capturing."""
+        if self.should_ignore_mouse_input():
+            return
+        self.adjust_camera_fov_from_scroll(scroll_y)
+
+    def handle_mouse_press(self, x: float, y: float, button: int, to_framebuffer_coords) -> None:
+        """Handle mouse button press: start picking on right-click."""
+        if self.should_ignore_mouse_input():
+            return
+        import pyglet
+
+        viewer = self._viewer
+        if (
+            button == pyglet.window.mouse.RIGHT
+            and getattr(viewer, "picking_enabled", False)
+            and getattr(viewer, "picking", None) is not None
+        ):
+            self.start_picking_from_screen(x, y, to_framebuffer_coords)
+
+    def handle_mouse_release(self, x: float, y: float, button: int) -> None:
+        """Handle mouse button release: end picking on right-click."""
+        import pyglet
+
+        if button == pyglet.window.mouse.RIGHT and getattr(self._viewer, "picking", None) is not None:
+            self.release_picking()
+
+    def handle_mouse_drag(
+        self,
+        x: float,
+        y: float,
+        dx: float,
+        dy: float,
+        buttons: int,
+        to_framebuffer_coords,
+    ) -> None:
+        """Handle mouse drag: rotate camera (left) or update picking (right)."""
+        import pyglet
+
+        allow_active_pick_drag = (
+            bool(buttons & pyglet.window.mouse.RIGHT)
+            and getattr(self._viewer, "picking_enabled", False)
+            and self.is_pick_active()
+        )
+        if self.should_ignore_mouse_input(allow_active_pick_drag=allow_active_pick_drag):
+            return
+        viewer = self._viewer
+        if buttons & pyglet.window.mouse.LEFT:
+            self.rotate_camera_from_drag(dx, dy)
+        if (
+            buttons & pyglet.window.mouse.RIGHT
+            and getattr(viewer, "picking_enabled", False)
+            and getattr(viewer, "picking", None) is not None
+        ):
+            self.update_picking_from_screen(x, y, to_framebuffer_coords)
+
     def _update_fps(self):
         """Update FPS counter; called once per rendered frame."""
         current_time = perf_counter()
