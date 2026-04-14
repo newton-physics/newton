@@ -18,9 +18,6 @@ conflicts = [[
     { package = "newton", extra = "torch-cu13" },
 ]]
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "absl-py"
 version = "2.4.0"
