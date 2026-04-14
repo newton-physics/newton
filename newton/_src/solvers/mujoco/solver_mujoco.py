@@ -2866,8 +2866,9 @@ class SolverMuJoCo(SolverBase):
         """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton's equality constraints.
-        A value of -1 indicates that the MuJoCo equality constraint has been created from a Newton joint, see :attr:`mjc_eq_to_newton_jnt`
-        for the corresponding joint index.
+        A value of -1 indicates the entry is unmapped -- the MuJoCo constraint was synthesized from a loop-closure 
+        joint (CONNECT or WELD) rather than from an explicit Newton equality constraint. For CONNECT-only 
+        entries see :attr:mjc_eq_to_newton_jnt.
 
         Shape [nworld, neq], dtype int32."""
         self.mjc_eq_to_newton_jnt: wp.array2d[wp.int32] | None = None
