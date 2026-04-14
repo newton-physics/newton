@@ -187,8 +187,17 @@ class ViewerViser(ViewerBase):
         """Reset model-dependent state, including scalar plot buffers."""
         # Remove plot handles from the GUI.
         for handle in self._plot_handles.values():
-            handle.remove()
+            try:
+                handle.remove()
+            except Exception:
+                pass
         self._plot_handles.clear()
+        if self._plot_folder is not None:
+            try:
+                self._plot_folder.remove()
+            except Exception:
+                pass
+            self._plot_folder = None
         self._scalar_buffers.clear()
         self._scalar_accumulators.clear()
         self._scalar_smoothing.clear()
@@ -1009,6 +1018,8 @@ class ViewerViser(ViewerBase):
             buf.clear()
             self._scalar_accumulators.pop(name, None)
 
+        if self._scalar_smoothing.get(name, smoothing) != smoothing:
+            self._scalar_accumulators.pop(name, None)
         self._scalar_smoothing[name] = smoothing
         if smoothing <= 1:
             buf.append(val)
