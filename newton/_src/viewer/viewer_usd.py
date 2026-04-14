@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any
 
 import numpy as np
@@ -289,9 +290,17 @@ class ViewerUSD(ViewerBase):
             tex_dir = os.path.dirname(self.output_path)
             safe_name = mesh_name.replace("/", "_").replace("\\", "_")
             tex_path = os.path.join(tex_dir, f"_tex_{safe_name}.png")
-            from PIL import Image
+            try:
+                from PIL import Image
 
-            Image.fromarray(tex_array).save(tex_path)
+                Image.fromarray(tex_array).save(tex_path)
+            except Exception as exc:
+                warnings.warn(
+                    f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. "
+                    "Mesh will render without texture.",
+                    stacklevel=2,
+                )
+                return
 
         safe = mesh_name.replace("/", "_").lstrip("_")
         mat_path = f"/root/Materials/mat_{safe}"
