@@ -658,13 +658,14 @@ class HydroelasticSDF:
 
         wp.launch(
             kernel=broadphase_collision_pairs_scatter,
-            dim=[self.max_num_shape_pairs],
+            dim=[self.grid_size],
             inputs=[
-                self.num_blocks_per_pair,
-                shape_sdf_data,
+                self.grid_size,
+                self.block_broad_collide_count,
                 self.block_start_prefix,
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
+                shape_sdf_data,
                 self.shape_sdf_shape2blocks,
                 self.max_num_blocks_broad,
             ],
@@ -928,51 +929,52 @@ def broadphase_collision_pairs_count(
 
 @wp.kernel(enable_backward=False)
 def broadphase_collision_pairs_scatter(
-    thread_num_blocks: wp.array[wp.int32],
-    shape_sdf_data: wp.array[TextureSDFData],
+    grid_size: int,
+    block_broad_collide_count: wp.array[wp.int32],
     block_start_prefix: wp.array[wp.int32],
     shape_pairs_sdf_sdf: wp.array[wp.vec2i],
     shape_pairs_sdf_sdf_count: wp.array[wp.int32],
+    shape_sdf_data: wp.array[TextureSDFData],
     shape2blocks: wp.array[wp.vec2i],
     max_num_blocks_broad: int,
     # outputs
     block_broad_collide_shape_pair: wp.array[wp.vec2i],
     block_broad_idx: wp.array[wp.int32],
 ):
-    tid = wp.tid()
-    if tid >= shape_pairs_sdf_sdf_count[0]:
+    offset = wp.tid()
+    total_blocks = wp.min(block_broad_collide_count[0], max_num_blocks_broad)
+    pair_count = wp.min(shape_pairs_sdf_sdf_count[0], block_start_prefix.shape[0])
+    if pair_count == 0:
         return
 
-    num_blocks = thread_num_blocks[tid]
-    if num_blocks == 0:
-        return
+    for block_tid in range(offset, total_blocks, grid_size):
+        # Binary search: find rightmost pair_idx where prefix[pair_idx] <= block_tid
+        lo = int(0)
+        hi = int(pair_count - 1)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if block_start_prefix[mid] <= block_tid:
+                lo = mid
+            else:
+                hi = mid - 1
+        pair_idx = lo
 
-    pair = shape_pairs_sdf_sdf[tid]
-    shape_a = pair[0]
-    shape_b = pair[1]
+        pair = shape_pairs_sdf_sdf[pair_idx]
+        shape_a = pair[0]
+        shape_b = pair[1]
 
-    # sort shapes such that the shape with the smaller voxel size is in second place
-    # NOTE: Confirm that this is OK to do for downstream code
-    voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
-    voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
+        # Sort shapes so the one with smaller voxel size is shape_b
+        voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
+        voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
+        if voxel_radius_b > voxel_radius_a:
+            shape_b, shape_a = shape_a, shape_b
 
-    if voxel_radius_b > voxel_radius_a:
-        shape_b, shape_a = shape_a, shape_b
+        shape_b_idx = shape2blocks[shape_b]
+        shape_b_block_start = shape_b_idx[0]
+        block_in_pair = block_tid - block_start_prefix[pair_idx]
 
-    shape_b_idx = shape2blocks[shape_b]
-    shape_b_block_start = shape_b_idx[0]
-
-    block_start = block_start_prefix[tid]
-
-    remaining = max_num_blocks_broad - block_start
-    if remaining <= 0:
-        return
-    num_blocks = wp.min(num_blocks, remaining)
-
-    pair = wp.vec2i(shape_a, shape_b)
-    for i in range(num_blocks):
-        block_broad_collide_shape_pair[block_start + i] = pair
-        block_broad_idx[block_start + i] = shape_b_block_start + i
+        block_broad_collide_shape_pair[block_tid] = wp.vec2i(shape_a, shape_b)
+        block_broad_idx[block_tid] = shape_b_block_start + block_in_pair
 
 
 @wp.kernel(enable_backward=False)

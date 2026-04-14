@@ -1282,7 +1282,15 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - Attribute
      - Description
    * - :attr:`~Contacts.force`
-     - Contact spatial forces (used by :class:`~sensors.SensorContact`)
+     - Contact spatial forces (used by :class:`~sensors.SensorContact`).
+       Populated by :meth:`~solvers.SolverBase.update_contacts`.
+
+.. note::
+
+   :class:`~solvers.SolverXPBD` with ``rigid_contact_con_weighting`` enabled
+   (the default) does not conserve momentum at contacts.  The per-contact
+   forces written by :meth:`~solvers.SolverXPBD.update_contacts` are
+   approximate -- see that method's documentation for details.
 
 Example usage:
 
