@@ -383,10 +383,10 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
-            rigid_contact_buffer_size=256,
+            rigid_body_contact_buffer_size=256,
         )
         for j in range(self.model.joint_count):
-            self.solver.set_joint_hard(j, False)
+            self.solver.set_joint_constraint_mode(j, False)
 
         self._rest_pos = plug_pos
         self.gizmo_tf = wp.transform(plug_pos, wp.quat_identity())

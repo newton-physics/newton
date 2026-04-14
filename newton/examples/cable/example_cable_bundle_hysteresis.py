@@ -374,7 +374,7 @@ class Example:
             if refresh_contacts:
                 self.model.collide(self.state_0, self.contacts)
 
-            self.solver.set_rigid_contact_refresh(refresh_contacts)
+            self.solver.set_rigid_history_update(refresh_contacts)
             self.solver.step(
                 self.state_0,
                 self.state_1,

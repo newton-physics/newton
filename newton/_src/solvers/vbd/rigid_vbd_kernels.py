@@ -12,7 +12,7 @@ Organization:
 - Data structures: RigidForceElementAdjacencyInfo and related structs
 - Device functions: Helper functions for rigid body dynamics
 - Utility kernels: Adjacency building
-- Pre-iteration kernels: Forward integration, warmstarting, Dahl parameter computation
+- Pre-iteration kernels: Forward integration, contact history restore, Dahl parameter computation
 - Iteration kernels: Contact accumulation, rigid body solve, dual updates
 - Post-iteration kernels: Velocity updates, Dahl state updates
 """
@@ -215,7 +215,7 @@ def chol33_solve(Lp: vec6, b: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def cable_get_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest: wp.quat) -> wp.vec3:
+def compute_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest: wp.quat) -> wp.vec3:
     """Compute cable bending curvature vector kappa in the parent frame.
 
     Kappa is the rotation vector (theta*axis) from the rest-aligned relative rotation.
@@ -384,8 +384,8 @@ def _average_contact_material(
 ):
     """Average material properties for a contact pair.
 
-    ke, kd: arithmetic mean (additive stiffness/damping).
-    mu: geometric mean (standard friction convention).
+    ke, kd: arithmetic mean.
+    mu: geometric mean.
     """
     avg_ke = 0.5 * (ke0 + ke1)
     avg_kd = 0.5 * (kd0 + kd1)
@@ -643,7 +643,6 @@ def evaluate_rigid_contact_from_collision(
     contact_point_b_local: wp.vec3,
     contact_normal: wp.vec3,
     penetration_depth: float,
-    tangential_constraint: wp.vec3,
     contact_ke: float,
     contact_ke_t: float,
     contact_kd: float,
@@ -651,13 +650,13 @@ def evaluate_rigid_contact_from_collision(
     friction_mu: float,
     friction_epsilon: float,
     hard_contact: int,
-    is_kinematic_contact: int,
     dt: float,
 ):
     """Compute augmented-Lagrangian contact forces and 3x3 Hessian blocks for a rigid contact pair.
 
-    Hard contacts (dynamic-dynamic): AL friction with vec3 lambda, cone clamping, tangential penalty.
-    Hard contacts (kinematic-dynamic): ALM normal + velocity-based IPC friction (no tangential lambda).
+    Hard contacts: ALM normal + displacement-based tangential friction with Coulomb cone clamping.
+    The tangential constraint is the relative tangential displacement from body_q_prev to body_q,
+    which correctly captures kinematic body motion.
     Soft contacts: velocity-based IPC friction with scalar penalty.
 
     Returns:
@@ -672,17 +671,16 @@ def evaluate_rigid_contact_from_collision(
         return (zero_vec, zero_vec, zero_mat, zero_mat, zero_mat, zero_vec, zero_vec, zero_mat, zero_mat, zero_mat)
 
     f_n = contact_ke * penetration_depth + lam_n
-    if f_n <= 0.0 or contact_ke <= 0.0:
-        if lam_n > 0.0 and hard_contact == 1:
-            f_n = 0.0
-            k_rescaled = lam_n / wp.max(wp.abs(penetration_depth), 1.0e-8)
-            k_rescaled = wp.min(k_rescaled, contact_ke)
-            contact_ke = wp.max(k_rescaled, 1.0)
-            contact_ke_t = 0.0
-        else:
-            zero_vec = wp.vec3(0.0)
-            zero_mat = wp.mat33(0.0)
-            return (zero_vec, zero_vec, zero_mat, zero_mat, zero_mat, zero_vec, zero_vec, zero_mat, zero_mat, zero_mat)
+    if contact_ke <= 0.0:
+        zero_vec = wp.vec3(0.0)
+        zero_mat = wp.mat33(0.0)
+        return (zero_vec, zero_vec, zero_mat, zero_mat, zero_mat, zero_vec, zero_vec, zero_mat, zero_mat, zero_mat)
+    f_n = wp.max(f_n, 0.0)
+
+    if f_n == 0.0 and hard_contact == 0:
+        zero_vec = wp.vec3(0.0)
+        zero_mat = wp.mat33(0.0)
+        return (zero_vec, zero_vec, zero_mat, zero_mat, zero_mat, zero_vec, zero_vec, zero_mat, zero_mat, zero_mat)
 
     if body_a_index < 0:
         X_wa = wp.transform_identity()
@@ -715,22 +713,27 @@ def evaluate_rigid_contact_from_collision(
     v_rel = (x_c_b_now - x_c_b_prev - x_c_a_now + x_c_a_prev) / dt
     v_dot_n = wp.dot(contact_normal, v_rel)
 
-    if hard_contact == 1 and is_kinematic_contact == 0:
-        # Dynamic-dynamic: ALM tangential friction with Coulomb cone clamping
-        lam_t = contact_lam - contact_normal * lam_n
-        f_t_vec = contact_ke_t * tangential_constraint + lam_t
-        f_t_len = wp.length(f_t_vec)
-        cone_limit = friction_mu * f_n
-        if f_t_len > cone_limit and f_t_len > 0.0:
-            cone_ratio = cone_limit / f_t_len
-            f_t_vec = f_t_vec * cone_ratio
-            contact_ke_t = contact_ke_t * cone_ratio
+    if hard_contact == 1:
+        f_total = contact_normal * f_n
+        K_total = contact_ke * n_outer
 
-        f_total = contact_normal * f_n + f_t_vec
-        I3 = wp.identity(n=3, dtype=float)
-        K_total = contact_ke * n_outer + contact_ke_t * (I3 - n_outer)
+        if friction_mu > 0.0 and f_n > 0.0:
+            # ALM tangential friction with Coulomb cone clamping.
+            # Tangential constraint = relative tangential displacement (body_q_prev -> body_q).
+            v_t = v_rel - contact_normal * v_dot_n
+            tangential_disp = -(v_t * dt)
+            lam_t = contact_lam - contact_normal * lam_n
+            f_t_vec = contact_ke_t * tangential_disp + lam_t
+            f_t_len = wp.length(f_t_vec)
+            cone_limit = friction_mu * f_n
+            if f_t_len > cone_limit and f_t_len > 0.0:
+                cone_ratio = cone_limit / f_t_len
+                f_t_vec = f_t_vec * cone_ratio
+            f_total = f_total + f_t_vec
+            I3 = wp.identity(n=3, dtype=float)
+            K_total = K_total + contact_ke_t * (I3 - n_outer)
     else:
-        # Kinematic-hard or soft: normal penalty + IPC velocity-based friction
+        # Soft contact: normal penalty + IPC velocity-based friction
         f_total = contact_normal * f_n
         K_total = contact_ke * n_outer
 
@@ -775,6 +778,113 @@ def evaluate_rigid_contact_from_collision(
 
 
 @wp.func
+def _compute_body_particle_contact_force(
+    penetration_depth: float,
+    n: wp.vec3,
+    relative_translation: wp.vec3,
+    ke: float,
+    kd: float,
+    mu: float,
+    friction_epsilon: float,
+    dt: float,
+):
+    """Pure force law for body-particle contacts: normal penalty + damping + friction.
+
+    All geometry and kinematics (penetration, normal, relative displacement) are
+    resolved by the caller.  This function only computes the contact force and
+    Hessian from those scalar/vector inputs.
+    """
+    f_n = penetration_depth * ke
+    force = n * f_n
+    hessian = ke * wp.outer(n, n)
+
+    if wp.dot(n, relative_translation) < 0.0:
+        damping_coeff = kd * ke
+        damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
+        hessian = hessian + damping_hessian
+        force = force - damping_hessian * relative_translation
+
+    eps_u = friction_epsilon * dt
+    friction_force, friction_hessian = compute_projected_isotropic_friction(
+        mu, f_n, n, relative_translation, eps_u
+    )
+    force = force + friction_force
+    hessian = hessian + friction_hessian
+
+    return force, hessian
+
+
+@wp.func
+def _eval_body_particle_contact(
+    particle_index: int,
+    particle_pos: wp.vec3,
+    particle_prev_pos: wp.vec3,
+    contact_index: int,
+    body_particle_contact_ke: float,
+    body_particle_contact_kd: float,
+    friction_mu: float,
+    friction_epsilon: float,
+    particle_radius: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    dt: float,
+):
+    """Particle-rigid contact force/Hessian - resolves geometry from arrays then
+    delegates to ``_compute_body_particle_contact_force``.
+
+    Prefer calling ``_compute_body_particle_contact_force`` directly when the
+    caller already has the contact geometry and relative displacement.
+    """
+    shape_index = contact_shape[contact_index]
+    body_index = shape_body[shape_index]
+
+    X_wb = wp.transform_identity()
+    X_com = wp.vec3()
+    if body_index >= 0:
+        X_wb = body_q[body_index]
+        X_com = body_com[body_index]
+
+    bx = wp.transform_point(X_wb, contact_body_pos[contact_index])
+    n = contact_normal[contact_index]
+
+    penetration_depth = -(wp.dot(n, particle_pos - bx) - particle_radius[particle_index])
+    if penetration_depth > 0.0:
+        dx = particle_pos - particle_prev_pos
+
+        if body_q_prev:
+            X_wb_prev = wp.transform_identity()
+            if body_index >= 0:
+                X_wb_prev = body_q_prev[body_index]
+            bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[contact_index])
+            bv = (bx - bx_prev) / dt + wp.transform_vector(X_wb, contact_body_vel[contact_index])
+        else:
+            r = bx - wp.transform_point(X_wb, X_com)
+            body_v_s = wp.spatial_vector()
+            if body_index >= 0:
+                body_v_s = body_qd[body_index]
+            body_w = wp.spatial_bottom(body_v_s)
+            body_v = wp.spatial_top(body_v_s)
+            bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
+
+        relative_translation = dx - bv * dt
+
+        return _compute_body_particle_contact_force(
+            penetration_depth, n, relative_translation,
+            body_particle_contact_ke, body_particle_contact_kd, friction_mu,
+            friction_epsilon, dt,
+        )
+    else:
+        return wp.vec3(0.0), wp.mat33(0.0)
+
+
+@wp.func
 def evaluate_body_particle_contact(
     particle_index: int,
     particle_pos: wp.vec3,
@@ -797,113 +907,35 @@ def evaluate_body_particle_contact(
     contact_normal: wp.array[wp.vec3],
     dt: float,
 ):
-    """
-    Evaluate particle-rigid body contact force and Hessian (on particle side).
+    """Particle-rigid contact force/Hessian with per-shape mu mixing.
 
-    Computes contact forces and Hessians for a particle interacting with a rigid body shape.
-    The function is agnostic to whether the rigid body is static, kinematic, or dynamic.
-
-    Contact model:
-    - Normal: Linear spring-damper (stiffness: body_particle_contact_ke, damping: body_particle_contact_kd)
-    - Friction: 3D projector-based Coulomb friction with IPC regularization
-    - Normal direction: Points from rigid surface towards particle (into particle)
-
-    Args:
-        particle_index: Index of the particle
-        particle_pos: Current particle position (world frame)
-        particle_prev_pos: Previous particle position (world frame) used as the
-            "previous" position for finite-difference contact-relative velocity.
-        contact_index: Index in the body-particle contact arrays
-        body_particle_contact_ke: Effective body-particle contact stiffness
-        body_particle_contact_kd: Effective body-particle contact damping
-        friction_mu: Effective body-particle friction coefficient
-        friction_epsilon: Friction regularization distance
-        particle_radius: Array of particle radii
-        shape_material_mu: Array of shape friction coefficients
-        shape_body: Array mapping shape index to body index
-        body_q: Current body transforms
-        body_q_prev: Previous body transforms (for finite-difference body
-            velocity when available)
-        body_qd: Body spatial velocities (fallback when no previous pose is provided)
-        body_com: Body centers of mass (local frame)
-        contact_shape: Array of shape indices for each soft contact
-        contact_body_pos: Array of contact points (local to shape)
-        contact_body_vel: Array of contact velocities (local frame)
-        contact_normal: Array of contact normals (world frame, from rigid to particle)
-        dt: Time window [s] used for finite-difference damping/friction.
-
-    Returns:
-        tuple[wp.vec3, wp.mat33]: (force, Hessian) on the particle (world frame)
+    VBD rigid-side uses ``_eval_body_particle_contact`` directly (mu is
+    pre-averaged per contact).  This wrapper is kept for other solvers
+    that pass raw mu and need per-shape mixing.
     """
     shape_index = contact_shape[contact_index]
-    body_index = shape_body[shape_index]
-
-    X_wb = wp.transform_identity()
-    X_com = wp.vec3()
-    if body_index >= 0:
-        X_wb = body_q[body_index]
-        X_com = body_com[body_index]
-
-    # body position in world space
-    bx = wp.transform_point(X_wb, contact_body_pos[contact_index])
-
-    n = contact_normal[contact_index]
-
-    penetration_depth = -(wp.dot(n, particle_pos - bx) - particle_radius[particle_index])
-    if penetration_depth > 0.0:
-        body_contact_force_norm = penetration_depth * body_particle_contact_ke
-        body_contact_force = n * body_contact_force_norm
-        body_contact_hessian = body_particle_contact_ke * wp.outer(n, n)
-
-        # Combine body-particle friction and shape material friction using geometric mean.
-        mu = wp.sqrt(friction_mu * shape_material_mu[shape_index])
-
-        dx = particle_pos - particle_prev_pos
-
-        if wp.dot(n, dx) < 0.0:
-            # Damping coefficient is scaled by contact stiffness (consistent with rigid-rigid)
-            damping_coeff = body_particle_contact_kd * body_particle_contact_ke
-            damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
-            body_contact_hessian = body_contact_hessian + damping_hessian
-            body_contact_force = body_contact_force - damping_hessian * dx
-
-        # body velocity
-        if body_q_prev:
-            # if body_q_prev is available, compute velocity using finite difference method
-            # this is more accurate for simulating static friction
-            X_wb_prev = wp.transform_identity()
-            if body_index >= 0:
-                X_wb_prev = body_q_prev[body_index]
-            bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[contact_index])
-            bv = (bx - bx_prev) / dt + wp.transform_vector(X_wb, contact_body_vel[contact_index])
-
-        else:
-            # otherwise use the instantaneous velocity
-            r = bx - wp.transform_point(X_wb, X_com)
-            body_v_s = wp.spatial_vector()
-            if body_index >= 0:
-                body_v_s = body_qd[body_index]
-
-            body_w = wp.spatial_bottom(body_v_s)
-            body_v = wp.spatial_top(body_v_s)
-
-            # compute the body velocity at the particle position
-            bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
-
-        relative_translation = dx - bv * dt
-
-        # Friction using 3D projector approach (consistent with rigid-rigid contacts)
-        eps_u = friction_epsilon * dt
-        friction_force, friction_hessian = compute_projected_isotropic_friction(
-            mu, body_contact_force_norm, n, relative_translation, eps_u
-        )
-        body_contact_force = body_contact_force + friction_force
-        body_contact_hessian = body_contact_hessian + friction_hessian
-    else:
-        body_contact_force = wp.vec3(0.0)
-        body_contact_hessian = wp.mat33(0.0)
-
-    return body_contact_force, body_contact_hessian
+    mixed_mu = wp.sqrt(friction_mu * shape_material_mu[shape_index])
+    return _eval_body_particle_contact(
+        particle_index,
+        particle_pos,
+        particle_prev_pos,
+        contact_index,
+        body_particle_contact_ke,
+        body_particle_contact_kd,
+        mixed_mu,
+        friction_epsilon,
+        particle_radius,
+        shape_body,
+        body_q,
+        body_q_prev,
+        body_qd,
+        body_com,
+        contact_shape,
+        contact_body_pos,
+        contact_body_vel,
+        contact_normal,
+        dt,
+    )
 
 
 @wp.func
@@ -1083,11 +1115,15 @@ def evaluate_joint_force_hessian(
 
     Indexing:
         joint_constraint_start[j] is a solver-owned start offset into the per-constraint
-        arrays (joint_penalty_k, joint_penalty_kd). Only structural slots exist:
+        arrays (joint_penalty_k, joint_penalty_kd). Layout per joint type:
           - CABLE: 2 scalars -> [stretch, bend]
           - BALL:  1 scalar  -> [linear]
-          - FIXED/REVOLUTE/PRISMATIC/D6: 2 scalars -> [linear, angular]
-        Drive/limit forces read model stiffness directly and do not use penalty slots.
+          - FIXED: 2 scalars -> [linear, angular]
+          - REVOLUTE:  3 scalars -> [linear, angular, ang_drive_limit]
+          - PRISMATIC: 3 scalars -> [linear, angular, lin_drive_limit]
+          - D6: 2 + lin_count + ang_count scalars -> [linear, angular, per-DOF drive/limit]
+        Drive/limit slots use AVBD-ramped stiffness via min(avbd_ke, model_ke).
+        Drive/limit forces remain penalty-only (no lambda or C0 state).
     """
     jt = joint_type[joint_index]
     if (
@@ -1381,7 +1417,7 @@ def evaluate_joint_force_hessian(
             t_ang = wp.vec3(0.0)
             Haa_ang = wp.mat33(0.0)
 
-        # Drive + limits on free angular DOF
+        # Drive + limits on free angular DOF (AVBD slot c_start + 2)
         dof_idx = qd_start
         model_drive_ke = joint_target_ke[dof_idx]
         drive_kd = joint_target_kd[dof_idx]
@@ -1394,6 +1430,10 @@ def evaluate_joint_force_hessian(
 
         has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
         has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+        avbd_ke = joint_penalty_k[c_start + 2]
+        drive_ke = wp.min(avbd_ke, model_drive_ke)
+        lim_ke = wp.min(avbd_ke, model_limit_ke)
 
         if has_drive or has_limits:
             inv_dt = 1.0 / dt
@@ -1415,14 +1455,14 @@ def evaluate_joint_force_hessian(
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                lim_d = lim_kd * model_limit_ke
-                f_scalar = model_limit_ke * err_pos + lim_d * dtheta_dt
-                H_scalar = model_limit_ke + lim_d * inv_dt
+                lim_d = lim_kd * lim_ke
+                f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
+                H_scalar = lim_ke + lim_d * inv_dt
             elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                drive_d = drive_kd * model_drive_ke
+                drive_d = drive_kd * drive_ke
                 vel_err = dtheta_dt - target_vel
-                f_scalar = model_drive_ke * err_pos + drive_d * vel_err
-                H_scalar = model_drive_ke + drive_d * inv_dt
+                f_scalar = drive_ke * err_pos + drive_d * vel_err
+                H_scalar = drive_ke + drive_d * inv_dt
 
             if H_scalar > 0.0:
                 tau_drive, Haa_drive = apply_angular_drive_limit_torque(a, J_world, is_parent_body, f_scalar, H_scalar)
@@ -1489,7 +1529,7 @@ def evaluate_joint_force_hessian(
             t_ang = wp.vec3(0.0)
             Haa_ang = wp.mat33(0.0)
 
-        # Drive + limits on free linear DOF
+        # Drive + limits on free linear DOF (AVBD slot c_start + 2)
         dof_idx = qd_start
         model_drive_ke = joint_target_ke[dof_idx]
         drive_kd = joint_target_kd[dof_idx]
@@ -1502,6 +1542,10 @@ def evaluate_joint_force_hessian(
 
         has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
         has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+        avbd_ke = joint_penalty_k[c_start + 2]
+        drive_ke = wp.min(avbd_ke, model_drive_ke)
+        lim_ke = wp.min(avbd_ke, model_limit_ke)
 
         if has_drive or has_limits:
             inv_dt = 1.0 / dt
@@ -1522,14 +1566,14 @@ def evaluate_joint_force_hessian(
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                lim_d = lim_kd * model_limit_ke
-                f_scalar = model_limit_ke * err_pos + lim_d * dd_dt
-                H_scalar = model_limit_ke + lim_d * inv_dt
+                lim_d = lim_kd * lim_ke
+                f_scalar = lim_ke * err_pos + lim_d * dd_dt
+                H_scalar = lim_ke + lim_d * inv_dt
             elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                drive_d = drive_kd * model_drive_ke
+                drive_d = drive_kd * drive_ke
                 vel_err = dd_dt - target_vel
-                f_scalar = model_drive_ke * err_pos + drive_d * vel_err
-                H_scalar = model_drive_ke + drive_d * inv_dt
+                f_scalar = drive_ke * err_pos + drive_d * vel_err
+                H_scalar = drive_ke + drive_d * inv_dt
 
             if H_scalar > 0.0:
                 if is_parent_body:
@@ -1666,6 +1710,10 @@ def evaluate_joint_force_hessian(
                     has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
                     has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
 
+                    avbd_ke = joint_penalty_k[c_start + 2 + li]
+                    drive_ke = wp.min(avbd_ke, model_drive_ke)
+                    lim_ke = wp.min(avbd_ke, model_limit_ke)
+
                     if has_drive or has_limits:
                         axis_w = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[dof_idx]))
                         d_along = wp.dot(C_vec, axis_w)
@@ -1677,14 +1725,14 @@ def evaluate_joint_force_hessian(
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
                         if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            lim_d = lim_kd * model_limit_ke
-                            f_scalar = model_limit_ke * err_pos + lim_d * dd_dt
-                            H_scalar = model_limit_ke + lim_d * inv_dt
+                            lim_d = lim_kd * lim_ke
+                            f_scalar = lim_ke * err_pos + lim_d * dd_dt
+                            H_scalar = lim_ke + lim_d * inv_dt
                         elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                            drive_d = drive_kd * model_drive_ke
+                            drive_d = drive_kd * drive_ke
                             vel_err = dd_dt - target_vel
-                            f_scalar = model_drive_ke * err_pos + drive_d * vel_err
-                            H_scalar = model_drive_ke + drive_d * inv_dt
+                            f_scalar = drive_ke * err_pos + drive_d * vel_err
+                            H_scalar = drive_ke + drive_d * inv_dt
 
                         if H_scalar > 0.0:
                             force_drive, torque_drive, Hll_drive, Hal_drive, Haa_drive = apply_linear_drive_limit_force(
@@ -1726,6 +1774,10 @@ def evaluate_joint_force_hessian(
                     has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
                     has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
 
+                    avbd_ke = joint_penalty_k[c_start + 2 + lin_count + ai]
+                    drive_ke = wp.min(avbd_ke, model_drive_ke)
+                    lim_ke = wp.min(avbd_ke, model_limit_ke)
+
                     if has_drive or has_limits:
                         a = wp.normalize(joint_axis[dof_idx])
                         theta = wp.dot(kappa, a)
@@ -1738,14 +1790,14 @@ def evaluate_joint_force_hessian(
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
                         if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            lim_d = lim_kd * model_limit_ke
-                            f_scalar = model_limit_ke * err_pos + lim_d * dtheta_dt
-                            H_scalar = model_limit_ke + lim_d * inv_dt
+                            lim_d = lim_kd * lim_ke
+                            f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
+                            H_scalar = lim_ke + lim_d * inv_dt
                         elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                            drive_d = drive_kd * model_drive_ke
+                            drive_d = drive_kd * drive_ke
                             vel_err = dtheta_dt - target_vel
-                            f_scalar = model_drive_ke * err_pos + drive_d * vel_err
-                            H_scalar = model_drive_ke + drive_d * inv_dt
+                            f_scalar = drive_ke * err_pos + drive_d * vel_err
+                            H_scalar = drive_ke + drive_d * inv_dt
 
                         if H_scalar > 0.0:
                             tau_drive, Haa_drive = apply_angular_drive_limit_torque(
@@ -1987,18 +2039,28 @@ def step_joint_C0_lambda(
     joint_constraint_dim: wp.array[wp.int32],
     joint_is_hard: wp.array[wp.int32],
     gamma: float,
+    joint_penalty_k: wp.array[float],
+    joint_penalty_k_min: wp.array[float],
+    joint_penalty_k_max: wp.array[float],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
     joint_lambda_lin: wp.array[wp.vec3],
     joint_lambda_ang: wp.array[wp.vec3],
 ):
-    """Per-step joint AVBD maintenance: C0 snapshot + lambda decay.
+    """Per-step joint AVBD maintenance: k decay + C0 snapshot + lambda decay.
 
-    Sole owner of all joint decay. Runs every step regardless of refresh.
+    Sole owner of all joint decay. Runs every step.
     """
     j = wp.tid()
     c_start = int(joint_constraint_start[j])
     c_dim = int(joint_constraint_dim[j])
+
+    # K decay runs unconditionally (even for disabled joints).
+    for s in range(c_dim):
+        idx = c_start + s
+        joint_penalty_k[idx] = wp.clamp(
+            gamma * joint_penalty_k[idx], joint_penalty_k_min[idx], joint_penalty_k_max[idx]
+        )
 
     child = joint_child[j]
     if not joint_enabled[j] or c_dim == 0 or child < 0:
@@ -2040,7 +2102,7 @@ def step_joint_C0_lambda(
             q_wc = wp.transform_get_rotation(X_wc)
             q_wp_rest = wp.transform_get_rotation(X_wp_rest)
             q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-            joint_C0_ang[j] = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+            joint_C0_ang[j] = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
             joint_lambda_ang[j] = joint_lambda_ang[j] * gamma
         else:
             joint_C0_ang[j] = wp.vec3(0.0)
@@ -2060,16 +2122,17 @@ def init_body_body_contact_materials(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
+    k_start: float,
     # Outputs
     contact_penalty_k: wp.array[float],
     contact_material_kd: wp.array[float],
     contact_material_mu: wp.array[float],
+    contact_material_ke: wp.array[float],
 ):
-    """
-    Cold-start contact penalties and cache material properties.
+    """Cold-start body-body contact penalties and cache material properties.
 
-    Computes averaged material properties for each rigid contact and sets the
-    contact penalty stiffness to the averaged material stiffness.
+    Averages both shapes' material.  Penalty is seeded at ``min(k_start, avg_ke)``
+    when ramping (k_start >= 0) or at ``avg_ke`` when fixed-k (k_start < 0).
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -2089,8 +2152,10 @@ def init_body_body_contact_materials(
 
     contact_material_kd[i] = avg_kd
     contact_material_mu[i] = avg_mu
+    contact_material_ke[i] = avg_ke
 
-    contact_penalty_k[i] = avg_ke
+    k_floor = avg_ke if k_start < 0.0 else wp.min(k_start, avg_ke)
+    contact_penalty_k[i] = k_floor
 
 
 @wp.kernel
@@ -2103,15 +2168,10 @@ def init_body_body_contacts_avbd(
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
-    rigid_contact_margin0: wp.array[float],
-    rigid_contact_margin1: wp.array[float],
     # Material
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
-    # Geometry
-    shape_body: wp.array[wp.int32],
-    body_q: wp.array[wp.transform],
     hard_contacts: int,
     # Cross-step state
     ht_keys: wp.array[wp.uint64],
@@ -2120,23 +2180,25 @@ def init_body_body_contacts_avbd(
     history_lambda: wp.array[wp.vec3],
     history_normal: wp.array[wp.vec3],
     history_stick_flag: wp.array[wp.int32],
+    history_penalty_k: wp.array[float],
     # Scalar parameters
     cell_size_inv: float,
     match_tolerance_sq: float,
+    k_start: float,
     # Outputs
     contact_penalty_k: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
-    contact_C0: wp.array[wp.vec3],
     contact_material_kd: wp.array[float],
     contact_material_mu: wp.array[float],
+    contact_material_ke: wp.array[float],
 ):
-    """Warmstart body-body contacts using hash table-based contact history.
+    """Restore body-body contact state from hash table history.
 
-    Matched contacts copy lambda from history (no decay - decay is handled by
-    step_body_body_contact_C0_lambda). For hard contacts, lambda is rotated from the old
-    contact frame to the new one. C0 is a vec3 constraint snapshot at the
-    collide-frame pose (body_q, before forward integration), used for both
-    normal and tangential ALM stabilization.
+    For hard contacts: restores lambda (rotated from old to new contact frame),
+    penalty_k, and stick-anchor points.
+    For soft contacts: only penalty_k restoration is meaningful (lambda and
+    stick_flag are stored but inert in the soft penalty path).
+    C0 and decay are handled by step_body_body_contact_C0_lambda.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -2189,9 +2251,11 @@ def init_body_body_contacts_avbd(
                             best_dist_sq = dist_sq
                             best_slot = slot
 
-    contact_penalty_k[i] = avg_ke
+    contact_material_ke[i] = avg_ke
+    k_floor = avg_ke if k_start < 0.0 else wp.min(k_start, avg_ke)
 
     if best_slot >= 0:
+        contact_penalty_k[i] = wp.clamp(history_penalty_k[best_slot], k_floor, avg_ke)
         lam_hist = history_lambda[best_slot]
         if hard_contacts == 1:
             n_old = history_normal[best_slot]
@@ -2207,19 +2271,8 @@ def init_body_body_contacts_avbd(
             rigid_contact_point0[i] = history_point0[best_slot]
             rigid_contact_point1[i] = history_point1[best_slot]
     else:
+        contact_penalty_k[i] = k_floor
         contact_lambda[i] = wp.vec3(0.0)
-
-    if hard_contacts == 1:
-        b0 = shape_body[s0] if s0 >= 0 else -1
-        b1 = shape_body[s1] if s1 >= 0 else -1
-        n = rigid_contact_normal[i]
-        cp0 = wp.transform_point(body_q[b0], rigid_contact_point0[i]) if b0 >= 0 else rigid_contact_point0[i]
-        cp1 = wp.transform_point(body_q[b1], rigid_contact_point1[i]) if b1 >= 0 else rigid_contact_point1[i]
-        thickness = rigid_contact_margin0[i] + rigid_contact_margin1[i]
-        d_vec = cp1 - cp0
-        contact_C0[i] = n * thickness - d_vec
-    else:
-        contact_C0[i] = wp.vec3(0.0)
 
 
 @wp.kernel
@@ -2232,6 +2285,7 @@ def snapshot_contact_history(
     rigid_contact_normal: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
     contact_stick_flag: wp.array[wp.int32],
+    contact_penalty_k: wp.array[float],
     # Hash table
     ht_keys: wp.array[wp.uint64],
     ht_active_slots: wp.array[wp.int32],
@@ -2242,13 +2296,15 @@ def snapshot_contact_history(
     history_lambda: wp.array[wp.vec3],
     history_normal: wp.array[wp.vec3],
     history_stick_flag: wp.array[wp.int32],
+    history_penalty_k: wp.array[float],
     history_age: wp.array[int],
     cached_slots: wp.array[int],
 ):
     """Snapshot converged contact state into the history hash table (post-solve).
 
-    Stores lambda, normal, stick state, and contact point for warmstarting.
-    Also caches the resolved slot index per contact so that subsequent
+    Stores penalty_k, lambda, normal, stick state, and contact points.
+    In soft mode, lambda and stick_flag are inert but stored uniformly.
+    Caches the resolved slot index per contact so that subsequent
     non-rebuild steps can update history without re-hashing.
     """
     i = wp.tid()
@@ -2271,6 +2327,7 @@ def snapshot_contact_history(
         history_lambda[slot] = contact_lambda[i]
         history_normal[slot] = rigid_contact_normal[i]
         history_stick_flag[slot] = contact_stick_flag[i]
+        history_penalty_k[slot] = contact_penalty_k[i]
         history_age[slot] = 0
 
 
@@ -2304,11 +2361,13 @@ def snapshot_contact_history_light(
     cached_slots: wp.array[int],
     contact_lambda: wp.array[wp.vec3],
     contact_stick_flag: wp.array[wp.int32],
+    contact_penalty_k: wp.array[float],
     # Outputs (hash table history arrays, indexed by cached slot)
     history_lambda: wp.array[wp.vec3],
     history_stick_flag: wp.array[wp.int32],
+    history_penalty_k: wp.array[float],
 ):
-    """Write latest lambda/stick state to the hash table at pre-cached slot positions.
+    """Write latest lambda/stick/penalty_k to the hash table at pre-cached slot positions.
 
     Runs on non-rebuild steps to keep the hash table fresh without hashing
     or probing.  Slots were cached by the previous full snapshot.
@@ -2320,6 +2379,7 @@ def snapshot_contact_history_light(
     if slot >= 0:
         history_lambda[slot] = contact_lambda[i]
         history_stick_flag[slot] = contact_stick_flag[i]
+        history_penalty_k[slot] = contact_penalty_k[i]
 
 
 @wp.kernel
@@ -2335,26 +2395,32 @@ def step_body_body_contact_C0_lambda(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     hard_contacts: int,
-    gamma: float,
-    recompute_C0: int,
+    gamma_lambda: float,
+    gamma_k: float,
+    contact_material_ke: wp.array[float],
+    k_start: float,
     # In/out
+    contact_penalty_k: wp.array[float],
     contact_C0: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
 ):
-    """Per-step lambda decay, plus optional vec3 C0 recompute.
+    """Per-step k decay + lambda decay + C0 snapshot.
 
-    Runs every step. On refresh steps (recompute_C0=0), only applies lambda decay
-    (C0 was already set by init_body_body_contacts_avbd when warmstart is enabled,
-    or remains zero in the cold-start path). On non-refresh steps (recompute_C0=1),
-    recomputes vec3 C0 at the collide-frame pose (body_q, before forward integration).
+    Runs every step. K decay is unconditional (hard and soft). Lambda decay
+    uses gamma_lambda (0 when contact history is off or contacts are soft).
+    C0 is always recomputed for hard contacts.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
         return
 
-    contact_lambda[i] = contact_lambda[i] * gamma
+    ke = contact_material_ke[i]
+    k_min = ke if k_start < 0.0 else wp.min(k_start, ke)
+    contact_penalty_k[i] = wp.clamp(gamma_k * contact_penalty_k[i], k_min, ke)
 
-    if recompute_C0 == 1 and hard_contacts == 1:
+    contact_lambda[i] = contact_lambda[i] * gamma_lambda
+
+    if hard_contacts == 1:
         s0 = rigid_contact_shape0[i]
         s1 = rigid_contact_shape1[i]
         b0 = shape_body[s0] if s0 >= 0 else -1
@@ -2379,19 +2445,18 @@ def init_body_particle_contacts(
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
+    k_start: float,
     # Outputs
     body_particle_contact_penalty_k: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
 ):
-    """
-    Initialize body-particle (particle-rigid) contact penalties and cache material
-    properties.
+    """Cold-start body-particle contact penalties and cache material properties.
 
-    The scalar inputs `soft_contact_ke/kd/mu` are the particle-side soft-contact
-    material parameters (from `model.soft_contact_*`). For each body-particle
-    contact, this kernel averages those particle-side values with the rigid
-    shape's material parameters and sets the penalty to the averaged stiffness.
+    Averages particle-side material (scalar `soft_contact_ke/kd/mu`) with the
+    rigid shape's material.  Penalty is seeded at ``min(k_start, avg_ke)`` when
+    ramping (k_start >= 0) or at ``avg_ke`` when fixed-k (k_start < 0).
     """
     i = wp.tid()
     if i >= body_particle_contact_count[0]:
@@ -2410,8 +2475,10 @@ def init_body_particle_contacts(
 
     body_particle_contact_material_kd[i] = avg_kd
     body_particle_contact_material_mu[i] = avg_mu
+    body_particle_contact_material_ke[i] = avg_ke
 
-    body_particle_contact_penalty_k[i] = avg_ke
+    k_floor = avg_ke if k_start < 0.0 else wp.min(k_start, avg_ke)
+    body_particle_contact_penalty_k[i] = k_floor
 
 
 @wp.kernel
@@ -2484,7 +2551,7 @@ def compute_cable_dahl_parameters(
     q_wc_rest = wp.transform_get_rotation(X_wc_rest)
 
     # Compute current curvature vector at beginning-of-step (predicted state)
-    kappa_now = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+    kappa_now = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
     # Read previous state (from last converged timestep)
     kappa_prev = joint_kappa_prev[j]
@@ -2634,7 +2701,6 @@ def accumulate_body_body_contacts_per_body(
 
         lam_n = float(0.0)
         C_eff = C_n
-        C_stab_t = wp.vec3(0.0)
         lam_vec = wp.vec3(0.0)
         k = contact_penalty_k[contact_idx]
 
@@ -2645,7 +2711,6 @@ def accumulate_body_body_contacts_per_body(
             C_vec = contact_normal * thickness - d
             C_stab_vec = C_vec - avbd_alpha * C0_vec
             C_stab_n = wp.dot(C_stab_vec, contact_normal)
-            C_stab_t = C_stab_vec - contact_normal * C_stab_n
             C_eff = C_stab_n
 
         if C_n <= _SMALL_LENGTH_EPS and lam_n <= 0.0:
@@ -2659,12 +2724,6 @@ def accumulate_body_body_contacts_per_body(
 
         contact_kd = contact_material_kd[contact_idx]
         contact_mu = contact_material_mu[contact_idx]
-
-        is_kin = int(0)
-        if b0 >= 0 and body_inv_mass[b0] == 0.0:
-            is_kin = int(1)
-        if b1 >= 0 and body_inv_mass[b1] == 0.0:
-            is_kin = int(1)
 
         (
             force_0,
@@ -2687,7 +2746,6 @@ def accumulate_body_body_contacts_per_body(
             cp1_local,
             contact_normal,
             C_eff,
-            C_stab_t,
             k,
             k,
             contact_kd,
@@ -2695,7 +2753,6 @@ def accumulate_body_body_contacts_per_body(
             contact_mu,
             friction_epsilon,
             hard_contacts,
-            is_kin,
             dt,
         )
 
@@ -2738,7 +2795,6 @@ def compute_rigid_contact_forces(
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
-    body_inv_mass: wp.array[float],
     # Contact material properties (per-contact)
     contact_penalty_k: wp.array[float],
     contact_material_kd: wp.array[float],
@@ -2755,7 +2811,7 @@ def compute_rigid_contact_forces(
     out_point1_world: wp.array[wp.vec3],
     out_force_on_body1: wp.array[wp.vec3],
 ):
-    """Compute per-contact augmented-Lagrangian forces in world space."""
+    """Compute per-contact forces in world space (hard: ALM, soft: penalty)."""
     contact_idx = wp.tid()
 
     rc = rigid_contact_count[0]
@@ -2798,7 +2854,6 @@ def compute_rigid_contact_forces(
 
     lam_n = float(0.0)
     C_eff = C_n
-    C_stab_t = wp.vec3(0.0)
     lam_vec = wp.vec3(0.0)
     k = contact_penalty_k[contact_idx]
 
@@ -2809,7 +2864,6 @@ def compute_rigid_contact_forces(
         C_vec = contact_normal * thickness - d
         C_stab_vec = C_vec - avbd_alpha * C0_vec
         C_stab_n = wp.dot(C_stab_vec, contact_normal)
-        C_stab_t = C_stab_vec - contact_normal * C_stab_n
         C_eff = C_stab_n
 
     f_n_check = k * C_eff + lam_n
@@ -2819,12 +2873,6 @@ def compute_rigid_contact_forces(
 
     contact_kd = contact_material_kd[contact_idx]
     contact_mu = contact_material_mu[contact_idx]
-
-    is_kin = int(0)
-    if b0 >= 0 and body_inv_mass[b0] == 0.0:
-        is_kin = int(1)
-    if b1 >= 0 and body_inv_mass[b1] == 0.0:
-        is_kin = int(1)
 
     (
         _force_0,
@@ -2847,7 +2895,6 @@ def compute_rigid_contact_forces(
         cp1_local,
         contact_normal,
         C_eff,
-        C_stab_t,
         k,
         k,
         contact_kd,
@@ -2855,7 +2902,6 @@ def compute_rigid_contact_forces(
         contact_mu,
         friction_epsilon,
         hard_contacts,
-        is_kin,
         dt,
     )
 
@@ -2873,7 +2919,6 @@ def accumulate_body_particle_contacts_per_body(
     # Rigid body state
     body_q_prev: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     body_inv_mass: wp.array[float],
     # AVBD body-particle soft contact penalties and material properties
@@ -2884,13 +2929,9 @@ def accumulate_body_particle_contacts_per_body(
     # Soft contact data (body-particle)
     body_particle_contact_count: wp.array[int],
     body_particle_contact_particle: wp.array[int],
-    body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
     body_particle_contact_body_vel: wp.array[wp.vec3],
     body_particle_contact_normal: wp.array[wp.vec3],
-    # Shape/material data
-    shape_material_mu: wp.array[float],
-    shape_body: wp.array[wp.int32],
     # Per-body soft-contact adjacency (body-particle)
     body_particle_contact_buffer_pre_alloc: int,
     body_particle_contact_counts: wp.array[wp.int32],
@@ -2906,15 +2947,9 @@ def accumulate_body_particle_contacts_per_body(
     Per-body accumulation of body-particle (particle-rigid) soft contact forces and
     Hessians on rigid bodies.
 
-    This kernel mirrors the Gauss-Seidel per-body pattern used for body-body contacts,
-    but iterates over body-particle contacts associated with each body via the
-    precomputed body_particle_contact_* adjacency.
-
-    For each body-particle contact, we:
-      1. Reuse the particle-side contact model via evaluate_body_particle_contact to
-         compute the force and Hessian on the particle using the effective body-particle penalty stiffness.
-      2. Apply the equal-and-opposite reaction force, torque, and Hessian contributions
-         to the rigid body.
+    This kernel resolves contact geometry and relative displacement inline, then
+    calls ``_compute_body_particle_contact_force`` for the pure force law.
+    Body surface velocity uses the displacement-based path (body_q_prev).
 
     Notes:
       - Only dynamic bodies (inv_mass > 0) are updated.
@@ -2939,6 +2974,7 @@ def accumulate_body_particle_contacts_per_body(
     max_contacts = body_particle_contact_count[0]
 
     X_wb = body_q[body_id]
+    X_wb_prev = body_q_prev[body_id]
     com_world = wp.transform_point(X_wb, body_com[body_id])
 
     force_acc = wp.vec3(0.0)
@@ -2970,33 +3006,17 @@ def accumulate_body_particle_contacts_per_body(
             i += _NUM_CONTACT_THREADS_PER_BODY
             continue
 
-        particle_prev_pos = particle_q_prev[particle_idx]
+        bx_prev = wp.transform_point(X_wb_prev, cp_local)
+        bv = (cp_world - bx_prev) / dt + wp.transform_vector(X_wb, body_particle_contact_body_vel[contact_idx])
+        dx = particle_pos - particle_q_prev[particle_idx]
+        relative_translation = dx - bv * dt
 
-        contact_ke = body_particle_contact_penalty_k[contact_idx]
-        contact_kd = body_particle_contact_material_kd[contact_idx]
-        contact_mu = body_particle_contact_material_mu[contact_idx]
-
-        force_on_particle, hessian_particle = evaluate_body_particle_contact(
-            particle_idx,
-            particle_pos,
-            particle_prev_pos,
-            contact_idx,
-            contact_ke,
-            contact_kd,
-            contact_mu,
-            friction_epsilon,
-            particle_radius,
-            shape_material_mu,
-            shape_body,
-            body_q,
-            body_q_prev,
-            body_qd,
-            body_com,
-            body_particle_contact_shape,
-            body_particle_contact_body_pos,
-            body_particle_contact_body_vel,
-            body_particle_contact_normal,
-            dt,
+        force_on_particle, hessian_particle = _compute_body_particle_contact_force(
+            penetration_depth, n, relative_translation,
+            body_particle_contact_penalty_k[contact_idx],
+            body_particle_contact_material_kd[contact_idx],
+            body_particle_contact_material_mu[contact_idx],
+            friction_epsilon, dt,
         )
 
         f_body = -force_on_particle
@@ -3004,13 +3024,12 @@ def accumulate_body_particle_contacts_per_body(
         r = cp_world - com_world
         tau_body = wp.cross(r, f_body)
 
-        K_total = hessian_particle
         r_skew = wp.skew(r)
-        r_skew_T_K = wp.transpose(r_skew) * K_total
+        r_skew_T_K = wp.transpose(r_skew) * hessian_particle
 
         force_acc += f_body
         torque_acc += tau_body
-        h_ll_acc += K_total
+        h_ll_acc += hessian_particle
         h_al_acc += -r_skew_T_K
         h_aa_acc += r_skew_T_K * r_skew
 
@@ -3321,6 +3340,7 @@ def solve_rigid_body(
 
 @wp.kernel
 def update_duals_joint(
+    # Inputs
     joint_type: wp.array[int],
     joint_enabled: wp.array[bool],
     joint_parent: wp.array[int],
@@ -3332,41 +3352,32 @@ def update_duals_joint(
     joint_constraint_start: wp.array[int],
     body_q: wp.array[wp.transform],
     body_q_rest: wp.array[wp.transform],
-    joint_penalty_k: wp.array[float],  # input
     joint_dof_dim: wp.array2d[int],
-    joint_lambda_lin: wp.array[wp.vec3],
-    joint_lambda_ang: wp.array[wp.vec3],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
     joint_is_hard: wp.array[wp.int32],
     avbd_alpha: float,
+    joint_penalty_k_max: wp.array[float],
+    beta_lin: float,
+    beta_ang: float,
+    joint_target_ke: wp.array[float],
+    joint_target_pos: wp.array[float],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    joint_limit_ke: wp.array[float],
+    joint_rest_angle: wp.array[float],
+    # Input/output
+    joint_penalty_k: wp.array[float],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
 ):
     """
-    Update augmented-Lagrangian duals for structural joint constraints (per-iteration).
+    Update augmented-Lagrangian duals for joint constraints (per-iteration).
 
-    Only structural slots (linear, angular) exist in the penalty arrays; drive/limit
-    forces read model stiffness directly and have no dual update.
-
-    Args:
-        joint_type: Joint types.
-        joint_enabled: Per-joint enable flag (disabled joints are skipped).
-        joint_parent: Parent body indices.
-        joint_child: Child body indices.
-        joint_X_p: Parent joint frames (local).
-        joint_X_c: Child joint frames (local).
-        joint_axis: Joint axis directions (per-DOF, used by REVOLUTE, PRISMATIC, D6).
-        joint_qd_start: Joint DOF start indices (index into joint_axis).
-        joint_constraint_start: Start index per joint in the solver constraint layout.
-        body_q: Current body transforms (world).
-        body_q_rest: Rest body transforms (world).
-        joint_penalty_k: Fixed per-constraint penalties (read only).
-        joint_dof_dim: Per-joint [lin_count, ang_count] for D6 joints.
-        joint_lambda_lin: In/out bilateral lambda for linear hard constraints.
-        joint_lambda_ang: In/out bilateral lambda for angular hard constraints.
-        joint_C0_lin: Linear C0 snapshot (from step_joint_C0_lambda).
-        joint_C0_ang: Angular C0 snapshot (from step_joint_C0_lambda).
-        joint_is_hard: Per-slot hard/soft flag (1 = AL with lambda + C0, 0 = penalty only).
-        avbd_alpha: Stabilization factor for C_stab = C - alpha * C0.
+    Structural slots (linear, angular) update lambda via ALM and ramp k,
+    both unconditionally.  Drive/limit slots ramp k only (no lambda);
+    k is capped at ``joint_penalty_k_max`` while the force kernel applies
+    the mode-specific stiffness cap (``min(avbd_ke, model_ke)``).
     """
     j = wp.tid()
 
@@ -3415,7 +3426,7 @@ def update_duals_joint(
         x_c = wp.transform_get_translation(X_wc)
         C_vec_stretch = x_c - x_p
 
-        kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        kappa = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
         # Stretch penalty update (constraint slot 0)
         stretch_idx = c_start
@@ -3428,6 +3439,9 @@ def update_duals_joint(
             joint_is_hard[stretch_idx],
         )
         joint_lambda_lin[j] = lam_new
+        joint_penalty_k[stretch_idx] = wp.min(
+            joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx] + beta_lin * wp.length(C_vec_stretch)
+        )
 
         # Bend penalty update (constraint slot 1)
         bend_idx = c_start + 1
@@ -3440,6 +3454,9 @@ def update_duals_joint(
             joint_is_hard[bend_idx],
         )
         joint_lambda_ang[j] = lam_new
+        joint_penalty_k[bend_idx] = wp.min(
+            joint_penalty_k_max[bend_idx], joint_penalty_k[bend_idx] + beta_ang * wp.length(kappa)
+        )
         return
 
     # BALL joint: update isotropic linear anchor-coincidence penalty (single scalar).
@@ -3458,6 +3475,7 @@ def update_duals_joint(
             joint_is_hard[i0],
         )
         joint_lambda_lin[j] = lam_new
+        joint_penalty_k[i0] = wp.min(joint_penalty_k_max[i0], joint_penalty_k[i0] + beta_lin * wp.length(C_vec))
         return
 
     # FIXED joint: update isotropic linear + isotropic angular penalties (2 scalars).
@@ -3477,12 +3495,15 @@ def update_duals_joint(
             joint_is_hard[i_lin],
         )
         joint_lambda_lin[j] = lam_new
+        joint_penalty_k[i_lin] = wp.min(
+            joint_penalty_k_max[i_lin], joint_penalty_k[i_lin] + beta_lin * wp.length(C_vec_lin)
+        )
 
         q_wp = wp.transform_get_rotation(X_wp)
         q_wc = wp.transform_get_rotation(X_wc)
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-        kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        kappa = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
         lam_new = _update_dual_vec3(
             kappa,
             joint_C0_ang[j],
@@ -3492,6 +3513,9 @@ def update_duals_joint(
             joint_is_hard[i_ang],
         )
         joint_lambda_ang[j] = lam_new
+        joint_penalty_k[i_ang] = wp.min(
+            joint_penalty_k_max[i_ang], joint_penalty_k[i_ang] + beta_ang * wp.length(kappa)
+        )
         return
 
     # REVOLUTE joint: isotropic linear + perpendicular angular penalties (2 scalars).
@@ -3514,11 +3538,14 @@ def update_duals_joint(
             joint_is_hard[i_lin],
         )
         joint_lambda_lin[j] = lam_new
+        joint_penalty_k[i_lin] = wp.min(
+            joint_penalty_k_max[i_lin], joint_penalty_k[i_lin] + beta_lin * wp.length(C_vec_lin)
+        )
 
         q_wc = wp.transform_get_rotation(X_wc)
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-        kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        kappa = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
         kappa_perp = P_ang * kappa
         lam_new = _update_dual_vec3(
             kappa_perp,
@@ -3529,6 +3556,30 @@ def update_duals_joint(
             joint_is_hard[i_ang],
         )
         joint_lambda_ang[j] = lam_new
+        joint_penalty_k[i_ang] = wp.min(
+            joint_penalty_k_max[i_ang], joint_penalty_k[i_ang] + beta_ang * wp.length(kappa_perp)
+        )
+
+        # Drive/limit dual update for free angular DOF (slot c_start + 2)
+        dof_idx = qd_start
+        model_drive_ke = joint_target_ke[dof_idx]
+        model_limit_ke = joint_limit_ke[dof_idx]
+        lim_lower = joint_limit_lower[dof_idx]
+        lim_upper = joint_limit_upper[dof_idx]
+        has_drive = model_drive_ke > 0.0
+        has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+        if has_drive or has_limits:
+            a = wp.normalize(joint_axis[qd_start])
+            theta = wp.dot(kappa, a)
+            theta_abs = theta + joint_rest_angle[dof_idx]
+            target_pos = joint_target_pos[dof_idx]
+            mode, err_pos = resolve_drive_limit_mode(theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            i_dl = c_start + 2
+            C_dl = wp.abs(err_pos)
+            joint_penalty_k[i_dl] = wp.min(
+                joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_ang * C_dl
+            )
         return
 
     # PRISMATIC joint: perpendicular linear + isotropic angular penalties (2 scalars).
@@ -3552,11 +3603,14 @@ def update_duals_joint(
             joint_is_hard[i_lin],
         )
         joint_lambda_lin[j] = lam_new
+        joint_penalty_k[i_lin] = wp.min(
+            joint_penalty_k_max[i_lin], joint_penalty_k[i_lin] + beta_lin * wp.length(C_vec_perp)
+        )
 
         q_wc = wp.transform_get_rotation(X_wc)
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-        kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        kappa = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
         kappa_perp = P_ang * kappa
         lam_new = _update_dual_vec3(
             kappa_perp,
@@ -3567,6 +3621,30 @@ def update_duals_joint(
             joint_is_hard[i_ang],
         )
         joint_lambda_ang[j] = lam_new
+        joint_penalty_k[i_ang] = wp.min(
+            joint_penalty_k_max[i_ang], joint_penalty_k[i_ang] + beta_ang * wp.length(kappa_perp)
+        )
+
+        # Drive/limit dual update for free linear DOF (slot c_start + 2)
+        dof_idx = qd_start
+        model_drive_ke = joint_target_ke[dof_idx]
+        model_limit_ke = joint_limit_ke[dof_idx]
+        lim_lower = joint_limit_lower[dof_idx]
+        lim_upper = joint_limit_upper[dof_idx]
+        has_drive = model_drive_ke > 0.0
+        has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+        if has_drive or has_limits:
+            axis_local = joint_axis[qd_start]
+            axis_w_dl = wp.normalize(wp.quat_rotate(q_wp, axis_local))
+            d_along = wp.dot(C_vec, axis_w_dl)
+            target_pos = joint_target_pos[dof_idx]
+            mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            i_dl = c_start + 2
+            C_dl = wp.abs(err_pos)
+            joint_penalty_k[i_dl] = wp.min(
+                joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_lin * C_dl
+            )
         return
 
     # D6 joint: projected linear + projected angular penalties (2 scalars).
@@ -3593,11 +3671,14 @@ def update_duals_joint(
                 joint_is_hard[i_lin],
             )
             joint_lambda_lin[j] = lam_new
+            joint_penalty_k[i_lin] = wp.min(
+                joint_penalty_k_max[i_lin], joint_penalty_k[i_lin] + beta_lin * wp.length(C_vec_perp)
+            )
 
         q_wc = wp.transform_get_rotation(X_wc)
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-        kappa = cable_get_kappa(q_wp_rot, q_wc, q_wp_rest, q_wc_rest)
+        kappa = compute_kappa(q_wp_rot, q_wc, q_wp_rest, q_wc_rest)
         if ang_count < 3:
             kappa_perp = P_ang * kappa
             lam_new = _update_dual_vec3(
@@ -3609,6 +3690,57 @@ def update_duals_joint(
                 joint_is_hard[i_ang],
             )
             joint_lambda_ang[j] = lam_new
+            joint_penalty_k[i_ang] = wp.min(
+                joint_penalty_k_max[i_ang], joint_penalty_k[i_ang] + beta_ang * wp.length(kappa_perp)
+            )
+
+        # Drive/limit dual update for D6 free DOFs
+        for li in range(3):
+            if li < lin_count:
+                dof_idx = qd_start + li
+                model_drive_ke = joint_target_ke[dof_idx]
+                model_limit_ke = joint_limit_ke[dof_idx]
+                lim_lower = joint_limit_lower[dof_idx]
+                lim_upper = joint_limit_upper[dof_idx]
+                has_drive = model_drive_ke > 0.0
+                has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+                if has_drive or has_limits:
+                    axis_w_dl = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[dof_idx]))
+                    d_along = wp.dot(C_vec, axis_w_dl)
+                    target_pos_dl = joint_target_pos[dof_idx]
+                    mode, err_pos = resolve_drive_limit_mode(
+                        d_along, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
+                    )
+                    i_dl = c_start + 2 + li
+                    C_dl = wp.abs(err_pos)
+                    joint_penalty_k[i_dl] = wp.min(
+                        joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_lin * C_dl
+                    )
+
+        for ai in range(3):
+            if ai < ang_count:
+                dof_idx = qd_start + lin_count + ai
+                model_drive_ke = joint_target_ke[dof_idx]
+                model_limit_ke = joint_limit_ke[dof_idx]
+                lim_lower = joint_limit_lower[dof_idx]
+                lim_upper = joint_limit_upper[dof_idx]
+                has_drive = model_drive_ke > 0.0
+                has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
+
+                if has_drive or has_limits:
+                    a_dl = wp.normalize(joint_axis[dof_idx])
+                    theta = wp.dot(kappa, a_dl)
+                    theta_abs = theta + joint_rest_angle[dof_idx]
+                    target_pos_dl = joint_target_pos[dof_idx]
+                    mode, err_pos = resolve_drive_limit_mode(
+                        theta_abs, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
+                    )
+                    i_dl = c_start + 2 + lin_count + ai
+                    C_dl = wp.abs(err_pos)
+                    joint_penalty_k[i_dl] = wp.min(
+                        joint_penalty_k_max[i_dl], joint_penalty_k[i_dl] + beta_ang * C_dl
+                    )
         return
 
 
@@ -3624,19 +3756,26 @@ def update_duals_body_body_contacts(
     rigid_contact_margin1: wp.array[float],
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
     contact_material_mu: wp.array[float],
-    contact_penalty_k: wp.array[float],  # input
-    contact_lambda: wp.array[wp.vec3],  # input/output
     contact_C0: wp.array[wp.vec3],
     avbd_alpha: float,
     hard_contacts: int,
     body_inv_mass: wp.array[float],
-    contact_stick_flag: wp.array[wp.int32],  # output
+    contact_material_ke: wp.array[float],
+    beta: float,
+    # Input/output
+    contact_penalty_k: wp.array[float],
+    contact_lambda: wp.array[wp.vec3],
+    # Output
+    contact_stick_flag: wp.array[wp.int32],
 ):
     """
     Update AVBD augmented-Lagrangian duals for contact constraints (per-iteration).
-    Hard mode: scalar isotropic k with vec3 lambda and cone clamping.
-    Soft mode: no lambda update.
+    Hard mode: scalar isotropic k with vec3 lambda. Normal uses C_stab_n, tangential
+    uses displacement (body_q_prev -> body_q) for kinematic friction support.
+    Coulomb cone clamping on tangential lambda. Soft mode: no lambda update.
+    K ramp runs unconditionally for both hard and soft contacts.
     """
     idx = wp.tid()
     if idx >= rigid_contact_count[0]:
@@ -3650,15 +3789,22 @@ def update_duals_body_body_contacts(
     if body_id_0 < 0 and body_id_1 < 0:
         return
 
+    cp0_local = rigid_contact_point0[idx]
+    cp1_local = rigid_contact_point1[idx]
+
     if body_id_0 >= 0:
-        p0_world = wp.transform_point(body_q[body_id_0], rigid_contact_point0[idx])
+        p0_world = wp.transform_point(body_q[body_id_0], cp0_local)
+        p0_prev = wp.transform_point(body_q_prev[body_id_0], cp0_local)
     else:
-        p0_world = rigid_contact_point0[idx]
+        p0_world = cp0_local
+        p0_prev = cp0_local
 
     if body_id_1 >= 0:
-        p1_world = wp.transform_point(body_q[body_id_1], rigid_contact_point1[idx])
+        p1_world = wp.transform_point(body_q[body_id_1], cp1_local)
+        p1_prev = wp.transform_point(body_q_prev[body_id_1], cp1_local)
     else:
-        p1_world = rigid_contact_point1[idx]
+        p1_world = cp1_local
+        p1_prev = cp1_local
 
     n = rigid_contact_normal[idx]
     d = p1_world - p0_world
@@ -3678,30 +3824,23 @@ def update_duals_body_body_contacts(
 
         lam_n_new = wp.max(lam_n_old + k * C_stab_n, 0.0)
 
-        # Detect inv_mass==0 kinematic contacts (not ground).
-        # These use velocity IPC friction in the primal and ignore lam_t.
-        is_kin = int(0)
-        if body_id_0 >= 0 and body_inv_mass[body_id_0] == 0.0:
-            is_kin = int(1)
-        if body_id_1 >= 0 and body_inv_mass[body_id_1] == 0.0:
-            is_kin = int(1)
-
-        if is_kin == 0:
-            C_stab_t = C_stab_vec - n * C_stab_n
-            lam_t_old = lam_vec - n * lam_n_old
-            lam_t_new = lam_t_old + k * C_stab_t
-            lam_t_len = wp.length(lam_t_new)
-            cone_limit = mu * lam_n_new
-            if lam_t_len > cone_limit and lam_t_len > 0.0:
-                lam_t_new = lam_t_new * (cone_limit / lam_t_len)
-            contact_lambda[idx] = n * lam_n_new + lam_t_new
-        else:
-            contact_lambda[idx] = n * lam_n_new
+        rel_disp = (p0_world - p0_prev) - (p1_world - p1_prev)
+        rel_disp_n = wp.dot(n, rel_disp)
+        tangential_disp = rel_disp - n * rel_disp_n
+        lam_t_old = lam_vec - n * lam_n_old
+        lam_t_new = lam_t_old + k * tangential_disp
+        lam_t_len = wp.length(lam_t_new)
+        cone_limit = mu * lam_n_new
+        if lam_t_len > cone_limit and lam_t_len > 0.0:
+            lam_t_new = lam_t_new * (cone_limit / lam_t_len)
+        contact_lambda[idx] = n * lam_n_new + lam_t_new
 
         has_kinematic = int(0)
         if body_id_0 < 0 or body_id_1 < 0:
             has_kinematic = int(1)
-        elif is_kin == 1:
+        elif body_id_0 >= 0 and body_inv_mass[body_id_0] == 0.0:
+            has_kinematic = int(1)
+        elif body_id_1 >= 0 and body_inv_mass[body_id_1] == 0.0:
             has_kinematic = int(1)
 
         flag = int(0)
@@ -3713,6 +3852,57 @@ def update_duals_body_body_contacts(
         contact_stick_flag[idx] = flag
     else:
         contact_stick_flag[idx] = int(0)
+
+    C_n = wp.dot(n * thickness_total - d, n)
+    if C_n > 0.0:
+        contact_penalty_k[idx] = wp.min(contact_material_ke[idx], contact_penalty_k[idx] + beta * C_n)
+
+
+@wp.kernel
+def update_duals_body_particle_contacts(
+    body_particle_contact_count: wp.array[int],
+    body_particle_contact_particle: wp.array[int],
+    body_particle_contact_shape: wp.array[int],
+    body_particle_contact_body_pos: wp.array[wp.vec3],
+    body_particle_contact_normal: wp.array[wp.vec3],
+    particle_q: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_particle_contact_material_ke: wp.array[float],
+    beta: float,
+    body_particle_contact_penalty_k: wp.array[float],
+):
+    """
+    Update AVBD penalty parameters for body-particle soft contacts (per-iteration).
+
+    Ramps each contact's penalty by beta * penetration, clamped to the
+    per-contact material stiffness ceiling.
+    """
+    idx = wp.tid()
+    if idx >= body_particle_contact_count[0]:
+        return
+
+    particle_idx = body_particle_contact_particle[idx]
+    shape_idx = body_particle_contact_shape[idx]
+    body_idx = shape_body[shape_idx] if shape_idx >= 0 else -1
+
+    stiffness = body_particle_contact_material_ke[idx]
+
+    X_wb = wp.transform_identity()
+    if body_idx >= 0:
+        X_wb = body_q[body_idx]
+
+    cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[idx])
+    particle_pos = particle_q[particle_idx]
+    radius = particle_radius[particle_idx]
+    n = body_particle_contact_normal[idx]
+
+    penetration = -(wp.dot(n, particle_pos - cp_world) - radius)
+    penetration = wp.max(0.0, penetration)
+
+    k = body_particle_contact_penalty_k[idx]
+    body_particle_contact_penalty_k[idx] = wp.min(k + beta * penetration, stiffness)
 
 
 # -----------------------------
@@ -3790,7 +3980,7 @@ def update_body_velocity(
 
         if has_deadzone != 0 and has_anchor == 0:
             translation_delta = wp.length(x - x_prev)
-            angular_delta = wp.length(quat_velocity(q, q_prev, 1.0))
+            angular_delta = wp.length(quat_velocity(q, q_prev, 1.0))  # dt=1 gives angular displacement [rad]
             if translation_delta < stick_freeze_translation_eps and angular_delta < stick_freeze_angular_eps:
                 pose = pose_prev
                 x = x_prev
@@ -3849,7 +4039,7 @@ def update_cable_dahl_state(
         joint_parent, joint_child: Parent/child body indices
         joint_X_p, joint_X_c: Joint frames in parent/child
         joint_constraint_start: Start index per joint in the solver constraint layout
-        joint_penalty_k: Per-constraint fixed stiffness; for cables, bend slot stores effective per-joint bend stiffness [N*m]
+        joint_penalty_k: Per-constraint penalty stiffness; for cables, bend slot stores effective per-joint bend stiffness [N*m]
         body_q: Final body transforms (after convergence)
         body_q_rest: Rest body transforms
         joint_sigma_prev: Friction stress state (read old, write new), wp.vec3 per joint
@@ -3872,12 +4062,6 @@ def update_cable_dahl_state(
     if child < 0:
         return
 
-    # Dahl guard: skip when bend is hard-constrained (AL drives error to zero,
-    # contradicting Dahl hysteresis which requires nonzero bending).
-    c_start_dahl = joint_constraint_start[j]
-    if joint_is_hard[c_start_dahl + 1] == 1:
-        return
-
     # Compute joint frames in world space (final state)
     if parent >= 0:
         X_wp = body_q[parent] * joint_X_p[j]
@@ -3894,11 +4078,11 @@ def update_cable_dahl_state(
     q_wc_rest = wp.transform_get_rotation(X_wc_rest)
 
     # Compute final curvature vector at end of timestep
-    kappa_final = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+    kappa_final = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
-    if not joint_enabled[j]:
-        # Refresh Dahl state to current configuration with zero preload so that
-        # re-enabling the joint does not see a stale kappa delta.
+    # Refresh Dahl state so toggling enabled/hard does not see stale values.
+    c_start_dahl = joint_constraint_start[j]
+    if not joint_enabled[j] or joint_is_hard[c_start_dahl + 1] == 1:
         joint_kappa_prev[j] = kappa_final
         joint_sigma_prev[j] = wp.vec3(0.0)
         joint_dkappa_prev[j] = wp.vec3(0.0)

@@ -41,9 +41,9 @@ class Example:
         quadruped.default_joint_cfg.armature = 0.01
 
         if self.solver_type == "vbd":
-            quadruped.default_joint_cfg.target_ke = 1.0e5
+            quadruped.default_joint_cfg.target_ke = 1.0e4
             quadruped.default_joint_cfg.target_kd = 0.0
-            quadruped.default_shape_cfg.ke = 1.0e5
+            quadruped.default_shape_cfg.ke = 1.0e4
             quadruped.default_shape_cfg.kd = 0.0
             quadruped.default_shape_cfg.mu = 1.0
         else:
@@ -89,11 +89,11 @@ class Example:
             self.update_step_interval = 1
             self.solver = newton.solvers.SolverVBD(
                 self.model,
-                iterations=1,
+                iterations=2,
             )
         else:
             self.update_step_interval = 1
-            self.solver = newton.solvers.SolverXPBD(self.model)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=2)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -126,7 +126,7 @@ class Example:
                 self.model.collide(self.state_0, self.contacts)
 
             if self.solver_type == "vbd":
-                self.solver.set_rigid_contact_refresh(refresh_contacts)
+                self.solver.set_rigid_history_update(refresh_contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 

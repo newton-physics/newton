@@ -77,6 +77,7 @@ from .rigid_vbd_kernels import (
     update_body_velocity,
     update_cable_dahl_state,
     update_duals_body_body_contacts,
+    update_duals_body_particle_contacts,
     update_duals_joint,
 )
 from .tri_mesh_collision import (
@@ -95,11 +96,12 @@ class SolverVBD(SolverBase):
         - Rigid body simulation (joints, contacts) using the AVBD algorithm
         - Coupled particle-rigid body systems
 
-    For rigid bodies, the AVBD algorithm uses fixed penalty stiffness together
-    with augmented-Lagrangian state for joints and contacts.
+    For rigid bodies, the AVBD algorithm uses penalty stiffness (fixed by default,
+    optionally ramped via ``k_start``) together with augmented-Lagrangian state
+    for joints and contacts.
     Rigid structural joint slots default to **hard mode** (augmented Lagrangian with persistent lambda
     and C0 stabilization). Cable stretch defaults to **hard mode**, while cable bend defaults to
-    **soft mode**. The hard/soft mode can be changed per slot via :meth:`set_joint_hard`.
+    **soft mode**. The hard/soft mode can be changed per slot via :meth:`set_joint_constraint_mode`.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
@@ -123,6 +125,8 @@ class SolverVBD(SolverBase):
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
           https://doi.org/10.1145/3658179
+        - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block Descent. ACM Trans. Graph. 44, 4, Article 90 (August 2025), 12 pages. 
+          https://doi.org/10.1145/3731195
     Note:
         `SolverVBD` requires coloring information for both particles and rigid bodies:
 
@@ -162,7 +166,7 @@ class SolverVBD(SolverBase):
     """
 
     class JointSlot:
-        """Named constraint slot indices for :meth:`set_joint_hard`.
+        """Named constraint slot indices for :meth:`set_joint_constraint_mode`.
 
         Structural slots (LINEAR=0, ANGULAR=1) map uniformly across all joint types:
           - CABLE:     LINEAR -> stretch, ANGULAR -> bend
@@ -196,21 +200,29 @@ class SolverVBD(SolverBase):
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
         particle_external_edge_contact_filtering_map: dict | None = None,
-        # Rigid body parameters
-        rigid_penalty_decay: float = 0.9,  # AVBD gamma: per-step lambda decay factor
-        rigid_joint_stabilization_alpha: float = 0.95,  # AVBD alpha for joints: C0 stabilization (C_stab = C - alpha * C0)
-        rigid_contact_stabilization_alpha: float | None = None,  # AVBD alpha for contacts: C0 stabilization (default: 0.95 w/ warmstart, 0.0 w/o)
+        # Rigid body parameters — AVBD hyperparameters
+        rigid_avbd_alpha: float = 0.95,  # C0 stabilization strength (C_stab = C - alpha * C0)
+        rigid_avbd_joint_alpha: float | None = None,  # Joint alpha override; None uses rigid_avbd_alpha
+        rigid_avbd_contact_alpha: float | None = None,  # Contact alpha override; None uses avbd_alpha (history+hard) or 0
+        rigid_avbd_beta: float = 0.0,  # Penalty ramp rate per iteration (0 = fixed-k)
+        rigid_avbd_linear_beta: float | None = None,  # Linear beta override; None uses rigid_avbd_beta
+        rigid_avbd_angular_beta: float | None = None,  # Angular beta override; None uses rigid_avbd_beta
+        rigid_avbd_gamma: float = 0.999,  # Per-step decay for both k and lambda
         # Rigid body - contacts
         rigid_contact_hard: bool = True,  # Hard = AL with lambda + C0 stabilization; soft = penalty only
-        rigid_contact_warmstart: bool = False,  # Cross-step contact-history warmstart via hash table
+        rigid_contact_history: bool = False,  # Persist contact state across steps (hard: k+lambda+C0; soft: k only)
         rigid_contact_match_tolerance: float = 0.01,
-        rigid_contact_buffer_size: int = 64,
-        rigid_particle_contact_buffer_size: int = 256,
+        rigid_contact_k_start: float = 1.0e2,  # Contact penalty seed (used when beta > 0)
+        rigid_body_contact_buffer_size: int = 64,
+        rigid_body_particle_contact_buffer_size: int = 256,
         # Rigid body - joints
-        rigid_joint_linear_ke: float = 1.0e5,  # Fixed penalty stiffness for structural linear joint constraints (BALL, FIXED, etc.)
-        rigid_joint_angular_ke: float = 1.0e5,  # Fixed penalty stiffness for structural angular joint constraints (FIXED, REVOLUTE, etc.)
+        rigid_joint_linear_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural linear joint constraints
+        rigid_joint_angular_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural angular joint constraints
+        rigid_joint_linear_k_start: float = 1.0e2,  # Linear penalty seed (used when linear beta > 0)
+        rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
         rigid_joint_linear_kd: float = 0.0,  # Rayleigh damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Rayleigh damping for non-cable angular joint constraints
+        rigid_enable_dahl_friction: bool | None = None,  # Deprecated: auto-detected from model attributes
     ):
         """
         Args:
@@ -259,32 +271,53 @@ class SolverVBD(SolverBase):
 
             Rigid body parameters:
 
-            rigid_penalty_decay: (AVBD gamma) Per-step lambda decay factor (lambda *= gamma).
-                Lower values decay lambda faster, improving stability at the cost of slower convergence.
-            rigid_joint_stabilization_alpha: C0 stabilization factor for joint constraints (C_stab = C - alpha * C0).
-            rigid_contact_stabilization_alpha: C0 stabilization factor for contact constraints.
-                Defaults to 0.95 with warmstart, 0.0 without. Explicit values are always respected.
+            rigid_avbd_alpha: C0 stabilization strength for all constraints (C_stab = C - alpha * C0).
+                Used as the default for both joints and contacts unless overridden.
+            rigid_avbd_joint_alpha: Joint-specific alpha override. ``None`` (default)
+                uses ``rigid_avbd_alpha``.
+            rigid_avbd_contact_alpha: Contact-specific alpha override. ``None`` (default)
+                uses ``rigid_avbd_alpha`` when history + hard contacts, ``0.0`` otherwise.
+            rigid_avbd_beta: Penalty ramp rate per AVBD iteration. ``0`` (default) disables
+                ramping (fixed-k). Set to e.g. ``1e5`` for ramping. Used for both linear and
+                angular constraints unless overridden. Note: linear (meters) and angular
+                (radians) constraints have different units, so the overrides should be used
+                for production tuning.
+            rigid_avbd_linear_beta: Linear beta override for linear constraints (meters).
+                ``None`` (default) uses ``rigid_avbd_beta``.
+            rigid_avbd_angular_beta: Angular beta override for angular constraints (radians).
+                ``None`` (default) uses ``rigid_avbd_beta``.
+            rigid_avbd_gamma: Per-step decay factor for both penalty k and lambda. Lower values
+                decay faster, improving stability at the cost of slower convergence.
             rigid_contact_hard: Whether body-body rigid contacts use hard mode (augmented Lagrangian with
                 persistent lambda and C0 stabilization) or soft mode (penalty only).
-            rigid_contact_warmstart: Whether to warmstart hard body-body contacts from cross-step contact history.
-                Defaults to ``False``. Forced to ``False`` when ``rigid_contact_hard=False``
-                (soft contacts do not use lambda history or dual updates).
+            rigid_contact_history: Whether to persist body-body contact state across steps via
+                spatial hash matching. For hard contacts, restores lambda, C0, and penalty k.
+                For soft contacts, restores penalty k only (useful with ramping).
             rigid_contact_match_tolerance: World-space tolerance used to match current contacts against contact
-                history entries during warmstart.
-            rigid_contact_buffer_size: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
-            rigid_particle_contact_buffer_size: Max body-particle (rigid-particle) contacts per rigid body for per-body soft-contact lists (tune based on expected body-particle contact density).
-            rigid_joint_linear_ke: Fixed penalty stiffness for non-cable structural linear joint slots.
-            rigid_joint_angular_ke: Fixed penalty stiffness for non-cable structural angular joint slots.
+                history entries when ``rigid_contact_history=True``.
+            rigid_contact_k_start: Contact penalty seed for AVBD ramping. Used when ``rigid_avbd_beta > 0``.
+                When beta is 0, k is fixed at the contact stiffness regardless of this value.
+            rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
+            rigid_body_particle_contact_buffer_size: Max body-particle contacts per rigid body for per-body
+                soft-contact lists.
+            rigid_joint_linear_ke: Penalty stiffness ceiling for non-cable structural linear joint slots.
+            rigid_joint_angular_ke: Penalty stiffness ceiling for non-cable structural angular joint slots.
+            rigid_joint_linear_k_start: Linear penalty seed for AVBD ramping. Used when linear beta > 0.
+                When beta is 0, k is fixed at the joint stiffness regardless of this value.
+            rigid_joint_angular_k_start: Angular penalty seed for AVBD ramping. Used when angular beta > 0.
+                When beta is 0, k is fixed at the joint stiffness regardless of this value.
             rigid_joint_linear_kd: Rayleigh damping coefficient for non-cable linear joint constraints.
             rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints.
+            rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is auto-detected
+                from ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
               solvers. If set to True, the rigid states should be integrated externally, with `state_in` passed to `step`
               representing the previous rigid state and `state_out` representing the current one. Frictional forces are
               computed accordingly.
-            - `particle_vertex_contact_buffer_size`, `particle_edge_contact_buffer_size`, `rigid_contact_buffer_size`,
-              and `rigid_particle_contact_buffer_size` are fixed and will not be dynamically resized during runtime.
+            - `particle_vertex_contact_buffer_size`, `particle_edge_contact_buffer_size`, `rigid_body_contact_buffer_size`,
+              and `rigid_body_particle_contact_buffer_size` are fixed and will not be dynamically resized during runtime.
               Setting them too small may result in undetected collisions (particles) or contact overflow (rigid body
               contacts).
               Setting them excessively large may increase memory usage and degrade performance.
@@ -292,6 +325,19 @@ class SolverVBD(SolverBase):
               ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` (set via ``register_custom_attributes``).
 
         """
+        if rigid_enable_dahl_friction is not None:
+            warnings.warn(
+                "rigid_enable_dahl_friction is deprecated and ignored. "
+                "Dahl friction is now auto-detected from model attributes "
+                "(model.vbd.dahl_eps_max / model.vbd.dahl_tau). "
+                "To disable per-joint, set dahl_eps_max=0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
+        rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
+
         super().__init__(model)
 
         # Common parameters
@@ -324,16 +370,22 @@ class SolverVBD(SolverBase):
         # Initialize rigid body system and rigid-particle (body-particle) interaction state
         self._init_rigid_system(
             model,
-            rigid_penalty_decay,
-            rigid_joint_stabilization_alpha,
-            rigid_contact_stabilization_alpha,
+            rigid_avbd_alpha,
+            rigid_avbd_linear_beta,
+            rigid_avbd_angular_beta,
+            rigid_avbd_gamma,
+            rigid_avbd_joint_alpha,
+            rigid_avbd_contact_alpha,
             rigid_contact_hard,
-            rigid_contact_warmstart,
+            rigid_contact_history,
             rigid_contact_match_tolerance,
-            rigid_contact_buffer_size,
-            rigid_particle_contact_buffer_size,
+            rigid_contact_k_start,
+            rigid_body_contact_buffer_size,
+            rigid_body_particle_contact_buffer_size,
             rigid_joint_linear_ke,
             rigid_joint_angular_ke,
+            rigid_joint_linear_k_start,
+            rigid_joint_angular_k_start,
             rigid_joint_linear_kd,
             rigid_joint_angular_kd,
         )
@@ -341,7 +393,7 @@ class SolverVBD(SolverBase):
         # Controls whether the next step() refreshes rigid body-body contacts from
         # the Contacts buffer or reuses the current rigid contact set.
         # Defaults to True and auto-resets to True after each step().
-        self._rigid_contact_refresh = True
+        self._update_rigid_history = True
 
     def _init_particle_system(
         self,
@@ -447,16 +499,22 @@ class SolverVBD(SolverBase):
     def _init_rigid_system(
         self,
         model: Model,
-        rigid_penalty_decay: float,
-        rigid_joint_stabilization_alpha: float,
-        rigid_contact_stabilization_alpha: float | None,
+        rigid_avbd_alpha: float,
+        rigid_avbd_linear_beta: float,
+        rigid_avbd_angular_beta: float,
+        rigid_avbd_gamma: float,
+        rigid_avbd_joint_alpha: float | None,
+        rigid_avbd_contact_alpha: float | None,
         rigid_contact_hard: bool,
-        rigid_contact_warmstart: bool,
+        rigid_contact_history: bool,
         rigid_contact_match_tolerance: float,
-        rigid_contact_buffer_size: int,
-        rigid_particle_contact_buffer_size: int,
+        rigid_contact_k_start: float,
+        rigid_body_contact_buffer_size: int,
+        rigid_body_particle_contact_buffer_size: int,
         rigid_joint_linear_ke: float,
         rigid_joint_angular_ke: float,
+        rigid_joint_linear_k_start: float,
+        rigid_joint_angular_k_start: float,
         rigid_joint_linear_kd: float,
         rigid_joint_angular_kd: float,
     ):
@@ -467,25 +525,37 @@ class SolverVBD(SolverBase):
           - Shared interaction state for body-particle (rigid-particle) soft contacts
         """
         # AVBD penalty parameters
-        self.rigid_penalty_decay = rigid_penalty_decay
-        self.rigid_joint_stabilization_alpha = rigid_joint_stabilization_alpha
-        # Hard-contact mode: lambda + C0 stabilization for body-body contacts.
+        if rigid_avbd_linear_beta < 0:
+            raise ValueError(f"rigid_avbd_linear_beta must be >= 0, got {rigid_avbd_linear_beta}")
+        if rigid_avbd_angular_beta < 0:
+            raise ValueError(f"rigid_avbd_angular_beta must be >= 0, got {rigid_avbd_angular_beta}")
+        if not (0.0 <= rigid_avbd_gamma <= 1.0):
+            raise ValueError(f"rigid_avbd_gamma must be in [0, 1], got {rigid_avbd_gamma}")
+        if rigid_contact_k_start < 0:
+            raise ValueError(f"rigid_contact_k_start must be >= 0, got {rigid_contact_k_start}")
+        if rigid_joint_linear_k_start < 0:
+            raise ValueError(f"rigid_joint_linear_k_start must be >= 0, got {rigid_joint_linear_k_start}")
+        if rigid_joint_angular_k_start < 0:
+            raise ValueError(f"rigid_joint_angular_k_start must be >= 0, got {rigid_joint_angular_k_start}")
+        if rigid_joint_linear_ke < 0:
+            raise ValueError(f"rigid_joint_linear_ke must be >= 0, got {rigid_joint_linear_ke}")
+        if rigid_joint_angular_ke < 0:
+            raise ValueError(f"rigid_joint_angular_ke must be >= 0, got {rigid_joint_angular_ke}")
+        self.rigid_avbd_gamma = rigid_avbd_gamma
+        self.rigid_contact_k_start_value = -1.0 if rigid_avbd_linear_beta == 0.0 else float(rigid_contact_k_start)
+        self.rigid_joint_linear_k_start = rigid_joint_linear_k_start if rigid_avbd_linear_beta > 0.0 else None
+        self.rigid_joint_angular_k_start = rigid_joint_angular_k_start if rigid_avbd_angular_beta > 0.0 else None
+        # Resolve internal alpha (joint/contact) and beta (linear/angular)
+        self.rigid_joint_alpha = rigid_avbd_joint_alpha if rigid_avbd_joint_alpha is not None else rigid_avbd_alpha
+        self.rigid_linear_beta = rigid_avbd_linear_beta
+        self.rigid_angular_beta = rigid_avbd_angular_beta
         self.rigid_contact_hard = int(rigid_contact_hard)
-        # Contact warmstart: requires hard contacts (AL with lambda + C0).
-        # Soft contacts never use lambda history or dual updates, so warmstart
-        # is forced off regardless of the user-supplied value.
-        if rigid_contact_warmstart and not rigid_contact_hard:
-            warnings.warn(
-                "rigid_contact_warmstart=True ignored because rigid_contact_hard=False "
-                "(soft contacts do not use lambda history or dual updates).",
-                stacklevel=3,
-            )
-            rigid_contact_warmstart = False
-        self.rigid_contact_warmstart = rigid_contact_warmstart
-        if rigid_contact_stabilization_alpha is not None:
-            self.rigid_contact_stabilization_alpha = rigid_contact_stabilization_alpha
+        self.rigid_contact_history = rigid_contact_history
+        if rigid_avbd_contact_alpha is not None:
+            self.rigid_contact_alpha = rigid_avbd_contact_alpha
         else:
-            self.rigid_contact_stabilization_alpha = 0.95 if rigid_contact_warmstart else 0.0
+            # Zero alpha works better without contact history: no warm duals to stabilize.
+            self.rigid_contact_alpha = rigid_avbd_alpha if (rigid_contact_history and rigid_contact_hard) else 0.0
         rigid_contact_match_tolerance = max(0.0, rigid_contact_match_tolerance)
         self.rigid_contact_match_tolerance = rigid_contact_match_tolerance
         self.rigid_contact_match_cell_size_inv = 1.0 / max(rigid_contact_match_tolerance, 1.0e-8)
@@ -533,7 +603,7 @@ class SolverVBD(SolverBase):
 
             # Per-body contact lists (CSR-like: per-body counts + flat index array).
             # Tight: pre_alloc = 0 when the contact source is absent (no shapes / no particles).
-            bb_pre_alloc = rigid_contact_buffer_size if model.shape_count > 0 else 0
+            bb_pre_alloc = rigid_body_contact_buffer_size if model.shape_count > 0 else 0
             self.body_body_contact_buffer_pre_alloc = bb_pre_alloc
             self.body_body_contact_counts = wp.zeros(self.model.body_count, dtype=wp.int32, device=self.device)
             self.body_body_contact_indices = wp.zeros(
@@ -541,7 +611,7 @@ class SolverVBD(SolverBase):
             )
             self.body_body_contact_overflow_max = wp.zeros(1, dtype=wp.int32, device=self.device)
 
-            bp_pre_alloc = rigid_particle_contact_buffer_size if model.particle_count > 0 else 0
+            bp_pre_alloc = rigid_body_particle_contact_buffer_size if model.particle_count > 0 else 0
             self.body_particle_contact_buffer_pre_alloc = bp_pre_alloc
             self.body_particle_contact_counts = wp.zeros(self.model.body_count, dtype=wp.int32, device=self.device)
             self.body_particle_contact_indices = wp.zeros(
@@ -549,26 +619,28 @@ class SolverVBD(SolverBase):
             )
             self.body_particle_contact_overflow_max = wp.zeros(1, dtype=wp.int32, device=self.device)
 
-            # Joint constraint layout + penalty stiffness
+            # Joint constraint layout + penalty stiffness (mutable k, frozen bounds)
             self._init_joint_constraint_layout()
-            self.joint_penalty_k = self._init_joint_penalty_k()
+            self.joint_penalty_k, self.joint_penalty_k_min, self.joint_penalty_k_max = self._init_joint_penalty_k()
             self.joint_rest_angle = self._init_joint_rest_angle()
 
-            # Body-body contact state (lazily allocated on first step, sized to contacts.rigid_contact_max).
+            # Body-body contact state (pre-allocated in __init__ when possible, resized on first step otherwise).
             self.body_body_contact_penalty_k = wp.zeros(0, dtype=float, device=self.device)
+            self.body_body_contact_material_ke = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_material_kd = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_material_mu = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_lambda = wp.zeros(0, dtype=wp.vec3, device=self.device)
             self.body_body_contact_C0 = wp.zeros(0, dtype=wp.vec3, device=self.device)
             self.body_body_contact_stick_flag = wp.zeros(0, dtype=wp.int32, device=self.device)
 
-            # Contact history for warmstart (same lazy pattern).
+            # Contact history (same pattern as body-body contact state).
             self.contact_history_ht = None
             self.contact_history_point0 = None
             self.contact_history_point1 = None
             self.contact_history_lambda = None
             self.contact_history_normal = None
             self.contact_history_stick_flag = None
+            self.contact_history_penalty_k = None
             self.contact_history_age = None
             self.contact_history_slots = None
 
@@ -605,15 +677,31 @@ class SolverVBD(SolverBase):
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
 
         # -------------------------------------------------------------
-        # Body-particle interaction - shared state (lazily allocated on first step)
+        # Body-particle interaction - shared state (pre-allocated below when
+        # particles exist, otherwise empty).
         # -------------------------------------------------------------
         self.body_particle_contact_penalty_k = wp.zeros(0, dtype=float, device=self.device)
+        self.body_particle_contact_material_ke = wp.zeros(0, dtype=float, device=self.device)
         self.body_particle_contact_material_kd = wp.zeros(0, dtype=float, device=self.device)
         self.body_particle_contact_material_mu = wp.zeros(0, dtype=float, device=self.device)
 
         # Kinematic body support: create effective inv_mass / inv_inertia arrays
         # with kinematic bodies zeroed out.
         self._init_kinematic_state()
+
+        # Pre-allocate body-body contact buffers when the collision pipeline
+        # has already been created (model.rigid_contact_max > 0).  When the
+        # solver is created before model.contacts(), rigid_contact_max is 0
+        # and we fall back to lazy allocation in _initialize_rigid_bodies.
+        rcm = getattr(self.model, "rigid_contact_max", 0) or 0
+        if rcm > 0 and self.model.body_count > 0 and not self.integrate_with_external_rigid_solver:
+            self._init_body_body_contact_state(rcm)
+            if self.rigid_contact_history:
+                self._init_contact_history(rcm)
+        # Body-particle buffers are always pre-allocated from model topology
+        # (shape_count * particle_count); no pipeline dependency.
+        if self.model.particle_count > 0 and self.model.shape_count > 0:
+            self._init_body_particle_contact_state(self.model.shape_count * self.model.particle_count)
 
         # Validation
         has_bodies = self.model.body_count > 0
@@ -635,8 +723,9 @@ class SolverVBD(SolverBase):
     # =====================================================
 
     def _init_body_body_contact_state(self, rigid_contact_max: int) -> None:
-        """Lazily allocate body-body contact state arrays sized to the actual contact buffer capacity."""
+        """Allocate body-body contact state arrays sized to the given contact buffer capacity."""
         self.body_body_contact_penalty_k = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
+        self.body_body_contact_material_ke = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_material_kd = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_material_mu = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_lambda = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
@@ -644,13 +733,14 @@ class SolverVBD(SolverBase):
         self.body_body_contact_stick_flag = wp.zeros(rigid_contact_max, dtype=wp.int32, device=self.device)
 
     def _init_body_particle_contact_state(self, soft_contact_max: int) -> None:
-        """Lazily allocate body-particle material arrays sized to the actual soft contact capacity."""
+        """Allocate body-particle material arrays sized to the given soft contact capacity."""
         self.body_particle_contact_penalty_k = wp.zeros(soft_contact_max, dtype=float, device=self.device)
+        self.body_particle_contact_material_ke = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self.body_particle_contact_material_kd = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self.body_particle_contact_material_mu = wp.zeros(soft_contact_max, dtype=float, device=self.device)
 
     def _init_contact_history(self, rigid_contact_max: int) -> None:
-        """Lazily allocate the contact history hash table sized to the actual contact buffer capacity."""
+        """Allocate the contact history hash table sized to the given contact buffer capacity."""
         ht_capacity = max(256, 4 * rigid_contact_max)
         self.contact_history_ht = HashTable(capacity=ht_capacity, device=self.device)
         ht_cap = self.contact_history_ht.capacity
@@ -659,40 +749,37 @@ class SolverVBD(SolverBase):
         self.contact_history_lambda = wp.zeros(ht_cap, dtype=wp.vec3, device=self.device)
         self.contact_history_normal = wp.zeros(ht_cap, dtype=wp.vec3, device=self.device)
         self.contact_history_stick_flag = wp.zeros(ht_cap, dtype=wp.int32, device=self.device)
+        self.contact_history_penalty_k = wp.zeros(ht_cap, dtype=float, device=self.device)
         self.contact_history_age = wp.zeros(ht_cap, dtype=int, device=self.device)
         self.contact_history_slots = wp.full(rigid_contact_max, -1, dtype=int, device=self.device)
 
     @staticmethod
     def _to_numpy(arr, dtype=None):
-        """Transfer a Warp array to CPU and return as numpy."""
+        """Transfer a Warp array to CPU and return as numpy, optionally casting dtype."""
         cpu = arr.to("cpu")
-        return cpu.numpy() if hasattr(cpu, "numpy") else np.asarray(cpu, dtype=dtype)
+        result = cpu.numpy() if hasattr(cpu, "numpy") else np.asarray(cpu)
+        return result if dtype is None else result.astype(dtype, copy=False)
 
     def _init_joint_constraint_layout(self) -> None:
         """Initialize VBD-owned joint constraint indexing.
 
-        VBD stores penalty stiffness values for *structural* constraint components only.
-        Drive/limit forces read model stiffness directly; they do not consume penalty slots.
+        VBD stores and adapts penalty stiffness values for scalar constraint components:
+          - CABLE: 2 scalars (stretch/linear, bend/angular)
+          - BALL:  1 scalar (isotropic linear anchor-coincidence)
+          - FIXED: 2 scalars (isotropic linear + isotropic angular)
+          - REVOLUTE:  3 scalars (isotropic linear + 2-DOF perpendicular angular + angular drive/limit)
+          - PRISMATIC: 3 scalars (2-DOF perpendicular linear + isotropic angular + linear drive/limit)
+          - D6:   2 + lin_count + ang_count scalars (projected linear + projected angular + per-DOF drive/limit)
+          - FREE:  0 scalars (not a constraint)
 
-        Constraint scalars per joint type:
-          - CABLE: 2 (stretch/linear, bend/angular)
-          - BALL:  1 (isotropic linear anchor-coincidence)
-          - FIXED: 2 (isotropic linear anchor-coincidence + isotropic angular)
-          - REVOLUTE:  2 (isotropic linear + 2-DOF perpendicular angular)
-          - PRISMATIC: 2 (2-DOF perpendicular linear + isotropic angular)
-          - D6:   2 (projected linear + projected angular)
-          - FREE:  0 (not a constraint)
-
-        Ordering (must match kernel indexing via joint_constraint_start):
-          - CABLE: [stretch, bend]
-          - BALL:  [linear]
-          - FIXED/REVOLUTE/PRISMATIC/D6: [linear, angular]
+        Drive and limit for each free DOF share one AVBD slot (mutually exclusive at runtime).
 
         Any other joint type will raise NotImplementedError.
         """
         n_j = self.model.joint_count
         with wp.ScopedDevice("cpu"):
             jt = self._to_numpy(self.model.joint_type, dtype=int)
+            jdof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
 
             dim_np = np.zeros((n_j,), dtype=np.int32)
             for j in range(n_j):
@@ -700,8 +787,14 @@ class SolverVBD(SolverBase):
                     dim_np[j] = 2
                 elif jt[j] == JointType.BALL:
                     dim_np[j] = 1
-                elif jt[j] in (JointType.FIXED, JointType.REVOLUTE, JointType.PRISMATIC, JointType.D6):
+                elif jt[j] == JointType.FIXED:
                     dim_np[j] = 2
+                elif jt[j] == JointType.REVOLUTE:
+                    dim_np[j] = 3
+                elif jt[j] == JointType.PRISMATIC:
+                    dim_np[j] = 3
+                elif jt[j] == JointType.D6:
+                    dim_np[j] = 2 + int(jdof_dim[j, 0]) + int(jdof_dim[j, 1])
                 else:
                     if jt[j] != JointType.FREE:
                         raise NotImplementedError(
@@ -723,22 +816,15 @@ class SolverVBD(SolverBase):
     def _init_joint_penalty_k(self):
         """Build initial joint penalty state on CPU and upload to solver device.
 
-        Initializes the solver-owned per-constraint arrays used by VBD:
-          - joint_penalty_k:  fixed penalty stiffness per structural constraint scalar
-          - joint_penalty_kd: damping coefficient per structural constraint scalar
-          - joint_is_hard:    1 for hard (ALM with lambda + C0), 0 for soft (penalty only).
-            All slots default to 1 (hard) except cable bend (slot 1) which defaults
-            to 0 (soft) for Dahl friction/hysteresis compatibility.
+        Returns:
+            (joint_penalty_k, joint_penalty_k_min, joint_penalty_k_max) tuple:
+              - joint_penalty_k:     mutable current penalty per constraint scalar
+              - joint_penalty_k_min: frozen floor (= k_start when beta > 0, slot ceiling when beta = 0)
+              - joint_penalty_k_max: frozen ceiling (= slot-specific ke)
 
-        Only structural slots exist; drive/limit forces read model stiffness directly
-        and do not consume penalty slots.
-
-        Per-type layout (matches kernel indexing via joint_constraint_start):
-          - CABLE: [stretch_ke, bend_ke] (from model.joint_target_ke/kd)
-          - BALL:  [linear_ke]
-          - FIXED/REVOLUTE/PRISMATIC/D6: [linear_ke, angular_ke]
-
-        FREE joints are not constraints and are ignored.
+        Side effects (stored on self):
+              - joint_penalty_kd:    damping coefficient per constraint scalar
+              - joint_is_hard:       hard/soft flag per constraint scalar (1 = hard, 0 = soft)
         """
         if (
             not hasattr(self, "joint_constraint_start")
@@ -756,8 +842,12 @@ class SolverVBD(SolverBase):
             )
 
         constraint_count = self.joint_constraint_count
+        lin_k_start = self.rigid_joint_linear_k_start
+        ang_k_start = self.rigid_joint_angular_k_start
+
         with wp.ScopedDevice("cpu"):
-            joint_k0_np = np.zeros((constraint_count,), dtype=float)
+            joint_k_max_np = np.zeros((constraint_count,), dtype=float)
+            joint_k_init_np = np.zeros((constraint_count,), dtype=float)
             joint_kd_np = np.zeros((constraint_count,), dtype=float)
             is_hard_np = np.zeros((constraint_count,), dtype=np.int32)
 
@@ -765,7 +855,18 @@ class SolverVBD(SolverBase):
             jdofs = self._to_numpy(self.model.joint_qd_start, dtype=int)
             jtarget_ke = self._to_numpy(self.model.joint_target_ke, dtype=float)
             jtarget_kd = self._to_numpy(self.model.joint_target_kd, dtype=float)
+            jlimit_ke = self._to_numpy(self.model.joint_limit_ke, dtype=float)
+            jdof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
             jc_start = self._to_numpy(self.joint_constraint_start, dtype=np.int32)
+
+            # Per-joint hard/soft mode from model attribute (default=1, hard).
+            vbd_attrs: Any = getattr(self.model, "vbd", None)
+            if vbd_attrs is not None and hasattr(vbd_attrs, "joint_is_hard"):
+                j_is_hard = self._to_numpy(vbd_attrs.joint_is_hard, dtype=np.int32)
+                if not np.all((j_is_hard == 0) | (j_is_hard == 1)):
+                    raise ValueError("model.vbd.joint_is_hard values must be 0 (soft) or 1 (hard).")
+            else:
+                j_is_hard = np.ones(self.model.joint_count, dtype=np.int32)
 
             structural_linear_ke = self.rigid_joint_linear_ke
             structural_angular_ke = self.rigid_joint_angular_ke
@@ -782,30 +883,100 @@ class SolverVBD(SolverBase):
                             f"Got joint_index={j}, joint_qd_start={dof0}, "
                             f"len(joint_target_ke)={len(jtarget_ke)}, len(joint_target_kd)={len(jtarget_kd)}."
                         )
-                    joint_k0_np[c0] = jtarget_ke[dof0]
-                    joint_k0_np[c0 + 1] = jtarget_ke[dof0 + 1]
+                    ke_stretch = jtarget_ke[dof0]
+                    ke_bend = jtarget_ke[dof0 + 1]
+                    joint_k_max_np[c0] = ke_stretch
+                    joint_k_max_np[c0 + 1] = ke_bend
+                    joint_k_init_np[c0] = ke_stretch if lin_k_start is None else min(lin_k_start, ke_stretch)
+                    joint_k_init_np[c0 + 1] = ke_bend if ang_k_start is None else min(ang_k_start, ke_bend)
                     joint_kd_np[c0] = jtarget_kd[dof0]
                     joint_kd_np[c0 + 1] = jtarget_kd[dof0 + 1]
-                    is_hard_np[c0] = 1
                 elif jt[j] == JointType.BALL:
                     c0 = int(jc_start[j])
-                    joint_k0_np[c0] = structural_linear_ke
+                    joint_k_max_np[c0] = structural_linear_ke
+                    joint_k_init_np[c0] = structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
                     joint_kd_np[c0] = self.rigid_joint_linear_kd
-                    is_hard_np[c0] = 1
-                elif jt[j] in (JointType.FIXED, JointType.REVOLUTE, JointType.PRISMATIC, JointType.D6):
+                    is_hard_np[c0] = int(j_is_hard[j])
+                elif jt[j] == JointType.FIXED:
                     c0 = int(jc_start[j])
-                    joint_k0_np[c0 + 0] = structural_linear_ke
+                    joint_k_max_np[c0 + 0] = structural_linear_ke
+                    joint_k_init_np[c0 + 0] = structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
                     joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
-                    is_hard_np[c0 + 0] = 1
-                    joint_k0_np[c0 + 1] = structural_angular_ke
+                    is_hard_np[c0 + 0] = int(j_is_hard[j])
+                    joint_k_max_np[c0 + 1] = structural_angular_ke
+                    joint_k_init_np[c0 + 1] = structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
                     joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
-                    is_hard_np[c0 + 1] = 1
+                    is_hard_np[c0 + 1] = int(j_is_hard[j])
+                elif jt[j] == JointType.REVOLUTE:
+                    c0 = int(jc_start[j])
+                    joint_k_max_np[c0 + 0] = structural_linear_ke
+                    joint_k_init_np[c0 + 0] = structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
+                    is_hard_np[c0 + 0] = int(j_is_hard[j])
+                    joint_k_max_np[c0 + 1] = structural_angular_ke
+                    joint_k_init_np[c0 + 1] = structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+                    is_hard_np[c0 + 1] = int(j_is_hard[j])
+                    dof0 = int(jdofs[j])
+                    dl_k_max = max(float(jtarget_ke[dof0]), float(jlimit_ke[dof0]))
+                    dl_seed = dl_k_max if ang_k_start is None else min(ang_k_start, dl_k_max)
+                    joint_k_max_np[c0 + 2] = dl_k_max
+                    joint_k_init_np[c0 + 2] = dl_seed
+                    joint_kd_np[c0 + 2] = 0.0
+                elif jt[j] == JointType.PRISMATIC:
+                    c0 = int(jc_start[j])
+                    joint_k_max_np[c0 + 0] = structural_linear_ke
+                    joint_k_init_np[c0 + 0] = structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
+                    is_hard_np[c0 + 0] = int(j_is_hard[j])
+                    joint_k_max_np[c0 + 1] = structural_angular_ke
+                    joint_k_init_np[c0 + 1] = structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+                    is_hard_np[c0 + 1] = int(j_is_hard[j])
+                    dof0 = int(jdofs[j])
+                    dl_k_max = max(float(jtarget_ke[dof0]), float(jlimit_ke[dof0]))
+                    dl_seed = dl_k_max if lin_k_start is None else min(lin_k_start, dl_k_max)
+                    joint_k_max_np[c0 + 2] = dl_k_max
+                    joint_k_init_np[c0 + 2] = dl_seed
+                    joint_kd_np[c0 + 2] = 0.0
+                elif jt[j] == JointType.D6:
+                    c0 = int(jc_start[j])
+                    dof0 = int(jdofs[j])
+                    lc = int(jdof_dim[j, 0])
+                    ac = int(jdof_dim[j, 1])
+                    joint_k_max_np[c0 + 0] = structural_linear_ke
+                    joint_k_init_np[c0 + 0] = structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
+                    is_hard_np[c0 + 0] = int(j_is_hard[j])
+                    joint_k_max_np[c0 + 1] = structural_angular_ke
+                    joint_k_init_np[c0 + 1] = structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+                    is_hard_np[c0 + 1] = int(j_is_hard[j])
+                    for li in range(lc):
+                        dof_idx = dof0 + li
+                        slot = c0 + 2 + li
+                        dl_k_max = max(float(jtarget_ke[dof_idx]), float(jlimit_ke[dof_idx]))
+                        dl_seed = dl_k_max if lin_k_start is None else min(lin_k_start, dl_k_max)
+                        joint_k_max_np[slot] = dl_k_max
+                        joint_k_init_np[slot] = dl_seed
+                        joint_kd_np[slot] = 0.0
+                    for ai in range(ac):
+                        dof_idx = dof0 + lc + ai
+                        slot = c0 + 2 + lc + ai
+                        dl_k_max = max(float(jtarget_ke[dof_idx]), float(jlimit_ke[dof_idx]))
+                        dl_seed = dl_k_max if ang_k_start is None else min(ang_k_start, dl_k_max)
+                        joint_k_max_np[slot] = dl_k_max
+                        joint_k_init_np[slot] = dl_seed
+                        joint_kd_np[slot] = 0.0
                 else:
                     pass
 
             self.joint_penalty_kd = wp.array(joint_kd_np, dtype=float, device=self.device)
             self.joint_is_hard = wp.array(is_hard_np, dtype=wp.int32, device=self.device)
-            return wp.array(joint_k0_np, dtype=float, device=self.device)
+            k = wp.array(joint_k_init_np, dtype=float, device=self.device)
+            k_min = wp.array(joint_k_init_np.copy(), dtype=float, device=self.device)
+            k_max = wp.array(joint_k_max_np, dtype=float, device=self.device)
+            return k, k_min, k_max
 
     def _init_joint_rest_angle(self):
         """Compute per-DOF rest-pose joint angles from ``model.joint_q``.
@@ -852,7 +1023,9 @@ class SolverVBD(SolverBase):
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """Register solver-specific custom Model attributes for SolverVBD.
 
-        Currently used for cable bending plasticity/hysteresis (Dahl friction model).
+        Currently used for:
+          - Cable bending plasticity/hysteresis (Dahl friction model)
+          - Per-joint structural constraint mode (hard/soft)
 
         Attributes are declared in the ``vbd`` namespace so they can be authored in scenes
         and in USD as ``newton:vbd:<attr>``.
@@ -874,6 +1047,16 @@ class SolverVBD(SolverBase):
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=1.0,
+                namespace="vbd",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="joint_is_hard",
+                frequency=Model.AttributeFrequency.JOINT,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=1,
                 namespace="vbd",
             )
         )
@@ -1171,11 +1354,11 @@ class SolverVBD(SolverBase):
     # Main Solver Methods
     # =====================================================
 
-    def set_rigid_contact_refresh(self, refresh: bool):
-        """Control whether step() refreshes solver contact state.
+    def set_rigid_history_update(self, update: bool):
+        """Set whether the next step() should update rigid solver history.
 
         When True (default), the step refreshes contact state from the Contacts
-        buffer: warmstarts from the hash table, initializes penalty_k/lambda/C0,
+        buffer: restores state from the hash table, initializes penalty_k/lambda/C0,
         and rebuilds per-body contact lists.  When False, the step reuses the
         current contact state and runs a light snapshot to keep the hash table fresh.
 
@@ -1187,19 +1370,28 @@ class SolverVBD(SolverBase):
         differs from the simulation step frequency.
 
         Args:
-            refresh: If True, refresh contacts from collision data.  If False, reuse previous contact state.
+            update: If True, update rigid solver state. If False, reuse previous.
         """
-        self._rigid_contact_refresh = refresh
+        self._update_rigid_history = update
 
-    def set_joint_hard(self, joint_index: int, hard: bool, slot: int | None = None):
-        """Set hard or soft constraint mode for a joint's structural slots.
+    def set_joint_constraint_mode(self, joint_index: int, hard: bool, slot: int | None = None):
+        """Set hard or soft constraint mode for a joint's structural slots at runtime.
 
         Hard mode (augmented Lagrangian): uses persistent lambda + C0 stabilization
         to drive constraint violation toward zero across iterations.
-        Soft mode (penalty-only): uses penalty forces only with fixed stiffness.
+        Soft mode (penalty-only): uses penalty stiffness only (no lambda or C0 state).
 
         Structural slots are LINEAR (slot 0) and ANGULAR (slot 1). Drive/limit slots
         (slot 2+) are always soft and cannot be set to hard.
+
+        For bulk initialization at build time (avoids per-joint roundtrips), use
+        the ``joint_is_hard`` model custom attribute instead::
+
+            SolverVBD.register_custom_attributes(builder)  # before adding joints
+            ...
+            model = builder.finalize()
+            model.vbd.joint_is_hard.numpy()[j] = 0  # set joint j to soft
+            solver = SolverVBD(model, ...)
 
         Args:
             joint_index: Index of the joint to modify.
@@ -1244,6 +1436,22 @@ class SolverVBD(SolverBase):
 
             self.joint_is_hard = wp.array(is_hard_np, dtype=wp.int32, device=self.device)
 
+            if not hard:
+                lam_lin_np = self._to_numpy(self.joint_lambda_lin)
+                lam_ang_np = self._to_numpy(self.joint_lambda_ang)
+                C0_lin_np = self._to_numpy(self.joint_C0_lin)
+                C0_ang_np = self._to_numpy(self.joint_C0_ang)
+                if slot is None or slot == 0:
+                    lam_lin_np[joint_index] = [0.0, 0.0, 0.0]
+                    C0_lin_np[joint_index] = [0.0, 0.0, 0.0]
+                if (slot is None or slot == 1) and cdim > 1:
+                    lam_ang_np[joint_index] = [0.0, 0.0, 0.0]
+                    C0_ang_np[joint_index] = [0.0, 0.0, 0.0]
+                self.joint_lambda_lin = wp.array(lam_lin_np, dtype=wp.vec3, device=self.device)
+                self.joint_lambda_ang = wp.array(lam_ang_np, dtype=wp.vec3, device=self.device)
+                self.joint_C0_lin = wp.array(C0_lin_np, dtype=wp.vec3, device=self.device)
+                self.joint_C0_ang = wp.array(C0_ang_np, dtype=wp.vec3, device=self.device)
+
     @override
     def step(
         self,
@@ -1256,12 +1464,14 @@ class SolverVBD(SolverBase):
         """Execute one simulation timestep using VBD (particles) and AVBD (rigid bodies).
 
         The solver follows a 3-phase structure:
-        1. Initialize: Forward integrate particles and rigid bodies, detect collisions, initialize/warmstart contact state
+        1. Initialize: Forward integrate particles and rigid bodies, detect collisions, initialize contact state
         2. Iterate: Interleave particle VBD iterations and rigid body AVBD iterations
         3. Finalize: Update velocities and persistent state (Dahl friction)
 
-        To control rigid substepping behavior, call set_rigid_contact_refresh()
-        before calling this method. It defaults to True and is reset to True after each call.
+        To control rigid body substepping behavior, call set_rigid_history_update().
+        When True (default), the step rebuilds rigid contact adjacency, re-initializes
+        rigid contact state (penalty_k, lambda, C0), and restores from history if enabled.
+        When False, reuses previous rigid contact state. Resets to True after each call.
 
         Args:
             state_in: Input state.
@@ -1272,21 +1482,21 @@ class SolverVBD(SolverBase):
                 depend on this argument.
             dt: Time step size.
         """
-        refresh = self._rigid_contact_refresh
-        self._rigid_contact_refresh = True
+        update_rigid = self._update_rigid_history
+        self._update_rigid_history = True
 
         if control is None:
             control = self.model.control(clone_variables=False)
 
-        self._initialize_rigid_bodies(state_in, control, contacts, dt, refresh)
+        update_rigid = self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid)
         self._initialize_particles(state_in, state_out, dt)
 
         for iter_num in range(self.iterations):
             self._solve_rigid_body_iteration(state_in, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
-        self._snapshot_rigid_contact_history(contacts, refresh)
-
+        # Snapshot rigid contact history before rigid finalize advances body_q_prev.
+        self._snapshot_rigid_contact_history(contacts, update_rigid)
         self._finalize_rigid_bodies(
             state_in, state_out, dt, apply_stick_deadzone=contacts is not None and self.rigid_contact_hard
         )
@@ -1295,12 +1505,14 @@ class SolverVBD(SolverBase):
     def _snapshot_rigid_contact_history(self, contacts: Contacts | None, refresh: bool):
         """Write contact solver state to the hash table.
 
-        When warmstart is enabled:
+        When contact history is enabled:
         - On refresh steps: full snapshot into the hash table and cache slot indices.
-        - On non-refresh steps: light update of lambda/stick state at cached slot indices.
+        - On non-refresh steps: light update of lambda/stick/penalty_k at cached slot indices.
+        In soft mode, lambda and stick_flag are inert but stored uniformly.
         """
-        if not self.rigid_contact_warmstart or contacts is None:
+        if not self.rigid_contact_history or contacts is None:
             return
+
         if self.model.body_count == 0 or self.integrate_with_external_rigid_solver:
             return
 
@@ -1333,6 +1545,7 @@ class SolverVBD(SolverBase):
                     contacts.rigid_contact_normal,
                     self.body_body_contact_lambda,
                     self.body_body_contact_stick_flag,
+                    self.body_body_contact_penalty_k,
                     ht.keys,
                     ht.active_slots,
                     self.rigid_contact_match_cell_size_inv,
@@ -1343,6 +1556,7 @@ class SolverVBD(SolverBase):
                     self.contact_history_lambda,
                     self.contact_history_normal,
                     self.contact_history_stick_flag,
+                    self.contact_history_penalty_k,
                     self.contact_history_age,
                     self.contact_history_slots,
                 ],
@@ -1358,10 +1572,12 @@ class SolverVBD(SolverBase):
                     self.contact_history_slots,
                     self.body_body_contact_lambda,
                     self.body_body_contact_stick_flag,
+                    self.body_body_contact_penalty_k,
                 ],
                 outputs=[
                     self.contact_history_lambda,
                     self.contact_history_stick_flag,
+                    self.contact_history_penalty_k,
                 ],
                 device=self.device,
             )
@@ -1472,16 +1688,20 @@ class SolverVBD(SolverBase):
         contacts: Contacts | None,
         dt: float,
         refresh: bool,
-    ):
+    ) -> bool:
         """Initialize rigid body states for AVBD solver (pre-iteration phase).
 
         Performs forward integration and initializes contact-related AVBD state when contacts are provided.
 
         If contacts is None, rigid contact-related work is skipped:
-        no per-body contact adjacency is built, and no contact state is initialized or warmstarted.
+        no per-body contact adjacency is built, and no contact state is initialized or restored.
 
         If control provides joint_f, per-DOF joint forces are mapped to body spatial
         wrenches and included in the forward integration (shifting the inertial target).
+
+        Returns:
+            The effective refresh flag (may be promoted from False to True when
+            contact state needs first-time allocation or resizing).
         """
         model = self.model
 
@@ -1489,13 +1709,16 @@ class SolverVBD(SolverBase):
         # Rigid-only initialization
         # ---------------------------
         if model.body_count > 0 and not self.integrate_with_external_rigid_solver:
+            # Force refresh when contact state is not yet allocated or undersized.
             if (
-                contacts is not None
+                not refresh
+                and contacts is not None
                 and contacts.rigid_contact_max > 0
-                and self.body_body_contact_penalty_k.shape[0] == 0
+                and self.body_body_contact_penalty_k.shape[0] < contacts.rigid_contact_max
             ):
                 refresh = True
-            # Contact C0 + warmstart BEFORE integration: body_q is the collide frame
+
+            # Contact C0 + history restore BEFORE integration: body_q is the collide frame
             # for all bodies (dynamic and kinematic) at this point.
             if refresh:
                 if contacts is None:
@@ -1503,7 +1726,7 @@ class SolverVBD(SolverBase):
                 else:
                     contact_launch_dim = contacts.rigid_contact_max
 
-                    if self.body_body_contact_penalty_k.shape[0] == 0:
+                    if self.body_body_contact_penalty_k.shape[0] < contact_launch_dim:
                         self._init_body_body_contact_state(contact_launch_dim)
 
                     # Build body-body contact lists
@@ -1533,9 +1756,12 @@ class SolverVBD(SolverBase):
                         device=self.device,
                     )
 
-                    # Warmstart AVBD body-body contacts and pre-compute material properties
-                    if self.rigid_contact_warmstart:
-                        if self.contact_history_ht is None:
+                    # Restore AVBD body-body contact state from history and pre-compute material properties
+                    if self.rigid_contact_history:
+                        if (
+                            self.contact_history_ht is None
+                            or self.contact_history_slots.shape[0] < contacts.rigid_contact_max
+                        ):
                             self._init_contact_history(contacts.rigid_contact_max)
 
                         wp.launch(
@@ -1548,13 +1774,9 @@ class SolverVBD(SolverBase):
                                 contacts.rigid_contact_point0,
                                 contacts.rigid_contact_point1,
                                 contacts.rigid_contact_normal,
-                                contacts.rigid_contact_margin0,
-                                contacts.rigid_contact_margin1,
                                 model.shape_material_ke,
                                 model.shape_material_kd,
                                 model.shape_material_mu,
-                                model.shape_body,
-                                state_in.body_q,
                                 self.rigid_contact_hard,
                                 self.contact_history_ht.keys,
                                 self.contact_history_point0,
@@ -1562,15 +1784,17 @@ class SolverVBD(SolverBase):
                                 self.contact_history_lambda,
                                 self.contact_history_normal,
                                 self.contact_history_stick_flag,
+                                self.contact_history_penalty_k,
                                 self.rigid_contact_match_cell_size_inv,
                                 self.rigid_contact_match_tolerance_sq,
+                                self.rigid_contact_k_start_value,
                             ],
                             outputs=[
                                 self.body_body_contact_penalty_k,
                                 self.body_body_contact_lambda,
-                                self.body_body_contact_C0,
                                 self.body_body_contact_material_kd,
                                 self.body_body_contact_material_mu,
+                                self.body_body_contact_material_ke,
                             ],
                             device=self.device,
                         )
@@ -1584,21 +1808,23 @@ class SolverVBD(SolverBase):
                                 model.shape_material_ke,
                                 model.shape_material_kd,
                                 model.shape_material_mu,
+                                self.rigid_contact_k_start_value,
                             ],
                             outputs=[
                                 self.body_body_contact_penalty_k,
                                 self.body_body_contact_material_kd,
                                 self.body_body_contact_material_mu,
+                                self.body_body_contact_material_ke,
                             ],
                             dim=contact_launch_dim,
                             device=self.device,
                         )
                         self.body_body_contact_lambda.zero_()
 
-            # Per-step contact lambda decay + C0 (body_q is still collide frame here).
+            # Per-step k decay + lambda decay + C0 (body_q is still collide frame here).
             if contacts is not None and contacts.rigid_contact_max > 0:
                 contact_launch_dim = contacts.rigid_contact_max
-                recompute_C0 = 0 if refresh else 1
+                gamma_lambda = self.rigid_avbd_gamma if (self.rigid_contact_history and self.rigid_contact_hard) else 0.0
                 wp.launch(
                     kernel=step_body_body_contact_C0_lambda,
                     dim=contact_launch_dim,
@@ -1614,17 +1840,19 @@ class SolverVBD(SolverBase):
                         model.shape_body,
                         state_in.body_q,
                         self.rigid_contact_hard,
-                        self.rigid_penalty_decay if (self.rigid_contact_warmstart and self.rigid_contact_hard) else 0.0,
-                        recompute_C0,
+                        gamma_lambda,
+                        self.rigid_avbd_gamma,
+                        self.body_body_contact_material_ke,
+                        self.rigid_contact_k_start_value,
                     ],
                     outputs=[
+                        self.body_body_contact_penalty_k,
                         self.body_body_contact_C0,
                         self.body_body_contact_lambda,
                     ],
                     device=self.device,
                 )
-                if not self.rigid_contact_hard:
-                    self.body_body_contact_stick_flag.zero_()
+                self.body_body_contact_stick_flag.zero_()
 
             # Accumulate joint_f into body wrenches (scratch buffer avoids mutating user state).
             body_f_for_integration = state_in.body_f
@@ -1676,9 +1904,6 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-            # Per-step joint lambda decay + C0 snapshot.
-            # Uses body_q_prev (previous-step pose for kinematic bodies) which
-            # provides implicit feedforward tracking force -- see avbd_rigid_review.md section 6.
             if model.joint_count > 0:
                 wp.launch(
                     kernel=step_joint_C0_lambda,
@@ -1694,9 +1919,12 @@ class SolverVBD(SolverBase):
                         self.joint_constraint_start,
                         self.joint_constraint_dim,
                         self.joint_is_hard,
-                        self.rigid_penalty_decay,
+                        self.rigid_avbd_gamma,
                     ],
                     outputs=[
+                        self.joint_penalty_k,
+                        self.joint_penalty_k_min,
+                        self.joint_penalty_k_max,
                         self.joint_C0_lin,
                         self.joint_C0_ang,
                         self.joint_lambda_lin,
@@ -1738,9 +1966,15 @@ class SolverVBD(SolverBase):
         # Body-particle interaction
         # ---------------------------
         particle_refresh = refresh
-        if model.particle_count > 0 and contacts is not None:
-            if self.body_particle_contact_penalty_k.shape[0] < contacts.soft_contact_max:
-                particle_refresh = True
+        if (
+            not particle_refresh
+            and model.particle_count > 0
+            and contacts is not None
+            and contacts.soft_contact_max > 0
+            and self.body_particle_contact_penalty_k.shape[0] < contacts.soft_contact_max
+        ):
+            particle_refresh = True
+
         if model.particle_count > 0 and particle_refresh and contacts is not None:
             # Build body-particle contact lists (only when SolverVBD integrates bodies).
             if not self.integrate_with_external_rigid_solver and model.body_count > 0:
@@ -1784,15 +2018,19 @@ class SolverVBD(SolverBase):
                     model.shape_material_ke,
                     model.shape_material_kd,
                     model.shape_material_mu,
+                    self.rigid_contact_k_start_value,
                 ],
                 outputs=[
                     self.body_particle_contact_penalty_k,
                     self.body_particle_contact_material_kd,
                     self.body_particle_contact_material_mu,
+                    self.body_particle_contact_material_ke,
                 ],
                 dim=soft_contact_launch_dim,
                 device=self.device,
             )
+
+        return refresh
 
     def _solve_particle_iteration(
         self, state_in: State, state_out: State, contacts: Contacts | None, dt: float, iter_num: int
@@ -2020,7 +2258,6 @@ class SolverVBD(SolverBase):
                         model.particle_radius,
                         self.body_q_prev,
                         state_in.body_q,
-                        state_in.body_qd,
                         model.body_com,
                         self.body_inv_mass_effective,
                         self.friction_epsilon,
@@ -2029,12 +2266,9 @@ class SolverVBD(SolverBase):
                         self.body_particle_contact_material_mu,
                         contacts.soft_contact_count,
                         contacts.soft_contact_particle,
-                        contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
-                        model.shape_material_mu,
-                        model.shape_body,
                         self.body_particle_contact_buffer_pre_alloc,
                         self.body_particle_contact_counts,
                         self.body_particle_contact_indices,
@@ -2067,7 +2301,7 @@ class SolverVBD(SolverBase):
                         self.body_body_contact_material_mu,
                         self.body_body_contact_lambda,
                         self.body_body_contact_C0,
-                        self.rigid_contact_stabilization_alpha,
+                        self.rigid_contact_alpha,
                         self.rigid_contact_hard,
                         contacts.rigid_contact_count,
                         contacts.rigid_contact_shape0,
@@ -2132,7 +2366,7 @@ class SolverVBD(SolverBase):
                     self.joint_C0_lin,
                     self.joint_C0_ang,
                     self.joint_is_hard,
-                    self.rigid_joint_stabilization_alpha,
+                    self.rigid_joint_alpha,
                     model.joint_dof_dim,
                     self.joint_rest_angle,
                     self.body_forces,
@@ -2148,7 +2382,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-        if contacts is not None and self.rigid_contact_hard:
+        if contacts is not None:
             contact_launch_dim = contacts.rigid_contact_max
             wp.launch(
                 kernel=update_duals_body_body_contacts,
@@ -2164,19 +2398,46 @@ class SolverVBD(SolverBase):
                     contacts.rigid_contact_margin1,
                     model.shape_body,
                     state_in.body_q,
+                    self.body_q_prev,
                     self.body_body_contact_material_mu,
-                    self.body_body_contact_penalty_k,
-                    self.body_body_contact_lambda,
                     self.body_body_contact_C0,
-                    self.rigid_contact_stabilization_alpha,
+                    self.rigid_contact_alpha,
                     self.rigid_contact_hard,
                     self.body_inv_mass_effective,
+                    self.body_body_contact_material_ke,
+                    self.rigid_linear_beta,
+                    self.body_body_contact_penalty_k,
+                    self.body_body_contact_lambda,
                 ],
                 outputs=[
                     self.body_body_contact_stick_flag,
                 ],
                 device=self.device,
             )
+
+            if model.particle_count > 0 and not self.integrate_with_external_rigid_solver:
+                soft_contact_launch_dim = contacts.soft_contact_max
+                wp.launch(
+                    kernel=update_duals_body_particle_contacts,
+                    dim=soft_contact_launch_dim,
+                    inputs=[
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_particle,
+                        contacts.soft_contact_shape,
+                        contacts.soft_contact_body_pos,
+                        contacts.soft_contact_normal,
+                        state_in.particle_q,
+                        model.particle_radius,
+                        model.shape_body,
+                        state_in.body_q,
+                        self.body_particle_contact_material_ke,
+                        self.rigid_linear_beta,
+                    ],
+                    outputs=[
+                        self.body_particle_contact_penalty_k,
+                    ],
+                    device=self.device,
+                )
 
         if model.joint_count > 0:
             wp.launch(
@@ -2194,28 +2455,40 @@ class SolverVBD(SolverBase):
                     self.joint_constraint_start,
                     state_in.body_q,
                     model.body_q,
-                    self.joint_penalty_k,
                     model.joint_dof_dim,
-                    self.joint_lambda_lin,
-                    self.joint_lambda_ang,
                     self.joint_C0_lin,
                     self.joint_C0_ang,
                     self.joint_is_hard,
-                    self.rigid_joint_stabilization_alpha,
+                    self.rigid_joint_alpha,
+                    self.joint_penalty_k_max,
+                    self.rigid_linear_beta,
+                    self.rigid_angular_beta,
+                    model.joint_target_ke,
+                    control.joint_target_pos,
+                    model.joint_limit_lower,
+                    model.joint_limit_upper,
+                    model.joint_limit_ke,
+                    self.joint_rest_angle,
+                    self.joint_penalty_k,
+                    self.joint_lambda_lin,
+                    self.joint_lambda_ang,
                 ],
                 device=self.device,
             )
 
     def collect_rigid_contact_forces(
-        self, state: State, contacts: Contacts | None, dt: float
+        self, body_q: wp.array, body_q_prev: wp.array, contacts: Contacts | None, dt: float
     ) -> tuple[wp.array, wp.array, wp.array, wp.array, wp.array, wp.array]:
         """Collect per-contact rigid contact forces and world-space application points.
 
-        This produces a **contact-specific** buffer that coupling code can filter (e.g., proxy contacts only).
-
         Args:
-            state (State): Simulation state containing rigid body transforms/velocities
-                used for contact-force evaluation.
+            body_q (wp.array[wp.transform]): Current body transforms (world frame),
+                typically ``state_out.body_q`` after a ``step()`` call.
+            body_q_prev (wp.array[wp.transform]): Previous body transforms (world frame)
+                corresponding to the start of the step. The caller must snapshot
+                ``solver.body_q_prev`` **before** calling ``step()``, because
+                ``step()`` advances the solver's internal ``body_q_prev`` to the
+                end-of-step pose.
             contacts (Optional[Contacts]): Contact data buffers containing rigid
                 contact geometry/material references. If None, the function
                 returns default zero/sentinel outputs.
@@ -2237,8 +2510,8 @@ class SolverVBD(SolverBase):
                 - force_on_body1: Contact force applied to body1 in world frame, wp.vec3 [N].
                 - rigid_contact_count: Length-1 active rigid-contact count, int32.
         """
-        # Allocate/resize persistent buffers to match contact capacity.
         max_contacts = int(contacts.rigid_contact_shape0.shape[0]) if contacts is not None else 0
+
         if not hasattr(self, "_rigid_contact_body0") or self._rigid_contact_body0 is None:
             self._rigid_contact_body0 = None
 
@@ -2248,14 +2521,13 @@ class SolverVBD(SolverBase):
             self._rigid_contact_point0_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
             self._rigid_contact_point1_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
 
-        # Trigger lazy allocation so the kernel can run even before the first step().
-        if max_contacts > 0 and self.body_body_contact_penalty_k.shape[0] == 0:
+        # Ensure buffers are large enough so the kernel can run even before the first step().
+        if max_contacts > 0 and self.body_body_contact_penalty_k.shape[0] < max_contacts:
             self._init_body_body_contact_state(max_contacts)
 
         missing_rigid_state = any(
             arr is None or arr.shape[0] == 0
             for arr in (
-                getattr(self, "body_q_prev", None),
                 getattr(self, "body_body_contact_penalty_k", None),
                 getattr(self, "body_body_contact_material_kd", None),
                 getattr(self, "body_body_contact_material_mu", None),
@@ -2267,18 +2539,12 @@ class SolverVBD(SolverBase):
             contacts.rigid_contact_force.zero_()
 
         if no_active_contacts or missing_rigid_state:
-            # Keep outputs in a known default state for coupling paths where rigid AVBD
-            # internal buffers are not initialized (e.g., external rigid solver mode).
             self._rigid_contact_body0 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
             self._rigid_contact_body1 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
             self._rigid_contact_point0_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
             self._rigid_contact_point1_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
 
-            rigid_contact_count = (
-                contacts.rigid_contact_count
-                if contacts is not None and contacts.rigid_contact_count is not None
-                else wp.zeros(1, dtype=wp.int32, device=self.device)
-            )
+            rigid_contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
             return (
                 self._rigid_contact_body0,
                 self._rigid_contact_body1,
@@ -2293,8 +2559,6 @@ class SolverVBD(SolverBase):
         # Type narrowing: remaining path requires a valid Contacts instance.
         assert contacts is not None
 
-        # Reuse the existing per-contact force buffer in Contacts (allocated by default).
-        # Force convention: force is applied to body1, and -force is applied to body0.
         wp.launch(
             kernel=compute_rigid_contact_forces,
             dim=max_contacts,
@@ -2309,16 +2573,15 @@ class SolverVBD(SolverBase):
                 contacts.rigid_contact_margin0,
                 contacts.rigid_contact_margin1,
                 self.model.shape_body,
-                state.body_q,
-                self.body_q_prev,
+                body_q,
+                body_q_prev,
                 self.model.body_com,
-                self.body_inv_mass_effective,
                 self.body_body_contact_penalty_k,
                 self.body_body_contact_material_kd,
                 self.body_body_contact_material_mu,
                 self.body_body_contact_lambda,
                 self.body_body_contact_C0,
-                self.rigid_contact_stabilization_alpha,
+                self.rigid_contact_alpha,
                 self.rigid_contact_hard,
                 float(self.friction_epsilon),
             ],

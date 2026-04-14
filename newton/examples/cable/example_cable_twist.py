@@ -126,6 +126,8 @@ class Example:
         self.cable_length = self.num_elements * segment_length
         cable_radius = 0.02
 
+        stretch_stiffness = 1.0e5
+
         # Stiffness sweep (increasing) for bend stiffness
         bend_stiffness_values = [1.0e1, 1.0e2, 1.0e3]
 
@@ -166,6 +168,7 @@ class Example:
                 positions=cable_points,
                 quaternions=cable_edge_q,
                 radius=cable_radius,
+                stretch_stiffness=stretch_stiffness,
                 bend_stiffness=bend_stiffness,
                 bend_damping=1.0e-2,
                 label=f"cable_{i}",
@@ -241,7 +244,7 @@ class Example:
             if refresh_contacts:
                 self.model.collide(self.state_0, self.contacts)
 
-            self.solver.set_rigid_contact_refresh(refresh_contacts)
+            self.solver.set_rigid_history_update(refresh_contacts)
             self.solver.step(
                 self.state_0,
                 self.state_1,

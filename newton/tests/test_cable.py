@@ -1078,8 +1078,8 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
     builder = newton.ModelBuilder()
 
     # Contact material (stiff contacts, noticeable friction)
-    builder.default_shape_cfg.ke = 1.0e5
-    builder.default_shape_cfg.kd = 1.0e-1
+    builder.default_shape_cfg.ke = 1.0e4
+    builder.default_shape_cfg.kd = 0.0
     builder.default_shape_cfg.mu = 1.0
 
     # Cable geometric parameters
@@ -3688,9 +3688,12 @@ def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
 
     # Collide + step so ALM state (penalty_k, lambda) gets populated.
     model.collide(state0, contacts)
+    body_q_prev_snapshot = wp.clone(solver.body_q_prev)
     solver.step(state0, state1, control, contacts, dt)
 
-    c_b0, c_b1, c_p0w, c_p1w, c_f_b1, c_count = solver.collect_rigid_contact_forces(state0, contacts, dt)
+    c_b0, c_b1, c_p0w, c_p1w, c_f_b1, c_count = solver.collect_rigid_contact_forces(
+        state0.body_q, body_q_prev_snapshot, contacts, dt
+    )
     count = int(c_count.numpy()[0])
 
     # Buffer lengths must match rigid contact capacity.

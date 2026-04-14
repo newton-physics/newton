@@ -327,7 +327,7 @@ class Example:
 
         solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
         if solver_type == "vbd":
-            self.solver = newton.solvers.SolverVBD(self.model, rigid_contact_buffer_size=512)
+            self.solver = newton.solvers.SolverVBD(self.model, rigid_body_contact_buffer_size=512)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)
 

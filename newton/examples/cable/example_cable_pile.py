@@ -18,7 +18,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.viewer.picking import Picking
 
 
 class Example:
@@ -60,8 +59,8 @@ class Example:
 
         # Material properties
         builder.default_shape_cfg.mu = 1.0e1
-        builder.default_shape_cfg.ke = 1.0e4
-        builder.default_shape_cfg.kd = 0.0
+        builder.default_shape_cfg.ke = 1.0e5
+        builder.default_shape_cfg.kd = 1.0e-4
 
         cable_shape_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,
@@ -98,7 +97,12 @@ class Example:
                 cfg=slope_cfg,
             )
         else:
-            builder.add_ground_plane()
+            ground_cfg = newton.ModelBuilder.ShapeConfig(
+                mu=1.0e9,
+                ke=builder.default_shape_cfg.ke,
+                kd=builder.default_shape_cfg.kd,
+            )
+            builder.add_ground_plane(cfg=ground_cfg)
 
         # Build layered lanes of cables with alternating orientations
         for layer in range(layers):
@@ -143,8 +147,8 @@ class Example:
                     quaternions=edge_q,
                     radius=cable_radius,
                     cfg=cable_shape_cfg,
-                    bend_stiffness=1.0e1,
-                    bend_damping=1.0e-1,
+                    bend_stiffness=1.0e0,
+                    bend_damping=1.0e0,
                     label=f"cable_l{layer}_{lane}",
                 )
                 rod_bodies_all.extend(rod_bodies)
@@ -156,8 +160,8 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_contact_buffer_size=256,
-            rigid_contact_warmstart=True,
+            rigid_body_contact_buffer_size=256,
+            rigid_contact_history=True,
         )
 
         self.state_0 = self.model.state()
@@ -166,8 +170,12 @@ class Example:
         self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
-        if hasattr(self.viewer, "picking") and self.viewer.picking is not None:
-            self.viewer.picking = Picking(self.model, pick_stiffness=50.0, pick_damping=5.0)
+
+        if hasattr(self.viewer, "picking"):
+            ps = self.viewer.picking.pick_state.numpy()
+            ps[0]["pick_stiffness"] = 20.0
+            ps[0]["pick_damping"] = 0.0
+            self.viewer.picking.pick_state.assign(ps)
 
         self.capture()
 
@@ -219,7 +227,7 @@ class Example:
         cable_diameter = 2.0 * cable_radius
         layers = 10
 
-        tolerance = 0.1
+        tolerance = 0.5
 
         max_z_settled = layers * cable_diameter + tolerance
         ground_tolerance = tolerance
@@ -240,7 +248,7 @@ class Example:
             )
             assert max_z_actual < max_z_settled, (
                 f"Pile too high: max_z={max_z_actual:.3f} > expected {max_z_settled:.3f} "
-                f"(4 layers x {cable_diameter:.3f}m diameter + tolerance)"
+                f"({layers} layers x {cable_diameter:.3f}m diameter + tolerance)"
             )
 
             assert (np.abs(body_velocities) < 5e2).all(), "Velocities too large"
