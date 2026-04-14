@@ -1,0 +1,29 @@
+name: Auto Rebase
+
+on:
+  push:
+    branches-ignore:
+      # Ignore branches created by github-rebase internals.
+      - rebase-pull-request**
+      - cherry-pick-rebase-pull-request**
+  pull_request:
+    types:
+      - labeled
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autorebase
+  cancel-in-progress: false
+
+jobs:
+  auto-rebase:
+    name: AutoRebase
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto rebase eligible pull requests
+        uses: Label305/AutoRebase@9400be642257d4d85c130ba170878490e8615f2f  # v0.2.0
+        with:
+          # Create AUTOREBASE_TOKEN with repository write access.
+          github_token: ${{ secrets.AUTOREBASE_TOKEN }}
