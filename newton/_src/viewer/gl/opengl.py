@@ -75,15 +75,13 @@ STYLE_REGISTRY: dict[str, ShadingStyleConfig] = {
     "studio": ShadingStyleConfig(
         name="studio",
         shader_class=ShaderShapeStudio,
-        draw_sky=False,
+        draw_sky=True,
         # ~45° elevation so the floor gets moderate (not maximum) direct light.
         sun_directions={
             0: np.array([1.0, 0.6, 0.8], dtype=np.float32),  # X-up
             1: np.array([0.6, 1.0, 0.8], dtype=np.float32),  # Y-up
             2: np.array([0.8, 0.6, 1.0], dtype=np.float32),  # Z-up
         },
-        gradient_top=(0.96, 0.96, 0.97),
-        gradient_bottom=(0.85, 0.85, 0.87),
         overrides={
             "fog_color": (0.93, 0.93, 0.95),
             "sky_color": (0.72, 0.82, 0.98),
@@ -92,6 +90,10 @@ STYLE_REGISTRY: dict[str, ShadingStyleConfig] = {
             "env_texture": None,
             "env_intensity": 0.0,
             "spotlight_enabled": False,
+            # Sky dome overrides — subtle near-white gradient, no sun flare.
+            "sky_upper": (0.96, 0.96, 0.97),
+            "sky_lower": (0.85, 0.85, 0.87),
+            "sky_sun_direction": (0.0, 0.0, 0.0),
         },
     ),
 }
@@ -2107,14 +2109,15 @@ class RendererGL:
 
         self._make_current()
 
+        overrides = self._active_style.overrides
         self._sky_shader.update(
             view_matrix=self._view_matrix,
             projection_matrix=self._projection_matrix,
             camera_pos=self.camera.pos,
             camera_far=self.camera.far,
-            sky_upper=self.sky_upper,
-            sky_lower=self.sky_lower,
-            sun_direction=self._sun_direction,
+            sky_upper=overrides.get("sky_upper", self.sky_upper),
+            sky_lower=overrides.get("sky_lower", self.sky_lower),
+            sun_direction=overrides.get("sky_sun_direction", self._sun_direction),
             up_axis=self.camera.up_axis,
         )
 
