@@ -227,10 +227,9 @@ class _SimLoop:
             # Warmup (allocates internal buffers so graph capture sees a stable set).
             self._simulate_frame()
             with wp.ScopedCapture(device) as capture:
-                self._simulate_frame()
+                self._simulate_frame()  # recorded only, not executed
             graph = capture.graph
-            # Warmup + capture = 2 frames; replay the rest.
-            for _ in range(steps - 2):
+            for _ in range(steps - 1):
                 wp.capture_launch(graph)
         else:
             for _ in range(steps):
