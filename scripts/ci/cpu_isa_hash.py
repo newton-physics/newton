@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2025 NVIDIA CORPORATION. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """Print a short hash of the host CPU's ISA feature set.
