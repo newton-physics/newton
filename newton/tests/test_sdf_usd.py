@@ -89,7 +89,7 @@ class TestSDFUSDParsing(unittest.TestCase):
     """Tests for SDF attribute parsing from USD."""
 
     def test_usd_sdf_mesh_attributes(self, device=None):
-        """USD newton:sdf* attributes trigger mesh.build_sdf() during parsing."""
+        """USD newton:sdf* attributes cause SDF to be built during finalize()."""
         if device is None or not wp.get_device(device).is_cuda:
             self.skipTest("SDF tests require CUDA device")
 
@@ -121,13 +121,14 @@ class TestSDFUSDParsing(unittest.TestCase):
             s1 = psm["/World/Body1/CollisionMesh"]
             s2 = psm["/World/Body2/CollisionMesh"]
 
-            # Body1: SDF should have been built on the mesh
-            mesh1 = builder.shape_source[s1]
-            self.assertIsNotNone(mesh1.sdf, "Expected mesh.sdf to be set after parsing SDF attributes")
+            # SDF params stored on builder but not yet built (deferred to finalize)
+            self.assertEqual(builder.shape_sdf_max_resolution[s1], 128)
+            self.assertIsNone(builder.shape_sdf_max_resolution[s2])
 
-            # Body2: no SDF attributes, so mesh.sdf should be None
-            mesh2 = builder.shape_source[s2]
-            self.assertIsNone(mesh2.sdf, "Expected mesh.sdf to be None without SDF attributes")
+            # After finalize, SDF is built on the mesh
+            builder.finalize(device=device)
+            mesh1 = builder.shape_source[s1]
+            self.assertIsNotNone(mesh1.sdf, "Expected mesh.sdf built during finalize")
 
     def test_usd_sdf_defaults(self, device=None):
         """Shapes without SDF attributes should use builder defaults (None)."""
@@ -179,9 +180,12 @@ class TestSDFUSDParsing(unittest.TestCase):
             result = parse_usd(builder, str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
-            # Mesh should have SDF built from default
+            # SDF params stored, deferred to finalize
+            self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
+
+            builder.finalize(device=device)
             mesh1 = builder.shape_source[s1]
-            self.assertIsNotNone(mesh1.sdf, "Expected SDF built from default_shape_cfg")
+            self.assertIsNotNone(mesh1.sdf, "Expected SDF built from default_shape_cfg during finalize")
 
     def test_usd_hydroelastic_attributes(self, device=None):
         """Presence of newton:kh signals hydroelastic opt-in (NewtonHydroelasticCollisionAPI)."""
@@ -246,9 +250,10 @@ class TestSDFUSDParsing(unittest.TestCase):
             result = parse_usd(builder, str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
-            # SDF should have been built
+            # SDF deferred to finalize
+            builder.finalize(device=device)
             mesh1 = builder.shape_source[s1]
-            self.assertIsNotNone(mesh1.sdf, "Expected SDF built with sdfMargin")
+            self.assertIsNotNone(mesh1.sdf, "Expected SDF built with sdfMargin during finalize")
 
 
 devices = get_selected_cuda_test_devices()

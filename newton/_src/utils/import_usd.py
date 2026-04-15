@@ -2683,24 +2683,11 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    # Build SDF on mesh when USD attributes request it.
-                    # add_shape_mesh rejects ShapeConfig.sdf_* for meshes, so we must
-                    # call mesh.build_sdf() directly and strip SDF fields from the cfg.
-                    _has_sdf = sdf_max_resolution is not None or sdf_target_voxel_size is not None
-                    if _has_sdf:
-                        sdf_kwargs = {"narrow_band_range": sdf_narrow_band_range}
-                        if sdf_max_resolution is not None:
-                            sdf_kwargs["max_resolution"] = sdf_max_resolution
-                        if sdf_target_voxel_size is not None:
-                            sdf_kwargs["target_voxel_size"] = sdf_target_voxel_size
-                        if sdf_margin is not None:
-                            sdf_kwargs["margin"] = sdf_margin
-                        elif gap_val is not None and gap_val != float("-inf"):
-                            sdf_kwargs["margin"] = gap_val
-                        sdf_kwargs["scale"] = tuple(shape_spec.meshScale)
-                        sdf_kwargs["texture_format"] = sdf_texture_format
-                        mesh.build_sdf(**sdf_kwargs)
-                    # Mesh ShapeConfig must not have sdf_* fields
+                    # add_shape_mesh() rejects SDF params in ShapeConfig for meshes,
+                    # so we strip SDF fields and pass a clean cfg. SDF building is
+                    # deferred to finalize() where instances can be deduplicated.
+                    # We write SDF params directly to the builder's per-shape lists
+                    # after the shape is added.
                     mesh_shape_params = dict(shape_params)
                     mesh_shape_params["cfg"] = replace(
                         shape_params["cfg"],
@@ -2708,12 +2695,23 @@ def parse_usd(
                         sdf_target_voxel_size=None,
                         sdf_narrow_band_range=(-0.1, 0.1),
                         sdf_texture_format="uint16",
+                        is_hydroelastic=False,
                     )
                     shape_id = builder.add_shape_mesh(
                         scale=wp.vec3(*shape_spec.meshScale),
                         mesh=mesh,
                         **mesh_shape_params,
                     )
+                    # Store SDF intent on the builder (deferred to finalize)
+                    builder.shape_sdf_max_resolution[shape_id] = sdf_max_resolution
+                    builder.shape_sdf_target_voxel_size[shape_id] = sdf_target_voxel_size
+                    builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
+                    builder.shape_sdf_texture_format[shape_id] = sdf_texture_format
+                    if sdf_margin is not None:
+                        builder.shape_gap[shape_id] = sdf_margin
+                    if is_hydroelastic:
+                        builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
+                        builder.shape_material_kh[shape_id] = kh
                     if not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:

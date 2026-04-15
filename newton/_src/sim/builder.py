@@ -9834,6 +9834,19 @@ class ModelBuilder:
 
                 if shape_type == GeoType.MESH and has_shape_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
+                    # Deferred SDF building: if SDF params were stored but mesh.sdf
+                    # was not built yet (e.g. during USD import), build it now.
+                    if mesh_sdf is None and (sdf_max_resolution is not None or sdf_target_voxel_size is not None):
+                        sdf_kwargs = {"narrow_band_range": tuple(sdf_narrow_band_range)}
+                        if sdf_max_resolution is not None:
+                            sdf_kwargs["max_resolution"] = sdf_max_resolution
+                        if sdf_target_voxel_size is not None:
+                            sdf_kwargs["target_voxel_size"] = sdf_target_voxel_size
+                        sdf_kwargs["margin"] = shape_gap
+                        sdf_kwargs["scale"] = tuple(shape_scale)
+                        sdf_kwargs["texture_format"] = sdf_tex_fmt
+                        shape_src.build_sdf(**sdf_kwargs)
+                        mesh_sdf = shape_src.sdf
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                         if mesh_sdf.texture_block_coords is not None:
