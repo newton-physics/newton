@@ -2873,7 +2873,7 @@ class SolverMuJoCo(SolverBase):
         Corresponds to the equality constraints that are created in MuJoCo from Newton's equality constraints.
         A value of -1 indicates the entry is unmapped -- the MuJoCo constraint was synthesized from a loop-closure
         joint (CONNECT or WELD) rather than from an explicit Newton equality constraint. For CONNECT-only
-        entries see :attr:mjc_eq_to_newton_jnt.
+        entries see :attr:`mjc_eq_to_newton_jnt`.
 
         Shape [nworld, neq], dtype int32."""
         self.mjc_eq_to_newton_jnt: wp.array2d[wp.int32] | None = None
@@ -2925,13 +2925,13 @@ class SolverMuJoCo(SolverBase):
         """Relative translation [m] at the reference pose per equality constraint, ``wp.array[wp.vec3]``, shape ``[equality_constraint_count]``."""
 
         # --- Internal state for anchor computation of joint-synthesized CONNECT constraints ---
-        self.jnt_eq_anchor1: wp.array | None = None
+        self.jnt_eq_anchor1: wp.array2d[wp.vec3] | None = None
         """Body1-local anchor [m] per ``[world, eq]`` for joint-synthesized CONNECT constraints, ``wp.array2d[wp.vec3]``, shape ``[world_count, neq]``."""
-        self.jnt_eq_anchor1_has_axis_offset: wp.array | None = None
+        self.jnt_eq_anchor1_has_axis_offset: wp.array2d[wp.int32] | None = None
         """Whether each ``[world, eq]`` entry is the second hinge CONNECT offset along the joint axis, ``wp.array2d[wp.int32]``, shape ``[world_count, neq]``."""
-        self.jnt_connect_constraint_q_rel: wp.array | None = None
+        self.jnt_connect_constraint_q_rel: wp.array2d[wp.quatf] | None = None
         """Relative rotation per ``[world, eq]`` for joint-synthesized CONNECT constraints, ``wp.array2d[wp.quat]``, shape ``[world_count, neq]``."""
-        self.jnt_connect_constraint_t_rel: wp.array | None = None
+        self.jnt_connect_constraint_t_rel: wp.array2d[wp.vec3] | None = None
         """Relative translation [m] per ``[world, eq]`` for joint-synthesized CONNECT constraints, ``wp.array2d[wp.vec3]``, shape ``[world_count, neq]``."""
 
         self._viewer = None
