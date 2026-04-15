@@ -1525,7 +1525,8 @@ class TestMenagerieBase(unittest.TestCase):
         _mujoco.mj_forward(mj_model, mj_data)
 
         # Zero geom margins for NATIVECCD compatibility — mujoco_warp rejects
-        # non-zero margins at put_model() time (#2106).
+        # non-zero margins at put_model() time for BOX/MESH pairs (#2106).
+        # This mirrors the Newton solver's approach in SolverMuJoCo.
         mj_model.geom_margin[:] = 0.0
 
         # Create mujoco_warp model/data with multiple worlds
