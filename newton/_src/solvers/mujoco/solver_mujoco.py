@@ -2403,9 +2403,9 @@ class SolverMuJoCo(SolverBase):
 
             # Set tendon properties (shared between fixed and spatial)
             if tendon_stiffness_np is not None:
-                t.stiffness = float(tendon_stiffness_np[i])
+                t.stiffness[0] = tendon_stiffness_np[i]
             if tendon_damping_np is not None:
-                t.damping = float(tendon_damping_np[i])
+                t.damping[0] = tendon_damping_np[i]
             if tendon_frictionloss_np is not None:
                 t.frictionloss = float(tendon_frictionloss_np[i])
             if tendon_limited_np is not None:
@@ -4601,9 +4601,9 @@ class SolverMuJoCo(SolverBase):
                     if joint_dof_limit_margin is not None:
                         joint_params["margin"] = joint_dof_limit_margin[ai]
                     if joint_stiffness is not None:
-                        joint_params["stiffness"] = joint_stiffness[ai]
+                        joint_params["stiffness"] = float(joint_stiffness[ai])
                     if joint_damping is not None:
-                        joint_params["damping"] = joint_damping[ai]
+                        joint_params["damping"] = float(joint_damping[ai])
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
@@ -4699,9 +4699,9 @@ class SolverMuJoCo(SolverBase):
                     if joint_dof_limit_margin is not None:
                         joint_params["margin"] = joint_dof_limit_margin[ai]
                     if joint_stiffness is not None:
-                        joint_params["stiffness"] = joint_stiffness[ai] * (np.pi / 180)
+                        joint_params["stiffness"] = float(joint_stiffness[ai] * (np.pi / 180))
                     if joint_damping is not None:
-                        joint_params["damping"] = joint_damping[ai] * (np.pi / 180)
+                        joint_params["damping"] = float(joint_damping[ai] * (np.pi / 180))
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
