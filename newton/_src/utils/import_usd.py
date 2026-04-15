@@ -2551,6 +2551,9 @@ def parse_usd(
                 sdf_target_voxel_size = R.get_value(
                     prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
                 )
+                # Schema default is 0 meaning "use sdfMaxResolution instead"
+                if sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+                    sdf_target_voxel_size = None
                 if sdf_target_voxel_size is None:
                     sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
 
