@@ -301,7 +301,7 @@ class MeshGL:
         # albedo
         gl.glVertexAttrib3f(7, 0.7, 0.5, 0.3)
         # material = (roughness, metallic, checker, texture_enable)
-        gl.glVertexAttrib4f(8, 0.85, 0.0, 0.0, 0.0)
+        gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 0.0)
 
         gl.glBindVertexArray(0)
 
@@ -1927,11 +1927,11 @@ class RendererGL:
         gl = RendererGL.gl
         style = self._active_style
 
-        if self.draw_wireframe:
-            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
-
         if self.draw_sky and style.draw_sky:
             self._draw_sky()
+
+        if self.draw_wireframe:
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
 
         shader = self._style_shaders[style.name]
         shader.update(**self._build_shader_kwargs())

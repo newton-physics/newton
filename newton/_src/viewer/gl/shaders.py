@@ -533,6 +533,7 @@ class ShaderShape(ShaderGL):
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
+            self.loc_enable_shadows = self._get_uniform_location("enable_shadows")
 
     def update(
         self,
@@ -575,6 +576,7 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
             self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
             self._gl.glUniform1f(self.loc_exposure, exposure)
+            self._gl.glUniform1i(self.loc_enable_shadows, int(enable_shadows))
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)
@@ -718,6 +720,9 @@ uniform mat4 light_space_matrix;
 uniform float shadow_radius;
 uniform float shadow_extents;
 uniform float exposure;
+uniform float diffuse_scale;
+uniform float specular_scale;
+uniform int enable_shadows;
 uniform int up_axis;
 
 const float PI = 3.14159265359;
@@ -845,7 +850,7 @@ void main()
 
     // Key directional light (primary source of contrast / shape definition)
     float NdotL = max(dot(N, L), 0.0);
-    vec3 diffuse = albedo * light_color * NdotL * 1.10;
+    vec3 diffuse = albedo * light_color * NdotL * 1.10 * diffuse_scale;
 
     // Fill light: perpendicular to key in the horizontal plane, slightly elevated.
     // This softly illuminates faces that are in shadow of the key without
@@ -870,7 +875,7 @@ void main()
     float NdotH = max(dot(N, H), 0.0);
     float spec_reflectance = mix(0.30, 1.0, metallic);
     vec3  spec_color = mix(vec3(spec_reflectance), albedo, metallic);
-    vec3  spec = spec_color * light_color * pow(NdotH, shininess) * NdotL;
+    vec3  spec = spec_color * light_color * pow(NdotH, shininess) * NdotL * specular_scale;
 
     // Studio-style rim highlight
     float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.07;
@@ -883,7 +888,7 @@ void main()
     float NdotV_clamp = max(dot(N, V), 0.0);
     vec3 catch_light = albedo * light_color * 0.18 * pow(NdotV_clamp, 3.0);
 
-    float shadow = ShadowCalculation();
+    float shadow = (enable_shadows != 0) ? ShadowCalculation() : 0.0;
     vec3 color = ambient + (1.0 - shadow) * (diffuse + spec) + rim_color + catch_light;
 
     // Apply exposure for brightness control (no ACES — studio uses lower
