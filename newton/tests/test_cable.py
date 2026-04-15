@@ -3282,7 +3282,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
 
     fps = 60.0
     frame_dt = 1.0 / fps
-    sim_substeps = 1
+    sim_substeps = 2
     sim_dt = frame_dt / sim_substeps
 
     # Record initial pose
@@ -3444,7 +3444,7 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     z_init_min = float(np.min(q_init[rod_bodies, 2]))
 
     frame_dt = 1.0 / 60.0
-    sim_substeps = 5
+    sim_substeps = 6
     sim_dt = frame_dt / sim_substeps
     num_steps = 20
 
@@ -3526,7 +3526,7 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
     frame_dt = 1.0 / 60.0
-    sim_substeps = 5
+    sim_substeps = 6
     sim_dt = frame_dt / sim_substeps
     num_steps = 20
 

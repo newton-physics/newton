@@ -42,6 +42,8 @@
 - Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
 - Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
 - Add `ViewerBase.log_arrows()` for arrow rendering (wide line + arrowhead) in the GL viewer with a dedicated geometry shader
+- Add `SolverVBD.set_joint_constraint_mode()` and `SolverVBD.JointSlot` for runtime hard/soft constraint toggling per joint
+- Add `rigid_contact_hard`, `rigid_contact_history`, `rigid_avbd_contact_alpha`, `rigid_avbd_joint_alpha` params to `SolverVBD` for augmented-Lagrangian contact and joint control
 
 ### Changed
 
@@ -73,6 +75,8 @@
 - Pin `mujoco` and `mujoco-warp` dependencies to `~=3.6.0`
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
+- Reduce default `stretch_stiffness` from `1.0e9` to `1.0e4` in `add_rod()` and `add_rod_graph()`
+- VBD solver uses augmented-Lagrangian hard constraints for body-body contacts by default (`rigid_contact_hard=True`)
 
 ### Deprecated
 
@@ -90,6 +94,7 @@
 - Deprecate `ModelBuilder.add_shape_ellipsoid()` parameters `a`, `b`, `c` in favor of `rx`, `ry`, `rz`
 - Deprecate passing a `Gaussian` as the second positional argument to `ModelBuilder.add_shape_gaussian()`; use the `gaussian=` keyword argument instead
 - Deprecate `SensorTiledCamera.utils.assign_random_colors_per_world()` and `assign_random_colors_per_shape()` in favor of per-shape colors via `ModelBuilder.add_shape_*(color=...)`
+- Deprecate `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
 
 ### Removed
 
