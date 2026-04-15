@@ -6,6 +6,8 @@
 
 - Add `SolverXPBD.update_contacts()` to populate `contacts.force` with per-contact spatial forces (linear force and torque) derived from XPBD constraint impulses
 - Raise process priority automatically in `--benchmark` mode for more stable measurements; add `--realtime` for maximum priority.
+- Add `ModelBuilder.default_shape_color` fallback so shapes without an explicit or imported color can use a user-configured default instead of the per-shape palette
+- Import per-shape authored color from USD stages into `ModelBuilder.shape_color`
 - Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
 - Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
 - Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
@@ -32,6 +34,8 @@
 - Fix SDF hydroelastic broadphase scatter kernel using a grid-stride loop with binary search instead of per-pair thread launch
 - Fix box support-map sign flips from quaternion rotation noise (~1e-14) producing invalid GJK/MPR contacts for face-touching boxes with non-trivial base rotations
 - Fix USD import of multi-DOF joints from MuJoCo-converted assets where multiple revolute joints between the same two bodies caused false cycle detection; merge them into D6 joints with correct DOF label mapping for MjcActuator target resolution
+- Fix USD import to honor authored `visibility = "invisible"` when deciding whether visual and collider shapes are rendered
+- Fix standalone Gaussian splat world-matrix lookup to use the Gaussian prim instead of the parent prim
 - Fix ViewerViser mesh popping artifacts caused by viser's automatic LOD simplification creating holes in complex geometry
 
 ## [1.1.0] - 2026-04-13
@@ -76,8 +80,6 @@
 - Export `ViewerBase` from `newton.viewer` public API
 - Add `custom_attributes` argument to `ModelBuilder.add_shape_convex_hull()`
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
-- Add `ModelBuilder.default_shape_color` fallback so shapes without an explicit or imported color can use a user-configured default instead of the per-shape palette
-- Import per-shape authored color from USD stages into `ModelBuilder.shape_color`
 - Add `enable_multiccd` parameter to `SolverMuJoCo` for multi-CCD contact generation (up to 4 contact points per geom pair)
 - Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
 - Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
@@ -149,8 +151,6 @@
 - Fix MJCF mesh scale resolution to use the mesh asset's own class rather than the geom's default class, avoiding incorrect vertex scaling for models like Robotiq 2F-85 V4
 - Fix articulated bodies drifting laterally on the ground in XPBD solver by solving rigid contacts before joints
 - Fix `hide_collision_shapes=True` not hiding collision meshes that have bound PBR materials
-- Fix USD import to honor authored `visibility = "invisible"` when deciding whether visual and collider shapes are rendered
-- Fix standalone Gaussian splat world-matrix lookup to use the Gaussian prim instead of the parent prim
 - Filter inactive particles in viewer so only particles with `ParticleFlags.ACTIVE` are rendered
 - Fix concurrent asset download races on Windows by using content-addressed cache directories
 - Fix body `gravcomp` not being written to the MuJoCo spec, causing it to be absent from XML saved via `save_to_mjcf`
