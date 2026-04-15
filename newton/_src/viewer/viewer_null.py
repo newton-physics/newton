@@ -60,10 +60,10 @@ class ViewerNull(ViewerBase):
     def log_mesh(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3),
-        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
-        normals: wp.array(dtype=wp.vec3) | None = None,
-        uvs: wp.array(dtype=wp.vec2) | None = None,
+        points: wp.array[wp.vec3],
+        indices: wp.array[wp.int32] | wp.array[wp.uint32],
+        normals: wp.array[wp.vec3] | None = None,
+        uvs: wp.array[wp.vec2] | None = None,
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
@@ -88,10 +88,10 @@ class ViewerNull(ViewerBase):
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
     ):
         """
@@ -181,11 +181,9 @@ class ViewerNull(ViewerBase):
     def log_lines(
         self,
         name: str,
-        starts: wp.array(dtype=wp.vec3) | None,
-        ends: wp.array(dtype=wp.vec3) | None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ),
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
         width: float = 0.01,
         hidden: bool = False,
     ):
@@ -206,11 +204,9 @@ class ViewerNull(ViewerBase):
     def log_points(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3) | None,
-        radii: wp.array(dtype=wp.float32) | float | None = None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ) = None,
+        points: wp.array[wp.vec3] | None,
+        radii: wp.array[wp.float32] | float | None = None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
     ):
         """
@@ -226,7 +222,7 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
+    def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
         """
         No-op implementation for logging a generic array.
 
@@ -237,13 +233,15 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False, smoothing: int = 1):
         """
         No-op implementation for logging a scalar value.
 
         Args:
             name: Name of the scalar.
             value: The scalar value.
+            clear: Ignored by this backend.
+            smoothing: Ignored by this backend.
         """
         pass
 

@@ -530,8 +530,8 @@ def get_custom_attribute_values(
 ) -> dict[str, Any]:
     """
     Get custom attribute values from a USD prim and a set of known custom attributes.
-    Returns a dictionary mapping from :attr:`ModelBuilder.CustomAttribute.key` to the converted Warp value.
-    The conversion is performed by :meth:`ModelBuilder.CustomAttribute.usd_value_transformer`.
+    Returns a dictionary mapping from :attr:`~newton.ModelBuilder.CustomAttribute.key` to the converted Warp value.
+    The conversion is performed by the ``CustomAttribute.usd_value_transformer`` callable.
 
     The context dictionary passed to the transformer function always contains:
     - ``"prim"``: The USD prim to query.
@@ -1718,11 +1718,9 @@ def _get_bound_material(target_prim: Usd.Prim) -> UsdShade.Material | None:
     if not rels:
         return None
     rels.sort(
-        key=lambda rel: 0
-        if rel.GetName() == "material:binding"
-        else 1
-        if rel.GetName() == "material:binding:preview"
-        else 2
+        key=lambda rel: (
+            0 if rel.GetName() == "material:binding" else 1 if rel.GetName() == "material:binding:preview" else 2
+        )
     )
     for rel in rels:
         targets = rel.GetTargets()
@@ -1866,6 +1864,17 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     if positions is None:
         raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
 
+    sorting_mode = Gaussian.SortingMode.RAY_HIT_DISTANCE
+    if usd_sorting_mode := get_attribute(prim, "sortingModeHint"):
+        if usd_sorting_mode == "zDepth":
+            sorting_mode = Gaussian.SortingMode.Z_DEPTH
+        elif usd_sorting_mode == "cameraDistance":
+            sorting_mode = Gaussian.SortingMode.CAMERA_DISTANCE
+        elif usd_sorting_mode == "rayHitDistance":
+            sorting_mode = Gaussian.SortingMode.RAY_HIT_DISTANCE
+        else:
+            raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
+
     return Gaussian(
         positions=positions,
         rotations=_get_float_array_attr("orientations"),
@@ -1874,4 +1883,5 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
         sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
         min_response=min_response,
+        sorting_mode=sorting_mode,
     )

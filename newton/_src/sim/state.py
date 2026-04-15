@@ -112,7 +112,8 @@ class State:
         """Generalized joint position coordinates [m or rad, depending on joint type], shape (joint_coord_count,), dtype float."""
 
         self.joint_qd: wp.array | None = None
-        """Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float."""
+        """Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float.
+        For FREE and DISTANCE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
 
     def clear_forces(self) -> None:
         """

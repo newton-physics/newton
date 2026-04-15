@@ -338,7 +338,7 @@ class TestWorldGroupBroadphaseKernels(unittest.TestCase):
         for world_a, world_b, col_a, col_b, expected in test_cases:
 
             @wp.kernel
-            def test_kernel(world_a: int, world_b: int, col_a: int, col_b: int, result: wp.array(dtype=bool)):
+            def test_kernel(world_a: int, world_b: int, col_a: int, col_b: int, result: wp.array[bool]):
                 result[0] = test_world_and_group_pair(world_a, world_b, col_a, col_b)
 
             result = wp.zeros(1, dtype=bool)

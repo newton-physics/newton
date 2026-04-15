@@ -24,14 +24,14 @@ from newton.utils import bourke_color_map
 
 
 @wp.kernel
-def loss_kernel(pos: wp.array(dtype=wp.vec3), target: wp.vec3, loss: wp.array(dtype=float)):
+def loss_kernel(pos: wp.array[wp.vec3], target: wp.vec3, loss: wp.array[float]):
     # distance to target
     delta = pos[0] - target
     loss[0] = wp.dot(delta, delta)
 
 
 @wp.kernel
-def step_kernel(x: wp.array(dtype=wp.vec3), grad: wp.array(dtype=wp.vec3), alpha: float):
+def step_kernel(x: wp.array[wp.vec3], grad: wp.array[wp.vec3], alpha: float):
     tid = wp.tid()
 
     # gradient descent step

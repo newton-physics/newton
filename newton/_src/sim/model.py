@@ -138,15 +138,15 @@ class Model:
         self.world_count: int = 0
         """Number of worlds added to the ModelBuilder."""
 
-        self.particle_q: wp.array(dtype=wp.vec3) | None = None
+        self.particle_q: wp.array[wp.vec3] | None = None
         """Particle positions [m], shape [particle_count, 3], float."""
-        self.particle_qd: wp.array(dtype=wp.vec3) | None = None
+        self.particle_qd: wp.array[wp.vec3] | None = None
         """Particle velocities [m/s], shape [particle_count, 3], float."""
-        self.particle_mass: wp.array(dtype=wp.float32) | None = None
+        self.particle_mass: wp.array[wp.float32] | None = None
         """Particle mass [kg], shape [particle_count], float."""
-        self.particle_inv_mass: wp.array(dtype=wp.float32) | None = None
+        self.particle_inv_mass: wp.array[wp.float32] | None = None
         """Particle inverse mass [1/kg], shape [particle_count], float."""
-        self.particle_radius: wp.array(dtype=wp.float32) | None = None
+        self.particle_radius: wp.array[wp.float32] | None = None
         """Particle radius [m], shape [particle_count], float."""
         self.particle_max_radius: float = 0.0
         """Maximum particle radius [m] (useful for HashGrid construction)."""
@@ -164,13 +164,13 @@ class Model:
         """Particle adhesion strength [m]."""
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
-        self.particle_flags: wp.array(dtype=wp.int32) | None = None
+        self.particle_flags: wp.array[wp.int32] | None = None
         """Particle enabled state, shape [particle_count], int."""
         self.particle_max_velocity: float = 1e5
         """Maximum particle velocity [m/s] (to prevent instability)."""
-        self.particle_world: wp.array(dtype=wp.int32) | None = None
+        self.particle_world: wp.array[wp.int32] | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
-        self.particle_world_start: wp.array(dtype=wp.int32) | None = None
+        self.particle_world_start: wp.array[wp.int32] | None = None
         """Start index of the first particle per world, shape [world_count + 2], int.
 
         The entries at indices ``0`` to ``world_count - 1`` store the start index of
@@ -190,71 +190,71 @@ class Model:
 
         self.shape_label: list[str] = []
         """List of labels for each shape."""
-        self.shape_transform: wp.array(dtype=wp.transform) | None = None
+        self.shape_transform: wp.array[wp.transform] | None = None
         """Rigid shape transforms [m, unitless quaternion], shape [shape_count, 7], float."""
-        self.shape_body: wp.array(dtype=wp.int32) | None = None
+        self.shape_body: wp.array[wp.int32] | None = None
         """Rigid shape body index, shape [shape_count], int."""
-        self.shape_flags: wp.array(dtype=wp.int32) | None = None
+        self.shape_flags: wp.array[wp.int32] | None = None
         """Rigid shape flags, shape [shape_count], int."""
         self.body_shapes: dict[int, list[int]] = {}
         """Mapping from body index to list of attached shape indices."""
 
         # Shape material properties
-        self.shape_material_ke: wp.array(dtype=wp.float32) | None = None
+        self.shape_material_ke: wp.array[wp.float32] | None = None
         """Shape contact elastic stiffness [N/m], shape [shape_count], float."""
-        self.shape_material_kd: wp.array(dtype=wp.float32) | None = None
+        self.shape_material_kd: wp.array[wp.float32] | None = None
         """Shape contact damping stiffness, shape [shape_count], float.
         Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
         but multiplied by ke as a relative damping factor by VBD."""
-        self.shape_material_kf: wp.array(dtype=wp.float32) | None = None
+        self.shape_material_kf: wp.array[wp.float32] | None = None
         """Shape contact friction stiffness [N·s/m], shape [shape_count], float."""
-        self.shape_material_ka: wp.array(dtype=wp.float32) | None = None
+        self.shape_material_ka: wp.array[wp.float32] | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
-        self.shape_material_mu: wp.array(dtype=wp.float32) | None = None
+        self.shape_material_mu: wp.array[wp.float32] | None = None
         """Shape coefficient of friction [dimensionless], shape [shape_count], float."""
-        self.shape_material_restitution: wp.array(dtype=wp.float32) | None = None
+        self.shape_material_restitution: wp.array[wp.float32] | None = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
-        self.shape_material_mu_torsional: wp.array(dtype=wp.float32) | None = None
+        self.shape_material_mu_torsional: wp.array[wp.float32] | None = None
         """Shape torsional friction coefficient [dimensionless] (resistance to spinning at contact point), shape [shape_count], float."""
-        self.shape_material_mu_rolling: wp.array(dtype=wp.float32) | None = None
+        self.shape_material_mu_rolling: wp.array[wp.float32] | None = None
         """Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float."""
-        self.shape_material_kh: wp.array(dtype=wp.float32) | None = None
+        self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Contact stiffness is computed as ``area * kh``, yielding an effective spring constant [N/m]."""
-        self.shape_gap: wp.array(dtype=wp.float32) | None = None
+        self.shape_gap: wp.array[wp.float32] | None = None
         """Shape additional contact detection gap [m], shape [shape_count], float."""
 
         # Shape geometry properties
-        self.shape_type: wp.array(dtype=wp.int32) | None = None
+        self.shape_type: wp.array[wp.int32] | None = None
         """Shape geometry type, shape [shape_count], int32."""
-        self.shape_is_solid: wp.array(dtype=wp.bool) | None = None
+        self.shape_is_solid: wp.array[wp.bool] | None = None
         """Whether shape is solid or hollow, shape [shape_count], bool."""
-        self.shape_margin: wp.array(dtype=wp.float32) | None = None
+        self.shape_margin: wp.array[wp.float32] | None = None
         """Shape surface margin [m], shape [shape_count], float."""
         self.shape_source: list[object | None] = []
         """List of source geometry objects (e.g., :class:`~newton.Mesh`) used for broadphase collision detection and rendering, shape [shape_count]."""
-        self.shape_source_ptr: wp.array(dtype=wp.uint64) | None = None
+        self.shape_source_ptr: wp.array[wp.uint64] | None = None
         """Geometry source pointers to be used inside the Warp kernels which are generated by finalizing the geometry objects, see for example :meth:`newton.Mesh.finalize`, shape [shape_count], uint64."""
-        self.shape_scale: wp.array(dtype=wp.vec3) | None = None
+        self.shape_scale: wp.array[wp.vec3] | None = None
         """Shape 3D scale, shape [shape_count], vec3."""
-        self.shape_color: wp.array(dtype=wp.vec3) | None = None
+        self.shape_color: wp.array[wp.vec3] | None = None
         """Shape display colors [0, 1], shape [shape_count], vec3."""
-        self.shape_filter: wp.array(dtype=wp.int32) | None = None
+        self.shape_filter: wp.array[wp.int32] | None = None
         """Shape filter group, shape [shape_count], int."""
 
-        self.shape_collision_group: wp.array(dtype=wp.int32) | None = None
+        self.shape_collision_group: wp.array[wp.int32] | None = None
         """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices (s1, s2) that should not collide. Pairs are in canonical order: s1 < s2."""
-        self.shape_collision_radius: wp.array(dtype=wp.float32) | None = None
+        self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
-        self.shape_contact_pairs: wp.array(dtype=wp.vec2i) | None = None
+        self.shape_contact_pairs: wp.array[wp.vec2i] | None = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
         self.shape_contact_pair_count: int = 0
         """Number of shape contact pairs."""
-        self.shape_world: wp.array(dtype=wp.int32) | None = None
+        self.shape_world: wp.array[wp.int32] | None = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
-        self.shape_world_start: wp.array(dtype=wp.int32) | None = None
+        self.shape_world_start: wp.array[wp.int32] | None = None
         """Start index of the first shape per world, shape [world_count + 2], int.
 
         The entries at indices ``0`` to ``world_count - 1`` store the start index of
@@ -280,19 +280,25 @@ class Model:
         """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
 
         # Heightfield collision data (compact table + per-shape index indirection)
-        self.shape_heightfield_index: wp.array(dtype=wp.int32) | None = None
+        self.shape_heightfield_index: wp.array[wp.int32] | None = None
         """Per-shape heightfield index, shape [shape_count]. -1 means shape has no heightfield."""
-        self.heightfield_data: wp.array(dtype=HeightfieldData) | None = None
+        self.heightfield_data: wp.array[HeightfieldData] | None = None
         """Compact array of HeightfieldData structs, one per actual heightfield shape."""
-        self.heightfield_elevations: wp.array(dtype=wp.float32) | None = None
+        self.heightfield_elevations: wp.array[wp.float32] | None = None
         """Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset."""
 
+        # Mesh edge data (packed array + per-shape slice)
+        self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
+        """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
+        self.shape_edge_range: wp.array[wp.vec2i] | None = None
+        """Per-shape (start, count) into mesh_edge_indices, shape [shape_count]. (-1,0) if no edges."""
+
         # SDF storage (compact table + per-shape index indirection)
-        self.shape_sdf_index: wp.array(dtype=wp.int32) | None = None
+        self.shape_sdf_index: wp.array[wp.int32] | None = None
         """Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF."""
-        self.sdf_block_coords: wp.array(dtype=wp.vec3us) | None = None
+        self.sdf_block_coords: wp.array[wp.vec3us] | None = None
         """Compact flat array of active SDF block coordinates."""
-        self.sdf_index2blocks: wp.array(dtype=wp.vec2i) | None = None
+        self.sdf_index2blocks: wp.array[wp.vec2i] | None = None
         """Per-SDF [start, end) indices into sdf_block_coords, shape [num_sdfs, 2]."""
 
         # Texture SDF storage
@@ -308,100 +314,101 @@ class Model:
         # Local AABB and voxel grid for contact reduction
         # Note: These are stored in Model (not Contacts) because they are static geometry properties
         # computed once during finalization, not per-frame contact data.
-        self.shape_collision_aabb_lower: wp.array(dtype=wp.vec3) | None = None
+        self.shape_collision_aabb_lower: wp.array[wp.vec3] | None = None
         """Scaled local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
         Includes shape scale but excludes margin and gap (those are applied at runtime).
         Used for broadphase AABB computation and voxel-based contact reduction."""
-        self.shape_collision_aabb_upper: wp.array(dtype=wp.vec3) | None = None
+        self.shape_collision_aabb_upper: wp.array[wp.vec3] | None = None
         """Scaled local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
         Includes shape scale but excludes margin and gap (those are applied at runtime).
         Used for broadphase AABB computation and voxel-based contact reduction."""
-        self._shape_voxel_resolution: wp.array(dtype=wp.vec3i) | None = None
+        self._shape_voxel_resolution: wp.array[wp.vec3i] | None = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
-        self.spring_indices: wp.array(dtype=wp.int32) | None = None
+        self.spring_indices: wp.array[wp.int32] | None = None
         """Particle spring indices, shape [spring_count*2], int."""
-        self.spring_rest_length: wp.array(dtype=wp.float32) | None = None
+        self.spring_rest_length: wp.array[wp.float32] | None = None
         """Particle spring rest length [m], shape [spring_count], float."""
-        self.spring_stiffness: wp.array(dtype=wp.float32) | None = None
+        self.spring_stiffness: wp.array[wp.float32] | None = None
         """Particle spring stiffness [N/m], shape [spring_count], float."""
-        self.spring_damping: wp.array(dtype=wp.float32) | None = None
+        self.spring_damping: wp.array[wp.float32] | None = None
         """Particle spring damping [N·s/m], shape [spring_count], float."""
-        self.spring_control: wp.array(dtype=wp.float32) | None = None
+        self.spring_control: wp.array[wp.float32] | None = None
         """Particle spring activation [dimensionless], shape [spring_count], float."""
-        self.spring_constraint_lambdas: wp.array(dtype=wp.float32) | None = None
+        self.spring_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
 
-        self.tri_indices: wp.array(dtype=wp.int32) | None = None
+        self.tri_indices: wp.array[wp.int32] | None = None
         """Triangle element indices, shape [tri_count*3], int."""
-        self.tri_poses: wp.array(dtype=wp.mat22) | None = None
+        self.tri_poses: wp.array[wp.mat22] | None = None
         """Triangle element rest pose, shape [tri_count, 2, 2], float."""
-        self.tri_activations: wp.array(dtype=wp.float32) | None = None
+        self.tri_activations: wp.array[wp.float32] | None = None
         """Triangle element activations, shape [tri_count], float."""
-        self.tri_materials: wp.array(dtype=wp.float32, ndim=2) | None = None
+        self.tri_materials: wp.array2d[wp.float32] | None = None
         """Triangle element materials, shape [tri_count, 5], float.
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s], [3] k_drag [Pa·s], [4] k_lift [Pa].
         Stored per-element; kernels multiply by rest area internally."""
-        self.tri_areas: wp.array(dtype=wp.float32) | None = None
+        self.tri_areas: wp.array[wp.float32] | None = None
         """Triangle element rest areas [m²], shape [tri_count], float."""
 
-        self.edge_indices: wp.array(dtype=wp.int32) | None = None
+        self.edge_indices: wp.array[wp.int32] | None = None
         """Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge."""
-        self.edge_rest_angle: wp.array(dtype=wp.float32) | None = None
+        self.edge_rest_angle: wp.array[wp.float32] | None = None
         """Bending edge rest angle [rad], shape [edge_count], float."""
-        self.edge_rest_length: wp.array(dtype=wp.float32) | None = None
+        self.edge_rest_length: wp.array[wp.float32] | None = None
         """Bending edge rest length [m], shape [edge_count], float."""
-        self.edge_bending_properties: wp.array(dtype=wp.float32, ndim=2) | None = None
+        self.edge_bending_properties: wp.array2d[wp.float32] | None = None
         """Bending edge stiffness and damping, shape [edge_count, 2], float.
         Components: [0] stiffness [N·m/rad], [1] damping [N·s]."""
-        self.edge_constraint_lambdas: wp.array(dtype=wp.float32) | None = None
+        self.edge_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for edge constraints (internal use)."""
 
-        self.tet_indices: wp.array(dtype=wp.int32) | None = None
+        self.tet_indices: wp.array[wp.int32] | None = None
         """Tetrahedral element indices, shape [tet_count*4], int."""
-        self.tet_poses: wp.array(dtype=wp.mat33) | None = None
+        self.tet_poses: wp.array[wp.mat33] | None = None
         """Tetrahedral rest poses, shape [tet_count, 3, 3], float."""
-        self.tet_activations: wp.array(dtype=wp.float32) | None = None
+        self.tet_activations: wp.array[wp.float32] | None = None
         """Tetrahedral volumetric activations, shape [tet_count], float."""
-        self.tet_materials: wp.array(dtype=wp.float32, ndim=2) | None = None
+        self.tet_materials: wp.array2d[wp.float32] | None = None
         """Tetrahedral elastic parameters in form :math:`k_{mu}, k_{lambda}, k_{damp}`, shape [tet_count, 3].
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
         Stored per-element; kernels multiply by rest volume internally."""
 
-        self.muscle_start: wp.array(dtype=wp.int32) | None = None
+        self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
-        self.muscle_params: wp.array(dtype=wp.float32, ndim=2) | None = None
+        self.muscle_params: wp.array2d[wp.float32] | None = None
         """Muscle parameters, shape [muscle_count, 5], float.
         Components: [0] f0 [N] (force scaling), [1] lm [m] (muscle fiber length), [2] lt [m] (tendon slack length),
         [3] lmax [m] (max efficient length), [4] pen [dimensionless] (penalty factor)."""
-        self.muscle_bodies: wp.array(dtype=wp.int32) | None = None
+        self.muscle_bodies: wp.array[wp.int32] | None = None
         """Body indices of the muscle waypoints, int."""
-        self.muscle_points: wp.array(dtype=wp.vec3) | None = None
+        self.muscle_points: wp.array[wp.vec3] | None = None
         """Local body offset of the muscle waypoints, float."""
-        self.muscle_activations: wp.array(dtype=wp.float32) | None = None
+        self.muscle_activations: wp.array[wp.float32] | None = None
         """Muscle activations [dimensionless, 0 to 1], shape [muscle_count], float."""
 
-        self.body_q: wp.array(dtype=wp.transform) | None = None
+        self.body_q: wp.array[wp.transform] | None = None
         """Rigid body poses [m, unitless quaternion] for state initialization, shape [body_count, 7], float."""
-        self.body_qd: wp.array(dtype=wp.spatial_vector) | None = None
-        """Rigid body velocities [m/s, rad/s] for state initialization, shape [body_count, 6], float."""
-        self.body_com: wp.array(dtype=wp.vec3) | None = None
+        self.body_qd: wp.array[wp.spatial_vector] | None = None
+        """Rigid body velocities [m/s, rad/s] for state initialization, shape [body_count, 6], float.
+        The linear component is the body COM velocity in world frame."""
+        self.body_com: wp.array[wp.vec3] | None = None
         """Rigid body center of mass [m] (in local frame), shape [body_count, 3], float."""
-        self.body_inertia: wp.array(dtype=wp.mat33) | None = None
+        self.body_inertia: wp.array[wp.mat33] | None = None
         """Rigid body inertia tensor [kg·m²] (relative to COM), shape [body_count, 3, 3], float."""
-        self.body_inv_inertia: wp.array(dtype=wp.mat33) | None = None
+        self.body_inv_inertia: wp.array[wp.mat33] | None = None
         """Rigid body inverse inertia tensor [1/(kg·m²)] (relative to COM), shape [body_count, 3, 3], float."""
-        self.body_mass: wp.array(dtype=wp.float32) | None = None
+        self.body_mass: wp.array[wp.float32] | None = None
         """Rigid body mass [kg], shape [body_count], float."""
-        self.body_inv_mass: wp.array(dtype=wp.float32) | None = None
+        self.body_inv_mass: wp.array[wp.float32] | None = None
         """Rigid body inverse mass [1/kg], shape [body_count], float."""
-        self.body_flags: wp.array(dtype=wp.int32) | None = None
+        self.body_flags: wp.array[wp.int32] | None = None
         """Rigid body flags (:class:`~newton.BodyFlags`), shape [body_count], int."""
         self.body_label: list[str] = []
         """Rigid body labels, shape [body_count], str."""
-        self.body_world: wp.array(dtype=wp.int32) | None = None
+        self.body_world: wp.array[wp.int32] | None = None
         """World index for each body, shape [body_count], int. Global entities have index -1."""
-        self.body_world_start: wp.array(dtype=wp.int32) | None = None
+        self.body_world_start: wp.array[wp.int32] | None = None
         """Start index of the first body per world, shape [world_count + 2], int.
 
         The entries at indices ``0`` to ``world_count - 1`` store the start index of
@@ -419,73 +426,75 @@ class Model:
             num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]
         """
 
-        self.joint_q: wp.array(dtype=wp.float32) | None = None
+        self.joint_q: wp.array[wp.float32] | None = None
         """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
-        self.joint_qd: wp.array(dtype=wp.float32) | None = None
-        """Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float."""
-        self.joint_f: wp.array(dtype=wp.float32) | None = None
-        """Generalized joint forces [N or N·m, depending on joint type] for state initialization, shape [joint_dof_count], float."""
-        self.joint_target_pos: wp.array(dtype=wp.float32) | None = None
+        self.joint_qd: wp.array[wp.float32] | None = None
+        """Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float.
+        For FREE and DISTANCE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
+        self.joint_f: wp.array[wp.float32] | None = None
+        """Default generalized joint forces [N or N·m, depending on joint type] used to initialize :attr:`newton.Control.joint_f`, shape [joint_dof_count], float.
+        For FREE and DISTANCE joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
+        self.joint_target_pos: wp.array[wp.float32] | None = None
         """Generalized joint position targets [m or rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_target_vel: wp.array(dtype=wp.float32) | None = None
+        self.joint_target_vel: wp.array[wp.float32] | None = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_act: wp.array(dtype=wp.float32) | None = None
+        self.joint_act: wp.array[wp.float32] | None = None
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
-        self.joint_type: wp.array(dtype=wp.int32) | None = None
+        self.joint_type: wp.array[wp.int32] | None = None
         """Joint type, shape [joint_count], int."""
-        self.joint_articulation: wp.array(dtype=wp.int32) | None = None
+        self.joint_articulation: wp.array[wp.int32] | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
-        self.joint_parent: wp.array(dtype=wp.int32) | None = None
+        self.joint_parent: wp.array[wp.int32] | None = None
         """Joint parent body indices, shape [joint_count], int."""
-        self.joint_child: wp.array(dtype=wp.int32) | None = None
+        self.joint_child: wp.array[wp.int32] | None = None
         """Joint child body indices, shape [joint_count], int."""
-        self.joint_ancestor: wp.array(dtype=wp.int32) | None = None
+        self.joint_ancestor: wp.array[wp.int32] | None = None
         """Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int."""
-        self.joint_X_p: wp.array(dtype=wp.transform) | None = None
+        self.joint_X_p: wp.array[wp.transform] | None = None
         """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""
-        self.joint_X_c: wp.array(dtype=wp.transform) | None = None
+        self.joint_X_c: wp.array[wp.transform] | None = None
         """Joint mass frame in child frame [m, unitless quaternion], shape [joint_count, 7], float."""
-        self.joint_axis: wp.array(dtype=wp.vec3) | None = None
+        self.joint_axis: wp.array[wp.vec3] | None = None
         """Joint axis in child frame, shape [joint_dof_count, 3], float."""
-        self.joint_armature: wp.array(dtype=wp.float32) | None = None
+        self.joint_armature: wp.array[wp.float32] | None = None
         """Armature [kg·m² (rotational) or kg (translational)] for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self.joint_target_mode: wp.array(dtype=wp.int32) | None = None
+        self.joint_target_mode: wp.array[wp.int32] | None = None
         """Joint target mode per DOF, see :class:`newton.JointTargetMode`. Shape [joint_dof_count], dtype int32."""
-        self.joint_target_ke: wp.array(dtype=wp.float32) | None = None
+        self.joint_target_ke: wp.array[wp.float32] | None = None
         """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_target_kd: wp.array(dtype=wp.float32) | None = None
+        self.joint_target_kd: wp.array[wp.float32] | None = None
         """Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_effort_limit: wp.array(dtype=wp.float32) | None = None
+        self.joint_effort_limit: wp.array[wp.float32] | None = None
         """Joint effort (force/torque) limits [N or N·m, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_velocity_limit: wp.array(dtype=wp.float32) | None = None
+        self.joint_velocity_limit: wp.array[wp.float32] | None = None
         """Joint velocity limits [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_friction: wp.array(dtype=wp.float32) | None = None
+        self.joint_friction: wp.array[wp.float32] | None = None
         """Joint friction force/torque [N or N·m, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_dof_dim: wp.array(dtype=wp.int32, ndim=2) | None = None
+        self.joint_dof_dim: wp.array2d[wp.int32] | None = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
-        self.joint_enabled: wp.array(dtype=wp.bool) | None = None
+        self.joint_enabled: wp.array[wp.bool] | None = None
         """Controls which joint is simulated (bodies become disconnected if False, supported by :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
-        self.joint_limit_lower: wp.array(dtype=wp.float32) | None = None
+        self.joint_limit_lower: wp.array[wp.float32] | None = None
         """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_limit_upper: wp.array(dtype=wp.float32) | None = None
+        self.joint_limit_upper: wp.array[wp.float32] | None = None
         """Joint upper position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_limit_ke: wp.array(dtype=wp.float32) | None = None
+        self.joint_limit_ke: wp.array[wp.float32] | None = None
         """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self.joint_limit_kd: wp.array(dtype=wp.float32) | None = None
+        self.joint_limit_kd: wp.array[wp.float32] | None = None
         """Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
-        self.joint_twist_lower: wp.array(dtype=wp.float32) | None = None
+        self.joint_twist_lower: wp.array[wp.float32] | None = None
         """Joint lower twist limit [rad], shape [joint_count], float."""
-        self.joint_twist_upper: wp.array(dtype=wp.float32) | None = None
+        self.joint_twist_upper: wp.array[wp.float32] | None = None
         """Joint upper twist limit [rad], shape [joint_count], float."""
-        self.joint_q_start: wp.array(dtype=wp.int32) | None = None
+        self.joint_q_start: wp.array[wp.int32] | None = None
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
-        self.joint_qd_start: wp.array(dtype=wp.int32) | None = None
+        self.joint_qd_start: wp.array[wp.int32] | None = None
         """Start index of the first velocity coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_label: list[str] = []
         """Joint labels, shape [joint_count], str."""
-        self.joint_world: wp.array(dtype=wp.int32) | None = None
+        self.joint_world: wp.array[wp.int32] | None = None
         """World index for each joint, shape [joint_count], int. -1 for global."""
-        self.joint_world_start: wp.array(dtype=wp.int32) | None = None
+        self.joint_world_start: wp.array[wp.int32] | None = None
         """Start index of the first joint per world, shape [world_count + 2], int.
 
         The entries at indices ``0`` to ``world_count - 1`` store the start index of
@@ -502,7 +511,7 @@ class Model:
 
             num_global_joints = joint_world_start[-1] - joint_world_start[-2] + joint_world_start[0]
         """
-        self.joint_dof_world_start: wp.array(dtype=wp.int32) | None = None
+        self.joint_dof_world_start: wp.array[wp.int32] | None = None
         """Start index of the first joint degree of freedom per world, shape [world_count + 2], int.
 
         The entries at indices ``0`` to ``world_count - 1`` store the start index of
@@ -519,7 +528,7 @@ class Model:
 
             num_global_joint_dofs = joint_dof_world_start[-1] - joint_dof_world_start[-2] + joint_dof_world_start[0]
         """
-        self.joint_coord_world_start: wp.array(dtype=wp.int32) | None = None
+        self.joint_coord_world_start: wp.array[wp.int32] | None = None
         """Start index of the first joint coordinate per world, shape [world_count + 2], int.
 
         The entries at indices ``0`` to ``world_count - 1`` store the start index of
@@ -536,7 +545,7 @@ class Model:
 
             num_global_joint_coords = joint_coord_world_start[-1] - joint_coord_world_start[-2] + joint_coord_world_start[0]
         """
-        self.joint_constraint_world_start: wp.array(dtype=wp.int32) | None = None
+        self.joint_constraint_world_start: wp.array[wp.int32] | None = None
         """Start index of the first joint constraint per world, shape [world_count + 2], int.
 
         The entries at indices ``0`` to ``world_count - 1`` store the start index of
@@ -554,13 +563,13 @@ class Model:
             num_global_joint_constraints = joint_constraint_world_start[-1] - joint_constraint_world_start[-2] + joint_constraint_world_start[0]
         """
 
-        self.articulation_start: wp.array(dtype=wp.int32) | None = None
+        self.articulation_start: wp.array[wp.int32] | None = None
         """Articulation start index, shape [articulation_count], int."""
         self.articulation_label: list[str] = []
         """Articulation labels, shape [articulation_count], str."""
-        self.articulation_world: wp.array(dtype=wp.int32) | None = None
+        self.articulation_world: wp.array[wp.int32] | None = None
         """World index for each articulation, shape [articulation_count], int. -1 for global."""
-        self.articulation_world_start: wp.array(dtype=wp.int32) | None = None
+        self.articulation_world_start: wp.array[wp.int32] | None = None
         """Start index of the first articulation per world, shape [world_count + 2], int.
 
         The entries at indices ``0`` to ``world_count - 1`` store the start index of
@@ -600,34 +609,34 @@ class Model:
 
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
-        self.gravity: wp.array(dtype=wp.vec3) | None = None
+        self.gravity: wp.array[wp.vec3] | None = None
         """Per-world gravity vectors [m/s²], shape [world_count, 3], dtype :class:`vec3`."""
 
-        self.equality_constraint_type: wp.array(dtype=wp.int32) | None = None
+        self.equality_constraint_type: wp.array[wp.int32] | None = None
         """Type of equality constraint, shape [equality_constraint_count], int."""
-        self.equality_constraint_body1: wp.array(dtype=wp.int32) | None = None
+        self.equality_constraint_body1: wp.array[wp.int32] | None = None
         """First body index, shape [equality_constraint_count], int."""
-        self.equality_constraint_body2: wp.array(dtype=wp.int32) | None = None
+        self.equality_constraint_body2: wp.array[wp.int32] | None = None
         """Second body index, shape [equality_constraint_count], int."""
-        self.equality_constraint_anchor: wp.array(dtype=wp.vec3) | None = None
+        self.equality_constraint_anchor: wp.array[wp.vec3] | None = None
         """Anchor point on first body, shape [equality_constraint_count, 3], float."""
-        self.equality_constraint_torquescale: wp.array(dtype=wp.float32) | None = None
+        self.equality_constraint_torquescale: wp.array[wp.float32] | None = None
         """Torque scale, shape [equality_constraint_count], float."""
-        self.equality_constraint_relpose: wp.array(dtype=wp.transform) | None = None
+        self.equality_constraint_relpose: wp.array[wp.transform] | None = None
         """Relative pose, shape [equality_constraint_count, 7], float."""
-        self.equality_constraint_joint1: wp.array(dtype=wp.int32) | None = None
+        self.equality_constraint_joint1: wp.array[wp.int32] | None = None
         """First joint index, shape [equality_constraint_count], int."""
-        self.equality_constraint_joint2: wp.array(dtype=wp.int32) | None = None
+        self.equality_constraint_joint2: wp.array[wp.int32] | None = None
         """Second joint index, shape [equality_constraint_count], int."""
-        self.equality_constraint_polycoef: wp.array(dtype=wp.float32, ndim=2) | None = None
+        self.equality_constraint_polycoef: wp.array2d[wp.float32] | None = None
         """Polynomial coefficients, shape [equality_constraint_count, 5], float."""
         self.equality_constraint_label: list[str] = []
         """Constraint name/label, shape [equality_constraint_count], str."""
-        self.equality_constraint_enabled: wp.array(dtype=wp.bool) | None = None
+        self.equality_constraint_enabled: wp.array[wp.bool] | None = None
         """Whether constraint is active, shape [equality_constraint_count], bool."""
-        self.equality_constraint_world: wp.array(dtype=wp.int32) | None = None
+        self.equality_constraint_world: wp.array[wp.int32] | None = None
         """World index for each constraint, shape [equality_constraint_count], int."""
-        self.equality_constraint_world_start: wp.array(dtype=wp.int32) | None = None
+        self.equality_constraint_world_start: wp.array[wp.int32] | None = None
         """Start index of the first equality constraint per world, shape [world_count + 2], int.
 
         The entries at indices ``0`` to ``world_count - 1`` store the start index of
@@ -645,19 +654,19 @@ class Model:
             num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]
         """
 
-        self.constraint_mimic_joint0: wp.array(dtype=wp.int32) | None = None
+        self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
         """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
-        self.constraint_mimic_joint1: wp.array(dtype=wp.int32) | None = None
+        self.constraint_mimic_joint1: wp.array[wp.int32] | None = None
         """Leader joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
-        self.constraint_mimic_coef0: wp.array(dtype=wp.float32) | None = None
+        self.constraint_mimic_coef0: wp.array[wp.float32] | None = None
         """Offset coefficient (coef0) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
-        self.constraint_mimic_coef1: wp.array(dtype=wp.float32) | None = None
+        self.constraint_mimic_coef1: wp.array[wp.float32] | None = None
         """Scale coefficient (coef1) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
-        self.constraint_mimic_enabled: wp.array(dtype=wp.bool) | None = None
+        self.constraint_mimic_enabled: wp.array[wp.bool] | None = None
         """Whether constraint is active, shape [constraint_mimic_count], bool."""
         self.constraint_mimic_label: list[str] = []
         """Constraint name/label, shape [constraint_mimic_count], str."""
-        self.constraint_mimic_world: wp.array(dtype=wp.int32) | None = None
+        self.constraint_mimic_world: wp.array[wp.int32] | None = None
         """World index for each constraint, shape [constraint_mimic_count], int."""
 
         self.particle_count: int = 0
@@ -692,14 +701,14 @@ class Model:
         """Total number of mimic constraints in the system."""
 
         # indices of particles sharing the same color
-        self.particle_color_groups: list[wp.array(dtype=wp.int32)] = []
+        self.particle_color_groups: list[wp.array[wp.int32]] = []
         """Coloring of all particles for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of particles sharing the same color."""
-        self.particle_colors: wp.array(dtype=wp.int32) | None = None
+        self.particle_colors: wp.array[wp.int32] | None = None
         """Color assignment for every particle."""
 
-        self.body_color_groups: list[wp.array(dtype=wp.int32)] = []
+        self.body_color_groups: list[wp.array[wp.int32]] = []
         """Coloring of all rigid bodies for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of bodies sharing the same color."""
-        self.body_colors: wp.array(dtype=wp.int32) | None = None
+        self.body_colors: wp.array[wp.int32] | None = None
         """Color assignment for every rigid body."""
 
         self.device: wp.Device = wp.get_device(device)
@@ -952,7 +961,7 @@ class Model:
 
         Note:
             Rigid contact gaps are controlled per-shape via :attr:`Model.shape_gap`, which is populated
-            from ``ShapeConfig.gap`` [m] during model building. If a shape doesn't specify a gap [m],
+            from ``ModelBuilder.ShapeConfig.gap`` [m] during model building. If a shape doesn't specify a gap [m],
             it defaults to ``builder.rigid_gap`` [m]. To adjust contact gaps [m], set them before calling
             :meth:`ModelBuilder.finalize`.
         Returns:

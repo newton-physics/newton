@@ -17,11 +17,11 @@ from ...sim import BodyFlags, JointType
 
 @wp.kernel
 def copy_kinematic_body_state_kernel(
-    body_flags: wp.array(dtype=wp.int32),
-    body_q_in: wp.array(dtype=wp.transform),
-    body_qd_in: wp.array(dtype=wp.spatial_vector),
-    body_q_out: wp.array(dtype=wp.transform),
-    body_qd_out: wp.array(dtype=wp.spatial_vector),
+    body_flags: wp.array[wp.int32],
+    body_q_in: wp.array[wp.transform],
+    body_qd_in: wp.array[wp.spatial_vector],
+    body_q_out: wp.array[wp.transform],
+    body_qd_out: wp.array[wp.spatial_vector],
 ):
     """Copy prescribed maximal state through the solve for kinematic bodies."""
     tid = wp.tid()
@@ -33,27 +33,27 @@ def copy_kinematic_body_state_kernel(
 
 @wp.kernel
 def apply_particle_shape_restitution(
-    particle_v_new: wp.array(dtype=wp.vec3),
-    particle_x_old: wp.array(dtype=wp.vec3),
-    particle_v_old: wp.array(dtype=wp.vec3),
-    particle_radius: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_qd_prev: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    shape_body: wp.array(dtype=int),
+    particle_v_new: wp.array[wp.vec3],
+    particle_x_old: wp.array[wp.vec3],
+    particle_v_old: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_qd_prev: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    shape_body: wp.array[int],
     particle_ka: float,
     restitution: float,
-    contact_count: wp.array(dtype=int),
-    contact_particle: wp.array(dtype=int),
-    contact_shape: wp.array(dtype=int),
-    contact_body_pos: wp.array(dtype=wp.vec3),
-    contact_body_vel: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
+    contact_count: wp.array[int],
+    contact_particle: wp.array[int],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
     contact_max: int,
-    particle_v_out: wp.array(dtype=wp.vec3),
+    particle_v_out: wp.array[wp.vec3],
 ):
     tid = wp.tid()
 
@@ -113,32 +113,32 @@ def apply_particle_shape_restitution(
 
 @wp.kernel
 def solve_particle_shape_contacts(
-    particle_x: wp.array(dtype=wp.vec3),
-    particle_v: wp.array(dtype=wp.vec3),
-    particle_invmass: wp.array(dtype=float),
-    particle_radius: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    body_m_inv: wp.array(dtype=float),
-    body_I_inv: wp.array(dtype=wp.mat33),
-    shape_body: wp.array(dtype=int),
-    shape_material_mu: wp.array(dtype=float),
+    particle_x: wp.array[wp.vec3],
+    particle_v: wp.array[wp.vec3],
+    particle_invmass: wp.array[float],
+    particle_radius: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_m_inv: wp.array[float],
+    body_I_inv: wp.array[wp.mat33],
+    shape_body: wp.array[int],
+    shape_material_mu: wp.array[float],
     particle_mu: float,
     particle_ka: float,
-    contact_count: wp.array(dtype=int),
-    contact_particle: wp.array(dtype=int),
-    contact_shape: wp.array(dtype=int),
-    contact_body_pos: wp.array(dtype=wp.vec3),
-    contact_body_vel: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
+    contact_count: wp.array[int],
+    contact_particle: wp.array[int],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
     contact_max: int,
     dt: float,
     relaxation: float,
     # outputs
-    delta: wp.array(dtype=wp.vec3),
-    body_delta: wp.array(dtype=wp.spatial_vector),
+    delta: wp.array[wp.vec3],
+    body_delta: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 
@@ -225,18 +225,18 @@ def solve_particle_shape_contacts(
 @wp.kernel
 def solve_particle_particle_contacts(
     grid: wp.uint64,
-    particle_x: wp.array(dtype=wp.vec3),
-    particle_v: wp.array(dtype=wp.vec3),
-    particle_invmass: wp.array(dtype=float),
-    particle_radius: wp.array(dtype=float),
-    particle_flags: wp.array(dtype=wp.int32),
+    particle_x: wp.array[wp.vec3],
+    particle_v: wp.array[wp.vec3],
+    particle_invmass: wp.array[float],
+    particle_radius: wp.array[float],
+    particle_flags: wp.array[wp.int32],
     k_mu: float,
     k_cohesion: float,
     max_radius: float,
     dt: float,
     relaxation: float,
     # outputs
-    deltas: wp.array(dtype=wp.vec3),
+    deltas: wp.array[wp.vec3],
 ):
     tid = wp.tid()
 
@@ -291,16 +291,16 @@ def solve_particle_particle_contacts(
 
 @wp.kernel
 def solve_springs(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    invmass: wp.array(dtype=float),
-    spring_indices: wp.array(dtype=int),
-    spring_rest_lengths: wp.array(dtype=float),
-    spring_stiffness: wp.array(dtype=float),
-    spring_damping: wp.array(dtype=float),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    invmass: wp.array[float],
+    spring_indices: wp.array[int],
+    spring_rest_lengths: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
     dt: float,
-    lambdas: wp.array(dtype=float),
-    delta: wp.array(dtype=wp.vec3),
+    lambdas: wp.array[float],
+    delta: wp.array[wp.vec3],
 ):
     tid = wp.tid()
 
@@ -357,15 +357,15 @@ def solve_springs(
 
 @wp.kernel
 def bending_constraint(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    invmass: wp.array(dtype=float),
-    indices: wp.array2d(dtype=int),
-    rest: wp.array(dtype=float),
-    bending_properties: wp.array2d(dtype=float),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    invmass: wp.array[float],
+    indices: wp.array2d[int],
+    rest: wp.array[float],
+    bending_properties: wp.array2d[float],
     dt: float,
-    lambdas: wp.array(dtype=float),
-    delta: wp.array(dtype=wp.vec3),
+    lambdas: wp.array[float],
+    delta: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     eps = 1.0e-6
@@ -458,16 +458,16 @@ def bending_constraint(
 
 @wp.kernel
 def solve_tetrahedra(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    inv_mass: wp.array(dtype=float),
-    indices: wp.array(dtype=int, ndim=2),
-    rest_matrix: wp.array(dtype=wp.mat33),
-    activation: wp.array(dtype=float),
-    materials: wp.array(dtype=float, ndim=2),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    inv_mass: wp.array[float],
+    indices: wp.array2d[int],
+    rest_matrix: wp.array[wp.mat33],
+    activation: wp.array[float],
+    materials: wp.array2d[float],
     dt: float,
     relaxation: float,
-    delta: wp.array(dtype=wp.vec3),
+    delta: wp.array[wp.vec3],
 ):
     tid = wp.tid()
 
@@ -629,16 +629,16 @@ def solve_tetrahedra(
 
 @wp.kernel
 def solve_tetrahedra2(
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    inv_mass: wp.array(dtype=float),
-    indices: wp.array(dtype=int, ndim=2),
-    pose: wp.array(dtype=wp.mat33),
-    activation: wp.array(dtype=float),
-    materials: wp.array(dtype=float, ndim=2),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    inv_mass: wp.array[float],
+    indices: wp.array2d[int],
+    pose: wp.array[wp.mat33],
+    activation: wp.array[float],
+    materials: wp.array2d[float],
     dt: float,
     relaxation: float,
-    delta: wp.array(dtype=wp.vec3),
+    delta: wp.array[wp.vec3],
 ):
     tid = wp.tid()
 
@@ -775,14 +775,14 @@ def solve_tetrahedra2(
 
 @wp.kernel
 def apply_particle_deltas(
-    x_orig: wp.array(dtype=wp.vec3),
-    x_pred: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
-    delta: wp.array(dtype=wp.vec3),
+    x_orig: wp.array[wp.vec3],
+    x_pred: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    delta: wp.array[wp.vec3],
     dt: float,
     v_max: float,
-    x_out: wp.array(dtype=wp.vec3),
-    v_out: wp.array(dtype=wp.vec3),
+    x_out: wp.array[wp.vec3],
+    v_out: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     if (particle_flags[tid] & ParticleFlags.ACTIVE) == 0:
@@ -808,18 +808,18 @@ def apply_particle_deltas(
 
 @wp.kernel
 def apply_body_deltas(
-    q_in: wp.array(dtype=wp.transform),
-    qd_in: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    body_I: wp.array(dtype=wp.mat33),
-    body_inv_m: wp.array(dtype=float),
-    body_inv_I: wp.array(dtype=wp.mat33),
-    deltas: wp.array(dtype=wp.spatial_vector),
-    constraint_inv_weights: wp.array(dtype=float),
+    q_in: wp.array[wp.transform],
+    qd_in: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_I: wp.array[wp.mat33],
+    body_inv_m: wp.array[float],
+    body_inv_I: wp.array[wp.mat33],
+    deltas: wp.array[wp.spatial_vector],
+    constraint_inv_weights: wp.array[float],
     dt: float,
     # outputs
-    q_out: wp.array(dtype=wp.transform),
-    qd_out: wp.array(dtype=wp.spatial_vector),
+    q_out: wp.array[wp.transform],
+    qd_out: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     inv_m = body_inv_m[tid]
@@ -880,8 +880,8 @@ def apply_body_deltas(
 
 @wp.kernel
 def apply_body_delta_velocities(
-    deltas: wp.array(dtype=wp.spatial_vector),
-    qd_out: wp.array(dtype=wp.spatial_vector),
+    deltas: wp.array[wp.spatial_vector],
+    qd_out: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     wp.atomic_add(qd_out, tid, deltas[tid])
@@ -889,19 +889,19 @@ def apply_body_delta_velocities(
 
 @wp.kernel
 def apply_joint_forces(
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=bool),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_qd_start: wp.array(dtype=int),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_f: wp.array(dtype=float),
-    body_f: wp.array(dtype=wp.spatial_vector),
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_axis: wp.array[wp.vec3],
+    joint_f: wp.array[float],
+    body_f: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     type = joint_type[tid]
@@ -1123,31 +1123,31 @@ def compute_angular_correction_3d(
 
 @wp.kernel
 def solve_simple_body_joints(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    body_inv_m: wp.array(dtype=float),
-    body_inv_I: wp.array(dtype=wp.mat33),
-    joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=bool),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_limit_lower: wp.array(dtype=float),
-    joint_limit_upper: wp.array(dtype=float),
-    joint_qd_start: wp.array(dtype=int),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_target: wp.array(dtype=float),
-    joint_target_ke: wp.array(dtype=float),
-    joint_target_kd: wp.array(dtype=float),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_inv_m: wp.array[float],
+    body_inv_I: wp.array[wp.mat33],
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_axis: wp.array[wp.vec3],
+    joint_target: wp.array[float],
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
     joint_linear_compliance: float,
     joint_angular_compliance: float,
     angular_relaxation: float,
     linear_relaxation: float,
     dt: float,
-    deltas: wp.array(dtype=wp.spatial_vector),
+    deltas: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     type = joint_type[tid]
@@ -1440,32 +1440,32 @@ def solve_simple_body_joints(
 
 @wp.kernel
 def solve_body_joints(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    body_inv_m: wp.array(dtype=float),
-    body_inv_I: wp.array(dtype=wp.mat33),
-    joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=bool),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_limit_lower: wp.array(dtype=float),
-    joint_limit_upper: wp.array(dtype=float),
-    joint_qd_start: wp.array(dtype=int),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
-    joint_axis: wp.array(dtype=wp.vec3),
-    joint_target_pos: wp.array(dtype=float),
-    joint_target_vel: wp.array(dtype=float),
-    joint_target_ke: wp.array(dtype=float),
-    joint_target_kd: wp.array(dtype=float),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_inv_m: wp.array[float],
+    body_inv_I: wp.array[wp.mat33],
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_axis: wp.array[wp.vec3],
+    joint_target_pos: wp.array[float],
+    joint_target_vel: wp.array[float],
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
     joint_linear_compliance: float,
     joint_angular_compliance: float,
     angular_relaxation: float,
     linear_relaxation: float,
     dt: float,
-    deltas: wp.array(dtype=wp.spatial_vector),
+    deltas: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     type = joint_type[tid]
@@ -2053,31 +2053,32 @@ def compute_angular_correction(
 
 @wp.kernel
 def solve_body_contact_positions(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_flags: wp.array(dtype=wp.int32),
-    body_com: wp.array(dtype=wp.vec3),
-    body_m_inv: wp.array(dtype=float),
-    body_I_inv: wp.array(dtype=wp.mat33),
-    shape_body: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
-    contact_point0: wp.array(dtype=wp.vec3),
-    contact_point1: wp.array(dtype=wp.vec3),
-    contact_offset0: wp.array(dtype=wp.vec3),
-    contact_offset1: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
-    contact_thickness0: wp.array(dtype=float),
-    contact_thickness1: wp.array(dtype=float),
-    contact_shape0: wp.array(dtype=int),
-    contact_shape1: wp.array(dtype=int),
-    shape_material_mu: wp.array(dtype=float),
-    shape_material_mu_torsional: wp.array(dtype=float),
-    shape_material_mu_rolling: wp.array(dtype=float),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_flags: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    body_m_inv: wp.array[float],
+    body_I_inv: wp.array[wp.mat33],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_thickness0: wp.array[float],
+    contact_thickness1: wp.array[float],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_material_mu: wp.array[float],
+    shape_material_mu_torsional: wp.array[float],
+    shape_material_mu_rolling: wp.array[float],
     relaxation: float,
     dt: float,
     # outputs
-    deltas: wp.array(dtype=wp.spatial_vector),
-    contact_inv_weight: wp.array(dtype=float),
+    deltas: wp.array[wp.spatial_vector],
+    contact_inv_weight: wp.array[float],
+    contact_impulse: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 
@@ -2285,14 +2286,112 @@ def solve_body_contact_positions(
     if body_b >= 0:
         wp.atomic_add(deltas, body_b, wp.spatial_vector(lin_delta_b, ang_delta_b))
 
+    if contact_impulse:
+        wp.atomic_add(contact_impulse, tid, wp.spatial_vector(lin_delta_a, ang_delta_a))
+
+
+@wp.kernel
+def accumulate_weighted_contact_impulse(
+    contact_count: wp.array[int],
+    contact_impulse_iter: wp.array[wp.spatial_vector],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_body: wp.array[int],
+    constraint_inv_weight: wp.array[float],
+    # output (accumulated across iterations)
+    contact_impulse: wp.array[wp.spatial_vector],
+):
+    """Scale per-contact impulse from one iteration by 1/N and accumulate.
+
+    ``constraint_inv_weight[body]`` holds the number of active contacts on
+    each body for the current iteration.  ``apply_body_deltas`` divides the
+    positional correction by that count, so the raw impulse stored per contact
+    is N times too large relative to what was actually applied.
+
+    When only one body is dynamic (the other is kinematic / ground), the
+    weight is simply ``1/N_dynamic``.  When both bodies are dynamic the
+    solver applies ``1/N_a`` to body A and ``1/N_b`` to body B, so there is
+    no single exact scalar.  We use the harmonic mean ``2/(N_a + N_b)`` which
+    is symmetric with respect to body ordering and reduces to ``1/N`` when
+    both counts are equal.
+    """
+    tid = wp.tid()
+    count = contact_count[0]
+    if tid >= count:
+        return
+
+    impulse = contact_impulse_iter[tid]
+
+    weight = 1.0
+    if constraint_inv_weight:
+        n_a = 0.0
+        n_b = 0.0
+        shape_a = contact_shape0[tid]
+        if shape_a >= 0:
+            body_a = shape_body[shape_a]
+            if body_a >= 0:
+                n_a = constraint_inv_weight[body_a]
+        shape_b = contact_shape1[tid]
+        if shape_b >= 0:
+            body_b = shape_body[shape_b]
+            if body_b >= 0:
+                n_b = constraint_inv_weight[body_b]
+        n_sum = n_a + n_b
+        if n_sum > 0.0:
+            if n_a == 0.0:
+                weight = 1.0 / n_b
+            elif n_b == 0.0:
+                weight = 1.0 / n_a
+            else:
+                weight = 2.0 / n_sum
+
+    scaled = wp.spatial_vector(
+        wp.spatial_top(impulse) * weight,
+        wp.spatial_bottom(impulse) * weight,
+    )
+    wp.atomic_add(contact_impulse, tid, scaled)
+
+
+@wp.kernel
+def convert_contact_impulse_to_force(
+    contact_count: wp.array[int],
+    contact_impulse: wp.array[wp.spatial_vector],
+    dt: float,
+    # output
+    contact_force: wp.array[wp.spatial_vector],
+):
+    """Convert accumulated per-contact spatial impulse to ``contacts.force`` spatial vectors.
+
+    The XPBD lambda convention used in this solver already absorbs one power
+    of ``dt`` (see ``compute_contact_constraint_delta``), so dividing the
+    accumulated impulse by the substep ``dt`` yields force [N] and torque [N·m].
+    The linear component includes normal and friction forces; the angular
+    component includes torsional and rolling friction torques.
+
+    The impulse is expected to already include the 1/N contact-weighting
+    correction (applied by ``accumulate_weighted_contact_impulse`` each
+    iteration).
+    """
+    tid = wp.tid()
+    count = contact_count[0]
+    if tid >= count:
+        contact_force[tid] = wp.spatial_vector()
+        return
+
+    inv_dt = 1.0 / dt
+    impulse = contact_impulse[tid]
+    f = wp.spatial_top(impulse) * inv_dt
+    tau = wp.spatial_bottom(impulse) * inv_dt
+    contact_force[tid] = wp.spatial_vector(f, tau)
+
 
 @wp.kernel
 def update_body_velocities(
-    poses: wp.array(dtype=wp.transform),
-    poses_prev: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
+    poses: wp.array[wp.transform],
+    poses_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
     dt: float,
-    qd_out: wp.array(dtype=wp.spatial_vector),
+    qd_out: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 
@@ -2323,31 +2422,31 @@ def update_body_velocities(
 
 @wp.kernel
 def apply_rigid_restitution(
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_qd_prev: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    body_m_inv: wp.array(dtype=float),
-    body_I_inv: wp.array(dtype=wp.mat33),
-    body_world: wp.array(dtype=wp.int32),
-    shape_body: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
-    contact_normal: wp.array(dtype=wp.vec3),
-    contact_shape0: wp.array(dtype=int),
-    contact_shape1: wp.array(dtype=int),
-    shape_material_restitution: wp.array(dtype=float),
-    contact_point0: wp.array(dtype=wp.vec3),
-    contact_point1: wp.array(dtype=wp.vec3),
-    contact_offset0: wp.array(dtype=wp.vec3),
-    contact_offset1: wp.array(dtype=wp.vec3),
-    contact_thickness0: wp.array(dtype=float),
-    contact_thickness1: wp.array(dtype=float),
-    contact_inv_weight: wp.array(dtype=float),
-    gravity: wp.array(dtype=wp.vec3),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
+    body_qd_prev: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_m_inv: wp.array[float],
+    body_I_inv: wp.array[wp.mat33],
+    body_world: wp.array[wp.int32],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_normal: wp.array[wp.vec3],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_material_restitution: wp.array[float],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
+    contact_thickness0: wp.array[float],
+    contact_thickness1: wp.array[float],
+    contact_inv_weight: wp.array[float],
+    gravity: wp.array[wp.vec3],
     dt: float,
     # outputs
-    deltas: wp.array(dtype=wp.spatial_vector),
+    deltas: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
 

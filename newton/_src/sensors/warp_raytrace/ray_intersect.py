@@ -303,7 +303,7 @@ def ray_intersect_mesh_with_normal(
     ray_direction: wp.vec3f,
     mesh_id: wp.uint64,
     shape_mesh_data_id: wp.int32,
-    mesh_data: wp.array(dtype=MeshData),
+    mesh_data: wp.array[MeshData],
     enable_backface_culling: wp.bool,
     max_t: wp.float32,
 ) -> tuple[GeomHit, wp.float32, wp.float32, wp.int32]:

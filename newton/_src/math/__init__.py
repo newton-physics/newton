@@ -192,8 +192,19 @@ def vec_abs(a: wp.vec3):
 
 @wp.func
 def vec_allclose(a: Any, b: Any, rtol: float = 1e-5, atol: float = 1e-8) -> bool:
-    """
-    Check if two Warp vectors are all close.
+    """Check whether two Warp vectors are element-wise equal within a tolerance.
+
+    Uses the same criterion as NumPy's ``allclose``:
+    ``abs(a[i] - b[i]) <= atol + rtol * abs(b[i])`` for every element.
+
+    Args:
+        a: First vector.
+        b: Second vector.
+        rtol: Relative tolerance.
+        atol: Absolute tolerance.
+
+    Returns:
+        bool: ``True`` if all elements satisfy the tolerance, ``False`` otherwise.
     """
     for i in range(wp.static(len(a))):
         if wp.abs(a[i] - b[i]) > atol + rtol * wp.abs(b[i]):
@@ -203,8 +214,17 @@ def vec_allclose(a: Any, b: Any, rtol: float = 1e-5, atol: float = 1e-8) -> bool
 
 @wp.func
 def vec_inside_limits(a: Any, lower: Any, upper: Any) -> bool:
-    """
-    Check if a Warp vector is inside the given limits.
+    """Check whether every element of a vector lies within the given bounds.
+
+    Returns ``True`` when ``lower[i] <= a[i] <= upper[i]`` for all elements.
+
+    Args:
+        a: Vector to test.
+        lower: Element-wise lower bounds (inclusive).
+        upper: Element-wise upper bounds (inclusive).
+
+    Returns:
+        bool: ``True`` if all elements are within bounds, ``False`` otherwise.
     """
     for i in range(wp.static(len(a))):
         if a[i] < lower[i] or a[i] > upper[i]:
@@ -260,13 +280,32 @@ EPSILON = 1e-15
 
 @wp.func
 def safe_div(x: Any, y: Any, eps: float = EPSILON) -> Any:
-    """Safe division that avoids division-by-zero."""
+    """Safe division that returns ``x / y``, falling back to ``x / eps`` when ``y`` is zero.
+
+    Args:
+        x: Numerator.
+        y: Denominator.
+        eps: Small positive fallback used in place of ``y`` when ``y == 0``.
+
+    Returns:
+        The quotient ``x / y``, or ``x / eps`` if ``y`` is zero.
+    """
     return x / wp.where(y != 0.0, y, eps)
 
 
 @wp.func
 def normalize_with_norm(x: Any):
-    """Normalize a vector and return both the normalized vector and the original norm."""
+    """Normalize a vector and return both the unit vector and the original norm.
+
+    If the input has zero length it is returned unchanged with a norm of ``0.0``.
+
+    Args:
+        x: Input vector.
+
+    Returns:
+        Tuple[vector, float]: ``(normalized_x, norm)`` where ``normalized_x`` is the
+        unit-length direction and ``norm`` is ``wp.length(x)``.
+    """
     norm = wp.length(x)
     if norm == 0.0:
         return x, 0.0

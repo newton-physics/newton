@@ -51,10 +51,10 @@ def sample_texture_mesh(
 def sample_texture(
     shape_type: wp.int32,
     shape_transform: wp.transformf,
-    texture_data: wp.array(dtype=TextureData),
+    texture_data: wp.array[TextureData],
     texture_index: wp.int32,
     mesh_id: wp.uint64,
-    mesh_data: wp.array(dtype=MeshData),
+    mesh_data: wp.array[MeshData],
     mesh_data_index: wp.int32,
     hit_point: wp.vec3f,
     bary_u: wp.float32,

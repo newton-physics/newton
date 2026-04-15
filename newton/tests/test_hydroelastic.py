@@ -386,7 +386,7 @@ def test_reduce_contacts_with_pre_prune_disabled_no_crash(test, device):
 
 @wp.kernel
 def _set_body_z_kernel(
-    body_q: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
     body_idx: int,
     z: float,
 ):
@@ -834,7 +834,6 @@ def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     contacts = pipeline.contacts()
     pipeline.collide(state_0, contacts)
-    wp.synchronize()
 
     hydro = pipeline.hydroelastic_sdf
     reducer = hydro.contact_reduction.reducer

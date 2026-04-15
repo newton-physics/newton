@@ -65,14 +65,14 @@ def _eval_grad(primitive: int, point: wp.vec3, p0: float, p1: float, p2: float, 
 @wp.kernel
 def evaluate_gradient_error_kernel(
     primitive: int,
-    points: wp.array(dtype=wp.vec3),
+    points: wp.array[wp.vec3],
     p0: float,
     p1: float,
     p2: float,
     up_axis: int,
     eps: float,
-    dot_alignment: wp.array(dtype=float),
-    analytic_norm: wp.array(dtype=float),
+    dot_alignment: wp.array[float],
+    analytic_norm: wp.array[float],
 ):
     tid = wp.tid()
     point = points[tid]

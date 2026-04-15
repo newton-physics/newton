@@ -19,9 +19,9 @@ AttributeFrequency = Model.AttributeFrequency
 
 @wp.kernel
 def set_model_articulation_mask_kernel(
-    world_arti_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
-    view_to_model_map: wp.array2d(dtype=int),  # map (world, arti) indices to Model articulation id
-    model_articulation_mask: wp.array(dtype=bool),  # output: mask of Model articulation indices
+    world_arti_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
+    view_to_model_map: wp.array2d[int],  # map (world, arti) indices to Model articulation id
+    model_articulation_mask: wp.array[bool],  # output: mask of Model articulation indices
 ):
     """
     Set Model articulation mask from a 2D (world, arti) mask in an ArticulationView.
@@ -33,9 +33,9 @@ def set_model_articulation_mask_kernel(
 
 @wp.kernel
 def set_model_articulation_mask_per_world_kernel(
-    world_mask: wp.array(dtype=bool),  # world mask in ArticulationView
-    view_to_model_map: wp.array2d(dtype=int),  # map (world, arti) indices to Model articulation id
-    model_articulation_mask: wp.array(dtype=bool),  # output: mask of Model articulation indices
+    world_mask: wp.array[bool],  # world mask in ArticulationView
+    view_to_model_map: wp.array2d[int],  # map (world, arti) indices to Model articulation id
+    model_articulation_mask: wp.array[bool],  # output: mask of Model articulation indices
 ):
     """
     Set Model articulation mask from a 1D world mask in an ArticulationView.
@@ -47,7 +47,7 @@ def set_model_articulation_mask_per_world_kernel(
 
 # @wp.kernel
 # def set_articulation_attribute_1d_kernel(
-#     view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+#     view_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
 #     values: Any,  # 1d array or indexedarray
 #     attrib: Any,  # 1d array or indexedarray
 # ):
@@ -58,7 +58,7 @@ def set_model_articulation_mask_per_world_kernel(
 
 # @wp.kernel
 # def set_articulation_attribute_2d_kernel(
-#     view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+#     view_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
 #     values: Any,  # 2d array or indexedarray
 #     attrib: Any,  # 2d array or indexedarray
 # ):
@@ -69,7 +69,7 @@ def set_model_articulation_mask_per_world_kernel(
 
 @wp.kernel
 def set_articulation_attribute_3d_kernel(
-    view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+    view_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
     values: Any,  # 3d array or indexedarray
     attrib: Any,  # 3d array or indexedarray
 ):
@@ -80,7 +80,7 @@ def set_articulation_attribute_3d_kernel(
 
 @wp.kernel
 def set_articulation_attribute_4d_kernel(
-    view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+    view_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
     values: Any,  # 4d array or indexedarray
     attrib: Any,  # 4d array or indexedarray
 ):
@@ -91,7 +91,7 @@ def set_articulation_attribute_4d_kernel(
 
 # @wp.kernel
 # def set_articulation_attribute_1d_per_world_kernel(
-#     view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+#     view_mask: wp.array[bool],  # world mask in ArticulationView
 #     values: Any,  # 1d array or indexedarray
 #     attrib: Any,  # 1d array or indexedarray
 # ):
@@ -102,7 +102,7 @@ def set_articulation_attribute_4d_kernel(
 
 # @wp.kernel
 # def set_articulation_attribute_2d_per_world_kernel(
-#     view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+#     view_mask: wp.array[bool],  # world mask in ArticulationView
 #     values: Any,  # 2d array or indexedarray
 #     attrib: Any,  # 2d array or indexedarray
 # ):
@@ -113,7 +113,7 @@ def set_articulation_attribute_4d_kernel(
 
 @wp.kernel
 def set_articulation_attribute_3d_per_world_kernel(
-    view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+    view_mask: wp.array[bool],  # world mask in ArticulationView
     values: Any,  # 3d array or indexedarray
     attrib: Any,  # 3d array or indexedarray
 ):
@@ -124,7 +124,7 @@ def set_articulation_attribute_3d_per_world_kernel(
 
 @wp.kernel
 def set_articulation_attribute_4d_per_world_kernel(
-    view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+    view_mask: wp.array[bool],  # world mask in ArticulationView
     values: Any,  # 4d array or indexedarray
     attrib: Any,  # 4d array or indexedarray
 ):
@@ -170,7 +170,7 @@ for dtype in [float, int, wp.transform, wp.spatial_vector]:
 @wp.kernel
 def _gather_indexed_3d_kernel(
     src: Any,  # 3d wp.array (pre-indexed, has .grad)
-    indices: wp.array(dtype=int),  # index mapping for dimension 2
+    indices: wp.array[int],  # index mapping for dimension 2
     dst: Any,  # 3d wp.array (contiguous staging buffer, has .grad)
 ):
     i, j, k = wp.tid()
@@ -180,7 +180,7 @@ def _gather_indexed_3d_kernel(
 @wp.kernel
 def _gather_indexed_4d_kernel(
     src: Any,  # 4d wp.array
-    indices: wp.array(dtype=int),
+    indices: wp.array[int],
     dst: Any,  # 4d wp.array
 ):
     i, j, k, l = wp.tid()
@@ -190,11 +190,11 @@ def _gather_indexed_4d_kernel(
 for _dtype in [float, wp.transform, wp.spatial_vector]:
     wp.overload(
         _gather_indexed_3d_kernel,
-        {"src": wp.array(dtype=_dtype, ndim=3), "dst": wp.array(dtype=_dtype, ndim=3)},
+        {"src": wp.array3d[_dtype], "dst": wp.array3d[_dtype]},
     )
     wp.overload(
         _gather_indexed_4d_kernel,
-        {"src": wp.array(dtype=_dtype, ndim=4), "dst": wp.array(dtype=_dtype, ndim=4)},
+        {"src": wp.array4d[_dtype], "dst": wp.array4d[_dtype]},
     )
 
 
@@ -204,7 +204,7 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 
 @wp.kernel
 def build_actuator_dof_mapping_slice_kernel(
-    actuator_input_indices: wp.array(dtype=wp.uint32),
+    actuator_input_indices: wp.array[wp.uint32],
     actuators_per_world: int,
     base_offset: int,
     slice_start: int,
@@ -214,7 +214,7 @@ def build_actuator_dof_mapping_slice_kernel(
     dofs_per_arti: int,
     dofs_per_world: int,
     num_worlds: int,
-    mapping: wp.array(dtype=int),
+    mapping: wp.array[int],
 ):
     """Build DOF-to-actuator mapping for slice-based view selection.
 
@@ -242,8 +242,8 @@ def build_actuator_dof_mapping_slice_kernel(
 
 @wp.kernel
 def build_actuator_dof_mapping_indices_kernel(
-    actuator_input_indices: wp.array(dtype=wp.uint32),
-    view_dof_indices: wp.array(dtype=int),
+    actuator_input_indices: wp.array[wp.uint32],
+    view_dof_indices: wp.array[int],
     base_offset: int,
     stride_within_worlds: int,
     count_per_world: int,
@@ -251,7 +251,7 @@ def build_actuator_dof_mapping_indices_kernel(
     dofs_per_arti: int,
     dofs_per_world: int,
     num_worlds: int,
-    mapping: wp.array(dtype=int),
+    mapping: wp.array[int],
 ):
     """Build DOF-to-actuator mapping for index-array-based view selection.
 
@@ -279,9 +279,9 @@ def build_actuator_dof_mapping_indices_kernel(
 
 @wp.kernel
 def gather_actuator_by_indices_kernel(
-    src: wp.array(dtype=float),
-    indices: wp.array(dtype=int),
-    dst: wp.array(dtype=float),
+    src: wp.array[float],
+    indices: wp.array[int],
+    dst: wp.array[float],
 ):
     """Gather values from src at specified indices into dst. Index -1 means skip (leave dst unchanged)."""
     tid = wp.tid()
@@ -292,11 +292,11 @@ def gather_actuator_by_indices_kernel(
 
 @wp.kernel
 def scatter_actuator_with_mask_kernel(
-    values: wp.array2d(dtype=float),
-    mapping: wp.array(dtype=int),
-    mask: wp.array(dtype=bool),
+    values: wp.array2d[float],
+    mapping: wp.array[int],
+    mask: wp.array[bool],
     dofs_per_world: int,
-    dst: wp.array(dtype=float),
+    dst: wp.array[float],
 ):
     """Scatter actuator values with articulation mask support.
 
@@ -380,7 +380,7 @@ def get_name_from_label(label: str):
     Returns:
         The final path component of the label.
     """
-    return label.split("/")[-1]
+    return label.rsplit("/", maxsplit=1)[-1]
 
 
 def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: int):
@@ -1448,6 +1448,9 @@ class ArticulationView:
         """
         Get the world-space spatial velocities of all links in the selected articulations.
 
+        The returned ``body_qd`` values follow Newton's public convention:
+        ``(v_com_world, omega_world)``.
+
         Args:
             source (Model | State): The source from which to retrieve the link velocities.
 
@@ -1584,6 +1587,9 @@ class ArticulationView:
         """
         Evaluates forward kinematics given the joint coordinates and updates the body information.
 
+        The written ``target.body_qd`` values follow Newton's public body-twist
+        convention ``(v_com_world, omega_world)``.
+
         Args:
             target (Model | State): The target where to evaluate forward kinematics (Model or State).
             mask (array): Mask of articulations in this ArticulationView (all by default).
@@ -1596,7 +1602,8 @@ class ArticulationView:
         """Evaluate spatial Jacobian for articulations in this view.
 
         Computes the spatial Jacobian J that maps joint velocities to spatial
-        velocities of each link in world frame.
+        velocities of each link in world frame, matching ``state.body_qd`` under
+        Newton's public COM/world body-twist convention.
 
         Args:
             state: The state containing body transforms (body_q).
@@ -1615,7 +1622,9 @@ class ArticulationView:
         """Evaluate generalized mass matrix for articulations in this view.
 
         Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
-        Jacobian and M is the block-diagonal spatial mass matrix.
+        Jacobian and M is the block-diagonal spatial mass matrix. The resulting
+        matrix is consistent with kinetic energy computed from COM-referenced
+        body twists.
 
         Args:
             state: The state containing body transforms (body_q).

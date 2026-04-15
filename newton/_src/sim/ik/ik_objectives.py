@@ -64,12 +64,12 @@ class IKObjective:
 
     def compute_residuals(
         self,
-        body_q: wp.array2d(dtype=wp.transform),
-        joint_q: wp.array2d(dtype=wp.float32),
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
         model: Model,
-        residuals: wp.array2d(dtype=wp.float32),
+        residuals: wp.array2d[wp.float32],
         start_idx: int,
-        problem_idx: wp.array(dtype=wp.int32),
+        problem_idx: wp.array[wp.int32],
     ) -> None:
         """Write this objective's residual block into a global buffer.
 
@@ -94,9 +94,9 @@ class IKObjective:
         self,
         tape: wp.Tape,
         model: Model,
-        jacobian: wp.array3d(dtype=wp.float32),
+        jacobian: wp.array3d[wp.float32],
         start_idx: int,
-        dq_dof: wp.array2d(dtype=wp.float32),
+        dq_dof: wp.array2d[wp.float32],
     ) -> None:
         """Fill this objective's Jacobian block with autodiff gradients.
 
@@ -132,11 +132,11 @@ class IKObjective:
 
     def compute_jacobian_analytic(
         self,
-        body_q: wp.array2d(dtype=wp.transform),
-        joint_q: wp.array2d(dtype=wp.float32),
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
         model: Model,
-        jacobian: wp.array3d(dtype=wp.float32),
-        joint_S_s: wp.array2d(dtype=wp.spatial_vector),
+        jacobian: wp.array3d[wp.float32],
+        joint_S_s: wp.array2d[wp.spatial_vector],
         start_idx: int,
     ) -> None:
         """Fill this objective's Jacobian block analytically, if supported.
@@ -158,15 +158,15 @@ class IKObjective:
 
 @wp.kernel
 def _pos_residuals(
-    body_q: wp.array2d(dtype=wp.transform),  # (n_batch, n_bodies)
-    target_pos: wp.array1d(dtype=wp.vec3),  # (n_problems)
+    body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
+    target_pos: wp.array[wp.vec3],  # (n_problems)
     link_index: int,
     link_offset: wp.vec3,
     start_idx: int,
     weight: float,
-    problem_idx_map: wp.array1d(dtype=wp.int32),
+    problem_idx_map: wp.array[wp.int32],
     # outputs
-    residuals: wp.array2d(dtype=wp.float32),  # (n_batch, n_residuals)
+    residuals: wp.array2d[wp.float32],  # (n_batch, n_residuals)
 ):
     row = wp.tid()
     base = problem_idx_map[row]
@@ -182,12 +182,12 @@ def _pos_residuals(
 
 @wp.kernel
 def _pos_jac_fill(
-    q_grad: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+    q_grad: wp.array2d[wp.float32],  # (n_batch, n_dofs)
     n_dofs: int,
     start_idx: int,
     component: int,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
+    jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
 ):
     problem_idx = wp.tid()
     residual_idx = start_idx + component
@@ -201,16 +201,16 @@ def _update_position_target(
     problem_idx: int,
     new_position: wp.vec3,
     # outputs
-    target_array: wp.array1d(dtype=wp.vec3),  # (n_problems)
+    target_array: wp.array[wp.vec3],  # (n_problems)
 ):
     target_array[problem_idx] = new_position
 
 
 @wp.kernel
 def _update_position_targets(
-    new_positions: wp.array1d(dtype=wp.vec3),  # (n_problems)
+    new_positions: wp.array[wp.vec3],  # (n_problems)
     # outputs
-    target_array: wp.array1d(dtype=wp.vec3),  # (n_problems)
+    target_array: wp.array[wp.vec3],  # (n_problems)
 ):
     problem_idx = wp.tid()
     target_array[problem_idx] = new_positions[problem_idx]
@@ -220,14 +220,14 @@ def _update_position_targets(
 def _pos_jac_analytic(
     link_index: int,
     link_offset: wp.vec3,
-    affects_dof: wp.array1d(dtype=wp.uint8),  # (n_dofs)
-    body_q: wp.array2d(dtype=wp.transform),  # (n_batch, n_bodies)
-    joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_batch, n_dofs)
+    affects_dof: wp.array[wp.uint8],  # (n_dofs)
+    body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
+    joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_dofs)
     start_idx: int,
     n_dofs: int,
     weight: float,
     # output
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
+    jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
 ):
     # one thread per (problem, dof)
     problem_idx, dof_idx = wp.tid()
@@ -268,7 +268,7 @@ class IKObjectivePosition(IKObjective):
         self,
         link_index: int,
         link_offset: wp.vec3,
-        target_positions: wp.array(dtype=wp.vec3),
+        target_positions: wp.array[wp.vec3],
         weight: float = 1.0,
     ) -> None:
         super().__init__()
@@ -342,7 +342,7 @@ class IKObjectivePosition(IKObjective):
             device=self.device,
         )
 
-    def set_target_positions(self, new_positions: wp.array(dtype=wp.vec3)) -> None:
+    def set_target_positions(self, new_positions: wp.array[wp.vec3]) -> None:
         """Replace the target positions for all base IK problems.
 
         Args:
@@ -366,12 +366,12 @@ class IKObjectivePosition(IKObjective):
 
     def compute_residuals(
         self,
-        body_q: wp.array2d(dtype=wp.transform),
-        joint_q: wp.array2d(dtype=wp.float32),
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
         model: Model,
-        residuals: wp.array2d(dtype=wp.float32),
+        residuals: wp.array2d[wp.float32],
         start_idx: int,
-        problem_idx: wp.array(dtype=wp.int32),
+        problem_idx: wp.array[wp.int32],
     ) -> None:
         """Write weighted position errors into the global residual buffer.
 
@@ -410,9 +410,9 @@ class IKObjectivePosition(IKObjective):
         self,
         tape: wp.Tape,
         model: Model,
-        jacobian: wp.array3d(dtype=wp.float32),
+        jacobian: wp.array3d[wp.float32],
         start_idx: int,
-        dq_dof: wp.array2d(dtype=wp.float32),
+        dq_dof: wp.array2d[wp.float32],
     ) -> None:
         """Fill the position Jacobian block using Warp autodiff.
 
@@ -453,11 +453,11 @@ class IKObjectivePosition(IKObjective):
 
     def compute_jacobian_analytic(
         self,
-        body_q: wp.array2d(dtype=wp.transform),
-        joint_q: wp.array2d(dtype=wp.float32),
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
         model: Model,
-        jacobian: wp.array3d(dtype=wp.float32),
-        joint_S_s: wp.array2d(dtype=wp.spatial_vector),
+        jacobian: wp.array3d[wp.float32],
+        joint_S_s: wp.array2d[wp.spatial_vector],
         start_idx: int,
     ) -> None:
         """Fill the position Jacobian block from the analytic motion subspace.
@@ -497,15 +497,15 @@ class IKObjectivePosition(IKObjective):
 
 @wp.kernel
 def _limit_residuals(
-    joint_q: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-    joint_limit_lower: wp.array1d(dtype=wp.float32),  # (n_dofs)
-    joint_limit_upper: wp.array1d(dtype=wp.float32),  # (n_dofs)
-    dof_to_coord: wp.array1d(dtype=wp.int32),  # (n_dofs)
+    joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
+    joint_limit_lower: wp.array[wp.float32],  # (n_dofs)
+    joint_limit_upper: wp.array[wp.float32],  # (n_dofs)
+    dof_to_coord: wp.array[wp.int32],  # (n_dofs)
     n_dofs: int,
     weight: float,
     start_idx: int,
     # outputs
-    residuals: wp.array2d(dtype=wp.float32),  # (n_batch, n_residuals)
+    residuals: wp.array2d[wp.float32],  # (n_batch, n_residuals)
 ):
     problem, dof_idx = wp.tid()
     coord_idx = dof_to_coord[dof_idx]
@@ -527,11 +527,11 @@ def _limit_residuals(
 
 @wp.kernel
 def _limit_jac_fill(
-    q_grad: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+    q_grad: wp.array2d[wp.float32],  # (n_batch, n_dofs)
     n_dofs: int,
     start_idx: int,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),
+    jacobian: wp.array3d[wp.float32],
 ):
     problem_idx, dof_idx = wp.tid()
 
@@ -540,15 +540,15 @@ def _limit_jac_fill(
 
 @wp.kernel
 def _limit_jac_analytic(
-    joint_q: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-    joint_limit_lower: wp.array1d(dtype=wp.float32),  # (n_dofs)
-    joint_limit_upper: wp.array1d(dtype=wp.float32),  # (n_dofs)
-    dof_to_coord: wp.array1d(dtype=wp.int32),  # (n_dofs)
+    joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
+    joint_limit_lower: wp.array[wp.float32],  # (n_dofs)
+    joint_limit_upper: wp.array[wp.float32],  # (n_dofs)
+    dof_to_coord: wp.array[wp.int32],  # (n_dofs)
     n_dofs: int,
     start_idx: int,
     weight: float,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
+    jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
 ):
     problem, dof_idx = wp.tid()
     coord_idx = dof_to_coord[dof_idx]
@@ -590,8 +590,8 @@ class IKObjectiveJointLimit(IKObjective):
 
     def __init__(
         self,
-        joint_limit_lower: wp.array(dtype=wp.float32),
-        joint_limit_upper: wp.array(dtype=wp.float32),
+        joint_limit_lower: wp.array[wp.float32],
+        joint_limit_upper: wp.array[wp.float32],
         weight: float = 0.1,
     ) -> None:
         super().__init__()
@@ -641,12 +641,12 @@ class IKObjectiveJointLimit(IKObjective):
 
     def compute_residuals(
         self,
-        body_q: wp.array2d(dtype=wp.transform),
-        joint_q: wp.array2d(dtype=wp.float32),
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
         model: Model,
-        residuals: wp.array2d(dtype=wp.float32),
+        residuals: wp.array2d[wp.float32],
         start_idx: int,
-        problem_idx: wp.array(dtype=wp.int32),
+        problem_idx: wp.array[wp.int32],
     ) -> None:
         """Write weighted joint-limit violations into the global residual buffer.
 
@@ -686,9 +686,9 @@ class IKObjectiveJointLimit(IKObjective):
         self,
         tape: wp.Tape,
         model: Model,
-        jacobian: wp.array3d(dtype=wp.float32),
+        jacobian: wp.array3d[wp.float32],
         start_idx: int,
-        dq_dof: wp.array2d(dtype=wp.float32),
+        dq_dof: wp.array2d[wp.float32],
     ) -> None:
         """Fill the limit Jacobian block using Warp autodiff.
 
@@ -721,11 +721,11 @@ class IKObjectiveJointLimit(IKObjective):
 
     def compute_jacobian_analytic(
         self,
-        body_q: wp.array2d(dtype=wp.transform),
-        joint_q: wp.array2d(dtype=wp.float32),
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
         model: Model,
-        jacobian: wp.array3d(dtype=wp.float32),
-        joint_S_s: wp.array2d(dtype=wp.spatial_vector),
+        jacobian: wp.array3d[wp.float32],
+        joint_S_s: wp.array2d[wp.spatial_vector],
         start_idx: int,
     ) -> None:
         """Fill the limit Jacobian block with the piecewise-linear derivative.
@@ -764,16 +764,16 @@ class IKObjectiveJointLimit(IKObjective):
 
 @wp.kernel
 def _rot_residuals(
-    body_q: wp.array2d(dtype=wp.transform),  # (n_batch, n_bodies)
-    target_rot: wp.array1d(dtype=wp.vec4),  # (n_problems)
+    body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
+    target_rot: wp.array[wp.vec4],  # (n_problems)
     link_index: int,
     link_offset_rotation: wp.quat,
     canonicalize_quat_err: wp.bool,
     start_idx: int,
     weight: float,
-    problem_idx_map: wp.array1d(dtype=wp.int32),
+    problem_idx_map: wp.array[wp.int32],
     # outputs
-    residuals: wp.array2d(dtype=wp.float32),  # (n_batch, n_residuals)
+    residuals: wp.array2d[wp.float32],  # (n_batch, n_residuals)
 ):
     row = wp.tid()
     base = problem_idx_map[row]
@@ -810,12 +810,12 @@ def _rot_residuals(
 
 @wp.kernel
 def _rot_jac_fill(
-    q_grad: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+    q_grad: wp.array2d[wp.float32],  # (n_batch, n_dofs)
     n_dofs: int,
     start_idx: int,
     component: int,
     # outputs
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
+    jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
 ):
     problem_idx = wp.tid()
 
@@ -830,16 +830,16 @@ def _update_rotation_target(
     problem_idx: int,
     new_rotation: wp.vec4,
     # outputs
-    target_array: wp.array1d(dtype=wp.vec4),  # (n_problems)
+    target_array: wp.array[wp.vec4],  # (n_problems)
 ):
     target_array[problem_idx] = new_rotation
 
 
 @wp.kernel
 def _update_rotation_targets(
-    new_rotation: wp.array1d(dtype=wp.vec4),  # (n_problems)
+    new_rotation: wp.array[wp.vec4],  # (n_problems)
     # outputs
-    target_array: wp.array1d(dtype=wp.vec4),  # (n_problems)
+    target_array: wp.array[wp.vec4],  # (n_problems)
 ):
     problem_idx = wp.tid()
     target_array[problem_idx] = new_rotation[problem_idx]
@@ -847,13 +847,13 @@ def _update_rotation_targets(
 
 @wp.kernel
 def _rot_jac_analytic(
-    affects_dof: wp.array1d(dtype=wp.uint8),  # (n_dofs)
-    joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_batch, n_dofs)
+    affects_dof: wp.array[wp.uint8],  # (n_dofs)
+    joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_dofs)
     start_idx: int,  # first residual row for this objective
     n_dofs: int,  # width of the global Jacobian
     weight: float,
     # output
-    jacobian: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
+    jacobian: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
 ):
     # one thread per (problem, dof)
     problem_idx, dof_idx = wp.tid()
@@ -890,7 +890,7 @@ class IKObjectiveRotation(IKObjective):
         self,
         link_index: int,
         link_offset_rotation: wp.quat,
-        target_rotations: wp.array(dtype=wp.vec4),
+        target_rotations: wp.array[wp.vec4],
         canonicalize_quat_err: bool = True,
         weight: float = 1.0,
     ) -> None:
@@ -966,7 +966,7 @@ class IKObjectiveRotation(IKObjective):
             device=self.device,
         )
 
-    def set_target_rotations(self, new_rotations: wp.array(dtype=wp.vec4)) -> None:
+    def set_target_rotations(self, new_rotations: wp.array[wp.vec4]) -> None:
         """Replace the target orientations for all base IK problems.
 
         Args:
@@ -991,12 +991,12 @@ class IKObjectiveRotation(IKObjective):
 
     def compute_residuals(
         self,
-        body_q: wp.array2d(dtype=wp.transform),
-        joint_q: wp.array2d(dtype=wp.float32),
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
         model: Model,
-        residuals: wp.array2d(dtype=wp.float32),
+        residuals: wp.array2d[wp.float32],
         start_idx: int,
-        problem_idx: wp.array(dtype=wp.int32),
+        problem_idx: wp.array[wp.int32],
     ) -> None:
         """Write weighted orientation errors into the global residual buffer.
 
@@ -1036,9 +1036,9 @@ class IKObjectiveRotation(IKObjective):
         self,
         tape: wp.Tape,
         model: Model,
-        jacobian: wp.array3d(dtype=wp.float32),
+        jacobian: wp.array3d[wp.float32],
         start_idx: int,
-        dq_dof: wp.array2d(dtype=wp.float32),
+        dq_dof: wp.array2d[wp.float32],
     ) -> None:
         """Fill the rotation Jacobian block using Warp autodiff.
 
@@ -1079,11 +1079,11 @@ class IKObjectiveRotation(IKObjective):
 
     def compute_jacobian_analytic(
         self,
-        body_q: wp.array2d(dtype=wp.transform),
-        joint_q: wp.array2d(dtype=wp.float32),
+        body_q: wp.array2d[wp.transform],
+        joint_q: wp.array2d[wp.float32],
         model: Model,
-        jacobian: wp.array3d(dtype=wp.float32),
-        joint_S_s: wp.array2d(dtype=wp.spatial_vector),
+        jacobian: wp.array3d[wp.float32],
+        joint_S_s: wp.array2d[wp.spatial_vector],
         start_idx: int,
     ) -> None:
         """Fill the rotation Jacobian block from the analytic motion subspace.

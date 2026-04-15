@@ -4,8 +4,8 @@
 ###########################################################################
 # Example Contact Sensor
 #
-# Shows how to use the SensorContact class to evaluate total contact
-# forces and per-counterpart force breakdowns.
+# Shows how to use the SensorContact class to evaluate contact forces,
+# including per-counterpart breakdowns.
 # The flap has a contact sensor registering the total contact force of
 # the objects on top. The plates' sensors register per-counterpart forces
 # for the cube and the ball to detect which object touched which plate. Each
@@ -36,11 +36,6 @@ class Example:
         self.reset_interval = 8.0
 
         self.viewer = viewer
-        self.plot_window = ViewerPlot(
-            viewer, "Flap Contact Force", n_points=100, avg=10, scale_min=0, graph_size=(400, 200)
-        )
-        if isinstance(self.viewer, newton.viewer.ViewerGL):
-            self.viewer.register_ui_callback(self.plot_window.render, "free")
 
         builder = newton.ModelBuilder()
         builder.add_usd(newton.examples.get_asset("sensor_contact_scene.usda"))
@@ -163,7 +158,11 @@ class Example:
             self._set_shape_colors({plate_shape: self.shape_colors[counterpart_label]})
 
         self.flap_contact_sensor.update(self.state_0, self.contacts)
-        self.plot_window.add_point(np.abs(self.flap_contact_sensor.total_force.numpy()[0, 2]))
+        self.viewer.log_scalar(
+            "Flap Contact Force",
+            np.abs(self.flap_contact_sensor.total_force.numpy()[0, 2]),
+            smoothing=10,
+        )
         self.sim_time += self.frame_dt
 
     def reset(self):
@@ -171,7 +170,7 @@ class Example:
         self.next_reset = self.sim_time + self.reset_interval
         self._set_shape_colors({self.shape_map[s]: v for s, v in self.shape_colors.items()})
         self.plates_touched = 2 * [False]
-        self.plot_window.reset()
+        self.viewer.log_scalar("Flap Contact Force", 0.0, clear=True)
 
         print("Resetting")
         # Restore initial joint positions and velocities in-place.
@@ -210,57 +209,6 @@ class Example:
         # sensing_obj_idx preserves the input order given to the sensor.
         assert self.model.shape_label[self.plate_contact_sensor.sensing_obj_idx[0]] == "/env/Plate1"
         assert self.model.shape_label[self.plate_contact_sensor.sensing_obj_idx[1]] == "/env/Plate2"
-
-
-class ViewerPlot:
-    """ImGui plot window"""
-
-    def __init__(self, viewer=None, title="Plot", n_points=200, avg=1, **kwargs):
-        self.viewer = viewer
-        self.avg = avg
-        self.title = title
-        self.data = np.zeros(n_points, dtype=np.float32)
-        self.plot_kwargs = kwargs
-        self.cache = []
-
-    def add_point(self, point):
-        self.cache.append(point)
-        if len(self.cache) == self.avg:
-            self.data[0] = sum(self.cache) / self.avg
-            self.data = np.roll(self.data, -1)
-            self.cache.clear()
-
-    def reset(self):
-        self.data.fill(0)
-        self.cache.clear()
-
-    def render(self, imgui):
-        """Render the force plot window.
-
-        Args:
-            imgui: The ImGui object passed by the ViewerGL callback system.
-        """
-        if not self.viewer or not self.viewer.ui.is_available:
-            return
-
-        io = self.viewer.ui.io
-
-        # Position the plot window
-        window_shape = (400, 350)
-        imgui.set_next_window_pos(
-            imgui.ImVec2(io.display_size[0] - window_shape[0] - 10, io.display_size[1] - window_shape[1] - 10)
-        )
-        imgui.set_next_window_size(imgui.ImVec2(*window_shape))
-
-        flags = imgui.WindowFlags_.no_resize.value
-
-        if imgui.begin(self.title, flags=flags):
-            imgui.text("Flap contact force")
-            avail = imgui.get_content_region_avail()
-            plot_kwargs = dict(self.plot_kwargs)
-            plot_kwargs["graph_size"] = (avail.x, plot_kwargs.get("graph_size", (0, 0))[1])
-            imgui.plot_lines("##force", self.data, **plot_kwargs)
-        imgui.end()
 
 
 if __name__ == "__main__":

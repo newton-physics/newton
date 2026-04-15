@@ -34,30 +34,30 @@ def triangle_barycentric(A: wp.vec3, B: wp.vec3, C: wp.vec3, P: wp.vec3):
 def eval_body_contact_kernel(
     # inputs
     dt: float,
-    pos_prev: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
     # body-particle contact
     soft_contact_ke: float,
     soft_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
-    particle_radius: wp.array(dtype=float),
-    soft_contact_particle: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
+    particle_radius: wp.array[float],
+    soft_contact_particle: wp.array[int],
+    contact_count: wp.array[int],
     contact_max: int,
-    shape_material_mu: wp.array(dtype=float),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_com: wp.array(dtype=wp.vec3),
-    contact_shape: wp.array(dtype=int),
-    contact_body_pos: wp.array(dtype=wp.vec3),
-    contact_body_vel: wp.array(dtype=wp.vec3),
-    contact_normal: wp.array(dtype=wp.vec3),
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
     # outputs: particle force and hessian
-    forces: wp.array(dtype=wp.vec3),
-    hessians: wp.array(dtype=wp.mat33),
+    forces: wp.array[wp.vec3],
+    hessians: wp.array[wp.mat33],
 ):
     t_id = wp.tid()
 
@@ -95,13 +95,13 @@ def eval_body_contact_kernel(
 def handle_vertex_triangle_contacts_kernel(
     thickness: float,
     stiff_factor: float,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=int, ndim=2),
-    broad_phase_vf: wp.array(dtype=int, ndim=2),
-    static_diags: wp.array(dtype=float),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[int],
+    broad_phase_vf: wp.array2d[int],
+    static_diags: wp.array[float],
     # outputs
-    forces: wp.array(dtype=wp.vec3),
-    hessian_diags: wp.array(dtype=wp.mat33),
+    forces: wp.array[wp.vec3],
+    hessian_diags: wp.array[wp.mat33],
 ):
     vid = wp.tid()
 
@@ -154,13 +154,13 @@ def handle_vertex_triangle_contacts_kernel(
 def handle_edge_edge_contacts_kernel(
     thickness: float,
     stiff_factor: float,
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=int, ndim=2),
-    broad_phase_ee: wp.array(dtype=int, ndim=2),
-    static_diags: wp.array(dtype=float),
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[int],
+    broad_phase_ee: wp.array2d[int],
+    static_diags: wp.array[float],
     # outputs
-    forces: wp.array(dtype=wp.vec3),
-    hessian_diags: wp.array(dtype=wp.mat33),
+    forces: wp.array[wp.vec3],
+    hessian_diags: wp.array[wp.mat33],
 ):
     eid = wp.tid()
     edge0 = wp.vec4i(edge_indices[eid, 2], edge_indices[eid, 3], edge_indices[eid, 0], edge_indices[eid, 1])
@@ -252,14 +252,14 @@ def intersection_gradient_vector(R: wp.vec3, E: wp.vec3, N: wp.vec3):
 def solve_untangling_kernel(
     thickness: float,
     stiff_factor: float,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=int, ndim=2),
-    edge_indices: wp.array(dtype=int, ndim=2),
-    broad_phase_ef: wp.array(dtype=int, ndim=2),
-    static_diags: wp.array(dtype=float),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[int],
+    edge_indices: wp.array2d[int],
+    broad_phase_ef: wp.array2d[int],
+    static_diags: wp.array[float],
     # outputs
-    forces: wp.array(dtype=wp.vec3),
-    hessian_diags: wp.array(dtype=wp.mat33),
+    forces: wp.array[wp.vec3],
+    hessian_diags: wp.array[wp.mat33],
 ):
     eid = wp.tid()
     edge = wp.vec4i(edge_indices[eid, 2], edge_indices[eid, 3], edge_indices[eid, 0], edge_indices[eid, 1])
