@@ -3,10 +3,6 @@
 
 import unittest
 
-import numpy as np
-import warp as wp
-
-import newton
 from newton._src.viewer.viewer import ViewerBase
 
 
