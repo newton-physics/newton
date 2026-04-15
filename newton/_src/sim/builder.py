@@ -68,7 +68,6 @@ from .model import Model
 if TYPE_CHECKING:
     from pxr import Usd
 
-    from ..actuators.actuator import Actuator
     from ..actuators.clamping.base import Clamping
     from ..actuators.controllers.base import Controller
     from ..geometry.types import TetMesh
@@ -1743,7 +1742,7 @@ class ModelBuilder:
         ctrl_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in ctrl_shared.items()))
         clamping_key = tuple(
             (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
-            for cc, shared in zip(clamping_classes, clamping_shared_list)
+            for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
         )
         entry_key = (controller_class, delay, clamping_key, ctrl_shared_key)
 
@@ -10362,7 +10361,7 @@ class ModelBuilder:
                 # Build clamping objects from per-DOF arrays + shared kwargs
                 clamping_objs = []
                 for i, (comp_class, shared_kw) in enumerate(
-                    zip(entry.clamping_classes, entry.clamping_shared_kwargs)
+                    zip(entry.clamping_classes, entry.clamping_shared_kwargs, strict=True)
                 ):
                     comp_args_per_actuator = [per_act[i] for per_act in entry.clamping_args]
                     comp_arrays = self._stack_args_to_arrays(

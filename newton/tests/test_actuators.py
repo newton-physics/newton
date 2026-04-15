@@ -3,7 +3,6 @@
 
 """Tests for actuator integration with ModelBuilder."""
 
-import math
 import os
 import unittest
 
@@ -13,15 +12,10 @@ import warp as wp
 import newton
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
-    Actuator,
-    ClampingDCMotor,
     ClampingMaxForce,
-    ClampingPositionBased,
     ControllerPD,
     ControllerPID,
-    Delay,
     ParsedActuator,
-    StateActuator,
     parse_actuator_prim,
 )
 from newton.selection import ArticulationView
@@ -336,40 +330,88 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         if use_mask:
             if use_multiple_artics_per_view:
                 expected_kp = [
-                    100.0, 200.0, 300.0,
-                    100.0, 200.0, 300.0,
-                    100.0, 200.0, 1200.0,
-                    100.0, 200.0, 1300.0,
-                    100.0, 200.0, 300.0,
-                    100.0, 200.0, 300.0,
+                    100.0,
+                    200.0,
+                    300.0,
+                    100.0,
+                    200.0,
+                    300.0,
+                    100.0,
+                    200.0,
+                    1200.0,
+                    100.0,
+                    200.0,
+                    1300.0,
+                    100.0,
+                    200.0,
+                    300.0,
+                    100.0,
+                    200.0,
+                    300.0,
                 ]
             else:
                 expected_kp = [
-                    100.0, 200.0, 300.0,
-                    100.0, 200.0, 300.0,
-                    100.0, 200.0, 300.0,
-                    100.0, 200.0, 1100.0,
-                    100.0, 200.0, 300.0,
-                    100.0, 200.0, 300.0,
+                    100.0,
+                    200.0,
+                    300.0,
+                    100.0,
+                    200.0,
+                    300.0,
+                    100.0,
+                    200.0,
+                    300.0,
+                    100.0,
+                    200.0,
+                    1100.0,
+                    100.0,
+                    200.0,
+                    300.0,
+                    100.0,
+                    200.0,
+                    300.0,
                 ]
         else:
             if use_multiple_artics_per_view:
                 expected_kp = [
-                    100.0, 200.0, 1000.0,
-                    100.0, 200.0, 1100.0,
-                    100.0, 200.0, 1200.0,
-                    100.0, 200.0, 1300.0,
-                    100.0, 200.0, 1400.0,
-                    100.0, 200.0, 1500.0,
+                    100.0,
+                    200.0,
+                    1000.0,
+                    100.0,
+                    200.0,
+                    1100.0,
+                    100.0,
+                    200.0,
+                    1200.0,
+                    100.0,
+                    200.0,
+                    1300.0,
+                    100.0,
+                    200.0,
+                    1400.0,
+                    100.0,
+                    200.0,
+                    1500.0,
                 ]
             else:
                 expected_kp = [
-                    100.0, 200.0, 300.0,
-                    100.0, 200.0, 1000.0,
-                    100.0, 200.0, 300.0,
-                    100.0, 200.0, 1100.0,
-                    100.0, 200.0, 300.0,
-                    100.0, 200.0, 1200.0,
+                    100.0,
+                    200.0,
+                    300.0,
+                    100.0,
+                    200.0,
+                    1000.0,
+                    100.0,
+                    200.0,
+                    300.0,
+                    100.0,
+                    200.0,
+                    1100.0,
+                    100.0,
+                    200.0,
+                    300.0,
+                    100.0,
+                    200.0,
+                    1200.0,
                 ]
 
         measured_kp = actuator.controller.kp.numpy()
@@ -397,8 +439,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 class TestActuatorStepIntegration(unittest.TestCase):
     """Tests for Actuator.step() with real Model/State/Control objects."""
 
-    def _build_chain_model(self, num_joints, controller_class, controller_kwargs,
-                           clamping=None, delay=None):
+    def _build_chain_model(self, num_joints, controller_class, controller_kwargs, clamping=None, delay=None):
         """Helper: build a revolute chain, add one actuator per joint, finalize."""
         builder = newton.ModelBuilder()
         links = [builder.add_link() for _ in range(num_joints)]
@@ -484,7 +525,9 @@ class TestActuatorStepIntegration(unittest.TestCase):
     def test_pd_step_max_force_clamp(self):
         """ControllerPD + ClampingMaxForce: force is clamped to max_force."""
         model, dofs = self._build_chain_model(
-            1, ControllerPD, {"kp": 100.0},
+            1,
+            ControllerPD,
+            {"kp": 100.0},
             clamping=[(ClampingMaxForce, {"max_force": 50.0})],
         )
         state = model.state()

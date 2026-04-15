@@ -11,13 +11,13 @@ from .base import Clamping
 
 @wp.kernel
 def _clamp_dc_motor_kernel(
-    current_vel: wp.array(dtype=float),
-    state_indices: wp.array(dtype=wp.uint32),
-    saturation_effort: wp.array(dtype=float),
-    velocity_limit: wp.array(dtype=float),
-    max_force: wp.array(dtype=float),
-    src: wp.array(dtype=float),
-    dst: wp.array(dtype=float),
+    current_vel: wp.array[float],
+    state_indices: wp.array[wp.uint32],
+    saturation_effort: wp.array[float],
+    velocity_limit: wp.array[float],
+    max_force: wp.array[float],
+    src: wp.array[float],
+    dst: wp.array[float],
 ):
     """DC motor velocity-dependent saturation: read src, write to dst.
 
@@ -39,7 +39,7 @@ def _clamp_dc_motor_kernel(
 class ClampingDCMotor(Clamping):
     """DC motor velocity-dependent torque saturation.
 
-    Clips controller output using the torque–speed characteristic:
+    Clips controller output using the torque-speed characteristic:
         τ_max(v) = clamp(τ_sat*(1 - v/v_max),  0,  effort_limit)
         τ_min(v) = clamp(τ_sat*(-1 - v/v_max), -effort_limit, 0)
 

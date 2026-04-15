@@ -10,18 +10,18 @@ from .base import Controller
 
 @wp.kernel
 def _pd_force_kernel(
-    current_pos: wp.array(dtype=float),
-    current_vel: wp.array(dtype=float),
-    target_pos: wp.array(dtype=float),
-    target_vel: wp.array(dtype=float),
-    control_input: wp.array(dtype=float),
-    state_indices: wp.array(dtype=wp.uint32),
-    target_indices: wp.array(dtype=wp.uint32),
-    force_indices: wp.array(dtype=wp.uint32),
-    kp: wp.array(dtype=float),
-    kd: wp.array(dtype=float),
-    constant_force: wp.array(dtype=float),
-    forces: wp.array(dtype=float),
+    current_pos: wp.array[float],
+    current_vel: wp.array[float],
+    target_pos: wp.array[float],
+    target_vel: wp.array[float],
+    control_input: wp.array[float],
+    state_indices: wp.array[wp.uint32],
+    target_indices: wp.array[wp.uint32],
+    force_indices: wp.array[wp.uint32],
+    kp: wp.array[float],
+    kd: wp.array[float],
+    constant_force: wp.array[float],
+    forces: wp.array[float],
 ):
     """PD force: f = constant + act + kp*(target_pos - q) + kd*(target_vel - v)."""
     i = wp.tid()
@@ -88,7 +88,7 @@ class ControllerPD(Controller):
         forces: wp.array,
         force_indices: wp.array,
         num_actuators: int,
-        state: Any,
+        state: Controller.State | None,
         dt: float,
     ) -> None:
         wp.launch(

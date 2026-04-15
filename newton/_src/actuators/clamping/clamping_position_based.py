@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import warp as wp
@@ -12,8 +12,8 @@ from .base import Clamping
 @wp.func
 def _interp_1d(
     x: float,
-    xs: wp.array(dtype=float),
-    ys: wp.array(dtype=float),
+    xs: wp.array[float],
+    ys: wp.array[float],
     n: int,
 ) -> float:
     """Linearly interpolate (x -> y) from sorted sample arrays, clamping at boundaries."""
@@ -35,13 +35,13 @@ def _interp_1d(
 
 @wp.kernel
 def _remotized_clamp_kernel(
-    current_pos: wp.array(dtype=float),
-    state_indices: wp.array(dtype=wp.uint32),
-    lookup_angles: wp.array(dtype=float),
-    lookup_torques: wp.array(dtype=float),
+    current_pos: wp.array[float],
+    state_indices: wp.array[wp.uint32],
+    lookup_angles: wp.array[float],
+    lookup_torques: wp.array[float],
     lookup_size: int,
-    src: wp.array(dtype=float),
-    dst: wp.array(dtype=float),
+    src: wp.array[float],
+    dst: wp.array[float],
 ):
     """Angle-dependent clamping via interpolated lookup table: read src, write dst."""
     i = wp.tid()
@@ -61,7 +61,7 @@ class ClampingPositionBased(Clamping):
     This is a post-controller dynamic.
     """
 
-    SHARED_PARAMS = {"lookup_angles", "lookup_torques"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"lookup_angles", "lookup_torques"}
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
@@ -85,8 +85,7 @@ class ClampingPositionBased(Clamping):
         """
         if len(lookup_angles) != len(lookup_torques):
             raise ValueError(
-                f"lookup_angles length ({len(lookup_angles)}) must match "
-                f"lookup_torques length ({len(lookup_torques)})"
+                f"lookup_angles length ({len(lookup_angles)}) must match lookup_torques length ({len(lookup_torques)})"
             )
         self.lookup_size = len(lookup_angles)
         self._raw_angles = lookup_angles
@@ -101,13 +100,9 @@ class ClampingPositionBased(Clamping):
 
     def set_device(self, device: wp.Device) -> None:
         if self.lookup_angles is None:
-            self.lookup_angles = wp.array(
-                np.array(self._raw_angles, dtype=np.float32), device=device
-            )
+            self.lookup_angles = wp.array(np.array(self._raw_angles, dtype=np.float32), device=device)
         if self.lookup_torques is None:
-            self.lookup_torques = wp.array(
-                np.array(self._raw_torques, dtype=np.float32), device=device
-            )
+            self.lookup_torques = wp.array(np.array(self._raw_torques, dtype=np.float32), device=device)
 
     def modify_forces(
         self,

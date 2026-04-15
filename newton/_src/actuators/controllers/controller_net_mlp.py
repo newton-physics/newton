@@ -1,12 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
+import typing
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import warp as wp
 
 from .base import Controller
+
+if typing.TYPE_CHECKING:
+    import torch
 
 
 class ControllerNetMLP(Controller):
@@ -19,14 +25,14 @@ class ControllerNetMLP(Controller):
     as input and is expected to return torques in physical units. Scaling is left to the user.
     """
 
-    SHARED_PARAMS = {"network_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"network_path"}
 
     @dataclass
-    class State:
+    class State(Controller.State):
         """History buffers for MLP controller."""
 
-        pos_error_history: Any = None
-        vel_history: Any = None
+        pos_error_history: torch.Tensor | None = None
+        vel_history: torch.Tensor | None = None
 
         def reset(self) -> None:
             self.pos_error_history.zero_()
@@ -46,7 +52,7 @@ class ControllerNetMLP(Controller):
         self,
         input_order: str = "pos_vel",
         input_idx: list[int] | None = None,
-        network: Any = None,
+        network: torch.nn.Module | None = None,
         network_path: str | None = None,
     ):
         """Initialize MLP controller.
@@ -55,7 +61,7 @@ class ControllerNetMLP(Controller):
             input_order: Concatenation order, "pos_vel" or "vel_pos".
             input_idx: History timestep indices to feed the network. 0 = current,
                 1 = one step ago, etc. Default [0].
-            network: Pre-trained network (torch.nn.Module). If None, loaded from network_path.
+            network: Pre-trained network. If None, loaded from network_path.
             network_path: Path to a TorchScript model file.
         """
         import torch
@@ -80,8 +86,8 @@ class ControllerNetMLP(Controller):
         else:
             raise ValueError("Either 'network' or 'network_path' must be provided")
 
-        self._torch_input_indices: Any = None
-        self._torch_sequential_indices: Any = None
+        self._torch_input_indices: torch.Tensor | None = None
+        self._torch_sequential_indices: torch.Tensor | None = None
         self._warp_sequential_indices: wp.array | None = None
 
     def set_device(self, device: wp.Device) -> None:
@@ -103,7 +109,7 @@ class ControllerNetMLP(Controller):
     def is_graphable(self) -> bool:
         return False
 
-    def state(self, num_actuators: int, device: wp.Device) -> "ControllerNetMLP.State":
+    def state(self, num_actuators: int, device: wp.Device) -> ControllerNetMLP.State:
         import torch
 
         return ControllerNetMLP.State(
@@ -123,7 +129,7 @@ class ControllerNetMLP(Controller):
         forces: wp.array,
         force_indices: wp.array,
         num_actuators: int,
-        state: "ControllerNetMLP.State",
+        state: ControllerNetMLP.State,
         dt: float,
     ) -> None:
         import torch
@@ -161,8 +167,8 @@ class ControllerNetMLP(Controller):
 
     def update_state(
         self,
-        current_state: "ControllerNetMLP.State",
-        next_state: "ControllerNetMLP.State",
+        current_state: ControllerNetMLP.State,
+        next_state: ControllerNetMLP.State,
     ) -> None:
         if next_state is None:
             return

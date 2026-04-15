@@ -1,12 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
+import typing
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import warp as wp
 
 from .base import Controller
+
+if typing.TYPE_CHECKING:
+    import torch
 
 
 class ControllerNetLSTM(Controller):
@@ -26,14 +32,14 @@ class ControllerNetLSTM(Controller):
     that num_layers and hidden_size can be inferred automatically.
     """
 
-    SHARED_PARAMS = {"network_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"network_path"}
 
     @dataclass
-    class State:
+    class State(Controller.State):
         """LSTM hidden and cell state."""
 
-        hidden: Any = None
-        cell: Any = None
+        hidden: torch.Tensor | None = None
+        cell: torch.Tensor | None = None
 
         def reset(self) -> None:
             self.hidden = self.hidden.new_zeros(self.hidden.shape)
@@ -49,13 +55,13 @@ class ControllerNetLSTM(Controller):
 
     def __init__(
         self,
-        network: Any = None,
+        network: torch.nn.Module | None = None,
         network_path: str | None = None,
     ):
         """Initialize LSTM controller.
 
         Args:
-            network: Pre-trained LSTM network (torch.nn.Module).
+            network: Pre-trained LSTM network.
                 If None, loaded from network_path.
             network_path: Path to a TorchScript model file.
         """
@@ -90,11 +96,11 @@ class ControllerNetLSTM(Controller):
         self._num_layers = lstm.num_layers
         self._hidden_size = lstm.hidden_size
 
-        self._torch_input_indices: Any = None
-        self._torch_sequential_indices: Any = None
+        self._torch_input_indices: torch.Tensor | None = None
+        self._torch_sequential_indices: torch.Tensor | None = None
         self._warp_sequential_indices: wp.array | None = None
-        self._hidden: Any = None
-        self._cell: Any = None
+        self._hidden: torch.Tensor | None = None
+        self._cell: torch.Tensor | None = None
 
     def set_device(self, device: wp.Device) -> None:
         import torch
@@ -115,7 +121,7 @@ class ControllerNetLSTM(Controller):
     def is_graphable(self) -> bool:
         return False
 
-    def state(self, num_actuators: int, device: wp.Device) -> "ControllerNetLSTM.State":
+    def state(self, num_actuators: int, device: wp.Device) -> ControllerNetLSTM.State:
         import torch
 
         return ControllerNetLSTM.State(
@@ -135,7 +141,7 @@ class ControllerNetLSTM(Controller):
         forces: wp.array,
         force_indices: wp.array,
         num_actuators: int,
-        state: "ControllerNetLSTM.State",
+        state: ControllerNetLSTM.State,
         dt: float,
     ) -> None:
         import torch
@@ -168,8 +174,8 @@ class ControllerNetLSTM(Controller):
 
     def update_state(
         self,
-        current_state: "ControllerNetLSTM.State",
-        next_state: "ControllerNetLSTM.State",
+        current_state: ControllerNetLSTM.State,
+        next_state: ControllerNetLSTM.State,
     ) -> None:
         if next_state is None:
             return

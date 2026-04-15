@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, ClassVar
 
 import warp as wp
 
@@ -21,7 +24,18 @@ class Controller:
             all DOFs). Different values require separate actuator instances.
     """
 
-    SHARED_PARAMS: set[str] = set()
+    @dataclass
+    class State:
+        """Base state for controllers.
+
+        Subclass this in concrete controllers that maintain internal
+        state (e.g. integral accumulators, history buffers).
+        """
+
+        def reset(self) -> None:
+            """Reset state to initial values."""
+
+    SHARED_PARAMS: ClassVar[set[str]] = set()
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
@@ -71,7 +85,7 @@ class Controller:
         forces: wp.array,
         force_indices: wp.array,
         num_actuators: int,
-        state: Any,
+        state: Controller.State | None,
         dt: float,
     ) -> None:
         """Compute raw forces and write to ``forces[force_indices[i]]``.
@@ -100,14 +114,14 @@ class Controller:
         """Return True if compute() can be captured in a CUDA graph."""
         return True
 
-    def state(self, num_actuators: int, device: wp.Device) -> Any:
+    def state(self, num_actuators: int, device: wp.Device) -> Controller.State | None:
         """Create and return a new state object, or None if stateless."""
         return None
 
     def update_state(
         self,
-        current_state: Any,
-        next_state: Any,
+        current_state: Controller.State,
+        next_state: Controller.State,
     ) -> None:
         """Advance internal state after a compute step.
 

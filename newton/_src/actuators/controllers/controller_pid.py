@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import math
 from dataclasses import dataclass
 from typing import Any
@@ -12,23 +14,23 @@ from .base import Controller
 
 @wp.kernel
 def _pid_force_kernel(
-    current_pos: wp.array(dtype=float),
-    current_vel: wp.array(dtype=float),
-    target_pos: wp.array(dtype=float),
-    target_vel: wp.array(dtype=float),
-    control_input: wp.array(dtype=float),
-    state_indices: wp.array(dtype=wp.uint32),
-    target_indices: wp.array(dtype=wp.uint32),
-    force_indices: wp.array(dtype=wp.uint32),
-    kp: wp.array(dtype=float),
-    ki: wp.array(dtype=float),
-    kd: wp.array(dtype=float),
-    integral_max: wp.array(dtype=float),
-    constant_force: wp.array(dtype=float),
+    current_pos: wp.array[float],
+    current_vel: wp.array[float],
+    target_pos: wp.array[float],
+    target_vel: wp.array[float],
+    control_input: wp.array[float],
+    state_indices: wp.array[wp.uint32],
+    target_indices: wp.array[wp.uint32],
+    force_indices: wp.array[wp.uint32],
+    kp: wp.array[float],
+    ki: wp.array[float],
+    kd: wp.array[float],
+    integral_max: wp.array[float],
+    constant_force: wp.array[float],
     dt: float,
-    current_integral: wp.array(dtype=float),
-    forces: wp.array(dtype=float),
-    next_integral: wp.array(dtype=float),
+    current_integral: wp.array[float],
+    forces: wp.array[float],
+    next_integral: wp.array[float],
 ):
     """PID force: f = constant + act + kp*e + ki*integral + kd*de."""
     i = wp.tid()
@@ -64,10 +66,10 @@ class ControllerPID(Controller):
     """
 
     @dataclass
-    class State:
+    class State(Controller.State):
         """Integral state for PID controller."""
 
-        integral: wp.array = None  # Shape (N,)
+        integral: wp.array[float] | None = None
 
         def reset(self) -> None:
             self.integral.zero_()
@@ -114,7 +116,7 @@ class ControllerPID(Controller):
     def is_stateful(self) -> bool:
         return True
 
-    def state(self, num_actuators: int, device: wp.Device) -> "ControllerPID.State":
+    def state(self, num_actuators: int, device: wp.Device) -> ControllerPID.State:
         return ControllerPID.State(
             integral=wp.zeros(num_actuators, dtype=wp.float32, device=device),
         )
@@ -131,7 +133,7 @@ class ControllerPID(Controller):
         forces: wp.array,
         force_indices: wp.array,
         num_actuators: int,
-        state: "ControllerPID.State",
+        state: ControllerPID.State,
         dt: float,
     ) -> None:
         wp.launch(
@@ -159,7 +161,7 @@ class ControllerPID(Controller):
 
     def update_state(
         self,
-        current_state: "ControllerPID.State",
-        next_state: "ControllerPID.State",
+        current_state: ControllerPID.State,
+        next_state: ControllerPID.State,
     ) -> None:
         wp.copy(next_state.integral, self._next_integral)

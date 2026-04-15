@@ -18,7 +18,6 @@ from .state import State
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
-
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 

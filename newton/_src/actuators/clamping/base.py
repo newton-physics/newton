@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any
+from typing import Any, ClassVar
 
 import warp as wp
 
@@ -22,7 +22,7 @@ class Clamping:
             all DOFs). Different values require separate actuator instances.
     """
 
-    SHARED_PARAMS: set[str] = set()
+    SHARED_PARAMS: ClassVar[set[str]] = set()
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:

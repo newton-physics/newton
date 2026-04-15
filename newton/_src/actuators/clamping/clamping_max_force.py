@@ -11,9 +11,9 @@ from .base import Clamping
 
 @wp.kernel
 def _box_clamp_kernel(
-    max_force: wp.array(dtype=float),
-    src: wp.array(dtype=float),
-    dst: wp.array(dtype=float),
+    max_force: wp.array[float],
+    src: wp.array[float],
+    dst: wp.array[float],
 ):
     """Clamp src forces to ±max_force, write to dst."""
     i = wp.tid()

@@ -1,26 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import warp as wp
 
 
 @wp.kernel
 def _delay_buffer_state_kernel(
-    target_pos_global: wp.array(dtype=float),
-    target_vel_global: wp.array(dtype=float),
-    control_input_global: wp.array(dtype=float),
-    indices: wp.array(dtype=wp.uint32),
+    target_pos_global: wp.array[float],
+    target_vel_global: wp.array[float],
+    control_input_global: wp.array[float],
+    indices: wp.array[wp.uint32],
     copy_idx: int,
     write_idx: int,
-    current_buffer_pos: wp.array2d(dtype=float),
-    current_buffer_vel: wp.array2d(dtype=float),
-    current_buffer_act: wp.array2d(dtype=float),
-    next_buffer_pos: wp.array2d(dtype=float),
-    next_buffer_vel: wp.array2d(dtype=float),
-    next_buffer_act: wp.array2d(dtype=float),
+    current_buffer_pos: wp.array2d[float],
+    current_buffer_vel: wp.array2d[float],
+    current_buffer_act: wp.array2d[float],
+    next_buffer_pos: wp.array2d[float],
+    next_buffer_vel: wp.array2d[float],
+    next_buffer_act: wp.array2d[float],
 ):
     """Update delay circular buffer: copy missing entry, write new entry."""
     i = wp.tid()
@@ -50,15 +52,15 @@ class Delay:
     clamping list).
     """
 
-    SHARED_PARAMS = {"delay"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"delay"}
 
     @dataclass
     class State:
         """Circular buffer state for delayed targets."""
 
-        buffer_pos: wp.array = None  # Shape (delay, N)
-        buffer_vel: wp.array = None  # Shape (delay, N)
-        buffer_act: wp.array = None  # Shape (delay, N)
+        buffer_pos: wp.array2d[float] | None = None
+        buffer_vel: wp.array2d[float] | None = None
+        buffer_act: wp.array2d[float] | None = None
         write_idx: int = 0
         is_filled: bool = False
 
@@ -87,7 +89,7 @@ class Delay:
     def set_indices(self, num_actuators: int, sequential_indices: wp.array) -> None:
         self._sequential_indices = sequential_indices
 
-    def state(self, num_actuators: int, device: wp.Device) -> "Delay.State":
+    def state(self, num_actuators: int, device: wp.Device) -> Delay.State:
         return Delay.State(
             buffer_pos=wp.zeros((self.delay, num_actuators), dtype=wp.float32, device=device),
             buffer_vel=wp.zeros((self.delay, num_actuators), dtype=wp.float32, device=device),
@@ -96,14 +98,14 @@ class Delay:
             is_filled=False,
         )
 
-    def is_ready(self, current_state: "Delay.State") -> bool:
+    def is_ready(self, current_state: Delay.State) -> bool:
         """Return True if the buffer is filled and delayed targets are available."""
         return current_state is not None and current_state.is_filled
 
     def get_delayed_targets(
         self,
         act_input: wp.array | None,
-        current_state: "Delay.State",
+        current_state: Delay.State,
     ) -> tuple[wp.array, wp.array, wp.array | None, wp.array]:
         """Return delayed targets from the circular buffer.
 
@@ -125,8 +127,8 @@ class Delay:
         act_input: wp.array | None,
         input_indices: wp.array,
         num_actuators: int,
-        current_state: "Delay.State",
-        next_state: "Delay.State",
+        current_state: Delay.State,
+        next_state: Delay.State,
         dt: float,
     ) -> None:
         if next_state is None:

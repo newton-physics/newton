@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,7 +19,7 @@ class SchemaEntry:
     component_class: type
     param_map: dict[str, str]
     is_controller: bool = False
-    validate: Any = None
+    validate: Callable[[dict[str, Any]], None] | None = None
 
 
 def _validate_clamp_velocity_based(kwargs: dict[str, Any]) -> None:
@@ -166,8 +167,7 @@ def parse_actuator_prim(prim) -> ParsedActuator | None:
 
     if controller_class is None:
         raise ValueError(
-            f"Actuator prim has no controller schema applied "
-            f"(applied schemas: {prim.GetAppliedSchemas()})"
+            f"Actuator prim has no controller schema applied (applied schemas: {prim.GetAppliedSchemas()})"
         )
 
     return ParsedActuator(

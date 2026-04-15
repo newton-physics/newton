@@ -23,28 +23,21 @@ from ._src.actuators import (
     ControllerPID,
     Delay,
     ParsedActuator,
-    StateActuator,
     parse_actuator_prim,
 )
 
 __all__ = [
-    # Composed actuator
     "Actuator",
-    "StateActuator",
-    # Controllers
-    "Controller",
-    "ControllerPD",
-    "ControllerPID",
-    "ControllerNetMLP",
-    "ControllerNetLSTM",
-    # Delay
-    "Delay",
-    # Clamping
     "Clamping",
+    "ClampingDCMotor",
     "ClampingMaxForce",
     "ClampingPositionBased",
-    "ClampingDCMotor",
-    # USD
+    "Controller",
+    "ControllerNetLSTM",
+    "ControllerNetMLP",
+    "ControllerPD",
+    "ControllerPID",
+    "Delay",
     "ParsedActuator",
     "parse_actuator_prim",
 ]
