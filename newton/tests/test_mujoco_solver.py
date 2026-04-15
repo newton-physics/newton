@@ -8807,12 +8807,10 @@ class TestEqualityJointObjType(unittest.TestCase):
         </mujoco>
         """)
 
-        newton_objtype = solver.mjw_model.eq_objtype.numpy().flatten()
-        native_objtype = native_model.eq_objtype
-
+        self.assertEqual(solver.mj_model.neq, native_model.neq, "neq count mismatch")
         np.testing.assert_array_equal(
-            newton_objtype[:1],
-            native_objtype,
+            solver.mj_model.eq_objtype,
+            native_model.eq_objtype,
             err_msg="eq_objtype mismatch: Newton should match native MuJoCo for joint equality",
         )
 
