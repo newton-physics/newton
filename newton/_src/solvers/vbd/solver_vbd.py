@@ -562,9 +562,7 @@ class SolverVBD(SolverBase):
         self.rigid_contact_match_cell_size_inv = 1.0 / max(rigid_contact_match_tolerance, 1.0e-8)
         self.rigid_contact_match_tolerance_sq = rigid_contact_match_tolerance * rigid_contact_match_tolerance
 
-        # Anti-creep deadzone thresholds for hard body-body contacts.
-        # Applied only to dynamic-dynamic contacts (DEADZONE_BIT) when no
-        # kinematic-driven anchor (ANCHOR_BIT) is present on the same body.
+        # DEADZONE body-snap thresholds; suppressed by _STICK_FLAG_ANCHOR.
         self.rigid_contact_stick_freeze_translation_eps = 1.0e-4
         self.rigid_contact_stick_freeze_angular_eps = 1.0e-4
 

@@ -60,6 +60,9 @@ _STICK_FLAG_ANCHOR = wp.constant(1)
 _STICK_FLAG_DEADZONE = wp.constant(2)
 """contact_stick_flag value: anti-creep deadzone (dynamic-dynamic contacts)"""
 
+_CONTACT_MATCH_NORMAL_DOT_THRESH = wp.constant(0.5)
+"""Normal agreement gate for contact history matching (about 60 degree tolerance)"""
+
 # ---------------------------------
 # Contact history hash helpers
 # ---------------------------------
@@ -116,102 +119,90 @@ def _build_contact_history_key(pair_bits: wp.uint64, cell: int) -> wp.uint64:
 # ---------------------------------
 
 
-class vec6(wp.types.vector(length=6, dtype=wp.float32)):
-    """Packed lower-triangular 3x3 matrix storage: [L00, L10, L11, L20, L21, L22]."""
-
-    pass
-
-
 @wp.func
-def chol33(A: wp.mat33) -> vec6:
+def ldlt6_solve(h_ll: wp.mat33, h_aa: wp.mat33, h_al: wp.mat33, rhs_lin: wp.vec3, rhs_ang: wp.vec3):
+    """Solve the 6x6 SPD block system via direct LDL^T factorization.
+
+    Returns (x_lin, x_ang).
     """
-    Compute Cholesky factorization A = L*L^T for 3x3 SPD matrix.
+    A11 = h_ll[0, 0]
+    A21 = h_ll[1, 0]
+    A22 = h_ll[1, 1]
+    A31 = h_ll[2, 0]
+    A32 = h_ll[2, 1]
+    A33 = h_ll[2, 2]
+    A41 = h_al[0, 0]
+    A42 = h_al[0, 1]
+    A43 = h_al[0, 2]
+    A44 = h_aa[0, 0]
+    A51 = h_al[1, 0]
+    A52 = h_al[1, 1]
+    A53 = h_al[1, 2]
+    A54 = h_aa[1, 0]
+    A55 = h_aa[1, 1]
+    A61 = h_al[2, 0]
+    A62 = h_al[2, 1]
+    A63 = h_al[2, 2]
+    A64 = h_aa[2, 0]
+    A65 = h_aa[2, 1]
+    A66 = h_aa[2, 2]
 
-    Uses packed storage for lower-triangular L to save memory and improve cache efficiency.
-    Packed format: [L00, L10, L11, L20, L21, L22] stores only the 6 non-zero elements.
+    # LDL^T decomposition
+    L21 = A21 / A11
+    L31 = A31 / A11
+    L41 = A41 / A11
+    L51 = A51 / A11
+    L61 = A61 / A11
 
-    Algorithm: Standard column-by-column Cholesky decomposition
-      Column 0: L00 = sqrt(a00), L10 = a10/L00, L20 = a20/L00
-      Column 1: L11 = sqrt(a11 - L10^2), L21 = (a21 - L20*L10)/L11
-      Column 2: L22 = sqrt(a22 - L20^2 - L21^2)
+    D2 = A22 - L21 * L21 * A11
 
-    Args:
-        A: Symmetric positive-definite 3x3 matrix (only lower triangle is accessed)
+    L32 = (A32 - L21 * L31 * A11) / D2
+    L42 = (A42 - L21 * L41 * A11) / D2
+    L52 = (A52 - L21 * L51 * A11) / D2
+    L62 = (A62 - L21 * L61 * A11) / D2
 
-    Returns:
-        vec6: Packed lower-triangular Cholesky factor L
-              Layout: [L00, L10, L11, L20, L21, L22]
-              Represents: L = [[L00,   0,   0],
-                               [L10, L11,   0],
-                               [L20, L21, L22]]
+    D3 = A33 - (L31 * L31 * A11 + L32 * L32 * D2)
 
-    Note: Assumes A is SPD. No checking for negative square roots.
-    """
-    # Extract lower triangle (A is symmetric, only lower half needed)
-    a00 = A[0, 0]
-    a10 = A[1, 0]
-    a11 = A[1, 1]
-    a20 = A[2, 0]
-    a21 = A[2, 1]
-    a22 = A[2, 2]
+    L43 = (A43 - L31 * L41 * A11 - L32 * L42 * D2) / D3
+    L53 = (A53 - L31 * L51 * A11 - L32 * L52 * D2) / D3
+    L63 = (A63 - L31 * L61 * A11 - L32 * L62 * D2) / D3
 
-    # Column 0: Compute first column of L
-    L00 = wp.sqrt(a00)
-    L10 = a10 / L00
-    L20 = a20 / L00
+    D4 = A44 - (L41 * L41 * A11 + L42 * L42 * D2 + L43 * L43 * D3)
 
-    # Column 1: Compute second column of L
-    L11 = wp.sqrt(a11 - L10 * L10)
-    L21 = (a21 - L20 * L10) / L11
+    L54 = (A54 - L41 * L51 * A11 - L42 * L52 * D2 - L43 * L53 * D3) / D4
+    L64 = (A64 - L41 * L61 * A11 - L42 * L62 * D2 - L43 * L63 * D3) / D4
 
-    # Column 2: Compute third column of L
-    L22 = wp.sqrt(a22 - L20 * L20 - L21 * L21)
+    D5 = A55 - (L51 * L51 * A11 + L52 * L52 * D2 + L53 * L53 * D3 + L54 * L54 * D4)
 
-    # Pack into vec6: [L00, L10, L11, L20, L21, L22]
-    return vec6(L00, L10, L11, L20, L21, L22)
+    L65 = (A65 - L51 * L61 * A11 - L52 * L62 * D2 - L53 * L63 * D3 - L54 * L64 * D4) / D5
 
+    D6 = A66 - (L61 * L61 * A11 + L62 * L62 * D2 + L63 * L63 * D3 + L64 * L64 * D4 + L65 * L65 * D5)
 
-@wp.func
-def chol33_solve(Lp: vec6, b: wp.vec3) -> wp.vec3:
-    """
-    Solve A*x = b given packed Cholesky factorization A = L*L^T.
+    # Forward substitution: L y = b
+    y1 = rhs_lin[0]
+    y2 = rhs_lin[1] - L21 * y1
+    y3 = rhs_lin[2] - L31 * y1 - L32 * y2
+    y4 = rhs_ang[0] - L41 * y1 - L42 * y2 - L43 * y3
+    y5 = rhs_ang[1] - L51 * y1 - L52 * y2 - L53 * y3 - L54 * y4
+    y6 = rhs_ang[2] - L61 * y1 - L62 * y2 - L63 * y3 - L64 * y4 - L65 * y5
 
-    Uses two-stage triangular solve:
-      1. Forward substitution:  L*y = b   (solve for y)
-      2. Backward substitution: L^T*x = y (solve for x)
+    # Diagonal solve: D z = y
+    z1 = y1 / A11
+    z2 = y2 / D2
+    z3 = y3 / D3
+    z4 = y4 / D4
+    z5 = y5 / D5
+    z6 = y6 / D6
 
-    This is more efficient than computing A^-1 explicitly and avoids
-    numerical issues from matrix inversion.
+    # Back-substitution: L^T x = z
+    x6 = z6
+    x5 = z5 - L65 * x6
+    x4 = z4 - L54 * x5 - L64 * x6
+    x3 = z3 - L43 * x4 - L53 * x5 - L63 * x6
+    x2 = z2 - L32 * x3 - L42 * x4 - L52 * x5 - L62 * x6
+    x1 = z1 - L21 * x2 - L31 * x3 - L41 * x4 - L51 * x5 - L61 * x6
 
-    Args:
-        Lp: Packed lower-triangular Cholesky factor from chol33()
-            Layout: [L00, L10, L11, L20, L21, L22]
-        b: Right-hand side vector
-
-    Returns:
-        vec3: Solution x to A*x = b
-
-    Complexity: 6 multiplies, 6 divides (optimal for 3x3)
-    """
-    # Unpack Cholesky factor for readability
-    L00 = Lp[0]
-    L10 = Lp[1]
-    L11 = Lp[2]
-    L20 = Lp[3]
-    L21 = Lp[4]
-    L22 = Lp[5]
-
-    # Forward substitution: L*y = b
-    y0 = b[0] / L00
-    y1 = (b[1] - L10 * y0) / L11
-    y2 = (b[2] - L20 * y0 - L21 * y1) / L22
-
-    # Backward substitution: L^T*x = y
-    x2 = y2 / L22
-    x1 = (y1 - L21 * x2) / L11
-    x0 = (y0 - L10 * x1 - L20 * x2) / L00
-
-    return wp.vec3(x0, x1, x2)
+    return wp.vec3(x1, x2, x3), wp.vec3(x4, x5, x6)
 
 
 @wp.func
@@ -2222,6 +2213,8 @@ def init_body_body_contacts_avbd(
     contact_material_mu[i] = avg_mu
 
     p0 = rigid_contact_point0[i]
+    p1 = rigid_contact_point1[i]
+    n_new = rigid_contact_normal[i]
     pair_bits = _pack_shape_pair_bits(s0, s1)
     base_cell = _compute_spatial_cell(p0, cell_size_inv)
 
@@ -2232,9 +2225,11 @@ def init_body_body_contacts_avbd(
     center_slot = hashtable_find(center_key, ht_keys)
 
     if center_slot >= 0:
-        d = p0 - history_point0[center_slot]
-        dist_sq = wp.dot(d, d)
-        if dist_sq < best_dist_sq:
+        dp0 = p0 - history_point0[center_slot]
+        dp1 = p1 - history_point1[center_slot]
+        dist_sq = wp.dot(dp0, dp0) + wp.dot(dp1, dp1)
+        n_dot = wp.dot(n_new, history_normal[center_slot])
+        if dist_sq < best_dist_sq and n_dot > _CONTACT_MATCH_NORMAL_DOT_THRESH:
             best_dist_sq = dist_sq
             best_slot = center_slot
 
@@ -2248,9 +2243,11 @@ def init_body_body_contacts_avbd(
                     key = _build_contact_history_key(pair_bits, cell)
                     slot = hashtable_find(key, ht_keys)
                     if slot >= 0:
-                        d = p0 - history_point0[slot]
-                        dist_sq = wp.dot(d, d)
-                        if dist_sq < best_dist_sq:
+                        dp0 = p0 - history_point0[slot]
+                        dp1 = p1 - history_point1[slot]
+                        dist_sq = wp.dot(dp0, dp0) + wp.dot(dp1, dp1)
+                        n_dot = wp.dot(n_new, history_normal[slot])
+                        if dist_sq < best_dist_sq and n_dot > _CONTACT_MATCH_NORMAL_DOT_THRESH:
                             best_dist_sq = dist_sq
                             best_slot = slot
 
@@ -2262,7 +2259,6 @@ def init_body_body_contacts_avbd(
         lam_hist = history_lambda[best_slot]
         if hard_contacts == 1:
             n_old = history_normal[best_slot]
-            n_new = rigid_contact_normal[i]
             lam_n = wp.dot(lam_hist, n_old)
             lam_t_old = lam_hist - n_old * lam_n
             lam_t_new = lam_t_old - n_new * wp.dot(lam_t_old, n_new)
@@ -3104,22 +3100,16 @@ def solve_rigid_body(
     body_q_new: wp.array[wp.transform],
 ):
     """
-    AVBD solve step for rigid bodies using block Cholesky decomposition.
+    AVBD solve step for rigid bodies.
 
-    Solves the 6-DOF rigid body system by assembling inertial, joint, and collision
-    contributions into a 6x6 block system:
-
-        [ H_ll   H_al^T ]
-        [ H_al   H_aa   ]
-
-    and solving via Schur complement.
-    Consistent with VBD particle solve pattern: inertia + external + constraint forces.
+    Assembles inertial, joint, and collision contributions into a 6x6 SPD
+    block system and solves via direct LDL^T.
 
     Algorithm:
       1. Compute inertial forces/Hessians
       2. Accumulate external forces/Hessians from rigid contacts
       3. Accumulate joint forces/Hessians from adjacent joints
-      4. Solve 6x6 block system via Schur complement: S = A - C*M^-1*C^T
+      4. Solve 6x6 system via LDL^T
       5. Update pose: rotation from angular increment, position from linear increment
 
     Args:
@@ -3278,45 +3268,15 @@ def solve_rigid_body(
         h_al = h_al + joint_H_al
         h_aa = h_aa + joint_H_aa
 
-    # Solve 6x6 block system via Schur complement
-    # Regularize angular Hessian (in-place)
+    # Regularize angular Hessian
     trA = wp.trace(h_aa) / 3.0
     epsA = 1.0e-9 * (trA + 1.0)
     h_aa[0, 0] = h_aa[0, 0] + epsA
     h_aa[1, 1] = h_aa[1, 1] + epsA
     h_aa[2, 2] = h_aa[2, 2] + epsA
 
-    # Factorize linear Hessian
-    Lm_p = chol33(h_ll)
-
-    # Compute M^-1 * f_force
-    MinvF = chol33_solve(Lm_p, f_force)
-
-    # Compute H_ll^{-1} * (H_al^T)
-    C_r0 = wp.vec3(h_al[0, 0], h_al[0, 1], h_al[0, 2])
-    C_r1 = wp.vec3(h_al[1, 0], h_al[1, 1], h_al[1, 2])
-    C_r2 = wp.vec3(h_al[2, 0], h_al[2, 1], h_al[2, 2])
-
-    X0 = chol33_solve(Lm_p, C_r0)
-    X1 = chol33_solve(Lm_p, C_r1)
-    X2 = chol33_solve(Lm_p, C_r2)
-
-    # Columns are the solved vectors X0, X1, X2
-    MinvCt = wp.mat33(X0[0], X1[0], X2[0], X0[1], X1[1], X2[1], X0[2], X1[2], X2[2])
-
-    # Compute Schur complement
-    S = h_aa - (h_al * MinvCt)
-
-    # Factorize Schur complement
-    Ls_p = chol33(S)
-
-    # Solve for angular increment
-    rhs_w = f_torque - (h_al * MinvF)
-    w_world = chol33_solve(Ls_p, rhs_w)
-
-    # Solve for linear increment
-    Ct_w = wp.transpose(h_al) * w_world
-    x_inc = chol33_solve(Lm_p, f_force - Ct_w)
+    # Solve 6x6 system via direct LDL^T
+    x_inc, w_world = ldlt6_solve(h_ll, h_aa, h_al, f_force, f_torque)
 
     # Update pose from increments
     # Convert angular increment to quaternion
@@ -3847,7 +3807,7 @@ def update_duals_body_body_contacts(
         if lam_n_new > 0.0:
             if has_kinematic == 1:
                 flag = _STICK_FLAG_ANCHOR
-            else:
+            elif lam_t_len <= cone_limit:
                 flag = _STICK_FLAG_DEADZONE
         contact_stick_flag[idx] = flag
     else:

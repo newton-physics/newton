@@ -58,7 +58,7 @@ class Example:
         rod_bodies_all: list[int] = []
 
         # Material properties
-        builder.default_shape_cfg.mu = 1.0e1
+        builder.default_shape_cfg.mu = 1.0e0
         builder.default_shape_cfg.ke = 1.0e5
         builder.default_shape_cfg.kd = 1.0e-4
 
