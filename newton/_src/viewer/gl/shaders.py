@@ -434,6 +434,32 @@ void main()
 }
 """
 
+gradient_bg_vertex_shader = """
+#version 330 core
+layout (location = 0) in vec2 aPos;
+
+out float vT;
+
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    vT = aPos.y * 0.5 + 0.5;  // [-1,1] -> [0,1]
+}
+"""
+
+gradient_bg_fragment_shader = """
+#version 330 core
+out vec4 FragColor;
+
+in float vT;
+
+uniform vec3 top_color;
+uniform vec3 bottom_color;
+
+void main() {
+    FragColor = vec4(mix(bottom_color, top_color, vT), 1.0);
+}
+"""
+
 frame_vertex_shader = """
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -503,14 +529,13 @@ class ShaderGL:
 class ShaderShape(ShaderGL):
     """Shader for rendering 3D shapes with lighting and shadows."""
 
-    def __init__(self, gl):
+    def __init__(self, gl, fragment_shader: str | None = None):
         super().__init__()
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
-        self.shader_program = ShaderProgram(
-            Shader(shape_vertex_shader, "vertex"), Shader(shape_fragment_shader, "fragment")
-        )
+        frag = fragment_shader if fragment_shader is not None else shape_fragment_shader
+        self.shader_program = ShaderProgram(Shader(shape_vertex_shader, "vertex"), Shader(frag, "fragment"))
 
         # Get all uniform locations
         with self:
@@ -534,6 +559,7 @@ class ShaderShape(ShaderGL):
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
+            self.loc_enable_shadows = self._get_uniform_location("enable_shadows")
 
     def update(
         self,
@@ -576,6 +602,7 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
             self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
             self._gl.glUniform1f(self.loc_exposure, exposure)
+            self._gl.glUniform1i(self.loc_enable_shadows, int(enable_shadows))
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)
@@ -650,6 +677,33 @@ class ShaderSky(ShaderGL):
             self._gl.glUniform1i(self.loc_up_axis, up_axis)
 
 
+class ShaderGradientBg(ShaderGL):
+    """Full-screen gradient background (two-color vertical blend)."""
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(gradient_bg_vertex_shader, "vertex"),
+            Shader(gradient_bg_fragment_shader, "fragment"),
+        )
+
+        with self:
+            self.loc_top_color = self._get_uniform_location("top_color")
+            self.loc_bottom_color = self._get_uniform_location("bottom_color")
+
+    def update(
+        self,
+        top_color: tuple[float, float, float],
+        bottom_color: tuple[float, float, float],
+    ):
+        with self:
+            self._gl.glUniform3f(self.loc_top_color, *top_color)
+            self._gl.glUniform3f(self.loc_bottom_color, *bottom_color)
+
+
 class ShadowShader(ShaderGL):
     """Shader for rendering shadow maps."""
 
@@ -694,6 +748,271 @@ class FrameShader(ShaderGL):
         """Update texture uniform."""
         with self:
             self._gl.glUniform1i(self.loc_texture, texture_unit)
+
+
+shape_fragment_shader_studio = """
+#version 330 core
+out vec4 FragColor;
+
+in vec3 Normal;
+in vec3 FragPos;
+in vec3 LocalPos;
+in vec2 TexCoord;
+in vec3 ObjectColor;
+in vec4 FragPosLightSpace;
+in vec4 Material;
+
+uniform vec3 view_pos;
+uniform vec3 light_color;
+uniform vec3 sky_color;
+uniform vec3 ground_color;
+uniform vec3 sun_direction;
+uniform sampler2D albedo_map;
+uniform sampler2D shadow_map;
+uniform mat4 light_space_matrix;
+uniform float shadow_radius;
+uniform float shadow_extents;
+uniform float exposure;
+uniform float diffuse_scale;
+uniform float specular_scale;
+uniform int enable_shadows;
+uniform int up_axis;
+
+const float PI = 3.14159265359;
+
+vec2 poissonDisk[16] = vec2[](
+   vec2( -0.94201624, -0.39906216 ),
+   vec2( 0.94558609, -0.76890725 ),
+   vec2( -0.094184101, -0.92938870 ),
+   vec2( 0.34495938, 0.29387760 ),
+   vec2( -0.91588581, 0.45771432 ),
+   vec2( -0.81544232, -0.87912464 ),
+   vec2( -0.38277543, 0.27676845 ),
+   vec2( 0.97484398, 0.75648379 ),
+   vec2( 0.44323325, -0.97511554 ),
+   vec2( 0.53742981, -0.47373420 ),
+   vec2( -0.26496911, -0.41893023 ),
+   vec2( 0.79197514, 0.19090188 ),
+   vec2( -0.24188840, 0.99706507 ),
+   vec2( -0.81409955, 0.91437590 ),
+   vec2( 0.19984126, 0.78641367 ),
+   vec2( 0.14383161, -0.14100790 )
+);
+
+float rand(vec2 co) {
+    return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+float ShadowCalculation()
+{
+    vec3 normal = normalize(Normal);
+    if (!gl_FrontFacing) normal = -normal;
+
+    float worldTexel = (shadow_extents * 2.0) / float(4096);
+    float normalBias = 2.0 * worldTexel;
+    vec4 light_space_pos = light_space_matrix * vec4(FragPos + normal * normalBias, 1.0);
+    vec3 projCoords = light_space_pos.xyz / light_space_pos.w;
+    projCoords = projCoords * 0.5 + 0.5;
+    if (projCoords.z > 1.0) return 0.0;
+
+    float frag_depth = projCoords.z;
+    float fade = 1.0;
+    float margin = 0.15;
+    fade *= smoothstep(0.0, margin, projCoords.x);
+    fade *= smoothstep(0.0, margin, 1.0 - projCoords.x);
+    fade *= smoothstep(0.0, margin, projCoords.y);
+    fade *= smoothstep(0.0, margin, 1.0 - projCoords.y);
+
+    float NdotL_bias = max(dot(normal, normalize(sun_direction)), 0.0);
+    float depthBias = mix(0.0003, 0.00002, NdotL_bias);
+    float biased_depth = frag_depth - depthBias;
+
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(shadow_map, 0);
+    float angle = rand(gl_FragCoord.xy) * 2.0 * PI;
+    float s = sin(angle); float c = cos(angle);
+    mat2 rot = mat2(c, -s, s, c);
+    for (int i = 0; i < 16; i++) {
+        vec2 offset = rot * poissonDisk[i];
+        float pcf_depth = texture(shadow_map, projCoords.xy + offset * shadow_radius * texelSize).r;
+        if (pcf_depth < biased_depth) shadow += 1.0;
+    }
+    return (shadow / 16.0) * fade;
+}
+
+float filterwidth(vec2 v)
+{
+    vec2 fw = max(abs(dFdx(v)), abs(dFdy(v)));
+    return max(fw.x, fw.y);
+}
+
+vec2 bump(vec2 x)
+{
+    return (floor(x / 2.0) + 2.0 * max(x / 2.0 - floor(x / 2.0) - 0.5, 0.0));
+}
+
+float checker(vec2 uv)
+{
+    float width = filterwidth(uv);
+    vec2 p0 = uv - 0.5 * width;
+    vec2 p1 = uv + 0.5 * width;
+    vec2 i = (bump(p1) - bump(p0)) / width;
+    return i.x * i.y + (1.0 - i.x) * (1.0 - i.y);
+}
+
+void main()
+{
+    float roughness = clamp(Material.x, 0.0, 1.0);
+    float metallic  = clamp(Material.y, 0.0, 1.0);
+    float checker_enable = Material.z;
+    float texture_enable = Material.w;
+    float checker_scale = 1.0;
+
+    // Ground plane (checker) should look matte in studio lighting
+    float ground_dampen = 1.0;
+    if (checker_enable > 0.0) {
+        roughness = max(roughness, 0.85);
+        ground_dampen = 0.35;  // reduce direct light on ground
+    }
+
+    // convert to linear space
+    vec3 albedo = pow(ObjectColor, vec3(2.2));
+    if (texture_enable > 0.5)
+    {
+        vec3 tex_color = texture(albedo_map, TexCoord).rgb;
+        albedo *= pow(tex_color, vec3(2.2));
+    }
+
+    if (checker_enable > 0.0)
+    {
+        vec2 uv = LocalPos.xy * checker_scale;
+        float cb = checker(uv);
+        vec3 albedo2 = albedo * 0.7;
+        albedo = mix(albedo, albedo2, cb);
+    }
+
+    // Specular color: dielectrics ~0.04, metals use albedo.
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+    // Metals: lift albedo toward brighter, less saturated version (no full IBL).
+    float luma = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+    albedo = mix(albedo, vec3(luma * 1.4), metallic * 0.45);
+
+    vec3 N = normalize(Normal);
+    if (!gl_FrontFacing)
+        N = -N;
+    vec3 V = normalize(view_pos - FragPos);
+    vec3 L = normalize(sun_direction);
+    vec3 H = normalize(V + L);
+
+    // Up axis
+    vec3 up = vec3(0.0, 1.0, 0.0);
+    if (up_axis == 0) up = vec3(1.0, 0.0, 0.0);
+    if (up_axis == 2) up = vec3(0.0, 0.0, 1.0);
+
+    // Cook-Torrance PBR
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotV = max(dot(N, V), 0.001);
+    float HdotV = max(dot(H, V), 0.0);
+
+    // GGX/Trowbridge-Reitz normal distribution
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * denom * denom);
+
+    // Schlick-GGX geometry (Smith method)
+    float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+    float G1_V = NdotV / (NdotV * (1.0 - k) + k);
+    float G1_L = NdotL / (NdotL * (1.0 - k) + k);
+    float G = G1_V * G1_L;
+
+    // Schlick Fresnel, dampened by roughness
+    vec3 F_max = mix(F0, vec3(1.0), 1.0 - roughness);
+    vec3 F = F0 + (F_max - F0) * pow(1.0 - HdotV, 5.0);
+
+    // Cook-Torrance specular BRDF
+    vec3 spec = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
+
+    // Diffuse uses remaining energy not reflected
+    vec3 kD = (1.0 - F) * (1.0 - metallic);
+
+    // Soft hemisphere ambient
+    float sky_fac = dot(N, up) * 0.5 + 0.5;
+    vec3 ambient = mix(ground_color, sky_color, sky_fac) * albedo * 0.25;
+
+    // Key directional light (same 3.0 multiplier as classic)
+    vec3 diffuse = kD * albedo / PI * light_color * NdotL * 3.0 * diffuse_scale;
+
+    // Fill light: perpendicular to key, slightly elevated
+    vec3 fill_dir = normalize(cross(up, L) + up * 0.20);
+    float NdotFill = max(dot(N, fill_dir), 0.0);
+    vec3 H_fill = normalize(V + fill_dir);
+    float NdotH_fill = max(dot(N, H_fill), 0.0);
+    float denom_fill = NdotH_fill * NdotH_fill * (a2 - 1.0) + 1.0;
+    float D_fill = a2 / (PI * denom_fill * denom_fill);
+    float G1_fill = NdotFill / (NdotFill * (1.0 - k) + k);
+    float G_fill = G1_V * G1_fill;
+    float HdotV_fill = max(dot(H_fill, V), 0.0);
+    vec3 F_fill = F0 + (F_max - F0) * pow(1.0 - HdotV_fill, 5.0);
+    vec3 spec_fill = (D_fill * G_fill * F_fill) / (4.0 * NdotV * NdotFill + 0.0001);
+    vec3 kD_fill = (1.0 - F_fill) * (1.0 - metallic);
+    diffuse += kD_fill * albedo / PI * light_color * NdotFill * 0.5;
+
+    // Soft back fill (opposite key)
+    float NdotBack = max(dot(N, -L), 0.0) * 0.08;
+    diffuse += kD * albedo / PI * light_color * NdotBack;
+
+    // Studio-style rim highlight
+    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.04;
+    vec3 rim_color = sky_color * rim;
+
+    // Camera-space catch light for 3D depth
+    float NdotV_clamp = max(dot(N, V), 0.0);
+    vec3 catch_light = albedo * light_color * 0.06 * pow(NdotV_clamp, 3.0);
+
+    float shadow = (enable_shadows != 0) ? ShadowCalculation() : 0.0;
+    vec3 direct = (diffuse + spec * specular_scale + spec_fill * 0.20 * specular_scale) * ground_dampen;
+    vec3 color = ambient + (1.0 - shadow) * direct + rim_color + catch_light;
+
+    // Apply exposure for brightness control (no ACES — studio uses lower
+    // light multipliers that stay in a moderate range where filmic rolloff
+    // would just darken the image and shift hues).
+    color *= exposure;
+    color = clamp(color, 0.0, 1.0);
+
+    // gamma correction (sRGB)
+    color = pow(color, vec3(1.0 / 2.2));
+    FragColor = vec4(color, 1.0);
+}
+"""
+
+
+class ShaderShapeStudio(ShaderShape):
+    """Studio-style shape shader: 3-point lighting, cast shadows, no fog or env map.
+
+    Uniforms absent from the studio fragment shader return location -1; OpenGL
+    silently ignores glUniform* calls with location -1, so update() is fully inherited.
+    """
+
+    def __init__(self, gl):
+        super().__init__(gl, fragment_shader=shape_fragment_shader_studio)
+
+
+edge_fragment_shader = """
+#version 330 core
+out vec4 FragColor;
+in vec4 Material;
+uniform vec4 edge_color;
+void main()
+{
+    // Skip ground plane (checker-enabled surfaces)
+    if (Material.z > 0.0)
+        discard;
+    FragColor = edge_color;
+}
+"""
 
 
 wireframe_vertex_shader = """
@@ -944,3 +1263,44 @@ class ShaderArrow(ShaderGL):
     def set_world(self, world: np.ndarray):
         """Set the per-shape world matrix uniform."""
         self._gl.glUniformMatrix4fv(self.loc_world, 1, self._gl.GL_FALSE, arr_pointer(world))
+
+
+class ShaderEdge(ShaderGL):
+    """Flat-color shader used for the edge/wireframe overlay pass.
+
+    Reuses the instanced shape vertex shader so the second geometry pass
+    is correctly positioned, then ignores all lighting and outputs a single
+    uniform ``edge_color``.
+    """
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(shape_vertex_shader, "vertex"), Shader(edge_fragment_shader, "fragment")
+        )
+
+        with self:
+            self.loc_view = self._get_uniform_location("view")
+            self.loc_projection = self._get_uniform_location("projection")
+            self.loc_edge_color = self._get_uniform_location("edge_color")
+            # light_space_matrix is referenced in the vertex shader; set to identity
+            # so gl_Position is computed correctly even though it is not used here.
+            self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
+
+    def update(
+        self,
+        view_matrix: np.ndarray,
+        projection_matrix: np.ndarray,
+        edge_color: tuple[float, float, float, float] = (0.05, 0.05, 0.05, 1.0),
+        light_space_matrix: np.ndarray | None = None,
+    ):
+        """Update shader uniforms for the edge pass."""
+        with self:
+            self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
+            self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+            self._gl.glUniform4f(self.loc_edge_color, *edge_color)
+            lsm = light_space_matrix if light_space_matrix is not None else np.eye(4, dtype=np.float32)
+            self._gl.glUniformMatrix4fv(self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(lsm))
