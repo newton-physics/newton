@@ -26,6 +26,14 @@ For a floating-base articulation (one connected to the world by a free joint), t
 Maximal coordinates describe the configuration of an articulation in terms of the body link positions and velocities.
 Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
+The linear component of :attr:`newton.State.body_qd` is the world-frame velocity
+of the body's center of mass. For public ``FREE`` and ``DISTANCE`` joints,
+:attr:`newton.State.joint_qd` stores the child-COM twist in the joint parent
+frame: the linear slice is child-COM velocity and the angular slice is angular
+velocity in that same frame.
+For floating-base articulations, the root ``FREE`` joint usually has the world
+as parent, so this parent-frame twist matches the world-frame body twist in
+practice.
 
 To convert between these two representations, we use forward and inverse kinematics:
 forward kinematics (:func:`newton.eval_fk`) converts generalized coordinates to maximal coordinates, and inverse kinematics (:func:`newton.eval_ik`) converts maximal coordinates to generalized coordinates.
@@ -657,6 +665,12 @@ Given the parent body's world transform :math:`x_{wp}` and the joint transform :
 
 .. math::
    x_{wc} = x_{wp} \cdot x_{pj} \cdot x_{j} \cdot x_{cj}^{-1}.
+
+Newton's public :func:`newton.eval_fk` writes :attr:`State.body_qd` using that
+COM/world convention, and :func:`newton.eval_ik` expects the same convention
+when recovering generalized state from maximal body state. For ``FREE`` and
+``DISTANCE`` joints, the
+recovered generalized velocities are rotated back into the joint parent frame.
 
 
 .. autofunction:: newton.eval_fk

@@ -220,7 +220,7 @@ class Example:
             z_max=BELT_HALF_THICKNESS - RAIL_BASE_OVERLAP + RAIL_HEIGHT,
             segments=BELT_MESH_SEGMENTS,
             color=(0.66, 0.69, 0.74),  # brushed metal
-            roughness=0.24,
+            roughness=0.5,
             metallic=0.9,
         )
         rail_outer_mesh = create_annular_prism_mesh(
@@ -230,7 +230,7 @@ class Example:
             z_max=BELT_HALF_THICKNESS - RAIL_BASE_OVERLAP + RAIL_HEIGHT,
             segments=BELT_MESH_SEGMENTS,
             color=(0.66, 0.69, 0.74),  # brushed metal
-            roughness=0.24,
+            roughness=0.5,
             metallic=0.9,
         )
 

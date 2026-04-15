@@ -31,7 +31,7 @@ def get_symbols(mod_name: str):
         else:
             children.append(name)
 
-    return (mod_name.split(".")[-1], children)
+    return (mod_name.rsplit(".", maxsplit=1)[-1], children)
 
 
 def print_symbols(sym_dict, indent=0):

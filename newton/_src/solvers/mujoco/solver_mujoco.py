@@ -25,6 +25,7 @@ from ...sim import (
     ModelBuilder,
     State,
 )
+from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
@@ -32,10 +33,12 @@ from ...utils.import_utils import string_to_warp
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
+    _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
     apply_mjc_qfrc_kernel,
+    build_ref_q_kernel,
     convert_mj_coords_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
     convert_qfrc_actuator_from_mj_kernel,
@@ -51,6 +54,8 @@ from .kernels import (
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
     update_body_properties_kernel,
+    update_connect_constraint_anchors_kernel,
+    update_connect_constraint_rel_body_poses_at_qref_kernel,
     update_ctrl_direct_actuator_properties_kernel,
     update_dof_properties_kernel,
     update_eq_data_and_active_kernel,
@@ -2899,6 +2904,14 @@ class SolverMuJoCo(SolverBase):
         self._first_env_shape_base: int = 0
         """Base shape index for the first environment."""
 
+        # --- Internal state for connect constraint anchor computation ---
+        self.has_connect_constraints: bool = False
+        """Whether the model contains any CONNECT equality constraints."""
+        self.connect_constraint_q_rel: wp.array | None = None
+        """Relative rotation ``inv(q2) * q1`` at the reference pose per equality constraint, ``wp.array[wp.quat]``, shape ``[equality_constraint_count]``."""
+        self.connect_constraint_t_rel: wp.array | None = None
+        """Relative translation [m] at the reference pose per equality constraint, ``wp.array[wp.vec3]``, shape ``[equality_constraint_count]``."""
+
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
 
@@ -2908,6 +2921,15 @@ class SolverMuJoCo(SolverBase):
         self.use_mujoco_cpu = use_mujoco_cpu
         if separate_worlds is None:
             separate_worlds = not use_mujoco_cpu and model.world_count > 1
+        # Lazy-allocated buffers for the fast-path contact conversion optimisation.
+        # See _convert_contacts_to_mjwarp / convert_newton_contacts_to_mjwarp_kernel.
+        # Initialised before _convert_to_mjc because notify_model_changed (called
+        # during conversion) may call _invalidate_contact_fast_path.
+        self._contact_tid_to_cid: wp.array[wp.int32] | None = None
+        self._last_contact_generation: wp.array[wp.int32] | None = None
+        self._last_nacon_count: wp.array[wp.int32] | None = None
+        self._last_contacts_id: int | None = None
+
         with wp.ScopedTimer("convert_model_to_mujoco", active=False):
             self._convert_to_mjc(
                 model,
@@ -2988,19 +3010,51 @@ class SolverMuJoCo(SolverBase):
                 print("Setting model.sensor_rne_postconstraint True")
             m.sensor_rne_postconstraint = True
 
+    def _invalidate_contact_fast_path(self):
+        """Force the next contact conversion to take the full path.
+
+        Called when cached MJWarp contact fields (friction, solref, solimp,
+        etc.) may be stale — e.g. after :meth:`notify_model_changed` updates
+        geom properties.
+        """
+        if self._last_contact_generation is not None:
+            self._last_contact_generation.fill_(_GENERATION_SENTINEL)
+            self._last_nacon_count.zero_()
+
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         # Ensure the inverse shape mapping exists (lazy creation)
         if self.newton_shape_to_mjc_geom is None:
             self._create_inverse_shape_mapping()
 
-        # Zero nacon before the kernel — the kernel uses atomic_add to count
-        # only the contacts that survive immovable-pair filtering.
+        # The kernel only produces valid output for tid < naconmax (the full
+        # path clamps count and rejects cid >= naconmax).  Launching more
+        # threads than naconmax wastes GPU resources, so cap the grid size.
+        launch_dim = min(contacts.rigid_contact_max, self.mjw_data.naconmax)
+
+        # Lazy-allocate fast-path buffers; reallocate if launch_dim grew
+        # (e.g. a different Contacts object with a larger rigid_contact_max).
+        # Also invalidate when the Contacts instance changes — a different
+        # object's contact_generation could coincidentally match our cached
+        # last_contact_generation while containing entirely different data.
+        contacts_id = id(contacts.contact_generation)
+        needs_realloc = self._contact_tid_to_cid is None or self._contact_tid_to_cid.shape[0] < launch_dim
+        contacts_changed = self._last_contacts_id != contacts_id
+
+        if needs_realloc or contacts_changed:
+            if needs_realloc:
+                self._contact_tid_to_cid = wp.full(launch_dim, -1, dtype=wp.int32, device=model.device)
+            self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=model.device)
+            self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=model.device)
+            self._last_contacts_id = contacts_id
+
+        # Zero nacon before the kernel — the full path uses atomic_add to count
+        # contacts; the fast path restores the count from last_nacon_count.
         self.mjw_data.nacon.zero_()
 
         bodies_per_world = self.model.body_count // self.model.world_count
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
-            dim=(contacts.rigid_contact_max,),
+            dim=(launch_dim,),
             inputs=[
                 state_in.body_q,
                 model.shape_body,
@@ -3048,6 +3102,30 @@ class SolverMuJoCo(SolverBase):
                 # Data to clear
                 self.mjw_data.nworld,
                 self.mjw_data.ncollision,
+                # Fast-path generation tracking
+                contacts.contact_generation,
+                self._last_contact_generation,
+                self._contact_tid_to_cid,
+                self._last_nacon_count,
+            ],
+            device=model.device,
+        )
+
+        # Snapshot the final nacon count and generation so the fast path can
+        # restore them on subsequent substeps.  Runs as a separate dim=1
+        # kernel AFTER the main kernel completes so that:
+        #  - nacon_out has its final value (from atomic_add on full path, or
+        #    restored from last_nacon_count on fast path)
+        #  - last_contact_generation is only updated after ALL threads in the
+        #    main kernel have read it (avoids a cross-block race)
+        wp.launch(
+            _snapshot_nacon_count,
+            dim=1,
+            inputs=[
+                self.mjw_data.nacon,
+                self._last_nacon_count,
+                contacts.contact_generation,
+                self._last_contact_generation,
             ],
             device=model.device,
         )
@@ -3066,6 +3144,7 @@ class SolverMuJoCo(SolverBase):
             self._update_joint_properties()
         if flags & SolverNotifyFlags.BODY_PROPERTIES:
             self._update_body_properties()
+            self._invalidate_contact_fast_path()
             need_const_0 = True
         if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
             self._update_joint_dof_properties()
@@ -3074,6 +3153,7 @@ class SolverMuJoCo(SolverBase):
         if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
             self._update_pair_properties()
+            self._invalidate_contact_fast_path()
         if flags & SolverNotifyFlags.MODEL_PROPERTIES:
             self._update_model_properties()
         if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
@@ -3088,6 +3168,13 @@ class SolverMuJoCo(SolverBase):
             need_const_0 = True
             need_length_range = True
 
+        update_connect_constraint_anchor_rel_xform_at_ref_pose = self.has_connect_constraints and bool(
+            flags & (SolverNotifyFlags.JOINT_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        )
+        update_connect_constraint_anchors = self.has_connect_constraints and bool(
+            flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES
+        )
+
         if self.use_mujoco_cpu:
             if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
@@ -3097,11 +3184,24 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model.dof_solref[:] = self.mjw_model.dof_solref.numpy()[0]
                 self.mj_model.qpos0[:] = self.mjw_model.qpos0.numpy()[0]
                 self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
-
             if need_length_range or need_const_fixed or need_const_0:
                 self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+            # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
+            # without accounting for Newton's dof_ref, so we overwrite with the
+            # correctly computed values.
+            self._notify_connect_constraints_changed(
+                update_connect_constraint_anchor_rel_xform_at_ref_pose,
+                update_connect_constraint_anchors,
+            )
+
         else:
-            if need_length_range or need_const_fixed or need_const_0:
+            if (
+                need_length_range
+                or need_const_fixed
+                or need_const_0
+                or update_connect_constraint_anchor_rel_xform_at_ref_pose
+                or update_connect_constraint_anchors
+            ):
                 with wp.ScopedDevice(self.model.device):
                     if need_length_range:
                         self._mujoco_warp.set_length_range(self.mjw_model, self.mjw_data)
@@ -3109,6 +3209,13 @@ class SolverMuJoCo(SolverBase):
                         self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
                     if need_const_0:
                         self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+                    # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
+                    # without accounting for Newton's dof_ref, so we overwrite with the
+                    # correctly computed values.
+                    self._notify_connect_constraints_changed(
+                        update_connect_constraint_anchor_rel_xform_at_ref_pose,
+                        update_connect_constraint_anchors,
+                    )
 
     def _create_inverse_shape_mapping(self):
         """
@@ -4685,6 +4792,7 @@ class SolverMuJoCo(SolverBase):
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
             if constraint_type == EqType.CONNECT:
+                self.has_connect_constraints = True
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT
                 eq.active = eq_constraint_enabled[i]
@@ -5693,6 +5801,255 @@ class SolverMuJoCo(SolverBase):
                 ],
                 device=self.model.device,
             )
+
+    @staticmethod
+    def _copy_dof_ref_to_qref(model: Model) -> wp.array:
+        """Build reference joint coordinates from model data and ``dof_ref``.
+
+        Launches ``build_ref_q_kernel`` to produce joint coordinates in
+        Newton convention (xyzw quaternions). FREE/DISTANCE joints source
+        position and orientation from ``body_q`` of the child body, BALL
+        joints use identity, and hinge/slide/D6 joints use ``dof_ref``.
+
+        Args:
+            model: The Newton :class:`Model`.
+
+        Returns:
+            Reference joint coordinates [m or rad],
+            ``wp.array[wp.float32]``, shape ``[joint_coord_count]``.
+        """
+        mujoco_attrs = getattr(model, "mujoco", None)
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
+
+        ref_q = wp.zeros(model.joint_coord_count, dtype=wp.float32, device=model.device)
+        wp.launch(
+            kernel=build_ref_q_kernel,
+            dim=model.joint_count,
+            inputs=[
+                model.joint_type,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_dof_dim,
+                model.joint_child,
+                model.body_q,
+                dof_ref,
+            ],
+            outputs=[
+                ref_q,
+            ],
+            device=model.device,
+        )
+        return ref_q
+
+    @staticmethod
+    def _compute_body_poses_at_qref(model: Model, ref_q: wp.array) -> wp.array:
+        """Compute body transforms at the reference joint configuration.
+
+        Runs ``eval_articulation_fk`` with the given ``ref_q`` and zero
+        velocities to obtain world-space body transforms at the reference
+        pose.
+
+        Args:
+            model: The Newton :class:`Model`.
+            ref_q: Reference joint coordinates [m or rad],
+                ``wp.array[wp.float32]``, shape ``[joint_coord_count]``.
+
+        Returns:
+            Body transforms at the reference pose [m],
+            ``wp.array[wp.transform]``, shape ``[body_count]``.
+        """
+        ref_qd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+
+        ref_body_q = wp.zeros(model.body_count, dtype=wp.transform, device=model.device)
+        ref_body_qd = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=model.device)
+
+        wp.launch(
+            kernel=eval_articulation_fk,
+            dim=model.articulation_count,
+            inputs=[
+                model.articulation_start,
+                model.joint_articulation,
+                ref_q,
+                ref_qd,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_type,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
+                model.joint_axis,
+                model.joint_dof_dim,
+                model.body_com,
+            ],
+            outputs=[
+                ref_body_q,
+                ref_body_qd,
+            ],
+            device=model.device,
+        )
+        return ref_body_q
+
+    @staticmethod
+    def _compute_connect_constraint_rel_xform_at_qref(model: Model, ref_body_q: wp.array) -> tuple[wp.array, wp.array]:
+        """Compute relative body transforms for CONNECT constraints at the reference pose.
+
+        Launches ``update_connect_constraint_rel_body_poses_at_qref_kernel``
+        to compute per-constraint ``(q_rel, t_rel)`` pairs such that::
+
+            anchor2 = quat_rotate(q_rel, anchor1) + t_rel
+
+        Args:
+            model: The Newton :class:`Model`.
+            ref_body_q: Body transforms at the reference pose [m],
+                ``wp.array[wp.transform]``, shape ``[body_count]``.
+
+        Returns:
+            Tuple of ``(q_rel, t_rel)`` where ``q_rel`` is
+            ``wp.array[wp.quat]`` and ``t_rel`` is
+            ``wp.array[wp.vec3]`` [m], each of
+            shape ``[equality_constraint_count]``.
+        """
+        neq = model.equality_constraint_count
+
+        q_rel = wp.zeros(neq, dtype=wp.quat, device=model.device)
+        t_rel = wp.zeros(neq, dtype=wp.vec3, device=model.device)
+
+        wp.launch(
+            update_connect_constraint_rel_body_poses_at_qref_kernel,
+            dim=neq,
+            inputs=[
+                model.equality_constraint_type,
+                model.equality_constraint_body1,
+                model.equality_constraint_body2,
+                ref_body_q,
+            ],
+            outputs=[
+                q_rel,
+                t_rel,
+            ],
+            device=model.device,
+        )
+
+        return q_rel, t_rel
+
+    @staticmethod
+    def _update_connect_constraint_anchor_rel_xform_at_ref_pose(
+        model: Model,
+    ) -> tuple[wp.array, wp.array]:
+        """Per-CONNECT constraint, recompute relative transforms from scratch via FK at the reference pose.
+
+        High-level orchestrator that calls ``_copy_dof_ref_to_qref``,
+        ``_compute_body_poses_at_qref``, and
+        ``_compute_connect_constraint_rel_xform_at_qref`` in sequence to
+        produce the per-constraint ``(q_rel, t_rel)`` that map ``anchor1``
+        to ``anchor2``.
+
+        Args:
+            model: The Newton :class:`Model`.
+
+        Returns:
+            Tuple of ``(q_rel, t_rel)`` where ``q_rel`` is
+            ``wp.array[wp.quat]`` and ``t_rel`` is
+            ``wp.array[wp.vec3]`` [m], each of
+            shape ``[equality_constraint_count]``.
+        """
+        ref_q = SolverMuJoCo._copy_dof_ref_to_qref(model)
+        ref_body_q = SolverMuJoCo._compute_body_poses_at_qref(model, ref_q)
+        q_rel, t_rel = SolverMuJoCo._compute_connect_constraint_rel_xform_at_qref(model, ref_body_q)
+        return q_rel, t_rel
+
+    @staticmethod
+    def _update_connect_constraint_anchors(
+        model: Model,
+        mjw_model: MjWarpModel,
+        mjc_eq_to_newton_eq: wp.array,
+        connect_anchor2_q: wp.array,
+        connect_anchor2_t: wp.array,
+    ):
+        """Write CONNECT constraint anchors into the MuJoCo Warp model.
+
+        Launches ``update_connect_constraint_anchors_kernel`` to copy
+        ``anchor1`` [m] and compute
+        ``anchor2 = quat_rotate(q_rel, anchor1) + t_rel`` [m] into
+        ``mjw_model.eq_data``. Skips immediately when ``mjw_model.neq == 0``.
+
+        Args:
+            model: The Newton :class:`Model` (source for constraint types
+                and anchor positions).
+            mjw_model: The MuJoCo Warp model (target for ``eq_data`` output).
+            mjc_eq_to_newton_eq: Mapping from MuJoCo ``[world, eq]`` to
+                Newton equality constraint index,
+                ``wp.array2d[wp.int32]``.
+            connect_anchor2_q: Precomputed relative rotation per constraint,
+                ``wp.array[wp.quat]``,
+                shape ``[equality_constraint_count]``.
+            connect_anchor2_t: Precomputed relative translation [m] per
+                constraint, ``wp.array[wp.vec3]``,
+                shape ``[equality_constraint_count]``.
+        """
+        if mjw_model.neq == 0:
+            return
+
+        world_count = mjc_eq_to_newton_eq.shape[0]
+
+        wp.launch(
+            update_connect_constraint_anchors_kernel,
+            dim=(world_count, mjw_model.neq),
+            inputs=[
+                mjc_eq_to_newton_eq,
+                model.equality_constraint_type,
+                model.equality_constraint_anchor,
+                connect_anchor2_q,
+                connect_anchor2_t,
+            ],
+            outputs=[
+                mjw_model.eq_data,
+            ],
+            device=model.device,
+        )
+
+    def _notify_connect_constraints_changed(
+        self,
+        update_anchor_rel_xform_at_ref_pose: bool,
+        update_anchors: bool,
+    ):
+        """Update CONNECT constraint anchors in response to model changes.
+
+        Optionally recomputes the relative body transforms at the reference
+        pose, then writes the resulting anchors into ``mjw_model.eq_data``
+        (and ``mj_model.eq_data`` on the CPU path).
+
+        Must be called **after** other model updates (``mj_setConst``,
+        ``set_const_0``, etc.) because it overwrites ``eq_data``.
+
+        Args:
+            update_anchor_rel_xform_at_ref_pose: Recompute ``(q_rel, t_rel)``
+                from ``dof_ref`` / joint properties.
+            update_anchors: Recompute anchors from
+                ``equality_constraint_anchor``.
+        """
+        if update_anchor_rel_xform_at_ref_pose:
+            self.connect_constraint_q_rel, self.connect_constraint_t_rel = (
+                SolverMuJoCo._update_connect_constraint_anchor_rel_xform_at_ref_pose(self.model)
+            )
+        # connect_constraint_q_rel is guaranteed non-None when update_anchors
+        # is True because _convert_to_mjc calls notify_model_changed(ALL),
+        # which includes JOINT_DOF_PROPERTIES and therefore always computes
+        # q_rel before any CONSTRAINT_PROPERTIES-only notification can occur.
+        # The None check is a defensive guard for the case where the model
+        # has no connect constraints (has_connect_constraints is False and
+        # both flags are False, so this branch is unreachable).
+        if (update_anchor_rel_xform_at_ref_pose or update_anchors) and self.connect_constraint_q_rel is not None:
+            SolverMuJoCo._update_connect_constraint_anchors(
+                self.model,
+                self.mjw_model,
+                self.mjc_eq_to_newton_eq,
+                self.connect_constraint_q_rel,
+                self.connect_constraint_t_rel,
+            )
+            if self.use_mujoco_cpu:
+                self.mj_model.eq_data[:] = self.mjw_model.eq_data.numpy()[0]
 
     def _update_geom_properties(self):
         """Update geom properties including collision radius, friction, and contact parameters in the MuJoCo model."""

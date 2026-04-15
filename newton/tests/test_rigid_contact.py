@@ -835,11 +835,11 @@ devices = get_test_devices()
 cuda_devices = get_selected_cuda_test_devices()
 
 solvers = {
-    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
+    "featherstone": newton.solvers.SolverFeatherstone,
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
-    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
+    "semi_implicit": newton.solvers.SolverSemiImplicit,
 }
 
 

@@ -35,6 +35,8 @@ from typing import Any
 
 import warp as wp
 
+from .support_function import GeoTypeEx, closest_point_on_triangle
+
 
 @wp.struct
 class Vert:
@@ -158,6 +160,12 @@ def create_support_map_function(support_func: Any):
         """
         Compute geometric center of Minkowski difference.
 
+        For generic shapes both centers are at their local origins.  For
+        triangles (and triangle prisms) the "center" on shape A is replaced
+        by the closest point on the triangle to the convex center
+        (``position_b``), giving MPR and GJK a much better starting point
+        when the triangle is large relative to the convex.
+
         Args:
             geom_a: Shape A geometry data
             geom_b: Shape B geometry data
@@ -170,10 +178,34 @@ def create_support_map_function(support_func: Any):
         """
         center = Vert()
 
-        # Both shape centers are at their local origins, so in the relative frame:
-        # center_A = vec3(0), center_B = position_b
+        center_a = wp.vec3(0.0, 0.0, 0.0)
+
+        if geom_a.shape_type == int(GeoTypeEx.TRIANGLE) or geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
+            # Project shape B's center onto the triangle for a starting
+            # point near the contact region — this dramatically improves
+            # MPR convergence for large triangles.
+            #
+            # Blend 1% toward the centroid so the point is strictly in the
+            # face interior.  This does NOT prevent an MPR degeneracy (MPR
+            # works fine from an edge point); it improves *manifold quality*.
+            # When shape B projects onto a shared mesh edge, both adjacent
+            # triangles get the same v0, producing MPR witness points biased
+            # toward the edge.  The manifold builder (multicontact.py) uses
+            # these witness points as its center for perturbed support
+            # mapping, so edge-biased centers cause overlapping contact
+            # polygons across the two triangles instead of distinct ones —
+            # resulting in asymmetric force distribution and spurious torque.
+            # The 1% nudge gives each triangle a unique v0 pulled toward its
+            # own interior, yielding well-separated manifold centers.
+            tri_a = wp.vec3(0.0, 0.0, 0.0)
+            tri_b = geom_a.scale
+            tri_c = geom_a.auxiliary
+            proj = closest_point_on_triangle(position_b, tri_a, tri_b, tri_c)
+            centroid = (tri_a + tri_b + tri_c) / 3.0
+            center_a = proj + 0.01 * (centroid - proj)
+
         center.B = position_b
-        center.BtoA = -position_b
+        center.BtoA = center_a - position_b
 
         return center
 
@@ -251,13 +283,21 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         v0 = geometric_center(geom_a, geom_b, orientation_b, position_b, data_provider)
 
         normal = v0.BtoA
-        if (
-            wp.abs(normal[0]) < NUMERIC_EPSILON
-            and wp.abs(normal[1]) < NUMERIC_EPSILON
-            and wp.abs(normal[2]) < NUMERIC_EPSILON
-        ):
-            # Any direction is fine - add small perturbation
-            v0.BtoA = wp.vec3(1e-05, 0.0, 0.0)
+        if wp.length_sq(normal) < NUMERIC_EPSILON:
+            # Centers coincide — probe three orthogonal directions and
+            # pick the one with the largest Minkowski support, giving
+            # MPR the most room to find a valid portal.
+            best_dot = float(-1.0e30)
+            best_dir = wp.vec3(1.0, 0.0, 0.0)
+            for axis_idx in range(3):
+                probe = wp.vec3(0.0, 0.0, 0.0)
+                probe[axis_idx] = 1.0
+                sv = minkowski_support(geom_a, geom_b, probe, orientation_b, position_b, extend, data_provider)
+                d = wp.dot(sv.BtoA, probe)
+                if d > best_dot:
+                    best_dot = d
+                    best_dir = probe
+            v0.BtoA = best_dir * 1e-05
 
         normal = -v0.BtoA
 
