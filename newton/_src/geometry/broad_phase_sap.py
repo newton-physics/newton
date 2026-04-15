@@ -44,9 +44,9 @@ def _normalize_sort_mode(mode: str) -> SAPSortMode:
 def _sap_project_aabb(
     elementid: int,
     direction: wp.vec3,  # Must be normalized
-    shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
-    shape_bounding_box_upper: wp.array(dtype=wp.vec3, ndim=1),
-    shape_gap: wp.array(dtype=float, ndim=1),  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_bounding_box_lower: wp.array[wp.vec3],
+    shape_bounding_box_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
 ) -> wp.vec2:
     lower = shape_bounding_box_lower[elementid]
     upper = shape_bounding_box_upper[elementid]
@@ -65,7 +65,7 @@ def _sap_project_aabb(
 
 @wp.func
 def binary_search_segment(
-    arr: wp.array(dtype=float, ndim=1),
+    arr: wp.array[float],
     base_idx: int,
     value: float,
     start: int,
@@ -111,8 +111,8 @@ def _create_tile_sort_kernel(tile_size: int):
 
     @wp.kernel(enable_backward=False)
     def tile_sort_kernel(
-        sap_projection_lower: wp.array(dtype=float, ndim=1),
-        sap_sort_index: wp.array(dtype=int, ndim=1),
+        sap_projection_lower: wp.array[float],
+        sap_sort_index: wp.array[int],
         max_geoms_per_world: int,
     ):
         """Tile-based segmented sort kernel.
@@ -144,16 +144,16 @@ def _create_tile_sort_kernel(tile_size: int):
 @wp.kernel(enable_backward=False)
 def _sap_project_kernel(
     direction: wp.vec3,  # Must be normalized
-    shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
-    shape_bounding_box_upper: wp.array(dtype=wp.vec3, ndim=1),
-    shape_gap: wp.array(dtype=float, ndim=1),  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    world_index_map: wp.array(dtype=int, ndim=1),
-    world_slice_ends: wp.array(dtype=int, ndim=1),
+    shape_bounding_box_lower: wp.array[wp.vec3],
+    shape_bounding_box_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    world_index_map: wp.array[int],
+    world_slice_ends: wp.array[int],
     max_shapes_per_world: int,
     # Outputs (1D arrays with manual indexing)
-    sap_projection_lower_out: wp.array(dtype=float, ndim=1),
-    sap_projection_upper_out: wp.array(dtype=float, ndim=1),
-    sap_sort_index_out: wp.array(dtype=int, ndim=1),
+    sap_projection_lower_out: wp.array[float],
+    sap_projection_upper_out: wp.array[float],
+    sap_sort_index_out: wp.array[int],
 ):
     world_id, local_shape_id = wp.tid()
 
@@ -188,12 +188,12 @@ def _sap_project_kernel(
 
 @wp.kernel(enable_backward=False)
 def _sap_range_kernel(
-    world_slice_ends: wp.array(dtype=int, ndim=1),
+    world_slice_ends: wp.array[int],
     max_shapes_per_world: int,
-    sap_projection_lower_in: wp.array(dtype=float, ndim=1),
-    sap_projection_upper_in: wp.array(dtype=float, ndim=1),
-    sap_sort_index_in: wp.array(dtype=int, ndim=1),
-    sap_range_out: wp.array(dtype=int, ndim=1),
+    sap_projection_lower_in: wp.array[float],
+    sap_projection_upper_in: wp.array[float],
+    sap_sort_index_in: wp.array[int],
+    sap_range_out: wp.array[int],
 ):
     world_id, local_shape_id = wp.tid()
 
@@ -242,13 +242,13 @@ def _sap_range_kernel(
 @wp.func
 def _process_single_sap_pair(
     pair: wp.vec2i,
-    shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
-    shape_bounding_box_upper: wp.array(dtype=wp.vec3, ndim=1),
-    shape_gap: wp.array(dtype=float, ndim=1),  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
+    shape_bounding_box_lower: wp.array[wp.vec3],
+    shape_bounding_box_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
-    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Sorted excluded pairs (empty if none)
+    filter_pairs: wp.array[wp.vec2i],  # Sorted excluded pairs (empty if none)
     num_filter_pairs: int,
 ):
     shape1 = pair[0]
@@ -284,24 +284,24 @@ def _process_single_sap_pair(
 @wp.kernel(enable_backward=False)
 def _sap_broadphase_kernel(
     # Input arrays
-    shape_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
-    shape_bounding_box_upper: wp.array(dtype=wp.vec3, ndim=1),
-    shape_gap: wp.array(dtype=float, ndim=1),  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    collision_group: wp.array(dtype=int, ndim=1),
-    shape_world: wp.array(dtype=int, ndim=1),  # World indices
-    world_index_map: wp.array(dtype=int, ndim=1),
-    world_slice_ends: wp.array(dtype=int, ndim=1),
-    sap_sort_index_in: wp.array(dtype=int, ndim=1),  # 1D array with manual indexing
-    sap_cumulative_sum_in: wp.array(dtype=int, ndim=1),  # Flattened [world_count * max_shapes]
+    shape_bounding_box_lower: wp.array[wp.vec3],
+    shape_bounding_box_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    collision_group: wp.array[int],
+    shape_world: wp.array[int],  # World indices
+    world_index_map: wp.array[int],
+    world_slice_ends: wp.array[int],
+    sap_sort_index_in: wp.array[int],  # 1D array with manual indexing
+    sap_cumulative_sum_in: wp.array[int],  # Flattened [world_count * max_shapes]
     world_count: int,
     max_shapes_per_world: int,
     nsweep_in: int,
     num_regular_worlds: int,  # Number of regular world segments (excluding dedicated -1 segment)
-    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Sorted excluded pairs (empty if none)
+    filter_pairs: wp.array[wp.vec2i],  # Sorted excluded pairs (empty if none)
     num_filter_pairs: int,
     # Output arrays
-    candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair: wp.array[wp.vec2i],
+    candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
 ):
     tid = wp.tid()
@@ -404,8 +404,8 @@ class BroadPhaseSAP:
 
     def __init__(
         self,
-        shape_world: wp.array(dtype=wp.int32, ndim=1) | np.ndarray,
-        shape_flags: wp.array(dtype=wp.int32, ndim=1) | np.ndarray | None = None,
+        shape_world: wp.array[wp.int32] | np.ndarray,
+        shape_flags: wp.array[wp.int32] | np.ndarray | None = None,
         sweep_thread_count_multiplier: int = 5,
         sort_type: Literal["segmented", "tile"] = "segmented",
         tile_block_dim: int | None = None,
@@ -509,17 +509,17 @@ class BroadPhaseSAP:
 
     def launch(
         self,
-        shape_lower: wp.array(dtype=wp.vec3, ndim=1),  # Lower bounds of shape bounding boxes
-        shape_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of shape bounding boxes
-        shape_gap: wp.array(dtype=float, ndim=1) | None,  # Optional per-shape effective gaps
-        shape_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        shape_world: wp.array(dtype=int, ndim=1),  # World index per box
+        shape_lower: wp.array[wp.vec3],  # Lower bounds of shape bounding boxes
+        shape_upper: wp.array[wp.vec3],  # Upper bounds of shape bounding boxes
+        shape_gap: wp.array[float] | None,  # Optional per-shape effective gaps
+        shape_collision_group: wp.array[int],  # Collision group ID per box
+        shape_world: wp.array[int],  # World index per box
         shape_count: int,  # Number of active bounding boxes
         # Outputs
-        candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
-        candidate_pair_count: wp.array(dtype=int, ndim=1),
+        candidate_pair: wp.array[wp.vec2i],  # Array to store overlapping shape pairs
+        candidate_pair_count: wp.array[int],
         device: Devicelike | None = None,  # Device to launch on
-        filter_pairs: wp.array(dtype=wp.vec2i, ndim=1) | None = None,  # Sorted excluded pairs
+        filter_pairs: wp.array[wp.vec2i] | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
     ) -> None:
         """Launch the sweep and prune broad phase collision detection with per-world segmented sort.

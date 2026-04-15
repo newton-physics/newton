@@ -181,16 +181,16 @@ def _accumulate_point_kernel(
     normal: wp.vec3,
     inv_voxel_size: wp.float32,
     # Hash table arrays
-    keys: wp.array(dtype=wp.uint64),
-    active_slots: wp.array(dtype=wp.int32),
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
     # Accumulator arrays
-    sum_positions_x: wp.array(dtype=wp.float32),
-    sum_positions_y: wp.array(dtype=wp.float32),
-    sum_positions_z: wp.array(dtype=wp.float32),
-    sum_normals_x: wp.array(dtype=wp.float32),
-    sum_normals_y: wp.array(dtype=wp.float32),
-    sum_normals_z: wp.array(dtype=wp.float32),
-    counts: wp.array(dtype=wp.int32),
+    sum_positions_x: wp.array[wp.float32],
+    sum_positions_y: wp.array[wp.float32],
+    sum_positions_z: wp.array[wp.float32],
+    sum_normals_x: wp.array[wp.float32],
+    sum_normals_y: wp.array[wp.float32],
+    sum_normals_z: wp.array[wp.float32],
+    counts: wp.array[wp.int32],
 ):
     """Accumulate a single point into the voxel grid (for testing)."""
     key = compute_voxel_key(point, inv_voxel_size)
@@ -210,19 +210,19 @@ def _accumulate_point_kernel(
 
 @wp.kernel
 def _finalize_voxels_kernel(
-    active_slots: wp.array(dtype=wp.int32),
+    active_slots: wp.array[wp.int32],
     num_active: wp.int32,
     # Accumulator arrays (input)
-    sum_positions_x: wp.array(dtype=wp.float32),
-    sum_positions_y: wp.array(dtype=wp.float32),
-    sum_positions_z: wp.array(dtype=wp.float32),
-    sum_normals_x: wp.array(dtype=wp.float32),
-    sum_normals_y: wp.array(dtype=wp.float32),
-    sum_normals_z: wp.array(dtype=wp.float32),
-    counts: wp.array(dtype=wp.int32),
+    sum_positions_x: wp.array[wp.float32],
+    sum_positions_y: wp.array[wp.float32],
+    sum_positions_z: wp.array[wp.float32],
+    sum_normals_x: wp.array[wp.float32],
+    sum_normals_y: wp.array[wp.float32],
+    sum_normals_z: wp.array[wp.float32],
+    counts: wp.array[wp.int32],
     # Output arrays
-    out_points: wp.array(dtype=wp.vec3),
-    out_normals: wp.array(dtype=wp.vec3),
+    out_points: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
 ):
     """Finalize voxel averages and write to output arrays."""
     tid = wp.tid()
@@ -662,24 +662,24 @@ def raycast_orthographic_kernel(
     # Voxel hash grid parameters
     inv_voxel_size: wp.float32,
     # Hash table arrays
-    keys: wp.array(dtype=wp.uint64),
-    active_slots: wp.array(dtype=wp.int32),
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
     # Accumulator arrays
-    sum_positions_x: wp.array(dtype=wp.float32),
-    sum_positions_y: wp.array(dtype=wp.float32),
-    sum_positions_z: wp.array(dtype=wp.float32),
-    sum_normals_x: wp.array(dtype=wp.float32),
-    sum_normals_y: wp.array(dtype=wp.float32),
-    sum_normals_z: wp.array(dtype=wp.float32),
-    counts: wp.array(dtype=wp.int32),
-    max_confidences: wp.array(dtype=wp.float32),
+    sum_positions_x: wp.array[wp.float32],
+    sum_positions_y: wp.array[wp.float32],
+    sum_positions_z: wp.array[wp.float32],
+    sum_normals_x: wp.array[wp.float32],
+    sum_normals_y: wp.array[wp.float32],
+    sum_normals_z: wp.array[wp.float32],
+    counts: wp.array[wp.int32],
+    max_confidences: wp.array[wp.float32],
     # Two-pass mode: 0 = confidence pass, 1 = position pass
     pass_mode: wp.int32,
     # Cavity camera candidate buffers (optional - pass empty arrays to disable)
-    cavity_origins: wp.array(dtype=wp.vec3),
-    cavity_directions: wp.array(dtype=wp.vec3),
-    cavity_hit_distances: wp.array(dtype=wp.float32),
-    cavity_count: wp.array(dtype=wp.int32),  # Single-element array for atomic counter
+    cavity_origins: wp.array[wp.vec3],
+    cavity_directions: wp.array[wp.vec3],
+    cavity_hit_distances: wp.array[wp.float32],
+    cavity_count: wp.array[wp.int32],  # Single-element array for atomic counter
     max_cavity_candidates: wp.int32,
     camera_offset: wp.float32,
     cavity_prob_scale: wp.float32,  # Scale factor to control acceptance rate
@@ -791,22 +791,22 @@ def raycast_hemisphere_kernel(
     min_ray_dist: wp.float32,
     max_ray_dist: wp.float32,
     # Hemisphere directions (local frame, z > 0)
-    hemisphere_dirs: wp.array(dtype=wp.vec3),
+    hemisphere_dirs: wp.array[wp.vec3],
     num_directions: wp.int32,
     # Voxel hash grid parameters
     inv_voxel_size: wp.float32,
     # Hash table arrays
-    keys: wp.array(dtype=wp.uint64),
-    active_slots: wp.array(dtype=wp.int32),
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
     # Accumulator arrays
-    sum_positions_x: wp.array(dtype=wp.float32),
-    sum_positions_y: wp.array(dtype=wp.float32),
-    sum_positions_z: wp.array(dtype=wp.float32),
-    sum_normals_x: wp.array(dtype=wp.float32),
-    sum_normals_y: wp.array(dtype=wp.float32),
-    sum_normals_z: wp.array(dtype=wp.float32),
-    counts: wp.array(dtype=wp.int32),
-    max_confidences: wp.array(dtype=wp.float32),
+    sum_positions_x: wp.array[wp.float32],
+    sum_positions_y: wp.array[wp.float32],
+    sum_positions_z: wp.array[wp.float32],
+    sum_normals_x: wp.array[wp.float32],
+    sum_normals_y: wp.array[wp.float32],
+    sum_normals_z: wp.array[wp.float32],
+    counts: wp.array[wp.int32],
+    max_confidences: wp.array[wp.float32],
     # Two-pass mode: 0 = confidence pass, 1 = position pass
     pass_mode: wp.int32,
 ):

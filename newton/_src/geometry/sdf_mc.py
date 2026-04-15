@@ -133,14 +133,15 @@ def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.flo
 
 @wp.func
 def mc_calc_face(
-    flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    flat_edge_verts_table: wp.array[wp.vec2ub],
+    corner_offsets_table: wp.array[wp.vec3ub],
     tri_range_start: wp.int32,
     corner_vals: vec8f,
     sdf_a: wp.uint64,
     x_id: wp.int32,
     y_id: wp.int32,
     z_id: wp.int32,
+    isovalue: wp.float32 = 0.0,
 ) -> tuple[float, wp.vec3, wp.vec3, float, wp.mat33f]:
     """Extract a triangle face from a marching cubes voxel.
 
@@ -171,7 +172,7 @@ def mc_calc_face(
         if wp.abs(val_diff) < 1e-8:
             p = 0.5 * (p_0 + p_1)
         else:
-            t = (0.0 - val_0) / val_diff
+            t = (isovalue - val_0) / val_diff
             p = p_0 + t * (p_1 - p_0)
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         p_scaled = wp.volume_index_to_world(sdf_a, vol_idx)

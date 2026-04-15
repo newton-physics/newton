@@ -11,17 +11,19 @@ from .types import (
 
 # A small constant to avoid division by zero and other numerical issues
 MINVAL = 1e-15
+# Tolerance for near-parallel ray rejection (e.g. ray vs plane)
+PARALLEL_TOL = 1e-6
 
 
 @wp.func
-def _spinlock_acquire(lock: wp.array(dtype=wp.int32)):
+def _spinlock_acquire(lock: wp.array[wp.int32]):
     # Try to acquire the lock by setting it to 1 if it's 0
     while wp.atomic_cas(lock, 0, 0, 1) == 1:
         pass
 
 
 @wp.func
-def _spinlock_release(lock: wp.array(dtype=wp.int32)):
+def _spinlock_release(lock: wp.array[wp.int32]):
     # Release the lock by setting it back to 0
     wp.atomic_exch(lock, 0, 0)
 
@@ -517,6 +519,51 @@ def ray_intersect_mesh(
 
 
 @wp.func
+def ray_intersect_plane(geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3):
+    """Computes ray-plane intersection.
+
+    The plane lies at z = 0 in local space with normal along +Z.  ``size`` holds ``(width, length, 0)``:
+    the full extents along local X and Y.  A value of ``0`` means infinite in that axis.  The plane is double-sided:
+    rays approaching from either side register intersections.
+
+    Args:
+        geom_to_world: The world transform of the plane.
+        ray_origin: The origin of the ray in world space.
+        ray_direction: The direction of the ray in world space.
+        size: ``(width, length, 0)`` -- full extents; ``0`` = infinite.
+
+    Returns:
+        The distance along the ray to the intersection point, or -1.0 if there is no intersection.
+    """
+    # transform ray to local frame
+    world_to_geom = wp.transform_inverse(geom_to_world)
+    ro = wp.transform_point(world_to_geom, ray_origin)
+    rd = wp.transform_vector(world_to_geom, ray_direction)
+
+    # Ray parallel to the plane (or degenerate)
+    if wp.abs(rd[2]) < PARALLEL_TOL:
+        return -1.0
+
+    # t where the ray crosses z = 0
+    t = -ro[2] / rd[2]
+    if t < 0.0:
+        return -1.0
+
+    hit_x = ro[0] + t * rd[0]
+    hit_y = ro[1] + t * rd[1]
+
+    half_w = size[0] * 0.5
+    half_l = size[1] * 0.5
+
+    if half_w > 0.0 and wp.abs(hit_x) > half_w:
+        return -1.0
+    if half_l > 0.0 and wp.abs(hit_y) > half_l:
+        return -1.0
+
+    return t
+
+
+@wp.func
 def ray_intersect_geom(
     geom_to_world: wp.transform,
     size: wp.vec3,
@@ -529,7 +576,7 @@ def ray_intersect_geom(
     Computes the intersection of a ray with a geometry.
 
     Args:
-        geom_to_world: The world-to-shape transform.
+        geom_to_world: The world transform of the shape.
         size: The size of the geometry.
         geomtype: The type of the geometry.
         ray_origin: The origin of the ray.
@@ -541,7 +588,10 @@ def ray_intersect_geom(
     """
     t_hit = -1.0
 
-    if geomtype == GeoType.SPHERE:
+    if geomtype == GeoType.PLANE:
+        t_hit = ray_intersect_plane(geom_to_world, ray_origin, ray_direction, size)
+
+    elif geomtype == GeoType.SPHERE:
         r = size[0]
         t_hit = ray_intersect_sphere(geom_to_world, ray_origin, ray_direction, r)
 
@@ -575,24 +625,25 @@ def ray_intersect_geom(
 @wp.kernel
 def raycast_kernel(
     # Model
-    body_q: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    shape_transform: wp.array(dtype=wp.transform),
-    geom_type: wp.array(dtype=int),
-    geom_size: wp.array(dtype=wp.vec3),
-    shape_source_ptr: wp.array(dtype=wp.uint64),
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_transform: wp.array[wp.transform],
+    geom_type: wp.array[int],
+    geom_size: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
     # Ray
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,
     # Lock helper
-    lock: wp.array(dtype=wp.int32),
+    lock: wp.array[wp.int32],
     # Output
-    min_dist: wp.array(dtype=float),
-    min_index: wp.array(dtype=int),
-    min_body_index: wp.array(dtype=int),
+    min_dist: wp.array[float],
+    min_index: wp.array[int],
+    min_body_index: wp.array[int],
     # Optional: world offsets for multi-world picking
-    shape_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
+    shape_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    visible_worlds_mask: wp.array[int],
 ):
     """
     Computes the intersection of a ray with all geometries in the scene.
@@ -612,8 +663,16 @@ def raycast_kernel(
         min_body_index: A single-element array to store the body index of the closest geometry. Expected to be initialized to -1.
         shape_world: Optional array mapping shape index to world index. Can be empty to disable world offsets.
         world_offsets: Optional array of world offsets. Can be empty to disable world offsets.
+        visible_worlds_mask: Optional mask array (1=visible, 0=hidden per world). Can be empty to disable filtering.
     """
     shape_idx = wp.tid()
+
+    # Skip shapes from non-visible worlds
+    if visible_worlds_mask and shape_world.shape[0] > 0:
+        world_idx = shape_world[shape_idx]
+        if world_idx >= 0:
+            if visible_worlds_mask[world_idx] == 0:
+                return
 
     # compute shape transform
     b = shape_body[shape_idx]
@@ -709,12 +768,12 @@ def ray_for_pixel(
 @wp.kernel
 def sensor_raycast_kernel(
     # Model
-    body_q: wp.array(dtype=wp.transform),
-    shape_body: wp.array(dtype=int),
-    shape_transform: wp.array(dtype=wp.transform),
-    geom_type: wp.array(dtype=int),
-    geom_size: wp.array(dtype=wp.vec3),
-    shape_source_ptr: wp.array(dtype=wp.uint64),
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_transform: wp.array[wp.transform],
+    geom_type: wp.array[int],
+    geom_size: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
     # Camera parameters
     camera_position: wp.vec3,
     camera_direction: wp.vec3,
@@ -724,7 +783,7 @@ def sensor_raycast_kernel(
     camera_aspect_ratio: float,
     resolution: wp.vec2,
     # Output (per-pixel results)
-    hit_distances: wp.array2d(dtype=float),
+    hit_distances: wp.array2d[float],
 ):
     """
     Raycast sensor kernel that casts rays for each pixel in an image.
@@ -794,8 +853,8 @@ def sensor_raycast_kernel(
 @wp.kernel
 def sensor_raycast_particles_kernel(
     grid: wp.uint64,
-    particle_positions: wp.array(dtype=wp.vec3),
-    particle_radius: wp.array(dtype=float),
+    particle_positions: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
     search_radius: float,
     march_step: float,
     max_steps: wp.int32,
@@ -807,7 +866,7 @@ def sensor_raycast_particles_kernel(
     camera_aspect_ratio: float,
     resolution: wp.vec2,
     max_distance: float,
-    hit_distances: wp.array2d(dtype=float),
+    hit_distances: wp.array2d[float],
 ):
     """March rays against particles stored in a hash grid and record the nearest hit if found before max_distance.
 

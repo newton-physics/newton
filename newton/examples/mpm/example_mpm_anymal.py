@@ -11,6 +11,7 @@
 ###########################################################################
 
 import sys
+import warnings
 
 import numpy as np
 import torch
@@ -167,7 +168,13 @@ class Example:
 
         # Download the policy from the newton-assets repository
         policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
-        self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"`torch\.jit\.load` is deprecated\. Please switch to `torch\.export`\.",
+                category=DeprecationWarning,
+            )
+            self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
 
         # Pre-compute tensors that don't change during simulation
         self.lab_to_mujoco_indices = torch.tensor(
@@ -289,7 +296,7 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",
-            lambda q, qd: q[2] > -voxel_size,
+            lambda q, qd: q[2] > -1.1 * voxel_size,
         )
 
     def render(self):

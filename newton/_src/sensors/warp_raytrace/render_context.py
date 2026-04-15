@@ -27,10 +27,10 @@ from .utils import Utils
 
 @wp.kernel(enable_backward=False)
 def compute_shape_bounds(
-    in_shape_type: wp.array(dtype=wp.int32),
-    in_shape_ptr: wp.array(dtype=wp.uint64),
-    in_gaussians: wp.array(dtype=Gaussian.Data),
-    out_bounds: wp.array2d(dtype=wp.vec3f),
+    in_shape_type: wp.array[wp.int32],
+    in_shape_ptr: wp.array[wp.uint64],
+    in_gaussians: wp.array[Gaussian.Data],
+    out_bounds: wp.array2d[wp.vec3f],
 ):
     tid = wp.tid()
 
@@ -56,12 +56,12 @@ def compute_shape_bounds(
 
 @wp.kernel(enable_backward=False)
 def convert_newton_transform(
-    in_body_transforms: wp.array(dtype=wp.transform),
-    in_shape_body: wp.array(dtype=wp.int32),
-    in_transform: wp.array(dtype=wp.transformf),
-    in_scale: wp.array(dtype=wp.vec3f),
-    out_transforms: wp.array(dtype=wp.transformf),
-    out_sizes: wp.array(dtype=wp.vec3f),
+    in_body_transforms: wp.array[wp.transform],
+    in_shape_body: wp.array[wp.int32],
+    in_transform: wp.array[wp.transformf],
+    in_scale: wp.array[wp.vec3f],
+    out_transforms: wp.array[wp.transformf],
+    out_sizes: wp.array[wp.vec3f],
 ):
     tid = wp.tid()
 
@@ -100,10 +100,10 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
 
 @wp.kernel(enable_backward=False)
 def compute_enabled_shapes(
-    shape_type: wp.array(dtype=wp.int32),
-    shape_flags: wp.array(dtype=wp.int32),
-    out_shape_enabled: wp.array(dtype=wp.uint32),
-    out_shape_enabled_count: wp.array(dtype=wp.int32),
+    shape_type: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    out_shape_enabled: wp.array[wp.uint32],
+    out_shape_enabled_count: wp.array[wp.int32],
 ):
     tid = wp.tid()
 
@@ -144,53 +144,53 @@ class RenderContext:
             device: Warp device string (e.g. ``"cuda:0"``). If ``None``,
                 the default Warp device is used.
         """
-        self.device = device
+        self.device: str | None = device
         self.utils = Utils(self)
         self.config = config if config else RenderContext.Config()
         self.state = RenderContext.State()
 
-        self.kernel_cache: dict[int, wp.kernel] = {}
+        self.kernel_cache: dict[int, wp.Kernel] = {}
 
-        self.world_count = world_count
+        self.world_count: int = world_count
 
-        self.bvh_shapes: wp.Bvh = None
-        self.bvh_shapes_group_roots: wp.array(dtype=wp.int32) = None
+        self.bvh_shapes: wp.Bvh | None = None
+        self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
 
-        self.bvh_particles: wp.Bvh = None
-        self.bvh_particles_group_roots: wp.array(dtype=wp.int32) = None
+        self.bvh_particles: wp.Bvh | None = None
+        self.bvh_particles_group_roots: wp.array[wp.int32] | None = None
 
-        self.triangle_mesh: wp.Mesh = None
-        self.shape_count_enabled = 0
-        self.shape_count_total = 0
+        self.triangle_mesh: wp.Mesh | None = None
+        self.shape_count_enabled: int = 0
+        self.shape_count_total: int = 0
 
-        self.__triangle_points: wp.array(dtype=wp.vec3f) = None
-        self.__triangle_indices: wp.array(dtype=wp.int32) = None
+        self.__triangle_points: wp.array[wp.vec3f] | None = None
+        self.__triangle_indices: wp.array[wp.int32] | None = None
 
-        self.__particles_position: wp.array(dtype=wp.vec3f) = None
-        self.__particles_radius: wp.array(dtype=wp.float32) = None
-        self.__particles_world_index: wp.array(dtype=wp.int32) = None
+        self.__particles_position: wp.array[wp.vec3f] | None = None
+        self.__particles_radius: wp.array[wp.float32] | None = None
+        self.__particles_world_index: wp.array[wp.int32] | None = None
 
-        self.__gaussians_data: wp.array(dtype=Gaussian.Data) = None
+        self.__gaussians_data: wp.array[Gaussian.Data] | None = None
 
-        self.shape_enabled: wp.array(dtype=wp.uint32) = None
-        self.shape_types: wp.array(dtype=wp.int32) = None
-        self.shape_sizes: wp.array(dtype=wp.vec3f) = None
-        self.shape_transforms: wp.array(dtype=wp.transformf) = None
-        self.shape_colors: wp.array(dtype=wp.vec3f) = None
-        self.shape_world_index: wp.array(dtype=wp.int32) = None
-        self.shape_source_ptr: wp.array(dtype=wp.uint64) = None
-        self.shape_bounds: wp.array2d(dtype=wp.vec3f) = None
-        self.shape_texture_ids: wp.array(dtype=wp.int32) = None
-        self.shape_mesh_data_ids: wp.array(dtype=wp.int32) = None
+        self.shape_enabled: wp.array[wp.uint32] | None = None
+        self.shape_types: wp.array[wp.int32] | None = None
+        self.shape_sizes: wp.array[wp.vec3f] | None = None
+        self.shape_transforms: wp.array[wp.transformf] | None = None
+        self.shape_colors: wp.array[wp.vec3f] | None = None
+        self.shape_world_index: wp.array[wp.int32] | None = None
+        self.shape_source_ptr: wp.array[wp.uint64] | None = None
+        self.shape_bounds: wp.array2d[wp.vec3f] | None = None
+        self.shape_texture_ids: wp.array[wp.int32] | None = None
+        self.shape_mesh_data_ids: wp.array[wp.int32] | None = None
 
-        self.mesh_data: wp.array(dtype=MeshData) = None
-        self.texture_data: wp.array(dtype=TextureData) = None
+        self.mesh_data: wp.array[MeshData] | None = None
+        self.texture_data: wp.array[TextureData] | None = None
 
-        self.lights_active: wp.array(dtype=wp.bool) = None
-        self.lights_type: wp.array(dtype=wp.int32) = None
-        self.lights_cast_shadow: wp.array(dtype=wp.bool) = None
-        self.lights_position: wp.array(dtype=wp.vec3f) = None
-        self.lights_orientation: wp.array(dtype=wp.vec3f) = None
+        self.lights_active: wp.array[wp.bool] | None = None
+        self.lights_type: wp.array[wp.int32] | None = None
+        self.lights_cast_shadow: wp.array[wp.bool] | None = None
+        self.lights_position: wp.array[wp.vec3f] | None = None
+        self.lights_orientation: wp.array[wp.vec3f] | None = None
 
     def init_from_model(self, model: Model, load_textures: bool = True):
         """Initialize render context state from a Newton simulation model.
@@ -309,13 +309,13 @@ class RenderContext:
 
     def render(
         self,
-        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
-        camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-        color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
-        depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
-        shape_index_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
-        normal_image: wp.array(dtype=wp.vec3f, ndim=4) | None = None,
-        albedo_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
+        camera_transforms: wp.array2d[wp.transformf],
+        camera_rays: wp.array4d[wp.vec3f],
+        color_image: wp.array4d[wp.uint32] | None = None,
+        depth_image: wp.array4d[wp.float32] | None = None,
+        shape_index_image: wp.array4d[wp.uint32] | None = None,
+        normal_image: wp.array4d[wp.vec3f] | None = None,
+        albedo_image: wp.array4d[wp.uint32] | None = None,
         refit_bvh: bool = True,
         clear_data: RenderContext.ClearData | None = DEFAULT_CLEAR_DATA,
     ):
@@ -510,61 +510,61 @@ class RenderContext:
         return self.gaussians_data is not None
 
     @property
-    def triangle_points(self) -> wp.array(dtype=wp.vec3f):
+    def triangle_points(self) -> wp.array[wp.vec3f]:
         return self.__triangle_points
 
     @triangle_points.setter
-    def triangle_points(self, triangle_points: wp.array(dtype=wp.vec3f)):
+    def triangle_points(self, triangle_points: wp.array[wp.vec3f]):
         if self.__triangle_points is None or self.__triangle_points.ptr != triangle_points.ptr:
             self.triangle_mesh = None
         self.__triangle_points = triangle_points
 
     @property
-    def triangle_indices(self) -> wp.array(dtype=wp.int32):
+    def triangle_indices(self) -> wp.array[wp.int32]:
         return self.__triangle_indices
 
     @triangle_indices.setter
-    def triangle_indices(self, triangle_indices: wp.array(dtype=wp.int32)):
+    def triangle_indices(self, triangle_indices: wp.array[wp.int32]):
         if self.__triangle_indices is None or self.__triangle_indices.ptr != triangle_indices.ptr:
             self.triangle_mesh = None
         self.__triangle_indices = triangle_indices
 
     @property
-    def particles_position(self) -> wp.array(dtype=wp.vec3f):
+    def particles_position(self) -> wp.array[wp.vec3f]:
         return self.__particles_position
 
     @particles_position.setter
-    def particles_position(self, particles_position: wp.array(dtype=wp.vec3f)):
+    def particles_position(self, particles_position: wp.array[wp.vec3f]):
         if self.__particles_position is None or self.__particles_position.ptr != particles_position.ptr:
             self.bvh_particles = None
         self.__particles_position = particles_position
 
     @property
-    def particles_radius(self) -> wp.array(dtype=wp.float32):
+    def particles_radius(self) -> wp.array[wp.float32]:
         return self.__particles_radius
 
     @particles_radius.setter
-    def particles_radius(self, particles_radius: wp.array(dtype=wp.float32)):
+    def particles_radius(self, particles_radius: wp.array[wp.float32]):
         if self.__particles_radius is None or self.__particles_radius.ptr != particles_radius.ptr:
             self.bvh_particles = None
         self.__particles_radius = particles_radius
 
     @property
-    def particles_world_index(self) -> wp.array(dtype=wp.int32):
+    def particles_world_index(self) -> wp.array[wp.int32]:
         return self.__particles_world_index
 
     @particles_world_index.setter
-    def particles_world_index(self, particles_world_index: wp.array(dtype=wp.int32)):
+    def particles_world_index(self, particles_world_index: wp.array[wp.int32]):
         if self.__particles_world_index is None or self.__particles_world_index.ptr != particles_world_index.ptr:
             self.bvh_particles = None
         self.__particles_world_index = particles_world_index
 
     @property
-    def gaussians_data(self) -> wp.array(dtype=Gaussian.Data):
+    def gaussians_data(self) -> wp.array[Gaussian.Data]:
         return self.__gaussians_data
 
     @gaussians_data.setter
-    def gaussians_data(self, gaussians_data: wp.array(dtype=Gaussian.Data)):
+    def gaussians_data(self, gaussians_data: wp.array[Gaussian.Data]):
         self.__gaussians_data = gaussians_data
         if gaussians_data is None:
             self.state.num_gaussians = 0
@@ -574,9 +574,9 @@ class RenderContext:
     def __update_bvh(
         self,
         bvh: wp.Bvh,
-        group_roots: wp.array(dtype=wp.int32),
+        group_roots: wp.array[wp.int32],
         size: int,
-        bounds_callback: Callable[[wp.array(dtype=wp.vec3f), wp.array(dtype=wp.vec3f), wp.array(dtype=wp.int32)], None],
+        bounds_callback: Callable[[wp.array[wp.vec3f], wp.array[wp.vec3f], wp.array[wp.int32]], None],
     ):
         """Build a new BVH or refit an existing one.
 
@@ -617,7 +617,7 @@ class RenderContext:
         return bvh, group_roots
 
     def __compute_bvh_bounds_shapes(
-        self, lowers: wp.array(dtype=wp.vec3f), uppers: wp.array(dtype=wp.vec3f), groups: wp.array(dtype=wp.int32)
+        self, lowers: wp.array[wp.vec3f], uppers: wp.array[wp.vec3f], groups: wp.array[wp.int32]
     ):
         """Compute axis-aligned bounding boxes for enabled shapes."""
         wp.launch(
@@ -640,7 +640,7 @@ class RenderContext:
         )
 
     def __compute_bvh_bounds_particles(
-        self, lowers: wp.array(dtype=wp.vec3f), uppers: wp.array(dtype=wp.vec3f), groups: wp.array(dtype=wp.int32)
+        self, lowers: wp.array[wp.vec3f], uppers: wp.array[wp.vec3f], groups: wp.array[wp.int32]
     ):
         """Compute axis-aligned bounding boxes for particles."""
         wp.launch(
@@ -750,12 +750,10 @@ class RenderContext:
         self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
         self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
 
-    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
+    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create an output array for color rendering.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :meth:`SensorTiledCamera.utils.create_color_image_output`.
         """
         warnings.warn(
@@ -765,12 +763,10 @@ class RenderContext:
         )
         return self.utils.create_color_image_output(width, height, camera_count)
 
-    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.float32, ndim=4
-    ):
+    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.float32]:
         """Create an output array for depth rendering.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :meth:`SensorTiledCamera.utils.create_depth_image_output`.
         """
         warnings.warn(
@@ -780,12 +776,10 @@ class RenderContext:
         )
         return self.utils.create_depth_image_output(width, height, camera_count)
 
-    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
+    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create an output array for shape-index rendering.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :meth:`SensorTiledCamera.utils.create_shape_index_image_output`.
         """
         warnings.warn(
@@ -795,12 +789,10 @@ class RenderContext:
         )
         return self.utils.create_shape_index_image_output(width, height, camera_count)
 
-    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.vec3f, ndim=4
-    ):
+    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
         """Create an output array for surface-normal rendering.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :meth:`SensorTiledCamera.utils.create_normal_image_output`.
         """
         warnings.warn(
@@ -810,12 +802,10 @@ class RenderContext:
         )
         return self.utils.create_normal_image_output(width, height, camera_count)
 
-    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array(
-        dtype=wp.uint32, ndim=4
-    ):
+    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create an output array for albedo rendering.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :meth:`SensorTiledCamera.utils.create_albedo_image_output`.
         """
         warnings.warn(

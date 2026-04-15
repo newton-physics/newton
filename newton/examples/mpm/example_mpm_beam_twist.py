@@ -11,11 +11,11 @@ from newton.solvers import SolverImplicitMPM
 
 @wp.kernel
 def apply_twist(
-    indices: wp.array(dtype=int),
-    rel_pos: wp.array(dtype=wp.vec3),
-    out_pos: wp.array(dtype=wp.vec3),
-    out_vel: wp.array(dtype=wp.vec3),
-    out_vel_grad: wp.array(dtype=wp.mat33),
+    indices: wp.array[int],
+    rel_pos: wp.array[wp.vec3],
+    out_pos: wp.array[wp.vec3],
+    out_vel: wp.array[wp.vec3],
+    out_vel_grad: wp.array[wp.mat33],
     center: wp.vec3,
     angle: float,
     speed: float,

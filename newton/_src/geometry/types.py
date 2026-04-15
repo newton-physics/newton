@@ -79,6 +79,24 @@ class GeoType(enum.IntEnum):
     GAUSSIAN = 11
     """Gaussian splat."""
 
+    @property
+    def is_primitive(self) -> bool:
+        """Return whether this is a primitive (analytically defined) shape type."""
+        return self in {
+            GeoType.SPHERE,
+            GeoType.CYLINDER,
+            GeoType.CONE,
+            GeoType.CAPSULE,
+            GeoType.BOX,
+            GeoType.ELLIPSOID,
+            GeoType.PLANE,
+        }
+
+    @property
+    def is_explicit(self) -> bool:
+        """Return whether this is an explicit (data-driven) shape type."""
+        return self in {GeoType.MESH, GeoType.CONVEX_MESH, GeoType.HFIELD}
+
 
 class Mesh:
     """
@@ -87,6 +105,11 @@ class Mesh:
     This class encapsulates a triangle mesh, including its geometry, physical properties,
     and utility methods for simulation. Meshes are typically used for collision detection,
     visualization, and inertia computation in physics simulation.
+
+    Triangle indices must use counter-clockwise (CCW) winding when viewed from
+    the outside of the surface. The collision pipeline derives face normals from
+    the winding order and culls back-face contacts, so incorrect winding may
+    cause convex shapes to pass through the mesh.
 
     Attributes:
         mass [kg]: Mesh mass in local coordinates, computed with density 1.0 when
@@ -169,6 +192,7 @@ class Mesh:
         self.maxhullvert = maxhullvert
         self._cached_hash = None
         self._texture_hash = None
+        self._edges = None
         self.sdf = sdf
 
         if compute_inertia:
@@ -548,6 +572,8 @@ class Mesh:
         terrain_params: dict | None = None,
         seed: int | None = None,
         *,
+        compute_normals: bool = False,
+        compute_uvs: bool = False,
         compute_inertia: bool = True,
     ) -> "Mesh":
         """Create a procedural terrain mesh from terrain blocks.
@@ -558,6 +584,8 @@ class Mesh:
             terrain_types: Terrain type name(s) or callable generator(s).
             terrain_params: Optional per-terrain parameter dictionary.
             seed: Optional random seed for deterministic terrain generation.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
 
         Returns:
@@ -572,7 +600,22 @@ class Mesh:
             terrain_params=terrain_params,
             seed=seed,
         )
-        return Mesh(vertices, indices, compute_inertia=compute_inertia)
+        normals = None
+        uvs = None
+        if compute_normals:
+            from ..utils.mesh import compute_vertex_normals  # noqa: PLC0415
+
+            normals = compute_vertex_normals(vertices, indices).astype(np.float32)
+        if compute_uvs:
+            total_x = grid_size[1] * block_size[0]
+            total_y = grid_size[0] * block_size[1]
+            uvs = np.column_stack(
+                [
+                    vertices[:, 0] / total_x if total_x > 0 else np.zeros(len(vertices)),
+                    vertices[:, 1] / total_y if total_y > 0 else np.zeros(len(vertices)),
+                ]
+            ).astype(np.float32)
+        return Mesh(vertices, indices, normals=normals, uvs=uvs, compute_inertia=compute_inertia)
 
     @staticmethod
     def create_heightfield(
@@ -583,6 +626,8 @@ class Mesh:
         center_y: float = 0.0,
         ground_z: float = 0.0,
         *,
+        compute_normals: bool = False,
+        compute_uvs: bool = False,
         compute_inertia: bool = True,
     ) -> "Mesh":
         """Create a watertight mesh from a 2D heightfield.
@@ -595,6 +640,8 @@ class Mesh:
             center_x [m]: Heightfield center position along X.
             center_y [m]: Heightfield center position along Y.
             ground_z [m]: Bottom surface Z value for watertight side walls.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
 
         Returns:
@@ -610,7 +657,19 @@ class Mesh:
             center_y=center_y,
             ground_z=ground_z,
         )
-        return Mesh(vertices, indices, compute_inertia=compute_inertia)
+        normals = None
+        uvs = None
+        if compute_normals:
+            from ..utils.mesh import compute_vertex_normals  # noqa: PLC0415
+
+            normals = compute_vertex_normals(vertices, indices).astype(np.float32)
+        if compute_uvs:
+            num_top = len(vertices) // 2
+            u = (vertices[:, 0] - (center_x - extent_x / 2)) / extent_x
+            v = (vertices[:, 1] - (center_y - extent_y / 2)) / extent_y
+            uvs = np.column_stack([u, v]).astype(np.float32)
+            uvs[:num_top] = np.clip(uvs[:num_top], 0.0, 1.0)
+        return Mesh(vertices, indices, normals=normals, uvs=uvs, compute_inertia=compute_inertia)
 
     def copy(
         self,
@@ -741,6 +800,7 @@ class Mesh:
     def vertices(self, value):
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
         self._cached_hash = None
+        self._edges = None
 
     @property
     def indices(self):
@@ -750,6 +810,44 @@ class Mesh:
     def indices(self, value):
         self._indices = np.array(value, dtype=np.int32).flatten()
         self._cached_hash = None
+        self._edges = None  # invalidate cached edges
+
+    @property
+    def edges(self) -> np.ndarray:
+        """Unique edge vertex pairs, shape (N, 2), with geometric deduplication.
+
+        Computed lazily on first access and cached. Invalidated when vertices or
+        indices change.
+        """
+        if self._edges is None:
+            if self._indices.size == 0 or self._vertices.size == 0:
+                self._edges = np.empty((0, 2), dtype=np.int32)
+                return self._edges
+            tris = self._indices.reshape(-1, 3)
+            n = len(tris)
+            # Canonical vertex ids via quantized coordinates (overflow-safe)
+            q = np.round(self._vertices * 1e7).astype(np.int64)
+            q_contig = np.ascontiguousarray(q)
+            void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
+            _, canonical = np.unique(void_verts, return_inverse=True)
+            canonical = canonical.ravel()
+            # Build edges with (min, max) canonical ordering, keep original indices
+            c = canonical[tris]
+            canon_edges = np.empty((n * 3, 2), dtype=np.int64)
+            orig_edges = np.empty((n * 3, 2), dtype=np.int32)
+            for k, (a, b) in enumerate(((0, 1), (1, 2), (0, 2))):
+                ca, cb = c[:, a], c[:, b]
+                canon_edges[k::3, 0] = np.minimum(ca, cb)
+                canon_edges[k::3, 1] = np.maximum(ca, cb)
+                orig_edges[k::3, 0] = tris[:, a]
+                orig_edges[k::3, 1] = tris[:, b]
+            # Deduplicate via void view (fast 1-D unique)
+            canon_edges = np.ascontiguousarray(canon_edges)
+            void_edges = canon_edges.view(np.dtype((np.void, canon_edges.dtype.itemsize * 2)))
+            _, first_idx = np.unique(void_edges, return_index=True)
+            first_idx.sort()
+            self._edges = orig_edges[first_idx]
+        return self._edges
 
     @property
     def normals(self):
@@ -761,6 +859,7 @@ class Mesh:
 
     @property
     def color(self) -> Vec3 | None:
+        """Optional display RGB color with values in [0, 1]."""
         return self._color
 
     @color.setter
@@ -769,6 +868,7 @@ class Mesh:
 
     @property
     def texture(self) -> str | np.ndarray | None:
+        """Optional texture as a file path or a normalized RGBA array."""
         return self._texture
 
     @texture.setter
@@ -783,7 +883,7 @@ class Mesh:
         """Content-based hash of the assigned texture.
 
         Returns a stable integer hash derived from the texture data.
-        The value is lazily computed and cached until :attr:`texture`
+        The value is lazily computed and cached until :attr:`~newton.Mesh.texture`
         is reassigned.
         """
         return self._compute_texture_hash()
@@ -1589,15 +1689,32 @@ class Gaussian:
             print(gaussian.count, gaussian.sh_degree)
     """
 
+    class SortingMode(enum.IntEnum):
+        """Sorting strategy for ordering Gaussian splat hits along a ray.
+
+        Controls how per-ray Gaussian intersections are depth-sorted before
+        front-to-back alpha compositing.
+        """
+
+        RAY_HIT_DISTANCE = 0
+        """Sort by closest-approach distance in the Gaussian's canonical space."""
+
+        CAMERA_DISTANCE = 1
+        """Sort by projection of the Gaussian center onto the ray direction."""
+
+        Z_DEPTH = 2
+        """Sort by camera-forward depth of the Gaussian center."""
+
     @wp.struct
     class Data:
         num_points: wp.int32
-        transforms: wp.array(dtype=wp.transformf)
-        scales: wp.array(dtype=wp.vec3f)
-        opacities: wp.array(dtype=wp.float32)
-        sh_coeffs: wp.array(dtype=wp.float32, ndim=2)
+        transforms: wp.array[wp.transformf]
+        scales: wp.array[wp.vec3f]
+        opacities: wp.array[wp.float32]
+        sh_coeffs: wp.array2d[wp.float32]
         bvh_id: wp.uint64
         min_response: wp.float32
+        sorting_mode: wp.int32
 
     def __init__(
         self,
@@ -1608,6 +1725,7 @@ class Gaussian:
         sh_coeffs: np.ndarray | None = None,
         sh_degree: int | None = None,
         min_response: float = 0.1,
+        sorting_mode: SortingMode = SortingMode.RAY_HIT_DISTANCE,
     ):
         """Construct a Gaussian splat asset from arrays.
 
@@ -1624,6 +1742,9 @@ class Gaussian:
                 (``C = 3`` -> degree 0, ``C = 12`` -> degree 1, etc.).
             sh_degree: Spherical harmonic degree.
             min_response: Minimum response required for alpha testing.
+            sorting_mode: Sorting strategy for depth-ordering Gaussian
+                intersections along each ray before alpha compositing
+                (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -1657,6 +1778,8 @@ class Gaussian:
         if not np.isfinite(min_response) or not (0.0 < min_response < 1.0):
             raise ValueError("min_response must be finite and in (0, 1)")
         self._min_response = float(min_response)
+
+        self._sorting_mode = sorting_mode
 
         self._cached_hash = None
         self._positions.setflags(write=False)
@@ -1718,6 +1841,11 @@ class Gaussian:
         """Min response, float."""
         return self._min_response
 
+    @property
+    def sorting_mode(self) -> SortingMode:
+        """Sorting mode, Gaussian.SortingMode."""
+        return self._sorting_mode
+
     def _find_sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
         c = self._sh_coeffs.shape[1]
@@ -1751,6 +1879,7 @@ class Gaussian:
             self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
             self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
             self.warp_data.min_response = self.min_response
+            self.warp_data.sorting_mode = self.sorting_mode
             self.warp_data.num_points = self.warp_data.transforms.shape[0]
 
             lowers = wp.zeros(self.count, dtype=wp.vec3f)
@@ -1972,6 +2101,7 @@ class Gaussian:
                     self._opacities.data.tobytes(),
                     self._sh_coeffs.data.tobytes(),
                     float(self._min_response),
+                    int(self._sorting_mode),
                 )
             )
         return self._cached_hash
@@ -1987,4 +2117,5 @@ class Gaussian:
             and np.array_equal(self._opacities, other._opacities)
             and np.array_equal(self._sh_coeffs, other._sh_coeffs)
             and self._min_response == other._min_response
+            and self._sorting_mode == other._sorting_mode
         )

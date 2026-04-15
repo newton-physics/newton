@@ -65,7 +65,7 @@ def _hashtable_hash(key: wp.uint64, capacity_mask: int) -> int:
 @wp.func
 def hashtable_find(
     key: wp.uint64,
-    keys: wp.array(dtype=wp.uint64),
+    keys: wp.array[wp.uint64],
 ) -> int:
     """Find a key and return its entry index (read-only lookup).
 
@@ -106,8 +106,8 @@ def hashtable_find(
 @wp.func
 def hashtable_find_or_insert(
     key: wp.uint64,
-    keys: wp.array(dtype=wp.uint64),
-    active_slots: wp.array(dtype=wp.int32),
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
 ) -> int:
     """Find or insert a key and return the entry index.
 
@@ -161,8 +161,8 @@ def hashtable_find_or_insert(
 
 @wp.kernel(enable_backward=False)
 def _hashtable_clear_keys_kernel(
-    keys: wp.array(dtype=wp.uint64),
-    active_slots: wp.array(dtype=wp.int32),
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
     capacity: int,
     num_threads: int,
 ):
@@ -187,7 +187,7 @@ def _hashtable_clear_keys_kernel(
 
 @wp.kernel(enable_backward=False)
 def _zero_count_kernel(
-    active_slots: wp.array(dtype=wp.int32),
+    active_slots: wp.array[wp.int32],
     capacity: int,
 ):
     """Zero the count element after clearing."""

@@ -177,7 +177,7 @@ def write_module_page(mod_name: str) -> None:
     if doc:
         lines.extend([doc, ""])
 
-    lines.extend([f".. currentmodule:: {mod_name}", ""])
+    lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
 
     # Render a simple bullet list of submodules (no autosummary/toctree) to
     # avoid generating stub pages that can cause duplicate descriptions.

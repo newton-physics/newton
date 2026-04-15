@@ -1,6 +1,8 @@
 .. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
+.. currentmodule:: newton
+
 ``warp.sim`` Migration Guide
 ============================
 
@@ -66,6 +68,10 @@ For example, :attr:`newton.State.body_qd` stores ``(lin_vel, ang_vel)``, whereas
 ``warp.sim`` followed Warp's native ``(ang_vel, lin_vel)`` convention. See
 :ref:`Twist conventions`.
 
+For rigid bodies, the linear component is the world-frame velocity of the body's
+center of mass (COM). If you need the body-origin velocity instead, recover it
+as ``v_origin = v_com - omega x r_com_world``.
+
 The attributes related to joint axes now have the same dimension as the joint DOFs, which is
 :attr:`newton.Model.joint_dof_count`. :attr:`newton.Model.joint_axis` remains available and is
 indexed per DOF; use :attr:`newton.Model.joint_qd_start` and :attr:`newton.Model.joint_dof_dim`
@@ -74,7 +80,11 @@ to locate a joint's slice in the per-DOF arrays.
 For free and D6 joints, Newton stores linear DOFs before angular DOFs in per-axis arrays. In
 particular, floating-base slices of :attr:`newton.State.joint_qd`, :attr:`newton.Control.joint_f`,
 :attr:`newton.Control.joint_target_pos`, and :attr:`newton.Control.joint_target_vel` use
-``(lin_vel, ang_vel)`` ordering, whereas ``warp.sim`` used ``(ang_vel, lin_vel)``.
+``(linear, angular)`` ordering, whereas ``warp.sim`` used ``(ang_vel, lin_vel)``.
+For public ``FREE`` and ``DISTANCE`` joints, :attr:`newton.State.joint_qd`
+stores the child-COM twist in the joint parent frame, while
+:attr:`newton.Control.joint_f` stores the world-frame COM wrench
+``(f_world, tau_com_world)``.
 
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
 | **warp.sim**                                                     | **Newton**                                                                                                            |
@@ -122,8 +132,8 @@ position and velocity targets, :attr:`newton.Control.joint_act` stores feedforwa
 and :attr:`newton.Control.joint_f` stores generalized forces/torques. Unlike ``warp.sim``,
 ``joint_act`` is no longer the target array.
 
-In order to match the MuJoCo convention, :attr:`~newton.Control.joint_f` includes the DOFs of the
-free joints as well, so its dimension is :attr:`newton.Model.joint_dof_count`.
+In order to match the MuJoCo convention, :attr:`~newton.Control.joint_f` includes the DOFs of
+``FREE`` and ``DISTANCE`` joints as well, so its dimension is :attr:`newton.Model.joint_dof_count`.
 
 ``JointMode`` has been replaced by :class:`newton.JointTargetMode`. Direct force control
 corresponds to :attr:`newton.JointTargetMode.EFFORT` together with
@@ -159,7 +169,7 @@ Analogously, the geometry types plane, capsule, cylinder, and cone now have thei
 +--------------------------------------------------------+------------------------------------------------------------------------+
 
 It is now possible to set the up axis of the builder using the :attr:`~newton.ModelBuilder.up_axis` attribute,
-which can be defined from any value compatible with the :obj:`~newton.core.types.AxisType` alias.
+which can be defined from any value compatible with the :obj:`~newton.AxisType` alias.
 :attr:`newton.ModelBuilder.up_vector` is now a read-only property computed from :attr:`newton.ModelBuilder.up_axis`.
 
 The ``ModelBuilder.add_joint_*()`` functions now use ``None`` defaults that are filled in from

@@ -35,15 +35,13 @@ RANDOMIZE_PER_WORLD = True
 
 
 @wp.kernel
-def compute_middle_kernel(
-    lower: wp.array3d(dtype=float), upper: wp.array3d(dtype=float), middle: wp.array3d(dtype=float)
-):
+def compute_middle_kernel(lower: wp.array3d[float], upper: wp.array3d[float], middle: wp.array3d[float]):
     world, arti, dof = wp.tid()
     middle[world, arti, dof] = 0.5 * (lower[world, arti, dof] + upper[world, arti, dof])
 
 
 @wp.kernel
-def reset_materials_kernel(mu: wp.array3d(dtype=float), seed: int, shape_count: int):
+def reset_materials_kernel(mu: wp.array3d[float], seed: int, shape_count: int):
     world, arti, shape = wp.tid()
 
     if RANDOMIZE_PER_WORLD:

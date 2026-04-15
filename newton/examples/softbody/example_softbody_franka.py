@@ -29,16 +29,16 @@ from newton.solvers import SolverFeatherstone, SolverVBD
 
 
 @wp.kernel
-def set_gripper_q(joint_q: wp.array2d(dtype=float), finger_pos: wp.array(dtype=float), idx0: int, idx1: int):
+def set_gripper_q(joint_q: wp.array2d[float], finger_pos: wp.array[float], idx0: int, idx1: int):
     joint_q[0, idx0] = finger_pos[0]
     joint_q[0, idx1] = finger_pos[0]
 
 
 @wp.kernel
 def compute_joint_qd(
-    target_q: wp.array(dtype=float),
-    current_q: wp.array(dtype=float),
-    out_qd: wp.array(dtype=float),
+    target_q: wp.array[float],
+    current_q: wp.array[float],
+    out_qd: wp.array[float],
     inv_frame_dt: float,
 ):
     i = wp.tid()

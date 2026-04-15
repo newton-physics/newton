@@ -9,13 +9,13 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.kernel
 def compute_collider_inv_mass(
-    J_mat_offsets: wp.array(dtype=int),
-    J_mat_columns: wp.array(dtype=int),
-    J_mat_values: wp.array(dtype=wp.mat33),
-    IJtm_mat_offsets: wp.array(dtype=int),
-    IJtm_mat_columns: wp.array(dtype=int),
-    IJtm_mat_values: wp.array(dtype=wp.mat33),
-    collider_inv_mass: wp.array(dtype=float),
+    J_mat_offsets: wp.array[int],
+    J_mat_columns: wp.array[int],
+    J_mat_values: wp.array[wp.mat33],
+    IJtm_mat_offsets: wp.array[int],
+    IJtm_mat_columns: wp.array[int],
+    IJtm_mat_values: wp.array[wp.mat33],
+    collider_inv_mass: wp.array[float],
 ):
     i = wp.tid()
 
@@ -100,13 +100,13 @@ def filter_collider_impulse_warmstart(
 
 @wp.kernel
 def apply_nodal_impulse_warmstart(
-    collider_impulse: wp.array(dtype=wp.vec3),
-    collider_friction: wp.array(dtype=float),
-    collider_normals: wp.array(dtype=wp.vec3),
-    collider_adhesion: wp.array(dtype=float),
-    inv_mass: wp.array(dtype=float),
-    velocities: wp.array(dtype=wp.vec3),
-    delta_impulse: wp.array(dtype=wp.vec3),
+    collider_impulse: wp.array[wp.vec3],
+    collider_friction: wp.array[float],
+    collider_normals: wp.array[wp.vec3],
+    collider_adhesion: wp.array[float],
+    inv_mass: wp.array[float],
+    velocities: wp.array[wp.vec3],
+    delta_impulse: wp.array[wp.vec3],
 ):
     """
     Applies pre-computed impulses to particles and colliders.
@@ -124,15 +124,15 @@ def apply_nodal_impulse_warmstart(
 
 @wp.kernel
 def solve_nodal_friction(
-    inv_mass: wp.array(dtype=float),
-    collider_friction: wp.array(dtype=float),
-    collider_adhesion: wp.array(dtype=float),
-    collider_normals: wp.array(dtype=wp.vec3),
-    collider_inv_mass: wp.array(dtype=float),
-    velocities: wp.array(dtype=wp.vec3),
-    collider_velocities: wp.array(dtype=wp.vec3),
-    impulse: wp.array(dtype=wp.vec3),
-    delta_impulse: wp.array(dtype=wp.vec3),
+    inv_mass: wp.array[float],
+    collider_friction: wp.array[float],
+    collider_adhesion: wp.array[float],
+    collider_normals: wp.array[wp.vec3],
+    collider_inv_mass: wp.array[float],
+    velocities: wp.array[wp.vec3],
+    collider_velocities: wp.array[wp.vec3],
+    impulse: wp.array[wp.vec3],
+    delta_impulse: wp.array[wp.vec3],
 ):
     """
     Solves for frictional impulses at nodes interacting with colliders.
@@ -171,12 +171,12 @@ def solve_nodal_friction(
 
 @wp.kernel
 def apply_subgrid_impulse(
-    tr_collider_mat_offsets: wp.array(dtype=int),
-    tr_collider_mat_columns: wp.array(dtype=int),
-    tr_collider_mat_values: wp.array(dtype=float),
-    inv_mass: wp.array(dtype=float),
-    impulses: wp.array(dtype=wp.vec3),
-    velocities: wp.array(dtype=wp.vec3),
+    tr_collider_mat_offsets: wp.array[int],
+    tr_collider_mat_columns: wp.array[int],
+    tr_collider_mat_values: wp.array[float],
+    inv_mass: wp.array[float],
+    impulses: wp.array[wp.vec3],
+    velocities: wp.array[wp.vec3],
 ):
     """
     Applies pre-computed impulses to particles and colliders.
@@ -195,11 +195,11 @@ def apply_subgrid_impulse(
 
 @wp.kernel
 def apply_subgrid_impulse_warmstart(
-    collider_friction: wp.array(dtype=float),
-    collider_normals: wp.array(dtype=wp.vec3),
-    collider_adhesion: wp.array(dtype=float),
-    collider_impulse: wp.array(dtype=wp.vec3),
-    delta_impulse: wp.array(dtype=wp.vec3),
+    collider_friction: wp.array[float],
+    collider_normals: wp.array[wp.vec3],
+    collider_adhesion: wp.array[float],
+    collider_impulse: wp.array[wp.vec3],
+    delta_impulse: wp.array[wp.vec3],
 ):
     i = wp.tid()
 
@@ -213,13 +213,13 @@ def apply_subgrid_impulse_warmstart(
 
 @wp.kernel
 def compute_collider_delassus_diagonal(
-    collider_mat_offsets: wp.array(dtype=int),
-    collider_mat_columns: wp.array(dtype=int),
-    collider_mat_values: wp.array(dtype=float),
-    collider_inv_mass: wp.array(dtype=float),
-    transposed_collider_mat_offsets: wp.array(dtype=int),
-    inv_volume: wp.array(dtype=float),
-    delassus_diagonal: wp.array(dtype=float),
+    collider_mat_offsets: wp.array[int],
+    collider_mat_columns: wp.array[int],
+    collider_mat_values: wp.array[float],
+    collider_inv_mass: wp.array[float],
+    transposed_collider_mat_offsets: wp.array[int],
+    inv_volume: wp.array[float],
+    delassus_diagonal: wp.array[float],
 ):
     i = wp.tid()
 
@@ -242,17 +242,17 @@ def compute_collider_delassus_diagonal(
 
 @wp.kernel
 def solve_subgrid_friction(
-    velocity: wp.array(dtype=wp.vec3),
-    collider_mat_offsets: wp.array(dtype=int),
-    collider_mat_columns: wp.array(dtype=int),
-    collider_mat_values: wp.array(dtype=float),
-    collider_friction: wp.array(dtype=float),
-    collider_adhesion: wp.array(dtype=float),
-    collider_normals: wp.array(dtype=wp.vec3),
-    collider_delassus_diagonal: wp.array(dtype=float),
-    collider_velocities: wp.array(dtype=wp.vec3),
-    impulse: wp.array(dtype=wp.vec3),
-    delta_impulse: wp.array(dtype=wp.vec3),
+    velocity: wp.array[wp.vec3],
+    collider_mat_offsets: wp.array[int],
+    collider_mat_columns: wp.array[int],
+    collider_mat_values: wp.array[float],
+    collider_friction: wp.array[float],
+    collider_adhesion: wp.array[float],
+    collider_normals: wp.array[wp.vec3],
+    collider_delassus_diagonal: wp.array[float],
+    collider_velocities: wp.array[wp.vec3],
+    impulse: wp.array[wp.vec3],
+    delta_impulse: wp.array[wp.vec3],
 ):
     i = wp.tid()
 

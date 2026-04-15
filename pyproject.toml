@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "newton"
-version = "1.1.0.dev0"
+version = "1.2.0.dev0"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
@@ -36,8 +36,8 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp>=3.5.0.2; python_version < '3.14'",  # MuJoCo, warp-accelerated (depends on mujoco which has no 3.14 wheels yet)
-    "mujoco>=3.5.0; python_version < '3.14'",        # MuJoCo physics engine (no 3.14 wheels yet)
+    "mujoco-warp~=3.6.0; python_version < '3.14'",  # MuJoCo, warp-accelerated (depends on mujoco which has no 3.14 wheels yet)
+    "mujoco~=3.6.0; python_version < '3.14'",        # MuJoCo physics engine (no 3.14 wheels yet)
     "newton-actuators>=0.1.0",
 ]
 
@@ -79,7 +79,7 @@ examples = [
     "GitPython>=3.1.44",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
-    "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
+    "cbor2>=5.7.0, <6",     # for binary recording format (.bin files) - more efficient than JSON
     "Pillow>=9.0.0",        # for image processing (viewer icons, heightfield loading, textures)
 ]
 
@@ -283,6 +283,7 @@ files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf
 [tool.typos.default.extend-words]
 arange = "arange"
 ba = "ba"
+iz = "iz"
 HAA = "HAA"
 lod = "lod"
 # MuJoCo Menagerie brand/product names

@@ -58,7 +58,7 @@ class Example:
         body_ellipsoid = builder.add_body(
             xform=wp.transform(p=self.ellipsoid_pos, q=wp.quat_identity()), label="ellipsoid"
         )
-        builder.add_shape_ellipsoid(body_ellipsoid, a=0.5, b=0.5, c=0.25)
+        builder.add_shape_ellipsoid(body_ellipsoid, rx=0.5, ry=0.5, rz=0.25)
 
         # CAPSULE
         self.capsule_pos = wp.vec3(0.0, 0.0, drop_z)
@@ -186,6 +186,7 @@ class Example:
         # Custom test for cylinder: allow 0.01 error for X and Y, strict for Z and rotation
         self.cylinder_pos[2] = 0.6
         cylinder_q = wp.transform(self.cylinder_pos, wp.quat_identity())
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -199,6 +200,7 @@ class Example:
             and abs(q[6] - cylinder_q[6]) < 1e-4,
             [3],
         )
+        # fmt: on
         self.box_pos[2] = 0.25
         box_q = wp.transform(self.box_pos, wp.quat_identity())
         newton.examples.test_body_state(
