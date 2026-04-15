@@ -884,6 +884,13 @@ void main()
         albedo = mix(albedo, albedo2, cb);
     }
 
+    // Specular color: dielectrics ~0.04, metals use albedo.
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+    // Metals: lift albedo toward brighter, less saturated version (no full IBL).
+    float luma = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+    albedo = mix(albedo, vec3(luma * 1.4), metallic * 0.45);
+
     vec3 N = normalize(Normal);
     if (!gl_FrontFacing)
         N = -N;
@@ -896,53 +903,70 @@ void main()
     if (up_axis == 0) up = vec3(1.0, 0.0, 0.0);
     if (up_axis == 2) up = vec3(0.0, 0.0, 1.0);
 
-    // Soft hemisphere ambient — reduced so the directional key light has contrast.
-    // A fully-bright hemisphere washes out all directional shading.
+    // Cook-Torrance PBR
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotV = max(dot(N, V), 0.001);
+    float HdotV = max(dot(H, V), 0.0);
+
+    // GGX/Trowbridge-Reitz normal distribution
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * denom * denom);
+
+    // Schlick-GGX geometry (Smith method)
+    float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+    float G1_V = NdotV / (NdotV * (1.0 - k) + k);
+    float G1_L = NdotL / (NdotL * (1.0 - k) + k);
+    float G = G1_V * G1_L;
+
+    // Schlick Fresnel, dampened by roughness
+    vec3 F_max = mix(F0, vec3(1.0), 1.0 - roughness);
+    vec3 F = F0 + (F_max - F0) * pow(1.0 - HdotV, 5.0);
+
+    // Cook-Torrance specular BRDF
+    vec3 spec = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
+
+    // Diffuse uses remaining energy not reflected
+    vec3 kD = (1.0 - F) * (1.0 - metallic);
+
+    // Soft hemisphere ambient
     float sky_fac = dot(N, up) * 0.5 + 0.5;
     vec3 ambient = mix(ground_color, sky_color, sky_fac) * albedo * 0.35;
 
-    // Key directional light (primary source of contrast / shape definition)
-    float NdotL = max(dot(N, L), 0.0);
-    vec3 diffuse = albedo * light_color * NdotL * 1.10 * diffuse_scale;
+    // Key directional light (higher multiplier compensates for PI-normalised BRDF)
+    vec3 diffuse = kD * albedo / PI * light_color * NdotL * 4.0 * diffuse_scale;
 
-    // Fill light: perpendicular to key in the horizontal plane, slightly elevated.
-    // This softly illuminates faces that are in shadow of the key without
-    // collapsing them to pure black, while still preserving contrast.
+    // Fill light: perpendicular to key, slightly elevated
     vec3 fill_dir = normalize(cross(up, L) + up * 0.20);
-    float NdotFill = max(dot(N, fill_dir), 0.0) * 0.28;
-    diffuse += albedo * light_color * NdotFill;
+    float NdotFill = max(dot(N, fill_dir), 0.0);
+    vec3 H_fill = normalize(V + fill_dir);
+    float NdotH_fill = max(dot(N, H_fill), 0.0);
+    float denom_fill = NdotH_fill * NdotH_fill * (a2 - 1.0) + 1.0;
+    float D_fill = a2 / (PI * denom_fill * denom_fill);
+    float G1_fill = NdotFill / (NdotFill * (1.0 - k) + k);
+    float G_fill = G1_V * G1_fill;
+    float HdotV_fill = max(dot(H_fill, V), 0.0);
+    vec3 F_fill = F0 + (F_max - F0) * pow(1.0 - HdotV_fill, 5.0);
+    vec3 spec_fill = (D_fill * G_fill * F_fill) / (4.0 * NdotV * NdotFill + 0.0001);
+    vec3 kD_fill = (1.0 - F_fill) * (1.0 - metallic);
+    diffuse += kD_fill * albedo / PI * light_color * NdotFill * 1.2;
 
-    // Soft back fill (opposite key) to prevent pitch-black rear faces
+    // Soft back fill (opposite key)
     float NdotBack = max(dot(N, -L), 0.0) * 0.10;
-    diffuse += albedo * light_color * NdotBack;
-
-    diffuse *= (1.0 - metallic);
-
-    // Specular — studio style.
-    // Physical dielectric reflectance F0=0.04 combined with energy-conserving
-    // normFactor produces ~1% brightness at typical angles, which is invisible.
-    // Instead use a boosted reflectance (0.30 for dielectrics, albedo for metals)
-    // without normFactor so the highlight is clearly visible at moderate roughness.
-    float gloss     = clamp(1.0 - roughness, 0.0, 1.0);
-    float shininess = 4.0 + pow(gloss, 2.0) * 60.0;  // range [4, 64]: soft but defined
-    float NdotH = max(dot(N, H), 0.0);
-    float spec_reflectance = mix(0.30, 1.0, metallic);
-    vec3  spec_color = mix(vec3(spec_reflectance), albedo, metallic);
-    vec3  spec = spec_color * light_color * pow(NdotH, shininess) * NdotL * specular_scale;
+    diffuse += kD * albedo / PI * light_color * NdotBack;
 
     // Studio-style rim highlight
     float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.07;
     vec3 rim_color = sky_color * rim;
 
-    // Camera-space catch light — places a soft highlight on surfaces facing the viewer.
-    // This is the characteristic studio catch-light "sphere pop": regardless of world-space light
-    // direction, spheres and curved surfaces always show a visible bright region near their
-    // silhouette-facing centre, giving them instant 3D depth.
+    // Camera-space catch light for 3D depth
     float NdotV_clamp = max(dot(N, V), 0.0);
     vec3 catch_light = albedo * light_color * 0.18 * pow(NdotV_clamp, 3.0);
 
     float shadow = (enable_shadows != 0) ? ShadowCalculation() : 0.0;
-    vec3 color = ambient + (1.0 - shadow) * (diffuse + spec) + rim_color + catch_light;
+    vec3 color = ambient + (1.0 - shadow) * (diffuse + spec * specular_scale + spec_fill * 0.28 * specular_scale) + rim_color + catch_light;
 
     // Apply exposure for brightness control (no ACES — studio uses lower
     // light multipliers that stay in a moderate range where filmic rolloff
