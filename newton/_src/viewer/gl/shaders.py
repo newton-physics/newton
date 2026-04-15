@@ -1268,4 +1268,3 @@ class ShaderEdge(ShaderGL):
             self._gl.glUniform4f(self.loc_edge_color, *edge_color)
             lsm = light_space_matrix if light_space_matrix is not None else np.eye(4, dtype=np.float32)
             self._gl.glUniformMatrix4fv(self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(lsm))
-
