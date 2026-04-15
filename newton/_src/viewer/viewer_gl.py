@@ -1637,6 +1637,9 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
+        elif symbol == pyglet.window.key.R:
+            # Request simulation reset
+            self._reset_requested = True
         elif symbol == pyglet.window.key.ESCAPE:
             # Exit with Escape key
             self.renderer.close()
@@ -1967,6 +1970,8 @@ class ViewerGL(ViewerBase):
 
                     # Pause simulation checkbox
                     changed, self._paused = imgui.checkbox("Pause", self._paused)
+                    if imgui.button("Reset"):
+                        self._reset_requested = True
 
                 # Visualization Controls section
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
