@@ -2779,6 +2779,7 @@ class SolverMuJoCo(SolverBase):
         wind: tuple | None = None,
         magnetic: tuple | None = None,
         use_mujoco_cpu: bool = False,
+        enable_multiccd: bool = False,
         disable_contacts: bool = False,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
@@ -2817,6 +2818,7 @@ class SolverMuJoCo(SolverBase):
             wind: Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
             magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
             use_mujoco_cpu: If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
+            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
             disable_contacts: If True, disable contact computation in MuJoCo.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
@@ -2915,6 +2917,9 @@ class SolverMuJoCo(SolverBase):
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
 
+        enableflags = 0
+        if enable_multiccd:
+            enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
         disableflags = 0
         if disable_contacts:
             disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
@@ -2933,6 +2938,7 @@ class SolverMuJoCo(SolverBase):
         with wp.ScopedTimer("convert_model_to_mujoco", active=False):
             self._convert_to_mjc(
                 model,
+                enableflags=enableflags,
                 disableflags=disableflags,
                 disable_contacts=disable_contacts,
                 separate_worlds=separate_worlds,
@@ -3715,6 +3721,7 @@ class SolverMuJoCo(SolverBase):
         nconmax: int | None = None,
         solver: int | str | None = None,
         integrator: int | str | None = None,
+        enableflags: int = 0,
         disableflags: int = 0,
         disable_contacts: bool = False,
         impratio: float | None = None,
@@ -3755,6 +3762,7 @@ class SolverMuJoCo(SolverBase):
             nconmax: Maximum number of contacts.
             solver: Constraint solver type ("cg" or "newton"). If None, uses model custom attribute or Newton's default ("newton").
             integrator: Integration method ("euler", "rk4", "implicit", "implicitfast"). If None, uses model custom attribute or Newton's default ("implicitfast").
+            enableflags: MuJoCo enable flags bitmask.
             disableflags: MuJoCo disable flags bitmask.
             disable_contacts: If True, disable contact computation.
             impratio: Impedance ratio for contacts. If None, uses model custom attribute or MuJoCo default (1.0).
@@ -3926,6 +3934,7 @@ class SolverMuJoCo(SolverBase):
             jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
         spec = mujoco.MjSpec()
+        spec.option.enableflags = enableflags
         spec.option.disableflags = disableflags
         spec.option.gravity = np.array([*model.gravity.numpy()[0]])
         spec.option.solver = solver
