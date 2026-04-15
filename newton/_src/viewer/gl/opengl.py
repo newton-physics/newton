@@ -1066,6 +1066,11 @@ class RendererGL:
         self.sky_upper = self.background_color
         self.sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
 
+        # Hemisphere ambient colors — decoupled from the visible sky so the
+        # sky dome can be a saturated blue while the ambient fill stays neutral.
+        self.ambient_sky = (0.8, 0.8, 0.85)
+        self.ambient_ground = (0.3, 0.3, 0.35)
+
         # Lighting settings
         self._shadow_radius = 3.0
         self._diffuse_scale = 1.0
@@ -1905,8 +1910,8 @@ class RendererGL:
             "up_axis": self.camera.up_axis,
             "sun_direction": tuple(self._sun_direction),
             "fog_color": self.sky_lower,
-            "sky_color": self.sky_upper,
-            "ground_color": self.sky_lower,
+            "sky_color": self.ambient_sky,
+            "ground_color": self.ambient_ground,
             "light_color": self._light_color,
             "enable_shadows": self.draw_shadows,
             "shadow_texture": self._shadow_texture,
