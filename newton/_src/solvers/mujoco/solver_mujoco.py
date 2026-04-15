@@ -4898,7 +4898,6 @@ class SolverMuJoCo(SolverBase):
                 hinge_axis = wp.quat_rotate(parent_xform_tf.q, hinge_axis_local)
                 offset = HINGE_CONNECT_AXIS_OFFSET
 
-                self.has_connect_constraints = True
                 self.has_jnt_connect_constraints = True
 
                 # First CONNECT at the joint anchor
@@ -4936,7 +4935,6 @@ class SolverMuJoCo(SolverBase):
                 mjc_eq_to_newton_jnt[eq.id] = j
                 jnt_eq_anchor1_dict[eq.id] = list(joint_parent_xform[j][:3])
                 jnt_eq_anchor1_has_axis_offset[eq.id] = False
-                self.has_connect_constraints = True
                 self.has_jnt_connect_constraints = True
             else:
                 warnings.warn(
@@ -6107,8 +6105,8 @@ class SolverMuJoCo(SolverBase):
         # which includes JOINT_DOF_PROPERTIES and therefore always computes
         # q_rel before any CONSTRAINT_PROPERTIES-only notification can occur.
         # The None check is a defensive guard for the case where the model
-        # has no connect constraints (has_connect_constraints is False and
-        # both flags are False, so this branch is unreachable).
+        # has no explicit connect constraints (has_connect_constraints is
+        # False and both flags are False, so this branch is unreachable).
         wrote_eq_data = False
         if (
             self.has_connect_constraints
