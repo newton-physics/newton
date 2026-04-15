@@ -937,10 +937,10 @@ void main()
 
     // Soft hemisphere ambient
     float sky_fac = dot(N, up) * 0.5 + 0.5;
-    vec3 ambient = mix(ground_color, sky_color, sky_fac) * albedo * 0.35;
+    vec3 ambient = mix(ground_color, sky_color, sky_fac) * albedo * 0.25;
 
-    // Key directional light (higher multiplier compensates for PI-normalised BRDF)
-    vec3 diffuse = kD * albedo / PI * light_color * NdotL * 4.0 * diffuse_scale;
+    // Key directional light (same 3.0 multiplier as classic)
+    vec3 diffuse = kD * albedo / PI * light_color * NdotL * 3.0 * diffuse_scale;
 
     // Fill light: perpendicular to key, slightly elevated
     vec3 fill_dir = normalize(cross(up, L) + up * 0.20);
@@ -955,22 +955,22 @@ void main()
     vec3 F_fill = F0 + (F_max - F0) * pow(1.0 - HdotV_fill, 5.0);
     vec3 spec_fill = (D_fill * G_fill * F_fill) / (4.0 * NdotV * NdotFill + 0.0001);
     vec3 kD_fill = (1.0 - F_fill) * (1.0 - metallic);
-    diffuse += kD_fill * albedo / PI * light_color * NdotFill * 1.2;
+    diffuse += kD_fill * albedo / PI * light_color * NdotFill * 0.5;
 
     // Soft back fill (opposite key)
-    float NdotBack = max(dot(N, -L), 0.0) * 0.10;
+    float NdotBack = max(dot(N, -L), 0.0) * 0.08;
     diffuse += kD * albedo / PI * light_color * NdotBack;
 
     // Studio-style rim highlight
-    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.07;
+    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.04;
     vec3 rim_color = sky_color * rim;
 
     // Camera-space catch light for 3D depth
     float NdotV_clamp = max(dot(N, V), 0.0);
-    vec3 catch_light = albedo * light_color * 0.18 * pow(NdotV_clamp, 3.0);
+    vec3 catch_light = albedo * light_color * 0.06 * pow(NdotV_clamp, 3.0);
 
     float shadow = (enable_shadows != 0) ? ShadowCalculation() : 0.0;
-    vec3 color = ambient + (1.0 - shadow) * (diffuse + spec * specular_scale + spec_fill * 0.28 * specular_scale) + rim_color + catch_light;
+    vec3 color = ambient + (1.0 - shadow) * (diffuse + spec * specular_scale + spec_fill * 0.20 * specular_scale) + rim_color + catch_light;
 
     // Apply exposure for brightness control (no ACES — studio uses lower
     // light multipliers that stay in a moderate range where filmic rolloff
