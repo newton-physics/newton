@@ -26,43 +26,43 @@ def _validate_clamp_velocity_based(kwargs: dict[str, Any]) -> None:
     vel_lim = kwargs.get("velocity_limit")
     if vel_lim is not None and vel_lim <= 0.0:
         raise ValueError(
-            f"ClampingDCMotorAPI requires velocity_limit > 0 (division by velocity_limit "
+            f"NewtonClampingDCMotorAPI requires velocity_limit > 0 (division by velocity_limit "
             f"in torque-speed computation); got {vel_lim}"
         )
 
 
 # Temporary registry until the actual USD schema is merged.
 SCHEMA_REGISTRY: dict[str, SchemaEntry] = {
-    "ControllerPDAPI": SchemaEntry(
+    "NewtonControllerPDAPI": SchemaEntry(
         component_class=ControllerPD,
         param_map={"kp": "kp", "kd": "kd", "constForce": "constant_force"},
         is_controller=True,
     ),
-    "ControllerPIDAPI": SchemaEntry(
+    "NewtonControllerPIDAPI": SchemaEntry(
         component_class=ControllerPID,
         param_map={"kp": "kp", "ki": "ki", "kd": "kd", "integralMax": "integral_max", "constForce": "constant_force"},
         is_controller=True,
     ),
-    "ClampingMaxForceAPI": SchemaEntry(
+    "NewtonClampingMaxForceAPI": SchemaEntry(
         component_class=ClampingMaxForce,
         param_map={"maxForce": "max_force"},
     ),
-    "DelayAPI": SchemaEntry(
+    "NewtonDelayAPI": SchemaEntry(
         component_class=Delay,
         param_map={"delay": "delay"},
     ),
-    "ClampingDCMotorAPI": SchemaEntry(
+    "NewtonClampingDCMotorAPI": SchemaEntry(
         component_class=ClampingDCMotor,
         param_map={"saturationEffort": "saturation_effort", "velocityLimit": "velocity_limit", "maxForce": "max_force"},
         validate=_validate_clamp_velocity_based,
     ),
     # Neural-network controllers
-    "ControllerNetMLPAPI": SchemaEntry(
+    "NewtonControllerNetMLPAPI": SchemaEntry(
         component_class=ControllerNetMLP,
         param_map={"networkPath": "network_path"},
         is_controller=True,
     ),
-    "ControllerNetLSTMAPI": SchemaEntry(
+    "NewtonControllerNetLSTMAPI": SchemaEntry(
         component_class=ControllerNetLSTM,
         param_map={"networkPath": "network_path"},
         is_controller=True,
@@ -105,7 +105,7 @@ def get_schemas_from_prim(prim) -> list[str]:
     """Get applied schemas that match the registry.
 
     Uses prim metadata to find applied schema tokens, since our custom
-    schemas (e.g. ``ControllerPDAPI``) are not registered USD schema types
+    schemas (e.g. ``NewtonControllerPDAPI``) are not registered USD schema types
     and therefore are not returned by ``GetAppliedSchemas()``.
     """
     # GetAppliedSchemas() only returns registered USD schema types.
@@ -128,7 +128,7 @@ def parse_actuator_prim(prim) -> ParsedActuator | None:
     Each detected schema directly maps to a component class with its
     extracted params. Returns None if not a valid actuator prim.
     """
-    if prim.GetTypeName() != "Actuator":
+    if prim.GetTypeName() != "NewtonActuator":
         return None
 
     target_paths = get_relationship_targets(prim, "newton:actuator:target")
