@@ -95,7 +95,7 @@ STYLE_REGISTRY: dict[str, ShadingStyleConfig] = {
         overrides={
             "fog_color": (0.55, 0.55, 0.58),
             "sky_color": (0.72, 0.82, 0.98),
-            "ground_color": (0.50, 0.45, 0.38),
+            "ground_color": (0.30, 0.28, 0.25),
             "light_color": (0.92, 0.90, 0.86),
             "env_texture": None,
             "env_intensity": 0.0,

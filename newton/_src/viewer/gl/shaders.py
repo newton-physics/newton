@@ -999,9 +999,13 @@ class ShaderShapeStudio(ShaderShape):
 edge_fragment_shader = """
 #version 330 core
 out vec4 FragColor;
+in vec4 Material;
 uniform vec4 edge_color;
 void main()
 {
+    // Skip ground plane (checker-enabled surfaces)
+    if (Material.z > 0.0)
+        discard;
     FragColor = edge_color;
 }
 """
