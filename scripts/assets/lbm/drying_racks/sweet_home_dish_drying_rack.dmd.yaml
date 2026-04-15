@@ -1,0 +1,20 @@
+directives:
+  - add_model:
+      file: package://lbm_eval_models/kitchen_accessories/drying_racks/sweet_home_dish_drying_rack_base.sdf
+      name: drying_rack_base
+  - add_model:
+      file: package://lbm_eval_models/kitchen_accessories/drying_racks/sweet_home_dish_drying_rack_wireframe.sdf
+      name: drying_rack_wireframe
+  - add_weld:
+      parent: drying_rack_base::nominal_wireframe_origin__z_up
+      child: drying_rack_wireframe::origin
+  - add_model:
+      file: package://lbm_eval_models/kitchen_accessories/drying_racks/sweet_home_dish_drying_rack_utensil_holder.sdf
+      name: drying_rack_utensil_holder
+  - add_weld:
+      parent: drying_rack_wireframe::origin
+      child: drying_rack_utensil_holder::origin
+      X_PC:
+        translation: [-0.1518, 0.0735, 0.11335]
+        rotation: !Rpy
+          deg: [0, -4.5, 0]

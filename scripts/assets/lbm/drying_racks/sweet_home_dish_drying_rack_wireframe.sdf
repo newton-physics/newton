@@ -1,0 +1,82 @@
+<?xml version="1.0"?>
+<sdf version="1.7" xmlns:drake="drake.mit.edu">
+  <model name="sweet_home_dish_drying_rack_wireframe">
+    <link name="sweet_home_dish_drying_rack_wireframe">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>0 -0.000189 0.0645 0 0 0</pose>
+        <mass>0.647</mass>
+        <inertia>
+          <ixx> 0.0147</ixx>
+          <ixy> 0.0000</ixy>
+          <ixz> 0.0000</ixz>
+          <iyy> 0.0081</iyy>
+          <iyz> 0.0002</iyz>
+          <izz> 0.0208</izz>
+        </inertia>
+      </inertial>
+      <visual name="sweet_home_dish_drying_rack_wireframe">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>package://lbm_eval_models/kitchen_accessories/drying_racks/assets/sweet_home_dish_drying_rack_wireframe.gltf</uri>
+            <scale>1.0 1.0 1.0</scale>
+          </mesh>
+        </geometry>
+      </visual>
+      <collision name="sweet_home_dish_drying_rack_collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>package://lbm_eval_models/kitchen_accessories/drying_racks/assets/sweet_home_dish_drying_rack_wireframe_low.vtk</uri>
+            <scale>1.0 1.0 1.0</scale>
+          </mesh>
+        </geometry>
+        <drake:proximity_properties>
+          <drake:mu_dynamic>0.15</drake:mu_dynamic>
+          <drake:mu_static>0.15</drake:mu_static>
+          <drake:hydroelastic_modulus>1e8</drake:hydroelastic_modulus>
+          <drake:hunt_crossley_dissipation>40</drake:hunt_crossley_dissipation>
+          <drake:compliant_hydroelastic/>
+        </drake:proximity_properties>
+      </collision>
+    </link>
+    <frame name="origin">
+      <pose relative_to="sweet_home_dish_drying_rack_wireframe">0 0 0 0 0 0</pose>
+    </frame>
+    <frame name="bottom_center__z_up">
+      <pose relative_to="sweet_home_dish_drying_rack_wireframe">0 0 0 0 0 0</pose>
+    </frame>
+
+    <frame name="plate_slot_rail_0">
+      <pose relative_to="origin">-0.117645 -0.10211 0.07669 0 0 0</pose>
+    </frame>
+    <frame name="plate_slot_rail_1">
+      <pose relative_to="plate_slot_rail_0">0.02353 0 0 0 0 0</pose>
+    </frame>
+    <frame name="plate_slot_rail_2">
+      <pose relative_to="plate_slot_rail_1">0.02353 0 0 0 0 0</pose>
+    </frame>
+    <frame name="plate_slot_rail_3">
+      <pose relative_to="plate_slot_rail_2">0.02353 0 0 0 0 0</pose>
+    </frame>
+    <frame name="plate_slot_rail_4">
+      <pose relative_to="plate_slot_rail_3">0.02353 0 0 0 0 0</pose>
+    </frame>
+    <frame name="plate_slot_rail_5">
+      <pose relative_to="plate_slot_rail_4">0.02353 0 0 0 0 0</pose>
+    </frame>
+    <frame name="plate_slot_rail_6">
+      <pose relative_to="plate_slot_rail_5">0.02353 0 0 0 0 0</pose>
+    </frame>
+    <frame name="plate_slot_rail_7">
+      <pose relative_to="plate_slot_rail_6">0.02353 0 0 0 0 0</pose>
+    </frame>
+    <frame name="plate_slot_rail_8">
+      <pose relative_to="plate_slot_rail_7">0.02353 0 0 0 0 0</pose>
+    </frame>
+    <frame name="plate_slot_rail_9">
+      <pose relative_to="plate_slot_rail_8">0.02353 0 0 0 0 0</pose>
+    </frame>
+  </model>
+</sdf>

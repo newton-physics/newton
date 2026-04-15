@@ -85,7 +85,6 @@ def main():
 
     if use_fixed:
         solver = newton.solvers.SolverMuJoCo(model, separate_worlds=True, nconmax=128, njmax=640)
-        contacts = model.contacts()
         n_inner = round(DT_OUTER / args.fixed_dt)
         print(
             f"Fixed-step demo: {args.num_worlds} world(s)  solver=SolverMuJoCo  "
@@ -103,10 +102,17 @@ def main():
 
     viewer = newton.viewer.ViewerGL(headless=args.headless)
     viewer.set_model(model)
+    viewer.set_world_offsets((0.9, 0.9, 0.0))
     viewer.set_camera(
         pos=wp.vec3(1.97, -2.07, 1.07),
         pitch=-22.5,
         yaw=136.3,
+    )
+
+    contacts = newton.Contacts(
+        rigid_contact_max=solver.mjw_data.naconmax,
+        soft_contact_max=0,
+        requested_attributes={"force"},
     )
 
     step = 0
@@ -135,7 +141,12 @@ def main():
         if args.num_steps > 0 and step >= args.num_steps:
             break
 
-        viewer.render(state_0, t)
+        if viewer.show_contacts:
+            solver.update_contacts(contacts, state_0)
+        viewer.begin_frame(t)
+        viewer.log_state(state_0)
+        viewer.log_contacts(contacts, state_0)
+        viewer.end_frame()
 
     wall = time.perf_counter() - t_start
     fps = step / wall if wall > 0 else float("inf")

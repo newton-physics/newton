@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<sdf version="1.7" xmlns:drake="drake.mit.edu">
+  <model name="sweet_home_dish_drying_rack_utensil_holder">
+    <link name="sweet_home_dish_drying_rack_utensil_holder">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>0.0291 0 -0.0352 0 0 0</pose>
+        <mass>0.0504</mass>
+        <inertia>
+          <ixx> 0.000137</ixx>
+          <ixy> 0.000000</ixy>
+          <ixz> 0.000005</ixz>
+          <iyy> 0.000064</iyy>
+          <iyz> 0.000000</iyz>
+          <izz> 0.000118</izz>
+        </inertia>
+      </inertial>
+      <visual name="sweet_home_dish_drying_rack_utensil_holder">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>package://lbm_eval_models/kitchen_accessories/drying_racks/assets/sweet_home_dish_drying_rack_utensil_holder.gltf</uri>
+            <scale>1.0 1.0 1.0</scale>
+          </mesh>
+        </geometry>
+      </visual>
+      <collision name="sweet_home_dish_drying_rack_utensil_holder_collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>package://lbm_eval_models/kitchen_accessories/drying_racks/assets/sweet_home_dish_drying_rack_utensil_holder_low.vtk</uri>
+            <scale>1.0 1.0 1.0</scale>
+          </mesh>
+        </geometry>
+        <drake:proximity_properties>
+          <drake:mu_dynamic>0.15</drake:mu_dynamic>
+          <drake:mu_static>0.15</drake:mu_static>
+          <drake:hydroelastic_modulus>1e8</drake:hydroelastic_modulus>
+          <drake:hunt_crossley_dissipation>40</drake:hunt_crossley_dissipation>
+          <drake:compliant_hydroelastic/>
+        </drake:proximity_properties>
+      </collision>
+    </link>
+    <frame name="origin">
+      <pose relative_to="sweet_home_dish_drying_rack_utensil_holder">0 0 0 0 0 0</pose>
+    </frame>
+    <frame name="clip_center__z_up">
+      <pose relative_to="sweet_home_dish_drying_rack_utensil_holder">0 0 0 0 0 0</pose>
+    </frame>
+    <!-- Emprically estimated center of each cup of the utensil holder -->
+    <frame name="left_cup_opening">
+      <pose relative_to="origin">0.032 0.039 0.0 0 0 0</pose>
+    </frame>
+    <frame name="right_cup_opening">
+      <pose relative_to="origin">0.032 -0.039 0.0 0 0 0</pose>
+    </frame>
+  </model>
+</sdf>

@@ -19,7 +19,14 @@ import warp as wp
 
 import newton
 import newton.solvers
-from scripts.scenes.dish_rack import DT_OUTER, LOG_EVERY, build_model_randomized, make_solver
+from scripts.scenes.dish_rack import (
+    DT_OUTER,
+    FIXED_DT_INNER,
+    LOG_EVERY,
+    build_model_randomized,
+    make_solver,
+    make_solver_fixed,
+)
 
 _grid_lines = 0
 
@@ -46,7 +53,7 @@ def _print_status(solver, step):
 
         col = 16
         bar = "+" + ("-" * col + "+") * 5
-        hdr = f"{'world':>{col}}{'sim_time (s)':>{col}}{'dt (s)':>{col}}{'Linf(q) err':>{col}}{'status':>{col}}"
+        hdr = f"{'world':>{col}}{'sim_time (s)':>{col}}{'dt (s)':>{col}}{'state err':>{col}}{'status':>{col}}"
         lines = [f"  step {step}  tol={solver._tol:.1e}", bar, hdr, bar]
         for i in range(len(sim_times)):
             lines.append(
@@ -71,6 +78,12 @@ def main():
     parser.add_argument("--num-steps", type=int, default=0, help="0 = run until closed")
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for object layout")
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument(
+        "--solver",
+        choices=("cenic", "mujoco"),
+        default="cenic",
+        help="cenic = SolverMuJoCoCENIC adaptive; mujoco = fixed-step SolverMuJoCo baseline",
+    )
     args = parser.parse_args()
 
     model = build_model_randomized(args.num_worlds, seed=args.seed)
@@ -78,44 +91,79 @@ def main():
     state_1 = model.state()
     control = model.control()
 
-    solver = make_solver(model)
-    print(
-        f"Dish-rack demo: {args.num_worlds} world(s)  seed={args.seed}  "
-        f"solver=SolverMuJoCoCENIC  tol={solver._tol:.1e}  "
-        f"dt_inner_init={solver._dt.numpy()[0]:.4f}  dt_inner_max={solver._dt_max:.4f}",
-        flush=True,
-    )
+    if args.solver == "cenic":
+        solver = make_solver(model)
+        print(
+            f"Dish-rack demo: {args.num_worlds} world(s)  seed={args.seed}  "
+            f"solver=SolverMuJoCoCENIC  tol={solver._tol:.1e}  "
+            f"dt_inner_init={solver._dt.numpy()[0]:.4f}  dt_inner_max={solver._dt_max:.4f}",
+            flush=True,
+        )
+    else:
+        solver = make_solver_fixed(model)
+        print(
+            f"Dish-rack demo: {args.num_worlds} world(s)  seed={args.seed}  "
+            f"solver=SolverMuJoCo (fixed)  dt={FIXED_DT_INNER:.4f}  "
+            f"substeps/frame={int(round(DT_OUTER / FIXED_DT_INNER))}",
+            flush=True,
+        )
 
     viewer = newton.viewer.ViewerGL(headless=args.headless)
     viewer.set_model(model)
+    # Rack bbox is 0.46 x 0.316 m; spacing wider than that so worlds don't overlap.
+    viewer.set_world_offsets((0.6, 0.5, 0.0))
     viewer.set_camera(
         pos=wp.vec3(0.85, -0.95, 0.70),
         pitch=-25.0,
         yaw=135.0,
     )
 
+    contacts = newton.Contacts(
+        rigid_contact_max=solver.mjw_data.naconmax,
+        soft_contact_max=0,
+        requested_attributes={"force"},
+    )
+
     step = 0
     t = 0.0
     t_start = time.perf_counter()
+    fixed_substeps = int(round(DT_OUTER / FIXED_DT_INNER))
 
     while viewer.is_running():
-        state_0, state_1 = solver.step_dt(
-            DT_OUTER,
-            state_0,
-            state_1,
-            control,
-            apply_forces=viewer.apply_forces,
-        )
+        if args.solver == "cenic":
+            state_0, state_1 = solver.step_dt(
+                DT_OUTER,
+                state_0,
+                state_1,
+                control,
+                apply_forces=viewer.apply_forces,
+            )
+        else:
+            for _ in range(fixed_substeps):
+                state_0.clear_forces()
+                if viewer.apply_forces is not None:
+                    viewer.apply_forces(state_0)
+                solver.step(state_0, state_1, control, contacts, FIXED_DT_INNER)
+                state_0, state_1 = state_1, state_0
         t += DT_OUTER
         step += 1
 
-        if step % LOG_EVERY == 0:
+        if step % LOG_EVERY == 0 and args.solver == "cenic":
             _print_status(solver, step)
 
         if args.num_steps > 0 and step >= args.num_steps:
             break
 
-        viewer.render(state_0, t)
+        # Both solvers use MuJoCo's internal contact solver (use_mujoco_contacts=True),
+        # so the Newton-side Contacts struct is NOT filled by step().  Copy
+        # MuJoCo's contacts across every frame so the viewer's "Show Contacts"
+        # toggle reflects the current sim state immediately when switched on.
+        # log_contacts gates rendering itself.
+        solver.update_contacts(contacts, state_0)
+        viewer.begin_frame(t)
+        viewer.log_state(state_0)
+        viewer.log_contacts(contacts, state_0)
+        viewer.end_frame()
 
     wall = time.perf_counter() - t_start
     fps = step / wall if wall > 0 else float("inf")

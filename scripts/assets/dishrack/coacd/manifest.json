@@ -1,0 +1,8 @@
+{
+  "n_parts": 151,
+  "source": "assets/dishrack/dishrack.obj",
+  "threshold": 0.05,
+  "max_convex_hull": -1,
+  "y_up_to_z_up": true,
+  "prealigned": true
+}

@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<sdf version="1.7" xmlns:drake="drake.mit.edu">
+  <model name="sweet_home_dish_drying_rack_base">
+    <link name="sweet_home_dish_drying_rack_base">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.00476 -0.000194 0.0123 0 0 0</pose>
+        <mass>0.209</mass>
+        <inertia>
+          <ixx> 0.00339</ixx>
+          <ixy>-0.00000</ixy>
+          <ixz> 0.00004</ixz>
+          <iyy> 0.00173</iyy>
+          <iyz> 0.00000</iyz>
+          <izz> 0.00509</izz>
+        </inertia>
+      </inertial>
+      <visual name="sweet_home_dish_drying_rack_base">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>package://lbm_eval_models/kitchen_accessories/drying_racks/assets/sweet_home_dish_drying_rack_base.gltf</uri>
+            <scale>1.0 1.0 1.0</scale>
+          </mesh>
+        </geometry>
+      </visual>
+      <collision name="sweet_home_dish_drying_rack_base_collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>package://lbm_eval_models/kitchen_accessories/drying_racks/assets/sweet_home_dish_drying_rack_base_low.vtk</uri>
+            <scale>1.0 1.0 1.0</scale>
+          </mesh>
+        </geometry>
+        <drake:proximity_properties>
+          <drake:mu_dynamic>0.15</drake:mu_dynamic>
+          <drake:mu_static>0.15</drake:mu_static>
+          <drake:hydroelastic_modulus>1e8</drake:hydroelastic_modulus>
+          <drake:hunt_crossley_dissipation>40</drake:hunt_crossley_dissipation>
+          <drake:compliant_hydroelastic/>
+        </drake:proximity_properties>
+      </collision>
+    </link>
+    <frame name="origin">
+      <pose relative_to="sweet_home_dish_drying_rack_base">0 0 0 0 0 0</pose>
+    </frame>
+    <frame name="nominal_wireframe_origin__z_up">
+      <pose relative_to="sweet_home_dish_drying_rack_base">-0.00527 -0.01075 0.009861 0 0.013858 0</pose>
+    </frame>
+    <frame name="bottom_center__z_up">
+      <pose relative_to="sweet_home_dish_drying_rack_base">0 0 0 0 0 0</pose>
+    </frame>
+  </model>
+</sdf>

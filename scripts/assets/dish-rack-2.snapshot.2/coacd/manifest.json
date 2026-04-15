@@ -1,6 +1,8 @@
 {
-  "n_parts": 385,
+  "n_parts": 34,
   "source": "assets/dish-rack-2.snapshot.2/Escurridor platos.STL",
-  "threshold": 0.03,
-  "max_convex_hull": -1
+  "threshold": 0.08,
+  "max_convex_hull": -1,
+  "y_up_to_z_up": true,
+  "prealigned": true
 }

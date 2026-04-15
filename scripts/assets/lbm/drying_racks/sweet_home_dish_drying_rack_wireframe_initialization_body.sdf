@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!-- This sdf file provides a single link with a single collision geometry.
+  The collision geometry is a thick rigid hydroelastic box that is used to
+  stablize the initial transient dynamics when a body is dropped on the drying
+  rack from a height. To attach this link to the drying rack, weld the origin
+  frame to the origin frame of sweet_home_dish_drying_rack_wireframe.  -->
+<sdf version="1.7" xmlns:drake="drake.mit.edu">
+  <model name="sweet_home_dish_drying_rack_wireframe_initialization_body">
+    <link name="base">
+      <collision name="collision">
+        <pose>0 0.085 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.27 0.22 0.052</size>
+          </box>
+        </geometry>
+        <drake:proximity_properties>
+          <drake:mu_dynamic>0.0</drake:mu_dynamic>
+          <drake:mu_static>0.0</drake:mu_static>
+          <drake:hunt_crossley_dissipation>40</drake:hunt_crossley_dissipation>
+          <drake:rigid_hydroelastic/>
+        </drake:proximity_properties>
+      </collision>
+    </link>
+    <frame name="origin">
+      <pose relative_to="base">0 0 0 0 0 0</pose>
+    </frame>
+  </model>
+</sdf>

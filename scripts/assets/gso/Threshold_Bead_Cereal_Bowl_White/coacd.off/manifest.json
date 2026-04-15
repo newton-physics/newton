@@ -1,0 +1,8 @@
+{
+  "n_parts": 91,
+  "source": "assets/gso/Threshold_Bead_Cereal_Bowl_White/model.obj",
+  "threshold": 0.03,
+  "max_convex_hull": -1,
+  "y_up_to_z_up": false,
+  "prealigned": true
+}

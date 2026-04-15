@@ -1,0 +1,8 @@
+{
+  "n_parts": 83,
+  "source": "assets/gso/Cole_Hardware_Mug_Classic_Blue/model.obj",
+  "threshold": 0.03,
+  "max_convex_hull": -1,
+  "y_up_to_z_up": false,
+  "prealigned": true
+}

@@ -29,13 +29,12 @@ from scripts.bench.plotting import save_fig
 from scripts.scenes.contact_objects import DT_OUTER, build_model_randomized, make_solver
 from newton._src.solvers.mujoco.solver_mujoco_cenic import (
     _apply_dt_cap,
-    _apply_dt_cap_dev,
     _advance_sim_time,
     _boundary_advance,
     _boundary_check,
     _boundary_reset,
     _calc_adjusted_step,
-    _inf_norm_q_error_kernel,
+    _inf_norm_state_error_kernel,
     _select_float_kernel,
     _select_spatial_vector_kernel,
     _select_transform_kernel,
@@ -101,7 +100,6 @@ def _measure_n(n: int, steps: int, warmup: int) -> dict:
 
     for _ in range(steps):
         effective_dt_max = min(solver._dt_max, DT_OUTER)
-        solver._effective_dt_max_buf.fill_(effective_dt_max)
         wp.launch(
             _apply_dt_cap, dim=nw,
             inputs=[solver._ideal_dt, solver._dt_min, effective_dt_max, solver._dt, solver._dt_half],
@@ -178,8 +176,11 @@ def _measure_n(n: int, steps: int, warmup: int) -> dict:
 
         # Error control
         wp.launch(
-            _inf_norm_q_error_kernel, dim=nw,
-            inputs=[solver._scratch_full.joint_q, solver._scratch_double.joint_q, solver._coords_per_world],
+            _inf_norm_state_error_kernel, dim=nw,
+            inputs=[
+                solver._scratch_full.joint_q, solver._scratch_double.joint_q,
+                solver._q_weights, solver._coords_per_world,
+            ],
             outputs=[solver._last_error], device=dev,
         )
         wp.synchronize()
@@ -252,8 +253,8 @@ def _measure_n(n: int, steps: int, warmup: int) -> dict:
         t = t_new
 
         wp.launch(
-            _apply_dt_cap_dev, dim=nw,
-            inputs=[solver._ideal_dt, solver._dt_min, solver._effective_dt_max_buf, solver._dt, solver._dt_half],
+            _apply_dt_cap, dim=nw,
+            inputs=[solver._ideal_dt, solver._dt_min, DT_OUTER, solver._dt, solver._dt_half],
             device=dev,
         )
         wp.synchronize()

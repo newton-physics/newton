@@ -1,11 +1,13 @@
-"""CENIC adaptive-step MuJoCo solver (CUDA-graph-fused).
+"""CENIC adaptive-step MuJoCo solver.
 
-Per-world adaptive time-stepping via step doubling, captured as a single
-CUDA graph.  Step controller follows Drake's CalcAdjustedStepSize.
+Per-world adaptive time-stepping via step doubling.  The boundary loop
+issues direct ``wp.launch()`` calls each iteration; no CUDA-graph capture.
+Step controller follows Drake's CalcAdjustedStepSize.
 """
 
 from __future__ import annotations
 
+import numpy as np
 import warp as wp
 
 from ...core.types import override
@@ -31,15 +33,20 @@ def _apply_dt_cap(
 
 
 @wp.kernel
-def _inf_norm_q_error_kernel(
+def _inf_norm_state_error_kernel(
     joint_q_full: wp.array(dtype=wp.float32),
     joint_q_double: wp.array(dtype=wp.float32),
+    q_weights: wp.array2d(dtype=wp.float32),
     coords_per_world: int,
     error_out: wp.array(dtype=wp.float32),
 ):
-    """Inf-norm (max absolute difference) on joint_q between full-step and doubled half-step.
+    """Weighted position-only inf-norm error between full-step and doubled half-step.
 
-    Diverged sims get error = 1e10.
+    Error = ``max_i w_i · |Δq_i|`` across joint coordinates in the world.
+    Matches the paper's weighted position-only norm (Sec. V-E),
+    ``|| S · (q - q̂) ||_∞`` with ``S = diag(M)^{-1/2}``.  Weights are
+    normalized per world so the heaviest DoF has weight 1 and clipped to
+    ``[1, 10]``.  Diverged sims get error = 1e10.
     """
     world = wp.tid()
     q_start = world * coords_per_world
@@ -47,7 +54,7 @@ def _inf_norm_q_error_kernel(
     max_err = float(0.0)
     for i in range(coords_per_world):
         d = wp.abs(joint_q_double[q_start + i] - joint_q_full[q_start + i])
-        max_err = wp.max(max_err, d)
+        max_err = wp.max(max_err, q_weights[world, i] * d)
 
     if wp.isnan(max_err) or wp.isinf(max_err):
         max_err = float(1.0e10)
@@ -60,6 +67,7 @@ _DRAKE_SAFETY = wp.constant(wp.float32(0.9))
 _DRAKE_MIN_SHRINK = wp.constant(wp.float32(0.1))
 _DRAKE_MAX_GROW = wp.constant(wp.float32(5.0))
 _DRAKE_HYSTERESIS_HIGH = wp.constant(wp.float32(1.2))
+_DRAKE_HYSTERESIS_LOW = wp.constant(wp.float32(0.9))
 
 
 @wp.kernel
@@ -98,12 +106,10 @@ def _calc_adjusted_step(
 
     new_step = _DRAKE_SAFETY * step * wp.sqrt(tol / wp.max(e, wp.float32(1.0e-30)))
 
-    # Hysteresis: suppress tiny grows.
-    if new_step > step and new_step < _DRAKE_HYSTERESIS_HIGH * step:
-        new_step = step
-
-    # Don't shrink an already-good step.
-    if new_step < step and e <= tol:
+    # Symmetric deadband (paper Alg 1): keep dt unchanged when new_step lands
+    # in [k_Low * dt, k_High * dt]. Prevents dt thrash from small error spikes
+    # (lower edge) and suppresses tiny grows (upper edge).
+    if new_step > _DRAKE_HYSTERESIS_LOW * step and new_step < _DRAKE_HYSTERESIS_HIGH * step:
         new_step = step
 
     new_step = wp.clamp(new_step, _DRAKE_MIN_SHRINK * step, _DRAKE_MAX_GROW * step)
@@ -318,6 +324,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         Args:
             model: The model to simulate.
             tol: Inf-norm error tolerance on joint_q per world [m or rad, depending on joint type].
+                Error is ``max|Δq|`` between the full step and the doubled half-step.
                 Worlds with error > tol are rejected and retry with a smaller dt.
             dt_inner_init: Initial inner (adaptive physics) timestep [s].
             dt_inner_min: Minimum allowed inner timestep [s].
@@ -375,6 +382,36 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._timestep_buf = wp.full(world_count, dt_inner_init, dtype=wp.float32, device=device)
         self.mjw_model.opt.timestep = self._timestep_buf
 
+        # Per-qpos error weights for the paper's weighted position-only norm
+        # (Sec. V-E), S = diag(M)^{-1/2}.  MuJoCo's mass reference lives on
+        # DoFs (nv), not qpos (nq), so for each joint we take the max invweight
+        # across its DoFs (= lightest effective DoF) and broadcast to all qpos
+        # coords of that joint.  Normalize per world so the heaviest DoF has
+        # weight 1 (keeps tol at its old numeric scale) and clip to [1, 10] so
+        # tiny-inertia rotational DoFs can't blow up the weight ratio.
+        jnt_qposadr = self.mjw_model.jnt_qposadr.numpy()
+        jnt_dofadr = self.mjw_model.jnt_dofadr.numpy()
+        invweight = self.mjw_model.dof_invweight0.numpy()  # [world_count, nv]
+        coords_per_world = self._coords_per_world
+        dofs_per_world = self._dofs_per_world
+        njnt = len(jnt_qposadr)
+
+        q_weights = np.ones((world_count, coords_per_world), dtype=np.float32)
+        for w in range(world_count):
+            dof_w = np.clip(invweight[w], 1.0e-30, None)
+            for j in range(njnt):
+                q_s = int(jnt_qposadr[j])
+                q_e = int(jnt_qposadr[j + 1]) if j + 1 < njnt else coords_per_world
+                qd_s = int(jnt_dofadr[j])
+                qd_e = int(jnt_dofadr[j + 1]) if j + 1 < njnt else dofs_per_world
+                joint_max_invweight = float(dof_w[qd_s:qd_e].max())
+                q_weights[w, q_s:q_e] = np.sqrt(joint_max_invweight)
+            # Normalize per world so the heaviest qpos coord has weight 1.
+            q_weights[w] /= q_weights[w].min()
+        q_weights = np.clip(q_weights, 1.0, 10.0)
+        self._q_weights = wp.array(q_weights, dtype=wp.float32, device=device)
+
+
 
 
     def _run_substep(
@@ -427,11 +464,12 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._run_substep(self._scratch_mid, self._scratch_double, None, self._dt_half)
 
         wp.launch(
-            _inf_norm_q_error_kernel,
+            _inf_norm_state_error_kernel,
             dim=n,
             inputs=[
                 self._scratch_full.joint_q,
                 self._scratch_double.joint_q,
+                self._q_weights,
                 self._coords_per_world,
             ],
             outputs=[self._last_error],
@@ -528,9 +566,10 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         control: Control,
         contacts: Contacts,
     ) -> State:
-        """Advance each world by one adaptive step (non-graph path).
+        """Advance each world by one adaptive step.
 
-        For the CUDA-graph-optimized path use :meth:`step_dt`.
+        Single-iteration path: one 3-eval attempt, controller update, select.
+        Does not loop to a boundary — use :meth:`step_dt` for that.
 
         Args:
             state_in: Input state.
@@ -553,11 +592,12 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._run_substep(self._scratch_mid, self._scratch_double, contacts, self._dt_half)
 
         wp.launch(
-            _inf_norm_q_error_kernel,
+            _inf_norm_state_error_kernel,
             dim=n,
             inputs=[
                 self._scratch_full.joint_q,
                 self._scratch_double.joint_q,
+                self._q_weights,
                 self._coords_per_world,
             ],
             outputs=[self._last_error],
@@ -635,11 +675,10 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
     ) -> tuple[State, State]:
         """Advance all worlds by exactly ``dt_outer`` seconds of simulation time.
 
-        The 3-eval step-doubling block is captured as a CUDA graph and replayed
-        once per iteration via ``wp.capture_launch()``.  The dt cap and boundary
-        check run as direct ``wp.launch()`` calls outside the graph, with a
-        single ``.numpy()`` read-back (4 bytes) per iteration to check
-        termination.
+        Loops the 3-eval step-doubling attempt, controller, and state-select
+        via direct ``wp.launch()`` calls until every world's ``sim_time``
+        reaches the boundary.  A single ``.numpy()`` read-back (4 bytes) per
+        iteration checks the boundary flag for termination.
 
         Args:
             dt_outer: Outer control/render period [s].
@@ -717,12 +756,12 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
 
     @property
     def last_error(self) -> wp.array:
-        """Inf-norm on q from the most recent accepted step, shape ``[world_count]``, float32, on device."""
+        """Inf-norm state error from the most recent accepted step, shape ``[world_count]``, float32, on device."""
         return self._accepted_error
 
     @property
     def last_raw_error(self) -> wp.array:
-        """Inf-norm on q from the most recent attempt (accepted or rejected), shape ``[world_count]``, float32, on device."""
+        """Inf-norm state error from the most recent attempt (accepted or rejected), shape ``[world_count]``, float32, on device."""
         return self._last_error
 
     @property
