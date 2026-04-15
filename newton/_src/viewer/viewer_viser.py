@@ -251,6 +251,31 @@ class ViewerViser(ViewerBase):
 
         return f"http://{local_host}:{port}{normalized_path}{query}"
 
+    @classmethod
+    def _get_viser_client_dir(cls) -> Path:
+        """Return the installed Viser client build for notebook playback."""
+        viser = cls._get_viser()
+
+        try:
+            viser_package_dir = Path(inspect.getfile(viser)).resolve().parent
+        except Exception:
+            viser_package_dir = None
+
+        if viser_package_dir is not None:
+            # Prefer the client build shipped with the installed viser package so
+            # the playback UI matches the serializer that generated the .viser file.
+            for candidate in (
+                viser_package_dir / "client" / "build",
+                viser_package_dir / "static",
+            ):
+                if (candidate / "index.html").exists():
+                    return candidate
+
+        raise FileNotFoundError(
+            "Viser client files not found in the installed viser package. "
+            "The notebook playback feature requires a Viser client build."
+        )
+
     @staticmethod
     def _is_client_camera_ready(client: Any) -> bool:
         """Return True if the client has reported an initial camera state."""
@@ -1084,18 +1109,11 @@ class ViewerViser(ViewerBase):
         import threading  # noqa: PLC0415
         from http.server import HTTPServer, SimpleHTTPRequestHandler  # noqa: PLC0415
 
-        # Get viser client directory (bundled with package at newton/_src/viewer/static/viser)
         recording_path = Path(recording_path).resolve()
         if not recording_path.exists():
             raise FileNotFoundError(f"Recording file not found: {recording_path}")
 
-        viser_client_dir = Path(__file__).parent / "viser" / "static"
-
-        if not viser_client_dir.exists():
-            raise FileNotFoundError(
-                f"Viser client files not found at {viser_client_dir}. "
-                "The notebook playback feature requires the viser client assets."
-            )
+        viser_client_dir = ViewerViser._get_viser_client_dir()
 
         # Read the recording file content
         recording_bytes = recording_path.read_bytes()
