@@ -20,7 +20,7 @@ from newton.utils import EventTracer
 
 
 @wp.kernel
-def apply_random_control(state: wp.uint32, joint_target: wp.array(dtype=float)):
+def apply_random_control(state: wp.uint32, joint_target: wp.array[float]):
     tid = wp.tid()
 
     joint_target[tid] = wp.randf(state) * 2.0 - 1.0
@@ -335,7 +335,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
-        "-b", "--bench", default=None, action="append", choices=benchmark_list.keys(), help="Run a single benchmark."
+        "-b",
+        "--bench",
+        default=None,
+        action="append",
+        choices=benchmark_list.keys(),
+        help="Run a specific benchmark; may be repeated to run multiple (e.g., --bench A --bench B).",
     )
     args = parser.parse_known_args()[0]
 

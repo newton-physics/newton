@@ -4,6 +4,7 @@
 newton
 ======
 
+.. py:module:: newton
 .. currentmodule:: newton
 
 .. toctree::
@@ -79,4 +80,4 @@ newton
    * - ``MAXVAL``
      - ``10000000000.0``
    * - ``__version__``
-     - ``1.1.0.dev0``
+     - ``1.2.0.dev0``

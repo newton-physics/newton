@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import ctypes
+import inspect
 import math
 import warnings
 from collections import Counter, deque
@@ -31,7 +32,6 @@ from ..core.types import (
     Vec6,
     axis_to_vec3,
     flag_to_int,
-    nparray,
 )
 from ..geometry import (
     Gaussian,
@@ -163,6 +163,33 @@ class ModelBuilder:
         desired.
 
     """
+
+    _DEFAULT_GROUND_PLANE_COLOR = (0.125, 0.125, 0.15)
+    _SHAPE_COLOR_PALETTE = (
+        # Paul Tol - Bright 9
+        (68, 119, 170),  # blue
+        (102, 204, 238),  # cyan
+        (34, 136, 51),  # green
+        (204, 187, 68),  # yellow
+        (238, 102, 119),  # red
+        (170, 51, 119),  # magenta
+        (238, 153, 51),  # orange
+        (0, 153, 136),  # teal
+    )
+    _BODY_ARMATURE_ARG_DEPRECATION_MESSAGE = (
+        "ModelBuilder.add_link(..., armature=...) and ModelBuilder.add_body(..., armature=...) "
+        "are deprecated and will be removed in a future release. "
+        "Add any isotropic artificial inertia directly to 'inertia' instead."
+    )
+    _DEFAULT_BODY_ARMATURE_DEPRECATION_MESSAGE = (
+        "ModelBuilder.default_body_armature is deprecated and will be removed in a future release. "
+        "Add any isotropic artificial inertia directly to 'inertia' instead."
+    )
+
+    @staticmethod
+    def _shape_palette_color(index: int) -> tuple[float, float, float]:
+        color = ModelBuilder._SHAPE_COLOR_PALETTE[index % len(ModelBuilder._SHAPE_COLOR_PALETTE)]
+        return (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
 
     @dataclass
     class ActuatorEntry:
@@ -487,7 +514,7 @@ class ModelBuilder:
             - A :class:`Model.AttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
               Uses dict-based storage where keys are entity indices, allowing sparse assignment.
             - A string for custom frequencies using the full frequency key (e.g., ``"mujoco:pair"``).
-              Uses list-based storage for sequential data appended via :meth:`add_custom_values`. All attributes
+              Uses list-based storage for sequential data appended via :meth:`~newton.ModelBuilder.add_custom_values`. All attributes
               sharing the same custom frequency must have the same count, validated by
               :meth:`finalize <ModelBuilder.finalize>`."""
 
@@ -805,8 +832,7 @@ class ModelBuilder:
         self.default_tet_density = 1.0
         """Default density [kg/m^3] for tetrahedral soft bodies."""
 
-        self.default_body_armature = 0.0
-        """Default body armature value used when body armature is not provided."""
+        self._default_body_armature = 0.0
         # endregion
 
         # region compiler settings (similar to MuJoCo)
@@ -824,13 +850,6 @@ class ModelBuilder:
         """Minimum allowed eigenvalue for rigid body inertia tensors [kg*m^2]. If set, ensures
         all principal moments of inertia are at least this value. Set to None to disable inertia
         eigenvalue clamping. Default: None."""
-
-        self.inertia_tolerance: float = 1e-6
-        """Tolerance for inertia eigenvalue positivity checks and triangle inequality
-        validation [kg*m^2]. Lower this for models with lightweight components (< ~50g).
-        Values below ~1e-7 may not behave identically across the detailed (float64) and
-        fast (float32) validation paths due to float32 precision limits.
-        Default: 1e-6."""
 
         self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
@@ -876,6 +895,8 @@ class ModelBuilder:
         """Shape scales accumulated for :attr:`Model.shape_scale`."""
         self.shape_source: list[Any] = []
         """Source geometry objects accumulated for :attr:`Model.shape_source`."""
+        self.shape_color: list[Vec3] = []
+        """Resolved display colors accumulated for :attr:`Model.shape_color`."""
         self.shape_is_solid: list[bool] = []
         """Solid-vs-hollow flags accumulated for :attr:`Model.shape_is_solid`."""
         self.shape_margin: list[float] = []
@@ -1117,7 +1138,7 @@ class ModelBuilder:
 
         self.rigid_gap: float = 0.1
         """Default rigid contact gap [m] applied when adding a shape whose
-        :attr:`ShapeConfig.gap` is ``None``. The resolved per-shape values are later
+        ``ModelBuilder.ShapeConfig.gap`` is ``None``. The resolved per-shape values are later
         propagated to :attr:`Model.shape_gap`."""
 
         self.num_rigid_contacts_per_world: int | None = None
@@ -2334,7 +2355,7 @@ class ModelBuilder:
                 (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
                 are authored in the USD but not strictly required to build the simulation. This is useful for
                 inspection, experimentation, or custom pipelines that read these values via
-                ``result["schema_attrs"]`` returned from :func:`parse_usd`.
+                ``result["schema_attrs"]`` returned from ``parse_usd()``.
 
                 .. note::
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
@@ -3058,6 +3079,7 @@ class ModelBuilder:
             "shape_type",
             "shape_scale",
             "shape_source",
+            "shape_color",
             "shape_is_solid",
             "shape_margin",
             "shape_material_ke",
@@ -3278,6 +3300,53 @@ class ModelBuilder:
 
         return wp.mat33(*value)
 
+    @staticmethod
+    def _external_warning_stacklevel() -> int:
+        frame = inspect.currentframe()
+        if frame is None:
+            return 2
+
+        frame = frame.f_back
+        stacklevel = 1
+        try:
+            while frame is not None and frame.f_code.co_filename == __file__:
+                frame = frame.f_back
+                stacklevel += 1
+            return stacklevel
+        finally:
+            del frame
+
+    @classmethod
+    def _warn_body_armature_arg_deprecated(cls) -> None:
+        warnings.warn(
+            cls._BODY_ARMATURE_ARG_DEPRECATION_MESSAGE,
+            DeprecationWarning,
+            stacklevel=cls._external_warning_stacklevel(),
+        )
+
+    @classmethod
+    def _warn_default_body_armature_deprecated(cls) -> None:
+        warnings.warn(
+            cls._DEFAULT_BODY_ARMATURE_DEPRECATION_MESSAGE,
+            DeprecationWarning,
+            stacklevel=cls._external_warning_stacklevel(),
+        )
+
+    @property
+    def default_body_armature(self) -> float:
+        """Deprecated default body armature.
+
+        .. deprecated:: 1.1
+            Add any isotropic artificial inertia directly to ``inertia`` instead.
+        """
+        self._warn_default_body_armature_deprecated()
+        return self._default_body_armature
+
+    @default_body_armature.setter
+    def default_body_armature(self, value: float) -> None:
+        self._warn_default_body_armature_deprecated()
+        self._default_body_armature = value
+
     def add_link(
         self,
         xform: Transform | None = None,
@@ -3298,9 +3367,15 @@ class ModelBuilder:
 
         After calling this method and one of the joint methods, ensure that an articulation is created using :meth:`add_articulation`.
 
+        .. deprecated:: 1.1
+            The ``armature`` parameter is deprecated. Add any isotropic artificial
+            inertia directly to ``inertia`` instead.
+
         Args:
             xform: The location of the body in the world frame.
-            armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
+            armature: Deprecated. Artificial inertia added to the body. If ``None``,
+                the deprecated default value from :attr:`default_body_armature` is used.
+                Add any isotropic artificial inertia directly to ``inertia`` instead.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
@@ -3316,7 +3391,8 @@ class ModelBuilder:
             The index of the body in the model.
 
         """
-
+        if armature is not None and armature != 0.0:
+            self._warn_body_armature_arg_deprecated()
         if xform is None:
             xform = wp.transform()
         else:
@@ -3334,7 +3410,7 @@ class ModelBuilder:
 
         # body data
         if armature is None:
-            armature = self.default_body_armature
+            armature = self._default_body_armature
         inertia = inertia + wp.mat33(np.eye(3, dtype=np.float32)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
@@ -3383,7 +3459,7 @@ class ModelBuilder:
         """Adds a stand-alone free-floating rigid body to the model.
 
         This is a convenience method that creates a single-body articulation with a free joint,
-        allowing the body to move freely in 6 degrees of freedom. Internally, this method calls:
+        allowing the body to move freely in 6 degrees of freedom. This is equivalent to calling:
 
         1. :meth:`add_link` to create the body
         2. :meth:`add_joint_free` to add a free joint connecting the body to the world
@@ -3392,9 +3468,15 @@ class ModelBuilder:
         For creating articulations with multiple linked bodies, use :meth:`add_link`,
         the appropriate joint methods, and :meth:`add_articulation` directly.
 
+        .. deprecated:: 1.1
+            The ``armature`` parameter is deprecated. Add any isotropic artificial
+            inertia directly to ``inertia`` instead.
+
         Args:
             xform: The location of the body in the world frame.
-            armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
+            armature: Deprecated. Artificial inertia added to the body. If ``None``,
+                the deprecated default value from :attr:`default_body_armature` is used.
+                Add any isotropic artificial inertia directly to ``inertia`` instead.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
@@ -3410,7 +3492,6 @@ class ModelBuilder:
             The index of the body in the model.
 
         """
-        # Create the link
         body_id = self.add_link(
             xform=xform,
             armature=armature,
@@ -3418,9 +3499,9 @@ class ModelBuilder:
             inertia=inertia,
             mass=mass,
             label=label,
-            custom_attributes=custom_attributes,
             lock_inertia=lock_inertia,
             is_kinematic=is_kinematic,
+            custom_attributes=custom_attributes,
         )
 
         # Add a free joint to make it float
@@ -3647,14 +3728,14 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
-            limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
-            limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
-            limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
-            armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
-            effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
-            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
-            friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
+            limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
+            limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
+            limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
+            limit_kd: The damping of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_kd`` is used.
+            armature: Artificial inertia added around the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
+            effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from ``ModelBuilder.default_joint_cfg.effort_limit`` is used.
+            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
+            friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -3739,14 +3820,14 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
-            limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
-            limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
-            limit_kd: The damping of the joint limit. If None, the default value from :attr:`default_joint_limit_kd` is used.
-            armature: Artificial inertia added around the joint axis. If None, the default value from :attr:`default_joint_armature` is used.
-            effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
-            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
-            friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
+            limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
+            limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
+            limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
+            limit_kd: The damping of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_kd`` is used.
+            armature: Artificial inertia added around the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
+            effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from ``ModelBuilder.default_joint_cfg.effort_limit`` is used.
+            velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
+            friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -3812,8 +3893,8 @@ class ModelBuilder:
             child: The index of the child body.
             parent_xform: The transform from the parent body frame to the joint parent anchor frame.
             child_xform: The transform from the child body frame to the joint child anchor frame.
-            armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
-            friction: Friction coefficient for the joint axes. If None, the default value from :attr:`default_joint_cfg.friction` is used.
+            armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
+            friction: Friction coefficient for the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -4049,7 +4130,7 @@ class ModelBuilder:
             label: The label of the joint.
             parent_xform: The transform from the parent body frame to the joint parent anchor frame.
             child_xform: The transform from the child body frame to the joint child anchor frame.
-            armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
+            armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
@@ -5095,13 +5176,15 @@ class ModelBuilder:
 
     def add_shape(
         self,
+        *,
         body: int,
         type: int,
         xform: Transform | None = None,
         cfg: ShapeConfig | None = None,
         scale: Vec3 | None = None,
-        src: Mesh | Any | None = None,
+        src: Mesh | Gaussian | Heightfield | Any | None = None,
         is_static: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5117,6 +5200,7 @@ class ModelBuilder:
             scale: The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
             src: The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH`. Defaults to `None`.
             is_static: If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color. Mesh-backed shapes fall back to :attr:`~newton.Mesh.color`.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated (e.g., "shape_N"). Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5193,10 +5277,18 @@ class ModelBuilder:
             shape_flags &= (
                 ~ShapeFlags.HYDROELASTIC
             )  # Falling back to mesh/primitive collisions for plane and hfield shapes
+
+        resolved_color = color
+        if resolved_color is None and src is not None:
+            resolved_color = getattr(src, "color", None)
+        if resolved_color is None:
+            resolved_color = ModelBuilder._shape_palette_color(shape)
+
         self.shape_flags.append(shape_flags)
         self.shape_type.append(type)
-        self.shape_scale.append((scale[0], scale[1], scale[2]))
+        self.shape_scale.append((float(scale[0]), float(scale[1]), float(scale[2])))
         self.shape_source.append(src)
+        self.shape_color.append(resolved_color)
         self.shape_margin.append(cfg.margin)
         self.shape_is_solid.append(cfg.is_solid)
         self.shape_material_ke.append(cfg.ke)
@@ -5251,6 +5343,7 @@ class ModelBuilder:
         length: float = 10.0,
         body: int = -1,
         cfg: ShapeConfig | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5272,6 +5365,7 @@ class ModelBuilder:
             length: The visual/collision extent of the plane along its local Y-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
             body: The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5303,12 +5397,14 @@ class ModelBuilder:
             is_static=True,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_ground_plane(
         self,
         height: float = 0.0,
         cfg: ShapeConfig | None = None,
+        color: Vec3 | None = _DEFAULT_GROUND_PLANE_COLOR,
         label: str | None = None,
     ) -> int:
         """Adds a ground plane collision shape to the model.
@@ -5316,6 +5412,7 @@ class ModelBuilder:
         Args:
             height: The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. Defaults to the ground plane color ``(0.125, 0.125, 0.15)``. Pass ``None`` to use the per-shape palette color instead.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
 
         Returns:
@@ -5327,6 +5424,7 @@ class ModelBuilder:
             length=0.0,
             cfg=cfg,
             label=label or "ground_plane",
+            color=color,
         )
 
     def add_shape_sphere(
@@ -5336,6 +5434,7 @@ class ModelBuilder:
         radius: float = 1.0,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5347,6 +5446,7 @@ class ModelBuilder:
             radius: The radius of the sphere. Defaults to `1.0`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5368,24 +5468,27 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_ellipsoid(
         self,
         body: int,
         xform: Transform | None = None,
-        a: float = 1.0,
-        b: float = 0.75,
-        c: float = 0.5,
+        rx: float = 1.0,
+        ry: float = 0.75,
+        rz: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        **kwargs,
     ) -> int:
         """Adds an ellipsoid collision shape or site to a body.
 
         The ellipsoid is centered at its local origin as defined by `xform`, with semi-axes
-        `a`, `b`, `c` along the local X, Y, Z axes respectively.
+        `rx`, `ry`, `rz` along the local X, Y, Z axes respectively.
 
         Note:
             Ellipsoid collision is handled by the GJK/MPR collision pipeline,
@@ -5394,11 +5497,12 @@ class ModelBuilder:
         Args:
             body: The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform: The transform of the ellipsoid in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
-            a: The semi-axis of the ellipsoid along its local X-axis. Defaults to `1.0`.
-            b: The semi-axis of the ellipsoid along its local Y-axis. Defaults to `0.75`.
-            c: The semi-axis of the ellipsoid along its local Z-axis. Defaults to `0.5`.
+            rx: The semi-axis of the ellipsoid along its local X-axis [m]. Defaults to `1.0`.
+            ry: The semi-axis of the ellipsoid along its local Y-axis [m]. Defaults to `0.75`.
+            rz: The semi-axis of the ellipsoid along its local Z-axis [m]. Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5416,21 +5520,41 @@ class ModelBuilder:
                 # Add an ellipsoid with semi-axes 1.0, 0.5, 0.25
                 builder.add_shape_ellipsoid(
                     body=body,
-                    a=1.0,  # X semi-axis
-                    b=0.5,  # Y semi-axis
-                    c=0.25,  # Z semi-axis
+                    rx=1.0,  # X semi-axis
+                    ry=0.5,  # Y semi-axis
+                    rz=0.25,  # Z semi-axis
                 )
 
-                # A sphere is a special case where a = b = c
-                builder.add_shape_ellipsoid(body=body, a=0.5, b=0.5, c=0.5)
+                # A sphere is a special case where rx = ry = rz
+                builder.add_shape_ellipsoid(body=body, rx=0.5, ry=0.5, rz=0.5)
         """
+        # Backward compat: accept deprecated a, b, c parameter names
+        _deprecated_map = {"a": ("rx", rx, 1.0), "b": ("ry", ry, 0.75), "c": ("rz", rz, 0.5)}
+        for old_name, (new_name, new_val, default) in _deprecated_map.items():
+            if old_name in kwargs:
+                if new_val != default:
+                    raise TypeError(f"Cannot specify both '{old_name}' and '{new_name}'")
+                warnings.warn(
+                    f"Parameter '{old_name}' is deprecated, use '{new_name}' instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        if "a" in kwargs:
+            rx = kwargs.pop("a")
+        if "b" in kwargs:
+            ry = kwargs.pop("b")
+        if "c" in kwargs:
+            rz = kwargs.pop("c")
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {set(kwargs)}")
+
         if cfg is None:
             cfg = self.default_site_cfg if as_site else self.default_shape_cfg
         elif as_site:
             cfg = cfg.copy()
             cfg.mark_as_site()
 
-        scale = wp.vec3(a, b, c)
+        scale = wp.vec3(rx, ry, rz)
         return self.add_shape(
             body=body,
             type=GeoType.ELLIPSOID,
@@ -5439,6 +5563,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_box(
@@ -5450,6 +5575,7 @@ class ModelBuilder:
         hz: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5465,6 +5591,7 @@ class ModelBuilder:
             hz: The half-extent of the box along its local Z-axis. Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5486,6 +5613,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_capsule(
@@ -5496,6 +5624,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5510,6 +5639,7 @@ class ModelBuilder:
             half_height: The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5536,6 +5666,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_cylinder(
@@ -5546,6 +5677,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5560,6 +5692,7 @@ class ModelBuilder:
             half_height: The half-length of the cylinder along the Z-axis. Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5586,6 +5719,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_cone(
@@ -5596,6 +5730,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5611,6 +5746,7 @@ class ModelBuilder:
             half_height: The half-height of the cone (distance from the geometric center to either the base or apex). The total height is 2*half_height. Defaults to `0.5`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5637,6 +5773,7 @@ class ModelBuilder:
             scale=scale,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_mesh(
@@ -5646,6 +5783,7 @@ class ModelBuilder:
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5657,6 +5795,7 @@ class ModelBuilder:
             mesh: The :class:`Mesh` object containing the vertex and triangle data. Defaults to `None`.
             scale: The scale of the mesh. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.color` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5675,6 +5814,7 @@ class ModelBuilder:
             src=mesh,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_convex_hull(
@@ -5684,7 +5824,9 @@ class ModelBuilder:
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a convex hull collision shape to a body.
 
@@ -5694,7 +5836,9 @@ class ModelBuilder:
             mesh: The :class:`Mesh` object containing the vertex data for the convex hull. Defaults to `None`.
             scale: The scale of the convex hull. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, falls back to :attr:`~newton.Mesh.color` when available.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
+            custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
             The index of the newly added shape.
@@ -5710,6 +5854,8 @@ class ModelBuilder:
             scale=scale,
             src=mesh,
             label=label,
+            color=color,
+            custom_attributes=custom_attributes,
         )
 
     def add_shape_heightfield(
@@ -5718,6 +5864,7 @@ class ModelBuilder:
         heightfield: Heightfield | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5732,6 +5879,7 @@ class ModelBuilder:
             heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
             scale: The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: An optional label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5753,16 +5901,18 @@ class ModelBuilder:
             is_static=True,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_shape_gaussian(
         self,
         body: int,
-        gaussian: Gaussian,
         xform: Transform | None = None,
+        gaussian: Gaussian | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
         collision_proxy: str | Mesh | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -5774,8 +5924,8 @@ class ModelBuilder:
         Args:
             body: The index of the parent body this shape belongs to.
                 Use ``-1`` for static world geometry.
-            gaussian: The :class:`Gaussian` splat asset.
             xform: Transform in parent body's local frame. Defaults to identity.
+            gaussian: The :class:`Gaussian` splat asset.
             scale: 3D scale applied to Gaussian positions. Defaults to ``(1, 1, 1)``.
             cfg: Shape configuration. If ``None``, uses :attr:`default_shape_cfg`
                 with ``has_shape_collision=False`` (Gaussians are render-only by
@@ -5785,6 +5935,7 @@ class ModelBuilder:
                 - ``None``: no collision (render-only).
                 - ``"convex_hull"``: auto-generate convex hull from Gaussian positions.
                 - A :class:`Mesh` instance: use the provided mesh as collision proxy.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
             label: Optional unique label for identifying the shape.
             custom_attributes: Dictionary of custom attribute values for SHAPE
                 frequency attributes.
@@ -5792,6 +5943,23 @@ class ModelBuilder:
         Returns:
             The index of the Gaussian shape.
         """
+        # Backward compat: detect Gaussian passed as second positional arg (old API
+        # had signature add_shape_gaussian(body, gaussian, xform=...)).
+        if isinstance(xform, Gaussian):
+            warnings.warn(
+                "Passing 'gaussian' as the second positional argument is deprecated. "
+                "Use add_shape_gaussian(body, xform=..., gaussian=...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if gaussian is not None:
+                raise TypeError("Cannot pass 'gaussian' both as positional and keyword argument.")
+            gaussian = xform
+            xform = None
+
+        if gaussian is None:
+            raise TypeError("'gaussian' is required when adding a Gaussian shape.")
+
         if cfg is None:
             cfg = self.default_shape_cfg.copy()
         else:
@@ -5834,6 +6002,7 @@ class ModelBuilder:
             is_static=True,
             label=label,
             custom_attributes=custom_attributes,
+            color=color,
         )
 
     def add_site(
@@ -5946,6 +6115,16 @@ class ModelBuilder:
                 f"Unsupported remeshing method: {method}. Supported methods are: {', '.join(remeshing_methods)}."
             )
 
+        def get_shape_custom_attributes(shape: int) -> dict[str, Any] | None:
+            custom_attributes = {
+                full_key: custom_attr.values[shape]
+                for full_key, custom_attr in self.custom_attributes.items()
+                if custom_attr.frequency == Model.AttributeFrequency.SHAPE
+                and isinstance(custom_attr.values, dict)
+                and shape in custom_attr.values
+            }
+            return custom_attributes or None
+
         if shape_indices is None:
             shape_indices = [
                 i
@@ -5964,6 +6143,8 @@ class ModelBuilder:
 
                 body = self.shape_body[shape]
                 xform = self.shape_transform[shape]
+                color = self.shape_color[shape]
+                custom_attributes = get_shape_custom_attributes(shape)
                 cfg = ModelBuilder.ShapeConfig(
                     density=0.0,  # do not add extra mass / inertia
                     margin=self.shape_margin[shape],
@@ -5977,8 +6158,10 @@ class ModelBuilder:
                     xform=xform,
                     cfg=cfg,
                     mesh=self.shape_source[shape],
+                    color=color,
                     label=f"{self.shape_label[shape]}_visual",
                     scale=self.shape_scale[shape],
+                    custom_attributes=custom_attributes,
                 )
 
                 # disable visibility of the original shape
@@ -6037,6 +6220,8 @@ class ModelBuilder:
                     if len(decomposition) > 1:
                         body = self.shape_body[shape]
                         xform = self.shape_transform[shape]
+                        color = self.shape_color[shape]
+                        custom_attributes = get_shape_custom_attributes(shape)
                         cfg = ModelBuilder.ShapeConfig(
                             density=0.0,  # do not add extra mass / inertia
                             ke=self.shape_material_ke[shape],
@@ -6062,7 +6247,9 @@ class ModelBuilder:
                                 mesh=Mesh(decomposition[i][0], decomposition[i][1]),
                                 scale=scale,
                                 cfg=cfg,
+                                color=color,
                                 label=f"{self.shape_label[shape]}_convex_{i}",
+                                custom_attributes=custom_attributes,
                             )
                     remeshed_shapes.add(shape)
             except Exception as e:
@@ -6882,7 +7069,7 @@ class ModelBuilder:
         """Adds a triangular FEM element between three particles in the system.
 
         Triangles are modeled as viscoelastic elements with elastic stiffness and damping
-        parameters specified on the model. See :attr:`~newton.Model.tri_ke`, :attr:`~newton.Model.tri_kd`.
+        parameters specified on the model. See :attr:`~newton.Model.tri_materials`.
 
         Args:
             i: The index of the first particle.
@@ -6952,9 +7139,9 @@ class ModelBuilder:
 
     def add_triangles(
         self,
-        i: list[int] | nparray,
-        j: list[int] | nparray,
-        k: list[int] | nparray,
+        i: list[int] | np.ndarray,
+        j: list[int] | np.ndarray,
+        k: list[int] | np.ndarray,
         tri_ke: list[float] | None = None,
         tri_ka: list[float] | None = None,
         tri_kd: list[float] | None = None,
@@ -7826,9 +8013,9 @@ class ModelBuilder:
         vertices: list[Vec3] | None = None,
         indices: list[int] | None = None,
         density: float | None = None,
-        k_mu: float | nparray | None = None,
-        k_lambda: float | nparray | None = None,
-        k_damp: float | nparray | None = None,
+        k_mu: float | np.ndarray | None = None,
+        k_lambda: float | np.ndarray | None = None,
+        k_damp: float | np.ndarray | None = None,
         tri_ke: float = 0.0,
         tri_ka: float = 0.0,
         tri_kd: float = 0.0,
@@ -9361,7 +9548,7 @@ class ModelBuilder:
             gaussians = []
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
-                if geo:
+                if geo and not isinstance(geo, Heightfield):
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
                             finalized_geos[geo_hash] = geo.finalize(device=device)
@@ -9388,6 +9575,7 @@ class ModelBuilder:
             m.shape_world = wp.array(self.shape_world, dtype=wp.int32)
 
             m.shape_source = self.shape_source  # used for rendering
+            m.shape_color = wp.array(self.shape_color, dtype=wp.vec3)
 
             m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_material_kd = wp.array(self.shape_material_kd, dtype=wp.float32, requires_grad=requires_grad)
@@ -9469,24 +9657,18 @@ class ModelBuilder:
                     if shape_type == GeoType.MESH and shape_src is not None:
                         # Compute local AABB from mesh vertices
                         vertices = shape_src.vertices
-                        aabb_lower = vertices.min(axis=0)
-                        aabb_upper = vertices.max(axis=0)
-
-                        # Apply scale to get the actual local-space bounds
-                        aabb_lower = aabb_lower * np.array(shape_scale)
-                        aabb_upper = aabb_upper * np.array(shape_scale)
+                        lo = vertices.min(axis=0) * np.array(shape_scale)
+                        hi = vertices.max(axis=0) * np.array(shape_scale)
+                        aabb_lower = np.minimum(lo, hi)
+                        aabb_upper = np.maximum(lo, hi)
 
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
-                        # Compute local AABB from convex mesh vertices (similar to MESH)
-                        vertices = shape_src.vertices
-                        aabb_lower = vertices.min(axis=0)
-                        aabb_upper = vertices.max(axis=0)
-
-                        # Apply scale to get the actual local-space bounds
-                        aabb_lower = aabb_lower * np.array(shape_scale)
-                        aabb_upper = aabb_upper * np.array(shape_scale)
+                        lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
+                        hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
+                        aabb_lower = np.minimum(lo, hi)
+                        aabb_upper = np.maximum(lo, hi)
 
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
@@ -9535,8 +9717,17 @@ class ModelBuilder:
                         aabb_upper = np.array([r, r, half_height])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
+                    elif shape_type == GeoType.HFIELD and shape_src is not None:
+                        hx = abs(shape_src.hx * shape_scale[0])
+                        hy = abs(shape_src.hy * shape_scale[1])
+                        z_lo = shape_src.min_z * shape_scale[2]
+                        z_hi = shape_src.max_z * shape_scale[2]
+                        aabb_lower = np.array([-hx, -hy, min(z_lo, z_hi)])
+                        aabb_upper = np.array([hx, hy, max(z_lo, z_hi)])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
                     else:
-                        # Other shapes (PLANE, HFIELD, etc.): use default unit cube with 1x1x1 voxel grid
+                        # Other shapes (PLANE, etc.): use default unit cube with 1x1x1 voxel grid
                         aabb_lower = np.array([-1.0, -1.0, -1.0])
                         aabb_upper = np.array([1.0, 1.0, 1.0])
                         nx, ny, nz = 1, 1, 1
@@ -9793,6 +9984,47 @@ class ModelBuilder:
             )
 
             # ---------------------
+            # mesh edges (packed array + per-shape slice)
+
+            shape_edge_ranges = []
+            edge_chunks = []
+            edge_offset = 0
+            edge_cache = {}  # mesh python id → (start, count)
+
+            for i in range(len(self.shape_type)):
+                if (
+                    self.shape_type[i] == GeoType.MESH
+                    and self.shape_source[i] is not None
+                    and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
+                ):
+                    mesh = self.shape_source[i]
+                    mesh_key = id(mesh)
+                    if mesh_key in edge_cache:
+                        shape_edge_ranges.append(edge_cache[mesh_key])
+                    else:
+                        edges = mesh.edges  # lazily computed and cached on the Mesh
+                        start = edge_offset
+                        count = len(edges)
+                        edge_chunks.append(edges)
+                        edge_offset += count
+                        entry = (start, count)
+                        edge_cache[mesh_key] = entry
+                        shape_edge_ranges.append(entry)
+                else:
+                    shape_edge_ranges.append((-1, 0))
+
+            m.shape_edge_range = wp.array(
+                shape_edge_ranges if shape_edge_ranges else [(-1, 0)],
+                dtype=wp.vec2i,
+                device=device,
+            )
+            m.mesh_edge_indices = (
+                wp.array(np.concatenate(edge_chunks), dtype=wp.vec2i, device=device)
+                if edge_chunks
+                else wp.zeros(1, dtype=wp.vec2i, device=device)
+            )
+
+            # ---------------------
             # springs
 
             def _to_wp_array(data, dtype, requires_grad):
@@ -9853,11 +10085,6 @@ class ModelBuilder:
             # This catches negative masses/inertias and other critical issues.
             # Neither path mutates the builder — corrected values only appear
             # on the returned Model so that finalize() is side-effect-free.
-            if not math.isfinite(self.inertia_tolerance) or self.inertia_tolerance < 0.0:
-                raise ValueError(
-                    f"inertia_tolerance must be a finite, non-negative value, got {self.inertia_tolerance!r}."
-                )
-
             if len(self.body_mass) > 0:
                 if self.validate_inertia_detailed:
                     # Use detailed Python validation with per-body warnings.
@@ -9879,7 +10106,6 @@ class ModelBuilder:
                             self.bound_mass,
                             self.bound_inertia,
                             body_label,
-                            self.inertia_tolerance,
                         )
 
                         if was_corrected:
@@ -9922,7 +10148,6 @@ class ModelBuilder:
                             self.balance_inertia,
                             self.bound_mass if self.bound_mass is not None else 0.0,
                             self.bound_inertia if self.bound_inertia is not None else 0.0,
-                            self.inertia_tolerance,
                             correction_count,
                         ],
                     )

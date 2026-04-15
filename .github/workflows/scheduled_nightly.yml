@@ -1,0 +1,246 @@
+name: Scheduled Nightly Tests
+
+# Orchestrator that dispatches all nightly test suites sequentially.
+# Each sub-workflow is triggered via the workflow_dispatch REST API and
+# polled to completion before the next is started, ensuring only one
+# EC2 instance is active at a time. Per-workflow history is preserved
+# as separate workflow runs. One group's failure does not block
+# subsequent groups.
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # Daily at 9 AM UTC (1 AM PST / 2 AM PDT)
+  workflow_dispatch:
+
+jobs:
+  check-warp-update:
+    name: Check for new warp-lang nightly build
+    if: github.repository == 'newton-physics/newton'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      warp-updated: ${{ steps.check-update.outputs.warp-updated }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        with:
+          version: "0.11.4"
+
+      - name: Update warp-lang in lock file
+        run: uv lock -P warp-lang --prerelease allow
+
+      - name: Check if warp-lang version changed
+        id: check-update
+        run: |
+          if git diff --quiet uv.lock; then
+            echo "No new warp-lang nightly build detected"
+            echo "warp-updated=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New warp-lang nightly build detected!"
+            echo "warp-updated=true" >> "$GITHUB_OUTPUT"
+            echo "Current warp-lang dependency tree:"
+            uv tree --package warp-lang
+          fi
+
+  run-nightly-tests:
+    name: Run nightly test suites
+    needs: [check-warp-update]
+    if: ${{ !cancelled() && github.repository == 'newton-physics/newton' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180  # Budget for sequential dispatch+poll of all sub-workflows (typical total ~90 min)
+    permissions:
+      actions: write
+      contents: read
+    outputs:
+      gpu-tests-conclusion: ${{ steps.gpu-tests.outputs.conclusion }}
+      gpu-tests-url: ${{ steps.gpu-tests.outputs.run-url }}
+      minimum-deps-tests-conclusion: ${{ steps.minimum-deps-tests.outputs.conclusion }}
+      minimum-deps-tests-url: ${{ steps.minimum-deps-tests.outputs.run-url }}
+      warp-nightly-tests-conclusion: ${{ steps.warp-nightly-tests.outputs.conclusion }}
+      warp-nightly-tests-url: ${{ steps.warp-nightly-tests.outputs.run-url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      REF: ${{ github.ref }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        with:
+          version: "0.11.4"
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Dispatch and wait for GPU tests
+        id: gpu-tests
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_tests.yml -f "inputs[instance-type]=g7e.12xlarge"
+
+      - name: Dispatch and wait for Minimum Deps tests
+        id: minimum-deps-tests
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py minimum_deps_tests.yml
+
+      - name: Dispatch and wait for Warp Nightly tests
+        id: warp-nightly-tests
+        if: needs.check-warp-update.result == 'success' && needs.check-warp-update.outputs.warp-updated == 'true'
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py warp_nightly_tests.yml
+
+  notify-on-failure:
+    name: Notify on failure
+    needs: [run-nightly-tests]
+    if: |
+      !cancelled() &&
+      ((needs.run-nightly-tests.outputs.gpu-tests-conclusion != '' &&
+        needs.run-nightly-tests.outputs.gpu-tests-conclusion != 'success') ||
+       (needs.run-nightly-tests.outputs.minimum-deps-tests-conclusion != '' &&
+        needs.run-nightly-tests.outputs.minimum-deps-tests-conclusion != 'success') ||
+       (needs.run-nightly-tests.outputs.warp-nightly-tests-conclusion != '' &&
+        needs.run-nightly-tests.outputs.warp-nightly-tests-conclusion != 'success'))
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: File or update GitHub issue
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        with:
+          script: |
+            const suites = [
+              {
+                name: 'Multi-GPU tests',
+                workflow: 'aws_gpu_tests.yml',
+                conclusion: '${{ needs.run-nightly-tests.outputs.gpu-tests-conclusion }}',
+                url: '${{ needs.run-nightly-tests.outputs.gpu-tests-url }}'
+              },
+              {
+                name: 'Minimum deps tests',
+                workflow: 'minimum_deps_tests.yml',
+                conclusion: '${{ needs.run-nightly-tests.outputs.minimum-deps-tests-conclusion }}',
+                url: '${{ needs.run-nightly-tests.outputs.minimum-deps-tests-url }}'
+              },
+              {
+                name: 'Warp nightly tests',
+                workflow: 'warp_nightly_tests.yml',
+                conclusion: '${{ needs.run-nightly-tests.outputs.warp-nightly-tests-conclusion }}',
+                url: '${{ needs.run-nightly-tests.outputs.warp-nightly-tests-url }}'
+              }
+            ];
+
+            // Fetch recent run history to show pass/fail trend in the issue table
+            // (default branch only, excludes cancelled runs)
+            async function getHistory(workflowFile) {
+              try {
+                const { data } = await github.rest.actions.listWorkflowRuns({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: workflowFile,
+                  branch: context.payload.repository?.default_branch || 'main',
+                  per_page: 10,
+                  status: 'completed',
+                  exclude_pull_requests: true
+                });
+                const runs = data.workflow_runs
+                  .filter(r => r.conclusion !== 'cancelled')
+                  .slice(0, 5);
+                return runs.map(r => r.conclusion === 'success' ? '✅' : '❌').join('');
+              } catch (error) {
+                core.warning(`Failed to fetch history for ${workflowFile}: ${error.message}`);
+                return '';
+              }
+            }
+
+            const failed = [];
+            const rows = [];
+            for (const suite of suites) {
+              const history = await getHistory(suite.workflow);
+              const recentCol = history || '—';
+              if (!suite.conclusion) {
+                rows.push(`| ${suite.name} | ${recentCol} | ⏭️ Skipped | |`);
+              } else if (suite.conclusion === 'success') {
+                rows.push(`| ${suite.name} | ${recentCol} | ✅ Passed | [View logs](${suite.url}) |`);
+              } else {
+                rows.push(`| ${suite.name} | ${recentCol} | ❌ Failed | [View logs](${suite.url}) |`);
+                failed.push(suite.name);
+              }
+            }
+
+            const labels = ['stability', 'testing'];
+            const orchestratorUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const failedList = failed.join(', ');
+            const table = [
+              '| Test Suite | Recent | Status | Logs |',
+              '|---|---|---|---|',
+              ...rows
+            ].join('\n');
+
+            // Search for an existing open nightly failure issue to update
+            // instead of creating duplicates
+            const { data: candidates } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: labels.join(','),
+              state: 'open',
+              per_page: 100
+            });
+            const existing = candidates.find(i => i.title.startsWith('Nightly failure'));
+
+            try {
+              // If an existing issue is found, add a comment; otherwise
+              // create a new one with today's date
+              if (existing) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existing.number,
+                  body: [
+                    `@newton-physics/newton-ci-notify Nightly tests are still failing.`,
+                    ``,
+                    table,
+                    ``,
+                    `**Orchestrator run:** [View](${orchestratorUrl})`
+                  ].join('\n')
+                });
+              } else {
+                const date = new Date().toISOString().slice(0, 10);
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: `Nightly failure (${date}): ${failedList}`,
+                  body: [
+                    `@newton-physics/newton-ci-notify`,
+                    ``,
+                    `The scheduled nightly workflow failed.`,
+                    ``,
+                    table,
+                    ``,
+                    `**Orchestrator run:** [View](${orchestratorUrl})`
+                  ].join('\n'),
+                  labels: labels
+                });
+              }
+            } catch (error) {
+              core.error(`Failed to create/update notification issue: ${error.message}`);
+              core.error(`Test suites that failed: ${failedList}`);
+              throw error;
+            }

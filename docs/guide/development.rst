@@ -187,6 +187,16 @@ not installed. In order to run these tests, include the ``torch-cu12`` or
             # run tests
             python -m newton.tests
 
+.. note::
+
+    The ``torch-cu12`` extra requires PyTorch built against CUDA 12.8. If your
+    driver only supports CUDA 12.4 or 12.5 (check with ``nvidia-smi``), install
+    PyTorch 2.6.0 manually instead of using the ``torch-cu12`` extra:
+
+    .. code-block:: console
+
+        pip install torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cu124
+
 Specific Newton examples can be tested in isolation via the ``-k`` argument:
 
 .. tab-set::
@@ -670,6 +680,33 @@ New examples must also be registered in the examples ``README.md`` with a
             # run in headless test mode (used by CI)
             python -m newton.examples basic_pendulum --viewer null --test
 
+Asset version pinning
+---------------------
+
+Several Newton tests and examples rely on external assets hosted in separate Git
+repositories.  To ensure that any given Newton commit always downloads the same
+asset versions, each repository is pinned to a specific commit SHA.  The pinned
+revisions are defined as constants in ``newton/_src/utils/download_assets.py``:
+
+- ``NEWTON_ASSETS_REF`` — pinned SHA for the ``newton-assets`` repository
+- ``MENAGERIE_REF`` — pinned SHA for the ``mujoco_menagerie`` repository
+
+Updating pinned revisions
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When upstream assets change and the new versions need to be adopted:
+
+1. Look up the new commit SHA from the asset repository.
+2. Update the corresponding ``*_REF`` constant in ``download_assets.py``.
+3. Run the full test suite to verify that no tests break with the new assets.
+4. Commit the SHA update together with any test adjustments.
+
+Overriding the pinned revision
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``download_asset()`` function accepts a ``ref`` parameter that overrides the
+default pinned SHA.
+
 Roadmap and Future Work
 -----------------------
 
@@ -736,7 +773,7 @@ benchmark code from the ``asv/benchmarks`` directory against the code state of t
 the benchmark definitions themselves are not checked out from different branches—only the code being
 benchmarked is.
 
-Benchmarks can also be run against a range of commits using the ``commit1...commit2`` syntax.
+Benchmarks can also be run against a range of commits using the ``commit1..commit2`` syntax.
 This is useful for comparing performance across several recent changes:
 
 .. tab-set::
@@ -756,6 +793,7 @@ This is useful for comparing performance across several recent changes:
 
             asv run --launch-method spawn HEAD~4..HEAD
 
+Note that the older commit has to come first.
 Commit hashes can be used instead of relative references:
 
 .. tab-set::
@@ -884,3 +922,15 @@ also ensuring that the benchmark is run a sufficient number of times to get a st
 The ``--durations all`` flag can be passed to the ``asv run`` command to show the durations of all benchmarks,
 which is helpful for ensuring that a single benchmark is not requiring an abnormally long amount of time compared
 to the other benchmarks.
+
+
+Release process
+---------------
+
+See :doc:`release` for the full release workflow, including versioning,
+branching strategy, testing criteria, and publication steps.
+
+.. toctree::
+   :hidden:
+
+   release

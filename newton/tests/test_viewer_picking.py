@@ -174,7 +174,6 @@ class TestPickingSetup(unittest.TestCase):
 
         state.body_f.zero_()
         picking._apply_picking_force(state)
-        wp.synchronize()
 
         # No body picked -> no force applied
         forces = state.body_f.numpy()
@@ -196,7 +195,6 @@ class TestPickingSetup(unittest.TestCase):
         picking.update(wp.vec3(0.5, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
         state.body_f.zero_()
         picking._apply_picking_force(state)
-        wp.synchronize()
 
         forces = state.body_f.numpy()
         self.assertEqual(forces.shape[0], model.body_count)
@@ -234,7 +232,6 @@ def test_picking_setup_device(test: TestPickingSetup, device):
     # update and apply_force should not crash
     picking.update(ray_start, ray_dir)
     picking._apply_picking_force(state)
-    wp.synchronize()
 
     picking.release()
     test.assertFalse(picking.is_picking())

@@ -217,8 +217,6 @@ class TestBroadPhase(unittest.TestCase):
             candidate_pair_count,
         )
 
-        wp.synchronize()
-
         pairs_wp = candidate_pair.numpy()
         candidate_pair_count = candidate_pair_count.numpy()[0]
 
@@ -372,8 +370,6 @@ class TestBroadPhase(unittest.TestCase):
             candidate_pair,
             candidate_pair_count,
         )
-
-        wp.synchronize()
 
         # Get results
         pairs_wp = candidate_pair.numpy()
@@ -581,8 +577,6 @@ class TestBroadPhase(unittest.TestCase):
             candidate_pair_count,
         )
 
-        wp.synchronize()
-
         # Get results
         pairs_wp = candidate_pair.numpy()
         num_candidate_pair_result = candidate_pair_count.numpy()[0]
@@ -738,8 +732,6 @@ class TestBroadPhase(unittest.TestCase):
             candidate_pair_count,
         )
 
-        wp.synchronize()
-
         pairs_wp = candidate_pair.numpy()
         candidate_pair_count = candidate_pair_count.numpy()[0]
 
@@ -856,8 +848,6 @@ class TestBroadPhase(unittest.TestCase):
             candidate_pair,
             candidate_pair_count,
         )
-
-        wp.synchronize()
 
         pairs_wp = candidate_pair.numpy()
         candidate_pair_count = candidate_pair_count.numpy()[0]
@@ -1004,8 +994,6 @@ class TestBroadPhase(unittest.TestCase):
             candidate_pair,
             candidate_pair_count,
         )
-
-        wp.synchronize()
 
         pairs_wp = candidate_pair.numpy()
         num_candidate_pair_val = candidate_pair_count.numpy()[0]
@@ -1178,8 +1166,6 @@ class TestBroadPhase(unittest.TestCase):
             candidate_pair,
             candidate_pair_count,
         )
-
-        wp.synchronize()
 
         # Get results
         pairs_wp = candidate_pair.numpy()
@@ -1562,8 +1548,6 @@ class TestBroadPhase(unittest.TestCase):
             candidate_pair,
             candidate_pair_count,
         )
-
-        wp.synchronize()
 
         # Get results
         pairs_wp = candidate_pair.numpy()
@@ -1972,8 +1956,6 @@ class TestBroadPhase(unittest.TestCase):
             candidate_pair_count,
         )
 
-        wp.synchronize()
-
         # Get results
         pairs_wp = candidate_pair.numpy()
         num_candidate_pair_result = candidate_pair_count.numpy()[0]
@@ -2098,7 +2080,6 @@ class TestBroadPhase(unittest.TestCase):
             pairs_nxn,
             pair_count_nxn,
         )
-        wp.synchronize()
 
         pairs_np = pairs_nxn.numpy()
         count_nxn = pair_count_nxn.numpy()[0]
@@ -2125,7 +2106,6 @@ class TestBroadPhase(unittest.TestCase):
             pairs_sap,
             pair_count_sap,
         )
-        wp.synchronize()
 
         pairs_np = pairs_sap.numpy()
         count_sap = pair_count_sap.numpy()[0]

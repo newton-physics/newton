@@ -6,6 +6,19 @@ from __future__ import annotations
 import warp as wp
 from warp import DeviceLike as Devicelike
 
+GENERATION_SENTINEL = -1
+"""Value reserved as an impossible generation; the increment kernel skips it."""
+
+
+@wp.kernel(enable_backward=False)
+def _increment_contact_generation(generation: wp.array[wp.int32]):
+    g = generation[0]
+    if g == 2147483647:
+        g = 0
+    else:
+        g = g + 1
+    generation[0] = g
+
 
 class Contacts:
     """
@@ -67,11 +80,13 @@ class Contacts:
         Args:
             rigid_contact_max: Maximum number of rigid contacts
             soft_contact_max: Maximum number of soft contacts
-            requires_grad: Whether **soft** contact arrays require gradients for differentiable
-                simulation.  Rigid contact arrays are always allocated without gradients because
-                the narrow phase kernels do not support backward passes.  Soft contact arrays
-                (body_pos, body_vel, normal) are allocated with ``requires_grad`` so that
-                gradient-based optimisation can flow through particle-shape contacts.
+            requires_grad: Whether contact arrays require gradients for differentiable
+                simulation.  When ``True``, soft contact arrays (body_pos, body_vel, normal)
+                are allocated with gradients so that gradient-based optimization can flow
+                through particle-shape contacts, **and** additional differentiable rigid
+                contact arrays are allocated (``rigid_contact_diff_*``) that provide
+                first-order gradients of contact distance and world-space points with
+                respect to body poses.
             device: Device to allocate buffers on
             per_contact_shape_properties: Enable per-contact stiffness/damping/friction arrays
             clear_buffers: If True, clear() will zero all contact buffers (slower but conservative).
@@ -80,6 +95,10 @@ class Contacts:
                 and safe since solvers only read up to contact_count.
             requested_attributes: Set of extended contact attribute names to allocate.
                 See :attr:`EXTENDED_ATTRIBUTES` for available options.
+
+        .. note::
+            The ``rigid_contact_diff_*`` arrays allocated when ``requires_grad=True`` are
+            **experimental**; see :meth:`newton.CollisionPipeline.collide`.
         """
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
@@ -89,6 +108,12 @@ class Contacts:
             self._counter_array = wp.zeros(2, dtype=wp.int32)
             # Create sliced views for individual counters (no additional allocation)
             self.rigid_contact_count = self._counter_array[0:1]
+
+            self.contact_generation = wp.zeros(1, dtype=wp.int32)
+            """Device-side generation counter, incremented each time :meth:`clear` is called.
+
+            Solvers can compare this against a cached value to detect whether the
+            contact set changed since the last conversion pass."""
 
             # rigid contacts — never requires_grad (narrow phase has enable_backward=False)
             self.rigid_contact_point_id = wp.zeros(rigid_contact_max, dtype=wp.int32)
@@ -124,6 +149,28 @@ class Contacts:
             # to be filled by the solver (currently unused)
             self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Contact force [N], shape (rigid_contact_max,), dtype :class:`vec3`."""
+
+            # Differentiable rigid contact arrays -- only allocated when requires_grad
+            # is True.  Populated by the post-processing kernel in
+            # :mod:`newton._src.geometry.differentiable_contacts`.
+            if requires_grad:
+                self.rigid_contact_diff_distance = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=True)
+                """Differentiable signed distance [m], shape (rigid_contact_max,), dtype float."""
+                self.rigid_contact_diff_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=False)
+                """Contact normal (A-to-B, world frame) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
+                self.rigid_contact_diff_point0_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
+                """World-space contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+                self.rigid_contact_diff_point1_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
+                """World-space contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            else:
+                self.rigid_contact_diff_distance = None
+                """Differentiable signed distance [m], shape (rigid_contact_max,), dtype float."""
+                self.rigid_contact_diff_normal = None
+                """Contact normal (A-to-B, world frame) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
+                self.rigid_contact_diff_point0_world = None
+                """World-space contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+                self.rigid_contact_diff_point1_world = None
+                """World-space contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
 
             # contact stiffness/damping/friction (only allocated if per_contact_shape_properties is enabled)
             if self.per_contact_shape_properties:
@@ -176,7 +223,7 @@ class Contacts:
         Clear contact data, resetting counts and optionally clearing all buffers.
 
         By default (clear_buffers=False), only resets contact counts. This is highly optimized,
-        requiring just 1 kernel launch. Collision detection overwrites all data up to the new
+        requiring just 2 kernel launches. Collision detection overwrites all data up to the new
         contact_count, and solvers only read up to count, so clearing stale data is unnecessary.
 
         If clear_buffers=True (conservative mode), performs full buffer clearing with sentinel
@@ -184,6 +231,15 @@ class Contacts:
         """
         # Clear all counters with a single kernel launch (consolidated counter array)
         self._counter_array.zero_()
+
+        # Bump generation so solvers know the contact set changed (graph-capture safe)
+        wp.launch(
+            _increment_contact_generation,
+            dim=1,
+            inputs=[self.contact_generation],
+            device=self.contact_generation.device,
+            record_tape=False,
+        )
 
         if self.clear_buffers:
             # Conservative path: clear all buffers (7-10 kernel launches)
@@ -195,6 +251,12 @@ class Contacts:
 
             if self.force is not None:
                 self.force.zero_()
+
+            if self.rigid_contact_diff_distance is not None:
+                self.rigid_contact_diff_distance.zero_()
+                self.rigid_contact_diff_normal.zero_()
+                self.rigid_contact_diff_point0_world.zero_()
+                self.rigid_contact_diff_point1_world.zero_()
 
             if self.per_contact_shape_properties:
                 self.rigid_contact_stiffness.zero_()

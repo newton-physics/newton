@@ -13,12 +13,12 @@ from ..utils.selection import match_labels
 
 @wp.kernel
 def compute_shape_transforms_kernel(
-    shapes: wp.array(dtype=int),
-    shape_body: wp.array(dtype=int),
-    shape_transform: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
+    shapes: wp.array[int],
+    shape_body: wp.array[int],
+    shape_transform: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
     # output
-    world_transforms: wp.array(dtype=wp.transform),
+    world_transforms: wp.array[wp.transform],
 ):
     """Compute world transforms for a list of shape indices.
 
@@ -45,11 +45,11 @@ def compute_shape_transforms_kernel(
 
 @wp.kernel
 def compute_relative_transforms_kernel(
-    all_shape_transforms: wp.array(dtype=wp.transform),
-    shapes: wp.array(dtype=int),
-    reference_sites: wp.array(dtype=int),
+    all_shape_transforms: wp.array[wp.transform],
+    shapes: wp.array[int],
+    reference_sites: wp.array[int],
     # output
-    relative_transforms: wp.array(dtype=wp.transform),
+    relative_transforms: wp.array[wp.transform],
 ):
     """Compute relative transforms expressing object poses in reference frame coordinates.
 

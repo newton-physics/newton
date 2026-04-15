@@ -19,31 +19,31 @@ from .ik_objectives import IKObjective
 
 @dataclass(slots=True)
 class BatchCtx:
-    joint_q: wp.array2d(dtype=wp.float32)
-    residuals: wp.array2d(dtype=wp.float32)
-    fk_body_q: wp.array2d(dtype=wp.transform)
-    problem_idx: wp.array(dtype=wp.int32)
+    joint_q: wp.array2d[wp.float32]
+    residuals: wp.array2d[wp.float32]
+    fk_body_q: wp.array2d[wp.transform]
+    problem_idx: wp.array[wp.int32]
 
     # AUTODIFF and MIXED
-    fk_body_qd: wp.array2d(dtype=wp.spatial_vector) | None = None
-    dq_dof: wp.array2d(dtype=wp.float32) | None = None
-    joint_q_proposed: wp.array2d(dtype=wp.float32) | None = None
-    joint_qd: wp.array2d(dtype=wp.float32) | None = None
+    fk_body_qd: wp.array2d[wp.spatial_vector] | None = None
+    dq_dof: wp.array2d[wp.float32] | None = None
+    joint_q_proposed: wp.array2d[wp.float32] | None = None
+    joint_qd: wp.array2d[wp.float32] | None = None
 
     # ANALYTIC and MIXED
-    jacobian_out: wp.array3d(dtype=wp.float32) | None = None
-    motion_subspace: wp.array2d(dtype=wp.spatial_vector) | None = None
-    fk_qd_zero: wp.array2d(dtype=wp.float32) | None = None
-    fk_X_local: wp.array2d(dtype=wp.transform) | None = None
+    jacobian_out: wp.array3d[wp.float32] | None = None
+    motion_subspace: wp.array2d[wp.spatial_vector] | None = None
+    fk_qd_zero: wp.array2d[wp.float32] | None = None
+    fk_X_local: wp.array2d[wp.transform] | None = None
 
 
 @wp.kernel
 def _accept_reject(
-    cost_curr: wp.array1d(dtype=wp.float32),
-    cost_prop: wp.array1d(dtype=wp.float32),
-    pred_red: wp.array1d(dtype=wp.float32),
+    cost_curr: wp.array[wp.float32],
+    cost_prop: wp.array[wp.float32],
+    pred_red: wp.array[wp.float32],
     rho_min: float,
-    accept: wp.array1d(dtype=wp.int32),
+    accept: wp.array[wp.int32],
 ):
     row = wp.tid()
     rho = (cost_curr[row] - cost_prop[row]) / (pred_red[row] + 1.0e-8)
@@ -52,19 +52,19 @@ def _accept_reject(
 
 @wp.kernel
 def _update_lm_state(
-    joint_q_proposed: wp.array2d(dtype=wp.float32),
-    residuals_proposed: wp.array2d(dtype=wp.float32),
-    costs_proposed: wp.array1d(dtype=wp.float32),
-    accept_flags: wp.array1d(dtype=wp.int32),
+    joint_q_proposed: wp.array2d[wp.float32],
+    residuals_proposed: wp.array2d[wp.float32],
+    costs_proposed: wp.array[wp.float32],
+    accept_flags: wp.array[wp.int32],
     n_coords: int,
     num_residuals: int,
     lambda_factor: float,
     lambda_min: float,
     lambda_max: float,
-    joint_q_current: wp.array2d(dtype=wp.float32),
-    residuals_current: wp.array2d(dtype=wp.float32),
-    costs: wp.array1d(dtype=wp.float32),
-    lambda_values: wp.array1d(dtype=wp.float32),
+    joint_q_current: wp.array2d[wp.float32],
+    residuals_current: wp.array2d[wp.float32],
+    costs: wp.array[wp.float32],
+    lambda_values: wp.array[wp.float32],
 ):
     row = wp.tid()
 
@@ -141,7 +141,7 @@ class IKOptimizerLM:
         lambda_max: float = 1e10,
         rho_min: float = 1e-3,
         *,
-        problem_idx: wp.array(dtype=wp.int32) | None = None,
+        problem_idx: wp.array[wp.int32] | None = None,
     ) -> None:
         self.model = model
         self.device = model.device
@@ -269,10 +269,10 @@ class IKOptimizerLM:
 
     def _ctx_solver(
         self,
-        joint_q: wp.array2d(dtype=wp.float32),
+        joint_q: wp.array2d[wp.float32],
         *,
-        residuals: wp.array2d(dtype=wp.float32) | None = None,
-        jacobian: wp.array3d(dtype=wp.float32) | None = None,
+        residuals: wp.array2d[wp.float32] | None = None,
+        jacobian: wp.array3d[wp.float32] | None = None,
     ) -> BatchCtx:
         ctx = BatchCtx(
             joint_q=joint_q,
@@ -361,7 +361,7 @@ class IKOptimizerLM:
         ctx.residuals.zero_()
         self._for_objectives_residuals(ctx)
 
-    def _jacobian_at(self, ctx: BatchCtx) -> wp.array3d(dtype=wp.float32):
+    def _jacobian_at(self, ctx: BatchCtx) -> wp.array3d[wp.float32]:
         mode = self.jacobian_mode
 
         if mode == IKJacobianType.AUTODIFF:
@@ -447,8 +447,8 @@ class IKOptimizerLM:
 
     def step(
         self,
-        joint_q_in: wp.array2d(dtype=wp.float32),
-        joint_q_out: wp.array2d(dtype=wp.float32),
+        joint_q_in: wp.array2d[wp.float32],
+        joint_q_out: wp.array2d[wp.float32],
         iterations: int = 10,
         step_size: float = 1.0,
     ) -> None:
@@ -479,9 +479,9 @@ class IKOptimizerLM:
 
     def _compute_residuals(
         self,
-        joint_q: wp.array2d(dtype=wp.float32),
-        output_residuals: wp.array2d(dtype=wp.float32) | None = None,
-    ) -> wp.array2d(dtype=wp.float32):
+        joint_q: wp.array2d[wp.float32],
+        output_residuals: wp.array2d[wp.float32] | None = None,
+    ) -> wp.array2d[wp.float32]:
         buffer = output_residuals or self.residuals
         ctx = self._ctx_solver(joint_q, residuals=buffer)
 
@@ -495,9 +495,9 @@ class IKOptimizerLM:
     def _compute_motion_subspace(
         self,
         *,
-        body_q: wp.array2d(dtype=wp.transform),
-        joint_S_s_out: wp.array2d(dtype=wp.spatial_vector),
-        joint_qd_in: wp.array2d(dtype=wp.float32),
+        body_q: wp.array2d[wp.transform],
+        joint_S_s_out: wp.array2d[wp.spatial_vector],
+        joint_qd_in: wp.array2d[wp.float32],
     ) -> None:
         n_joints = self.model.joint_count
         batch = body_q.shape[0]
@@ -522,11 +522,11 @@ class IKOptimizerLM:
 
     def _integrate_dq(
         self,
-        joint_q: wp.array2d(dtype=wp.float32),
+        joint_q: wp.array2d[wp.float32],
         *,
-        dq_in: wp.array2d(dtype=wp.float32),
-        joint_q_out: wp.array2d(dtype=wp.float32),
-        joint_qd_out: wp.array2d(dtype=wp.float32),
+        dq_in: wp.array2d[wp.float32],
+        joint_q_out: wp.array2d[wp.float32],
+        joint_qd_out: wp.array2d[wp.float32],
         step_size: float = 1.0,
     ) -> None:
         batch = joint_q.shape[0]
@@ -536,9 +536,13 @@ class IKOptimizerLM:
             dim=[batch, self.model.joint_count],
             inputs=[
                 self.model.joint_type,
+                self.model.joint_parent,
+                self.model.joint_child,
                 self.model.joint_q_start,
                 self.model.joint_qd_start,
                 self.model.joint_dof_dim,
+                self.model.joint_X_c,
+                self.model.body_com,
                 joint_q,
                 dq_in,
                 joint_qd_out,
@@ -554,7 +558,7 @@ class IKOptimizerLM:
 
     def _step(
         self,
-        joint_q: wp.array2d(dtype=wp.float32),
+        joint_q: wp.array2d[wp.float32],
         step_size: float = 1.0,
         iteration: int = 0,
     ) -> None:
@@ -640,7 +644,7 @@ class IKOptimizerLM:
         self.lambda_values.zero_()
         self.accept_flags.zero_()
 
-    def compute_costs(self, joint_q: wp.array2d(dtype=wp.float32)) -> wp.array(dtype=wp.float32):
+    def compute_costs(self, joint_q: wp.array2d[wp.float32]) -> wp.array[wp.float32]:
         """Evaluate squared residual costs for a batch of joint configurations.
 
         Args:
@@ -661,11 +665,11 @@ class IKOptimizerLM:
 
     def _solve_tiled(
         self,
-        jacobian: wp.array3d(dtype=wp.float32),
-        residuals: wp.array3d(dtype=wp.float32),
-        lambda_values: wp.array(dtype=wp.float32),
-        dq_dof: wp.array2d(dtype=wp.float32),
-        pred_reduction: wp.array(dtype=wp.float32),
+        jacobian: wp.array3d[wp.float32],
+        residuals: wp.array3d[wp.float32],
+        lambda_values: wp.array[wp.float32],
+        dq_dof: wp.array2d[wp.float32],
+        pred_reduction: wp.array[wp.float32],
     ) -> None:
         raise NotImplementedError("This method should be overridden by specialized solver")
 
@@ -675,12 +679,12 @@ class IKOptimizerLM:
         C, R, _ = key
 
         def _template(
-            jacobians: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, n_dofs)
-            residuals: wp.array3d(dtype=wp.float32),  # (n_batch, n_residuals, 1)
-            lambda_values: wp.array1d(dtype=wp.float32),  # (n_batch)
+            jacobians: wp.array3d[wp.float32],  # (n_batch, n_residuals, n_dofs)
+            residuals: wp.array3d[wp.float32],  # (n_batch, n_residuals, 1)
+            lambda_values: wp.array[wp.float32],  # (n_batch)
             # outputs
-            dq_dof: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
-            pred_reduction_out: wp.array1d(dtype=wp.float32),  # (n_batch)
+            dq_dof: wp.array2d[wp.float32],  # (n_batch, n_dofs)
+            pred_reduction_out: wp.array[wp.float32],  # (n_batch)
         ):
             row = wp.tid()
 
@@ -731,18 +735,22 @@ class IKOptimizerLM:
         @wp.kernel
         def _integrate_dq_dof(
             # model-wide
-            joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
-            joint_q_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-            joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-            joint_dof_dim: wp.array2d(dtype=wp.int32),  # (n_joints, 2)  → (lin, ang)
+            joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_parent: wp.array[wp.int32],  # (n_joints)
+            joint_child: wp.array[wp.int32],  # (n_joints)
+            joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)  → (lin, ang)
+            joint_X_c: wp.array[wp.transform],  # (n_joints)
+            body_com: wp.array[wp.vec3],  # (n_bodies)
             # per-row
-            joint_q_curr: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-            joint_qd_curr: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)  (typically all-zero)
-            dq_dof: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)  ← update direction (q̇)
+            joint_q_curr: wp.array2d[wp.float32],  # (n_batch, n_coords)
+            joint_qd_curr: wp.array2d[wp.float32],  # (n_batch, n_dofs)  (typically all-zero)
+            dq_dof: wp.array2d[wp.float32],  # (n_batch, n_dofs)  ← update direction (q̇)
             dt: float,  # step scale (usually 1.0)
             # outputs
-            joint_q_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-            joint_qd_out: wp.array2d(dtype=wp.float32),  # (n_batch, n_dofs)
+            joint_q_out: wp.array2d[wp.float32],  # (n_batch, n_coords)
+            joint_qd_out: wp.array2d[wp.float32],  # (n_batch, n_dofs)
         ):
             """
             Integrate the candidate update ``dq_dof`` (interpreted as a
@@ -758,6 +766,8 @@ class IKOptimizerLM:
 
             # Static joint metadata
             t = joint_type[joint_idx]
+            parent = joint_parent[joint_idx]
+            child = joint_child[joint_idx]
             coord_start = joint_q_start[joint_idx]
             dof_start = joint_qd_start[joint_idx]
             lin_axes = joint_dof_dim[joint_idx, 0]
@@ -775,6 +785,9 @@ class IKOptimizerLM:
             #   qd_new = 0 + delta           (qd ← delta)
             #   q_new  = q + qd_new * dt     (q ← q + delta)
             jcalc_integrate(
+                parent,
+                joint_X_c[joint_idx],
+                body_com[child],
                 t,
                 q_row,
                 qd_row,
@@ -790,16 +803,16 @@ class IKOptimizerLM:
 
         @wp.kernel(module="unique")
         def _compute_motion_subspace_2d(
-            joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
-            joint_parent: wp.array1d(dtype=wp.int32),  # (n_joints)
-            joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-            joint_qd: wp.array2d(dtype=wp.float32),  # (n_batch, n_joint_dof_count)
-            joint_axis: wp.array1d(dtype=wp.vec3),  # (n_joint_dof_count)
-            joint_dof_dim: wp.array2d(dtype=wp.int32),  # (n_joints, 2)
-            body_q: wp.array2d(dtype=wp.transform),  # (n_batch, n_bodies)
-            joint_X_p: wp.array1d(dtype=wp.transform),  # (n_joints)
+            joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_parent: wp.array[wp.int32],  # (n_joints)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_qd: wp.array2d[wp.float32],  # (n_batch, n_joint_dof_count)
+            joint_axis: wp.array[wp.vec3],  # (n_joint_dof_count)
+            joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)
+            body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
+            joint_X_p: wp.array[wp.transform],  # (n_joints)
             # outputs
-            joint_S_s: wp.array2d(dtype=wp.spatial_vector),  # (n_batch, n_joint_dof_count)
+            joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_joint_dof_count)
         ):
             row, joint_idx = wp.tid()
 
@@ -831,16 +844,16 @@ class IKOptimizerLM:
 
         @wp.kernel(module="unique")
         def _fk_local(
-            joint_type: wp.array1d(dtype=wp.int32),  # (n_joints)
-            joint_q: wp.array2d(dtype=wp.float32),  # (n_batch, n_coords)
-            joint_q_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-            joint_qd_start: wp.array1d(dtype=wp.int32),  # (n_joints + 1)
-            joint_axis: wp.array1d(dtype=wp.vec3),  # (n_axes)
-            joint_dof_dim: wp.array2d(dtype=wp.int32),  # (n_joints, 2)  → (lin, ang)
-            joint_X_p: wp.array1d(dtype=wp.transform),  # (n_joints)
-            joint_X_c: wp.array1d(dtype=wp.transform),  # (n_joints)
+            joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
+            joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_axis: wp.array[wp.vec3],  # (n_axes)
+            joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)  → (lin, ang)
+            joint_X_p: wp.array[wp.transform],  # (n_joints)
+            joint_X_c: wp.array[wp.transform],  # (n_joints)
             # outputs
-            X_local_out: wp.array2d(dtype=wp.transform),  # (n_batch, n_joints)
+            X_local_out: wp.array2d[wp.transform],  # (n_batch, n_joints)
         ):
             row, local_joint_idx = wp.tid()
 
@@ -912,11 +925,11 @@ class IKOptimizerLM:
 
             def _solve_tiled(
                 self,
-                jac: wp.array3d(dtype=wp.float32),
-                res: wp.array3d(dtype=wp.float32),
-                lam: wp.array(dtype=wp.float32),
-                dq: wp.array2d(dtype=wp.float32),
-                pred: wp.array(dtype=wp.float32),
+                jac: wp.array3d[wp.float32],
+                res: wp.array3d[wp.float32],
+                lam: wp.array[wp.float32],
+                dq: wp.array2d[wp.float32],
+                pred: wp.array[wp.float32],
             ) -> None:
                 wp.launch_tiled(
                     _lm_solve_tiled,

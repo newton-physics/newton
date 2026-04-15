@@ -28,17 +28,17 @@ import newton.utils
 # -------------------------------------------------------------------------
 @wp.kernel
 def _collision_residuals(
-    body_q: wp.array2d(dtype=wp.transform),  # (batch_rows, n_bodies)
-    obstacle_centers: wp.array1d(dtype=wp.vec3),  # (n_problems,)
-    obstacle_radii: wp.array1d(dtype=wp.float32),  # (n_problems,)
+    body_q: wp.array2d[wp.transform],  # (batch_rows, n_bodies)
+    obstacle_centers: wp.array[wp.vec3],  # (n_problems,)
+    obstacle_radii: wp.array[wp.float32],  # (n_problems,)
     link_index: int,
     link_offset: wp.vec3,
     link_radius: float,
     start_idx: int,  # start row in the global residual vector
     weight: float,
-    problem_idx: wp.array1d(dtype=wp.int32),  # (batch_rows,)
+    problem_idx: wp.array[wp.int32],  # (batch_rows,)
     # outputs
-    residuals: wp.array2d(dtype=wp.float32),  # (batch_rows, total_residuals)
+    residuals: wp.array2d[wp.float32],  # (batch_rows, total_residuals)
 ):
     row_idx = wp.tid()
     base = problem_idx[row_idx]
@@ -54,7 +54,7 @@ def _collision_residuals(
     # Softplus of penetration depth to keep it smooth
     dist = wp.length(ee_pos - c)
     delta = (link_radius + r_obs) - dist
-    margin = 0.15
+    margin = 0.12
     pen = wp.log(1.0 + wp.exp(delta / margin)) * margin
 
     residuals[row_idx, start_idx] = weight * pen
@@ -65,7 +65,7 @@ def _update_center_target(
     problem_idx: int,
     new_center: wp.vec3,
     # outputs
-    centers: wp.array1d(dtype=wp.vec3),  # (n_problems,)
+    centers: wp.array[wp.vec3],  # (n_problems,)
 ):
     centers[problem_idx] = new_center
 
@@ -179,8 +179,8 @@ class Example:
         self.links_to_check_collision = [
             ("fr3_link5", 7, 0.06),  # (name, index, radius)
             ("fr3_link7", 9, 0.06),
-            ("fr3_hand_tcp", 10, 0.05),
-            ("fr3_link3", 5, 0.08),  # elbow block: frequent contact risk during reach-backs and around-table moves
+            ("fr3_hand_tcp", 10, 0.10),
+            ("fr3_link3", 5, 0.10),  # elbow block: frequent contact risk during reach-backs and around-table moves
             ("fr3_link4", 6, 0.07),  # proximal forearm: fills gap between elbow and your existing link5 sphere
             ("fr3_link6", 8, 0.06),  # wrist housing: catches close passes near fixtures when orienting the tool
             # Optional but helpful if space is tight around the shoulder/torso:
@@ -227,7 +227,7 @@ class Example:
                     link_radius=link_radius,
                     obstacle_centers=self.obstacle_centers,
                     obstacle_radii=self.obstacle_radii,
-                    weight=50.0,
+                    weight=3.0,
                 )
             )
 

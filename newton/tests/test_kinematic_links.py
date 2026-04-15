@@ -621,7 +621,7 @@ solvers = {
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
-    "vbd": lambda model: newton.solvers.SolverVBD(model),
+    "vbd": newton.solvers.SolverVBD,
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():

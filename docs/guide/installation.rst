@@ -1,11 +1,15 @@
 .. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
+.. currentmodule:: newton
+
 Installation
 ============
 
 This guide covers the recommended way to install Newton from PyPI. For
 installing from source or using ``uv``, see the :doc:`development` guide.
+
+.. _system-requirements:
 
 System Requirements
 -------------------
@@ -93,7 +97,7 @@ CPU-Only Limitations
 Newton can run on CPU (including macOS), but the following features require an
 NVIDIA GPU and are unavailable in CPU-only mode:
 
-- **SDF collision** — signed-distance-field computation (:func:`compute_sdf_from_shape`) requires CUDA
+- **SDF collision** — signed-distance-field computation requires CUDA
   (``wp.Volume`` is GPU-only).
 - **Mesh-mesh contacts** — SDF-based mesh-mesh collision is silently skipped on CPU.
 - **Hydroelastic contacts** — depends on the SDF system.
@@ -155,6 +159,8 @@ with other packages:
     ``examples`` extra). If you encounter installation errors, we recommend upgrading to a later
     Python version, or follow the :doc:`development` guide to install Newton using ``uv``.
 
+.. _running-examples:
+
 Running Examples
 ^^^^^^^^^^^^^^^^
 
@@ -173,6 +179,17 @@ to check the supported CUDA version (shown in the top-right corner of the output
 
     pip install newton[torch-cu12] --extra-index-url https://download.pytorch.org/whl/cu128
     python -m newton.examples robot_anymal_c_walk
+
+.. note::
+
+    The ``torch-cu12`` extra installs PyTorch built against CUDA 12.8. If your
+    driver only supports CUDA 12.4 or 12.5 (check with ``nvidia-smi``), you
+    need to install PyTorch 2.6.0 manually instead:
+
+    .. code-block:: console
+
+        pip install "newton[examples]"
+        pip install torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cu124
 
 See a list of all available examples:
 
@@ -255,11 +272,11 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``importers``
      - Asset import and mesh processing dependencies
    * - ``remesh``
-     - Remeshing dependencies (Open3D, pyfqmr) for :class:`~newton.SurfaceReconstructor`
+     - Remeshing dependencies (Open3D, pyfqmr) for :func:`newton.utils.remesh_mesh`
    * - ``examples``
      - Dependencies for running examples, including visualization (includes ``sim`` + ``importers``)
    * - ``torch-cu12``
-     - PyTorch (CUDA 12) for running RL policy examples (includes ``examples``)
+     - PyTorch (CUDA 12.8+) for running RL policy examples (includes ``examples``); see :ref:`note above <running-examples>` for CUDA 12.4–12.5
    * - ``torch-cu13``
      - PyTorch (CUDA 13) for running RL policy examples (includes ``examples``)
    * - ``notebook``
@@ -272,6 +289,8 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
 Some extras transitively include others. For example, ``examples`` pulls in both
 ``sim`` and ``importers``, and ``dev`` pulls in ``examples``. You only need to
 install the most specific set for your use case.
+
+.. _versioning:
 
 Versioning
 ----------

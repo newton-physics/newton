@@ -261,7 +261,6 @@ def assert_builders_equal(
         test.assertEqual(builder1.geoms[k].mid, builder2.geoms[k].mid)
         test.assertEqual(builder1.geoms[k].body, builder2.geoms[k].body)
         test.assertEqual(builder1.geoms[k].shape.type, builder2.geoms[k].shape.type)
-        test.assertEqual(builder1.geoms[k].shape.num_params, builder2.geoms[k].shape.num_params)
         test.assertTrue(lists_equal(builder1.geoms[k].shape.paramsvec, builder2.geoms[k].shape.paramsvec))
         if not skip_materials:
             test.assertEqual(builder1.geoms[k].material, builder2.geoms[k].material)
