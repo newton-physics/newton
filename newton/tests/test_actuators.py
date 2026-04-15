@@ -45,12 +45,12 @@ class TestActuatorBuilder(unittest.TestCase):
         dofs = [builder.joint_qd_start[j] for j in joints]
 
         # All ControllerPD, no clamping — accumulate into one group
-        builder.add_actuator(ControllerPD, indices=[dofs[0]], kp=50.0, constant_force=1.0)
-        builder.add_actuator(ControllerPD, indices=[dofs[1]], kp=100.0, kd=10.0)
+        builder.add_actuator(ControllerPD, index=dofs[0], kp=50.0, constant_force=1.0)
+        builder.add_actuator(ControllerPD, index=dofs[1], kp=100.0, kd=10.0)
         # With ClampingMaxForce — separate group
         builder.add_actuator(
             ControllerPD,
-            indices=[dofs[2]],
+            index=dofs[2],
             clamping=[(ClampingMaxForce, {"max_force": 50.0})],
             kp=150.0,
         )
@@ -90,9 +90,9 @@ class TestActuatorBuilder(unittest.TestCase):
         dof1 = template.joint_qd_start[joint1]
         dof2 = template.joint_qd_start[joint2]
 
-        template.add_actuator(ControllerPD, indices=[dof0], kp=100.0, kd=10.0)
-        template.add_actuator(ControllerPID, indices=[dof1], kp=200.0, ki=5.0, kd=20.0)
-        template.add_actuator(ControllerPD, indices=[dof2], kp=300.0)
+        template.add_actuator(ControllerPD, index=dof0, kp=100.0, kd=10.0)
+        template.add_actuator(ControllerPID, index=dof1, kp=200.0, ki=5.0, kd=20.0)
+        template.add_actuator(ControllerPD, index=dof2, kp=300.0)
 
         num_worlds = 3
         builder = newton.ModelBuilder()
@@ -132,12 +132,12 @@ class TestActuatorBuilder(unittest.TestCase):
 
         dofs = [builder.joint_qd_start[j] for j in joints]
 
-        builder.add_actuator(ControllerPD, indices=[dofs[0]], kp=100.0)
-        builder.add_actuator(ControllerPD, indices=[dofs[1]], kp=150.0)
-        builder.add_actuator(ControllerPD, indices=[dofs[2]], delay=3, kp=200.0)
-        builder.add_actuator(ControllerPD, indices=[dofs[3]], delay=3, kp=250.0)
-        builder.add_actuator(ControllerPD, indices=[dofs[4]], delay=7, kp=300.0)
-        builder.add_actuator(ControllerPD, indices=[dofs[5]], delay=7, kp=350.0)
+        builder.add_actuator(ControllerPD, index=dofs[0], kp=100.0)
+        builder.add_actuator(ControllerPD, index=dofs[1], kp=150.0)
+        builder.add_actuator(ControllerPD, index=dofs[2], delay=3, kp=200.0)
+        builder.add_actuator(ControllerPD, index=dofs[3], delay=3, kp=250.0)
+        builder.add_actuator(ControllerPD, index=dofs[4], delay=7, kp=300.0)
+        builder.add_actuator(ControllerPD, index=dofs[5], delay=7, kp=350.0)
 
         model = builder.finalize()
 
@@ -152,59 +152,6 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(delay7.num_actuators, 2)
 
         np.testing.assert_array_almost_equal(delay3.controller.kp.numpy(), [200.0, 250.0])
-
-    def test_multi_input_actuator_2d_indices(self):
-        """Test actuators with multiple input indices (2D index arrays)."""
-        builder = newton.ModelBuilder()
-
-        bodies = [builder.add_body() for _ in range(6)]
-        joints = []
-        for i, body in enumerate(bodies):
-            parent = -1 if i == 0 else bodies[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-
-        dofs = [builder.joint_qd_start[j] for j in joints]
-
-        builder.add_actuator(ControllerPD, indices=[dofs[0], dofs[1]], kp=100.0)
-        builder.add_actuator(ControllerPD, indices=[dofs[2], dofs[3]], kp=200.0)
-        builder.add_actuator(ControllerPD, indices=[dofs[4], dofs[5]], kp=300.0)
-
-        model = builder.finalize()
-
-        self.assertEqual(len(model.actuators), 1)
-        act = model.actuators[0]
-
-        self.assertEqual(act.num_actuators, 3)
-
-        input_arr = act.indices.numpy()
-        self.assertEqual(input_arr.shape, (3, 2))
-
-        np.testing.assert_array_equal(input_arr[0], [dofs[0], dofs[1]])
-        np.testing.assert_array_equal(input_arr[1], [dofs[2], dofs[3]])
-        np.testing.assert_array_equal(input_arr[2], [dofs[4], dofs[5]])
-
-        np.testing.assert_array_almost_equal(act.controller.kp.numpy(), [100.0, 200.0, 300.0])
-
-    def test_dimension_mismatch_raises_error(self):
-        """Test that mixing different input dimensions raises an error."""
-        builder = newton.ModelBuilder()
-
-        bodies = [builder.add_body() for _ in range(3)]
-        joints = []
-        for i, body in enumerate(bodies):
-            parent = -1 if i == 0 else bodies[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-
-        dofs = [builder.joint_qd_start[j] for j in joints]
-
-        builder.add_actuator(ControllerPD, indices=[dofs[0]], kp=100.0)
-
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_actuator(ControllerPD, indices=[dofs[1], dofs[2]], kp=200.0)
-
-        self.assertIn("dimension mismatch", str(ctx.exception))
 
 
 @unittest.skipUnless(HAS_USD, "pxr not installed")
@@ -279,7 +226,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         for i, jname in enumerate(joint_names):
             j_idx = single_articulation_builder.joint_label.index(jname)
             dof = single_articulation_builder.joint_qd_start[j_idx]
-            single_articulation_builder.add_actuator(ControllerPD, indices=[dof], kp=100.0 * (i + 1))
+            single_articulation_builder.add_actuator(ControllerPD, index=dof, kp=100.0 * (i + 1))
 
         single_world_builder = newton.ModelBuilder()
         for _i in range(num_articulations_per_world):
@@ -452,7 +399,7 @@ class TestActuatorStepIntegration(unittest.TestCase):
         for dof in dofs:
             builder.add_actuator(
                 controller_class,
-                indices=[dof],
+                index=dof,
                 clamping=clamping,
                 delay=delay,
                 **controller_kwargs,

@@ -196,13 +196,10 @@ class ModelBuilder:
     class ActuatorEntry:
         """Stores accumulated specs for one group of compatible composed actuators.
 
-        Each element in ``indices`` represents one actuator's DOF indices.
-        For single-DOF actuators: [[idx1], [idx2], ...] → flattened to 1D array
-        For multi-DOF actuators: [[idx1, idx2], [idx3, idx4], ...] → 2D array
-
-        The entry key is ``(controller_class, delay, clamping_key, ctrl_shared_key)``
-        where shared params (e.g. ``delay``, ``network_path``, lookup tables) must be
-        identical across all actuators in a group.
+        Each element in ``indices`` is a single DOF index.  The entry key is
+        ``(controller_class, delay, clamping_key, ctrl_shared_key)`` where
+        shared params (e.g. ``delay``, ``network_path``, lookup tables) must
+        be identical across all actuators in a group.
         """
 
         controller_class: type  # Controller subclass (e.g. ControllerPD)
@@ -210,7 +207,7 @@ class ModelBuilder:
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
         controller_shared_kwargs: dict  # Shared controller kwargs (e.g. network_path)
-        indices: list[list[int]]  # Per-actuator DOF indices
+        indices: list[int]  # Per-actuator DOF indices
         controller_args: list[dict[str, Any]]  # Per-actuator controller array params
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
@@ -1687,23 +1684,22 @@ class ModelBuilder:
     def add_actuator(
         self,
         controller_class: type[Controller],
-        indices: list[int],
+        index: int,
         clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
         delay: int | None = None,
         **controller_kwargs: Any,
     ) -> None:
-        """Add an external actuator, independent of any ``UsdPhysics`` joint drives.
+        """Add an external actuator for a single DOF.
 
         External actuators apply forces computed outside the physics engine.
         Multiple calls with the same *controller_class*, *delay*, *clamping*
-        types, and identical shared parameters are accumulated into one entry;
-        the :class:`~newton.actuators.Actuator` instance is created during
+        types, and identical shared parameters are accumulated into one
+        :class:`~newton.actuators.Actuator` instance during
         :meth:`finalize <ModelBuilder.finalize>`.
 
         Args:
             controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
-            indices: DOF indices this actuator reads from and writes to.
-                Length 1 for single-DOF, length > 1 for multi-DOF actuators.
+            index: DOF index this actuator reads from and writes to.
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-controller. E.g. ``[(ClampingMaxForce, {'max_force': 50.0})]``.
             delay: Optional integer number of timesteps to delay inputs.
@@ -1760,18 +1756,7 @@ class ModelBuilder:
             ),
         )
 
-        # Validate dimension consistency before appending
-        if entry.indices:
-            expected_dim = len(entry.indices[0])
-            if len(indices) != expected_dim:
-                raise ValueError(
-                    f"Indices dimension mismatch for {controller_class.__name__}: "
-                    f"expected {expected_dim}, got {len(indices)}. "
-                    f"All actuators of the same type must have the same number of DOFs."
-                )
-
-        # Each call adds one actuator with its indices and per-DOF params
-        entry.indices.append(indices)
+        entry.indices.append(index)
         entry.controller_args.append(ctrl_array_params)
         entry.clamping_args.append(clamping_array_params_list)
 
@@ -1802,39 +1787,19 @@ class ModelBuilder:
         return result
 
     @staticmethod
-    def _build_index_array(indices: list[list[int]], device: Devicelike) -> wp.array:
-        """Build a warp array from nested index lists.
-
-        If all inner lists have length 1, creates a 1D array (N,).
-        Otherwise, creates a 2D array (N, M) where M is the inner list length.
+    def _build_index_array(indices: list[int], device: Devicelike) -> wp.array:
+        """Build a 1-D warp index array from a flat list of DOF indices.
 
         Args:
-            indices: Nested list of indices, one inner list per actuator.
+            indices: Flat list of DOF indices, one per actuator.
             device: Device for the warp array.
 
         Returns:
-            Array with shape ``(N,)`` or ``(N, M)``.
-
-        Raises:
-            ValueError: If inner lists have inconsistent lengths (for 2D case).
+            Array with shape ``(N,)``.
         """
         if not indices:
             return wp.array([], dtype=wp.uint32, device=device)
-
-        inner_lengths = [len(idx_list) for idx_list in indices]
-        max_len = max(inner_lengths)
-
-        if max_len == 1:
-            # All single-input: flatten to 1D
-            flat = [idx_list[0] for idx_list in indices]
-            return wp.array(flat, dtype=wp.uint32, device=device)
-        else:
-            # Multi-input: create 2D array
-            if not all(length == max_len for length in inner_lengths):
-                raise ValueError(
-                    f"All actuators must have the same number of inputs for 2D indexing. Got lengths: {inner_lengths}"
-                )
-            return wp.array(indices, dtype=wp.uint32, device=device)
+        return wp.array(indices, dtype=wp.uint32, device=device)
 
     @property
     def default_site_cfg(self) -> ShapeConfig:
@@ -3314,9 +3279,8 @@ class ModelBuilder:
                     clamping_args=[],
                 ),
             )
-            # Offset indices by start_joint_dof_idx (each actuator's indices are a list)
-            for idx_list in sub_entry.indices:
-                entry.indices.append([idx + start_joint_dof_idx for idx in idx_list])
+            for idx in sub_entry.indices:
+                entry.indices.append(idx + start_joint_dof_idx)
             entry.controller_args.extend(sub_entry.controller_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
 

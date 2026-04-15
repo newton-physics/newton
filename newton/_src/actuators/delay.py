@@ -58,9 +58,9 @@ class Delay:
     class State:
         """Circular buffer state for delayed targets."""
 
-        buffer_pos: wp.array2d[float] | None = None
-        buffer_vel: wp.array2d[float] | None = None
-        buffer_act: wp.array2d[float] | None = None
+        buffer_pos: wp.array2d[float] = None
+        buffer_vel: wp.array2d[float] = None
+        buffer_act: wp.array2d[float] = None
         write_idx: int = 0
         is_filled: bool = False
 

@@ -2763,9 +2763,9 @@ def parse_usd(
         parsed = parse_actuator_prim(prim)
         if parsed is None:
             continue
-        dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
-        if not dof_indices:
+        if parsed.target_path not in path_to_dof:
             continue
+        dof_index = path_to_dof[parsed.target_path]
 
         # Separate Delay from Clamping components in the parsed spec
         delay_val = None
@@ -2778,7 +2778,7 @@ def parse_usd(
 
         builder.add_actuator(
             parsed.controller_class,
-            indices=dof_indices,
+            index=dof_index,
             clamping=clamping_specs if clamping_specs else None,
             delay=delay_val,
             **parsed.controller_kwargs,

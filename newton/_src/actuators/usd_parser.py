@@ -82,7 +82,7 @@ class ParsedActuator:
     controller_class: type
     controller_kwargs: dict[str, Any] = field(default_factory=dict)
     component_specs: list[tuple[type, dict[str, Any]]] = field(default_factory=list)
-    target_paths: list[str] = field(default_factory=list)
+    target_path: str = ""
 
 
 def get_attribute(prim, name: str, default: Any = None) -> Any:
@@ -93,12 +93,15 @@ def get_attribute(prim, name: str, default: Any = None) -> Any:
     return attr.Get()
 
 
-def get_relationship_targets(prim, name: str) -> list[str]:
-    """Get relationship target paths from a USD prim."""
+def get_relationship_target(prim, name: str) -> str | None:
+    """Get the single relationship target path from a USD prim."""
     rel = prim.GetRelationship(name)
     if not rel:
-        return []
-    return [str(t) for t in rel.GetTargets()]
+        return None
+    targets = rel.GetTargets()
+    if len(targets) != 1:
+        return None
+    return str(targets[0])
 
 
 def get_schemas_from_prim(prim) -> list[str]:
@@ -131,8 +134,8 @@ def parse_actuator_prim(prim) -> ParsedActuator | None:
     if prim.GetTypeName() != "NewtonActuator":
         return None
 
-    target_paths = get_relationship_targets(prim, "newton:actuator:target")
-    if not target_paths:
+    target_path = get_relationship_target(prim, "newton:actuator:target")
+    if target_path is None:
         return None
 
     schemas = get_schemas_from_prim(prim)
@@ -174,5 +177,5 @@ def parse_actuator_prim(prim) -> ParsedActuator | None:
         controller_class=controller_class,
         controller_kwargs=controller_kwargs,
         component_specs=component_specs,
-        target_paths=target_paths,
+        target_path=target_path,
     )
