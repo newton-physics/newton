@@ -686,9 +686,6 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - USD attribute
      - Newton property
      - Default
-   * - ``mjc:damping`` :sup:`reuse`
-     - ``rigid_body_linear_damping``
-     - 0.0
    * - ``mjc:gravcomp`` :sup:`ext`
      - ``mujoco.gravcomp``
      - 0.0
