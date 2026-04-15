@@ -61,6 +61,7 @@ from ._src.sim import (  # noqa: E402
     eval_ik,
     eval_jacobian,
     eval_mass_matrix,
+    reset_state,
 )
 
 __all__ += [
@@ -78,6 +79,7 @@ __all__ += [
     "eval_ik",
     "eval_jacobian",
     "eval_mass_matrix",
+    "reset_state",
 ]
 
 # ==================================================================================

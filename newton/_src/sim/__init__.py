@@ -30,4 +30,19 @@ __all__ = [
     "eval_ik",
     "eval_jacobian",
     "eval_mass_matrix",
+    "reset_state",
 ]
+
+
+def reset_state(model: Model, state: State, eval_fk: bool = True) -> None:
+    """Reset a state to the model's initial configuration.
+
+    Convenience wrapper for :meth:`Model.reset_state`. See that method for
+    full documentation.
+
+    Args:
+        model: The model whose initial configuration to restore.
+        state: The state object to reset.
+        eval_fk: Whether to re-evaluate forward kinematics.
+    """
+    model.reset_state(state, eval_fk=eval_fk)
