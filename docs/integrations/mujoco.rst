@@ -735,6 +735,21 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - ``mjc:actEarly``
      - ``mujoco.actuator_actearly``
      - ``False``
+   * - ``mjc:ctrlLimited``
+     - ``mujoco.actuator_ctrllimited``
+     - ``"auto"``
+   * - ``mjc:forceLimited``
+     - ``mujoco.actuator_forcelimited``
+     - ``"auto"``
+   * - ``mjc:actLimited``
+     - ``mujoco.actuator_actlimited``
+     - ``"auto"``
+   * - ``mjc:inheritRange``
+     - *(resolves range from transmission target)*
+     -
+   * - ``mjc:target``
+     - *(USD relationship → transmission target)*
+     -
 
 **Tendon** (``MjcTendon``):
 
@@ -807,13 +822,11 @@ Authoring them on USD prims has no effect.
 - **Body**: ``mjc:inertia``, ``mjc:mpos``, ``mjc:mquat``,
   ``mjc:shellinertia``
 - **Actuator**: ``mjc:act``, ``mjc:ctrl``, ``mjc:crankLength``,
-  ``mjc:ctrlLimited``, ``mjc:forceLimited``, ``mjc:actLimited``,
-  ``mjc:inheritRange``, ``mjc:target``, ``mjc:refSite``, ``mjc:sliderSite``
+  ``mjc:refSite``, ``mjc:sliderSite``
 - **Solver options**: ``mjc:option:noslip_iterations``,
   ``mjc:option:noslip_tolerance``, ``mjc:option:actuatorgroupdisable``,
   ``mjc:option:o_friction``, ``mjc:option:o_margin``,
-  ``mjc:option:o_solimp``, ``mjc:option:o_solref``, ``mjc:option:timestep``
-  (the built-in ``time_steps_per_second`` property handles this instead)
+  ``mjc:option:o_solimp``, ``mjc:option:o_solref``
 
 
 .. _mujoco-custom-attribute-parsing:
