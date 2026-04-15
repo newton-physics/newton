@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -8795,12 +8796,16 @@ class TestRegisterCustomAttributesDocstringCoverage(unittest.TestCase):
         docstring = SolverMuJoCo.register_custom_attributes.__doc__
         self.assertIsNotNone(docstring, "register_custom_attributes must have a docstring")
 
+        def _contains_exact_name(name: str) -> bool:
+            pattern = rf"(?<![A-Za-z0-9_:]){re.escape(name)}(?![A-Za-z0-9_:])"
+            return re.search(pattern, docstring) is not None
+
         # Collect all mujoco-namespace attribute names
         missing_attrs = []
         for _key, attr in builder.custom_attributes.items():
             if attr.namespace != "mujoco":
                 continue
-            if attr.name not in docstring:
+            if not _contains_exact_name(attr.name):
                 missing_attrs.append(attr.name)
 
         self.assertEqual(
@@ -8815,7 +8820,7 @@ class TestRegisterCustomAttributesDocstringCoverage(unittest.TestCase):
         for key, _freq in builder.custom_frequencies.items():
             if not key.startswith("mujoco:"):
                 continue
-            if key not in docstring:
+            if not _contains_exact_name(key):
                 missing_freqs.append(key)
 
         self.assertEqual(
