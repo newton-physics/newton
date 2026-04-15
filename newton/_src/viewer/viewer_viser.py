@@ -681,35 +681,38 @@ class ViewerViser(ViewerBase):
         if not self._scalar_dirty:
             return
 
-        from viser import uplot
+        try:
+            from viser import uplot
 
-        # Create the plots folder on first use.
-        if self._plot_folder is None:
-            self._plot_folder = self._server.gui.add_folder("Plots")
+            # Create the plots folder on first use.
+            if self._plot_folder is None:
+                self._plot_folder = self._server.gui.add_folder("Plots")
 
-        n = self._plot_history_size
-        x = np.arange(n, dtype=np.float64)
+            n = self._plot_history_size
+            x = np.arange(n, dtype=np.float64)
 
-        for name in self._scalar_dirty:
-            buf = self._scalar_buffers[name]
-            y = np.full(n, np.nan, dtype=np.float64)
-            y[n - len(buf) :] = np.array(buf, dtype=np.float64)
+            for name in self._scalar_dirty:
+                buf = self._scalar_buffers[name]
+                y = np.full(n, np.nan, dtype=np.float64)
+                y[n - len(buf) :] = np.array(buf, dtype=np.float64)
 
-            handle = self._plot_handles.get(name)
-            if handle is None:
-                with self._plot_folder:
-                    handle = self._server.gui.add_uplot(
-                        data=(x, y),
-                        series=(
-                            uplot.Series(label="step"),
-                            uplot.Series(label=name, stroke="#3b82f6", width=2),
-                        ),
-                        scales={"x": uplot.Scale(time=False)},
-                        aspect=2.0,
-                    )
-                self._plot_handles[name] = handle
-            else:
-                handle.data = (x, y)
+                handle = self._plot_handles.get(name)
+                if handle is None:
+                    with self._plot_folder:
+                        handle = self._server.gui.add_uplot(
+                            data=(x, y),
+                            series=(
+                                uplot.Series(label="step"),
+                                uplot.Series(label=name, stroke="#3b82f6", width=2),
+                            ),
+                            scales={"x": uplot.Scale(time=False)},
+                            aspect=2.0,
+                        )
+                    self._plot_handles[name] = handle
+                else:
+                    handle.data = (x, y)
+        except Exception:
+            pass
 
         self._scalar_dirty.clear()
 
