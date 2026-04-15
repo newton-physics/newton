@@ -1105,6 +1105,7 @@ def _expand_batched_fields(target_obj: Any, reference_obj: Any, field_names: lis
 # - body_pos, body_quat: Newton recomputes from joint transforms (~3e-8 float diff)
 MODEL_BACKFILL_FIELDS: list[str] = [
     "body_inertia",
+    "body_ipos",
     "body_iquat",
     "body_invweight0",
     "dof_invweight0",
@@ -1994,8 +1995,7 @@ class TestMenagerie_ShadowHand(TestMenagerieMJCF):
 
     robot_folder = "shadow_hand"
     robot_xml = "scene_right.xml"
-    # Dynamics disabled: tendon_invweight0 diff causes qvel drift 2.3e-5 (#2170)
-    num_steps = 0
+    num_steps = 20
     fk_enabled = True
     # tendon_invweight0 is compilation-dependent (derived from inertia)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"tendon_invweight0"}
@@ -2129,8 +2129,8 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
 
     robot_folder = "apptronik_apollo"
     backfill_model = True
-    # Dynamics disabled: qvel divergence 5.8e-5 (model compilation diffs amplified by free joint)
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 5e-5
     fk_enabled = True
     njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
@@ -2252,9 +2252,10 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
-    # Dynamics disabled: qvel divergence 7.2e-5 (model compilation diffs amplified by free joint)
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 1e-4
     fk_enabled = True
+    backfill_model = True
 
 
 class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
