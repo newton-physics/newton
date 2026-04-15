@@ -818,11 +818,13 @@ Authoring them on USD prims has no effect.
 - **Flags** (``mjc:flag:*``): all flags except ``mjc:flag:gravity``
   (``actuation``, ``clampctrl``, ``contact``, ``equality``, ``multiccd``,
   ``nativeccd``, ``warmstart``, etc.)
-- **Joint**: ``mjc:qpos``, ``mjc:qvel``, ``mjc:group``, ``mjc:jointInParent``
-- **Body**: ``mjc:inertia``, ``mjc:mpos``, ``mjc:mquat``,
-  ``mjc:shellinertia``
+- **Keyframe** (``MjcKeyframe``): ``mjc:qpos``, ``mjc:qvel``,
+  ``mjc:mpos``, ``mjc:mquat``
+- **Shape / collision**: ``mjc:inertia`` (mesh inertia mode),
+  ``mjc:shellinertia``, ``mjc:group``
 - **Actuator**: ``mjc:act``, ``mjc:ctrl``, ``mjc:crankLength``,
-  ``mjc:refSite``, ``mjc:sliderSite``
+  ``mjc:jointInParent``, ``mjc:refSite``, ``mjc:sliderSite``,
+  ``mjc:group``
 - **Solver options**: ``mjc:option:noslip_iterations``,
   ``mjc:option:noslip_tolerance``, ``mjc:option:actuatorgroupdisable``,
   ``mjc:option:o_friction``, ``mjc:option:o_margin``,
