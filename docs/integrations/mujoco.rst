@@ -756,13 +756,13 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
      - ``False``
    * - ``mjc:ctrlLimited``
      - ``mujoco.actuator_ctrllimited``
-     - ``"auto"``
+     - 2 (auto)
    * - ``mjc:forceLimited``
      - ``mujoco.actuator_forcelimited``
-     - ``"auto"``
+     - 2 (auto)
    * - ``mjc:actLimited``
      - ``mujoco.actuator_actlimited``
-     - ``"auto"``
+     - 2 (auto)
    * - ``mjc:inheritRange``
      - *(resolves ctrlrange from transmission target)*
      - 0 (disabled)
@@ -821,6 +821,18 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - ``mjc:actuatorfrcrange:min`` / ``max`` :sup:`reuse`
      - ``mujoco.tendon_actuator_force_range``
      - ``(0, 0)``
+   * - ``mjc:type`` :sup:`ext`
+     - ``mujoco.tendon_type``
+     - *(parsed from prim)*
+   * - ``mjc:path`` :sup:`ext` *(relationship)*
+     - *(resolves spatial tendon wrap path)*
+     -
+   * - ``mjc:path:indices`` :sup:`ext`
+     - *(wrap element joint/site indices)*
+     -
+   * - ``mjc:path:coef`` :sup:`ext`
+     - *(wrap element coefficients)*
+     -
 
 :sup:`ext` = Newton extension — not defined in the mjcPhysics schema.  These
 correspond to MuJoCo XML attributes that do not yet have a schema counterpart.
