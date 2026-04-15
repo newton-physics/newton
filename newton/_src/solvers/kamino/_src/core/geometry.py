@@ -331,6 +331,31 @@ class GeometriesModel:
     Shape of ``(num_excluded_geom_pairs,)`` and type :class:`vec2i`.
     """
 
+    ###
+    # Mesh / Heightfield Data (pass-through from Newton Model)
+    ###
+
+    heightfield_index: wp.array | None = None
+    """Per-shape heightfield index (``-1`` for non-heightfield shapes)."""
+
+    heightfield_data: wp.array | None = None
+    """Concatenated :class:`HeightfieldData` structs for all heightfields."""
+
+    heightfield_elevations: wp.array | None = None
+    """Concatenated elevation samples for all heightfields."""
+
+    collision_aabb_lower: wp.array | None = None
+    """Per-shape local-space collision AABB lower bounds."""
+
+    collision_aabb_upper: wp.array | None = None
+    """Per-shape local-space collision AABB upper bounds."""
+
+    voxel_resolution: wp.array | None = None
+    """Per-shape voxel resolution for mesh contact reduction."""
+
+    collision_radius: wp.array | None = None
+    """Per-shape bounding-sphere radius for broadphase AABB computation."""
+
 
 @dataclass
 class GeometriesData:
