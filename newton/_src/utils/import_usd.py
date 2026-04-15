@@ -2501,8 +2501,7 @@ def parse_usd(
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = _get_material_props_cached(prim)
                 collider_has_visual_material = (
-                    key == UsdPhysics.ObjectType.MeshShape
-                    and _has_visual_material_properties(material_props)
+                    key == UsdPhysics.ObjectType.MeshShape and _has_visual_material_properties(material_props)
                 )
 
                 # Explicit hide_collision_shapes overrides material-based visibility:
