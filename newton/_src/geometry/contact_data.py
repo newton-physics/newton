@@ -37,6 +37,7 @@ class ContactData:
         contact_stiffness: Contact stiffness. 0.0 means no stiffness was set.
         contact_damping: Contact damping scale. 0.0 means no damping was set.
         contact_friction_scale: Friction scaling factor. 0.0 means no friction was set.
+        sort_sub_key: Sub-key for deterministic contact sorting (encodes edge/triangle/vertex index).
     """
 
     contact_point_center: wp.vec3
@@ -52,6 +53,34 @@ class ContactData:
     contact_stiffness: float
     contact_damping: float
     contact_friction_scale: float
+    sort_sub_key: int
+
+
+@wp.func
+def make_contact_sort_key(shape_a: int, shape_b: int, sort_sub_key: int) -> wp.int64:
+    """Build a 64-bit sort key for deterministic contact ordering.
+
+    Layout (bit 63 kept zero so int64 order matches uint64 order)::
+
+        [62:43] shape_a      (20 bits, max 1,048,575 shapes)
+        [42:23] shape_b      (20 bits, max 1,048,575 shapes)
+        [22:0]  sort_sub_key (23 bits, max 8,388,607)
+
+    Values exceeding these bit widths are silently masked.  The effective
+    limits depend on upstream bit consumption in each contact path:
+
+    - Mesh-triangle contacts: ``(tri_idx << 1) | 1`` — 22 effective bits
+      for ``tri_idx`` (~4M triangles).  When expanded by the multi-contact
+      path (``<< 3 | i``), this drops to 19 effective bits (~524K triangles).
+    - SDF contacts: ``(edge_idx << 2) | (mode << 1)`` — 21 effective bits
+      for ``edge_idx`` (~2M edges).  After multi-contact expansion
+      (``<< 3``), 18 effective bits (~262K edges).
+    """
+    return (
+        ((wp.int64(shape_a) & wp.int64(0xFFFFF)) << wp.int64(43))
+        | ((wp.int64(shape_b) & wp.int64(0xFFFFF)) << wp.int64(23))
+        | (wp.int64(sort_sub_key) & wp.int64(0x7FFFFF))
+    )
 
 
 @wp.func
