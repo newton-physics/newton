@@ -89,11 +89,11 @@ STYLE_REGISTRY: dict[str, ShadingStyleConfig] = {
             1: np.array([0.6, 1.0, 0.8], dtype=np.float32),  # Y-up
             2: np.array([0.8, 0.6, 1.0], dtype=np.float32),  # Z-up
         },
-        sky_upper=(0.98, 0.98, 1.0),
-        sky_lower=(0.55, 0.55, 0.60),
+        sky_upper=(0.68, 0.68, 0.72),
+        sky_lower=(0.32, 0.32, 0.36),
         draw_sun=False,
         overrides={
-            "fog_color": (0.93, 0.93, 0.95),
+            "fog_color": (0.55, 0.55, 0.58),
             "sky_color": (0.72, 0.82, 0.98),
             "ground_color": (0.50, 0.45, 0.38),
             "light_color": (0.92, 0.90, 0.86),
