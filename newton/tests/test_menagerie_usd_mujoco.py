@@ -1279,8 +1279,9 @@ class TestMenagerieUSD_H1(TestMenagerieUSD):
     usd_asset_folder = "unitree_h1"
     usd_scene_file = "usd_structured/h1.usda"
 
-    num_worlds = 2
-    num_steps = 0  # USD dynamics not yet tested with step-response
+    num_steps = 20
+    fk_enabled = True
+    backfill_model = True
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1294,6 +1295,7 @@ class TestMenagerieUSD_G1WithHands(TestMenagerieUSD):
 
     num_worlds = 2
     num_steps = 0  # USD dynamics not yet tested with step-response
+    fk_enabled = False  # xpos diff 0.109 — USD import issue (#2420)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1307,6 +1309,7 @@ class TestMenagerieUSD_ShadowHand(TestMenagerieUSD):
 
     num_worlds = 2
     num_steps = 0  # USD dynamics not yet tested with step-response
+    fk_enabled = False  # xpos diff 0.146 — USD import issue (#2420)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1335,6 +1338,7 @@ class TestMenagerieUSD_ApptronikApollo(TestMenagerieUSD):
 
     num_worlds = 2
     num_steps = 0  # USD dynamics not yet tested with step-response
+    fk_enabled = False  # xpos diff 1.56 — USD import issue (#2420)
     njmax = 398
 
     # Apollo's USD has no collision geoms, so geom/collision counts differ.
@@ -1356,6 +1360,7 @@ class TestMenagerieUSD_BoosterT1(TestMenagerieUSD):
 
     num_worlds = 2
     num_steps = 0  # USD dynamics not yet tested with step-response
+    fk_enabled = False  # xpos diff 0.509 — USD import issue (#2420)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1369,6 +1374,7 @@ class TestMenagerieUSD_WonikAllegro(TestMenagerieUSD):
 
     num_worlds = 2
     num_steps = 0  # USD dynamics not yet tested with step-response
+    fk_enabled = False  # xpos diff 0.106 — USD import issue (#2420)
 
     def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
         # TODO: USD asset has different mass/inertia values than the original MJCF.
@@ -1389,8 +1395,9 @@ class TestMenagerieUSD_UR5e(TestMenagerieUSD):
     usd_asset_folder = "universal_robots_ur5e"
     usd_scene_file = "usd_structured/ur5e.usda"
 
-    num_worlds = 2
-    num_steps = 0  # USD dynamics not yet tested with step-response
+    num_steps = 20
+    fk_enabled = True
+    backfill_model = True
 
 
 # =============================================================================

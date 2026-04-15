@@ -975,7 +975,6 @@ class ModelKamino:
         shape_scale_np = model.shape_scale.numpy()
         shape_flags_np = model.shape_flags.numpy()
         geom_shape_collision_group_np = model.shape_collision_group.numpy()
-        geom_shape_type_np = np.array(shape_type_np, dtype=int)
         geom_shape_params_np = np.zeros((model.shape_count, 4), dtype=float)
         model_num_collidable_geoms = 0
         for s in range(model.shape_count):
@@ -1311,7 +1310,7 @@ class ModelKamino:
                 wid=model.shape_world,
                 gid=wp.array(shape_sid_np, dtype=int32),  # TODO: Remove
                 bid=model.shape_body,
-                type=wp.array(geom_shape_type_np, dtype=int32),
+                type=wp.array(shape_type_np, dtype=int32),
                 flags=model.shape_flags,
                 ptr=model.shape_source_ptr,
                 params=wp.array(geom_shape_params_np, dtype=vec4f),
@@ -1322,6 +1321,14 @@ class ModelKamino:
                 margin=model.shape_margin,
                 collidable_pairs=model.shape_contact_pairs,
                 excluded_pairs=wp.array(sorted(model.shape_collision_filter_pairs), dtype=vec2i),
+                # Mesh / heightfield data pass-through from Newton model
+                heightfield_index=model.shape_heightfield_index,
+                heightfield_data=model.heightfield_data,
+                heightfield_elevations=model.heightfield_elevations,
+                collision_aabb_lower=model.shape_collision_aabb_lower,
+                collision_aabb_upper=model.shape_collision_aabb_upper,
+                voxel_resolution=model._shape_voxel_resolution,
+                collision_radius=model.shape_collision_radius,
             )
 
             # Per-material properties
