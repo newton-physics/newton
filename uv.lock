@@ -5906,17 +5906,17 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.12.1"
+version = "1.13.0.dev20260413"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.1-py3-none-macosx_11_0_arm64.whl", hash = "sha256:98df3533a6c40a33cce961f8efa991006b30c9d286356e4cd77ea8ce86928f1d" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.1-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:6bf01f10509488ba8eacaf4ec7fcf7cfbd503118b22e002ecba407b40a17424e" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.1-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:af6d680e79c1be6e46ddf80ecaa358f222804f882f4683260a7b4abd80a0981b" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.12.1-py3-none-win_amd64.whl", hash = "sha256:826b2f93df8e47eac0c751a8eb5a0533e2fc5434158c8896a63be53bfbd728c7" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.13.0.dev20260413-py3-none-macosx_11_0_arm64.whl", hash = "sha256:50ab8d4538c808469bb7d4aaf909e250db365cb571e4f6d5a7350aaf5d9fb6b5" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.13.0.dev20260413-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:ed4c9bc8f8b0c252dc6afd1bd9b1b535ea803ca21a623ae27bbe75b3142c2e9c" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.13.0.dev20260413-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:22559b23bfe04596e855fa48672220b9f3178c10cb866fddfa4d10d3068412a7" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.13.0.dev20260413-py3-none-win_amd64.whl", hash = "sha256:ad6ef8a2b258734dbeb07f9dbbe3819b83e023f9bd658152e7e70dde04fe5337" },
 ]
 
 [[package]]
