@@ -1524,6 +1524,10 @@ class TestMenagerieBase(unittest.TestCase):
         mj_data = _mujoco.MjData(mj_model)
         _mujoco.mj_forward(mj_model, mj_data)
 
+        # Zero geom margins for NATIVECCD compatibility — mujoco_warp rejects
+        # non-zero margins at put_model() time (#2106).
+        mj_model.geom_margin[:] = 0.0
+
         # Create mujoco_warp model/data with multiple worlds
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)
