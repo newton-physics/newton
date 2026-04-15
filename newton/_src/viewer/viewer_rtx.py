@@ -124,7 +124,7 @@ class ViewerRTX(ViewerUSD):
         paused=False,
         environment="default",
         vsync=False,
-        async_rendering=False,
+        async_rendering=True,
     ):
         # FIXME: Disable USD checks in OVRTX that refuse to load the library if `usd-core` is present.
         # This is a temporary workaround until OVRTX is shipped with namespaced USD libs.
