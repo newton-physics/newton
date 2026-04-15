@@ -869,8 +869,11 @@ void main()
     float checker_scale = 1.0;
 
     // Ground plane (checker) should look matte in studio lighting
-    if (checker_enable > 0.0)
+    float ground_dampen = 1.0;
+    if (checker_enable > 0.0) {
         roughness = max(roughness, 0.85);
+        ground_dampen = 0.35;  // reduce direct light on ground
+    }
 
     // convert to linear space
     vec3 albedo = pow(ObjectColor, vec3(2.2));
@@ -970,7 +973,8 @@ void main()
     vec3 catch_light = albedo * light_color * 0.06 * pow(NdotV_clamp, 3.0);
 
     float shadow = (enable_shadows != 0) ? ShadowCalculation() : 0.0;
-    vec3 color = ambient + (1.0 - shadow) * (diffuse + spec * specular_scale + spec_fill * 0.20 * specular_scale) + rim_color + catch_light;
+    vec3 direct = (diffuse + spec * specular_scale + spec_fill * 0.20 * specular_scale) * ground_dampen;
+    vec3 color = ambient + (1.0 - shadow) * direct + rim_color + catch_light;
 
     // Apply exposure for brightness control (no ACES — studio uses lower
     // light multipliers that stay in a moderate range where filmic rolloff
