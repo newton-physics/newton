@@ -45,23 +45,23 @@ class TestViewerResetSignal(unittest.TestCase):
         viewer = _StubViewer()
         self.assertFalse(viewer.is_reset_requested())
 
-    def test_request_and_query(self):
-        """Setting _reset_requested is visible via is_reset_requested."""
+    def test_request_reset(self):
+        """request_reset() sets the flag visible via is_reset_requested."""
         viewer = _StubViewer()
-        viewer._reset_requested = True
+        viewer.request_reset()
         self.assertTrue(viewer.is_reset_requested())
 
     def test_clear_reset_request(self):
         """clear_reset_request resets the flag to False."""
         viewer = _StubViewer()
-        viewer._reset_requested = True
+        viewer.request_reset()
         viewer.clear_reset_request()
         self.assertFalse(viewer.is_reset_requested())
 
     def test_clear_model_resets_flag(self):
         """clear_model() should clear the reset flag."""
         viewer = _StubViewer()
-        viewer._reset_requested = True
+        viewer.request_reset()
         viewer.clear_model()
         self.assertFalse(viewer.is_reset_requested())
 

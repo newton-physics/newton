@@ -76,6 +76,15 @@ class ViewerBase(ABC):
         """Clear the reset-requested flag after the reset has been handled."""
         self._reset_requested = False
 
+    def request_reset(self) -> None:
+        """Request a simulation reset.
+
+        Sets the internal flag that :meth:`is_reset_requested` queries.
+        The next frame's run-loop iteration (or user code) should detect
+        the flag, perform the reset, and call :meth:`clear_reset_request`.
+        """
+        self._reset_requested = True
+
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.
 

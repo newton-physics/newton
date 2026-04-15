@@ -872,10 +872,19 @@ class Model:
             wp.copy(state.body_q, self.body_q)
             wp.copy(state.body_qd, self.body_qd)
             state.body_f.zero_()
+            if getattr(state, "body_q_prev", None) is not None:
+                wp.copy(state.body_q_prev, self.body_q)
+            if getattr(state, "body_qdd", None) is not None:
+                state.body_qdd.zero_()
+            if getattr(state, "body_parent_f", None) is not None:
+                state.body_parent_f.zero_()
 
         if self.joint_count:
             wp.copy(state.joint_q, self.joint_q)
             wp.copy(state.joint_qd, self.joint_qd)
+            mujoco_ns = getattr(state, "mujoco", None)
+            if mujoco_ns is not None and getattr(mujoco_ns, "qfrc_actuator", None) is not None:
+                mujoco_ns.qfrc_actuator.zero_()
 
         if eval_fk and self.joint_count:
             from .articulation import eval_fk as _eval_fk  # noqa: PLC0415

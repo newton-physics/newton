@@ -213,7 +213,7 @@ class _ExampleBrowser:
                         imgui.tree_pop()
                 imgui.separator()
                 if imgui.button("Reset"):
-                    self.viewer._reset_requested = True
+                    self.viewer.request_reset()
 
         self.callback = _browser_ui
         viewer.register_ui_callback(_browser_ui, position="panel")
