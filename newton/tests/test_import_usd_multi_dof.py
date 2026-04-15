@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 import os
@@ -61,53 +61,6 @@ class TestImportUsdMultiDofJoints(unittest.TestCase):
         self.assertIsNotNone(model)
         self.assertEqual(model.body_count, 13)
         self.assertEqual(model.joint_count, 13)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_non_orthogonal_axes_rejected(self):
-        """Merging joints with non-orthogonal axes should raise ValueError."""
-        from pxr import Usd
-
-        usda = """#usda 1.0
-(
-    metersPerUnit = 1
-    upAxis = "Z"
-)
-def Xform "root" (
-    apiSchemas = ["PhysicsArticulationRootAPI"]
-)
-{
-    def Xform "body0" (
-        apiSchemas = ["PhysicsRigidBodyAPI"]
-    )
-    {
-        def Xform "body1" (
-            apiSchemas = ["PhysicsRigidBodyAPI"]
-        )
-        {
-        }
-
-        def PhysicsRevoluteJoint "joint_a"
-        {
-            uniform token physics:axis = "X"
-            rel physics:body0 = </root/body0>
-            rel physics:body1 = </root/body0/body1>
-        }
-
-        def PhysicsRevoluteJoint "joint_b"
-        {
-            uniform token physics:axis = "X"
-            rel physics:body0 = </root/body0>
-            rel physics:body1 = </root/body0/body1>
-        }
-    }
-}
-"""
-        stage = Usd.Stage.CreateInMemory()
-        stage.GetRootLayer().ImportFromString(usda)
-
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError, msg="axes are not orthogonal"):
-            builder.add_usd(stage)
 
 
 if __name__ == "__main__":

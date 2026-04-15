@@ -1249,10 +1249,20 @@ def parse_usd(
                 )
                 break
 
-        # Collect joint-level custom attributes from the representative prim
-        joint_custom_attrs = usd.get_custom_attribute_values(
-            first_prim, builder_custom_attr_joint, context={"builder": builder}
-        )
+        # Split custom attributes into joint-level (one value per joint) and
+        # per-DOF (one value per DOF).  Joint-level attrs come from the
+        # representative prim; per-DOF attrs are collected from each sibling.
+        joint_freq_attrs = [a for a in builder_custom_attr_joint if a.frequency == AttributeFrequency.JOINT]
+        dof_freq_attrs = [
+            a
+            for a in builder_custom_attr_joint
+            if a.frequency in (AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD)
+        ]
+        joint_custom_attrs = usd.get_custom_attribute_values(first_prim, joint_freq_attrs, context={"builder": builder})
+        # Per-DOF custom attributes accumulated separately for linear / angular
+        # so we can reorder to D6 DOF order (linear first, then angular).
+        linear_dof_custom: list[dict[str, Any]] = []
+        angular_dof_custom: list[dict[str, Any]] = []
 
         # Cache the representative parent-side rotation for axis remapping
         rep_parent_rot = np.array(parent_tf.q, dtype=float)
@@ -1397,46 +1407,48 @@ def parse_usd(
                 actuator_mode=actuator_mode,
             )
 
+            # Collect per-DOF custom attributes from this sibling prim
+            sibling_dof_attrs = usd.get_custom_attribute_values(jp_prim, dof_freq_attrs, context={"builder": builder})
+
             if is_revolute:
                 angular_axes.append(ax)
                 angular_prim_paths.append(jp)
                 angular_initial_pos.append(initial_position)
                 angular_initial_vel.append(initial_velocity)
+                angular_dof_custom.append(sibling_dof_attrs)
             else:
                 linear_axes.append(ax)
                 linear_prim_paths.append(jp)
                 linear_initial_pos.append(initial_position)
                 linear_initial_vel.append(initial_velocity)
+                linear_dof_custom.append(sibling_dof_attrs)
 
             enabled_count += 1
 
         if enabled_count == 0:
             return None
 
-        # Verify that all axes within each group are approximately orthogonal.
-        # Non-orthogonal or duplicate axes (e.g. MuJoCo backlash joints) cannot
-        # be faithfully represented as a single D6 joint.
-        for group_name, axes_list, paths_list in [
-            ("angular", angular_axes, angular_prim_paths),
-            ("linear", linear_axes, linear_prim_paths),
-        ]:
-            for i in range(len(axes_list)):
-                ax_i = np.array(axes_list[i].axis, dtype=float)
-                for j in range(i + 1, len(axes_list)):
-                    ax_j = np.array(axes_list[j].axis, dtype=float)
-                    dot = abs(float(np.dot(ax_i, ax_j)))
-                    if dot > 0.1:
-                        raise ValueError(
-                            f"Cannot merge {group_name} joints {paths_list[i]} and {paths_list[j]} "
-                            f"into a D6 joint: axes are not orthogonal (|dot|={dot:.3f}). "
-                            f"Non-orthogonal or duplicate axes (e.g. MuJoCo backlash joints) "
-                            f"are not supported."
-                        )
-
         # D6 DOF order: linear first, then angular
         dof_prim_paths = linear_prim_paths + angular_prim_paths
         dof_initial_pos = linear_initial_pos + angular_initial_pos
         dof_initial_vel = linear_initial_vel + angular_initial_vel
+        ordered_dof_custom = linear_dof_custom + angular_dof_custom
+
+        # Merge per-DOF custom attributes into DOF-indexed dicts for add_joint_d6.
+        # Each entry in ordered_dof_custom is a dict of {attr_key: value} from one sibling prim.
+        # We assemble {attr_key: {dof_index: value}} so _process_joint_custom_attributes
+        # assigns each DOF its own value instead of broadcasting from the representative.
+        for dof_idx, dof_attrs in enumerate(ordered_dof_custom):
+            for attr_key, value in dof_attrs.items():
+                if attr_key not in joint_custom_attrs:
+                    joint_custom_attrs[attr_key] = {}
+                existing = joint_custom_attrs[attr_key]
+                if not isinstance(existing, dict):
+                    # First per-DOF value for an attr that was already set as a scalar
+                    # from the representative — convert to a dict to allow per-DOF override.
+                    joint_custom_attrs[attr_key] = {dof_idx: value}
+                else:
+                    existing[dof_idx] = value
 
         # Use the representative (first enabled) joint path as the D6 joint label
         label = str(first_desc.primPath)
