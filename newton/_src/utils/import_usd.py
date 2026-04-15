@@ -2425,7 +2425,7 @@ def parse_usd(
             if _is_uniform_scale(soft_mesh_scale):
                 add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
             else:
-                add_soft_mesh_kwargs["vertices"] = tetmesh.vertices * np.array(soft_mesh_scale, dtype=np.float32)
+                add_soft_mesh_kwargs["vertices"] = tetmesh_for_builder.vertices * np.array(soft_mesh_scale, dtype=np.float32)
 
             builder.add_soft_mesh(**add_soft_mesh_kwargs)
 
