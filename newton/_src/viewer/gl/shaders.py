@@ -868,6 +868,10 @@ void main()
     float texture_enable = Material.w;
     float checker_scale = 1.0;
 
+    // Ground plane (checker) should look matte in studio lighting
+    if (checker_enable > 0.0)
+        roughness = max(roughness, 0.85);
+
     // convert to linear space
     vec3 albedo = pow(ObjectColor, vec3(2.2));
     if (texture_enable > 0.5)
