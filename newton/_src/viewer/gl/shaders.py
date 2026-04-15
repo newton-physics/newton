@@ -282,37 +282,57 @@ void main()
         albedo = mix(albedo, albedo2, cb);
     }
 
+    // Specular color: dielectrics ~0.04, metals use albedo.
+    // Computed before desaturation so F0 reflects true material reflectance.
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+    // Metals appear paler/desaturated because their look is dominated by
+    // bright specular reflections.  Without full IBL we approximate this by
+    // lifting the albedo toward a brighter, less saturated version.
+    float luma = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+    albedo = mix(albedo, vec3(luma * 1.4), metallic * 0.45);
+
     // surface vectors
     vec3 N = normalize(Normal);
-    // Flip normal for backfacing triangles
-    if (!gl_FrontFacing) {
-        N = -N;
-    }
     vec3 V = normalize(view_pos - FragPos);
+    // Flip normal for backfacing triangles
+    if (!gl_FrontFacing) N = -N;
     vec3 L = normalize(sun_direction);
     vec3 H = normalize(V + L);
 
-    // Blinn-Phong terms
+    // Cook-Torrance PBR
     float NdotL = max(dot(N, L), 0.0);
     float NdotH = max(dot(N, H), 0.0);
-    float NdotV = max(dot(N, V), 0.0);
+    float NdotV = max(dot(N, V), 0.001);
+    float HdotV = max(dot(H, V), 0.0);
 
-    // Derive Blinn-Phong exponent from perceptual roughness.
-    // roughness 0 → perfectly smooth, 1 → very rough
-    float gloss = clamp(1.0 - roughness, 0.0, 1.0);
-    // Map gloss to exponent range ~[2, 1024]
-    float shininess = 1.0 + pow(gloss, 4.0) * 1023.0;
+    // GGX/Trowbridge-Reitz normal distribution
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * denom * denom);
 
-    // energy-preserving normalization for Blinn-Phong
-    float normFactor = (shininess + 2.0) / (8.0 * PI);
+    // Schlick-GGX geometry function (Smith method for both view and light)
+    float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+    float G1_V = NdotV / (NdotV * (1.0 - k) + k);
+    float G1_L = NdotL / (NdotL * (1.0 - k) + k);
+    float G = G1_V * G1_L;
 
-    vec3 diffuse  = albedo * light_color * NdotL * 3.0 * diffuse_scale;
+    // Schlick Fresnel, dampened by roughness to reduce edge aliasing
+    vec3 F_max = mix(F0, vec3(1.0), 1.0 - roughness);
+    vec3 F = F0 + (F_max - F0) * pow(1.0 - HdotV, 5.0);
 
-    // Specular color: dielectrics ~0.04, metals use albedo
-    vec3 F0 = mix(vec3(0.04), albedo, metallic);
-    vec3 spec = F0 * light_color * normFactor * pow(NdotH, shininess) * NdotL * specular_scale;
+    // Cook-Torrance specular BRDF
+    vec3 spec = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
 
-    // simple hemispherical ambient term
+    // Diffuse uses remaining energy not reflected
+    vec3 kD = (1.0 - F) * (1.0 - metallic);
+    vec3 diffuse = kD * albedo / PI;
+
+    // Direct lighting
+    vec3 Lo = (diffuse * diffuse_scale + spec * specular_scale) * light_color * NdotL * 3.0;
+
+    // Hemispherical ambient (kept subtle for depth)
     vec3 up = vec3(0.0, 1.0, 0.0);
     if (up_axis == 0) up = vec3(1.0, 0.0, 0.0);
     if (up_axis == 2) up = vec3(0.0, 0.0, 1.0);
@@ -328,25 +348,16 @@ void main()
     // shadows
     float shadow = ShadowCalculation();
 
-    // spotlight attenuation
-    float spotlightAttenuation = SpotlightAttenuation();
+    float spotAttenuation = SpotlightAttenuation();
+    vec3 color = ambient + (1.0 - shadow) * spotAttenuation * Lo;
 
-    // Metals should contribute little diffuse light.
-    diffuse *= 1.0 - metallic;
-    vec3 color = ambient + (1.0 - shadow) * spotlightAttenuation * (diffuse + spec);
-
-    // Fresnel darkening: reduce brightness at glancing angles for metals
-    color *= mix(1.0, pow(NdotV, 2.0), metallic);
-
-    // environment reflection for metallic look (fade with roughness)
-    float env_lod = clamp(pow(roughness, 1.0/4.0), 0.0, 1.0) * 8.0;
+    // Environment / image-based lighting for metals
     vec3 R = reflect(-V, N);
-    vec3 env_color = sample_env_map(R, env_lod);
-    env_color = pow(env_color, vec3(2.2)); // to linear
-    float reflection_strength = clamp(metallic * pow(1.0 - roughness, 2.0), 0.0, 1.0);
-    vec3 env_tint = mix(vec3(1.0), albedo, metallic);
-    vec3 env_reflection = env_color * env_tint * env_intensity;
-    color = mix(color, env_reflection, reflection_strength);
+    float env_lod = roughness * 8.0;
+    vec3 env_color = pow(sample_env_map(R, env_lod), vec3(2.2));
+    vec3 env_F = F0 + (F_max - F0) * pow(1.0 - NdotV, 5.0);
+    vec3 env_spec = env_color * env_F * env_intensity;
+    color += env_spec * metallic;
 
     // fog
     float dist = length(FragPos - view_pos);
@@ -532,8 +543,8 @@ class ShaderShape(ShaderGL):
         up_axis: int,
         sun_direction: tuple[float, float, float],
         light_color: tuple[float, float, float] = (2.0, 2.0, 2.0),
-        ground_color: tuple[float, float, float] = (0.294, 0.333, 0.592),
-        sky_color: tuple[float, float, float] = (0.745, 0.863, 0.941),
+        ground_color: tuple[float, float, float] = (0.3, 0.3, 0.35),
+        sky_color: tuple[float, float, float] = (0.8, 0.8, 0.85),
         enable_shadows: bool = False,
         shadow_texture: int | None = None,
         light_space_matrix: np.ndarray | None = None,
@@ -706,6 +717,7 @@ uniform sampler2D shadow_map;
 uniform mat4 light_space_matrix;
 uniform float shadow_radius;
 uniform float shadow_extents;
+uniform float exposure;
 uniform int up_axis;
 
 const float PI = 3.14159265359;
@@ -873,6 +885,12 @@ void main()
 
     float shadow = ShadowCalculation();
     vec3 color = ambient + (1.0 - shadow) * (diffuse + spec) + rim_color + catch_light;
+
+    // Apply exposure for brightness control (no ACES — studio uses lower
+    // light multipliers that stay in a moderate range where filmic rolloff
+    // would just darken the image and shift hues).
+    color *= exposure;
+    color = clamp(color, 0.0, 1.0);
 
     // gamma correction (sRGB)
     color = pow(color, vec3(1.0 / 2.2));
