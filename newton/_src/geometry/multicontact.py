@@ -766,6 +766,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 contact_data.contact_point_center = contact_point_world
                 contact_data.contact_normal_a_to_b = normal_world
                 contact_data.contact_distance = signed_distance
+                contact_data.sort_sub_key = (contact_template.sort_sub_key << 3) | i
 
                 contact_data = post_process_contact(
                     contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
@@ -946,6 +947,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             contact_data.contact_point_center = deepest_center_world
             contact_data.contact_normal_a_to_b = normal_world
             contact_data.contact_distance = deepest_signed_distance
+            contact_data.sort_sub_key = (contact_template.sort_sub_key << 3) | count_out
 
             contact_data = post_process_contact(
                 contact_data, geom_a, position_a_ws, quaternion_a_ws, geom_b, position_b_ws, quaternion_b_ws

@@ -717,6 +717,71 @@ for bp_name in ("explicit", "nxn", "sap"):
     )
 
 
+def test_box_box_quaternion_perturbation(test, device, broad_phase: str):
+    """Verify box-box contacts are correct under tiny quaternion perturbation.
+
+    Two identical cubes are placed face-to-face with a non-trivial base
+    rotation (30 deg around X) and a tiny quaternion perturbation (~1e-14)
+    in the second box only. Without the support-map deadband fix this
+    produces 1 invalid contact instead of 4 face-corner contacts, with an
+    out-of-bounds body-frame point and a wrong world-frame normal.
+
+    Regression test for issue #2024 / #2430.
+    """
+    with wp.ScopedDevice(device):
+        half = 0.495
+        q_clean = wp.quat(0.2588233343021173, 0.0, 0.0, 0.9659246769912934)
+        q_noisy = wp.quat(0.2588233343021173, -2.27e-14, 9.25e-15, 0.9659246769912934)
+
+        y, z = 6.680443286895752, 4.4285125732421875
+
+        builder = newton.ModelBuilder()
+        b0 = builder.add_body(xform=wp.transform(p=wp.vec3(half, y, z), q=q_clean))
+        builder.add_shape_box(body=b0, hx=half, hy=half, hz=half)
+
+        b1 = builder.add_body(xform=wp.transform(p=wp.vec3(-half, y, z), q=q_noisy))
+        builder.add_shape_box(body=b1, hx=half, hy=half, hz=half)
+
+        model = builder.finalize(device=device)
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        cc = int(contacts.rigid_contact_count.numpy()[0])
+        points0 = contacts.rigid_contact_point0.numpy()[:cc]
+        normals = contacts.rigid_contact_normal.numpy()[:cc]
+
+        test.assertEqual(cc, 4, f"Expected 4 face-corner contacts, got {cc}")
+
+        for i in range(cc):
+            pt = points0[i]
+            n = normals[i]
+            for j in range(3):
+                test.assertLessEqual(
+                    abs(pt[j]),
+                    half * 1.01,
+                    f"Contact {i} body-frame point[{j}] = {pt[j]:.4f} outside half-extent {half}",
+                )
+            test.assertAlmostEqual(
+                abs(n[0]),
+                1.0,
+                places=2,
+                msg=f"Contact {i} normal = [{n[0]:.4f}, {n[1]:.4f}, {n[2]:.4f}], expected [+-1, 0, 0]",
+            )
+
+
+for bp_name in ("explicit", "nxn", "sap"):
+    add_function_test(
+        TestRigidContactNormal,
+        f"test_box_box_quaternion_perturbation_{bp_name}",
+        test_box_box_quaternion_perturbation,
+        devices=devices,
+        broad_phase=bp_name,
+    )
+
+
 # ============================================================================
 # Particle-Shape (Soft) Contact Tests
 # ============================================================================
@@ -1029,6 +1094,260 @@ for shape_type in particle_shape_tests:
         devices=devices,
         shape_type=shape_type,
     )
+
+
+# ============================================================================
+# Full-scene deterministic contact pipeline test
+# ============================================================================
+
+
+class TestDeterministicPipeline(unittest.TestCase):
+    """Test that deterministic=True yields bit-identical contacts across collide calls."""
+
+    pass
+
+
+def _build_deterministic_scene(device):
+    """Build the mixed-shape scene from example_basic_shapes6_determinism."""
+    from newton._src.geometry import create_mesh_terrain  # noqa: PLC0415
+
+    builder = newton.ModelBuilder()
+
+    # Procedural mesh terrain ground
+    terrain_vertices, terrain_indices = create_mesh_terrain(
+        grid_size=(6, 6),
+        block_size=(5.0, 5.0),
+        terrain_types=["pyramid_stairs"],
+        terrain_params={
+            "pyramid_stairs": {"step_width": 0.4, "step_height": 0.05, "platform_width": 0.8},
+        },
+        seed=42,
+    )
+    terrain_mesh = newton.Mesh(terrain_vertices, terrain_indices)
+    terrain_mesh.build_sdf(max_resolution=512)
+    builder.add_shape_mesh(body=-1, mesh=terrain_mesh, xform=wp.transform(p=wp.vec3(-15.0, -15.0, -0.5)))
+
+    # Icosahedron mesh
+    phi = (1.0 + np.sqrt(5.0)) / 2.0
+    ico_radius = 0.35
+    ico_base_vertices = np.array(
+        [
+            [-1, phi, 0],
+            [1, phi, 0],
+            [-1, -phi, 0],
+            [1, -phi, 0],
+            [0, -1, phi],
+            [0, 1, phi],
+            [0, -1, -phi],
+            [0, 1, -phi],
+            [phi, 0, -1],
+            [phi, 0, 1],
+            [-phi, 0, -1],
+            [-phi, 0, 1],
+        ],
+        dtype=np.float32,
+    )
+    for i in range(len(ico_base_vertices)):
+        ico_base_vertices[i] = ico_base_vertices[i] / np.linalg.norm(ico_base_vertices[i]) * ico_radius
+    ico_face_indices = [
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
+    ]
+    ico_vertices, ico_normals, ico_indices = [], [], []
+    for face_idx, face in enumerate(ico_face_indices):
+        v0, v1, v2 = ico_base_vertices[face[0]], ico_base_vertices[face[1]], ico_base_vertices[face[2]]
+        normal = np.cross(v1 - v0, v2 - v0)
+        normal = normal / np.linalg.norm(normal)
+        ico_vertices.extend([v0, v1, v2])
+        ico_normals.extend([normal, normal, normal])
+        base = face_idx * 3
+        ico_indices.extend([base, base + 1, base + 2])
+    ico_mesh = newton.Mesh(
+        np.array(ico_vertices, dtype=np.float32),
+        np.array(ico_indices, dtype=np.int32),
+        normals=np.array(ico_normals, dtype=np.float32),
+    )
+
+    # Cube mesh with SDF
+    hs = 0.3
+    cube_verts = np.array(
+        [
+            [-hs, -hs, -hs],
+            [hs, -hs, -hs],
+            [hs, hs, -hs],
+            [-hs, hs, -hs],
+            [-hs, -hs, hs],
+            [hs, -hs, hs],
+            [hs, hs, hs],
+            [-hs, hs, hs],
+        ],
+        dtype=np.float32,
+    )
+    cube_tris = np.array(
+        [0, 3, 2, 0, 2, 1, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5],
+        dtype=np.int32,
+    )
+    cube_mesh = newton.Mesh(cube_verts, cube_tris)
+    cube_mesh.build_sdf(max_resolution=64)
+
+    # 4x4x4 grid of mixed shapes
+    shape_types = ["sphere", "box", "capsule", "mesh_cube", "cylinder", "cone", "icosahedron"]
+    grid_offset = wp.vec3(-5.0, -5.0, 0.5)
+    rng = np.random.default_rng(42)
+    shape_index = 0
+    for ix in range(4):
+        for iy in range(4):
+            for iz in range(4):
+                pos = wp.vec3(
+                    float(grid_offset[0]) + ix * 1.5 + (rng.random() - 0.5) * 0.4,
+                    float(grid_offset[1]) + iy * 1.5 + (rng.random() - 0.5) * 0.4,
+                    float(grid_offset[2]) + iz * 1.5 + (rng.random() - 0.5) * 0.4,
+                )
+                shape_type = shape_types[shape_index % len(shape_types)]
+                shape_index += 1
+                body = builder.add_body(xform=wp.transform(p=pos, q=wp.quat_identity()))
+                if shape_type == "sphere":
+                    builder.add_shape_sphere(body, radius=0.3)
+                elif shape_type == "box":
+                    builder.add_shape_box(body, hx=0.3, hy=0.3, hz=0.3)
+                elif shape_type == "capsule":
+                    builder.add_shape_capsule(body, radius=0.2, half_height=0.4)
+                elif shape_type == "cylinder":
+                    builder.add_shape_cylinder(body, radius=0.25, half_height=0.35)
+                elif shape_type == "cone":
+                    builder.add_shape_cone(body, radius=0.3, half_height=0.4)
+                elif shape_type == "mesh_cube":
+                    builder.add_shape_mesh(body, mesh=cube_mesh)
+                elif shape_type == "icosahedron":
+                    builder.add_shape_convex_hull(body, mesh=ico_mesh)
+                joint = builder.add_joint_free(body)
+                builder.add_articulation([joint])
+
+    model = builder.finalize(device=device)
+    return model
+
+
+def test_deterministic_pipeline_500_steps(test, device):
+    """Run 500 steps of the mixed-shape scene and assert bit-identical contacts on every collide."""
+    with wp.ScopedDevice(device):
+        model = _build_deterministic_scene(device)
+
+        pipeline_a = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            deterministic=True,
+            reduce_contacts=True,
+            rigid_contact_max=50000,
+        )
+        pipeline_b = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            deterministic=True,
+            reduce_contacts=True,
+            rigid_contact_max=50000,
+        )
+        contacts_a = pipeline_a.contacts()
+        contacts_b = pipeline_b.contacts()
+
+        solver = newton.solvers.SolverXPBD(model, iterations=2, rigid_contact_relaxation=0.8)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        fps = 100
+        sim_substeps = 10
+        sim_dt = 1.0 / fps / sim_substeps
+
+        checked_arrays = [
+            "rigid_contact_shape0",
+            "rigid_contact_shape1",
+            "rigid_contact_point0",
+            "rigid_contact_point1",
+            "rigid_contact_normal",
+            "rigid_contact_offset0",
+            "rigid_contact_offset1",
+            "rigid_contact_margin0",
+            "rigid_contact_margin1",
+        ]
+
+        total_checks = 0
+        for _frame in range(500):
+            for _sub in range(sim_substeps):
+                state_0.clear_forces()
+                pipeline_a.collide(state_0, contacts_a)
+                pipeline_b.collide(state_0, contacts_b)
+
+                count_a = int(contacts_a.rigid_contact_count.numpy()[0])
+                count_b = int(contacts_b.rigid_contact_count.numpy()[0])
+                test.assertEqual(
+                    count_a,
+                    count_b,
+                    f"Contact count mismatch at frame {_frame} substep {_sub}: {count_a} vs {count_b}",
+                )
+                if count_a > 0:
+                    # Also compare sort keys to distinguish ordering vs value issues
+                    keys_a = pipeline_a._sort_key_array.numpy()[:count_a]
+                    keys_b = pipeline_b._sort_key_array.numpy()[:count_a]
+                    keys_match = np.array_equal(keys_a, keys_b)
+
+                    for name in checked_arrays:
+                        a = getattr(contacts_a, name).numpy()[:count_a]
+                        b = getattr(contacts_b, name).numpy()[:count_a]
+                        if not np.array_equal(a, b):
+                            diff_mask = a != b
+                            diff_indices = np.argwhere(diff_mask)
+                            msg = (
+                                f"Determinism failure in {name} at frame {_frame} substep {_sub} "
+                                f"({int(np.count_nonzero(diff_mask))} elements differ, {count_a} contacts)\n"
+                                f"  sort_keys_match={keys_match}\n"
+                            )
+                            for raw_idx in diff_indices[:5]:
+                                tidx = tuple(raw_idx)
+                                msg += f"  [{tidx}]: a={a[tidx]!r}  b={b[tidx]!r}  diff={float(a[tidx]) - float(b[tidx]):.18e}\n"
+                            if not keys_match:
+                                key_diff = np.argwhere(keys_a != keys_b)
+                                msg += f"  sort_key diffs at indices: {key_diff[:10].flatten().tolist()}\n"
+                                for ki in key_diff[:5].flatten():
+                                    msg += f"    key[{ki}]: a=0x{keys_a[ki]:016x}  b=0x{keys_b[ki]:016x}\n"
+                            # Show shape pairs for differing contacts
+                            s0_a = contacts_a.rigid_contact_shape0.numpy()[:count_a]
+                            s1_a = contacts_a.rigid_contact_shape1.numpy()[:count_a]
+                            for idx in diff_indices[:5]:
+                                ci = idx[0] if len(idx) > 1 else int(idx)
+                                msg += f"  contact[{ci}]: shapes=({s0_a[ci]}, {s1_a[ci]}), key_a=0x{keys_a[ci]:016x}\n"
+                            test.assertTrue(False, msg)
+                total_checks += 1
+
+                solver.step(state_0, state_1, control, contacts_a, sim_dt)
+                state_0, state_1 = state_1, state_0
+
+
+add_function_test(
+    TestDeterministicPipeline,
+    "test_deterministic_pipeline_500_steps",
+    test_deterministic_pipeline_500_steps,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
 
 
 if __name__ == "__main__":

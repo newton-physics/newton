@@ -1282,7 +1282,15 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - Attribute
      - Description
    * - :attr:`~Contacts.force`
-     - Contact spatial forces (used by :class:`~sensors.SensorContact`)
+     - Contact spatial forces (used by :class:`~sensors.SensorContact`).
+       Populated by :meth:`~solvers.SolverBase.update_contacts`.
+
+.. note::
+
+   :class:`~solvers.SolverXPBD` with ``rigid_contact_con_weighting`` enabled
+   (the default) does not conserve momentum at contacts.  The per-contact
+   forces written by :meth:`~solvers.SolverXPBD.update_contacts` are
+   approximate -- see that method's documentation for details.
 
 Example usage:
 
@@ -1628,6 +1636,38 @@ Custom collision properties can be authored in USD:
     }
 
 See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
+
+.. _Deterministic Contacts:
+
+Deterministic Contact Ordering
+------------------------------
+
+GPU thread scheduling is non-deterministic, so the order in which contacts are
+written to the output buffer can vary between runs.  Pass ``deterministic=True``
+to :class:`~newton.CollisionPipeline` (or :class:`~newton.geometry.NarrowPhase`) to guarantee
+a reproducible contact order:
+
+.. code-block:: python
+
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+
+This enables two mechanisms:
+
+1. **Fingerprint tiebreaking** — each contact carries a geometry-derived
+   fingerprint (triangle/edge index) that is used as a deterministic tiebreaker
+   in the ``atomic_max`` contact reduction, so the reduction winner is
+   independent of thread scheduling.
+2. **Radix sort** — after the narrow phase, all contact arrays are reordered by
+   a 64-bit key encoding ``(shape_a, shape_b, sub_key)`` via a radix sort +
+   gather pass.
+
+The overhead is small: fingerprint storage per contact, modified packing in
+the reduction, and one radix sort + gather pass per frame.  The sort is
+fully CUDA-graph-capturable.
+
+.. note::
+
+   Hydroelastic contacts are not yet covered by deterministic ordering.
 
 .. _Performance:
 
