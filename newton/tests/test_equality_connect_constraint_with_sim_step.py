@@ -1121,128 +1121,129 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
             joint0_type = joint_type_combos[combo_idx][0]
             joint1_type = joint_type_combos[combo_idx][1]
 
-            sim = self._build_loop_joint_model(
-                loop_joint_axis=loop_joint_axis,
-                joint0_axis=joint0_axis,
-                joint1_axis=joint1_axis,
-                joint0_type=joint0_type,
-                joint1_type=joint1_type,
-                dof_refs=dof_refs,
-                num_worlds=num_worlds,
-            )
-
-            # 4 joints per world: root_fixed(0), joint0(1), joint1(2), loop_joint(3)
-            joints_per_world = 4
-            joint_X_p_np = sim.model.joint_X_p.numpy()
-            joint_X_c_np = sim.model.joint_X_c.numpy()
-            joint_axis_np = sim.model.joint_axis.numpy()
-            joint_qd_start_np = sim.model.joint_qd_start.numpy()
-
-            # There should be 2 CONNECT equality constraints from the loop joint
-            # (revolute loop joint creates 2 CONNECT constraints)
-            neq = sim.solver.mj_model.neq
-            self.assertEqual(neq, 2, "Expected 2 CONNECT constraints from revolute loop joint")
-
-            # Verify initial eq_data is correct
-            for w in range(num_worlds):
-                loop_joint_idx = w * joints_per_world + 3
-
-                anchor1_a, anchor2_a, anchor1_b, anchor2_b = self._compute_loop_joint_expected_anchors(
+            with self.subTest(joint0=joint0_type, joint1=joint1_type):
+                sim = self._build_loop_joint_model(
+                    loop_joint_axis=loop_joint_axis,
                     joint0_axis=joint0_axis,
                     joint1_axis=joint1_axis,
                     joint0_type=joint0_type,
                     joint1_type=joint1_type,
-                    dof_ref0=dof_refs[w][0],
-                    dof_ref1=dof_refs[w][1],
-                    joint_X_p_np=joint_X_p_np,
-                    joint_X_c_np=joint_X_c_np,
-                    joint_axis_np=joint_axis_np,
-                    joint_qd_start_np=joint_qd_start_np,
-                    joint0_idx=w * joints_per_world + 1,
-                    joint1_idx=w * joints_per_world + 2,
-                    loop_joint_idx=loop_joint_idx,
+                    dof_refs=dof_refs,
+                    num_worlds=num_worlds,
                 )
 
-                self._assert_loop_joint_eq_data(sim, w, anchor1_a, anchor2_a, anchor1_b, anchor2_b)
+                # 4 joints per world: root_fixed(0), joint0(1), joint1(2), loop_joint(3)
+                joints_per_world = 4
+                joint_X_p_np = sim.model.joint_X_p.numpy()
+                joint_X_c_np = sim.model.joint_X_c.numpy()
+                joint_axis_np = sim.model.joint_axis.numpy()
+                joint_qd_start_np = sim.model.joint_qd_start.numpy()
 
-            ##############
-            # TEST: Change dof_ref and verify CONNECT anchors are recomputed
-            ##############
+                # There should be 2 CONNECT equality constraints from the loop joint
+                # (revolute loop joint creates 2 CONNECT constraints)
+                neq = sim.solver.mj_model.neq
+                self.assertEqual(neq, 2, "Expected 2 CONNECT constraints from revolute loop joint")
 
-            # Build flat dof_ref array. Per world, the DOF layout in Newton is:
-            # joint0 (1 DOF) + joint1 (1 DOF) + loop_joint (1 DOF) = 3 DOFs per world.
-            # The loop joint DOF exists in Newton even though it is excluded from MuJoCo's
-            # joint list. dof_ref is indexed by Newton DOF, so we must include the loop
-            # joint's entry (kept at 0.0).
-            flat_changed_dof_ref = []
-            for w in range(num_worlds):
-                flat_changed_dof_ref.append(changed_dof_refs[w][0])
-                flat_changed_dof_ref.append(changed_dof_refs[w][1])
-                flat_changed_dof_ref.append(0.0)  # loop joint DOF (unchanged)
+                # Verify initial eq_data is correct
+                for w in range(num_worlds):
+                    loop_joint_idx = w * joints_per_world + 3
 
-            sim.model.mujoco.dof_ref.assign(np.array(flat_changed_dof_ref, dtype=np.float32))
-            sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+                    anchor1_a, anchor2_a, anchor1_b, anchor2_b = self._compute_loop_joint_expected_anchors(
+                        joint0_axis=joint0_axis,
+                        joint1_axis=joint1_axis,
+                        joint0_type=joint0_type,
+                        joint1_type=joint1_type,
+                        dof_ref0=dof_refs[w][0],
+                        dof_ref1=dof_refs[w][1],
+                        joint_X_p_np=joint_X_p_np,
+                        joint_X_c_np=joint_X_c_np,
+                        joint_axis_np=joint_axis_np,
+                        joint_qd_start_np=joint_qd_start_np,
+                        joint0_idx=w * joints_per_world + 1,
+                        joint1_idx=w * joints_per_world + 2,
+                        loop_joint_idx=loop_joint_idx,
+                    )
 
-            # Verify eq_data was updated with new anchors
-            for w in range(num_worlds):
-                loop_joint_idx = w * joints_per_world + 3
+                    self._assert_loop_joint_eq_data(sim, w, anchor1_a, anchor2_a, anchor1_b, anchor2_b)
 
-                anchor1_a, anchor2_a, anchor1_b, anchor2_b = self._compute_loop_joint_expected_anchors(
-                    joint0_axis=joint0_axis,
-                    joint1_axis=joint1_axis,
-                    joint0_type=joint0_type,
-                    joint1_type=joint1_type,
-                    dof_ref0=changed_dof_refs[w][0],
-                    dof_ref1=changed_dof_refs[w][1],
-                    joint_X_p_np=joint_X_p_np,
-                    joint_X_c_np=joint_X_c_np,
-                    joint_axis_np=joint_axis_np,
-                    joint_qd_start_np=joint_qd_start_np,
-                    joint0_idx=w * joints_per_world + 1,
-                    joint1_idx=w * joints_per_world + 2,
-                    loop_joint_idx=loop_joint_idx,
-                )
+                ##############
+                # TEST: Change dof_ref and verify CONNECT anchors are recomputed
+                ##############
 
-                self._assert_loop_joint_eq_data(sim, w, anchor1_a, anchor2_a, anchor1_b, anchor2_b)
+                # Build flat dof_ref array. Per world, the DOF layout in Newton is:
+                # joint0 (1 DOF) + joint1 (1 DOF) + loop_joint (1 DOF) = 3 DOFs per world.
+                # The loop joint DOF exists in Newton even though it is excluded from MuJoCo's
+                # joint list. dof_ref is indexed by Newton DOF, so we must include the loop
+                # joint's entry (kept at 0.0).
+                flat_changed_dof_ref = []
+                for w in range(num_worlds):
+                    flat_changed_dof_ref.append(changed_dof_refs[w][0])
+                    flat_changed_dof_ref.append(changed_dof_refs[w][1])
+                    flat_changed_dof_ref.append(0.0)  # loop joint DOF (unchanged)
 
-            ##############
-            # TEST: Change joint_X_p of the loop joint and verify CONNECT anchors are recomputed
-            ##############
+                sim.model.mujoco.dof_ref.assign(np.array(flat_changed_dof_ref, dtype=np.float32))
+                sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
-            # Shift the loop joint's parent transform for each world
-            joint_X_p_np = sim.model.joint_X_p.numpy()
-            for w in range(num_worlds):
-                loop_joint_idx = w * joints_per_world + 3
-                # Apply a per-world translation offset to the loop joint
-                joint_X_p_np[loop_joint_idx][0] += 0.3 + 0.1 * w
-                joint_X_p_np[loop_joint_idx][1] += 0.2
-            sim.model.joint_X_p.assign(joint_X_p_np)
-            sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+                # Verify eq_data was updated with new anchors
+                for w in range(num_worlds):
+                    loop_joint_idx = w * joints_per_world + 3
 
-            # Re-read after modification
-            joint_X_p_np = sim.model.joint_X_p.numpy()
-            joint_axis_np = sim.model.joint_axis.numpy()
+                    anchor1_a, anchor2_a, anchor1_b, anchor2_b = self._compute_loop_joint_expected_anchors(
+                        joint0_axis=joint0_axis,
+                        joint1_axis=joint1_axis,
+                        joint0_type=joint0_type,
+                        joint1_type=joint1_type,
+                        dof_ref0=changed_dof_refs[w][0],
+                        dof_ref1=changed_dof_refs[w][1],
+                        joint_X_p_np=joint_X_p_np,
+                        joint_X_c_np=joint_X_c_np,
+                        joint_axis_np=joint_axis_np,
+                        joint_qd_start_np=joint_qd_start_np,
+                        joint0_idx=w * joints_per_world + 1,
+                        joint1_idx=w * joints_per_world + 2,
+                        loop_joint_idx=loop_joint_idx,
+                    )
 
-            for w in range(num_worlds):
-                loop_joint_idx = w * joints_per_world + 3
+                    self._assert_loop_joint_eq_data(sim, w, anchor1_a, anchor2_a, anchor1_b, anchor2_b)
 
-                anchor1_a, anchor2_a, anchor1_b, anchor2_b = self._compute_loop_joint_expected_anchors(
-                    joint0_axis=joint0_axis,
-                    joint1_axis=joint1_axis,
-                    joint0_type=joint0_type,
-                    joint1_type=joint1_type,
-                    dof_ref0=changed_dof_refs[w][0],
-                    dof_ref1=changed_dof_refs[w][1],
-                    joint_X_p_np=joint_X_p_np,
-                    joint_X_c_np=joint_X_c_np,
-                    joint_axis_np=joint_axis_np,
-                    joint_qd_start_np=joint_qd_start_np,
-                    joint0_idx=w * joints_per_world + 1,
-                    joint1_idx=w * joints_per_world + 2,
-                    loop_joint_idx=loop_joint_idx,
-                )
+                ##############
+                # TEST: Change joint_X_p of the loop joint and verify CONNECT anchors are recomputed
+                ##############
 
-                self._assert_loop_joint_eq_data(sim, w, anchor1_a, anchor2_a, anchor1_b, anchor2_b)
+                # Shift the loop joint's parent transform for each world
+                joint_X_p_np = sim.model.joint_X_p.numpy()
+                for w in range(num_worlds):
+                    loop_joint_idx = w * joints_per_world + 3
+                    # Apply a per-world translation offset to the loop joint
+                    joint_X_p_np[loop_joint_idx][0] += 0.3 + 0.1 * w
+                    joint_X_p_np[loop_joint_idx][1] += 0.2
+                sim.model.joint_X_p.assign(joint_X_p_np)
+                sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+
+                # Re-read after modification
+                joint_X_p_np = sim.model.joint_X_p.numpy()
+                joint_axis_np = sim.model.joint_axis.numpy()
+
+                for w in range(num_worlds):
+                    loop_joint_idx = w * joints_per_world + 3
+
+                    anchor1_a, anchor2_a, anchor1_b, anchor2_b = self._compute_loop_joint_expected_anchors(
+                        joint0_axis=joint0_axis,
+                        joint1_axis=joint1_axis,
+                        joint0_type=joint0_type,
+                        joint1_type=joint1_type,
+                        dof_ref0=changed_dof_refs[w][0],
+                        dof_ref1=changed_dof_refs[w][1],
+                        joint_X_p_np=joint_X_p_np,
+                        joint_X_c_np=joint_X_c_np,
+                        joint_axis_np=joint_axis_np,
+                        joint_qd_start_np=joint_qd_start_np,
+                        joint0_idx=w * joints_per_world + 1,
+                        joint1_idx=w * joints_per_world + 2,
+                        loop_joint_idx=loop_joint_idx,
+                    )
+
+                    self._assert_loop_joint_eq_data(sim, w, anchor1_a, anchor2_a, anchor1_b, anchor2_b)
 
     def test_loop_joint_connect_constraint(self):
         self._test_loop_joint_connect_constraint()
