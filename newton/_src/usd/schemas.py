@@ -38,66 +38,6 @@ def _physx_gap_from_prim(prim: Usd.Prim) -> float | None:
     return float(contact_offset) - float(rest_offset)
 
 
-def _mesh_bbox_diagonal(prim: Usd.Prim) -> float | None:
-    """Compute the bounding box diagonal length of a mesh prim from its points [m].
-
-    Returns None if the prim has no points attribute or it is empty.
-    """
-    points = usd.get_attribute(prim, "points")
-    if points is None or len(points) == 0:
-        return None
-    import numpy as np
-
-    pts = np.asarray(points, dtype=np.float32)
-    extent = pts.max(axis=0) - pts.min(axis=0)
-    return float(np.linalg.norm(extent))
-
-
-def _physx_sdf_narrow_band_to_inner(prim: Usd.Prim) -> float | None:
-    """Convert PhysX sdfNarrowBandThickness (fraction of bbox diagonal) to Newton inner band [m].
-
-    PhysX stores a single fraction representing the band thickness around the surface.
-    Newton uses separate inner (negative) and outer (positive) distances.
-    We split the thickness equally: inner = -(fraction * diagonal), outer = +(fraction * diagonal).
-    """
-    thickness = usd.get_attribute(prim, "physxSDFMeshCollision:sdfNarrowBandThickness")
-    if thickness is None:
-        return None
-    diag = _mesh_bbox_diagonal(prim)
-    if diag is None or diag <= 0.0:
-        return None
-    return -(thickness * diag)
-
-
-def _physx_sdf_narrow_band_to_outer(prim: Usd.Prim) -> float | None:
-    """Convert PhysX sdfNarrowBandThickness (fraction of bbox diagonal) to Newton outer band [m]."""
-    thickness = usd.get_attribute(prim, "physxSDFMeshCollision:sdfNarrowBandThickness")
-    if thickness is None:
-        return None
-    diag = _mesh_bbox_diagonal(prim)
-    if diag is None or diag <= 0.0:
-        return None
-    return thickness * diag
-
-
-def _physx_sdf_margin_to_meters(prim: Usd.Prim) -> float | None:
-    """Convert PhysX sdfMargin (fraction of bbox diagonal) to Newton sdf_margin [m]."""
-    margin_frac = usd.get_attribute(prim, "physxSDFMeshCollision:sdfMargin")
-    if margin_frac is None:
-        return None
-    diag = _mesh_bbox_diagonal(prim)
-    if diag is None or diag <= 0.0:
-        return None
-    return margin_frac * diag
-
-
-_PHYSX_BITS_TO_TEXTURE_FORMAT = {
-    "BitsPerPixel8": "uint8",
-    "BitsPerPixel16": "uint16",
-    "BitsPerPixel32": "float32",
-}
-
-
 class SchemaResolverNewton(SchemaResolver):
     """Schema resolver for Newton-authored USD attributes.
 
@@ -111,27 +51,6 @@ class SchemaResolverNewton(SchemaResolver):
             "max_solver_iterations": SchemaAttribute("newton:maxSolverIterations", -1),
             "time_steps_per_second": SchemaAttribute("newton:timeStepsPerSecond", 1000),
             "gravity_enabled": SchemaAttribute("newton:gravityEnabled", True),
-            # Collision pipeline configuration
-            "collision_reduce_contacts": SchemaAttribute("newton:collision:reduceContacts", None),
-            "collision_rigid_contact_max": SchemaAttribute("newton:collision:rigidContactMax", None),
-            "collision_max_triangle_pairs": SchemaAttribute("newton:collision:maxTrianglePairs", None),
-            "collision_broad_phase": SchemaAttribute("newton:collision:broadPhase", None),
-            "collision_soft_contact_max": SchemaAttribute("newton:collision:softContactMax", None),
-            "collision_soft_contact_margin": SchemaAttribute("newton:collision:softContactMargin", None),
-            # Hydroelastic pipeline configuration
-            "hydro_reduce_contacts": SchemaAttribute("newton:hydro:reduceContacts", None),
-            "hydro_pre_prune_contacts": SchemaAttribute("newton:hydro:prePruneContacts", None),
-            "hydro_output_contact_surface": SchemaAttribute("newton:hydro:outputContactSurface", None),
-            "hydro_normal_matching": SchemaAttribute("newton:hydro:normalMatching", None),
-            "hydro_anchor_contact": SchemaAttribute("newton:hydro:anchorContact", None),
-            "hydro_moment_matching": SchemaAttribute("newton:hydro:momentMatching", None),
-            "hydro_margin_contact_area": SchemaAttribute("newton:hydro:marginContactArea", None),
-            "hydro_buffer_fraction": SchemaAttribute("newton:hydro:bufferFraction", None),
-            "hydro_buffer_mult_broad": SchemaAttribute("newton:hydro:bufferMultBroad", None),
-            "hydro_buffer_mult_iso": SchemaAttribute("newton:hydro:bufferMultIso", None),
-            "hydro_buffer_mult_contact": SchemaAttribute("newton:hydro:bufferMultContact", None),
-            "hydro_contact_buffer_fraction": SchemaAttribute("newton:hydro:contactBufferFraction", None),
-            "hydro_grid_size": SchemaAttribute("newton:hydro:gridSize", None),
         },
         PrimType.JOINT: {
             # warning: there is no NewtonJointAPI, none of these are schema attributes
@@ -268,28 +187,6 @@ class SchemaResolverPhysx(SchemaResolver):
                 float("-inf"),
                 usd_value_getter=_physx_gap_from_prim,
                 attribute_names=("physxCollision:contactOffset", "physxCollision:restOffset"),
-            ),
-            # PhysX SDF parameters (fractional values converted to absolute meters)
-            "sdf_max_resolution": SchemaAttribute("physxSDFMeshCollision:sdfResolution", None),
-            "sdf_narrow_band_inner": SchemaAttribute(
-                "physxSDFMeshCollision:sdfNarrowBandThickness",
-                None,
-                usd_value_getter=_physx_sdf_narrow_band_to_inner,
-            ),
-            "sdf_narrow_band_outer": SchemaAttribute(
-                "physxSDFMeshCollision:sdfNarrowBandThickness",
-                None,
-                usd_value_getter=_physx_sdf_narrow_band_to_outer,
-            ),
-            "sdf_margin": SchemaAttribute(
-                "physxSDFMeshCollision:sdfMargin",
-                None,
-                usd_value_getter=_physx_sdf_margin_to_meters,
-            ),
-            "sdf_texture_format": SchemaAttribute(
-                "physxSDFMeshCollision:sdfBitsPerSubgridPixel",
-                None,
-                lambda v: _PHYSX_BITS_TO_TEXTURE_FORMAT.get(v),
             ),
         },
         PrimType.MATERIAL: {
