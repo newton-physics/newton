@@ -194,6 +194,48 @@ def _step_sim(model, cp, solver, s0, s1, ctrl, dt=0.005, substeps=1):
     return s0, s1, contacts
 
 
+class _SimLoop:
+    """Run a simulation loop, using CUDA graph capture when available."""
+
+    def __init__(self, model, cp, solver, s0, s1, ctrl, dt=0.005, substeps=1):
+        self.model = model
+        self.cp = cp
+        self.solver = solver
+        self.s0 = s0
+        self.s1 = s1
+        self.ctrl = ctrl
+        self.dt = dt
+        self.substeps = substeps
+        self.contacts = model.collide(s0, collision_pipeline=cp)
+
+    def _simulate_frame(self):
+        for _ in range(self.substeps):
+            self.s0.clear_forces()
+            self.model.collide(self.s0, self.contacts, collision_pipeline=self.cp)
+            self.solver.step(self.s0, self.s1, self.ctrl, self.contacts, self.dt)
+            self.s0, self.s1 = self.s1, self.s0
+
+    def run(self, steps):
+        """Run *steps* frames, returning the final state pair."""
+        device = self.model.device
+        use_graph = device is not None and device.is_cuda and wp.is_mempool_enabled(device)
+
+        if use_graph:
+            # Warmup (allocates internal buffers so graph capture sees a stable set).
+            self._simulate_frame()
+            with wp.ScopedCapture(device) as capture:
+                self._simulate_frame()
+            graph = capture.graph
+            # Warmup + capture = 2 frames; replay the rest.
+            for _ in range(steps - 2):
+                wp.capture_launch(graph)
+        else:
+            for _ in range(steps):
+                self._simulate_frame()
+
+        return self.s0, self.s1
+
+
 # ======================================================================
 # Contact-level tests (collision pipeline only, no solver)
 # ======================================================================
@@ -442,10 +484,8 @@ class TestMeshBackfaceSimulation(unittest.TestCase):
         qd[2] = -10.0
         s0.joint_qd = wp.array(qd, dtype=wp.float32, device=s0.joint_qd.device)
 
-        for _ in range(50):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=10)
-            joint_q = s0.joint_q.numpy()
-            self.assertFalse(np.any(np.isnan(joint_q)), "High-velocity sphere: NaN")
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=10).run(50)
+        self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "High-velocity sphere: NaN")
 
     def test_sim_valley_sphere_no_nan(self):
         """Sphere in V-shaped valley should settle without NaN.
@@ -469,8 +509,7 @@ class TestMeshBackfaceSimulation(unittest.TestCase):
         ctrl = model.control()
         newton.eval_fk(model, s0.joint_q, s0.joint_qd, s0)
 
-        for _ in range(200):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(200)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Valley sphere: NaN")
 
     def test_sim_shape_stuck_behind_mesh_no_nan(self):
@@ -496,8 +535,7 @@ class TestMeshBackfaceSimulation(unittest.TestCase):
                     shape_pos=(0.0, 0.0, z_start),
                     shape_scale=scale,
                 )
-                for _ in range(100):
-                    s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+                s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(100)
                 self.assertFalse(
                     np.any(np.isnan(s0.joint_q.numpy())),
                     f"Stuck {shape_type.name}: NaN after 100 steps",
@@ -572,8 +610,7 @@ class TestHeightfieldPrism(unittest.TestCase):
             shape_pos=(0.0, 0.0, 0.5),
             shape_scale=(0.1,),
         )
-        for _ in range(100):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(100)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Flat hfield sphere: NaN")
 
         # After settling, the sphere should be resting above the heightfield
@@ -587,8 +624,7 @@ class TestHeightfieldPrism(unittest.TestCase):
             shape_pos=(0.0, 0.0, 0.5),
             shape_scale=(0.1, 0.1, 0.1),
         )
-        for _ in range(100):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(100)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Flat hfield box: NaN")
 
         final_z = s0.body_q.numpy()[0, 2]
@@ -602,8 +638,7 @@ class TestHeightfieldPrism(unittest.TestCase):
             shape_scale=(0.1,),
             rough=True,
         )
-        for _ in range(200):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(200)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Rough hfield sphere: NaN")
 
         # Sphere should not have fallen through the heightfield (min_z=0)
@@ -618,8 +653,7 @@ class TestHeightfieldPrism(unittest.TestCase):
             shape_scale=(0.05, 0.15),
             rough=True,
         )
-        for _ in range(200):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(200)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Rough hfield capsule: NaN")
 
     def test_sphere_below_heightfield_no_nan(self):
@@ -633,8 +667,7 @@ class TestHeightfieldPrism(unittest.TestCase):
             shape_pos=(0.0, 0.0, -0.05),
             shape_scale=(0.1,),
         )
-        for _ in range(50):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(50)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Below hfield sphere: NaN")
 
     def test_high_velocity_sphere_on_heightfield(self):
@@ -649,8 +682,7 @@ class TestHeightfieldPrism(unittest.TestCase):
         qd[2] = -10.0
         s0.joint_qd = wp.array(qd, dtype=wp.float32, device=s0.joint_qd.device)
 
-        for _ in range(50):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=10)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=10).run(50)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Fast hfield sphere: NaN")
 
 
@@ -751,8 +783,7 @@ class TestHeightfieldPrismSteepAndRotated(unittest.TestCase):
             min_z=0.0,
             max_z=2.0,
         )
-        for _ in range(100):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(100)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Ridge sphere: NaN")
 
     def test_box_on_sharp_ridge_no_nan(self):
@@ -772,8 +803,7 @@ class TestHeightfieldPrismSteepAndRotated(unittest.TestCase):
             min_z=0.0,
             max_z=2.0,
         )
-        for _ in range(100):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(100)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Ridge box: NaN")
 
     def test_rotated_heightfield_sphere_no_nan(self):
@@ -805,8 +835,7 @@ class TestHeightfieldPrismSteepAndRotated(unittest.TestCase):
             min_z=0.0,
             max_z=0.5,
         )
-        for _ in range(200):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(200)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Rotated hfield sphere: NaN")
 
     def test_rotated_steep_heightfield_capsule_no_nan(self):
@@ -836,8 +865,7 @@ class TestHeightfieldPrismSteepAndRotated(unittest.TestCase):
             min_z=0.0,
             max_z=2.0,
         )
-        for _ in range(200):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=5)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=5).run(200)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Rotated steep hfield capsule: NaN")
 
 
@@ -1050,8 +1078,7 @@ class TestTrianglePreconditioning(unittest.TestCase):
         model, cp, solver, s0, s1, ctrl = self._build_xpbd_sim_scene(
             mesh, GeoType.SPHERE, (0.0, 0.0, 0.5), shape_scale=(0.1,)
         )
-        for _ in range(100):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=4)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=4).run(100)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Sphere on large mesh: NaN in joint_q")
 
     @unittest.skipUnless(_cuda_available, "CUDA required")
@@ -1061,8 +1088,7 @@ class TestTrianglePreconditioning(unittest.TestCase):
         model, cp, solver, s0, s1, ctrl = self._build_xpbd_sim_scene(
             mesh, GeoType.BOX, (0.0, 0.0, 0.5), shape_scale=(0.1, 0.1, 0.1)
         )
-        for _ in range(100):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=4)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=4).run(100)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Box on large mesh: NaN in joint_q")
 
     @unittest.skipUnless(_cuda_available, "CUDA required")
@@ -1072,8 +1098,7 @@ class TestTrianglePreconditioning(unittest.TestCase):
         model, cp, solver, s0, s1, ctrl = self._build_xpbd_sim_scene(
             mesh, GeoType.CAPSULE, (0.0, 0.0, 0.5), shape_scale=(0.1, 0.2)
         )
-        for _ in range(100):
-            s0, s1, _ = _step_sim(model, cp, solver, s0, s1, ctrl, substeps=4)
+        s0, _ = _SimLoop(model, cp, solver, s0, s1, ctrl, substeps=4).run(100)
         self.assertFalse(np.any(np.isnan(s0.joint_q.numpy())), "Capsule on large mesh: NaN in joint_q")
 
 
