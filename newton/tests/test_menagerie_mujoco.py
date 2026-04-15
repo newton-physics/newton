@@ -263,6 +263,8 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # TileSet types: comparison function doesn't handle these
     "qM_tiles",
     "qLD_tiles",
+    "qLD_all_updates",
+    "qLD_level_offsets",
     "qLDiagInv_tiles",
     # Visualization group: Newton defaults to 0, native may use other groups
     "geom_group",
