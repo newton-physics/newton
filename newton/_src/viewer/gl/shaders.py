@@ -434,6 +434,32 @@ void main()
 }
 """
 
+gradient_bg_vertex_shader = """
+#version 330 core
+layout (location = 0) in vec2 aPos;
+
+out float vT;
+
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    vT = aPos.y * 0.5 + 0.5;  // [-1,1] -> [0,1]
+}
+"""
+
+gradient_bg_fragment_shader = """
+#version 330 core
+out vec4 FragColor;
+
+in float vT;
+
+uniform vec3 top_color;
+uniform vec3 bottom_color;
+
+void main() {
+    FragColor = vec4(mix(bottom_color, top_color, vT), 1.0);
+}
+"""
+
 frame_vertex_shader = """
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -649,6 +675,33 @@ class ShaderSky(ShaderGL):
             self._gl.glUniform3f(self.loc_sky_lower, *sky_lower)
             self._gl.glUniform3f(self.loc_sun_direction, *sun_direction)
             self._gl.glUniform1i(self.loc_up_axis, up_axis)
+
+
+class ShaderGradientBg(ShaderGL):
+    """Full-screen gradient background (two-color vertical blend)."""
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(gradient_bg_vertex_shader, "vertex"),
+            Shader(gradient_bg_fragment_shader, "fragment"),
+        )
+
+        with self:
+            self.loc_top_color = self._get_uniform_location("top_color")
+            self.loc_bottom_color = self._get_uniform_location("bottom_color")
+
+    def update(
+        self,
+        top_color: tuple[float, float, float],
+        bottom_color: tuple[float, float, float],
+    ):
+        with self:
+            self._gl.glUniform3f(self.loc_top_color, *top_color)
+            self._gl.glUniform3f(self.loc_bottom_color, *bottom_color)
 
 
 class ShadowShader(ShaderGL):

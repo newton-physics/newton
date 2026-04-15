@@ -18,6 +18,7 @@ from .shaders import (
     FrameShader,
     ShaderArrow,
     ShaderEdge,
+    ShaderGradientBg,
     ShaderLine,
     ShaderShape,
     ShaderShapeStudio,
@@ -40,6 +41,9 @@ class ShadingStyleConfig:
         draw_sky: Whether to render the sky sphere background.
         sun_directions: Per-up-axis key-light direction (un-normalized).
             Keys: 0=X-up, 1=Y-up, 2=Z-up.
+        gradient_top: Top color for a screen-space gradient background, or
+            ``None`` to skip the gradient pass (default).
+        gradient_bottom: Bottom color for the gradient background.
         overrides: Shader parameter overrides applied on top of live renderer
             state. Keys absent here fall back to the renderer's own values,
             so a style only needs to declare what it changes.
@@ -49,6 +53,8 @@ class ShadingStyleConfig:
     shader_class: type[ShaderShape]
     draw_sky: bool
     sun_directions: dict
+    gradient_top: tuple[float, float, float] | None = None
+    gradient_bottom: tuple[float, float, float] | None = None
     overrides: dict = field(default_factory=dict)
 
 
@@ -76,6 +82,8 @@ STYLE_REGISTRY: dict[str, ShadingStyleConfig] = {
             1: np.array([0.6, 1.0, 0.8], dtype=np.float32),  # Y-up
             2: np.array([0.8, 0.6, 1.0], dtype=np.float32),  # Z-up
         },
+        gradient_top=(0.96, 0.96, 0.97),
+        gradient_bottom=(0.85, 0.85, 0.87),
         overrides={
             "fog_color": (0.93, 0.93, 0.95),
             "sky_color": (0.72, 0.82, 0.98),
@@ -1220,6 +1228,7 @@ class RendererGL:
         self._setup_frame_buffer()
         self._setup_sky_mesh()
         self._setup_frame_mesh()
+        self._setup_gradient_bg_mesh()
 
         self._shadow_shader = ShadowShader(gl)
         self._style_shaders: dict[str, ShaderShape] = {
@@ -1228,6 +1237,7 @@ class RendererGL:
         self._edge_shader = ShaderEdge(gl)
         self._frame_shader = FrameShader(gl)
         self._sky_shader = ShaderSky(gl)
+        self._gradient_bg_shader = ShaderGradientBg(gl)
         self._wireframe_shader = ShaderLine(gl)
         self._arrow_shader = ShaderArrow(gl)
 
@@ -1830,6 +1840,39 @@ class RendererGL:
 
         check_gl_error()
 
+    def _setup_gradient_bg_mesh(self):
+        gl = RendererGL.gl
+
+        # fmt: off
+        verts = np.array([
+            -1.0, -1.0,
+             1.0, -1.0,
+             1.0,  1.0,
+            -1.0,  1.0,
+        ], dtype=np.float32)
+        # fmt: on
+        indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
+
+        self._grad_bg_vao = gl.GLuint()
+        gl.glGenVertexArrays(1, self._grad_bg_vao)
+        gl.glBindVertexArray(self._grad_bg_vao)
+
+        vbo = gl.GLuint()
+        gl.glGenBuffers(1, vbo)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, verts.nbytes, verts.ctypes.data, gl.GL_STATIC_DRAW)
+
+        ebo = gl.GLuint()
+        gl.glGenBuffers(1, ebo)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo)
+        gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices.ctypes.data, gl.GL_STATIC_DRAW)
+
+        gl.glVertexAttribPointer(0, 2, gl.GL_FLOAT, gl.GL_FALSE, 2 * verts.itemsize, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+
+        gl.glBindVertexArray(0)
+        check_gl_error()
+
     def _setup_shadow_buffer(self):
         gl = RendererGL.gl
 
@@ -1931,6 +1974,9 @@ class RendererGL:
     def _render_scene(self, objects):
         gl = RendererGL.gl
         style = self._active_style
+
+        if style.gradient_top is not None:
+            self._draw_gradient_bg(style.gradient_top, style.gradient_bottom)
 
         if self.draw_sky and style.draw_sky:
             self._draw_sky()
@@ -2075,6 +2121,24 @@ class RendererGL:
         gl.glBindVertexArray(self._sky_vao)
         gl.glDrawElements(gl.GL_TRIANGLES, self._sky_tri_count, gl.GL_UNSIGNED_INT, None)
         gl.glBindVertexArray(0)
+
+        check_gl_error()
+
+    def _draw_gradient_bg(
+        self,
+        top_color: tuple[float, float, float],
+        bottom_color: tuple[float, float, float],
+    ):
+        gl = RendererGL.gl
+        self._make_current()
+
+        gl.glDepthMask(gl.GL_FALSE)
+        self._gradient_bg_shader.update(top_color=top_color, bottom_color=bottom_color)
+        with self._gradient_bg_shader:
+            gl.glBindVertexArray(self._grad_bg_vao)
+            gl.glDrawElements(gl.GL_TRIANGLES, 6, gl.GL_UNSIGNED_INT, None)
+            gl.glBindVertexArray(0)
+        gl.glDepthMask(gl.GL_TRUE)
 
         check_gl_error()
 
