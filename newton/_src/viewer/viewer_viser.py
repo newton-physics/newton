@@ -578,7 +578,9 @@ class ViewerViser(ViewerBase):
         if batched_colors is None:
             batched_colors = np.full((num_instances, 3), 180, dtype=np.uint8)
 
-        # Create new batched mesh
+        # Create new batched mesh.
+        # LOD is disabled because viser's automatic mesh simplification creates
+        # holes in complex geometry (e.g. terrain), causing popping artifacts.
         if use_trimesh:
             handle = self._call_scene_method(
                 self._server.scene.add_batched_meshes_trimesh,
@@ -587,7 +589,7 @@ class ViewerViser(ViewerBase):
                 batched_positions=positions,
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
-                lod="auto",
+                lod="off",
             )
         else:
             handle = self._call_scene_method(
@@ -599,7 +601,7 @@ class ViewerViser(ViewerBase):
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
                 batched_colors=batched_colors,
-                lod="auto",
+                lod="off",
             )
 
         self._scene_handles[name] = handle
