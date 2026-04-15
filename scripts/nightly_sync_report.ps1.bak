@@ -4,10 +4,7 @@ param(
     [string]$StableBranch = "main",
     [string]$ResearchBranch = "research/pressure-field",
     [ValidateSet("rebase", "merge")]
-    [string]$Strategy = "rebase",
-    [string]$ProtoMotionsRepo = "",
-    [int]$SmokeEpochs = 10,
-    [string]$SmokeViewerBackend = ""
+    [string]$Strategy = "rebase"
 )
 
 Set-StrictMode -Version Latest
@@ -56,96 +53,6 @@ function Test-GitRef {
     return $LASTEXITCODE -eq 0
 }
 
-function Convert-ToWslPath {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-
-    if ($Path.StartsWith("/")) {
-        return $Path
-    }
-
-    $resolved = (Resolve-Path $Path).Path
-    $output = & wsl.exe wslpath -a $resolved 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to convert path to WSL format: $resolved`n$output"
-    }
-    return ($output | Out-String).Trim()
-}
-
-function Convert-ToBashDoubleQuoted {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Text
-    )
-
-    $escaped = $Text -replace '\\', '\\'
-    $escaped = $escaped -replace '"', '\"'
-    $escaped = $escaped -replace '\$', '\\$'
-    return '"' + $escaped + '"'
-}
-
-function Resolve-ProtoMotionsRepo {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$NewtonRepoRoot,
-        [string]$ConfiguredRepo
-    )
-
-    if (-not [string]::IsNullOrWhiteSpace($ConfiguredRepo)) {
-        if (-not (Test-Path $ConfiguredRepo)) {
-            throw "Configured ProtoMotions repo path does not exist: $ConfiguredRepo"
-        }
-        return (Resolve-Path $ConfiguredRepo).Path
-    }
-
-    $siblingRepo = Join-Path (Split-Path $NewtonRepoRoot -Parent) "ProtoMotions"
-    if (Test-Path $siblingRepo) {
-        return (Resolve-Path $siblingRepo).Path
-    }
-
-    return $null
-}
-
-function Invoke-ProtoMotionsSmoke {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$RepoPath,
-        [Parameter(Mandatory = $true)]
-        [int]$Epochs,
-        [string]$ViewerBackend
-    )
-
-    if ($Epochs -lt 1) {
-        throw "SmokeEpochs must be >= 1."
-    }
-
-    if ($ViewerBackend -and @("gl", "viser") -notcontains $ViewerBackend) {
-        throw "SmokeViewerBackend must be 'gl' or 'viser' when provided."
-    }
-
-    $repoPathWsl = Convert-ToWslPath -Path $RepoPath
-    $smokeScript = "skills/newton-nightly-compat/scripts/run_mimic_smoke.sh"
-    $smokeArgs = @("--epochs", "$Epochs")
-    if ($ViewerBackend) {
-        $smokeArgs += @("--viewer", $ViewerBackend)
-    }
-
-    $quotedArgs = ($smokeArgs | ForEach-Object { Convert-ToBashDoubleQuoted -Text $_ }) -join " "
-    $bashCommand = @(
-        "set -euo pipefail"
-        "cd $(Convert-ToBashDoubleQuoted -Text $repoPathWsl)"
-        "bash $(Convert-ToBashDoubleQuoted -Text $smokeScript) $quotedArgs"
-    ) -join "; "
-
-    $output = & wsl.exe bash -lc $bashCommand 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw (($output | Out-String).Trim())
-    }
-    return ($output | Out-String).Trim()
-}
-
 $repoRoot = Get-GitOutput -Arguments @("rev-parse", "--show-toplevel")
 Set-Location $repoRoot
 
@@ -163,10 +70,6 @@ $isDirty = -not [string]::IsNullOrWhiteSpace($dirtyStatus)
 $syncResult = "not-run"
 $syncOutput = ""
 $syncError = ""
-$smokeResult = "not-run"
-$smokeOutput = ""
-$smokeError = ""
-$resolvedProtoMotionsRepo = $null
 
 if ($isDirty) {
     $syncResult = "skipped"
@@ -182,22 +85,6 @@ if ($isDirty) {
     } catch {
         $syncResult = "failed"
         $syncError = $_.Exception.Message
-    }
-}
-
-if ($syncResult -eq "success") {
-    try {
-        $resolvedProtoMotionsRepo = Resolve-ProtoMotionsRepo -NewtonRepoRoot $repoRoot -ConfiguredRepo $ProtoMotionsRepo
-        if ($null -eq $resolvedProtoMotionsRepo) {
-            $smokeResult = "skipped"
-            $smokeError = "ProtoMotions repo not found next to the Newton repo and no -ProtoMotionsRepo override was provided."
-        } else {
-            $smokeOutput = Invoke-ProtoMotionsSmoke -RepoPath $resolvedProtoMotionsRepo -Epochs $SmokeEpochs -ViewerBackend $SmokeViewerBackend
-            $smokeResult = "success"
-        }
-    } catch {
-        $smokeResult = "failed"
-        $smokeError = $_.Exception.Message
     }
 }
 
@@ -245,15 +132,7 @@ $reportLines.Add("- Timestamp: $($timestamp.ToString('yyyy-MM-dd HH:mm:ss zzz'))
 $reportLines.Add("- Repository: $repoRoot")
 $reportLines.Add("- Started on branch: $currentBranch")
 $reportLines.Add("- Sync result: $syncResult")
-$reportLines.Add("- ProtoMotions smoke result: $smokeResult")
 $reportLines.Add("- Strategy: $Strategy")
-$reportLines.Add("- Smoke epochs: $SmokeEpochs")
-if ($resolvedProtoMotionsRepo) {
-    $reportLines.Add("- ProtoMotions repo: $resolvedProtoMotionsRepo")
-}
-if ($SmokeViewerBackend) {
-    $reportLines.Add("- Smoke viewer backend: $SmokeViewerBackend")
-}
 $reportLines.Add("- Compare URL: $compareUrl")
 $reportLines.Add("")
 $reportLines.Add("## Worktree")
@@ -302,27 +181,5 @@ if ($syncError) {
     $reportLines.Add('```')
 }
 
-if ($smokeOutput) {
-    $reportLines.Add("")
-    $reportLines.Add("## ProtoMotions Smoke Output")
-    $reportLines.Add("")
-    $reportLines.Add('```text')
-    $reportLines.Add($smokeOutput)
-    $reportLines.Add('```')
-}
-
-if ($smokeError) {
-    $reportLines.Add("")
-    $reportLines.Add("## ProtoMotions Smoke Error")
-    $reportLines.Add("")
-    $reportLines.Add('```text')
-    $reportLines.Add($smokeError)
-    $reportLines.Add('```')
-}
-
 Set-Content -Path $reportPath -Value $reportLines
 Write-Host $reportPath
-
-if (($syncResult -ne "success") -or (($smokeResult -ne "success") -and ($smokeResult -ne "skipped"))) {
-    exit 1
-}
