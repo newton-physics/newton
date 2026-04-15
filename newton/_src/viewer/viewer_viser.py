@@ -184,12 +184,72 @@ class ViewerViser(ViewerBase):
 
     @property
     def url(self) -> str:
-        """Get the URL of the viser server.
+        """Get the browser URL of the viser server.
 
         Returns:
-            str: Local HTTP URL for the running viser server.
+            str: Browser URL for the running viser server.
         """
+        if self.is_jupyter_notebook:
+            return self._build_browser_url(self._port)
         return f"http://localhost:{self._port}"
+
+    @staticmethod
+    def _normalize_jupyter_base_url(base_url: str) -> str:
+        """Normalize a Jupyter base URL for proxy path construction."""
+        if not base_url:
+            return ""
+        if not base_url.startswith("/"):
+            base_url = "/" + base_url
+        if base_url != "/":
+            return base_url.rstrip("/")
+        return ""
+
+    @classmethod
+    def _get_jupyter_proxy_base_url(cls) -> str | None:
+        """Return the Jupyter base URL when notebook proxying is available."""
+        try:
+            from importlib.util import find_spec  # noqa: PLC0415
+
+            if find_spec("jupyter_server_proxy") is None:
+                return None
+        except Exception:
+            return None
+
+        # JUPYTER_BASE_URL is not always exported (e.g. CLI --NotebookApp.base_url).
+        for env_name in ("JUPYTER_BASE_URL", "JUPYTERHUB_SERVICE_PREFIX", "NB_PREFIX"):
+            candidate = os.environ.get(env_name)
+            if candidate:
+                return cls._normalize_jupyter_base_url(candidate)
+
+        try:
+            from jupyter_server.serverapp import list_running_servers  # noqa: PLC0415
+
+            for server in list_running_servers():
+                candidate = server.get("base_url")
+                if candidate:
+                    return cls._normalize_jupyter_base_url(candidate)
+        except Exception:
+            pass
+
+        return None
+
+    @classmethod
+    def _build_browser_url(
+        cls,
+        port: int,
+        *,
+        path: str = "/",
+        query: str = "",
+        local_host: str = "localhost",
+    ) -> str:
+        """Build a browser URL, preferring Jupyter proxy routes when available."""
+        normalized_path = "/" if path in ("", "/") else "/" + path.lstrip("/")
+
+        jupyter_base_url = cls._get_jupyter_proxy_base_url()
+        if jupyter_base_url is not None:
+            return f"{jupyter_base_url}/proxy/{port}{normalized_path}{query}"
+
+        return f"http://{local_host}:{port}{normalized_path}{query}"
 
     @staticmethod
     def _is_client_camera_ready(client: Any) -> bool:
@@ -1107,47 +1167,10 @@ class ViewerViser(ViewerBase):
         # Keep playbackPath relative so notebook proxy prefixes (e.g. /lab/proxy/<port>/)
         # are preserved. Each viewer instance uses a different port, so paths stay distinct.
         playback_path = "recording.viser"
-        base_url = f"http://127.0.0.1:{port}"
-        player_url = f"{base_url}/?playbackPath={playback_path}"
-
-        # Route through Jupyter's proxy only when jupyter-server-proxy is installed.
-        # Without that package, proxy URLs may be unavailable and break playback.
-        jupyter_base_url = None
-        try:
-            from importlib.util import find_spec  # noqa: PLC0415
-
-            has_jupyter_server_proxy = find_spec("jupyter_server_proxy") is not None
-        except Exception:
-            has_jupyter_server_proxy = False
-
-        if has_jupyter_server_proxy:
-            # JUPYTER_BASE_URL is not always exported (e.g. CLI --NotebookApp.base_url).
-            # In that case, fall back to common env vars and running server metadata.
-            for env_name in ("JUPYTER_BASE_URL", "JUPYTERHUB_SERVICE_PREFIX", "NB_PREFIX"):
-                candidate = os.environ.get(env_name)
-                if candidate:
-                    jupyter_base_url = candidate
-                    break
-
-            if not jupyter_base_url:
-                try:
-                    from jupyter_server.serverapp import list_running_servers  # noqa: PLC0415
-
-                    for server in list_running_servers():
-                        candidate = server.get("base_url")
-                        if candidate:
-                            jupyter_base_url = candidate
-                            break
-                except Exception:
-                    pass
-
-            if jupyter_base_url:
-                if not jupyter_base_url.startswith("/"):
-                    jupyter_base_url = "/" + jupyter_base_url
-                if jupyter_base_url != "/":
-                    jupyter_base_url = jupyter_base_url.rstrip("/")
-                else:
-                    jupyter_base_url = ""
-                player_url = f"{jupyter_base_url}/proxy/{port}/?playbackPath={playback_path}"
+        player_url = ViewerViser._build_browser_url(
+            port,
+            query=f"?playbackPath={playback_path}",
+            local_host="127.0.0.1",
+        )
 
         return player_url + ViewerViser._camera_query_from_request(camera_request)
