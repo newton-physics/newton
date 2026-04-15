@@ -59,6 +59,23 @@ class ViewerBase(ABC):
         """
         return False
 
+    def is_reset_requested(self) -> bool:
+        """Report whether a simulation reset has been requested.
+
+        The flag is set by viewer UI controls (e.g. the *R* key or
+        *Reset* button in :class:`ViewerGL`).  Callers should check this
+        once per frame before stepping the simulation and call
+        :meth:`clear_reset_request` after handling the reset.
+
+        Returns:
+            bool: True when a reset has been requested.
+        """
+        return self._reset_requested
+
+    def clear_reset_request(self) -> None:
+        """Clear the reset-requested flag after the reset has been handled."""
+        self._reset_requested = False
+
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.
 
@@ -110,6 +127,9 @@ class ViewerBase(ABC):
 
         # Picking
         self.picking_enabled = True
+
+        # Reset signal
+        self._reset_requested = False
 
         # Display options
         self.show_joints = False
