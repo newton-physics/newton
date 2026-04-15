@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import collections
+import copy
 import datetime
 import inspect
 import itertools
@@ -17,6 +18,8 @@ from urllib.parse import urljoin
 
 if TYPE_CHECKING:
     from pxr import Usd
+
+    from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
 else:
@@ -87,7 +90,7 @@ def parse_usd(
     force_position_velocity_actuation: bool = False,
     override_root_xform: bool = False,
 ) -> dict[str, Any]:
-    """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
+    """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
     The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -355,6 +358,8 @@ def parse_usd(
     material_props_cache: dict[str, dict[str, Any]] = {}
     # cache for mesh data loaded from USD prims
     mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
+    # cache for TetMesh data loaded from USD prims
+    tetmesh_cache: dict[str, TetMesh] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -444,6 +449,18 @@ def parse_usd(
         if material_props.get("metallic") is not None:
             mesh.metallic = material_props["metallic"]
         return mesh
+
+    def _get_tetmesh_cached(prim: Usd.Prim) -> TetMesh:
+        """Load and cache TetMesh data to avoid repeated USD extraction."""
+        prim_path = str(prim.GetPath())
+        if prim_path not in tetmesh_cache:
+            tetmesh_cache[prim_path] = usd.get_tetmesh(prim)
+        return tetmesh_cache[prim_path]
+
+    def _is_uniform_scale(scale: wp.vec3) -> bool:
+        """Return whether a decomposed scale vector is effectively uniform."""
+        scale_np = np.array(scale, dtype=np.float32)
+        return bool(np.allclose(scale_np, scale_np[0], rtol=1e-6, atol=1e-6))
 
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
@@ -631,7 +648,7 @@ def parse_usd(
                     cfg=visual_shape_cfg,
                     label=path_name,
                 )
-            elif len(type_name) > 0 and type_name != "xform" and verbose:
+            elif len(type_name) > 0 and type_name not in {"xform", "tetmesh"} and verbose:
                 print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
 
             if shape_id >= 0:
@@ -2712,6 +2729,57 @@ def parse_usd(
                 for shape1 in builder.body_shapes[body1]:
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
+
+    root_prim = stage.GetPrimAtPath(root_path)
+    if root_prim and root_prim.IsValid():
+        for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
+            if not prim.IsA(UsdGeom.TetMesh):
+                continue
+
+            path = str(prim.GetPath())
+            if path.startswith("/Prototypes/"):
+                continue
+            if any(re.match(pattern, path) for pattern in ignore_paths):
+                continue
+
+            if collect_schema_attrs:
+                R.collect_prim_attrs(prim)
+
+            tetmesh = _get_tetmesh_cached(prim)
+            tetmesh_for_builder = tetmesh
+            if tetmesh.custom_attributes:
+                filtered_custom_attributes = {
+                    k: v for k, v in tetmesh.custom_attributes.items() if k in builder.custom_attributes
+                }
+                if len(filtered_custom_attributes) != len(tetmesh.custom_attributes):
+                    # Preserve the cached TetMesh while keeping add_usd's
+                    # current behavior of dropping unregistered import attrs.
+                    tetmesh_for_builder = copy.copy(tetmesh)
+                    tetmesh_for_builder.custom_attributes = filtered_custom_attributes
+
+            soft_mesh_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
+            soft_mesh_pos, soft_mesh_rot, soft_mesh_scale = wp.transform_decompose(soft_mesh_mat)
+
+            add_soft_mesh_kwargs = {
+                "pos": soft_mesh_pos,
+                "rot": soft_mesh_rot,
+                "scale": 1.0,
+                "vel": wp.vec3(0.0, 0.0, 0.0),
+                "mesh": tetmesh_for_builder,
+            }
+            if _is_uniform_scale(soft_mesh_scale):
+                add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
+            else:
+                add_soft_mesh_kwargs["vertices"] = tetmesh_for_builder.vertices * np.array(
+                    soft_mesh_scale, dtype=np.float32
+                )
+
+            builder.add_soft_mesh(**add_soft_mesh_kwargs)
+
+            if verbose:
+                print(
+                    f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra."
+                )
 
     # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
     if load_visual_shapes:
