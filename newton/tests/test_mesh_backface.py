@@ -209,11 +209,14 @@ class _SimLoop:
         self.contacts = model.collide(s0, collision_pipeline=cp)
 
     def _simulate_frame(self):
-        for _ in range(self.substeps):
+        for i in range(self.substeps):
             self.s0.clear_forces()
             self.model.collide(self.s0, self.contacts, collision_pipeline=self.cp)
             self.solver.step(self.s0, self.s1, self.ctrl, self.contacts, self.dt)
-            self.s0, self.s1 = self.s1, self.s0
+            if self.substeps % 2 == 1 and i == self.substeps - 1:
+                self.s0.assign(self.s1)
+            else:
+                self.s0, self.s1 = self.s1, self.s0
 
     def run(self, steps):
         """Run *steps* frames, returning the final state pair."""
