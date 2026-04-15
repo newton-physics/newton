@@ -129,6 +129,8 @@ class ViewerViser(ViewerBase):
         self._meshes = {}
         self._instances = {}
         self._scene_handles = {}  # Track viser scene node handles
+        self._plane_meshes = {}
+        self._plane_handles = {}
 
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
@@ -538,6 +540,88 @@ class ViewerViser(ViewerBase):
             )
         self._scene_handles[name] = handle
 
+    @staticmethod
+    def _quats_xyzw_to_wxyz(quats_xyzw: np.ndarray) -> np.ndarray:
+        """Convert quaternions from Warp's XYZW layout to viser's WXYZ layout."""
+        quats_xyzw = np.asarray(quats_xyzw, dtype=np.float32)
+        quats_wxyz = np.empty_like(quats_xyzw)
+        quats_wxyz[:, 0] = quats_xyzw[:, 3]
+        quats_wxyz[:, 1] = quats_xyzw[:, 0]
+        quats_wxyz[:, 2] = quats_xyzw[:, 1]
+        quats_wxyz[:, 3] = quats_xyzw[:, 2]
+        return quats_wxyz
+
+    def _remove_plane_handles(self, name: str):
+        """Remove any plane-grid handles associated with an instance batch."""
+        handles = self._plane_handles.pop(name, [])
+        for handle in handles:
+            try:
+                handle.remove()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _build_plane_grid_points(width: float, length: float) -> np.ndarray:
+        """Create a finite grid of line segments in the local XY plane."""
+        width = max(float(width), 0.1)
+        length = max(float(length), 0.1)
+
+        spacing = max(min(width, length) / 10.0, 0.25)
+        spacing = min(spacing, 2.0)
+
+        nx = max(int(np.ceil(width / spacing)), 1)
+        ny = max(int(np.ceil(length / spacing)), 1)
+
+        xs = np.linspace(-width * 0.5, width * 0.5, nx + 1, dtype=np.float32)
+        ys = np.linspace(-length * 0.5, length * 0.5, ny + 1, dtype=np.float32)
+
+        segments = []
+        for x in xs:
+            segments.append([[x, -length * 0.5, 0.0], [x, length * 0.5, 0.0]])
+        for y in ys:
+            segments.append([[-width * 0.5, y, 0.0], [width * 0.5, y, 0.0]])
+
+        return np.asarray(segments, dtype=np.float32)
+
+    def _log_plane_instances(
+        self,
+        name: str,
+        plane_info: dict[str, float | bool],
+        xforms: wp.array(dtype=wp.transform) | None,
+        hidden: bool = False,
+    ):
+        """Render plane instances as finite line grids instead of opaque meshes."""
+        self._remove_plane_handles(name)
+
+        if hidden or xforms is None:
+            return
+
+        xforms_np = self._to_numpy(xforms)
+        if xforms_np is None or len(xforms_np) == 0:
+            return
+
+        xforms_np = np.asarray(xforms_np, dtype=np.float32)
+        positions = xforms_np[:, :3]
+        quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
+
+        width = float(plane_info["width"])
+        length = float(plane_info["length"])
+        grid_points = self._build_plane_grid_points(width, length)
+
+        handles = []
+        for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
+            handle = self._server.scene.add_line_segments(
+                name=f"{name}/grid_{idx}",
+                points=grid_points,
+                colors=(150, 150, 150),
+                line_width=1.5,
+                wxyz=quat_wxyz,
+                position=position,
+            )
+            handles.append(handle)
+
+        self._plane_handles[name] = handles
+
     @override
     def log_instances(
         self,
@@ -564,6 +648,12 @@ class ViewerViser(ViewerBase):
             materials: Instance materials.
             hidden: Whether the instances are hidden.
         """
+        if mesh in self._plane_meshes:
+            self._log_plane_instances(name, self._plane_meshes[mesh], xforms, hidden=hidden)
+            return
+
+        self._remove_plane_handles(name)
+
         # Check that mesh exists
         if mesh not in self._meshes:
             raise RuntimeError(f"Mesh {mesh} not found. Call log_mesh first.")
@@ -601,13 +691,7 @@ class ViewerViser(ViewerBase):
         # Warp transform format: [x, y, z, qx, qy, qz, qw]
         positions = xforms_np[:, :3].astype(np.float32)
 
-        # Convert quaternions from Warp format (x, y, z, w) to viser format (w, x, y, z)
-        quats_xyzw = xforms_np[:, 3:7]
-        quats_wxyz = np.zeros((num_instances, 4), dtype=np.float32)
-        quats_wxyz[:, 0] = quats_xyzw[:, 3]  # w
-        quats_wxyz[:, 1] = quats_xyzw[:, 0]  # x
-        quats_wxyz[:, 2] = quats_xyzw[:, 1]  # y
-        quats_wxyz[:, 3] = quats_xyzw[:, 2]  # z
+        quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
 
         # Prepare scales
         if scales_np is not None:
@@ -891,18 +975,19 @@ class ViewerViser(ViewerBase):
                 if extents is None:
                     width, length = 10.0, 10.0
                 else:
-                    max_extent = max(extents) * 1.5
+                    max_extent = max(max(extents) * 1.5, 8.0)
                     width = max_extent
                     length = max_extent
+                infinite_grid = False
             else:
                 width = geo_scale[0]
                 length = geo_scale[1] if len(geo_scale) > 1 else 10.0
-            mesh = newton.Mesh.create_plane(width, length, compute_inertia=False)
-            points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
-            normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
-            uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
-            indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
-            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+                infinite_grid = False
+            self._plane_meshes[name] = {
+                "width": float(width),
+                "length": float(length),
+                "infinite_grid": infinite_grid,
+            }
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
 
