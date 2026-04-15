@@ -34,7 +34,7 @@ def _interp_1d(
 
 
 @wp.kernel
-def _remotized_clamp_kernel(
+def _position_based_clamp_kernel(
     current_pos: wp.array[float],
     state_indices: wp.array[wp.uint32],
     lookup_angles: wp.array[float],
@@ -54,11 +54,9 @@ class ClampingPositionBased(Clamping):
     """Angle-dependent torque clamping via lookup table.
 
     Replaces a fixed ±max_force box clamp with angle-dependent torque
-    limits interpolated from a lookup table. Models remotized actuators
-    (e.g., linkage-driven joints) where the transmission ratio and thus
-    maximum output torque vary with joint angle.
-
-    This is a post-controller dynamic.
+    limits interpolated from a lookup table. Models actuators where
+    the transmission ratio and thus maximum output torque vary with
+    joint angle (e.g., linkage-driven joints).
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"lookup_angles", "lookup_torques"}
@@ -77,7 +75,7 @@ class ClampingPositionBased(Clamping):
         lookup_angles: wp.array | tuple[float, ...] | list[float],
         lookup_torques: wp.array | tuple[float, ...] | list[float],
     ):
-        """Initialize remotized clamp dynamic.
+        """Initialize position-based clamp.
 
         Args:
             lookup_angles: Sorted joint angles for the torque lookup table. Shape (K,).
@@ -105,7 +103,7 @@ class ClampingPositionBased(Clamping):
         num_actuators: int,
     ) -> None:
         wp.launch(
-            kernel=_remotized_clamp_kernel,
+            kernel=_position_based_clamp_kernel,
             dim=num_actuators,
             inputs=[
                 positions,

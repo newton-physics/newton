@@ -21,14 +21,14 @@ def _box_clamp_kernel(
 
 
 class ClampingMaxForce(Clamping):
-    """Box-clamp forces to ±max_force per actuator.
-
-    This is a post-controller dynamic.
-    """
+    """Box-clamp forces to ±max_force per actuator."""
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        return {"max_force": args.get("max_force", math.inf)}
+        max_force = args.get("max_force", math.inf)
+        if max_force < 0:
+            raise ValueError(f"max_force must be non-negative, got {max_force}")
+        return {"max_force": max_force}
 
     def __init__(self, max_force: wp.array):
         """Initialize clamp dynamic.

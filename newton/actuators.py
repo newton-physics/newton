@@ -12,6 +12,7 @@ construction.
 
 from ._src.actuators import (
     Actuator,
+    ActuatorParsed,
     Clamping,
     ClampingDCMotor,
     ClampingMaxForce,
@@ -22,12 +23,12 @@ from ._src.actuators import (
     ControllerPD,
     ControllerPID,
     Delay,
-    ParsedActuator,
     parse_actuator_prim,
 )
 
 __all__ = [
     "Actuator",
+    "ActuatorParsed",
     "Clamping",
     "ClampingDCMotor",
     "ClampingMaxForce",
@@ -38,6 +39,5 @@ __all__ = [
     "ControllerPD",
     "ControllerPID",
     "Delay",
-    "ParsedActuator",
     "parse_actuator_prim",
 ]

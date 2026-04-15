@@ -12,10 +12,10 @@ import warp as wp
 import newton
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
+    ActuatorParsed,
     ClampingMaxForce,
     ControllerPD,
     ControllerPID,
-    ParsedActuator,
     parse_actuator_prim,
 )
 from newton.selection import ArticulationView
@@ -177,7 +177,7 @@ class TestActuatorUSDParsing(unittest.TestCase):
         parsed = parse_actuator_prim(actuator_prim)
 
         self.assertIsNotNone(parsed)
-        self.assertIsInstance(parsed, ParsedActuator)
+        self.assertIsInstance(parsed, ActuatorParsed)
         self.assertEqual(parsed.controller_class, ControllerPD)
         self.assertEqual(parsed.controller_kwargs.get("kp"), 100.0)
         self.assertEqual(parsed.controller_kwargs.get("kd"), 10.0)

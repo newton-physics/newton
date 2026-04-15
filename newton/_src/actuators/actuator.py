@@ -18,28 +18,17 @@ from .delay import Delay
 @wp.kernel
 def _scatter_add_kernel(
     forces: wp.array[float],
+    computed_forces: wp.array[float],
     indices: wp.array[wp.uint32],
     output: wp.array[float],
+    computed_output: wp.array[float],
 ):
-    """Scatter-add forces into output at specified indices."""
+    """Scatter-add forces into output; optionally scatter computed forces too."""
     i = wp.tid()
     idx = indices[i]
     output[idx] = output[idx] + forces[i]
-
-
-@wp.kernel
-def _scatter_add_dual_kernel(
-    applied_forces: wp.array[float],
-    computed_forces: wp.array[float],
-    indices: wp.array[wp.uint32],
-    applied_output: wp.array[float],
-    computed_output: wp.array[float],
-):
-    """Scatter-add both applied and computed forces in one pass."""
-    i = wp.tid()
-    idx = indices[i]
-    applied_output[idx] = applied_output[idx] + applied_forces[i]
-    computed_output[idx] = computed_output[idx] + computed_forces[i]
+    if computed_output:
+        computed_output[idx] = computed_output[idx] + computed_forces[i]
 
 
 class Actuator:
@@ -49,9 +38,8 @@ class Actuator:
     forces via a controller, applies clamping (force limits, saturation, etc.),
     and writes the result to the output array.
 
-    Delay is handled separately from clamping because it is the only
-    pre-controller modifier (it replaces targets with delayed versions).
-    All clamping is post-controller (it bounds forces).
+    An optional delay can be applied to the controller inputs, modelling
+    actuator communication or processing lag.
 
     Usage::
 
@@ -74,7 +62,7 @@ class Actuator:
         state_vel_attr: Attribute on sim_state for velocities.
         control_target_pos_attr: Attribute on sim_control for target positions.
         control_target_vel_attr: Attribute on sim_control for target velocities.
-        control_input_attr: Attribute on sim_control for control input. None to skip.
+        control_feedforward_attr: Attribute on sim_control for control input. None to skip.
         control_output_attr: Attribute on sim_control for clamped output forces.
         control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
             forces. None to skip writing computed forces.
@@ -107,7 +95,7 @@ class Actuator:
         state_vel_attr: str = "joint_qd",
         control_target_pos_attr: str = "joint_target_pos",
         control_target_vel_attr: str = "joint_target_vel",
-        control_input_attr: str | None = "joint_act",
+        control_feedforward_attr: str | None = "joint_act",
         control_output_attr: str = "joint_f",
         control_computed_output_attr: str | None = None,
     ):
@@ -121,14 +109,16 @@ class Actuator:
         self.state_vel_attr = state_vel_attr
         self.control_target_pos_attr = control_target_pos_attr
         self.control_target_vel_attr = control_target_vel_attr
-        self.control_input_attr = control_input_attr
+        self.control_feedforward_attr = control_feedforward_attr
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
 
         device = indices.device
         self._sequential_indices = wp.array(np.arange(self.num_actuators, dtype=np.uint32), device=device)
         self._computed_forces = wp.zeros(self.num_actuators, dtype=wp.float32, device=device)
-        self._applied_forces = wp.zeros(self.num_actuators, dtype=wp.float32, device=device)
+        self._applied_forces = (
+            wp.zeros(self.num_actuators, dtype=wp.float32, device=device) if self.clamping else None
+        )
 
         controller.finalize(device, self.num_actuators)
 
@@ -168,7 +158,7 @@ class Actuator:
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
-        return self.controller.is_graphable() and all(c.is_graphable() for c in self.clamping)
+        return self.controller.is_graphable()
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
@@ -216,8 +206,8 @@ class Actuator:
         orig_target_pos = getattr(sim_control, self.control_target_pos_attr)
         orig_target_vel = getattr(sim_control, self.control_target_vel_attr)
         orig_act_input = None
-        if self.control_input_attr is not None:
-            orig_act_input = getattr(sim_control, self.control_input_attr, None)
+        if self.control_feedforward_attr is not None:
+            orig_act_input = getattr(sim_control, self.control_feedforward_attr, None)
 
         target_pos = orig_target_pos
         target_vel = orig_target_vel
@@ -265,30 +255,23 @@ class Actuator:
                         self.num_actuators,
                     )
                     src = self._applied_forces
+                output_forces = self._applied_forces
             else:
-                wp.copy(self._applied_forces, self._computed_forces)
+                output_forces = self._computed_forces
 
-            # --- 4. Scatter-add applied (+ optionally computed) to output ---
+            # --- 4. Scatter-add to output ---
             applied_output = getattr(sim_control, self.control_output_attr)
-            if self.control_computed_output_attr is not None:
-                computed_output = getattr(sim_control, self.control_computed_output_attr)
-                wp.launch(
-                    kernel=_scatter_add_dual_kernel,
-                    dim=self.num_actuators,
-                    inputs=[
-                        self._applied_forces,
-                        self._computed_forces,
-                        self.indices,
-                    ],
-                    outputs=[applied_output, computed_output],
-                )
-            else:
-                wp.launch(
-                    kernel=_scatter_add_kernel,
-                    dim=self.num_actuators,
-                    inputs=[self._applied_forces, self.indices],
-                    outputs=[applied_output],
-                )
+            computed_output = (
+                getattr(sim_control, self.control_computed_output_attr)
+                if self.control_computed_output_attr is not None
+                else None
+            )
+            wp.launch(
+                kernel=_scatter_add_kernel,
+                dim=self.num_actuators,
+                inputs=[output_forces, self._computed_forces, self.indices],
+                outputs=[applied_output, computed_output],
+            )
 
         # --- 5. State updates ---
         if has_states:

@@ -59,7 +59,3 @@ class Clamping:
             num_actuators: Number of actuators N.
         """
         pass
-
-    def is_graphable(self) -> bool:
-        """Return True if all operations can be captured in a CUDA graph."""
-        return True

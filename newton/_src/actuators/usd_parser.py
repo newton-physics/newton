@@ -71,7 +71,7 @@ SCHEMA_REGISTRY: dict[str, SchemaEntry] = {
 
 
 @dataclass
-class ParsedActuator:
+class ActuatorParsed:
     """Result of parsing a USD actuator prim.
 
     Each detected API schema produces a (class, kwargs) entry.
@@ -125,7 +125,7 @@ def get_schemas_from_prim(prim) -> list[str]:
     return [s for s in tokens if s in SCHEMA_REGISTRY]
 
 
-def parse_actuator_prim(prim) -> ParsedActuator | None:
+def parse_actuator_prim(prim) -> ActuatorParsed | None:
     """Parse a USD Actuator prim into a composed actuator specification.
 
     Each detected schema directly maps to a component class with its
@@ -173,7 +173,7 @@ def parse_actuator_prim(prim) -> ParsedActuator | None:
             f"Actuator prim has no controller schema applied (applied schemas: {prim.GetAppliedSchemas()})"
         )
 
-    return ParsedActuator(
+    return ActuatorParsed(
         controller_class=controller_class,
         controller_kwargs=controller_kwargs,
         component_specs=component_specs,
