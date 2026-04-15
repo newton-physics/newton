@@ -41,6 +41,10 @@ class ShadingStyleConfig:
         draw_sky: Whether to render the sky sphere background.
         sun_directions: Per-up-axis key-light direction (un-normalized).
             Keys: 0=X-up, 1=Y-up, 2=Z-up.
+        sky_upper: Override for the sky dome upper (zenith) color, or ``None``
+            to use the renderer's ``sky_upper`` attribute (default).
+        sky_lower: Override for the sky dome lower (horizon) color.
+        draw_sun: Whether the sky dome renders a sun flare (default ``True``).
         gradient_top: Top color for a screen-space gradient background, or
             ``None`` to skip the gradient pass (default).
         gradient_bottom: Bottom color for the gradient background.
@@ -53,6 +57,9 @@ class ShadingStyleConfig:
     shader_class: type[ShaderShape]
     draw_sky: bool
     sun_directions: dict
+    sky_upper: tuple[float, float, float] | None = None
+    sky_lower: tuple[float, float, float] | None = None
+    draw_sun: bool = True
     gradient_top: tuple[float, float, float] | None = None
     gradient_bottom: tuple[float, float, float] | None = None
     overrides: dict = field(default_factory=dict)
@@ -82,6 +89,9 @@ STYLE_REGISTRY: dict[str, ShadingStyleConfig] = {
             1: np.array([0.6, 1.0, 0.8], dtype=np.float32),  # Y-up
             2: np.array([0.8, 0.6, 1.0], dtype=np.float32),  # Z-up
         },
+        sky_upper=(0.96, 0.96, 0.97),
+        sky_lower=(0.85, 0.85, 0.87),
+        draw_sun=False,
         overrides={
             "fog_color": (0.93, 0.93, 0.95),
             "sky_color": (0.72, 0.82, 0.98),
@@ -90,10 +100,6 @@ STYLE_REGISTRY: dict[str, ShadingStyleConfig] = {
             "env_texture": None,
             "env_intensity": 0.0,
             "spotlight_enabled": False,
-            # Sky dome overrides — subtle near-white gradient, no sun flare.
-            "sky_upper": (0.96, 0.96, 0.97),
-            "sky_lower": (0.85, 0.85, 0.87),
-            "sky_sun_direction": (0.0, 0.0, 0.0),
         },
     ),
 }
@@ -2109,15 +2115,16 @@ class RendererGL:
 
         self._make_current()
 
-        overrides = self._active_style.overrides
+        style = self._active_style
+        sun_dir = self._sun_direction if style.draw_sun else (0.0, 0.0, 0.0)
         self._sky_shader.update(
             view_matrix=self._view_matrix,
             projection_matrix=self._projection_matrix,
             camera_pos=self.camera.pos,
             camera_far=self.camera.far,
-            sky_upper=overrides.get("sky_upper", self.sky_upper),
-            sky_lower=overrides.get("sky_lower", self.sky_lower),
-            sun_direction=overrides.get("sky_sun_direction", self._sun_direction),
+            sky_upper=style.sky_upper or self.sky_upper,
+            sky_lower=style.sky_lower or self.sky_lower,
+            sun_direction=sun_dir,
             up_axis=self.camera.up_axis,
         )
 
