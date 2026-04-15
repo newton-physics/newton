@@ -130,12 +130,7 @@ class Actuator:
         self._computed_forces = wp.zeros(self.num_actuators, dtype=wp.float32, device=device)
         self._applied_forces = wp.zeros(self.num_actuators, dtype=wp.float32, device=device)
 
-        controller.set_device(device)
-        controller.set_indices(indices, self._sequential_indices)
-        for clamp in self.clamping:
-            clamp.set_device(device)
-        if self.delay is not None:
-            self.delay.set_indices(self.num_actuators, self._sequential_indices)
+        controller.finalize(device, self.num_actuators)
 
     def get_param(self, name: str) -> wp.array | None:
         """Search for a named warp array parameter across controller and clamping.
@@ -235,9 +230,8 @@ class Actuator:
             delay_state = current_act_state.delay_state if current_act_state else None
 
             if self.delay.is_ready(delay_state):
-                target_pos, target_vel, act_input, target_indices = self.delay.get_delayed_targets(
-                    act_input, delay_state
-                )
+                target_pos, target_vel, act_input = self.delay.get_delayed_targets(act_input, delay_state)
+                target_indices = self._sequential_indices
             else:
                 skip_compute = True
 
@@ -253,7 +247,6 @@ class Actuator:
                 self.indices,
                 target_indices,
                 self._computed_forces,
-                self._sequential_indices,
                 self.num_actuators,
                 ctrl_state,
                 dt,

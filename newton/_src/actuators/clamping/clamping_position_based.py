@@ -88,21 +88,12 @@ class ClampingPositionBased(Clamping):
                 f"lookup_angles length ({len(lookup_angles)}) must match lookup_torques length ({len(lookup_torques)})"
             )
         self.lookup_size = len(lookup_angles)
-        self._raw_angles = lookup_angles
-        self._raw_torques = lookup_torques
-        self.lookup_angles: wp.array | None = None
-        self.lookup_torques: wp.array | None = None
-
-        if isinstance(lookup_angles, wp.array):
-            self.lookup_angles = lookup_angles
-        if isinstance(lookup_torques, wp.array):
-            self.lookup_torques = lookup_torques
-
-    def set_device(self, device: wp.Device) -> None:
-        if self.lookup_angles is None:
-            self.lookup_angles = wp.array(np.array(self._raw_angles, dtype=np.float32), device=device)
-        if self.lookup_torques is None:
-            self.lookup_torques = wp.array(np.array(self._raw_torques, dtype=np.float32), device=device)
+        if not isinstance(lookup_angles, wp.array):
+            lookup_angles = wp.array(np.array(lookup_angles, dtype=np.float32))
+        if not isinstance(lookup_torques, wp.array):
+            lookup_torques = wp.array(np.array(lookup_torques, dtype=np.float32))
+        self.lookup_angles = lookup_angles
+        self.lookup_torques = lookup_torques
 
     def modify_forces(
         self,

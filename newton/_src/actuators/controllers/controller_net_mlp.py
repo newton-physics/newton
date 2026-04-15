@@ -88,20 +88,13 @@ class ControllerNetMLP(Controller):
 
         self._torch_input_indices: torch.Tensor | None = None
         self._torch_sequential_indices: torch.Tensor | None = None
-        self._warp_sequential_indices: wp.array | None = None
 
-    def set_device(self, device: wp.Device) -> None:
+    def finalize(self, device: wp.Device, num_actuators: int) -> None:
         import torch
 
         self._torch_device = torch.device(f"cuda:{device.ordinal}" if device.is_cuda else "cpu")
         self.network = self.network.to(self._torch_device)
-
-    def set_indices(self, input_indices: wp.array, sequential_indices: wp.array) -> None:
-        import torch
-
-        self._torch_input_indices = torch.tensor(input_indices.numpy(), dtype=torch.long, device=self._torch_device)
-        self._torch_sequential_indices = torch.arange(len(input_indices), dtype=torch.long, device=self._torch_device)
-        self._warp_sequential_indices = sequential_indices
+        self._torch_sequential_indices = torch.arange(num_actuators, dtype=torch.long, device=self._torch_device)
 
     def is_stateful(self) -> bool:
         return True
@@ -127,21 +120,25 @@ class ControllerNetMLP(Controller):
         input_indices: wp.array,
         target_indices: wp.array,
         forces: wp.array,
-        force_indices: wp.array,
         num_actuators: int,
         state: ControllerNetMLP.State,
         dt: float,
     ) -> None:
         import torch
 
+        if self._torch_input_indices is None:
+            self._torch_input_indices = torch.tensor(
+                input_indices.numpy(), dtype=torch.long, device=self._torch_device
+            )
+
         current_pos = wp.to_torch(positions)
         current_vel = wp.to_torch(velocities)
         target = wp.to_torch(target_pos)
 
         torch_target_idx = (
-            self._torch_sequential_indices
-            if target_indices is self._warp_sequential_indices
-            else self._torch_input_indices
+            self._torch_input_indices
+            if target_indices is input_indices
+            else self._torch_sequential_indices
         )
 
         pos_error = target[torch_target_idx] - current_pos[self._torch_input_indices]

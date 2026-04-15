@@ -14,8 +14,6 @@ class Clamping:
     angle-dependent torque curves, etc. They read from a source force
     buffer and write bounded values to a destination buffer.
 
-    For input delay, use the ``Delay`` class (passed separately to the
-    Actuator, not as a Clamping).
 
     Class Attributes:
         SHARED_PARAMS: Parameter names that are instance-level (shared across
@@ -35,17 +33,6 @@ class Clamping:
             Complete arguments with defaults filled in.
         """
         raise NotImplementedError(f"{cls.__name__} must implement resolve_arguments")
-
-    def set_device(self, device: wp.Device) -> None:
-        """Called by Actuator to set the target device.
-
-        Override in subclasses that need to allocate device arrays
-        from raw data (e.g. lookup tables).
-
-        Args:
-            device: Warp device to use.
-        """
-        pass
 
     def modify_forces(
         self,

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import warnings
 from typing import Any
 
 import warp as wp
@@ -52,9 +53,29 @@ class ClampingDCMotor(Clamping):
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         if "velocity_limit" not in args:
             raise ValueError("ClampingDCMotor requires 'velocity_limit' argument")
+        vel_lim = args["velocity_limit"]
+        if vel_lim <= 0.0:
+            warnings.warn(
+                f"ClampingDCMotor: velocity_limit must be > 0 (used as divisor "
+                f"in torque-speed computation); got {vel_lim}, falling back to 1e6",
+                stacklevel=2,
+            )
+            vel_lim = 1e6
+        sat = args.get("saturation_effort", math.inf)
+        if math.isinf(sat):
+            max_force = args.get("max_force", math.inf)
+            if not math.isinf(max_force):
+                sat = max_force
+            else:
+                sat = 1e6
+            warnings.warn(
+                f"ClampingDCMotor: saturation_effort not set or infinite, "
+                f"defaulting to {sat} to avoid inf*0 in torque-speed computation",
+                stacklevel=2,
+            )
         return {
-            "saturation_effort": args.get("saturation_effort", math.inf),
-            "velocity_limit": args["velocity_limit"],
+            "saturation_effort": sat,
+            "velocity_limit": vel_lim,
             "max_force": args.get("max_force", math.inf),
         }
 

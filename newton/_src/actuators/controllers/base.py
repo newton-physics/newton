@@ -49,27 +49,15 @@ class Controller:
         """
         raise NotImplementedError(f"{cls.__name__} must implement resolve_arguments")
 
-    def set_device(self, device: wp.Device) -> None:
-        """Called by Actuator to set the target device.
+    def finalize(self, device: wp.Device, num_actuators: int) -> None:
+        """Called by :class:`Actuator` after construction to set up device-specific resources.
 
         Override in subclasses that need to place tensors or networks
-        on a specific device (e.g. neural-network controllers).
+        on a specific device, or pre-compute index tensors.
 
         Args:
             device: Warp device to use.
-        """
-        pass
-
-    def set_indices(self, input_indices: wp.array, sequential_indices: wp.array) -> None:
-        """Called by Actuator to provide DOF index arrays.
-
-        Override in subclasses that need to pre-compute index tensors
-        (e.g. torch index tensors for neural-network controllers).
-
-        Args:
-            input_indices: DOF indices for reading state. Shape (N,)
-                for single-input or (N, M) for multi-input actuators.
-            sequential_indices: Sequential indices [0..N). Shape (N,).
+            num_actuators: Number of actuators (DOFs) this controller manages.
         """
         pass
 
@@ -83,12 +71,11 @@ class Controller:
         input_indices: wp.array,
         target_indices: wp.array,
         forces: wp.array,
-        force_indices: wp.array,
         num_actuators: int,
         state: Controller.State | None,
         dt: float,
     ) -> None:
-        """Compute raw forces and write to ``forces[force_indices[i]]``.
+        """Compute raw forces and write to ``forces[i]``.
 
         Args:
             positions: Joint positions (global array).
@@ -98,8 +85,7 @@ class Controller:
             act_input: Feedforward control input (may be None).
             input_indices: Indices into positions/velocities.
             target_indices: Indices into target arrays.
-            forces: Scratch buffer to write forces to. Shape (N,).
-            force_indices: Indices into forces buffer (typically sequential).
+            forces: Compact scratch buffer to write forces to. Shape (N,).
             num_actuators: Number of actuators N.
             state: Controller state (None if stateless).
             dt: Timestep in seconds.

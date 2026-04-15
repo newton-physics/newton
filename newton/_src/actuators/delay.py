@@ -84,10 +84,6 @@ class Delay:
             delay: Number of timesteps to delay inputs.
         """
         self.delay = delay
-        self._sequential_indices: wp.array | None = None
-
-    def set_indices(self, num_actuators: int, sequential_indices: wp.array) -> None:
-        self._sequential_indices = sequential_indices
 
     def state(self, num_actuators: int, device: wp.Device) -> Delay.State:
         return Delay.State(
@@ -106,19 +102,19 @@ class Delay:
         self,
         act_input: wp.array | None,
         current_state: Delay.State,
-    ) -> tuple[wp.array, wp.array, wp.array | None, wp.array]:
+    ) -> tuple[wp.array, wp.array, wp.array | None]:
         """Return delayed targets from the circular buffer.
 
         Call only when ``is_ready()`` is True.
 
         Returns:
-            (delayed_pos, delayed_vel, delayed_act, sequential_indices)
+            (delayed_pos, delayed_vel, delayed_act)
         """
         read_idx = (current_state.write_idx + 1) % self.delay
         delayed_pos = current_state.buffer_pos[read_idx]
         delayed_vel = current_state.buffer_vel[read_idx]
         delayed_act = current_state.buffer_act[read_idx] if act_input is not None else None
-        return delayed_pos, delayed_vel, delayed_act, self._sequential_indices
+        return delayed_pos, delayed_vel, delayed_act
 
     def update_state(
         self,

@@ -17,7 +17,6 @@ def _pd_force_kernel(
     control_input: wp.array[float],
     state_indices: wp.array[wp.uint32],
     target_indices: wp.array[wp.uint32],
-    force_indices: wp.array[wp.uint32],
     kp: wp.array[float],
     kd: wp.array[float],
     constant_force: wp.array[float],
@@ -27,7 +26,6 @@ def _pd_force_kernel(
     i = wp.tid()
     state_idx = state_indices[i]
     target_idx = target_indices[i]
-    force_idx = force_indices[i]
 
     position_error = target_pos[target_idx] - current_pos[state_idx]
     velocity_error = target_vel[target_idx] - current_vel[state_idx]
@@ -41,7 +39,7 @@ def _pd_force_kernel(
         act = control_input[target_idx]
 
     force = const_f + act + kp[i] * position_error + kd[i] * velocity_error
-    forces[force_idx] = force
+    forces[i] = force
 
 
 class ControllerPD(Controller):
@@ -86,7 +84,6 @@ class ControllerPD(Controller):
         input_indices: wp.array,
         target_indices: wp.array,
         forces: wp.array,
-        force_indices: wp.array,
         num_actuators: int,
         state: Controller.State | None,
         dt: float,
@@ -102,7 +99,6 @@ class ControllerPD(Controller):
                 act_input,
                 input_indices,
                 target_indices,
-                force_indices,
                 self.kp,
                 self.kd,
                 self.constant_force,

@@ -21,7 +21,6 @@ def _pid_force_kernel(
     control_input: wp.array[float],
     state_indices: wp.array[wp.uint32],
     target_indices: wp.array[wp.uint32],
-    force_indices: wp.array[wp.uint32],
     kp: wp.array[float],
     ki: wp.array[float],
     kd: wp.array[float],
@@ -36,7 +35,6 @@ def _pid_force_kernel(
     i = wp.tid()
     state_idx = state_indices[i]
     target_idx = target_indices[i]
-    force_idx = force_indices[i]
 
     position_error = target_pos[target_idx] - current_pos[state_idx]
     velocity_error = target_vel[target_idx] - current_vel[state_idx]
@@ -53,7 +51,7 @@ def _pid_force_kernel(
         act = control_input[target_idx]
 
     force = const_f + act + kp[i] * position_error + ki[i] * integral + kd[i] * velocity_error
-    forces[force_idx] = force
+    forces[i] = force
     next_integral[i] = integral
 
 
@@ -108,10 +106,8 @@ class ControllerPID(Controller):
         self.constant_force = constant_force
         self._next_integral: wp.array | None = None
 
-    def set_indices(self, input_indices: wp.array, sequential_indices: wp.array) -> None:
-        num = len(input_indices)
-        device = input_indices.device
-        self._next_integral = wp.zeros(num, dtype=wp.float32, device=device)
+    def finalize(self, device: wp.Device, num_actuators: int) -> None:
+        self._next_integral = wp.zeros(num_actuators, dtype=wp.float32, device=device)
 
     def is_stateful(self) -> bool:
         return True
@@ -131,7 +127,6 @@ class ControllerPID(Controller):
         input_indices: wp.array,
         target_indices: wp.array,
         forces: wp.array,
-        force_indices: wp.array,
         num_actuators: int,
         state: ControllerPID.State,
         dt: float,
@@ -147,7 +142,6 @@ class ControllerPID(Controller):
                 act_input,
                 input_indices,
                 target_indices,
-                force_indices,
                 self.kp,
                 self.ki,
                 self.kd,
