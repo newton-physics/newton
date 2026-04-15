@@ -1268,7 +1268,8 @@ def create_texture_sdf_from_mesh(
     *,
     margin: float = 0.05,
     narrow_band_range: tuple[float, float] = (-0.1, 0.1),
-    max_resolution: int = 64,
+    max_resolution: int | None = None,
+    target_voxel_size: float | None = None,
     subgrid_size: int = 8,
     quantization_mode: int = QuantizationMode.UINT16,
     winding_threshold: float = 0.5,
@@ -1284,7 +1285,14 @@ def create_texture_sdf_from_mesh(
         mesh: Warp mesh with ``support_winding_number=True``.
         margin: extra AABB padding [m].
         narrow_band_range: signed narrow-band distance range [m] as ``(inner, outer)``.
-        max_resolution: maximum grid dimension [voxel].
+        max_resolution: maximum grid dimension [voxel]. Used when
+            ``target_voxel_size`` is not provided. Defaults to 64 when both
+            ``max_resolution`` and ``target_voxel_size`` are ``None``.
+        target_voxel_size: target voxel size [m] along the longest padded-AABB
+            axis. When provided, takes precedence over ``max_resolution`` and
+            ``max_resolution`` is derived as
+            ``ceil(max_padded_extent / target_voxel_size)`` then rounded up to
+            a multiple of 8 to match the sparse SDF path.
         subgrid_size: cells per subgrid.
         quantization_mode: :class:`QuantizationMode` value.
         winding_threshold: winding number threshold for inside/outside classification.
@@ -1312,6 +1320,26 @@ def create_texture_sdf_from_mesh(
     max_ext_scalar = np.max(ext)
     if max_ext_scalar < 1e-10:
         return create_empty_texture_sdf_data(), None, None, []
+
+    # Resolve max_resolution, honoring target_voxel_size when provided.
+    # Mirrors the sparse SDF path in sdf_utils._compute_sdf_from_shape_impl
+    # so texture and sparse grids agree on resolution.
+    if target_voxel_size is not None:
+        if target_voxel_size <= 0.0:
+            raise ValueError("target_voxel_size must be > 0")
+        derived_res = int(np.ceil(max_ext_scalar / float(target_voxel_size)))
+        # Keep alignment with tiled SDF builders that operate on 8-voxel chunks.
+        derived_res = max(8, ((derived_res + 7) // 8) * 8)
+        max_resolution = derived_res
+    elif max_resolution is None:
+        max_resolution = 64
+
+    max_resolution = int(max_resolution)
+    if max_resolution <= 0:
+        raise ValueError("max_resolution must be > 0")
+    if max_resolution >= (1 << 16):
+        raise ValueError(f"max_resolution must be less than {1 << 16}")
+
     cell_size_scalar = max_ext_scalar / max_resolution
     dims = np.ceil(ext / cell_size_scalar).astype(int) + 1
     grid_x, grid_y, grid_z = int(dims[0]), int(dims[1]), int(dims[2])

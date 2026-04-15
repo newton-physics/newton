@@ -1215,6 +1215,155 @@ def test_build_sdf_texture_format_parameter(test, device):
     test.assertEqual(sdf_f32._subgrid_texture.dtype, wp.float32)
 
 
+def test_texture_sdf_target_voxel_size_scales(test, device):
+    """Regression test for #2407: create_texture_sdf_from_mesh must honor target_voxel_size.
+
+    Prior to the fix, the texture SDF path ignored ``target_voxel_size`` and
+    always fell back to ``max_resolution=64`` (or whatever was passed), so
+    sweeping ``target_voxel_size`` produced identical block counts. After the
+    fix, halving ``target_voxel_size`` should roughly ~8x the block count
+    (2^3 in 3D) for a cube mesh until the coarse grid saturates.
+    """
+    mesh = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+
+    counts = []
+    for vox in (0.2, 0.1, 0.05):
+        _tex_sdf, _ct, _st, block_coords = create_texture_sdf_from_mesh(
+            wp_mesh,
+            margin=0.05,
+            narrow_band_range=(-0.1, 0.1),
+            target_voxel_size=vox,
+            device=device,
+        )
+        counts.append(len(block_coords))
+
+    # Block count must strictly increase as voxels get smaller — the old
+    # bug produced identical counts across all target_voxel_size values.
+    test.assertLess(
+        counts[0],
+        counts[1],
+        f"target_voxel_size=0.2 produced {counts[0]} blocks but 0.1 produced {counts[1]}; "
+        f"target_voxel_size was likely ignored (see #2407).",
+    )
+    test.assertLess(
+        counts[1],
+        counts[2],
+        f"target_voxel_size=0.1 produced {counts[1]} blocks but 0.05 produced {counts[2]}; "
+        f"target_voxel_size was likely ignored (see #2407).",
+    )
+
+
+def test_texture_sdf_target_voxel_size_takes_precedence(test, device):
+    """Regression test for #2407: target_voxel_size must override max_resolution.
+
+    Documented precedence in ``SDF.create_from_mesh`` is that
+    ``target_voxel_size`` wins over ``max_resolution`` when both are provided.
+    The sparse SDF path already honored this; this test guards the texture
+    SDF path.
+    """
+    mesh = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+
+    # Low max_resolution alone produces a coarse SDF.
+    _s1, _c1, _sub1, blocks_low_res = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=8,
+        device=device,
+    )
+
+    # A small target_voxel_size paired with the same low max_resolution
+    # must produce a higher-resolution SDF (more blocks), because
+    # target_voxel_size takes precedence.
+    _s2, _c2, _sub2, blocks_override = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=8,
+        target_voxel_size=0.05,
+        device=device,
+    )
+
+    test.assertGreater(
+        len(blocks_override),
+        len(blocks_low_res),
+        f"target_voxel_size=0.05 with max_resolution=8 produced "
+        f"{len(blocks_override)} blocks, but max_resolution=8 alone produced "
+        f"{len(blocks_low_res)}; target_voxel_size should take precedence (see #2407).",
+    )
+
+
+def test_mesh_build_sdf_target_voxel_size_propagates_to_texture(test, device):
+    """Regression test for #2407: Mesh.build_sdf(target_voxel_size=...) must
+    drive the texture SDF resolution, not just the sparse SDF.
+
+    Validates the end-to-end user-facing path: the reporter's observation was
+    that ``SDF.texture_block_coords`` did not vary with ``target_voxel_size``.
+    """
+    counts = []
+    for vox in (0.2, 0.1, 0.05):
+        mesh = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
+        sdf = mesh.build_sdf(
+            device=device,
+            target_voxel_size=vox,
+            narrow_band_range=(-0.1, 0.1),
+            margin=0.05,
+        )
+        test.assertIsNotNone(sdf.texture_block_coords)
+        counts.append(len(sdf.texture_block_coords))
+
+    test.assertLess(
+        counts[0],
+        counts[1],
+        f"Mesh.build_sdf(target_voxel_size=0.2) -> {counts[0]} texture blocks, "
+        f"target_voxel_size=0.1 -> {counts[1]}; expected strict increase (see #2407).",
+    )
+    test.assertLess(
+        counts[1],
+        counts[2],
+        f"Mesh.build_sdf(target_voxel_size=0.1) -> {counts[1]} texture blocks, "
+        f"target_voxel_size=0.05 -> {counts[2]}; expected strict increase (see #2407).",
+    )
+
+
+def test_create_texture_sdf_from_mesh_validates_target_voxel_size(test, device):
+    """Invalid target_voxel_size values must raise a clear error."""
+    mesh = _create_box_mesh()
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+
+    with test.assertRaises(ValueError):
+        create_texture_sdf_from_mesh(
+            wp_mesh,
+            margin=0.05,
+            narrow_band_range=(-0.1, 0.1),
+            target_voxel_size=0.0,
+            device=device,
+        )
+
+    with test.assertRaises(ValueError):
+        create_texture_sdf_from_mesh(
+            wp_mesh,
+            margin=0.05,
+            narrow_band_range=(-0.1, 0.1),
+            target_voxel_size=-0.1,
+            device=device,
+        )
+
+
 # Register tests for CUDA devices
 devices = get_cuda_test_devices()
 add_function_test(TestTextureSDF, "test_texture_sdf_construction", test_texture_sdf_construction, devices=devices)
@@ -1259,6 +1408,30 @@ add_function_test(
 )
 add_function_test(
     TestTextureSDF, "test_build_sdf_texture_format_parameter", test_build_sdf_texture_format_parameter, devices=devices
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_target_voxel_size_scales",
+    test_texture_sdf_target_voxel_size_scales,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_target_voxel_size_takes_precedence",
+    test_texture_sdf_target_voxel_size_takes_precedence,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_mesh_build_sdf_target_voxel_size_propagates_to_texture",
+    test_mesh_build_sdf_target_voxel_size_propagates_to_texture,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_create_texture_sdf_from_mesh_validates_target_voxel_size",
+    test_create_texture_sdf_from_mesh_validates_target_voxel_size,
+    devices=devices,
 )
 add_function_test(
     TestTextureSDF,
