@@ -3692,7 +3692,7 @@ def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
     solver.step(state0, state1, control, contacts, dt)
 
     c_b0, c_b1, c_p0w, c_p1w, c_f_b1, c_count = solver.collect_rigid_contact_forces(
-        state0.body_q, body_q_prev_snapshot, contacts, dt
+        state1.body_q, body_q_prev_snapshot, contacts, dt
     )
     count = int(c_count.numpy()[0])
 
