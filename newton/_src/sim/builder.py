@@ -2253,7 +2253,7 @@ class ModelBuilder:
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
     ) -> dict[str, Any]:
-        """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
+        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -9993,6 +9993,47 @@ class ModelBuilder:
                 wp.array(np.concatenate(elevation_chunks), dtype=wp.float32, device=device)
                 if elevation_chunks
                 else wp.zeros(1, dtype=wp.float32, device=device)
+            )
+
+            # ---------------------
+            # mesh edges (packed array + per-shape slice)
+
+            shape_edge_ranges = []
+            edge_chunks = []
+            edge_offset = 0
+            edge_cache = {}  # mesh python id → (start, count)
+
+            for i in range(len(self.shape_type)):
+                if (
+                    self.shape_type[i] == GeoType.MESH
+                    and self.shape_source[i] is not None
+                    and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
+                ):
+                    mesh = self.shape_source[i]
+                    mesh_key = id(mesh)
+                    if mesh_key in edge_cache:
+                        shape_edge_ranges.append(edge_cache[mesh_key])
+                    else:
+                        edges = mesh.edges  # lazily computed and cached on the Mesh
+                        start = edge_offset
+                        count = len(edges)
+                        edge_chunks.append(edges)
+                        edge_offset += count
+                        entry = (start, count)
+                        edge_cache[mesh_key] = entry
+                        shape_edge_ranges.append(entry)
+                else:
+                    shape_edge_ranges.append((-1, 0))
+
+            m.shape_edge_range = wp.array(
+                shape_edge_ranges if shape_edge_ranges else [(-1, 0)],
+                dtype=wp.vec2i,
+                device=device,
+            )
+            m.mesh_edge_indices = (
+                wp.array(np.concatenate(edge_chunks), dtype=wp.vec2i, device=device)
+                if edge_chunks
+                else wp.zeros(1, dtype=wp.vec2i, device=device)
             )
 
             # ---------------------

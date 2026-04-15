@@ -104,6 +104,7 @@ def create_kernel(
         camera_transform = camera_transforms[camera_index, world_index]
         ray_origin_world = wp.transform_point(camera_transform, camera_rays[camera_index, py, px, 0])
         ray_dir_world = wp.transform_vector(camera_transform, camera_rays[camera_index, py, px, 1])
+        camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
         closest_hit = raytrace_closest_hit(
             bvh_shapes_size,
@@ -127,6 +128,7 @@ def create_kernel(
             gaussians_data,
             ray_origin_world,
             ray_dir_world,
+            camera_forward,
         )
 
         if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:

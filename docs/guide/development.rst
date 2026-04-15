@@ -187,6 +187,16 @@ not installed. In order to run these tests, include the ``torch-cu12`` or
             # run tests
             python -m newton.tests
 
+.. note::
+
+    The ``torch-cu12`` extra requires PyTorch built against CUDA 12.8. If your
+    driver only supports CUDA 12.4 or 12.5 (check with ``nvidia-smi``), install
+    PyTorch 2.6.0 manually instead of using the ``torch-cu12`` extra:
+
+    .. code-block:: console
+
+        pip install torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cu124
+
 Specific Newton examples can be tested in isolation via the ``-k`` argument:
 
 .. tab-set::

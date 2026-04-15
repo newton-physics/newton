@@ -393,6 +393,69 @@ def test_sensor_raycast_single_pixel_hit(test: unittest.TestCase, device):
     test.assertTrue(np.all(depth_image[no_hit_mask] < 0.0), "Non-target pixels should report no hit (-1).")
 
 
+def test_sensor_raycast_ground_plane(test: unittest.TestCase, device: str):
+    """Test that SensorRaycast detects the ground plane."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.add_ground_plane()
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+
+    # Camera at z=5 looking straight down -- should see ground at z=0
+    sensor = SensorRaycast(
+        model=model,
+        camera_position=(0.0, 0.0, 5.0),
+        camera_direction=(0.0, 0.0, -1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.5,
+        width=8,
+        height=8,
+        max_distance=100.0,
+    )
+
+    sensor.update(state)
+    depth = sensor.get_depth_image_numpy()
+
+    # Every pixel should hit the infinite ground plane
+    test.assertTrue(np.all(depth > 0.0), "All pixels should hit the ground plane")
+    # Center pixel should be at distance 5.0
+    test.assertAlmostEqual(float(depth[4, 4]), 5.0, delta=0.1)
+
+
+def test_sensor_raycast_ellipsoid(test: unittest.TestCase, device: str):
+    """Test that SensorRaycast detects an ellipsoid shape."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 5.0), wp.quat_identity()))
+    builder.add_shape_ellipsoid(body=body, rx=1.5, ry=1.0, rz=0.8)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    # Camera at origin looking +Z toward the ellipsoid
+    sensor = SensorRaycast(
+        model=model,
+        camera_position=(0.0, 0.0, 0.0),
+        camera_direction=(0.0, 0.0, 1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.1,
+        width=1,
+        height=1,
+        max_distance=20.0,
+    )
+
+    sensor.update(state)
+    depth = sensor.get_depth_image_numpy()
+
+    test.assertEqual(depth.shape, (1, 1))
+    # Ray along +Z hits ellipsoid at z = 5.0 - rz = 4.2
+    test.assertAlmostEqual(float(depth[0, 0]), 4.2, delta=1e-3)
+
+
 class TestSensorRaycast(unittest.TestCase):
     pass
 
@@ -400,6 +463,12 @@ class TestSensorRaycast(unittest.TestCase):
 # Register test for all available devices
 devices = get_test_devices()
 add_function_test(TestSensorRaycast, "test_sensor_raycast_cubemap", test_sensor_raycast_cubemap, devices=devices)
+add_function_test(
+    TestSensorRaycast,
+    "test_sensor_raycast_ground_plane",
+    test_sensor_raycast_ground_plane,
+    devices=devices,
+)
 add_function_test(
     TestSensorRaycast,
     "test_sensor_raycast_particles_hit",
@@ -440,6 +509,12 @@ add_function_test(
     TestSensorRaycast,
     "test_sensor_raycast_single_pixel_hit",
     test_sensor_raycast_single_pixel_hit,
+    devices=devices,
+)
+add_function_test(
+    TestSensorRaycast,
+    "test_sensor_raycast_ellipsoid",
+    test_sensor_raycast_ellipsoid,
     devices=devices,
 )
 

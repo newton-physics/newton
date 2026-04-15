@@ -380,7 +380,7 @@ def get_name_from_label(label: str):
     Returns:
         The final path component of the label.
     """
-    return label.split("/")[-1]
+    return label.rsplit("/", maxsplit=1)[-1]
 
 
 def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: int):
@@ -1448,6 +1448,9 @@ class ArticulationView:
         """
         Get the world-space spatial velocities of all links in the selected articulations.
 
+        The returned ``body_qd`` values follow Newton's public convention:
+        ``(v_com_world, omega_world)``.
+
         Args:
             source (Model | State): The source from which to retrieve the link velocities.
 
@@ -1584,6 +1587,9 @@ class ArticulationView:
         """
         Evaluates forward kinematics given the joint coordinates and updates the body information.
 
+        The written ``target.body_qd`` values follow Newton's public body-twist
+        convention ``(v_com_world, omega_world)``.
+
         Args:
             target (Model | State): The target where to evaluate forward kinematics (Model or State).
             mask (array): Mask of articulations in this ArticulationView (all by default).
@@ -1596,7 +1602,8 @@ class ArticulationView:
         """Evaluate spatial Jacobian for articulations in this view.
 
         Computes the spatial Jacobian J that maps joint velocities to spatial
-        velocities of each link in world frame.
+        velocities of each link in world frame, matching ``state.body_qd`` under
+        Newton's public COM/world body-twist convention.
 
         Args:
             state: The state containing body transforms (body_q).
@@ -1615,7 +1622,9 @@ class ArticulationView:
         """Evaluate generalized mass matrix for articulations in this view.
 
         Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
-        Jacobian and M is the block-diagonal spatial mass matrix.
+        Jacobian and M is the block-diagonal spatial mass matrix. The resulting
+        matrix is consistent with kinetic energy computed from COM-referenced
+        body twists.
 
         Args:
             state: The state containing body transforms (body_q).

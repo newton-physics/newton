@@ -8,8 +8,10 @@ import warp as wp
 from ...math import transform_twist, velocity_at_point
 from ...sim import BodyFlags, JointType, Model, State
 from ...sim.articulation import (
+    com_twist_to_point_velocity,
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
+    origin_twist_to_com_twist,
 )
 from ..semi_implicit.kernels_body import joint_force
 
@@ -415,6 +417,9 @@ def jcalc_tau(
 
 @wp.func
 def jcalc_integrate(
+    parent: int,
+    joint_X_c: wp.transform,
+    body_com_child: wp.vec3,
     type: int,
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
@@ -476,13 +481,58 @@ def jcalc_integrate(
         return
 
     if type == JointType.FREE or type == JointType.DISTANCE:
+        if parent < 0:
+            a_parent = wp.vec3(joint_qdd[dof_start + 0], joint_qdd[dof_start + 1], joint_qdd[dof_start + 2])
+            alpha = wp.vec3(joint_qdd[dof_start + 3], joint_qdd[dof_start + 4], joint_qdd[dof_start + 5])
+
+            v_parent = wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2])
+            omega = wp.vec3(joint_qd[dof_start + 3], joint_qd[dof_start + 4], joint_qd[dof_start + 5])
+
+            p = wp.vec3(joint_q[coord_start + 0], joint_q[coord_start + 1], joint_q[coord_start + 2])
+            r = wp.quat(
+                joint_q[coord_start + 3], joint_q[coord_start + 4], joint_q[coord_start + 5], joint_q[coord_start + 6]
+            )
+
+            r_com_joint = wp.transform_point(wp.transform_inverse(joint_X_c), body_com_child)
+            x_com = p + wp.quat_rotate(r, r_com_joint)
+            v_com = v_parent + wp.cross(omega, x_com)
+            a_com = a_parent + wp.cross(alpha, x_com) + wp.cross(omega, v_com)
+
+            omega_new = omega + alpha * dt
+            v_com_new = v_com + a_com * dt
+
+            drdt = wp.quat(omega_new, 0.0) * r * 0.5
+            r_new = wp.normalize(r + drdt * dt)
+            x_com_new = x_com + v_com_new * dt
+            p_new = x_com_new - wp.quat_rotate(r_new, r_com_joint)
+            v_parent_new = v_com_new - wp.cross(omega_new, x_com_new)
+
+            joint_q_new[coord_start + 0] = p_new[0]
+            joint_q_new[coord_start + 1] = p_new[1]
+            joint_q_new[coord_start + 2] = p_new[2]
+
+            joint_q_new[coord_start + 3] = r_new[0]
+            joint_q_new[coord_start + 4] = r_new[1]
+            joint_q_new[coord_start + 5] = r_new[2]
+            joint_q_new[coord_start + 6] = r_new[3]
+
+            joint_qd_new[dof_start + 0] = v_parent_new[0]
+            joint_qd_new[dof_start + 1] = v_parent_new[1]
+            joint_qd_new[dof_start + 2] = v_parent_new[2]
+            joint_qd_new[dof_start + 3] = omega_new[0]
+            joint_qd_new[dof_start + 4] = omega_new[1]
+            joint_qd_new[dof_start + 5] = omega_new[2]
+            return
+
         a_s = wp.vec3(joint_qdd[dof_start + 0], joint_qdd[dof_start + 1], joint_qdd[dof_start + 2])
         m_s = wp.vec3(joint_qdd[dof_start + 3], joint_qdd[dof_start + 4], joint_qdd[dof_start + 5])
 
         v_s = wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2])
         w_s = wp.vec3(joint_qd[dof_start + 3], joint_qd[dof_start + 4], joint_qd[dof_start + 5])
 
-        # symplectic Euler
+        # Descendants stay in Featherstone's internal parent-origin coordinates
+        # during the integrator step. The public COM convention is restored at
+        # the solver boundary once the end-step parent pose is known.
         w_s = w_s + m_s * dt
         v_s = v_s + a_s * dt
 
@@ -495,11 +545,9 @@ def jcalc_integrate(
 
         drdt_s = wp.quat(w_s, 0.0) * r_s * 0.5
 
-        # new orientation (normalized)
         p_s_new = p_s + dpdt_s * dt
         r_s_new = wp.normalize(r_s + drdt_s * dt)
 
-        # update transform
         joint_q_new[coord_start + 0] = p_s_new[0]
         joint_q_new[coord_start + 1] = p_s_new[1]
         joint_q_new[coord_start + 2] = p_s_new[2]
@@ -608,7 +656,7 @@ def eval_rigid_fk(
     body_q: wp.array[wp.transform],
     body_q_com: wp.array[wp.transform],
 ):
-    # one thread per-articulation
+    # one thread per joint
     index = wp.tid()
 
     start = articulation_start[index]
@@ -776,6 +824,208 @@ def convert_body_force_com_to_origin(
     torque_com = wp.spatial_bottom(f_ext_com)
 
     body_f_ext[tid] = -wp.spatial_vector(force, torque_com + wp.cross(r_com, force))
+
+
+@wp.kernel
+def accumulate_free_distance_joint_f_to_body_force(
+    joint_type: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
+    joint_f_public: wp.array[float],
+    body_f_ext: wp.array[wp.spatial_vector],
+):
+    """Accumulate FREE/DISTANCE control wrenches into Featherstone body forces."""
+    joint_id = wp.tid()
+    jtype = joint_type[joint_id]
+    if jtype != JointType.FREE and jtype != JointType.DISTANCE:
+        return
+
+    qd_start = joint_qd_start[joint_id]
+    child = joint_child[joint_id]
+    X_sm = body_q[child] * body_X_com[child]
+    r_com = wp.transform_get_translation(X_sm)
+
+    force = wp.vec3(
+        joint_f_public[qd_start + 0],
+        joint_f_public[qd_start + 1],
+        joint_f_public[qd_start + 2],
+    )
+    torque_com = wp.vec3(
+        joint_f_public[qd_start + 3],
+        joint_f_public[qd_start + 4],
+        joint_f_public[qd_start + 5],
+    )
+
+    body_f_ext[child] = body_f_ext[child] - wp.spatial_vector(force, torque_com + wp.cross(r_com, force))
+
+
+@wp.kernel
+def convert_free_distance_joint_qd_public_to_internal(
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_qd_public: wp.array[float],
+    joint_qd_internal: wp.array[float],
+):
+    joint_id = wp.tid()
+    qd_start = joint_qd_start[joint_id]
+    qd_end = joint_qd_start[joint_id + 1]
+    jtype = joint_type[joint_id]
+
+    if jtype != JointType.FREE and jtype != JointType.DISTANCE:
+        for i in range(qd_start, qd_end):
+            joint_qd_internal[i] = joint_qd_public[i]
+        return
+
+    parent = joint_parent[joint_id]
+    child = joint_child[joint_id]
+
+    X_wpj = joint_X_p[joint_id]
+    if parent >= 0:
+        X_wpj = body_q[parent] * X_wpj
+
+    q_p = wp.transform_get_rotation(X_wpj)
+    x_anchor_world = wp.transform_get_translation(X_wpj)
+    x_child_com_world = wp.transform_point(body_q[child], body_com[child])
+    r_child_com_parent = wp.quat_rotate_inv(q_p, x_child_com_world - x_anchor_world)
+
+    v_com_parent = wp.vec3(
+        joint_qd_public[qd_start + 0],
+        joint_qd_public[qd_start + 1],
+        joint_qd_public[qd_start + 2],
+    )
+    omega_parent = wp.vec3(
+        joint_qd_public[qd_start + 3],
+        joint_qd_public[qd_start + 4],
+        joint_qd_public[qd_start + 5],
+    )
+    v_internal_parent = v_com_parent - wp.cross(omega_parent, r_child_com_parent)
+
+    joint_qd_internal[qd_start + 0] = v_internal_parent[0]
+    joint_qd_internal[qd_start + 1] = v_internal_parent[1]
+    joint_qd_internal[qd_start + 2] = v_internal_parent[2]
+    joint_qd_internal[qd_start + 3] = omega_parent[0]
+    joint_qd_internal[qd_start + 4] = omega_parent[1]
+    joint_qd_internal[qd_start + 5] = omega_parent[2]
+
+
+@wp.kernel
+def reconstruct_free_distance_joint_q_from_body_pose(
+    joint_indices: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    joint_q: wp.array[float],
+):
+    joint_id = joint_indices[wp.tid()]
+    parent = joint_parent[joint_id]
+    child = joint_child[joint_id]
+
+    X_wpj = joint_X_p[joint_id]
+    if parent >= 0:
+        X_wpj = body_q[parent] * X_wpj
+
+    X_wcj = body_q[child] * joint_X_c[joint_id]
+
+    x_err_c = wp.quat_rotate_inv(
+        wp.transform_get_rotation(X_wpj),
+        wp.transform_get_translation(X_wcj) - wp.transform_get_translation(X_wpj),
+    )
+    q_pc = wp.quat_inverse(wp.transform_get_rotation(X_wpj)) * wp.transform_get_rotation(X_wcj)
+
+    q_start = joint_q_start[joint_id]
+    joint_q[q_start + 0] = x_err_c[0]
+    joint_q[q_start + 1] = x_err_c[1]
+    joint_q[q_start + 2] = x_err_c[2]
+    joint_q[q_start + 3] = q_pc[0]
+    joint_q[q_start + 4] = q_pc[1]
+    joint_q[q_start + 5] = q_pc[2]
+    joint_q[q_start + 6] = q_pc[3]
+
+
+@wp.kernel
+def convert_free_distance_joint_qd_internal_to_public(
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_qd_internal: wp.array[float],
+    joint_qd_public: wp.array[float],
+):
+    joint_id = wp.tid()
+    qd_start = joint_qd_start[joint_id]
+    qd_end = joint_qd_start[joint_id + 1]
+    jtype = joint_type[joint_id]
+
+    if jtype != JointType.FREE and jtype != JointType.DISTANCE:
+        for i in range(qd_start, qd_end):
+            joint_qd_public[i] = joint_qd_internal[i]
+        return
+
+    parent = joint_parent[joint_id]
+    child = joint_child[joint_id]
+
+    X_wpj = joint_X_p[joint_id]
+    if parent >= 0:
+        X_wpj = body_q[parent] * X_wpj
+
+    q_p = wp.transform_get_rotation(X_wpj)
+    x_anchor_world = wp.transform_get_translation(X_wpj)
+    x_child_com_world = wp.transform_point(body_q[child], body_com[child])
+    r_child_com_parent = wp.quat_rotate_inv(q_p, x_child_com_world - x_anchor_world)
+
+    v_internal_parent = wp.vec3(
+        joint_qd_internal[qd_start + 0],
+        joint_qd_internal[qd_start + 1],
+        joint_qd_internal[qd_start + 2],
+    )
+    omega_parent = wp.vec3(
+        joint_qd_internal[qd_start + 3],
+        joint_qd_internal[qd_start + 4],
+        joint_qd_internal[qd_start + 5],
+    )
+    v_com_parent = v_internal_parent + wp.cross(omega_parent, r_child_com_parent)
+
+    joint_qd_public[qd_start + 0] = v_com_parent[0]
+    joint_qd_public[qd_start + 1] = v_com_parent[1]
+    joint_qd_public[qd_start + 2] = v_com_parent[2]
+    joint_qd_public[qd_start + 3] = omega_parent[0]
+    joint_qd_public[qd_start + 4] = omega_parent[1]
+    joint_qd_public[qd_start + 5] = omega_parent[2]
+
+
+@wp.kernel
+def convert_free_distance_joint_f_public_to_internal(
+    joint_type: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_f_public: wp.array[float],
+    joint_f_internal: wp.array[float],
+):
+    """Copy non-free joint forces; FREE/DISTANCE wrenches are routed via body forces."""
+    joint_id = wp.tid()
+    qd_start = joint_qd_start[joint_id]
+    qd_end = joint_qd_start[joint_id + 1]
+    jtype = joint_type[joint_id]
+
+    if jtype != JointType.FREE and jtype != JointType.DISTANCE:
+        for i in range(qd_start, qd_end):
+            joint_f_internal[i] = joint_f_public[i]
+        return
+
+    for i in range(qd_start, qd_end):
+        joint_f_internal[i] = 0.0
 
 
 # Inverse dynamics via Recursive Newton-Euler algorithm (Featherstone Table 5.1)
@@ -1343,9 +1593,13 @@ def eval_dense_solve_batched(
 @wp.kernel
 def integrate_generalized_joints(
     joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
     joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
     joint_dof_dim: wp.array2d[int],
+    joint_X_c: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
     joint_qdd: wp.array[float],
@@ -1358,12 +1612,17 @@ def integrate_generalized_joints(
     index = wp.tid()
 
     type = joint_type[index]
+    parent = joint_parent[index]
+    child = joint_child[index]
     coord_start = joint_q_start[index]
     dof_start = joint_qd_start[index]
     lin_axis_count = joint_dof_dim[index, 0]
     ang_axis_count = joint_dof_dim[index, 1]
 
     jcalc_integrate(
+        parent,
+        joint_X_c[index],
+        body_com[child],
         type,
         joint_q,
         joint_qd,
@@ -1376,6 +1635,42 @@ def integrate_generalized_joints(
         joint_q_new,
         joint_qd_new,
     )
+
+
+@wp.func
+def integrate_body_pose_from_com_twist(
+    X_wb: wp.transform,
+    body_com: wp.vec3,
+    qd_com_world: wp.spatial_vector,
+    dt: float,
+):
+    q = wp.transform_get_rotation(X_wb)
+    x_com = wp.transform_point(X_wb, body_com)
+
+    v_com = wp.spatial_top(qd_com_world)
+    w = wp.spatial_bottom(qd_com_world)
+
+    drdt = wp.quat(w, 0.0) * q * 0.5
+    q_new = wp.normalize(q + drdt * dt)
+    x_com_new = x_com + v_com * dt
+    x_origin_new = x_com_new - wp.quat_rotate(q_new, body_com)
+
+    return wp.transform(x_origin_new, q_new)
+
+
+@wp.kernel
+def correct_free_distance_body_pose_from_world_twist(
+    joint_indices: wp.array[int],
+    joint_child: wp.array[int],
+    body_com: wp.array[wp.vec3],
+    body_q_in: wp.array[wp.transform],
+    body_qd_out: wp.array[wp.spatial_vector],
+    body_q_out: wp.array[wp.transform],
+    dt: float,
+):
+    joint_id = joint_indices[wp.tid()]
+    child = joint_child[joint_id]
+    body_q_out[child] = integrate_body_pose_from_com_twist(body_q_in[child], body_com[child], body_qd_out[child], dt)
 
 
 @wp.kernel
@@ -1428,8 +1723,9 @@ def copy_kinematic_joint_state(
 # ============================================================================
 # Forward Kinematics with Velocity Conversion for Featherstone
 # ============================================================================
-# Local copy of FK function that converts FREE/DISTANCE joint velocities from
-# origin frame to COM frame, as required by the Featherstone solver.
+# Featherstone keeps FREE/DISTANCE joint speeds in its internal spatial-twist
+# basis, but the public Newton state stores COM-referenced body twists. This
+# helper evaluates FK from the internal joint_qd basis and writes public body_qd.
 
 
 @wp.func
@@ -1574,69 +1870,27 @@ def eval_single_articulation_fk_with_velocity_conversion(
         # transform from world to child body frame
         X_wc = X_wcj * wp.transform_inverse(X_cj)
 
+        x_child_origin = wp.transform_get_translation(X_wc)
         v_parent_origin = wp.vec3()
         w_parent = wp.vec3()
         if parent >= 0:
             v_wp = body_qd[parent]
             w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = velocity_at_point(
-                v_wp, wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
-            )
-
-        linear_joint_anchor = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+            v_parent_origin = com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_origin)
+        linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
         angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-        child_origin_offset_world = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wcj)
-        linear_joint_origin = linear_joint_anchor + wp.cross(angular_joint_world, child_origin_offset_world)
+        if type == JointType.FREE or type == JointType.DISTANCE:
+            v_j_world = transform_twist(X_wpj, v_j)
+            linear_joint_origin = velocity_at_point(v_j_world, x_child_origin)
+            angular_joint_world = wp.spatial_bottom(v_j_world)
+        else:
+            child_origin_offset_world = x_child_origin - wp.transform_get_translation(X_wcj)
+            linear_joint_origin = linear_joint_world + wp.cross(angular_joint_world, child_origin_offset_world)
 
-        v_wc = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
+        v_wc_origin = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
 
         body_q[child] = X_wc
-        body_qd[child] = v_wc
-
-
-@wp.kernel
-def convert_articulation_free_distance_body_qd(
-    articulation_start: wp.array[int],
-    articulation_count: int,
-    articulation_mask: wp.array[bool],
-    articulation_indices: wp.array[int],
-    joint_type: wp.array[int],
-    joint_child: wp.array[int],
-    body_com: wp.array[wp.vec3],
-    body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-):
-    tid = wp.tid()
-
-    if articulation_indices:
-        articulation_id = articulation_indices[tid]
-    else:
-        articulation_id = tid
-
-    if articulation_id < 0 or articulation_id >= articulation_count:
-        return
-
-    if articulation_mask:
-        if not articulation_mask[articulation_id]:
-            return
-
-    joint_start = articulation_start[articulation_id]
-    joint_end = articulation_start[articulation_id + 1]
-
-    for i in range(joint_start, joint_end):
-        type = joint_type[i]
-        if type != JointType.FREE and type != JointType.DISTANCE:
-            continue
-
-        child = joint_child[i]
-        X_wc = body_q[child]
-        v_wc = body_qd[child]
-
-        v_origin = wp.spatial_top(v_wc)
-        omega = wp.spatial_bottom(v_wc)
-        r_com = wp.transform_point(X_wc, body_com[child])
-        v_com = v_origin + wp.cross(omega, r_com)
-        body_qd[child] = wp.spatial_vector(v_com, omega)
+        body_qd[child] = origin_twist_to_com_twist(v_wc_origin, X_wc, body_com[child])
 
 
 @wp.kernel
@@ -1706,6 +1960,53 @@ def eval_articulation_fk_with_velocity_conversion(
     )
 
 
+@wp.kernel
+def eval_articulation_fk_with_velocity_conversion_from_joint(
+    articulation_start: wp.array[int],
+    articulation_indices: wp.array[int],
+    articulation_joint_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_com: wp.array[wp.vec3],
+    # outputs
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    tid = wp.tid()
+    articulation_id = articulation_indices[tid]
+    joint_start = articulation_joint_start[tid]
+    joint_end = articulation_start[articulation_id + 1]
+
+    eval_single_articulation_fk_with_velocity_conversion(
+        joint_start,
+        joint_end,
+        joint_q,
+        joint_qd,
+        joint_q_start,
+        joint_qd_start,
+        joint_type,
+        joint_parent,
+        joint_child,
+        joint_X_p,
+        joint_X_c,
+        joint_axis,
+        joint_dof_dim,
+        body_com,
+        # outputs
+        body_q,
+        body_qd,
+    )
+
+
 def eval_fk_with_velocity_conversion(
     model: Model,
     joint_q: wp.array[float],
@@ -1715,11 +2016,11 @@ def eval_fk_with_velocity_conversion(
     indices: wp.array[int] | None = None,
 ):
     """
-    Evaluates the model's forward kinematics with velocity conversion for Featherstone solver.
+    Evaluates Featherstone FK from internal free-joint speeds and writes public body twists.
 
-    This is a local copy that converts FREE/DISTANCE joint velocities from origin frame to COM frame,
-    as required by the Featherstone solver. Updates the state's body information (:attr:`State.body_q`
-    and :attr:`State.body_qd`).
+    This helper mirrors :func:`newton.eval_fk`, but it expects Featherstone's
+    internal FREE/DISTANCE ``joint_qd`` convention as input and still writes
+    the public COM-referenced :attr:`State.body_qd` output.
 
     Args:
         model (Model): The model to evaluate.
@@ -1768,16 +2069,35 @@ def eval_fk_with_velocity_conversion(
         device=model.device,
     )
 
+
+def eval_fk_with_velocity_conversion_from_joint_starts(
+    model: Model,
+    articulation_indices: wp.array[int],
+    articulation_joint_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    state: State,
+):
+    assert len(articulation_indices) == len(articulation_joint_start)
+
     wp.launch(
-        kernel=convert_articulation_free_distance_body_qd,
-        dim=num_articulations,
+        kernel=eval_articulation_fk_with_velocity_conversion_from_joint,
+        dim=len(articulation_indices),
         inputs=[
             model.articulation_start,
-            model.articulation_count,
-            mask,
-            indices,
+            articulation_indices,
+            articulation_joint_start,
+            joint_q,
+            joint_qd,
+            model.joint_q_start,
+            model.joint_qd_start,
             model.joint_type,
+            model.joint_parent,
             model.joint_child,
+            model.joint_X_p,
+            model.joint_X_c,
+            model.joint_axis,
+            model.joint_dof_dim,
             model.body_com,
         ],
         outputs=[

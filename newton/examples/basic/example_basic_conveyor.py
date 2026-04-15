@@ -183,22 +183,22 @@ class Example:
 
         belt_cfg = newton.ModelBuilder.ShapeConfig(
             mu=1.2,
-            ke=1.0e3,  # vbd only
-            kd=1.0e-1,  # vbd only
+            ke=1.0e7,  # vbd only
+            kd=1.0e-5,  # vbd only
             collision_group=BELT_COLLISION_GROUP,
         )
         rail_cfg = newton.ModelBuilder.ShapeConfig(
             mu=0.8,
-            ke=1.0e3,  # vbd only
-            kd=1.0e-1,  # vbd only
+            ke=1.0e7,  # vbd only
+            kd=1.0e-5,  # vbd only
             collision_group=RAIL_COLLISION_GROUP,
         )
         bag_cfg = newton.ModelBuilder.ShapeConfig(
             mu=1.0,
-            ke=1.0e3,  # vbd only
-            kd=1.0e-1,  # vbd only
+            ke=1.0e7,  # vbd only
+            kd=1.0e-5,  # vbd only
             restitution=0.0,
-        )  # xpbd only
+        )
 
         belt_inner_radius = BELT_RING_RADIUS - BELT_HALF_WIDTH
         belt_outer_radius = BELT_RING_RADIUS + BELT_HALF_WIDTH
@@ -220,7 +220,7 @@ class Example:
             z_max=BELT_HALF_THICKNESS - RAIL_BASE_OVERLAP + RAIL_HEIGHT,
             segments=BELT_MESH_SEGMENTS,
             color=(0.66, 0.69, 0.74),  # brushed metal
-            roughness=0.24,
+            roughness=0.5,
             metallic=0.9,
         )
         rail_outer_mesh = create_annular_prism_mesh(
@@ -230,7 +230,7 @@ class Example:
             z_max=BELT_HALF_THICKNESS - RAIL_BASE_OVERLAP + RAIL_HEIGHT,
             segments=BELT_MESH_SEGMENTS,
             color=(0.66, 0.69, 0.74),  # brushed metal
-            roughness=0.24,
+            roughness=0.5,
             metallic=0.9,
         )
 
