@@ -34,8 +34,6 @@
 - Fix SDF hydroelastic broadphase scatter kernel using a grid-stride loop with binary search instead of per-pair thread launch
 - Fix box support-map sign flips from quaternion rotation noise (~1e-14) producing invalid GJK/MPR contacts for face-touching boxes with non-trivial base rotations
 - Fix USD import of multi-DOF joints from MuJoCo-converted assets where multiple revolute joints between the same two bodies caused false cycle detection; merge them into D6 joints with correct DOF label mapping for MjcActuator target resolution
-- Fix USD import to honor authored `visibility = "invisible"` when deciding whether visual and collider shapes are rendered
-- Fix standalone Gaussian splat world-matrix lookup to use the Gaussian prim instead of the parent prim
 - Fix ViewerViser mesh popping artifacts caused by viser's automatic LOD simplification creating holes in complex geometry
 
 ## [1.1.0] - 2026-04-13
