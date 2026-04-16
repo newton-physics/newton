@@ -68,6 +68,7 @@ class ControllerPID(Controller):
         """Integral state for PID controller."""
 
         integral: wp.array[float] | None = None
+        """Accumulated integral of position error, shape (N,)."""
 
         def reset(self) -> None:
             self.integral.zero_()

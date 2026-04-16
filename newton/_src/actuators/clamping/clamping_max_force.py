@@ -33,7 +33,7 @@ class ClampingMaxForce(Clamping):
         return {"max_force": max_force}
 
     def __init__(self, max_force: wp.array[float]):
-        """Initialize clamp dynamic.
+        """Initialize max-force clamp.
 
         Args:
             max_force: Per-actuator force limits. Shape (N,).

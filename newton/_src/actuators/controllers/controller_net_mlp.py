@@ -32,7 +32,9 @@ class ControllerNetMLP(Controller):
         """History buffers for MLP controller."""
 
         pos_error_history: torch.Tensor | None = None
+        """Position error history, shape (history_length, N)."""
         vel_history: torch.Tensor | None = None
+        """Velocity history, shape (history_length, N)."""
 
         def reset(self) -> None:
             self.pos_error_history.zero_()

@@ -79,17 +79,17 @@ class Controller:
         """Compute raw forces and write to ``forces[i]``.
 
         Args:
-            positions: Joint positions (global array).
-            velocities: Joint velocities (global array).
-            target_pos: Target positions (global or compact array).
-            target_vel: Target velocities (global or compact array).
-            feedforward: Feedforward control input (may be None).
+            positions: Joint positions [m or rad] (global array).
+            velocities: Joint velocities [m/s or rad/s] (global array).
+            target_pos: Target positions [m or rad] (global or compact array).
+            target_vel: Target velocities [m/s or rad/s] (global or compact array).
+            feedforward: Feedforward control input [N or N·m] (may be None).
             input_indices: Indices into positions/velocities.
             target_indices: Indices into target arrays.
-            forces: Compact scratch buffer to write forces to. Shape (N,).
+            forces: Scratch buffer to write forces [N or N·m] to. Shape (N,).
             num_actuators: Number of actuators N.
             state: Controller state (None if stateless).
-            dt: Timestep in seconds.
+            dt: Timestep [s].
             device: Warp device for kernel launches.
         """
         raise NotImplementedError

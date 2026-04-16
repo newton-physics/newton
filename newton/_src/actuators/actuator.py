@@ -43,27 +43,13 @@ class Actuator:
 
         actuator = Actuator(
             indices=indices,
-            delay=Delay(delay=5),
             controller=ControllerPD(kp=kp, kd=kd),
+            delay=Delay(delay=5),
             clamping=[ClampingMaxForce(max_force=max_f)],
         )
 
         # Simulation loop
         actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
-
-    Args:
-        indices: DOF indices for reading state/targets and writing forces. Shape (N,).
-        delay: Optional Delay instance for input delay.
-        controller: Controller that computes raw forces.
-        clamping: List of Clamping objects (post-controller force bounds).
-        state_pos_attr: Attribute on sim_state for positions.
-        state_vel_attr: Attribute on sim_state for velocities.
-        control_target_pos_attr: Attribute on sim_control for target positions.
-        control_target_vel_attr: Attribute on sim_control for target velocities.
-        control_feedforward_attr: Attribute on sim_control for control input. None to skip.
-        control_output_attr: Attribute on sim_control for clamped output forces.
-        control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
-            forces. None to skip writing computed forces.
     """
 
     @dataclass
@@ -75,7 +61,9 @@ class Actuator:
         """
 
         delay_state: Delay.State | None = None
+        """Delay buffer state, or ``None`` if no delay is used."""
         controller_state: Controller.State | None = None
+        """Controller-specific state, or ``None`` if stateless."""
 
         def reset(self) -> None:
             if self.delay_state is not None:
@@ -97,6 +85,22 @@ class Actuator:
         control_output_attr: str = "joint_f",
         control_computed_output_attr: str | None = None,
     ):
+        """Initialize actuator.
+
+        Args:
+            indices: DOF indices for reading state/targets and writing forces. Shape (N,).
+            controller: Controller that computes raw forces.
+            delay: Optional Delay instance for input delay.
+            clamping: List of Clamping objects (post-controller force bounds).
+            state_pos_attr: Attribute on sim_state for positions.
+            state_vel_attr: Attribute on sim_state for velocities.
+            control_target_pos_attr: Attribute on sim_control for target positions.
+            control_target_vel_attr: Attribute on sim_control for target velocities.
+            control_feedforward_attr: Attribute on sim_control for control input. None to skip.
+            control_output_attr: Attribute on sim_control for clamped output forces.
+            control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
+                forces. None to skip writing computed forces.
+        """
         self.indices = indices
         self.controller = controller
         self.delay = delay
@@ -195,7 +199,7 @@ class Actuator:
             sim_control: Control structure with target/output arrays.
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
-            dt: Timestep in seconds.
+            dt: Timestep [s].
         """
         has_states = current_act_state is not None and next_act_state is not None
 

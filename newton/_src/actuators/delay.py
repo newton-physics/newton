@@ -59,10 +59,15 @@ class Delay:
         """Circular buffer state for delayed targets."""
 
         buffer_pos: wp.array2d[float] | None = None
+        """Delayed target positions [m or rad], shape (delay, N)."""
         buffer_vel: wp.array2d[float] | None = None
+        """Delayed target velocities [m/s or rad/s], shape (delay, N)."""
         buffer_act: wp.array2d[float] | None = None
+        """Delayed feedforward inputs [N or N·m], shape (delay, N)."""
         write_idx: int = 0
+        """Current write position in the circular buffer."""
         is_filled: bool = False
+        """Whether the buffer has been fully populated."""
 
         def reset(self) -> None:
             self.buffer_pos.zero_()
@@ -86,10 +91,10 @@ class Delay:
         if delay < 1:
             raise ValueError(f"delay must be >= 1, got {delay}")
         self.delay = delay
-        self._indices: wp.array | None = None
+        self._indices: wp.array[wp.uint32] | None = None
         self._num_actuators: int = 0
 
-    def finalize(self, indices: wp.array, num_actuators: int) -> None:
+    def finalize(self, indices: wp.array[wp.uint32], num_actuators: int) -> None:
         """Store indices and actuator count for use during state updates.
 
         Called by :class:`Actuator` after construction.
@@ -102,6 +107,12 @@ class Delay:
         self._num_actuators = num_actuators
 
     def state(self, num_actuators: int, device: wp.Device) -> Delay.State:
+        """Create a new delay state with zeroed circular buffers.
+
+        Args:
+            num_actuators: Number of actuators (buffer width).
+            device: Warp device for buffer allocation.
+        """
         return Delay.State(
             buffer_pos=wp.zeros((self.delay, num_actuators), dtype=wp.float32, device=device),
             buffer_vel=wp.zeros((self.delay, num_actuators), dtype=wp.float32, device=device),
@@ -140,6 +151,15 @@ class Delay:
         current_state: Delay.State,
         next_state: Delay.State,
     ) -> None:
+        """Write current targets into the buffer and advance the write pointer.
+
+        Args:
+            target_pos: Current target positions [m or rad] (global array).
+            target_vel: Current target velocities [m/s or rad/s] (global array).
+            feedforward: Current feedforward input [N or N·m] (global array, may be None).
+            current_state: Delay state to read from.
+            next_state: Delay state to write into.
+        """
         if next_state is None:
             return
 

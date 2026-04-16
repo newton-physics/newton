@@ -18,8 +18,8 @@ efficient integration into RL workflows with many parallel environments.
 
 The goal is to provide canonical actuator models with support for
 **differentiability** and **graphable execution** where the underlying
-controller implementation supports it.  The library is designed to be easy for
-users to customize and extend for their specific actuator models.
+controller implementation supports it.  The actuator subsystem is designed to
+be easy to customize and extend for specific actuator models.
 
 Architecture
 ------------
@@ -190,8 +190,13 @@ in sequence.
 Customization
 -------------
 
-To create a custom controller, subclass :class:`Controller` and implement
-:meth:`~Controller.compute`:
+Any actuator can be assembled from the existing building blocks — mix and
+match controllers, clamping stages, and delay to fit a specific use case.
+When the built-in components are not sufficient, implement new ones by
+subclassing :class:`Controller` or :class:`Clamping`.
+
+For example, a custom controller needs to implement
+:meth:`~Controller.compute` and :meth:`~Controller.resolve_arguments`:
 
 .. code-block:: python
 
@@ -199,6 +204,10 @@ To create a custom controller, subclass :class:`Controller` and implement
    from newton.actuators import Controller
 
    class MyController(Controller):
+       @classmethod
+       def resolve_arguments(cls, args):
+           return {"gain": args.get("gain", 1.0)}
+
        def __init__(self, gain: wp.array):
            self.gain = gain
 
@@ -208,7 +217,11 @@ To create a custom controller, subclass :class:`Controller` and implement
            # Launch a Warp kernel that writes into `forces`
            ...
 
-To create a custom clamping, subclass :class:`Clamping` and implement
+``resolve_arguments`` maps user-provided keyword arguments (from
+:meth:`~newton.ModelBuilder.add_actuator` or USD schemas) to constructor
+parameters, filling in defaults where needed.
+
+Similarly, a custom clamping stage subclasses :class:`Clamping` and implements
 :meth:`~Clamping.modify_forces`.
 
 See Also

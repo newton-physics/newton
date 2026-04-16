@@ -39,7 +39,9 @@ class ControllerNetLSTM(Controller):
         """LSTM hidden and cell state."""
 
         hidden: torch.Tensor | None = None
+        """LSTM hidden state, shape (num_layers, N, hidden_size)."""
         cell: torch.Tensor | None = None
+        """LSTM cell state, shape (num_layers, N, hidden_size)."""
 
         def reset(self) -> None:
             self.hidden = self.hidden.new_zeros(self.hidden.shape)
