@@ -467,9 +467,15 @@ def parse_usd(
         return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
 
     def _is_effectively_visible(prim: Usd.Prim) -> bool:
+        """Return whether ``prim`` is effectively visible in USD.
+
+        A prim is effectively visible only when it is a :class:`UsdGeom.Imageable`
+        whose inherited visibility is not ``invisible``. Non-imageable prims are
+        not renderable in USD, so they are treated as not effectively visible.
+        """
         imageable = UsdGeom.Imageable(prim)
         if not imageable:
-            return True
+            return False
         return imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
 
     bodies_with_visual_shapes: set[int] = set()
