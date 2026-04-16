@@ -242,7 +242,6 @@ class Actuator:
                 self.indices,
                 target_indices,
                 self._computed_forces,
-                self.num_actuators,
                 ctrl_state,
                 dt,
                 device=self.device,

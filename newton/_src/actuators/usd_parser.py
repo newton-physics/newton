@@ -87,6 +87,8 @@ SCHEMA_REGISTRY: dict[str, SchemaEntry] = {
         validate=_validate_clamp_position_based,
     ),
     # Neural-network controllers
+    # input_order / input_idx (MLP) are intentionally left out of the schema;
+    # they are framework-specific (e.g. IsaacLab) and I would siggest to set programmatically.
     "NewtonControllerNetMLPAPI": SchemaEntry(
         component_class=ControllerNetMLP,
         param_map={"networkPath": "network_path"},
@@ -112,7 +114,8 @@ class ActuatorParsed:
     controller_class: type[Controller]
     controller_kwargs: dict[str, Any] = field(default_factory=dict)
     component_specs: list[tuple[type[Clamping | Delay], dict[str, Any]]] = field(default_factory=list)
-    target_path: str = ""
+    target_paths: list[str] = field(default_factory=list)
+    """Joint targets. Currently only a single target is supported."""
 
 
 def get_attribute(prim, name: str, default: Any = None) -> Any:
@@ -123,15 +126,12 @@ def get_attribute(prim, name: str, default: Any = None) -> Any:
     return attr.Get()
 
 
-def get_relationship_target(prim, name: str) -> str | None:
-    """Get the single relationship target path from a USD prim."""
+def get_relationship_targets(prim, name: str) -> list[str]:
+    """Get relationship target paths from a USD prim."""
     rel = prim.GetRelationship(name)
     if not rel:
-        return None
-    targets = rel.GetTargets()
-    if len(targets) != 1:
-        return None
-    return str(targets[0])
+        return []
+    return [str(t) for t in rel.GetTargets()]
 
 
 def get_schemas_from_prim(prim) -> list[str]:
@@ -169,9 +169,13 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
     if prim.GetTypeName() != "NewtonActuator":
         return None
 
-    target_path = get_relationship_target(prim, "newton:actuator:target")
-    if target_path is None:
+    target_paths = get_relationship_targets(prim, "newton:actuator:targets")
+    if not target_paths:
         return None
+    if len(target_paths) != 1:
+        raise ValueError(
+            f"Actuator prim currently supports exactly one target; got {len(target_paths)}"
+        )
 
     schemas = get_schemas_from_prim(prim)
     controller_class = None
@@ -212,5 +216,5 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
         controller_class=controller_class,
         controller_kwargs=controller_kwargs,
         component_specs=component_specs,
-        target_path=target_path,
+        target_paths=target_paths,
     )

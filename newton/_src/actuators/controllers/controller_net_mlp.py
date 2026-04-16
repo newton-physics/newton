@@ -60,10 +60,13 @@ class ControllerNetMLP(Controller):
         """Initialize MLP controller.
 
         Args:
-            input_order: Concatenation order, "pos_vel" or "vel_pos".
-            input_idx: History timestep indices to feed the network. 0 = current,
-                1 = one step ago, etc. Default [0].
-            network: Pre-trained network. If None, loaded from network_path.
+            input_order: Concatenation order, ``"pos_vel"`` or ``"vel_pos"``.
+                Not part of the USD schema; pass programmatically when the
+                network expects a non-default layout.
+            input_idx: History timestep indices to feed the network. ``0`` is
+                the current step, ``1`` one step ago, etc. Defaults to ``[0]``.
+                Not part of the USD schema; pass programmatically.
+            network: Pre-trained network. If None, loaded from *network_path*.
             network_path: Path to a TorchScript model file.
         """
         import torch
@@ -122,7 +125,6 @@ class ControllerNetMLP(Controller):
         input_indices: wp.array[wp.uint32],
         target_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        num_actuators: int,
         state: ControllerNetMLP.State,
         dt: float,
         device: wp.Device | None = None,
@@ -157,7 +159,7 @@ class ControllerNetMLP(Controller):
         with torch.inference_mode():
             torques = self.network(net_input)
 
-        torques = torques.reshape(num_actuators)
+        torques = torques.reshape(len(forces))
         torques_wp = wp.from_torch(torques.contiguous(), dtype=wp.float32)
         wp.copy(forces, torques_wp)
 

@@ -6,10 +6,10 @@
 Actuators
 =========
 
-Newton provides composable actuator implementations that read physics simulation
-state, compute actuator forces, and write the forces back to control arrays for
+Actuators provide composable implementations that read physics simulation
+state, compute forces, and write the forces back to control arrays for
 application to the simulation.  The simulator does not need to be part of
-Newton: the library is designed to be reusable anywhere the caller can provide
+Newton: actuators are designed to be reusable anywhere the caller can provide
 state arrays and consume forces.
 
 Each :class:`Actuator` instance is **vectorized**: a single actuator object
@@ -18,8 +18,8 @@ efficient integration into RL workflows with many parallel environments.
 
 The goal is to provide canonical actuator models with support for
 **differentiability** and **graphable execution** where the underlying
-controller implementation supports it.  The actuator subsystem is designed to
-be easy to customize and extend for specific actuator models.
+controller implementation supports it.  Actuators are designed to be easy to
+customize and extend for specific actuator models.
 
 Architecture
 ------------

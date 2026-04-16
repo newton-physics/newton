@@ -71,7 +71,6 @@ class Controller:
         input_indices: wp.array[wp.uint32],
         target_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        num_actuators: int,
         state: Controller.State | None,
         dt: float,
         device: wp.Device | None = None,
@@ -87,7 +86,6 @@ class Controller:
             input_indices: Indices into positions/velocities.
             target_indices: Indices into target arrays.
             forces: Scratch buffer to write forces [N or N·m] to. Shape (N,).
-            num_actuators: Number of actuators N.
             state: Controller state (None if stateless).
             dt: Timestep [s].
             device: Warp device for kernel launches.

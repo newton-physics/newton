@@ -128,14 +128,13 @@ class ControllerPID(Controller):
         input_indices: wp.array[wp.uint32],
         target_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        num_actuators: int,
         state: ControllerPID.State,
         dt: float,
         device: wp.Device | None = None,
     ) -> None:
         wp.launch(
             kernel=_pid_force_kernel,
-            dim=num_actuators,
+            dim=len(forces),
             inputs=[
                 positions,
                 velocities,

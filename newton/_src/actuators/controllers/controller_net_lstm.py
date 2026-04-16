@@ -134,7 +134,6 @@ class ControllerNetLSTM(Controller):
         input_indices: wp.array[wp.uint32],
         target_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        num_actuators: int,
         state: ControllerNetLSTM.State,
         dt: float,
         device: wp.Device | None = None,
@@ -155,7 +154,7 @@ class ControllerNetLSTM(Controller):
         pos_error = target[torch_target_idx] - current_pos[self._torch_input_indices]
         vel = current_vel[self._torch_input_indices]
 
-        # (num_actuators, 1, 2): seq_len=1, features=[pos_error, velocity]
+        # (N, 1, 2): seq_len=1, features=[pos_error, velocity]
         net_input = torch.stack([pos_error, vel], dim=1).unsqueeze(1)
 
         with torch.inference_mode():
@@ -164,7 +163,7 @@ class ControllerNetLSTM(Controller):
                 (state.hidden, state.cell),
             )
 
-        torques = torques.reshape(num_actuators)
+        torques = torques.reshape(len(forces))
         torques_wp = wp.from_torch(torques.contiguous(), dtype=wp.float32)
         wp.copy(forces, torques_wp)
 

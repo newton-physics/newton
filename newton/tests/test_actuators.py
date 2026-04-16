@@ -200,7 +200,7 @@ class TestResolveArguments(unittest.TestCase):
 class TestActuatorParser(unittest.TestCase):
     """parse_actuator_prim resolves schema names and extracts kwargs correctly."""
 
-    TARGET_REL: ClassVar[dict[str, list[str]]] = {"newton:actuator:target": ["/World/Robot/Joint1"]}
+    TARGET_REL: ClassVar[dict[str, list[str]]] = {"newton:actuator:targets": ["/World/Robot/Joint1"]}
 
     def _prim(self, attrs=None, rels=None, schemas=None, type_name="NewtonActuator"):
         return _MockPrim(type_name, attrs=attrs, rels=rels or self.TARGET_REL, schemas=schemas)

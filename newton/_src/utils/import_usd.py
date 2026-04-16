@@ -2763,9 +2763,9 @@ def parse_usd(
         parsed = parse_actuator_prim(prim)
         if parsed is None:
             continue
-        if parsed.target_path not in path_to_dof:
+        if len(parsed.target_paths) != 1 or parsed.target_paths[0] not in path_to_dof:
             continue
-        dof_index = path_to_dof[parsed.target_path]
+        dof_index = path_to_dof[parsed.target_paths[0]]
 
         # Separate Delay from Clamping components in the parsed spec
         delay_val = None
