@@ -338,12 +338,6 @@ Joint attributes
      - ``actuatorfrcrange``
      - Per-actuator ``forcerange`` for ball joints
 
-``armature``, ``friction``, and ``limit_ke``/``limit_kd`` can also be
-populated from ``mjc:`` USD attributes (``mjc:armature``,
-``mjc:frictionloss``, ``mjc:solref``).  When both a standard and
-``mjc:`` attribute are authored, the resolution order is
-Newton → PhysX → MuJoCo.
-
 .. note::
 
    The imported ``solref`` values are currently incorrectly mapped to
@@ -451,13 +445,7 @@ Shape attributes
      - ``geom_margin``
      - ``newton:contactMargin``
      - ``margin``
-     -
-
-``margin``, ``gap``, ``ke``/``kd``, and ``max_hull_vertices`` can also be
-populated from ``mjc:`` USD attributes (``mjc:margin``, ``mjc:gap``,
-``mjc:solref``, ``mjc:maxhullvert``).  Newton computes
-``margin = mjc:margin − mjc:gap``.  See the ``solref`` note under
-:ref:`mujoco-joint-attributes`.
+     - From ``mjc:``: ``margin = mjc:margin − mjc:gap``
 
 **Custom attributes** (``mujoco.*`` namespace):
 
