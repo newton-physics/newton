@@ -134,7 +134,6 @@ def create_newton_model_from_mjcf(
     """
     # Create articulation builder for the robot
     robot_builder = newton.ModelBuilder()
-    SolverMuJoCo.register_custom_attributes(robot_builder)
 
     # floating defaults to None, which honors the MJCF's explicit joint definitions.
     # Menagerie models define their own <freejoint> tags for floating-base robots.

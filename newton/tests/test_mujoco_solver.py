@@ -3755,7 +3755,6 @@ class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
 """
 
         template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
         template_builder.add_mjcf(mjcf)
 
         # Create main builder with multiple worlds
@@ -7003,7 +7002,6 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             </contact>
         </mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -7328,7 +7326,6 @@ class TestMuJoCoSolverFreeJointBodyPos(unittest.TestCase):
         </mujoco>
         """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -7363,7 +7360,6 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
         </mujoco>
         """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -7442,7 +7438,6 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         A ball joint should produce qpos0 equal to [1, 0, 0, 0] (wxyz).
         """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         parent = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         builder.add_shape_box(body=parent, hx=0.1, hy=0.1, hz=0.1)
         j0 = builder.add_joint_fixed(-1, parent)
@@ -8250,7 +8245,6 @@ class TestActuatorDampratioMultiWorld(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         robot_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(robot_builder)
         robot_builder.add_mjcf(cls.MJCF, ctrl_direct=True)
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
@@ -8295,7 +8289,6 @@ class TestActuatorLengthRangeRuntime(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(cls.MJCF, ctrl_direct=True)
         cls.model = builder.finalize()
         cls.solver = SolverMuJoCo(cls.model)
@@ -8334,7 +8327,6 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         robot_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(robot_builder)
         robot_builder.add_mjcf(cls.MJCF, ctrl_direct=True)
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
