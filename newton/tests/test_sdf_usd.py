@@ -255,6 +255,66 @@ class TestSDFUSDParsing(unittest.TestCase):
             mesh1 = builder.shape_source[s1]
             self.assertIsNotNone(mesh1.sdf, "Expected SDF built with sdfMargin during finalize")
 
+    def test_usd_sdf_enabled_false(self, device=None):
+        """newton:sdfEnabled=false suppresses SDF building even with params authored."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("SDF tests require CUDA device")
+
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_sdf_disabled.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
+            p1 = m1.GetPrim()
+            p1.CreateAttribute("newton:sdfEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(False)
+            p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(128)
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = parse_usd(builder, str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
+
+            # SDF params should not be stored when sdfEnabled=false
+            self.assertIsNone(builder.shape_sdf_max_resolution[s1])
+
+            builder.finalize(device=device)
+            mesh1 = builder.shape_source[s1]
+            self.assertIsNone(mesh1.sdf, "SDF should not be built when sdfEnabled=false")
+
+    def test_usd_hydroelastic_enabled_false(self, device=None):
+        """newton:hydroelasticEnabled=false suppresses hydroelastic even with kh authored."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("SDF tests require CUDA device")
+
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_hydro_disabled.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
+            p1 = m1.GetPrim()
+            p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(128)
+            p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
+            p1.CreateAttribute("newton:hydroelasticEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(False)
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = parse_usd(builder, str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
+
+            # SDF should still be built (sdfEnabled not false), but hydroelastic should be off
+            self.assertEqual(builder.shape_sdf_max_resolution[s1], 128)
+            self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
+
 
 devices = get_selected_cuda_test_devices()
 add_function_test(
@@ -277,6 +337,18 @@ add_function_test(
     TestSDFUSDParsing,
     "test_usd_sdf_margin",
     TestSDFUSDParsing.test_usd_sdf_margin,
+    devices=devices,
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_sdf_enabled_false",
+    TestSDFUSDParsing.test_usd_sdf_enabled_false,
+    devices=devices,
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_hydroelastic_enabled_false",
+    TestSDFUSDParsing.test_usd_hydroelastic_enabled_false,
     devices=devices,
 )
 

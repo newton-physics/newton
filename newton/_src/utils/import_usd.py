@@ -2542,46 +2542,64 @@ def parse_usd(
                 shape_color = material_props.get("color")
 
                 # SDF parameters
-                sdf_max_resolution = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
-                )
-                if sdf_max_resolution is None:
-                    sdf_max_resolution = builder.default_shape_cfg.sdf_max_resolution
-
-                sdf_target_voxel_size = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
-                )
-                # Schema default is 0 meaning "use sdfMaxResolution instead"
-                if sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+                sdf_enabled = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_enabled", verbose=verbose)
+                # None means no newton:sdfEnabled attr authored — fall through to param-based detection
+                if sdf_enabled is False:
+                    # Explicitly disabled: skip all SDF/hydro param resolution
+                    sdf_max_resolution = None
                     sdf_target_voxel_size = None
-                if sdf_target_voxel_size is None:
-                    sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
-
-                sdf_narrow_band_inner = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
-                )
-                sdf_narrow_band_outer = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
-                )
-                default_nb = builder.default_shape_cfg.sdf_narrow_band_range
-                sdf_narrow_band_range = (
-                    sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
-                    sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
-                )
-
-                sdf_texture_format = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose
-                )
-                if sdf_texture_format is None:
+                    sdf_narrow_band_range = builder.default_shape_cfg.sdf_narrow_band_range
                     sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
-
-                sdf_margin = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_margin", verbose=verbose)
-
-                # Hydroelastic: presence of newton:kh signals NewtonHydroelasticCollisionAPI
-                kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
-                is_hydroelastic = kh is not None or builder.default_shape_cfg.is_hydroelastic
-                if kh is None:
+                    sdf_margin = None
                     kh = builder.default_shape_cfg.kh
+                    is_hydroelastic = False
+                else:
+                    sdf_max_resolution = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
+                    )
+                    if sdf_max_resolution is None:
+                        sdf_max_resolution = builder.default_shape_cfg.sdf_max_resolution
+
+                    sdf_target_voxel_size = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
+                    )
+                    # Schema default is 0 meaning "use sdfMaxResolution instead"
+                    if sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+                        sdf_target_voxel_size = None
+                    if sdf_target_voxel_size is None:
+                        sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
+
+                    sdf_narrow_band_inner = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
+                    )
+                    sdf_narrow_band_outer = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
+                    )
+                    default_nb = builder.default_shape_cfg.sdf_narrow_band_range
+                    sdf_narrow_band_range = (
+                        sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
+                        sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
+                    )
+
+                    sdf_texture_format = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose
+                    )
+                    if sdf_texture_format is None:
+                        sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
+
+                    sdf_margin = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_margin", verbose=verbose)
+
+                    # Hydroelastic
+                    hydroelastic_enabled = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
+                    )
+                    kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                    if hydroelastic_enabled is False:
+                        is_hydroelastic = False
+                    else:
+                        is_hydroelastic = kh is not None or builder.default_shape_cfg.is_hydroelastic
+                    if kh is None:
+                        kh = builder.default_shape_cfg.kh
 
                 shape_params = {
                     "body": body_id,
