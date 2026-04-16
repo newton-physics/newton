@@ -32,21 +32,19 @@ def _scatter_add_kernel(
 
 
 class Actuator:
-    """Composed actuator: controller + optional delay + clamping.
+    """Composed actuator: delay → controller → clamping.
 
-    An actuator reads from simulation state/control arrays, computes
-    forces via a controller, applies clamping (force limits, saturation, etc.),
-    and writes the result to the output array.
-
-    An optional delay can be applied to the controller inputs, modelling
-    actuator communication or processing lag.
+    An actuator reads from simulation state/control arrays, optionally
+    delays the control targets, computes forces via a controller, applies
+    clamping (force limits, saturation, etc.), and writes the result to
+    the output array.
 
     Usage::
 
         actuator = Actuator(
             indices=indices,
-            controller=ControllerPD(kp=kp, kd=kd),
             delay=Delay(delay=5),
+            controller=ControllerPD(kp=kp, kd=kd),
             clamping=[ClampingMaxForce(max_force=max_f)],
         )
 
@@ -55,8 +53,8 @@ class Actuator:
 
     Args:
         indices: DOF indices for reading state/targets and writing forces. Shape (N,).
-        controller: Controller that computes raw forces.
         delay: Optional Delay instance for input delay.
+        controller: Controller that computes raw forces.
         clamping: List of Clamping objects (post-controller force bounds).
         state_pos_attr: Attribute on sim_state for positions.
         state_vel_attr: Attribute on sim_state for velocities.
@@ -72,18 +70,18 @@ class Actuator:
     class State:
         """Composed state for an :class:`Actuator`.
 
-        Holds the controller state and, if a delay is present, the delay
+        Holds the delay state (if a delay is present) and the controller
         state. Clamping objects are stateless.
         """
 
-        controller_state: Controller.State | None = None
         delay_state: Delay.State | None = None
+        controller_state: Controller.State | None = None
 
         def reset(self) -> None:
-            if self.controller_state is not None:
-                self.controller_state.reset()
             if self.delay_state is not None:
                 self.delay_state.reset()
+            if self.controller_state is not None:
+                self.controller_state.reset()
 
     def __init__(
         self,
@@ -121,6 +119,8 @@ class Actuator:
         )
 
         controller.finalize(self.device, self.num_actuators)
+        if delay is not None:
+            delay.finalize(self.indices, self.num_actuators)
 
     def get_param(self, name: str) -> wp.array | None:
         """Search for a named warp array parameter across controller and clamping.
@@ -145,16 +145,16 @@ class Actuator:
     @property
     def SHARED_PARAMS(self) -> set[str]:
         params: set[str] = set()
-        params |= self.controller.SHARED_PARAMS
         if self.delay is not None:
             params |= self.delay.SHARED_PARAMS
+        params |= self.controller.SHARED_PARAMS
         for c in self.clamping:
             params |= c.SHARED_PARAMS
         return params
 
     def is_stateful(self) -> bool:
-        """Return True if controller or delay maintains internal state."""
-        return self.controller.is_stateful() or self.delay is not None
+        """Return True if delay or controller maintains internal state."""
+        return self.delay is not None or self.controller.is_stateful()
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
@@ -165,10 +165,10 @@ class Actuator:
         if not self.is_stateful():
             return None
         return Actuator.State(
+            delay_state=(self.delay.state(self.num_actuators, self.device) if self.delay is not None else None),
             controller_state=(
                 self.controller.state(self.num_actuators, self.device) if self.controller.is_stateful() else None
             ),
-            delay_state=(self.delay.state(self.num_actuators, self.device) if self.delay is not None else None),
         )
 
     def step(
@@ -183,7 +183,7 @@ class Actuator:
 
         1. **Delay** — read delayed targets from buffer.
         2. **Controller** — compute raw forces into ``_computed_forces``.
-        3. **Clamping** — bound forces from computed → ``_applied_forces``.
+        3. **Clamping** — clamp forces from computed → ``_applied_forces``.
         4. **Scatter** — add applied (and optionally computed) forces to output.
         5. **State updates** — update delay buffer and controller state.
 
@@ -204,13 +204,13 @@ class Actuator:
 
         orig_target_pos = getattr(sim_control, self.control_target_pos_attr)
         orig_target_vel = getattr(sim_control, self.control_target_vel_attr)
-        orig_act_input = None
+        orig_feedforward = None
         if self.control_feedforward_attr is not None:
-            orig_act_input = getattr(sim_control, self.control_feedforward_attr, None)
+            orig_feedforward = getattr(sim_control, self.control_feedforward_attr, None)
 
         target_pos = orig_target_pos
         target_vel = orig_target_vel
-        act_input = orig_act_input
+        feedforward = orig_feedforward
         target_indices = self.indices
 
         # --- 1. Delay: read delayed targets ---
@@ -219,7 +219,7 @@ class Actuator:
             delay_state = current_act_state.delay_state if current_act_state else None
 
             if self.delay.is_ready(delay_state):
-                target_pos, target_vel, act_input = self.delay.get_delayed_targets(act_input, delay_state)
+                target_pos, target_vel, feedforward = self.delay.get_delayed_targets(feedforward, delay_state)
                 target_indices = self._sequential_indices
             else:
                 skip_compute = True
@@ -232,7 +232,7 @@ class Actuator:
                 velocities,
                 target_pos,
                 target_vel,
-                act_input,
+                feedforward,
                 self.indices,
                 target_indices,
                 self._computed_forces,
@@ -277,21 +277,17 @@ class Actuator:
 
         # --- 5. State updates ---
         if has_states:
-            if self.controller.is_stateful() and not skip_compute:
-                self.controller.update_state(
-                    current_act_state.controller_state,
-                    next_act_state.controller_state,
-                )
-
             if self.delay is not None:
                 self.delay.update_state(
                     orig_target_pos,
                     orig_target_vel,
-                    orig_act_input,
-                    self.indices,
-                    self.num_actuators,
+                    orig_feedforward,
                     current_act_state.delay_state,
                     next_act_state.delay_state,
-                    dt,
-                    device=self.device,
+                )
+
+            if self.controller.is_stateful() and not skip_compute:
+                self.controller.update_state(
+                    current_act_state.controller_state,
+                    next_act_state.controller_state,
                 )

@@ -13,7 +13,7 @@ import warp as wp
 def _delay_buffer_state_kernel(
     target_pos_global: wp.array[float],
     target_vel_global: wp.array[float],
-    control_input_global: wp.array[float],
+    feedforward_global: wp.array[float],
     indices: wp.array[wp.uint32],
     copy_idx: int,
     write_idx: int,
@@ -36,8 +36,8 @@ def _delay_buffer_state_kernel(
     next_buffer_vel[write_idx, i] = target_vel_global[global_idx]
 
     act = float(0.0)
-    if control_input_global:
-        act = control_input_global[global_idx]
+    if feedforward_global:
+        act = feedforward_global[global_idx]
     next_buffer_act[write_idx, i] = act
 
 
@@ -86,6 +86,20 @@ class Delay:
         if delay < 1:
             raise ValueError(f"delay must be >= 1, got {delay}")
         self.delay = delay
+        self._indices: wp.array | None = None
+        self._num_actuators: int = 0
+
+    def finalize(self, indices: wp.array, num_actuators: int) -> None:
+        """Store indices and actuator count for use during state updates.
+
+        Called by :class:`Actuator` after construction.
+
+        Args:
+            indices: DOF indices array.
+            num_actuators: Number of actuators.
+        """
+        self._indices = indices
+        self._num_actuators = num_actuators
 
     def state(self, num_actuators: int, device: wp.Device) -> Delay.State:
         return Delay.State(
@@ -102,7 +116,7 @@ class Delay:
 
     def get_delayed_targets(
         self,
-        act_input: wp.array[float] | None,
+        feedforward: wp.array[float] | None,
         current_state: Delay.State,
     ) -> tuple[wp.array[float], wp.array[float], wp.array[float] | None]:
         """Return delayed targets from the circular buffer.
@@ -110,25 +124,21 @@ class Delay:
         Call only when ``is_ready()`` is True.
 
         Returns:
-            (delayed_pos, delayed_vel, delayed_act)
+            (delayed_pos, delayed_vel, delayed_feedforward)
         """
         read_idx = (current_state.write_idx + 1) % self.delay
         delayed_pos = current_state.buffer_pos[read_idx]
         delayed_vel = current_state.buffer_vel[read_idx]
-        delayed_act = current_state.buffer_act[read_idx] if act_input is not None else None
+        delayed_act = current_state.buffer_act[read_idx] if feedforward is not None else None
         return delayed_pos, delayed_vel, delayed_act
 
     def update_state(
         self,
         target_pos: wp.array[float],
         target_vel: wp.array[float],
-        act_input: wp.array[float] | None,
-        input_indices: wp.array[wp.uint32],
-        num_actuators: int,
+        feedforward: wp.array[float] | None,
         current_state: Delay.State,
         next_state: Delay.State,
-        dt: float,
-        device: wp.Device | None = None,
     ) -> None:
         if next_state is None:
             return
@@ -138,12 +148,12 @@ class Delay:
 
         wp.launch(
             kernel=_delay_buffer_state_kernel,
-            dim=num_actuators,
+            dim=self._num_actuators,
             inputs=[
                 target_pos,
                 target_vel,
-                act_input,
-                input_indices,
+                feedforward,
+                self._indices,
                 copy_idx,
                 write_idx,
                 current_state.buffer_pos,
@@ -155,7 +165,6 @@ class Delay:
                 next_state.buffer_vel,
                 next_state.buffer_act,
             ],
-            device=device,
         )
 
         next_state.write_idx = write_idx

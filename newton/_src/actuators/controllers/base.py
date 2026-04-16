@@ -67,7 +67,7 @@ class Controller:
         velocities: wp.array[float],
         target_pos: wp.array[float],
         target_vel: wp.array[float],
-        act_input: wp.array[float] | None,
+        feedforward: wp.array[float] | None,
         input_indices: wp.array[wp.uint32],
         target_indices: wp.array[wp.uint32],
         forces: wp.array[float],
@@ -83,7 +83,7 @@ class Controller:
             velocities: Joint velocities (global array).
             target_pos: Target positions (global or compact array).
             target_vel: Target velocities (global or compact array).
-            act_input: Feedforward control input (may be None).
+            feedforward: Feedforward control input (may be None).
             input_indices: Indices into positions/velocities.
             target_indices: Indices into target arrays.
             forces: Compact scratch buffer to write forces to. Shape (N,).

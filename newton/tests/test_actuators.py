@@ -934,7 +934,7 @@ class TestControllerNetMLP(unittest.TestCase):
     def test_is_stateful_and_not_graphable(self):
         _model, dofs = _build_simple_model(1, device=self.dev)
         act = Actuator(
-            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            wp.array(dofs, dtype=wp.uint32, device=self.dev),
             controller=ControllerNetMLP(network=self._mlp(2)),
         )
         self.assertTrue(act.is_stateful())
@@ -944,7 +944,7 @@ class TestControllerNetMLP(unittest.TestCase):
         n = 3
         _model, dofs = _build_simple_model(n, device=self.dev)
         act = Actuator(
-            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            wp.array(dofs, dtype=wp.uint32, device=self.dev),
             controller=ControllerNetMLP(network=self._mlp(6), input_idx=[0, 1, 2]),
         )
         cs = act.state().controller_state
@@ -960,7 +960,7 @@ class TestControllerNetMLP(unittest.TestCase):
 
         model, dofs = _build_simple_model(1, device=self.dev)
         act = Actuator(
-            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            wp.array(dofs, dtype=wp.uint32, device=self.dev),
             controller=ControllerNetMLP(network=net),
             clamping=[ClampingMaxForce(max_force=wp.array([10.0], dtype=wp.float32, device=self.dev))],
         )
@@ -1009,7 +1009,7 @@ class TestControllerNetLSTM(unittest.TestCase):
     def test_is_stateful_and_not_graphable(self):
         _model, dofs = _build_simple_model(1, device=self.dev)
         act = Actuator(
-            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            wp.array(dofs, dtype=wp.uint32, device=self.dev),
             controller=ControllerNetLSTM(network=self._lstm()),
         )
         self.assertTrue(act.is_stateful())
@@ -1019,7 +1019,7 @@ class TestControllerNetLSTM(unittest.TestCase):
         hidden, layers, n = 16, 2, 3
         _model, dofs = _build_simple_model(n, device=self.dev)
         act = Actuator(
-            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            wp.array(dofs, dtype=wp.uint32, device=self.dev),
             controller=ControllerNetLSTM(network=self._lstm(hidden=hidden, layers=layers)),
         )
         cs = act.state().controller_state
@@ -1029,7 +1029,7 @@ class TestControllerNetLSTM(unittest.TestCase):
     def test_state_evolves_after_step(self):
         model, dofs = _build_simple_model(1, device=self.dev)
         act = Actuator(
-            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            wp.array(dofs, dtype=wp.uint32, device=self.dev),
             controller=ControllerNetLSTM(network=self._lstm()),
         )
         sa, sb = act.state(), act.state()
