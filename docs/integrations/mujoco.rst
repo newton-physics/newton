@@ -121,8 +121,7 @@ table shows:
 Standard Newton properties (``joint_limit_lower``, ``shape_material_mu``, etc.)
 are populated from standard USD physics schemas, MJCF XML elements, or set
 programmatically.  MuJoCo-specific parameters use the ``mujoco``
-custom-attribute namespace.  Attributes marked :sup:`ext` are Newton extensions
-— ``mjc:``-prefixed USD attributes without a schema counterpart yet.
+custom-attribute namespace.
 
 **Setup.**
   Call :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` on a
@@ -360,8 +359,7 @@ Newton → PhysX → MuJoCo.
      - 0.0
      -
    * - ``friction``
-     - ``mjc:frictionloss`` :sup:`ext`
-     - 0.0
+     - ``mjc:frictionloss``     - 0.0
      -
    * - ``limit_*_ke`` / ``limit_*_kd``
      - ``mjc:solref``
@@ -388,28 +386,23 @@ Newton → PhysX → MuJoCo.
      - Default
      - Notes
    * - ``mujoco.limit_margin``
-     - ``mjc:margin`` :sup:`ext`
-     - ``margin``
+     - ``mjc:margin``     - ``margin``
      - 0.0
      - [m or rad]
    * - ``mujoco.solimplimit``
-     - ``mjc:solimplimit`` :sup:`ext`
-     -
+     - ``mjc:solimplimit``     -
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.solreffriction``
-     - ``mjc:solreffriction`` :sup:`ext`
-     -
+     - ``mjc:solreffriction``     -
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.solimpfriction``
-     - ``mjc:solimpfriction`` :sup:`ext`
-     -
+     - ``mjc:solimpfriction``     -
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.dof_passive_stiffness``
-     - ``mjc:stiffness`` :sup:`ext`
-     - ``stiffness``
+     - ``mjc:stiffness``     - ``stiffness``
      - 0.0
      -
    * - ``mujoco.dof_passive_damping``
@@ -418,13 +411,11 @@ Newton → PhysX → MuJoCo.
      - 0.0
      -
    * - ``mujoco.dof_springref``
-     - ``mjc:springref`` :sup:`ext`
-     - ``springref``
+     - ``mjc:springref``     - ``springref``
      - 0.0
      - [m or rad]
    * - ``mujoco.dof_ref``
-     - ``mjc:ref`` :sup:`ext`
-     - ``ref``
+     - ``mjc:ref``     - ``ref``
      - 0.0
      - [m or rad]
    * - ``mujoco.jnt_actgravcomp``
@@ -558,24 +549,19 @@ rather than the collision prim.
      - Default
      - Notes
    * - ``mu_torsional``
-     - ``mjc:torsionalfriction`` :sup:`ext`
-     - 0.005
+     - ``mjc:torsionalfriction``     - 0.005
      -
    * - ``mu_rolling``
-     - ``mjc:rollingfriction`` :sup:`ext`
-     - 0.0001
+     - ``mjc:rollingfriction``     - 0.0001
      -
    * - ``priority``
-     - ``mjc:priority`` :sup:`ext`
-     - 0
+     - ``mjc:priority``     - 0
      -
    * - ``weight``
-     - ``mjc:solmix`` :sup:`ext`
-     - 1.0
+     - ``mjc:solmix``     - 1.0
      -
    * - ``stiffness`` / ``damping``
-     - ``mjc:solref`` :sup:`ext`
-     - ``[0.02, 1.0]``
+     - ``mjc:solref``     - ``[0.02, 1.0]``
      - See the ``solref`` note under :ref:`mujoco-joint-attributes`
 
 
@@ -628,8 +614,7 @@ Body attributes
      - Default
      - Notes
    * - ``mujoco.gravcomp``
-     - ``mjc:gravcomp`` :sup:`ext`
-     - ``gravcomp``
+     - ``mjc:gravcomp``     - ``gravcomp``
      - 0.0
      -
 
@@ -900,13 +885,11 @@ Equality constraint attributes
      - Default
      - Notes
    * - ``mujoco.eq_solref``
-     - ``mjc:solref`` :sup:`ext`
-     - ``solref``
+     - ``mjc:solref``     - ``solref``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.eq_solimp``
-     - ``mjc:solimp`` :sup:`ext`
-     - ``solimp``
+     - ``mjc:solimp``     - ``solimp``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
 
@@ -926,73 +909,59 @@ Tendon attributes
      - Default
      - Notes
    * - ``mujoco.tendon_stiffness``
-     - ``mjc:stiffness`` :sup:`ext`
-     - ``stiffness``
+     - ``mjc:stiffness``     - ``stiffness``
      - 0.0
      - [N/m]
    * - ``mujoco.tendon_damping``
-     - ``mjc:damping`` :sup:`ext`
-     - ``damping``
+     - ``mjc:damping``     - ``damping``
      - 0.0
      - [N·s/m]
    * - ``mujoco.tendon_frictionloss``
-     - ``mjc:frictionloss`` :sup:`ext`
-     - ``frictionloss``
+     - ``mjc:frictionloss``     - ``frictionloss``
      - 0.0
      - [N]
    * - ``mujoco.tendon_limited``
-     - ``mjc:limited`` :sup:`ext`
-     - ``limited``
+     - ``mjc:limited``     - ``limited``
      - 2 (auto)
      - Tri-state
    * - ``mujoco.tendon_range``
-     - ``mjc:range:min`` / ``max`` :sup:`ext`
-     - ``range``
+     - ``mjc:range:min`` / ``max``     - ``range``
      - ``(0, 0)``
      - [m]
    * - ``mujoco.tendon_margin``
-     - ``mjc:margin`` :sup:`ext`
-     - ``margin``
+     - ``mjc:margin``     - ``margin``
      - 0.0
      - [m]
    * - ``mujoco.tendon_solref_limit``
-     - ``mjc:solreflimit`` :sup:`ext`
-     - ``solreflimit``
+     - ``mjc:solreflimit``     - ``solreflimit``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.tendon_solimp_limit``
-     - ``mjc:solimplimit`` :sup:`ext`
-     - ``solimplimit``
+     - ``mjc:solimplimit``     - ``solimplimit``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.tendon_solref_friction``
-     - ``mjc:solreffriction`` :sup:`ext`
-     - ``solreffriction``
+     - ``mjc:solreffriction``     - ``solreffriction``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.tendon_solimp_friction``
-     - ``mjc:solimpfriction`` :sup:`ext`
-     - ``solimpfriction``
+     - ``mjc:solimpfriction``     - ``solimpfriction``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.tendon_armature``
-     - ``mjc:armature`` :sup:`ext`
-     - ``armature``
+     - ``mjc:armature``     - ``armature``
      - 0.0
      - [kg]
    * - ``mujoco.tendon_springlength``
-     - ``mjc:springlength`` :sup:`ext`
-     - ``springlength``
+     - ``mjc:springlength``     - ``springlength``
      - ``(-1, -1)``
      - [m]; ``-1`` = use model length
    * - ``mujoco.tendon_actuator_force_limited``
-     - ``mjc:actuatorfrclimited`` :sup:`ext`
-     - ``actuatorfrclimited``
+     - ``mjc:actuatorfrclimited``     - ``actuatorfrclimited``
      - 2 (auto)
      - Tri-state
    * - ``mujoco.tendon_actuator_force_range``
-     - ``mjc:actuatorfrcrange:min`` / ``max`` :sup:`ext`
-     - ``actuatorfrcrange``
+     - ``mjc:actuatorfrcrange:min`` / ``max``     - ``actuatorfrcrange``
      - ``(0, 0)``
      - [N]
 
@@ -1128,10 +1097,6 @@ five custom frequencies for variable-length entity types:
 - ``mujoco:tendon`` — fixed and spatial tendons
 - ``mujoco:tendon_joint`` — per-joint entries in fixed tendons
 - ``mujoco:tendon_wrap`` — wrap path elements in spatial tendons
-
-:sup:`ext` = Newton extension — not defined in the mjcPhysics schema.  These
-correspond to MuJoCo XML attributes that do not yet have a schema counterpart.
-
 
 .. _mujoco-unsupported-attributes:
 
