@@ -116,14 +116,49 @@ exclude_patterns = [
     "**/lib/**",
 ]
 
+
+def _ensure_pandoc_on_path() -> str | None:
+    """Return a usable pandoc executable path, preferring the bundled docs dependency."""
+
+    pandoc_path = shutil.which("pandoc")
+    if pandoc_path is not None:
+        return pandoc_path
+
+    try:
+        import pypandoc  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    try:
+        bundled_path = Path(pypandoc.get_pandoc_path())
+    except OSError:
+        return None
+
+    search_dir = bundled_path.parent
+    if not search_dir.is_dir():
+        return None
+
+    resolved_path = shutil.which("pandoc", path=str(search_dir))
+    if resolved_path is None:
+        return None
+
+    existing_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = str(Path(resolved_path).parent) + os.pathsep + existing_path
+    os.environ.setdefault("PYPANDOC_PANDOC", resolved_path)
+    return resolved_path
+
+
 # nbsphinx requires pandoc to convert Jupyter notebooks.  When pandoc is not
 # installed we exclude the notebook tutorials so the rest of the docs can still
 # be built locally without a hard error.  CI workflows install pandoc explicitly
-# so published docs always include the tutorials.
+# so published docs always include the tutorials.  Prefer the bundled
+# ``pypandoc_binary`` executable when available so local docs builds work out of
+# the box in the docs environment.
 #
 # Set NEWTON_REQUIRE_PANDOC=1 to turn the missing-pandoc warning into an error
 # (used in CI to guarantee tutorials are never silently skipped).
-if shutil.which("pandoc") is None:
+pandoc_path = _ensure_pandoc_on_path()
+if pandoc_path is None:
     if os.environ.get("NEWTON_REQUIRE_PANDOC", "") == "1":
         raise RuntimeError(
             "pandoc is required but not found. Install pandoc "
