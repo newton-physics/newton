@@ -258,8 +258,8 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         offsets from the body origin.
         """
 
-        dt = 0.01
-        num_steps = 50
+        dt = 0.002
+        num_steps = 250
         num_worlds = self._num_worlds()
         use_mujoco_cpu = self._use_mujoco_cpu()
 
