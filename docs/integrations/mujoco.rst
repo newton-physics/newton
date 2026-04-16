@@ -102,8 +102,8 @@ tendons.
 
 .. _mujoco-parameters:
 
-MuJoCo parameters
------------------
+MuJoCo model attributes
+-----------------------
 
 The tables below list every Newton property and custom attribute that
 :class:`~newton.solvers.SolverMuJoCo` reads, organized by entity type.  Each
