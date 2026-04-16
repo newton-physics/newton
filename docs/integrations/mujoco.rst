@@ -294,7 +294,7 @@ Solver parameters follow a three-level resolution priority:
      - 3D gravity vector → MuJoCo ``opt.gravity``
 
 
-.. _mujoco-joint-parameters:
+.. _mujoco-joint-attributes:
 
 Joint attributes
 ^^^^^^^^^^^^^^^^
@@ -334,7 +334,7 @@ Joint attributes
      - actuator ``gainprm`` / ``biasprm``
      - ``physics:drive:stiffness`` / ``damping``
      -
-     - See :ref:`mujoco-actuator-parameters`
+     - See :ref:`mujoco-actuator-attributes`
    * - ``joint_effort_limit``
      - ``jnt_actfrcrange``
      - ``physics:drive:forceLimit``
@@ -434,7 +434,7 @@ Newton → PhysX → MuJoCo.
      -
 
 
-.. _mujoco-shape-parameters:
+.. _mujoco-shape-attributes:
 
 Shape attributes
 ^^^^^^^^^^^^^^^^
@@ -503,7 +503,7 @@ The ``mjc:`` USD attributes below are an alternative source for
    * - ``ke`` / ``kd``
      - ``mjc:solref``
      - ``[0.02, 1.0]``
-     - See the ``solref`` note under :ref:`mujoco-joint-parameters`
+     - See the ``solref`` note under :ref:`mujoco-joint-attributes`
 
 **Custom attributes** (``mujoco.*`` namespace):
 
@@ -538,13 +538,16 @@ The ``mjc:`` USD attributes below are an alternative source for
      -
 
 
-.. _mujoco-material-parameters:
+.. _mujoco-material-attributes:
 
 Material attributes
 ^^^^^^^^^^^^^^^^^^^
 
 The ``mjc:`` USD attributes below are an alternative source for material
-properties on ``PhysicsMaterialAPI`` prims.
+properties on ``PhysicsMaterialAPI`` prims.  These map to the same Newton
+properties listed in the :ref:`mujoco-shape-attributes` standard table
+(e.g. ``mu_torsional``, ``stiffness``) but are read from the material prim
+rather than the collision prim.
 
 .. list-table::
    :header-rows: 1
@@ -573,10 +576,10 @@ properties on ``PhysicsMaterialAPI`` prims.
    * - ``stiffness`` / ``damping``
      - ``mjc:solref`` :sup:`ext`
      - ``[0.02, 1.0]``
-     - See the ``solref`` note under :ref:`mujoco-joint-parameters`
+     - See the ``solref`` note under :ref:`mujoco-joint-attributes`
 
 
-.. _mujoco-body-parameters:
+.. _mujoco-body-attributes:
 
 Body attributes
 ^^^^^^^^^^^^^^^
@@ -631,7 +634,7 @@ Body attributes
      -
 
 
-.. _mujoco-actuator-parameters:
+.. _mujoco-actuator-attributes:
 
 Actuator attributes
 ^^^^^^^^^^^^^^^^^^^
@@ -822,7 +825,7 @@ the target joint's limits as the actuator's ``ctrlrange``.
      - Auto-compute joint limits (default: ``True``)
 
 
-.. _mujoco-equality-parameters:
+.. _mujoco-equality-attributes:
 
 Equality constraint attributes
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -908,7 +911,7 @@ Equality constraint attributes
      -
 
 
-.. _mujoco-tendon-parameters:
+.. _mujoco-tendon-attributes:
 
 Tendon attributes
 ^^^^^^^^^^^^^^^^^
@@ -1047,7 +1050,7 @@ prefix.
      - Wrap element parameter
 
 
-.. _mujoco-contact-pair-parameters:
+.. _mujoco-contact-pair-attributes:
 
 Contact pair attributes
 ^^^^^^^^^^^^^^^^^^^^^^^
