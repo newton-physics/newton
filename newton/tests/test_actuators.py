@@ -1,10 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for actuator integration with ModelBuilder."""
+"""Tests for Newton actuators — parsing, building, stepping, and parameter access.
 
+Covers the full actuator lifecycle:
+  - Argument resolution and validation for each component
+  - USD prim parsing (mock prims, no real USD stage needed)
+  - ModelBuilder accumulation, grouping, and replication
+  - State shapes and initialization
+  - Force computation: PD, PID, clamping, delay, DC motor, position-based
+  - Dual output (applied vs pre-clamp forces)
+  - Parameter access via ArticulationView
+  - Full USD stage parsing (skip-guarded)
+  - Neural-network controllers (torch-dependent, skip-guarded)
+"""
+
+import importlib.util
 import os
 import unittest
+from typing import ClassVar
 
 import numpy as np
 import warp as wp
@@ -12,10 +26,16 @@ import warp as wp
 import newton
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
+    Actuator,
     ActuatorParsed,
+    ClampingDCMotor,
     ClampingMaxForce,
+    ClampingPositionBased,
+    ControllerNetLSTM,
+    ControllerNetMLP,
     ControllerPD,
     ControllerPID,
+    Delay,
     parse_actuator_prim,
 )
 from newton.selection import ArticulationView
@@ -27,12 +47,235 @@ try:
 except ImportError:
     HAS_USD = False
 
+_HAS_TORCH = importlib.util.find_spec("torch") is not None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_chain(num_joints, controller_class, controller_kwargs, clamping=None, delay=None):
+    """Build a revolute chain with one actuator per joint, return (model, dof_indices)."""
+    builder = newton.ModelBuilder()
+    links = [builder.add_link() for _ in range(num_joints)]
+    joints = []
+    for i, link in enumerate(links):
+        parent = -1 if i == 0 else links[i - 1]
+        joints.append(builder.add_joint_revolute(parent=parent, child=link, axis=newton.Axis.Z))
+    builder.add_articulation(joints)
+    dofs = [builder.joint_qd_start[j] for j in joints]
+    for dof in dofs:
+        builder.add_actuator(
+            controller_class,
+            index=dof,
+            clamping=clamping,
+            delay=delay,
+            **controller_kwargs,
+        )
+    return builder.finalize(), dofs
+
+
+def _build_simple_model(num_joints, device="cpu"):
+    """Build a minimal revolute chain without actuators, return (model, dof_indices)."""
+    builder = newton.ModelBuilder()
+    links = [builder.add_link() for _ in range(num_joints)]
+    joints = []
+    for i, link in enumerate(links):
+        parent = -1 if i == 0 else links[i - 1]
+        joints.append(builder.add_joint_revolute(parent=parent, child=link, axis=newton.Axis.Z))
+    builder.add_articulation(joints)
+    return builder.finalize(device=device), [builder.joint_qd_start[j] for j in joints]
+
+
+def _write_dof_values(model, array, dof_indices, values):
+    """Write scalar values into specific DOF positions of a Warp array."""
+    arr_np = array.numpy()
+    for dof, val in zip(dof_indices, values, strict=True):
+        arr_np[dof] = val
+    wp.copy(array, wp.array(arr_np, dtype=float, device=model.device))
+
+
+# ---------------------------------------------------------------------------
+# Mock USD prims
+# ---------------------------------------------------------------------------
+
+
+class _MockTokenListOp:
+    def __init__(self, items):
+        self._items = list(items)
+
+    def GetAddedOrExplicitItems(self):
+        return self._items
+
+
+class _MockAttr:
+    def __init__(self, value):
+        self._value = value
+
+    def HasAuthoredValue(self):
+        return self._value is not None
+
+    def Get(self):
+        return self._value
+
+
+class _MockRel:
+    def __init__(self, targets):
+        self._targets = targets
+
+    def GetTargets(self):
+        return self._targets
+
+
+class _MockPrim:
+    """Minimal stand-in for a USD prim."""
+
+    def __init__(self, type_name, attrs=None, rels=None, schemas=None):
+        self._type = type_name
+        self._attrs = {k: _MockAttr(v) for k, v in (attrs or {}).items()}
+        self._rels = {k: _MockRel(v) for k, v in (rels or {}).items()}
+        self._schemas = schemas or []
+
+    def GetTypeName(self):
+        return self._type
+
+    def GetAttribute(self, name):
+        return self._attrs.get(name)
+
+    def GetRelationship(self, name):
+        return self._rels.get(name)
+
+    def GetAppliedSchemas(self):
+        return self._schemas
+
+    def GetMetadata(self, key):
+        if key == "apiSchemas":
+            return _MockTokenListOp(self._schemas) if self._schemas else None
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 1. Argument resolution — verify defaults and validation
+# ---------------------------------------------------------------------------
+
+
+class TestResolveArguments(unittest.TestCase):
+    """Each component's resolve_arguments should fill defaults and reject bad input."""
+
+    def test_pd_defaults(self):
+        r = ControllerPD.resolve_arguments({"kp": 50.0})
+        self.assertEqual(r["kp"], 50.0)
+        self.assertEqual(r["kd"], 0.0)
+        self.assertEqual(r["constant_force"], 0.0)
+
+    def test_delay_requires_delay_arg(self):
+        with self.assertRaises(ValueError):
+            Delay.resolve_arguments({})
+
+    def test_dc_motor_requires_velocity_limit(self):
+        with self.assertRaises(ValueError):
+            ClampingDCMotor.resolve_arguments({})
+
+    def test_dc_motor_accepts_velocity_limit(self):
+        r = ClampingDCMotor.resolve_arguments({"velocity_limit": 10.0})
+        self.assertEqual(r["velocity_limit"], 10.0)
+
+    def test_position_based_requires_lookup(self):
+        with self.assertRaises(ValueError):
+            ClampingPositionBased.resolve_arguments({})
+
+
+# ---------------------------------------------------------------------------
+# 2. USD prim parsing (mock prims)
+# ---------------------------------------------------------------------------
+
+
+class TestActuatorParser(unittest.TestCase):
+    """parse_actuator_prim resolves schema names and extracts kwargs correctly."""
+
+    TARGET_REL: ClassVar[dict] = {"newton:actuator:target": ["/World/Robot/Joint1"]}
+
+    def _prim(self, attrs=None, rels=None, schemas=None, type_name="NewtonActuator"):
+        return _MockPrim(type_name, attrs=attrs, rels=rels or self.TARGET_REL, schemas=schemas)
+
+    def test_pd_controller(self):
+        r = parse_actuator_prim(
+            self._prim(
+                attrs={"newton:actuator:kp": 100.0, "newton:actuator:kd": 10.0},
+                schemas=["NewtonControllerPDAPI"],
+            )
+        )
+        self.assertEqual(r.controller_class, ControllerPD)
+        self.assertEqual(r.controller_kwargs["kp"], 100.0)
+        self.assertEqual(r.controller_kwargs["kd"], 10.0)
+        self.assertEqual(r.component_specs, [])
+
+    def test_pid_controller(self):
+        r = parse_actuator_prim(
+            self._prim(
+                attrs={"newton:actuator:kp": 100.0, "newton:actuator:ki": 5.0},
+                schemas=["NewtonControllerPIDAPI"],
+            )
+        )
+        self.assertEqual(r.controller_class, ControllerPID)
+        self.assertEqual(r.controller_kwargs["ki"], 5.0)
+
+    def test_pd_with_delay(self):
+        r = parse_actuator_prim(
+            self._prim(
+                attrs={"newton:actuator:kp": 50.0, "newton:actuator:delay": 5},
+                schemas=["NewtonControllerPDAPI", "NewtonDelayAPI"],
+            )
+        )
+        self.assertEqual(len(r.component_specs), 1)
+        cls, kwargs = r.component_specs[0]
+        self.assertIs(cls, Delay)
+        self.assertEqual(kwargs["delay"], 5)
+
+    def test_pd_with_dc_motor(self):
+        r = parse_actuator_prim(
+            self._prim(
+                attrs={
+                    "newton:actuator:kp": 100.0,
+                    "newton:actuator:velocityLimit": 10.0,
+                    "newton:actuator:saturationEffort": 150.0,
+                    "newton:actuator:maxForce": 200.0,
+                },
+                schemas=["NewtonControllerPDAPI", "NewtonClampingDCMotorAPI"],
+            )
+        )
+        self.assertEqual(r.controller_class, ControllerPD)
+        self.assertEqual(len(r.component_specs), 1)
+        self.assertIs(r.component_specs[0][0], ClampingDCMotor)
+
+    def test_dc_motor_zero_velocity_limit_raises(self):
+        with self.assertRaises(ValueError):
+            parse_actuator_prim(
+                self._prim(
+                    attrs={"newton:actuator:kp": 100.0, "newton:actuator:velocityLimit": 0.0},
+                    schemas=["NewtonControllerPDAPI", "NewtonClampingDCMotorAPI"],
+                )
+            )
+
+    def test_non_actuator_type_returns_none(self):
+        p = _MockPrim("Mesh")
+        self.assertIsNone(parse_actuator_prim(p))
+
+    def test_missing_target_returns_none(self):
+        p = _MockPrim("NewtonActuator", attrs={"newton:actuator:kp": 100.0})
+        self.assertIsNone(parse_actuator_prim(p))
+
+
+# ---------------------------------------------------------------------------
+# 3. Builder — accumulation, grouping, replication
+# ---------------------------------------------------------------------------
+
 
 class TestActuatorBuilder(unittest.TestCase):
-    """Tests for ModelBuilder.add_actuator - functionality, multi-world, and scalar params."""
+    """Tests for ModelBuilder.add_actuator — grouping, replication, and scalar params."""
 
     def test_accumulation_and_parameters(self):
-        """Test actuator accumulation and parameters."""
         builder = newton.ModelBuilder()
 
         bodies = [builder.add_body() for _ in range(3)]
@@ -44,10 +287,8 @@ class TestActuatorBuilder(unittest.TestCase):
 
         dofs = [builder.joint_qd_start[j] for j in joints]
 
-        # All ControllerPD, no clamping — accumulate into one group
         builder.add_actuator(ControllerPD, index=dofs[0], kp=50.0, constant_force=1.0)
         builder.add_actuator(ControllerPD, index=dofs[1], kp=100.0, kd=10.0)
-        # With ClampingMaxForce — separate group
         builder.add_actuator(
             ControllerPD,
             index=dofs[2],
@@ -57,7 +298,6 @@ class TestActuatorBuilder(unittest.TestCase):
 
         model = builder.finalize()
 
-        # Two groups: ControllerPD-no-clamping and ControllerPD+ClampingMaxForce
         self.assertEqual(len(model.actuators), 2)
 
         plain_act = next(a for a in model.actuators if not a.clamping)
@@ -74,7 +314,6 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertAlmostEqual(clamped_act.clamping[0].max_force.numpy()[0], 50.0)
 
     def test_mixed_types_with_replication(self):
-        """Test mixed controller types, replication, and DOF offsets."""
         template = newton.ModelBuilder()
 
         body0 = template.add_body()
@@ -120,7 +359,6 @@ class TestActuatorBuilder(unittest.TestCase):
             self.assertEqual(pd_indices[w * 2 + 1] - pd_indices[(w - 1) * 2 + 1], dofs_per_world)
 
     def test_delay_grouping(self):
-        """Test: same delay groups, different delays separate, mixed with simple PD."""
         builder = newton.ModelBuilder()
 
         bodies = [builder.add_body() for _ in range(6)]
@@ -154,41 +392,297 @@ class TestActuatorBuilder(unittest.TestCase):
         np.testing.assert_array_almost_equal(delay3.controller.kp.numpy(), [200.0, 250.0])
 
 
-@unittest.skipUnless(HAS_USD, "pxr not installed")
-class TestActuatorUSDParsing(unittest.TestCase):
-    """Tests for parsing actuators from USD files."""
+# ---------------------------------------------------------------------------
+# 4. State shapes and initialization
+# ---------------------------------------------------------------------------
 
-    def test_usd_parsing(self):
-        """Test that USD parsing automatically parses Newton actuators."""
-        test_dir = os.path.dirname(__file__)
-        usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
 
-        if not os.path.exists(usd_path):
-            self.skipTest(f"Test USD file not found: {usd_path}")
+class TestActuatorState(unittest.TestCase):
+    """State objects must have correct shapes and initial values."""
 
-        builder = newton.ModelBuilder()
-        result = parse_usd(builder, usd_path)
-        self.assertGreater(result["actuator_count"], 0)
-        model = builder.finalize()
-        self.assertGreater(len(model.actuators), 0)
+    def test_delay_buffer_shape(self):
+        delay_steps, n = 5, 2
+        model, _dofs = _build_chain(n, ControllerPD, {"kp": 1.0}, delay=delay_steps)
+        actuator = next(a for a in model.actuators if a.delay is not None)
+        ds = actuator.state().delay_state
+        self.assertEqual(ds.buffer_pos.shape, (delay_steps, n))
+        self.assertEqual(ds.buffer_vel.shape, (delay_steps, n))
+        self.assertEqual(ds.buffer_act.shape, (delay_steps, n))
+        self.assertEqual(ds.write_idx, delay_steps - 1)
+        self.assertFalse(ds.is_filled)
 
-        stage = Usd.Stage.Open(usd_path)
-        actuator_prim = stage.GetPrimAtPath("/World/Robot/Joint1Actuator")
-        parsed = parse_actuator_prim(actuator_prim)
+    def test_pid_integral_initialised_to_zero(self):
+        n = 3
+        model, _dofs = _build_chain(n, ControllerPID, {"kp": 0.0, "ki": 1.0, "kd": 0.0})
+        actuator = model.actuators[0]
+        s = actuator.state()
+        np.testing.assert_array_equal(s.controller_state.integral.numpy(), np.zeros(n))
 
-        self.assertIsNotNone(parsed)
-        self.assertIsInstance(parsed, ActuatorParsed)
-        self.assertEqual(parsed.controller_class, ControllerPD)
-        self.assertEqual(parsed.controller_kwargs.get("kp"), 100.0)
-        self.assertEqual(parsed.controller_kwargs.get("kd"), 10.0)
+    def test_stateless_actuator_returns_none(self):
+        model, _dofs = _build_chain(1, ControllerPD, {"kp": 1.0})
+        actuator = model.actuators[0]
+        self.assertIsNone(actuator.state())
+        self.assertFalse(actuator.is_stateful())
+
+
+# ---------------------------------------------------------------------------
+# 5. Force computation — step() behavior
+# ---------------------------------------------------------------------------
+
+
+class TestActuatorStep(unittest.TestCase):
+    """Actuator.step() with real Model/State/Control objects."""
+
+    # -- PD controller -------------------------------------------------------
+
+    def test_pd_position_error(self):
+        """force = kp * (target_pos - q) when kd=0."""
+        model, dofs = _build_chain(3, ControllerPD, {"kp": 100.0})
+        state = model.state()
+        control = model.control()
+        _write_dof_values(model, control.joint_target_pos, dofs, [1.0, 2.0, 3.0])
+
+        model.actuators[0].step(state, control)
+
+        forces = control.joint_f.numpy()
+        np.testing.assert_allclose([forces[d] for d in dofs], [100.0, 200.0, 300.0], rtol=1e-5)
+
+    def test_pd_velocity_error(self):
+        """force = kd * (target_vel - qd) when kp=0."""
+        model, dofs = _build_chain(2, ControllerPD, {"kp": 0.0, "kd": 10.0})
+        state = model.state()
+        control = model.control()
+        _write_dof_values(model, control.joint_target_vel, dofs, [5.0, -3.0])
+
+        model.actuators[0].step(state, control)
+
+        forces = control.joint_f.numpy()
+        np.testing.assert_allclose([forces[d] for d in dofs], [50.0, -30.0], rtol=1e-5)
+
+    def test_pd_feedforward(self):
+        """Feedforward joint_act is added to output force."""
+        model, dofs = _build_chain(2, ControllerPD, {"kp": 0.0})
+        state = model.state()
+        control = model.control()
+        _write_dof_values(model, control.joint_act, dofs, [7.0, -3.0])
+
+        model.actuators[0].step(state, control)
+
+        forces = control.joint_f.numpy()
+        np.testing.assert_allclose([forces[d] for d in dofs], [7.0, -3.0], rtol=1e-5)
+
+    def test_pd_constant_force(self):
+        """constant_force offset is included in output."""
+        model, dofs = _build_chain(1, ControllerPD, {"kp": 0.0, "constant_force": 42.0})
+        state = model.state()
+        control = model.control()
+
+        model.actuators[0].step(state, control)
+
+        self.assertAlmostEqual(control.joint_f.numpy()[dofs[0]], 42.0, places=5)
+
+    # -- PD + ClampingMaxForce -----------------------------------------------
+
+    def test_max_force_clamp(self):
+        """Force is clamped to ±max_force."""
+        model, dofs = _build_chain(
+            1,
+            ControllerPD,
+            {"kp": 100.0},
+            clamping=[(ClampingMaxForce, {"max_force": 50.0})],
+        )
+        state = model.state()
+        control = model.control()
+        _write_dof_values(model, control.joint_target_pos, dofs, [1.0])
+
+        model.actuators[0].step(state, control)
+
+        self.assertAlmostEqual(control.joint_f.numpy()[dofs[0]], 50.0, places=5)
+
+    # -- Dual output (applied vs pre-clamp) ----------------------------------
+
+    def test_dual_output_applied_and_computed(self):
+        """control_computed_output_attr writes the pre-clamp force separately."""
+        model, dofs = _build_chain(
+            1,
+            ControllerPD,
+            {"kp": 1000.0},
+            clamping=[(ClampingMaxForce, {"max_force": 50.0})],
+        )
+        actuator = model.actuators[0]
+        actuator.control_computed_output_attr = "joint_f_computed"
+
+        state = model.state()
+        control = model.control()
+        control.joint_f_computed = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        _write_dof_values(model, control.joint_target_pos, dofs, [1.0])
+
+        actuator.step(state, control)
+
+        self.assertAlmostEqual(control.joint_f.numpy()[dofs[0]], 50.0, places=3)
+        self.assertAlmostEqual(control.joint_f_computed.numpy()[dofs[0]], 1000.0, places=3)
+
+    def test_dual_output_computed_untouched_when_disabled(self):
+        """Pre-clamp array is not written when control_computed_output_attr is None."""
+        model, dofs = _build_chain(
+            1,
+            ControllerPD,
+            {"kp": 1000.0},
+            clamping=[(ClampingMaxForce, {"max_force": 50.0})],
+        )
+        state = model.state()
+        control = model.control()
+        control.joint_f_computed = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        _write_dof_values(model, control.joint_target_pos, dofs, [1.0])
+
+        model.actuators[0].step(state, control)
+
+        self.assertAlmostEqual(control.joint_f.numpy()[dofs[0]], 50.0, places=3)
+        self.assertAlmostEqual(control.joint_f_computed.numpy()[dofs[0]], 0.0, places=3)
+
+    # -- PID controller ------------------------------------------------------
+
+    def test_pid_integral_accumulation(self):
+        """Integral term accumulates over multiple steps."""
+        model, dofs = _build_chain(1, ControllerPID, {"kp": 0.0, "ki": 10.0, "kd": 0.0})
+        state = model.state()
+        control = model.control()
+        _write_dof_values(model, control.joint_target_pos, dofs, [1.0])
+
+        actuator = model.actuators[0]
+        state_a = actuator.state()
+        state_b = actuator.state()
+        dt = 0.01
+
+        forces_over_time = []
+        for step_i in range(3):
+            control.joint_f.zero_()
+            current, nxt = (state_a, state_b) if step_i % 2 == 0 else (state_b, state_a)
+            actuator.step(state, control, current, nxt, dt)
+            forces_over_time.append(control.joint_f.numpy()[dofs[0]])
+
+        np.testing.assert_allclose(forces_over_time, [0.1, 0.2, 0.3], rtol=1e-4)
+
+    # -- Delay ---------------------------------------------------------------
+
+    def test_delay_behavior(self):
+        """Targets are delayed by N steps; buffer-filling steps produce zero force."""
+        delay_steps = 2
+        model, dofs = _build_chain(1, ControllerPD, {"kp": 1.0}, delay=delay_steps)
+        state = model.state()
+
+        actuator = model.actuators[0]
+        state_a = actuator.state()
+        state_b = actuator.state()
+        dt = 0.01
+
+        force_history = []
+        for step_i in range(delay_steps + 2):
+            control = model.control()
+            target_val = float(step_i + 1) * 10.0
+            _write_dof_values(model, control.joint_target_pos, dofs, [target_val])
+
+            current, nxt = (state_a, state_b) if step_i % 2 == 0 else (state_b, state_a)
+            actuator.step(state, control, current, nxt, dt)
+            force_history.append(control.joint_f.numpy()[dofs[0]])
+
+        for i in range(delay_steps):
+            self.assertEqual(force_history[i], 0.0, f"Step {i}: expected 0 during fill phase")
+
+        self.assertAlmostEqual(force_history[delay_steps], 10.0, places=4)
+        self.assertAlmostEqual(force_history[delay_steps + 1], 20.0, places=4)
+
+    # -- DC motor clamping (torque-speed curve) ------------------------------
+
+    def _step_dc_motor(self, qd):
+        """Build a DC-motor-clamped actuator, step once at given velocity, return force."""
+        model, dofs = _build_chain(
+            1,
+            ControllerPD,
+            {"kp": 1000.0},
+            clamping=[
+                (
+                    ClampingDCMotor,
+                    {
+                        "saturation_effort": 100.0,
+                        "velocity_limit": 10.0,
+                        "max_force": 200.0,
+                    },
+                )
+            ],
+        )
+        state = model.state()
+        _write_dof_values(model, state.joint_qd, dofs, [qd])
+        control = model.control()
+        _write_dof_values(model, control.joint_target_pos, dofs, [1.0])
+
+        model.actuators[0].step(state, control)
+        return control.joint_f.numpy()[dofs[0]]
+
+    def test_dc_motor_zero_velocity_full_torque(self):
+        self.assertAlmostEqual(self._step_dc_motor(0.0), 100.0, places=3)
+
+    def test_dc_motor_half_velocity_halves_limit(self):
+        self.assertAlmostEqual(self._step_dc_motor(5.0), 50.0, places=3)
+
+    def test_dc_motor_at_velocity_limit_zero_torque(self):
+        self.assertAlmostEqual(self._step_dc_motor(10.0), 0.0, places=3)
+
+    def test_dc_motor_opposing_velocity_increases_limit(self):
+        self.assertAlmostEqual(self._step_dc_motor(-5.0), 150.0, places=3)
+
+    # -- Position-based clamping (angle-dependent) ---------------------------
+
+    def _step_position_based(self, q):
+        """Build a position-based-clamped actuator with delay=1, step until active, return force."""
+        model, dofs = _build_chain(
+            1,
+            ControllerPD,
+            {"kp": 1000.0},
+            delay=1,
+            clamping=[
+                (
+                    ClampingPositionBased,
+                    {
+                        "lookup_angles": (-1.0, 0.0, 1.0),
+                        "lookup_torques": (10.0, 30.0, 50.0),
+                    },
+                )
+            ],
+        )
+        state = model.state()
+        _write_dof_values(model, state.joint_q, dofs, [q])
+
+        actuator = model.actuators[0]
+        sa, sb = actuator.state(), actuator.state()
+        force = 0.0
+        for step_i in range(2):
+            control = model.control()
+            _write_dof_values(model, control.joint_target_pos, dofs, [q + 10.0])
+            current, nxt = (sa, sb) if step_i % 2 == 0 else (sb, sa)
+            actuator.step(state, control, current, nxt, dt=0.01)
+            force = control.joint_f.numpy()[dofs[0]]
+        return force
+
+    def test_position_based_table_endpoints(self):
+        self.assertAlmostEqual(self._step_position_based(-1.0), 10.0, places=2)
+        self.assertAlmostEqual(self._step_position_based(1.0), 50.0, places=2)
+
+    def test_position_based_midpoint_interpolation(self):
+        self.assertAlmostEqual(self._step_position_based(0.0), 30.0, places=2)
+        self.assertAlmostEqual(self._step_position_based(-0.5), 20.0, places=2)
+        self.assertAlmostEqual(self._step_position_based(0.5), 40.0, places=2)
+
+
+# ---------------------------------------------------------------------------
+# 6. Parameter access via ArticulationView
+# ---------------------------------------------------------------------------
 
 
 class TestActuatorSelectionAPI(unittest.TestCase):
     """Tests for actuator parameter access via ArticulationView."""
 
     def run_test_actuator_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
-        """Test ArticulationView get/set of actuator parameters."""
-
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="myart">
     <worldbody>
@@ -249,7 +743,6 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
         actuator = model.actuators[0]
 
-        # get_actuator_parameter searches controller for "kp"
         kp_values = joint_view.get_actuator_parameter(actuator, "kp").numpy().copy()
 
         if use_multiple_artics_per_view:
@@ -272,7 +765,6 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         wp_kp = wp.array(kp_values, dtype=float, device=model.device)
         joint_view.set_actuator_parameter(actuator, "kp", wp_kp, mask=mask)
 
-        # Build expected flat kp array
         expected_kp = []
         if use_mask:
             if use_multiple_artics_per_view:
@@ -383,182 +875,174 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=True)
 
 
-class TestActuatorStepIntegration(unittest.TestCase):
-    """Tests for Actuator.step() with real Model/State/Control objects."""
+# ---------------------------------------------------------------------------
+# 7. USD stage parsing (real USD, skip-guarded)
+# ---------------------------------------------------------------------------
 
-    def _build_chain_model(self, num_joints, controller_class, controller_kwargs, clamping=None, delay=None):
-        """Helper: build a revolute chain, add one actuator per joint, finalize."""
+
+@unittest.skipUnless(HAS_USD, "pxr not installed")
+class TestActuatorUSDParsing(unittest.TestCase):
+    """Tests for parsing actuators from real USD files."""
+
+    def test_usd_parsing(self):
+        test_dir = os.path.dirname(__file__)
+        usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
+
+        if not os.path.exists(usd_path):
+            self.skipTest(f"Test USD file not found: {usd_path}")
+
         builder = newton.ModelBuilder()
-        links = [builder.add_link() for _ in range(num_joints)]
-        joints = []
-        for i, link in enumerate(links):
-            parent = -1 if i == 0 else links[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=link, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-        dofs = [builder.joint_qd_start[j] for j in joints]
-        for dof in dofs:
-            builder.add_actuator(
-                controller_class,
-                index=dof,
-                clamping=clamping,
-                delay=delay,
-                **controller_kwargs,
-            )
-        return builder.finalize(), dofs
+        result = parse_usd(builder, usd_path)
+        self.assertGreater(result["actuator_count"], 0)
+        model = builder.finalize()
+        self.assertGreater(len(model.actuators), 0)
 
-    def _set_control_array(self, model, control_array, dof_indices, values):
-        arr_np = control_array.numpy()
-        for dof, val in zip(dof_indices, values, strict=True):
-            arr_np[dof] = val
-        wp.copy(control_array, wp.array(arr_np, dtype=float, device=model.device))
+        stage = Usd.Stage.Open(usd_path)
+        actuator_prim = stage.GetPrimAtPath("/World/Robot/Joint1Actuator")
+        parsed = parse_actuator_prim(actuator_prim)
 
-    def test_pd_step_position_error(self):
-        """ControllerPD: force = kp * (target_pos - q) when kd=0."""
-        model, dofs = self._build_chain_model(3, ControllerPD, {"kp": 100.0})
-        state = model.state()
-        control = model.control()
-        control.joint_f.zero_()
+        self.assertIsNotNone(parsed)
+        self.assertIsInstance(parsed, ActuatorParsed)
+        self.assertEqual(parsed.controller_class, ControllerPD)
+        self.assertEqual(parsed.controller_kwargs.get("kp"), 100.0)
+        self.assertEqual(parsed.controller_kwargs.get("kd"), 10.0)
 
-        self._set_control_array(model, control.joint_target_pos, dofs, [1.0, 2.0, 3.0])
 
-        actuator = model.actuators[0]
-        actuator.step(state, control)
+# ---------------------------------------------------------------------------
+# 8. Neural-network controllers (torch, skip-guarded)
+# ---------------------------------------------------------------------------
 
-        forces = control.joint_f.numpy()
-        np.testing.assert_allclose(
-            [forces[d] for d in dofs],
-            [100.0, 200.0, 300.0],
-            rtol=1e-5,
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestControllerNetMLP(unittest.TestCase):
+    """ControllerNetMLP — creation, state shapes, step with clamping."""
+
+    def setUp(self):
+        wp.init()
+        import torch
+
+        self.torch = torch
+        self.dev = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    def _mlp(self, in_dim, hidden=32):
+        return self.torch.nn.Sequential(
+            self.torch.nn.Linear(in_dim, hidden),
+            self.torch.nn.ELU(),
+            self.torch.nn.Linear(hidden, 1),
         )
 
-    def test_pd_step_velocity_error(self):
-        """ControllerPD: force includes kd * (target_vel - qd)."""
-        model, dofs = self._build_chain_model(2, ControllerPD, {"kp": 0.0, "kd": 10.0})
-        state = model.state()
-        control = model.control()
-        control.joint_f.zero_()
-
-        self._set_control_array(model, control.joint_target_vel, dofs, [5.0, -3.0])
-
-        actuator = model.actuators[0]
-        actuator.step(state, control)
-
-        forces = control.joint_f.numpy()
-        np.testing.assert_allclose(
-            [forces[d] for d in dofs],
-            [50.0, -30.0],
-            rtol=1e-5,
+    def test_is_stateful_and_not_graphable(self):
+        _model, dofs = _build_simple_model(1, device=self.dev)
+        act = Actuator(
+            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            controller=ControllerNetMLP(network=self._mlp(2)),
         )
+        self.assertTrue(act.is_stateful())
+        self.assertFalse(act.is_graphable())
 
-    def test_pd_step_feedforward_joint_act(self):
-        """ControllerPD: feedforward joint_act is added to output force."""
-        model, dofs = self._build_chain_model(2, ControllerPD, {"kp": 0.0})
-        state = model.state()
-        control = model.control()
-        control.joint_f.zero_()
-
-        self._set_control_array(model, control.joint_act, dofs, [7.0, -3.0])
-
-        actuator = model.actuators[0]
-        actuator.step(state, control)
-
-        forces = control.joint_f.numpy()
-        np.testing.assert_allclose(
-            [forces[d] for d in dofs],
-            [7.0, -3.0],
-            rtol=1e-5,
+    def test_state_history_shape(self):
+        n = 3
+        _model, dofs = _build_simple_model(n, device=self.dev)
+        act = Actuator(
+            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            controller=ControllerNetMLP(network=self._mlp(6), input_idx=[0, 1, 2]),
         )
+        cs = act.state().controller_state
+        self.assertEqual(cs.pos_error_history.shape, (n, n))
+        self.assertEqual(cs.vel_history.shape, (n, n))
 
-    def test_pd_step_max_force_clamp(self):
-        """ControllerPD + ClampingMaxForce: force is clamped to max_force."""
-        model, dofs = self._build_chain_model(
-            1,
-            ControllerPD,
-            {"kp": 100.0},
-            clamping=[(ClampingMaxForce, {"max_force": 50.0})],
+    def test_constant_bias_clamped(self):
+        """Network with large constant output is clamped to max_force."""
+        net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True))
+        with self.torch.no_grad():
+            net[0].weight.fill_(0.0)
+            net[0].bias.fill_(999.0)
+
+        model, dofs = _build_simple_model(1, device=self.dev)
+        act = Actuator(
+            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            controller=ControllerNetMLP(network=net),
+            clamping=[ClampingMaxForce(max_force=wp.array([10.0], dtype=wp.float32, device=self.dev))],
         )
+        sa, sb = act.state(), act.state()
+
         state = model.state()
         control = model.control()
-        control.joint_f.zero_()
+        act.step(state, control, sa, sb)
 
-        self._set_control_array(model, control.joint_target_pos, dofs, [1.0])
-
-        actuator = model.actuators[0]
-        actuator.step(state, control)
-
-        # kp * (1 - 0) = 100, clamped to 50
-        forces = control.joint_f.numpy()
-        self.assertAlmostEqual(forces[dofs[0]], 50.0, places=5)
-
-    def test_pd_step_constant_force(self):
-        """ControllerPD: constant_force offset is included in output."""
-        model, dofs = self._build_chain_model(1, ControllerPD, {"kp": 0.0, "constant_force": 42.0})
-        state = model.state()
         control = model.control()
-        control.joint_f.zero_()
+        act.step(state, control, sa, sb)
 
-        actuator = model.actuators[0]
-        actuator.step(state, control)
+        self.assertAlmostEqual(control.joint_f.numpy()[dofs[0]], 10.0, places=3)
 
-        forces = control.joint_f.numpy()
-        self.assertAlmostEqual(forces[dofs[0]], 42.0, places=5)
+    def test_invalid_input_order_raises(self):
+        with self.assertRaises(ValueError):
+            ControllerNetMLP(network=self._mlp(2), input_order="invalid")
 
-    def test_pid_step_integral_accumulation(self):
-        """ControllerPID: integral term accumulates over multiple steps."""
-        model, dofs = self._build_chain_model(1, ControllerPID, {"kp": 0.0, "ki": 10.0, "kd": 0.0})
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestControllerNetLSTM(unittest.TestCase):
+    """ControllerNetLSTM — creation, state shapes, state evolution."""
+
+    def setUp(self):
+        wp.init()
+        import torch
+
+        self.torch = torch
+        self.dev = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    def _lstm(self, hidden=8, layers=1):
+        import torch
+
+        class Net(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lstm = torch.nn.LSTM(2, hidden, layers, batch_first=True)
+                self.dec = torch.nn.Linear(hidden, 1)
+
+            def forward(self, x, hc):
+                out, (h, c) = self.lstm(x, hc)
+                return self.dec(out[:, -1, :]), (h, c)
+
+        return Net()
+
+    def test_is_stateful_and_not_graphable(self):
+        _model, dofs = _build_simple_model(1, device=self.dev)
+        act = Actuator(
+            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            controller=ControllerNetLSTM(network=self._lstm()),
+        )
+        self.assertTrue(act.is_stateful())
+        self.assertFalse(act.is_graphable())
+
+    def test_state_shape(self):
+        hidden, layers, n = 16, 2, 3
+        _model, dofs = _build_simple_model(n, device=self.dev)
+        act = Actuator(
+            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            controller=ControllerNetLSTM(network=self._lstm(hidden=hidden, layers=layers)),
+        )
+        cs = act.state().controller_state
+        self.assertEqual(cs.hidden.shape, (layers, n, hidden))
+        self.assertEqual(cs.cell.shape, (layers, n, hidden))
+
+    def test_state_evolves_after_step(self):
+        model, dofs = _build_simple_model(1, device=self.dev)
+        act = Actuator(
+            indices=wp.array(dofs, dtype=wp.uint32, device=self.dev),
+            controller=ControllerNetLSTM(network=self._lstm()),
+        )
+        sa, sb = act.state(), act.state()
+        self.assertTrue(self.torch.all(sa.controller_state.hidden == 0.0).item())
+
         state = model.state()
+        _write_dof_values(model, state.joint_qd, dofs, [1.0])
         control = model.control()
+        _write_dof_values(model, control.joint_target_pos, dofs, [1.0])
 
-        self._set_control_array(model, control.joint_target_pos, dofs, [1.0])
+        act.step(state, control, sa, sb)
 
-        actuator = model.actuators[0]
-        state_a = actuator.state()
-        state_b = actuator.state()
-        dt = 0.01
-
-        forces_over_time = []
-        for step_i in range(3):
-            control.joint_f.zero_()
-            if step_i % 2 == 0:
-                current, nxt = state_a, state_b
-            else:
-                current, nxt = state_b, state_a
-            actuator.step(state, control, current, nxt, dt)
-            forces_over_time.append(control.joint_f.numpy()[dofs[0]])
-
-        np.testing.assert_allclose(forces_over_time, [0.1, 0.2, 0.3], rtol=1e-4)
-
-    def test_delayed_pd_step_delay_behavior(self):
-        """ControllerPD with delay: targets are delayed by N steps."""
-        delay = 2
-        model, dofs = self._build_chain_model(1, ControllerPD, {"kp": 1.0}, delay=delay)
-        state = model.state()
-
-        actuator = model.actuators[0]
-        state_a = actuator.state()
-        state_b = actuator.state()
-        dt = 0.01
-
-        force_history = []
-        for step_i in range(delay + 2):
-            control = model.control()
-            control.joint_f.zero_()
-            target_val = float(step_i + 1) * 10.0
-            self._set_control_array(model, control.joint_target_pos, dofs, [target_val])
-
-            if step_i % 2 == 0:
-                current, nxt = state_a, state_b
-            else:
-                current, nxt = state_b, state_a
-            actuator.step(state, control, current, nxt, dt)
-            force_history.append(control.joint_f.numpy()[dofs[0]])
-
-        # Steps 0..(delay-1) produce zero (buffer filling)
-        for i in range(delay):
-            self.assertEqual(force_history[i], 0.0, f"Step {i}: expected 0 during fill phase")
-
-        self.assertAlmostEqual(force_history[delay], 10.0, places=4)
-        self.assertAlmostEqual(force_history[delay + 1], 20.0, places=4)
+        self.assertFalse(self.torch.all(sb.controller_state.hidden == 0.0).item())
 
 
 if __name__ == "__main__":

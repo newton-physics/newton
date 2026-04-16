@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -7,8 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .clamping import ClampingDCMotor, ClampingMaxForce
-from .controllers import ControllerNetLSTM, ControllerNetMLP, ControllerPD, ControllerPID
+from .clamping import Clamping, ClampingDCMotor, ClampingMaxForce
+from .controllers import Controller, ControllerNetLSTM, ControllerNetMLP, ControllerPD, ControllerPID
 from .delay import Delay
 
 
@@ -79,9 +79,9 @@ class ActuatorParsed:
     component_specs (delay, clamping, etc.).
     """
 
-    controller_class: type
+    controller_class: type[Controller]
     controller_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type, dict[str, Any]]] = field(default_factory=list)
+    component_specs: list[tuple[type[Clamping | Delay], dict[str, Any]]] = field(default_factory=list)
     target_path: str = ""
 
 
@@ -129,7 +129,12 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
     """Parse a USD Actuator prim into a composed actuator specification.
 
     Each detected schema directly maps to a component class with its
-    extracted params. Returns None if not a valid actuator prim.
+    extracted params. Returns ``None`` if the prim is not a
+    ``NewtonActuator`` or has no target relationship.
+
+    Raises:
+        ValueError: If the prim is a valid actuator but has malformed
+            schemas (e.g. multiple controllers or no controller schema).
     """
     if prim.GetTypeName() != "NewtonActuator":
         return None

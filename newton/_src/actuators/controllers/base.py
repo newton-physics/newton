@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -63,17 +63,18 @@ class Controller:
 
     def compute(
         self,
-        positions: wp.array,
-        velocities: wp.array,
-        target_pos: wp.array,
-        target_vel: wp.array,
-        act_input: wp.array | None,
-        input_indices: wp.array,
-        target_indices: wp.array,
-        forces: wp.array,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        act_input: wp.array[float] | None,
+        input_indices: wp.array[wp.uint32],
+        target_indices: wp.array[wp.uint32],
+        forces: wp.array[float],
         num_actuators: int,
         state: Controller.State | None,
         dt: float,
+        device: wp.Device | None = None,
     ) -> None:
         """Compute raw forces and write to ``forces[i]``.
 
@@ -89,6 +90,7 @@ class Controller:
             num_actuators: Number of actuators N.
             state: Controller state (None if stateless).
             dt: Timestep in seconds.
+            device: Warp device for kernel launches.
         """
         raise NotImplementedError
 

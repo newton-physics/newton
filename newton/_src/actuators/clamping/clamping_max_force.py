@@ -1,5 +1,7 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
 
 import math
 from typing import Any
@@ -30,7 +32,7 @@ class ClampingMaxForce(Clamping):
             raise ValueError(f"max_force must be non-negative, got {max_force}")
         return {"max_force": max_force}
 
-    def __init__(self, max_force: wp.array):
+    def __init__(self, max_force: wp.array[float]):
         """Initialize clamp dynamic.
 
         Args:
@@ -40,16 +42,18 @@ class ClampingMaxForce(Clamping):
 
     def modify_forces(
         self,
-        src_forces: wp.array,
-        dst_forces: wp.array,
-        positions: wp.array,
-        velocities: wp.array,
-        input_indices: wp.array,
+        src_forces: wp.array[float],
+        dst_forces: wp.array[float],
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        input_indices: wp.array[wp.uint32],
         num_actuators: int,
+        device: wp.Device | None = None,
     ) -> None:
         wp.launch(
             kernel=_box_clamp_kernel,
             dim=num_actuators,
             inputs=[self.max_force, src_forces],
             outputs=[dst_forces],
+            device=device,
         )

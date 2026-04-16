@@ -1,5 +1,7 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
 
 from typing import Any, ClassVar
 
@@ -64,7 +66,7 @@ class ClampingPositionBased(Clamping):
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         if "lookup_angles" not in args or "lookup_torques" not in args:
-            raise ValueError("ClampPositionBased requires 'lookup_angles' and 'lookup_torques' arguments")
+            raise ValueError("ClampingPositionBased requires 'lookup_angles' and 'lookup_torques' arguments")
         return {
             "lookup_angles": tuple(args["lookup_angles"]),
             "lookup_torques": tuple(args["lookup_torques"]),
@@ -72,19 +74,21 @@ class ClampingPositionBased(Clamping):
 
     def __init__(
         self,
-        lookup_angles: wp.array | tuple[float, ...] | list[float],
-        lookup_torques: wp.array | tuple[float, ...] | list[float],
+        lookup_angles: wp.array[float] | tuple[float, ...] | list[float],
+        lookup_torques: wp.array[float] | tuple[float, ...] | list[float],
     ):
         """Initialize position-based clamp.
 
         Args:
-            lookup_angles: Sorted joint angles for the torque lookup table. Shape (K,).
-            lookup_torques: Max output torques corresponding to lookup_angles. Shape (K,).
+            lookup_angles: Sorted joint angles [rad] for the torque lookup table. Shape (K,).
+            lookup_torques: Max output torques [N·m] corresponding to lookup_angles. Shape (K,).
         """
         if len(lookup_angles) != len(lookup_torques):
             raise ValueError(
                 f"lookup_angles length ({len(lookup_angles)}) must match lookup_torques length ({len(lookup_torques)})"
             )
+        if not isinstance(lookup_torques, wp.array) and any(t < 0 for t in lookup_torques):
+            raise ValueError("lookup_torques must contain non-negative values for symmetric clamping")
         self.lookup_size = len(lookup_angles)
         if not isinstance(lookup_angles, wp.array):
             lookup_angles = wp.array(np.array(lookup_angles, dtype=np.float32))
@@ -95,12 +99,13 @@ class ClampingPositionBased(Clamping):
 
     def modify_forces(
         self,
-        src_forces: wp.array,
-        dst_forces: wp.array,
-        positions: wp.array,
-        velocities: wp.array,
-        input_indices: wp.array,
+        src_forces: wp.array[float],
+        dst_forces: wp.array[float],
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        input_indices: wp.array[wp.uint32],
         num_actuators: int,
+        device: wp.Device | None = None,
     ) -> None:
         wp.launch(
             kernel=_position_based_clamp_kernel,
@@ -114,4 +119,5 @@ class ClampingPositionBased(Clamping):
                 src_forces,
             ],
             outputs=[dst_forces],
+            device=device,
         )

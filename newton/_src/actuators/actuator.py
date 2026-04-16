@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class Actuator:
 
     def __init__(
         self,
-        indices: wp.array,
+        indices: wp.array[wp.uint32],
         controller: Controller,
         delay: Delay | None = None,
         clamping: list[Clamping] | None = None,
@@ -113,14 +113,14 @@ class Actuator:
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
 
-        device = indices.device
-        self._sequential_indices = wp.array(np.arange(self.num_actuators, dtype=np.uint32), device=device)
-        self._computed_forces = wp.zeros(self.num_actuators, dtype=wp.float32, device=device)
+        self.device = indices.device
+        self._sequential_indices = wp.array(np.arange(self.num_actuators, dtype=np.uint32), device=self.device)
+        self._computed_forces = wp.zeros(self.num_actuators, dtype=wp.float32, device=self.device)
         self._applied_forces = (
-            wp.zeros(self.num_actuators, dtype=wp.float32, device=device) if self.clamping else None
+            wp.zeros(self.num_actuators, dtype=wp.float32, device=self.device) if self.clamping else None
         )
 
-        controller.finalize(device, self.num_actuators)
+        controller.finalize(self.device, self.num_actuators)
 
     def get_param(self, name: str) -> wp.array | None:
         """Search for a named warp array parameter across controller and clamping.
@@ -164,12 +164,11 @@ class Actuator:
         """Return a new composed state, or None if fully stateless."""
         if not self.is_stateful():
             return None
-        device = self.indices.device
         return Actuator.State(
             controller_state=(
-                self.controller.state(self.num_actuators, device) if self.controller.is_stateful() else None
+                self.controller.state(self.num_actuators, self.device) if self.controller.is_stateful() else None
             ),
-            delay_state=(self.delay.state(self.num_actuators, device) if self.delay is not None else None),
+            delay_state=(self.delay.state(self.num_actuators, self.device) if self.delay is not None else None),
         )
 
     def step(
@@ -240,6 +239,7 @@ class Actuator:
                 self.num_actuators,
                 ctrl_state,
                 dt,
+                device=self.device,
             )
 
             # --- 3. Clamping: computed → applied (fused copy+clamp) ---
@@ -253,6 +253,7 @@ class Actuator:
                         velocities,
                         self.indices,
                         self.num_actuators,
+                        device=self.device,
                     )
                     src = self._applied_forces
                 output_forces = self._applied_forces
@@ -271,6 +272,7 @@ class Actuator:
                 dim=self.num_actuators,
                 inputs=[output_forces, self._computed_forces, self.indices],
                 outputs=[applied_output, computed_output],
+                device=self.device,
             )
 
         # --- 5. State updates ---
@@ -291,4 +293,5 @@ class Actuator:
                     current_act_state.delay_state,
                     next_act_state.delay_state,
                     dt,
+                    device=self.device,
                 )

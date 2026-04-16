@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -23,10 +23,10 @@ class ControllerNetLSTM(Controller):
     timesteps to capture temporal patterns.
 
     The network must be callable as:
-        torques, (h_new, c_new) = network(input, (h, c))
+        torques, (hidden_new, cell_new) = network(input, (hidden, cell))
 
     where input has shape (batch, 1, 2) with features [pos_error, velocity],
-    and h/c have shape (num_layers, batch, hidden_size).
+    and hidden/cell have shape (num_layers, batch, hidden_size).
 
     The network is expected to have a ``lstm`` attribute (torch.nn.LSTM) so
     that num_layers and hidden_size can be inferred automatically.
@@ -124,17 +124,18 @@ class ControllerNetLSTM(Controller):
 
     def compute(
         self,
-        positions: wp.array,
-        velocities: wp.array,
-        target_pos: wp.array,
-        target_vel: wp.array,
-        act_input: wp.array | None,
-        input_indices: wp.array,
-        target_indices: wp.array,
-        forces: wp.array,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        act_input: wp.array[float] | None,
+        input_indices: wp.array[wp.uint32],
+        target_indices: wp.array[wp.uint32],
+        forces: wp.array[float],
         num_actuators: int,
         state: ControllerNetLSTM.State,
         dt: float,
+        device: wp.Device | None = None,
     ) -> None:
         import torch
 

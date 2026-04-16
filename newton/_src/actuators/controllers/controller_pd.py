@@ -1,5 +1,7 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
 
 from typing import Any
 
@@ -59,9 +61,9 @@ class ControllerPD(Controller):
 
     def __init__(
         self,
-        kp: wp.array,
-        kd: wp.array,
-        constant_force: wp.array | None = None,
+        kp: wp.array[float],
+        kd: wp.array[float],
+        constant_force: wp.array[float] | None = None,
     ):
         """Initialize PD controller.
 
@@ -76,17 +78,18 @@ class ControllerPD(Controller):
 
     def compute(
         self,
-        positions: wp.array,
-        velocities: wp.array,
-        target_pos: wp.array,
-        target_vel: wp.array,
-        act_input: wp.array | None,
-        input_indices: wp.array,
-        target_indices: wp.array,
-        forces: wp.array,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        act_input: wp.array[float] | None,
+        input_indices: wp.array[wp.uint32],
+        target_indices: wp.array[wp.uint32],
+        forces: wp.array[float],
         num_actuators: int,
         state: Controller.State | None,
         dt: float,
+        device: wp.Device | None = None,
     ) -> None:
         wp.launch(
             kernel=_pd_force_kernel,
@@ -104,4 +107,5 @@ class ControllerPD(Controller):
                 self.constant_force,
             ],
             outputs=[forces],
+            device=device,
         )

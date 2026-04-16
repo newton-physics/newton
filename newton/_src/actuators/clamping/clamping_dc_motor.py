@@ -1,5 +1,7 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
 
 import math
 import warnings
@@ -81,9 +83,9 @@ class ClampingDCMotor(Clamping):
 
     def __init__(
         self,
-        saturation_effort: wp.array,
-        velocity_limit: wp.array,
-        max_force: wp.array,
+        saturation_effort: wp.array[float],
+        velocity_limit: wp.array[float],
+        max_force: wp.array[float],
     ):
         """Initialize DC motor saturation.
 
@@ -98,12 +100,13 @@ class ClampingDCMotor(Clamping):
 
     def modify_forces(
         self,
-        src_forces: wp.array,
-        dst_forces: wp.array,
-        positions: wp.array,
-        velocities: wp.array,
-        input_indices: wp.array,
+        src_forces: wp.array[float],
+        dst_forces: wp.array[float],
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        input_indices: wp.array[wp.uint32],
         num_actuators: int,
+        device: wp.Device | None = None,
     ) -> None:
         wp.launch(
             kernel=_clamp_dc_motor_kernel,
@@ -117,4 +120,5 @@ class ClampingDCMotor(Clamping):
                 src_forces,
             ],
             outputs=[dst_forces],
+            device=device,
         )

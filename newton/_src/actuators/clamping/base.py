@@ -1,5 +1,7 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
 
 from typing import Any, ClassVar
 
@@ -36,12 +38,13 @@ class Clamping:
 
     def modify_forces(
         self,
-        src_forces: wp.array,
-        dst_forces: wp.array,
-        positions: wp.array,
-        velocities: wp.array,
-        input_indices: wp.array,
+        src_forces: wp.array[float],
+        dst_forces: wp.array[float],
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        input_indices: wp.array[wp.uint32],
         num_actuators: int,
+        device: wp.Device | None = None,
     ) -> None:
         """Read forces from src, apply clamping, write to dst.
 
@@ -51,11 +54,12 @@ class Clamping:
         for subsequent clampings.
 
         Args:
-            src_forces: Input force buffer to read. Shape (N,).
-            dst_forces: Output force buffer to write. Shape (N,).
-            positions: Joint positions (global array).
-            velocities: Joint velocities (global array).
+            src_forces: Input force buffer [N or N·m] to read. Shape (N,).
+            dst_forces: Output force buffer [N or N·m] to write. Shape (N,).
+            positions: Joint positions [m or rad] (global array).
+            velocities: Joint velocities [m/s or rad/s] (global array).
             input_indices: Indices into positions/velocities.
             num_actuators: Number of actuators N.
+            device: Warp device for kernel launches.
         """
-        pass
+        raise NotImplementedError(f"{type(self).__name__} must implement modify_forces")

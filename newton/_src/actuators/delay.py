@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -58,9 +58,9 @@ class Delay:
     class State:
         """Circular buffer state for delayed targets."""
 
-        buffer_pos: wp.array2d[float] = None
-        buffer_vel: wp.array2d[float] = None
-        buffer_act: wp.array2d[float] = None
+        buffer_pos: wp.array2d[float] | None = None
+        buffer_vel: wp.array2d[float] | None = None
+        buffer_act: wp.array2d[float] | None = None
         write_idx: int = 0
         is_filled: bool = False
 
@@ -81,8 +81,10 @@ class Delay:
         """Initialize delay.
 
         Args:
-            delay: Number of timesteps to delay inputs.
+            delay: Number of timesteps to delay inputs. Must be >= 1.
         """
+        if delay < 1:
+            raise ValueError(f"delay must be >= 1, got {delay}")
         self.delay = delay
 
     def state(self, num_actuators: int, device: wp.Device) -> Delay.State:
@@ -100,9 +102,9 @@ class Delay:
 
     def get_delayed_targets(
         self,
-        act_input: wp.array | None,
+        act_input: wp.array[float] | None,
         current_state: Delay.State,
-    ) -> tuple[wp.array, wp.array, wp.array | None]:
+    ) -> tuple[wp.array[float], wp.array[float], wp.array[float] | None]:
         """Return delayed targets from the circular buffer.
 
         Call only when ``is_ready()`` is True.
@@ -118,14 +120,15 @@ class Delay:
 
     def update_state(
         self,
-        target_pos: wp.array,
-        target_vel: wp.array,
-        act_input: wp.array | None,
-        input_indices: wp.array,
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        act_input: wp.array[float] | None,
+        input_indices: wp.array[wp.uint32],
         num_actuators: int,
         current_state: Delay.State,
         next_state: Delay.State,
         dt: float,
+        device: wp.Device | None = None,
     ) -> None:
         if next_state is None:
             return
@@ -152,6 +155,7 @@ class Delay:
                 next_state.buffer_vel,
                 next_state.buffer_act,
             ],
+            device=device,
         )
 
         next_state.write_idx = write_idx
