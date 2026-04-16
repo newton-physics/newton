@@ -757,7 +757,6 @@ class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase,
         return SolverMuJoCo(
             model,
             iterations=1,
-            ls_iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=False,
             integrator="euler",
@@ -775,7 +774,6 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
         return SolverMuJoCo(
             model,
             iterations=1,
-            ls_iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,
@@ -786,8 +784,8 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
 class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
     """Test that loop-joint-synthesized CONNECT constraints update when dof_ref changes.
 
-    Creates two articulations connected by a revolute loop joint. The loop
-    joint generates 2 CONNECT constraints in MuJoCo. Verifies that changing
+    Creates a single articulation with a revolute loop joint closing back to
+    its root body. The loop joint generates 2 CONNECT constraints in MuJoCo. Verifies that changing
     dof_ref at runtime correctly recomputes the CONNECT anchors.
     """
 
@@ -1254,7 +1252,6 @@ class TestLoopJointConnectConstraintMuJoCoWarp(TestLoopJointConnectConstraintBas
         return SolverMuJoCo(
             model,
             iterations=1,
-            ls_iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=False,
             separate_worlds=True,
@@ -1268,7 +1265,6 @@ class TestLoopJointConnectConstraintMuJoCoCPU(TestLoopJointConnectConstraintBase
         return SolverMuJoCo(
             model,
             iterations=1,
-            ls_iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,
@@ -1438,7 +1434,6 @@ class TestMixedWeldAndConnectMuJoCoWarp(TestMixedWeldAndConnectLoopJointBase, un
         return SolverMuJoCo(
             model,
             iterations=1,
-            ls_iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=False,
             separate_worlds=True,
@@ -1452,7 +1447,6 @@ class TestMixedWeldAndConnectMuJoCoCPU(TestMixedWeldAndConnectLoopJointBase, uni
         return SolverMuJoCo(
             model,
             iterations=1,
-            ls_iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,
