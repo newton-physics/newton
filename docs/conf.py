@@ -120,32 +120,25 @@ exclude_patterns = [
 def _ensure_pandoc_on_path() -> str | None:
     """Return a usable pandoc executable path, preferring the bundled docs dependency."""
 
-    pandoc_path = shutil.which("pandoc")
-    if pandoc_path is not None:
-        return pandoc_path
-
+    # Try the bundled pypandoc_binary first so local docs builds work out of
+    # the box even when a stale or incompatible system pandoc is on PATH.
     try:
         import pypandoc  # noqa: PLC0415
-    except ImportError:
-        return None
 
-    try:
         bundled_path = Path(pypandoc.get_pandoc_path())
-    except OSError:
-        return None
+        search_dir = bundled_path.parent
+        if search_dir.is_dir():
+            resolved_path = shutil.which("pandoc", path=str(search_dir))
+            if resolved_path is not None:
+                existing_path = os.environ.get("PATH", "")
+                os.environ["PATH"] = str(Path(resolved_path).parent) + os.pathsep + existing_path
+                os.environ.setdefault("PYPANDOC_PANDOC", resolved_path)
+                return resolved_path
+    except (ImportError, OSError):
+        pass
 
-    search_dir = bundled_path.parent
-    if not search_dir.is_dir():
-        return None
-
-    resolved_path = shutil.which("pandoc", path=str(search_dir))
-    if resolved_path is None:
-        return None
-
-    existing_path = os.environ.get("PATH", "")
-    os.environ["PATH"] = str(Path(resolved_path).parent) + os.pathsep + existing_path
-    os.environ.setdefault("PYPANDOC_PANDOC", resolved_path)
-    return resolved_path
+    # Fall back to whatever pandoc is already on PATH.
+    return shutil.which("pandoc")
 
 
 # nbsphinx requires pandoc to convert Jupyter notebooks.  When pandoc is not
