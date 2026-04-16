@@ -301,32 +301,36 @@ Joint attributes
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 25 45
+   :widths: 25 20 25 30
 
    * - Newton property
      - MuJoCo field
+     - USD attribute
      - Notes
-   * - ``joint_limit_lower`` / ``joint_limit_upper``
+   * - ``joint_limit_lower`` / ``upper``
      - ``jnt_range``
+     - ``physics:lowerLimit`` / ``upperLimit``
      - Angular limits converted to degrees for MuJoCo
-   * - ``joint_limit_ke`` / ``joint_limit_kd``
+   * - ``joint_limit_ke`` / ``kd``
      - ``jnt_solref``
+     - ``newton:*:limitStiffness`` / ``Damping``
      - Forwarded as negative solref ``(-ke, -kd)``
    * - ``joint_armature``
      - ``dof_armature``
+     - ``newton:armature``
      -
    * - ``joint_friction``
      - ``dof_frictionloss``
+     - ``newton:friction``
      -
-   * - ``joint_target_ke``
+   * - ``joint_target_ke`` / ``kd``
      - actuator ``gainprm`` / ``biasprm``
-     - See :ref:`mujoco-actuator-parameters`
-   * - ``joint_target_kd``
-     - actuator ``gainprm`` / ``biasprm``
+     - ``physics:drive:stiffness`` / ``damping``
      - See :ref:`mujoco-actuator-parameters`
    * - ``joint_effort_limit``
-     - ``jnt_actfrcrange`` or ``actuator forcerange``
-     - Per-DOF for revolute/prismatic; per-actuator for ball joints
+     - ``jnt_actfrcrange``
+     - ``physics:drive:forceLimit``
+     - Per-actuator ``forcerange`` for ball joints
 
 **Properties populated from** ``mjc:`` **USD attributes** (via ``SchemaResolverMjc``):
 
@@ -363,46 +367,56 @@ Joint attributes
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 30 20 20
+   :widths: 25 22 18 15 20
 
    * - Custom attribute
      - USD attribute
+     - MJCF attribute
      - Default
      - Notes
    * - ``mujoco.limit_margin``
      - ``mjc:margin`` :sup:`ext`
+     - ``margin``
      - 0.0
-     - Joint-limit margin [m or rad]
+     - [m or rad]
    * - ``mujoco.solimplimit``
      - ``mjc:solimplimit`` :sup:`ext`
+     -
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.solreffriction``
      - ``mjc:solreffriction`` :sup:`ext`
+     -
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.solimpfriction``
      - ``mjc:solimpfriction`` :sup:`ext`
+     -
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.dof_passive_stiffness``
      - ``mjc:stiffness`` :sup:`ext`
+     - ``stiffness``
      - 0.0
      -
    * - ``mujoco.dof_passive_damping``
      - ``mjc:damping``
+     - ``damping``
      - 0.0
      -
    * - ``mujoco.dof_springref``
      - ``mjc:springref`` :sup:`ext`
+     - ``springref``
      - 0.0
      - [m or rad]
    * - ``mujoco.dof_ref``
      - ``mjc:ref`` :sup:`ext`
+     - ``ref``
      - 0.0
      - [m or rad]
    * - ``mujoco.jnt_actgravcomp``
      - ``mjc:actuatorgravcomp``
+     - ``actuatorgravcomp``
      - ``False``
      -
 
@@ -416,26 +430,32 @@ Shape attributes
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 25 45
+   :widths: 25 20 25 30
 
    * - Newton property
      - MuJoCo field
+     - USD attribute
      - Notes
    * - ``shape_material_mu``
      - ``geom_friction[0]``
+     - ``physics:dynamicFriction``
      - Sliding friction
    * - ``shape_material_mu_torsional``
      - ``geom_friction[1]``
+     - ``newton:torsionalFriction``
      -
    * - ``shape_material_mu_rolling``
      - ``geom_friction[2]``
+     - ``newton:rollingFriction``
      -
-   * - ``shape_material_ke`` / ``shape_material_kd``
+   * - ``shape_material_ke`` / ``kd``
      - ``geom_solref``
+     - ``newton:contact_ke`` / ``kd``
      - Converted via ``convert_solref()``; falls back to
        ``(0.02, 1.0)`` when zero or negative
    * - ``shape_margin``
      - ``geom_margin``
+     - ``newton:contactMargin``
      -
 
 **Properties populated from** ``mjc:`` **USD attributes** (via ``SchemaResolverMjc``):
@@ -469,26 +489,31 @@ Shape attributes
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 30 20 20
+   :widths: 25 22 18 15 20
 
    * - Custom attribute
      - USD attribute
+     - MJCF attribute
      - Default
      - Notes
    * - ``mujoco.condim``
      - ``mjc:condim``
+     -
      - 3
      -
    * - ``mujoco.geom_priority``
      - ``mjc:priority``
+     - ``priority``
      - 0
      -
    * - ``mujoco.geom_solimp``
      - ``mjc:solimp``
+     - ``solimp``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.geom_solmix``
      - ``mjc:solmix``
+     - ``solmix``
      - 1.0
      -
 
@@ -539,22 +564,27 @@ Body attributes
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 25 45
+   :widths: 25 20 25 30
 
    * - Newton property
      - MuJoCo field
+     - USD attribute
      - Notes
    * - ``body_mass``
      - ``body_mass``
+     - ``physics:mass``
      - Zero-mass bodies use ``inertiafromgeom="auto"``
    * - ``body_inertia``
      - ``body_inertia`` / ``body_iquat``
+     - ``physics:diagonalInertia``
      - Eigendecomposed; uses ``diaginertia`` or ``fullinertia``
    * - ``body_com``
      - ``body_ipos``
+     - ``physics:centerOfMass``
      - Center-of-mass offset
    * - ``body_q``
      - ``body_pos`` / ``body_quat``
+     - ``xformOp:*``
      - Initial pose for free-joint bodies
 
 **Custom attributes:**
@@ -831,18 +861,21 @@ Equality constraint attributes
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 30 20 20
+   :widths: 25 22 18 15 20
 
    * - Custom attribute
      - USD attribute
+     - MJCF attribute
      - Default
      - Notes
    * - ``mujoco.eq_solref``
      - ``mjc:solref`` :sup:`ext`
+     - ``solref``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.eq_solimp``
      - ``mjc:solimp`` :sup:`ext`
+     - ``solimp``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
 
@@ -854,66 +887,81 @@ Tendon attributes
 
 .. list-table::
    :header-rows: 1
-   :widths: 35 30 15 20
+   :widths: 25 22 18 15 20
 
    * - Custom attribute
      - USD attribute
+     - MJCF attribute
      - Default
      - Notes
    * - ``mujoco.tendon_stiffness``
      - ``mjc:stiffness`` :sup:`ext`
+     - ``stiffness``
      - 0.0
      - [N/m]
    * - ``mujoco.tendon_damping``
      - ``mjc:damping`` :sup:`ext`
+     - ``damping``
      - 0.0
      - [N·s/m]
    * - ``mujoco.tendon_frictionloss``
      - ``mjc:frictionloss`` :sup:`ext`
+     - ``frictionloss``
      - 0.0
      - [N]
    * - ``mujoco.tendon_limited``
      - ``mjc:limited`` :sup:`ext`
+     - ``limited``
      - 2 (auto)
      - Tri-state
    * - ``mujoco.tendon_range``
      - ``mjc:range:min`` / ``max`` :sup:`ext`
+     - ``range``
      - ``(0, 0)``
      - [m]
    * - ``mujoco.tendon_margin``
      - ``mjc:margin`` :sup:`ext`
+     - ``margin``
      - 0.0
      - [m]
    * - ``mujoco.tendon_solref_limit``
      - ``mjc:solreflimit`` :sup:`ext`
+     - ``solreflimit``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.tendon_solimp_limit``
      - ``mjc:solimplimit`` :sup:`ext`
+     - ``solimplimit``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.tendon_solref_friction``
      - ``mjc:solreffriction`` :sup:`ext`
+     - ``solreffriction``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.tendon_solimp_friction``
      - ``mjc:solimpfriction`` :sup:`ext`
+     - ``solimpfriction``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.tendon_armature``
      - ``mjc:armature`` :sup:`ext`
+     - ``armature``
      - 0.0
      - [kg]
    * - ``mujoco.tendon_springlength``
      - ``mjc:springlength`` :sup:`ext`
+     - ``springlength``
      - ``(-1, -1)``
      - [m]; ``-1`` = use model length
    * - ``mujoco.tendon_actuator_force_limited``
      - ``mjc:actuatorfrclimited`` :sup:`ext`
+     - ``actuatorfrclimited``
      - 2 (auto)
      - Tri-state
    * - ``mujoco.tendon_actuator_force_range``
      - ``mjc:actuatorfrcrange:min`` / ``max`` :sup:`ext`
+     - ``actuatorfrcrange``
      - ``(0, 0)``
      - [N]
 
@@ -982,46 +1030,56 @@ programmatic assignment.
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 30 15 25
+   :widths: 25 22 18 15 20
 
    * - Custom attribute
      - USD attribute
+     - MJCF attribute
      - Default
      - Notes
    * - ``mujoco.pair_world``
      - ``newton:mujoco:pair_world``
+     -
      - 0
      - World index
    * - ``mujoco.pair_geom1`` / ``pair_geom2``
      - ``newton:mujoco:pair_geom1`` / ``newton:mujoco:pair_geom2``
+     - ``geom1`` / ``geom2``
      - -1
      - Shape indices
    * - ``mujoco.pair_condim``
      - ``newton:mujoco:pair_condim``
+     - ``condim``
      - 3
      -
    * - ``mujoco.pair_solref``
      - ``newton:mujoco:pair_solref``
+     - ``solref``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.pair_solreffriction``
      - ``newton:mujoco:pair_solreffriction``
+     - ``solreffriction``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.pair_solimp``
      - ``newton:mujoco:pair_solimp``
+     - ``solimp``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.pair_margin``
      - ``newton:mujoco:pair_margin``
+     - ``margin``
      - 0.0
      -
    * - ``mujoco.pair_gap``
      - ``newton:mujoco:pair_gap``
+     - ``gap``
      - 0.0
      -
    * - ``mujoco.pair_friction``
      - ``newton:mujoco:pair_friction``
+     - ``friction``
      - ``(1, 1, 0.005, 0.0001, 0.0001)``
      - ``(slide, slide, torsion, roll, roll)``
 
