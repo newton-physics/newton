@@ -399,10 +399,7 @@ relying on applied schemas.
 Newton also defines a small number of ``mjc:``-prefixed attributes that are
 **not** in the mjcPhysics schema (marked with :sup:`ext` in the tables below).
 These correspond to MuJoCo XML attributes that do not yet have a schema
-counterpart.  In addition, Newton reads some schema-defined attributes from
-prim types other than where the schema defines them (marked with :sup:`reuse`);
-for example, ``mjc:margin`` is defined in ``MjcCollisionAPI`` but Newton also
-reads it from joint and tendon prims.
+counterpart.
 
 .. note::
 
@@ -411,8 +408,7 @@ reads it from joint and tendon prims.
    ``MjcSiteAPI``, ``MjcImageableAPI``, ``MjcActuator``, and
    ``MjcKeyframe``.  Notably, there are no schema types for **bodies**,
    **materials**, **tendons**, or **equality constraints** — all ``mjc:``
-   attributes Newton reads from those prim types are either extensions or
-   reuse of attributes defined on other schema types.
+   attributes Newton reads from those prim types are extensions.
 
 Attributes reach Newton through two code paths:
 
@@ -565,7 +561,7 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - USD attribute
      - Custom attribute
      - Default
-   * - ``mjc:margin`` :sup:`reuse`
+   * - ``mjc:margin`` :sup:`ext`
      - ``mujoco.limit_margin``
      - 0.0
    * - ``mjc:solimplimit`` :sup:`ext`
@@ -660,13 +656,13 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - ``mjc:rollingfriction`` :sup:`ext`
      - ``mu_rolling``
      - 0.0001
-   * - ``mjc:priority`` :sup:`reuse`
+   * - ``mjc:priority`` :sup:`ext`
      - ``priority``
      - 0
-   * - ``mjc:solmix`` :sup:`reuse`
+   * - ``mjc:solmix`` :sup:`ext`
      - ``weight``
      - 1.0
-   * - ``mjc:solref`` :sup:`reuse`
+   * - ``mjc:solref`` :sup:`ext`
      - ``stiffness`` / ``damping``
      - ``[0.02, 1.0]``
 
@@ -699,10 +695,10 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - USD attribute
      - Custom attribute
      - Default
-   * - ``mjc:solref`` :sup:`reuse`
+   * - ``mjc:solref`` :sup:`ext`
      - ``mujoco.eq_solref``
      - ``(0.02, 1.0)``
-   * - ``mjc:solimp`` :sup:`reuse`
+   * - ``mjc:solimp`` :sup:`ext`
      - ``mujoco.eq_solimp``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
 
@@ -782,7 +778,7 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - ``mjc:stiffness`` :sup:`ext`
      - ``mujoco.tendon_stiffness``
      - 0.0
-   * - ``mjc:damping`` :sup:`reuse`
+   * - ``mjc:damping`` :sup:`ext`
      - ``mujoco.tendon_damping``
      - 0.0
    * - ``mjc:frictionloss`` :sup:`ext`
@@ -794,7 +790,7 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - ``mjc:range:min`` / ``max`` :sup:`ext`
      - ``mujoco.tendon_range``
      - ``(0, 0)``
-   * - ``mjc:margin`` :sup:`reuse`
+   * - ``mjc:margin`` :sup:`ext`
      - ``mujoco.tendon_margin``
      - 0.0
    * - ``mjc:solreflimit`` :sup:`ext`
@@ -809,16 +805,16 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
    * - ``mjc:solimpfriction`` :sup:`ext`
      - ``mujoco.tendon_solimp_friction``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
-   * - ``mjc:armature`` :sup:`reuse`
+   * - ``mjc:armature`` :sup:`ext`
      - ``mujoco.tendon_armature``
      - 0.0
    * - ``mjc:springlength`` :sup:`ext`
      - ``mujoco.tendon_springlength``
      - ``(-1, -1)``
-   * - ``mjc:actuatorfrclimited`` :sup:`reuse`
+   * - ``mjc:actuatorfrclimited`` :sup:`ext`
      - ``mujoco.tendon_actuator_force_limited``
      - 2 (auto)
-   * - ``mjc:actuatorfrcrange:min`` / ``max`` :sup:`reuse`
+   * - ``mjc:actuatorfrcrange:min`` / ``max`` :sup:`ext`
      - ``mujoco.tendon_actuator_force_range``
      - ``(0, 0)``
    * - ``mjc:type`` :sup:`ext`
@@ -836,10 +832,6 @@ for all joint DOFs (``transX``, ``transY``, ``transZ``, ``rotX``, ``rotY``,
 
 :sup:`ext` = Newton extension — not defined in the mjcPhysics schema.  These
 correspond to MuJoCo XML attributes that do not yet have a schema counterpart.
-
-:sup:`reuse` = Attribute is defined in the schema but on a different prim type
-(e.g. ``MjcCollisionAPI`` or ``MjcJointAPI``).  Newton reads it from this prim
-type as well, but a schema-compliant USD exporter may not author it here.
 
 
 Unsupported mjcPhysics schema attributes
