@@ -1996,6 +1996,7 @@ class TestMenagerie_ShadowHand(TestMenagerieMJCF):
     robot_folder = "shadow_hand"
     robot_xml = "scene_right.xml"
     num_steps = 20
+    dynamics_tolerance = 5e-5  # GPU float32 noise accumulates over steps
     fk_enabled = True
     # tendon_invweight0 is compilation-dependent (derived from inertia)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"tendon_invweight0"}
@@ -2130,7 +2131,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     robot_folder = "apptronik_apollo"
     backfill_model = True
     num_steps = 20
-    dynamics_tolerance = 5e-5
+    dynamics_tolerance = 5e-3  # non-deterministic on GPU: qvel diff 4.3e-5 to 1.3e-3 across runs
     fk_enabled = True
     njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
