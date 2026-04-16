@@ -939,6 +939,12 @@ prefix.
    * - ``mujoco.tendon_type``
      - ``newton:mujoco:tendon_type``
      - 0 = fixed, 1 = spatial
+   * - ``mujoco.tendon_joint_adr``
+     - *(computed)*
+     - Start address into fixed-tendon joint arrays
+   * - ``mujoco.tendon_joint_num``
+     - *(computed)*
+     - Number of joints in fixed tendon
    * - ``mujoco.tendon_wrap_adr``
      - ``newton:mujoco:tendon_wrap_adr``
      - Start address into wrap arrays
@@ -1129,6 +1135,15 @@ the next :class:`~newton.State`.
    * - ``state.body_qd``
      - *(FK)*
      - Computed via :func:`~newton.eval_articulation_fk`
+   * - ``state.body_qdd``
+     - ``cacc``
+     - Body accelerations; only when field is non-None
+   * - ``state.body_parent_f``
+     - ``cfrc_int``
+     - Incoming joint wrenches; only when field is non-None
+   * - ``state.mujoco.qfrc_actuator``
+     - ``qfrc_actuator``
+     - Actuator forces in joint space; only when field is non-None
 
 
 Collision filtering
@@ -1216,6 +1231,12 @@ Caveats
 
 **Velocity limits are not forwarded.**
   Newton's ``joint_velocity_limit`` has no MuJoCo equivalent and is ignored.
+
+**joint_enabled is not supported.**
+  Newton's per-joint ``joint_enabled`` flag has no effect in the MuJoCo solver.
+
+**DISTANCE and CABLE joints are not supported.**
+  These joint types cannot be represented in MuJoCo and will raise an error.
 
 **Body ordering must be depth-first.**
   The solver sorts joints in depth-first topological order for MuJoCo's
