@@ -8828,6 +8828,71 @@ class TestRegisterCustomAttributesDocstringCoverage(unittest.TestCase):
             [],
             f"The following custom frequencies are registered but not mentioned "
             f"in the register_custom_attributes docstring: {missing_freqs}",
+        )
+
+
+class TestMujocoRstCoverage(unittest.TestCase):
+    """Verify the mujoco.rst docs mention every mjc: USD attribute."""
+
+    RST_PATH = os.path.join(
+        os.path.dirname(__file__), "..", "..", "docs", "integrations", "mujoco.rst"
+    )
+
+    def test_custom_attributes_in_rst(self):
+        """Every custom attribute with a USD path must appear in mujoco.rst."""
+        with open(self.RST_PATH) as f:
+            rst = f.read()
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        missing = []
+        for _key, attr in builder.custom_attributes.items():
+            if attr.namespace != "mujoco":
+                continue
+            usd_name = getattr(attr, "usd_attribute_name", None)
+            if not usd_name or usd_name == "*":
+                continue
+            # Range attrs (e.g. mjc:range:min) — check for the base name
+            base = re.sub(r":(min|max)$", "", usd_name)
+            if base not in rst:
+                missing.append(f"{attr.name} (usd: {usd_name})")
+
+        self.assertEqual(
+            missing,
+            [],
+            f"The following custom attributes are registered but not "
+            f"mentioned in mujoco.rst: {missing}",
+        )
+
+    def test_schema_resolver_in_rst(self):
+        """Every mjc: SchemaResolverMjc attribute must appear in mujoco.rst."""
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        with open(self.RST_PATH) as f:
+            rst = f.read()
+
+        missing = []
+        for prim_type, attrs in SchemaResolverMjc.mapping.items():
+            seen_usd_names = set()
+            for newton_prop, schema_attr in attrs.items():
+                usd_name = schema_attr.name
+                if usd_name in seen_usd_names:
+                    continue
+                seen_usd_names.add(usd_name)
+                # Range attrs (e.g. mjc:ctrlRange:max) — check base name
+                base = re.sub(r":(min|max)$", "", usd_name)
+                if base not in rst:
+                    missing.append(
+                        f"{newton_prop} (usd: {usd_name}, prim: {prim_type.name})"
+                    )
+
+        self.assertEqual(
+            missing,
+            [],
+            f"The following SchemaResolverMjc attributes are not mentioned "
+            f"in mujoco.rst: {missing}",
+        )
 
 
 class TestEqualityJointObjType(unittest.TestCase):

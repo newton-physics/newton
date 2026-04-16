@@ -735,6 +735,34 @@ The ``mjc:target`` relationship on ``MjcActuator`` prims resolves the
 transmission target.  ``mjc:inheritRange`` (default: 0 = disabled) copies
 the target joint's limits as the actuator's ``ctrlrange``.
 
+**Internal attributes** (``newton:mujoco:*`` USD namespace):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - Custom attribute
+     - USD attribute
+     - Notes
+   * - ``mujoco.actuator_trnid``
+     - ``newton:mujoco:actuator_trnid``
+     - Transmission target index pair
+   * - ``mujoco.actuator_world``
+     - ``newton:mujoco:actuator_world``
+     - World index
+   * - ``mujoco.actuator_cranklength``
+     - ``newton:mujoco:actuator_cranklength``
+     - Slider-crank length [m]
+   * - ``mujoco.ctrl``
+     - ``newton:mujoco:ctrl``
+     - Direct MuJoCo actuator control signal
+   * - ``mujoco.ctrl_source``
+     - ``newton:mujoco:ctrl_source``
+     - Control source (direct / joint target)
+   * - ``mujoco.autolimits``
+     - ``newton:mujoco:autolimits``
+     - Auto-compute joint limits (default: ``True``)
+
 
 .. _mujoco-equality-parameters:
 
@@ -892,45 +920,102 @@ Tendon parameters
 Spatial tendons additionally use ``mjc:path`` (relationship),
 ``mjc:path:indices``, and ``mjc:path:coef`` to describe the wrap path.
 
+**Internal attributes** (``newton:mujoco:*`` USD namespace):
+
+These are populated automatically during MJCF/USD import or set
+programmatically.  Newton reads them from USD using the ``newton:mujoco:``
+prefix.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - Custom attribute
+     - USD attribute
+     - Notes
+   * - ``mujoco.tendon_world``
+     - ``newton:mujoco:tendon_world``
+     - World index
+   * - ``mujoco.tendon_type``
+     - ``newton:mujoco:tendon_type``
+     - 0 = fixed, 1 = spatial
+   * - ``mujoco.tendon_wrap_adr``
+     - ``newton:mujoco:tendon_wrap_adr``
+     - Start address into wrap arrays
+   * - ``mujoco.tendon_wrap_num``
+     - ``newton:mujoco:tendon_wrap_num``
+     - Number of wrap elements
+   * - ``mujoco.tendon_joint``
+     - ``newton:mujoco:tendon_joint``
+     - Joint index per fixed-tendon entry
+   * - ``mujoco.tendon_coef``
+     - ``newton:mujoco:tendon_coef``
+     - Joint coefficient per fixed-tendon entry
+   * - ``mujoco.tendon_wrap_type``
+     - ``newton:mujoco:tendon_wrap_type``
+     - Wrap element type (site / geom / pulley)
+   * - ``mujoco.tendon_wrap_shape``
+     - ``newton:mujoco:tendon_wrap_shape``
+     - Wrap element shape index
+   * - ``mujoco.tendon_wrap_sidesite``
+     - ``newton:mujoco:tendon_wrap_sidesite``
+     - Side-site shape index
+   * - ``mujoco.tendon_wrap_prm``
+     - ``newton:mujoco:tendon_wrap_prm``
+     - Wrap element parameter
+
 
 .. _mujoco-contact-pair-parameters:
 
 Contact pair parameters
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-Explicit contact pairs (``mujoco:pair`` frequency) are only populated from
-MJCF import or programmatic assignment — there are no ``mjc:`` USD attributes
-for pairs.
+Explicit contact pairs (``mujoco:pair`` frequency) are populated from
+MJCF import, USD import (via ``newton:mujoco:*`` attributes), or
+programmatic assignment.
 
 .. list-table::
    :header-rows: 1
-   :widths: 35 25 40
+   :widths: 30 30 15 25
 
    * - Custom attribute
+     - USD attribute
      - Default
      - Notes
+   * - ``mujoco.pair_world``
+     - ``newton:mujoco:pair_world``
+     - 0
+     - World index
    * - ``mujoco.pair_geom1`` / ``pair_geom2``
+     - ``newton:mujoco:pair_geom1`` / ``newton:mujoco:pair_geom2``
      - -1
      - Shape indices
    * - ``mujoco.pair_condim``
+     - ``newton:mujoco:pair_condim``
      - 3
      -
    * - ``mujoco.pair_solref``
+     - ``newton:mujoco:pair_solref``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.pair_solreffriction``
+     - ``newton:mujoco:pair_solreffriction``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.pair_solimp``
+     - ``newton:mujoco:pair_solimp``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.pair_margin``
+     - ``newton:mujoco:pair_margin``
      - 0.0
      -
    * - ``mujoco.pair_gap``
+     - ``newton:mujoco:pair_gap``
      - 0.0
      -
    * - ``mujoco.pair_friction``
+     - ``newton:mujoco:pair_friction``
      - ``(1, 1, 0.005, 0.0001, 0.0001)``
      - ``(slide, slide, torsion, roll, roll)``
 
@@ -958,8 +1043,9 @@ correspond to MuJoCo XML attributes that do not yet have a schema counterpart.
 Unsupported mjcPhysics schema attributes
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The following mjcPhysics schema attributes are **not** parsed by Newton.
-Authoring them on USD prims has no effect.
+The following mjcPhysics schema attributes are **not** parsed by Newton
+from USD.  Authoring them on USD prims has no effect.  Some of these are
+parsed from MJCF (noted below).
 
 - **Compiler options** (``mjc:compiler:*``): all 14 compiler attributes
   (``alignFree``, ``angle``, ``autoLimits``, ``balanceInertia``, etc.)
@@ -970,9 +1056,12 @@ Authoring them on USD prims has no effect.
   ``mjc:mpos``, ``mjc:mquat``
 - **Shape / collision**: ``mjc:inertia`` (mesh inertia mode),
   ``mjc:shellinertia``, ``mjc:group``
-- **Actuator**: ``mjc:act``, ``mjc:ctrl``, ``mjc:crankLength``,
+- **Actuator**: ``mjc:act``,
   ``mjc:jointInParent``, ``mjc:refSite``, ``mjc:sliderSite``,
-  ``mjc:group``
+  ``mjc:group``.
+  Note: ``mjc:crankLength`` and ``mjc:ctrl`` are not parsed from USD but
+  **are** parsed from MJCF (see ``mujoco.actuator_cranklength`` and
+  ``mujoco.ctrl`` above).
 - **Solver options**: ``mjc:option:noslip_iterations``,
   ``mjc:option:noslip_tolerance``, ``mjc:option:actuatorgroupdisable``,
   ``mjc:option:o_friction``, ``mjc:option:o_margin``,
