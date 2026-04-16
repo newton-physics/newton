@@ -121,15 +121,13 @@ table shows:
 Standard Newton properties (``joint_limit_lower``, ``shape_material_mu``, etc.)
 are populated from standard USD physics schemas, MJCF XML elements, or set
 programmatically.  MuJoCo-specific parameters use the ``mujoco``
-custom-attribute namespace.
-
-**Setup.**
-  Call :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` on a
-  :class:`~newton.ModelBuilder` **before** loading assets so that USD and MJCF
-  importers can populate the ``mujoco.*`` attributes.  After
-  :meth:`~newton.ModelBuilder.finalize`, they are accessible as
-  ``model.mujoco.<name>``.  See :doc:`/concepts/custom_attributes` for
-  background on Newton's custom-attribute system.
+custom-attribute namespace — call
+:meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` on a
+:class:`~newton.ModelBuilder` **before** loading assets so that USD and MJCF
+importers can populate them.  After :meth:`~newton.ModelBuilder.finalize`, they
+are accessible as ``model.mujoco.<name>``.  See
+:doc:`/concepts/custom_attributes` for background on Newton's custom-attribute
+system.
 
 
 .. _mujoco-solver-options:
