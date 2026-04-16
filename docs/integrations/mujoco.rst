@@ -338,31 +338,11 @@ Joint attributes
      - ``actuatorfrcrange``
      - Per-actuator ``forcerange`` for ball joints
 
-The ``mjc:`` USD attributes below are an alternative source for
-``armature``, ``friction``, and ``limit_ke``/``limit_kd`` (the same
-properties listed above).  When both a standard USD attribute and an
+``armature``, ``friction``, and ``limit_ke``/``limit_kd`` can also be
+populated from ``mjc:`` USD attributes (``mjc:armature``,
+``mjc:frictionloss``, ``mjc:solref``).  When both a standard and
 ``mjc:`` attribute are authored, the resolution order is
 Newton → PhysX → MuJoCo.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 25 20 30
-
-   * - Newton property
-     - ``mjc:`` USD attribute
-     - Default
-     - Notes
-   * - ``armature``
-     - ``mjc:armature``
-     - 0.0
-     -
-   * - ``friction``
-     - ``mjc:frictionloss``     - 0.0
-     -
-   * - ``limit_*_ke`` / ``limit_*_kd``
-     - ``mjc:solref``
-     - ``[0.02, 1.0]``
-     - Mapped to per-axis limit stiffness / damping for all DOFs
 
 .. note::
 
@@ -384,23 +364,28 @@ Newton → PhysX → MuJoCo.
      - Default
      - Notes
    * - ``mujoco.limit_margin``
-     - ``mjc:margin``     - ``margin``
+     - ``mjc:margin``
+     - ``margin``
      - 0.0
      - [m or rad]
    * - ``mujoco.solimplimit``
-     - ``mjc:solimplimit``     -
+     - ``mjc:solimplimit``
+     -
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.solreffriction``
-     - ``mjc:solreffriction``     -
+     - ``mjc:solreffriction``
+     -
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.solimpfriction``
-     - ``mjc:solimpfriction``     -
+     - ``mjc:solimpfriction``
+     -
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.dof_passive_stiffness``
-     - ``mjc:stiffness``     - ``stiffness``
+     - ``mjc:stiffness``
+     - ``stiffness``
      - 0.0
      -
    * - ``mujoco.dof_passive_damping``
@@ -409,11 +394,13 @@ Newton → PhysX → MuJoCo.
      - 0.0
      -
    * - ``mujoco.dof_springref``
-     - ``mjc:springref``     - ``springref``
+     - ``mjc:springref``
+     - ``springref``
      - 0.0
      - [m or rad]
    * - ``mujoco.dof_ref``
-     - ``mjc:ref``     - ``ref``
+     - ``mjc:ref``
+     - ``ref``
      - 0.0
      - [m or rad]
    * - ``mujoco.jnt_actgravcomp``
@@ -466,33 +453,11 @@ Shape attributes
      - ``margin``
      -
 
-The ``mjc:`` USD attributes below are an alternative source for
-``margin``, ``gap``, ``ke``/``kd``, and ``max_hull_vertices``.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 25 20 30
-
-   * - Newton property
-     - ``mjc:`` USD attribute
-     - Default
-     - Notes
-   * - ``max_hull_vertices``
-     - ``mjc:maxhullvert``
-     - -1
-     -
-   * - ``margin``
-     - ``mjc:margin``
-     - 0.0
-     - Newton computes ``margin = mjc:margin − mjc:gap``
-   * - ``gap``
-     - ``mjc:gap``
-     - 0.0
-     -
-   * - ``ke`` / ``kd``
-     - ``mjc:solref``
-     - ``[0.02, 1.0]``
-     - See the ``solref`` note under :ref:`mujoco-joint-attributes`
+``margin``, ``gap``, ``ke``/``kd``, and ``max_hull_vertices`` can also be
+populated from ``mjc:`` USD attributes (``mjc:margin``, ``mjc:gap``,
+``mjc:solref``, ``mjc:maxhullvert``).  Newton computes
+``margin = mjc:margin − mjc:gap``.  See the ``solref`` note under
+:ref:`mujoco-joint-attributes`.
 
 **Custom attributes** (``mujoco.*`` namespace):
 
@@ -547,19 +512,24 @@ rather than the collision prim.
      - Default
      - Notes
    * - ``mu_torsional``
-     - ``mjc:torsionalfriction``     - 0.005
+     - ``mjc:torsionalfriction``
+     - 0.005
      -
    * - ``mu_rolling``
-     - ``mjc:rollingfriction``     - 0.0001
+     - ``mjc:rollingfriction``
+     - 0.0001
      -
    * - ``priority``
-     - ``mjc:priority``     - 0
+     - ``mjc:priority``
+     - 0
      -
    * - ``weight``
-     - ``mjc:solmix``     - 1.0
+     - ``mjc:solmix``
+     - 1.0
      -
    * - ``stiffness`` / ``damping``
-     - ``mjc:solref``     - ``[0.02, 1.0]``
+     - ``mjc:solref``
+     - ``[0.02, 1.0]``
      - See the ``solref`` note under :ref:`mujoco-joint-attributes`
 
 
@@ -612,7 +582,8 @@ Body attributes
      - Default
      - Notes
    * - ``mujoco.gravcomp``
-     - ``mjc:gravcomp``     - ``gravcomp``
+     - ``mjc:gravcomp``
+     - ``gravcomp``
      - 0.0
      -
 
@@ -883,11 +854,13 @@ Equality constraint attributes
      - Default
      - Notes
    * - ``mujoco.eq_solref``
-     - ``mjc:solref``     - ``solref``
+     - ``mjc:solref``
+     - ``solref``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.eq_solimp``
-     - ``mjc:solimp``     - ``solimp``
+     - ``mjc:solimp``
+     - ``solimp``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
 
@@ -907,59 +880,73 @@ Tendon attributes
      - Default
      - Notes
    * - ``mujoco.tendon_stiffness``
-     - ``mjc:stiffness``     - ``stiffness``
+     - ``mjc:stiffness``
+     - ``stiffness``
      - 0.0
      - [N/m]
    * - ``mujoco.tendon_damping``
-     - ``mjc:damping``     - ``damping``
+     - ``mjc:damping``
+     - ``damping``
      - 0.0
      - [N·s/m]
    * - ``mujoco.tendon_frictionloss``
-     - ``mjc:frictionloss``     - ``frictionloss``
+     - ``mjc:frictionloss``
+     - ``frictionloss``
      - 0.0
      - [N]
    * - ``mujoco.tendon_limited``
-     - ``mjc:limited``     - ``limited``
+     - ``mjc:limited``
+     - ``limited``
      - 2 (auto)
      - Tri-state
    * - ``mujoco.tendon_range``
-     - ``mjc:range:min`` / ``max``     - ``range``
+     - ``mjc:range:min`` / ``max``
+     - ``range``
      - ``(0, 0)``
      - [m]
    * - ``mujoco.tendon_margin``
-     - ``mjc:margin``     - ``margin``
+     - ``mjc:margin``
+     - ``margin``
      - 0.0
      - [m]
    * - ``mujoco.tendon_solref_limit``
-     - ``mjc:solreflimit``     - ``solreflimit``
+     - ``mjc:solreflimit``
+     - ``solreflimit``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.tendon_solimp_limit``
-     - ``mjc:solimplimit``     - ``solimplimit``
+     - ``mjc:solimplimit``
+     - ``solimplimit``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.tendon_solref_friction``
-     - ``mjc:solreffriction``     - ``solreffriction``
+     - ``mjc:solreffriction``
+     - ``solreffriction``
      - ``(0.02, 1.0)``
      -
    * - ``mujoco.tendon_solimp_friction``
-     - ``mjc:solimpfriction``     - ``solimpfriction``
+     - ``mjc:solimpfriction``
+     - ``solimpfriction``
      - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
      -
    * - ``mujoco.tendon_armature``
-     - ``mjc:armature``     - ``armature``
+     - ``mjc:armature``
+     - ``armature``
      - 0.0
      - [kg]
    * - ``mujoco.tendon_springlength``
-     - ``mjc:springlength``     - ``springlength``
+     - ``mjc:springlength``
+     - ``springlength``
      - ``(-1, -1)``
      - [m]; ``-1`` = use model length
    * - ``mujoco.tendon_actuator_force_limited``
-     - ``mjc:actuatorfrclimited``     - ``actuatorfrclimited``
+     - ``mjc:actuatorfrclimited``
+     - ``actuatorfrclimited``
      - 2 (auto)
      - Tri-state
    * - ``mujoco.tendon_actuator_force_range``
-     - ``mjc:actuatorfrcrange:min`` / ``max``     - ``actuatorfrcrange``
+     - ``mjc:actuatorfrcrange:min`` / ``max``
+     - ``actuatorfrcrange``
      - ``(0, 0)``
      - [N]
 
