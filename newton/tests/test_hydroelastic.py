@@ -834,7 +834,6 @@ def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     contacts = pipeline.contacts()
     pipeline.collide(state_0, contacts)
-    wp.synchronize()
 
     hydro = pipeline.hydroelastic_sdf
     reducer = hydro.contact_reduction.reducer
