@@ -286,6 +286,10 @@ Solver parameters follow a three-level resolution priority:
      - ``mjc:flag:gravity``
      - ``True``
      -
+   * - ``gravity``
+     -
+     - ``(0, 0, -9.81)``
+     - 3D gravity vector → MuJoCo ``opt.gravity``
 
 
 .. _mujoco-joint-parameters:
@@ -757,6 +761,43 @@ Equality constraint parameters
      - ``mjEQ_JOINT``
      - ``coef0`` / ``coef1`` mapped to polynomial coefficients.
        Only ``REVOLUTE`` and ``PRISMATIC`` joints are supported.
+
+**Standard Newton properties:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 30 35
+
+   * - Newton property
+     - MuJoCo field
+     - Notes
+   * - ``equality_constraint_type``
+     - ``eq_type``
+     -
+   * - ``equality_constraint_anchor``
+     - ``eq_data[0:3]``
+     - CONNECT anchor point
+   * - ``equality_constraint_relpose``
+     - ``eq_data``
+     - WELD relative pose
+   * - ``equality_constraint_polycoef``
+     - ``eq_data[0:5]``
+     - JOINT polynomial coefficients
+   * - ``equality_constraint_torquescale``
+     - ``eq_data[10]``
+     - WELD torque scale
+   * - ``equality_constraint_enabled``
+     - ``eq_active``
+     -
+   * - ``constraint_mimic_joint0`` / ``joint1``
+     - ``eq_obj1id`` / ``eq_obj2id``
+     - Mimic follower / leader joint
+   * - ``constraint_mimic_coef0`` / ``coef1``
+     - ``eq_data[0:2]``
+     - Mimic polynomial coefficients
+   * - ``constraint_mimic_enabled``
+     - ``eq_active``
+     -
 
 **Custom attributes** (read from equality constraint prims):
 
