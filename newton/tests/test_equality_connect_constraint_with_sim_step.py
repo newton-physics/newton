@@ -755,8 +755,6 @@ class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase,
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
-            iterations=1,
-            ls_iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=False,
             integrator="euler",
@@ -773,8 +771,6 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
-            iterations=1,
-            ls_iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,
