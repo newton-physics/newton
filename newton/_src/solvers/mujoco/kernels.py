@@ -2458,17 +2458,19 @@ def convert_qfrc_actuator_from_mj_kernel(
     """
     worldid, jntid = wp.tid()
 
+    joint_id = joints_per_world * worldid + jntid
+
     # Skip loop joints — they have no MuJoCo DOF entries
     q_i = mj_q_start[jntid]
     if q_i < 0:
         return
 
     qd_i = mj_qd_start[jntid]
-    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    wqd_i = joint_qd_start[joint_id]
 
-    type = joint_type[jntid]
+    jtype = joint_type[joint_id]
 
-    if type == JointType.FREE:
+    if jtype == JointType.FREE:
         # MuJoCo qfrc_actuator for free joint:
         #   [f_x, f_y, f_z] = linear force at body origin (world frame)
         #   [τ_x, τ_y, τ_z] = torque in body frame
@@ -2496,7 +2498,7 @@ def convert_qfrc_actuator_from_mj_kernel(
         )
 
         # CoM offset in world frame
-        child = joint_child[jntid]
+        child = joint_child[joint_id]
         com_world = wp.quat_rotate(rot, body_com[child])
 
         # Rotate torque body -> world and shift reference origin -> CoM
@@ -2508,11 +2510,11 @@ def convert_qfrc_actuator_from_mj_kernel(
         qfrc_actuator[wqd_i + 3] = tau_world[0]
         qfrc_actuator[wqd_i + 4] = tau_world[1]
         qfrc_actuator[wqd_i + 5] = tau_world[2]
-    elif type == JointType.BALL:
+    elif jtype == JointType.BALL:
         for i in range(3):
             qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
     else:
-        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
         for i in range(axis_count):
             qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
 

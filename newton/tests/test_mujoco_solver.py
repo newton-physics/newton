@@ -8275,6 +8275,66 @@ class TestActuatorDampratioMultiWorld(unittest.TestCase):
             )
 
 
+class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
+    """Multi-world qfrc_actuator must use each world's own body CoM.
+
+    Regression test: convert_qfrc_actuator_from_mj_kernel indexed
+    joint_type, joint_child, and joint_dof_dim with per-world jntid
+    instead of the global index, so world 1 read world 0's CoM for
+    the free-joint force transform.
+    """
+
+    MJCF = """
+    <mujoco>
+      <option gravity="0 0 0"/>
+      <worldbody>
+        <body pos="0 0 1" quat="0.7071 0.7071 0 0">
+          <freejoint name="root"/>
+          <geom type="box" size="0.1 0.1 0.05" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="root" gear="0 0 1 0 0 0"/>
+      </actuator>
+    </mujoco>
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        def make_template(com):
+            t = newton.ModelBuilder()
+            t.add_mjcf(cls.MJCF, ctrl_direct=True)
+            t.request_state_attributes("mujoco:qfrc_actuator")
+            t.body_com[0] = com
+            return t
+
+        builder = newton.ModelBuilder()
+        builder.request_state_attributes("mujoco:qfrc_actuator")
+        builder.add_world(make_template(wp.vec3(0.0, 0.0, 0.0)))
+        builder.add_world(make_template(wp.vec3(0.1, -0.05, 0.03)))
+        cls.model = builder.finalize()
+        cls.solver = SolverMuJoCo(cls.model)
+
+    def test_world1_uses_own_com(self):
+        """World 1 angular qfrc must reflect its non-zero CoM, not world 0's."""
+        state = self.model.state()
+        ctrl = self.model.control()
+        ctrl.mujoco.ctrl = wp.array([10.0, 10.0], dtype=wp.float32)
+        self.solver.step(state, state, ctrl, None, dt=0.01)
+
+        qfrc = state.mujoco.qfrc_actuator.numpy()
+        dofs_per_world = self.model.joint_dof_count // self.model.world_count
+
+        # World 0 has CoM at origin — cross product is zero
+        np.testing.assert_allclose(qfrc[3:6], 0.0, atol=0.01)
+        # World 1: tau = -cross(R * com, f_lin) where R is 90deg around X,
+        # com = (0.1, -0.05, 0.03), f_lin = (0, 0, 10)
+        # => R*com = (0.1, -0.03, -0.05), tau = (0.3, 1.0, 0.0)
+        # The bug would produce zeros here (reading world 0's zero CoM).
+        angular_1 = qfrc[dofs_per_world + 3 : dofs_per_world + 6]
+        np.testing.assert_allclose(angular_1, [0.3, 1.0, 0.0], atol=0.05)
+
+
 class TestActuatorLengthRangeRuntime(unittest.TestCase):
     """Verify actuator lengthrange updates after runtime gear changes."""
 
