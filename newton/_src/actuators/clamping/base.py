@@ -12,7 +12,7 @@ class Clamping:
     """Base class for post-controller force clamping.
 
     Clamping objects are stacked on top of a controller to bound
-    output forces — symmetric limits, velocity-dependent saturation,
+    clamp forces — symmetric limits, velocity-dependent saturation,
     angle-dependent torque curves, etc. They read from a source force
     buffer and write bounded values to a destination buffer.
 
@@ -36,6 +36,16 @@ class Clamping:
         """
         raise NotImplementedError(f"{cls.__name__} must implement resolve_arguments")
 
+    def finalize(self, device: wp.Device, num_actuators: int) -> None:
+        """Called by :class:`~newton.actuators.Actuator` after construction to set up device-specific resources.
+
+        Override in subclasses that need to move arrays to a specific device.
+
+        Args:
+            device: Warp device to use.
+            num_actuators: Number of actuators (DOFs) this clamping manages.
+        """
+
     def modify_forces(
         self,
         src_forces: wp.array[float],
@@ -43,7 +53,6 @@ class Clamping:
         positions: wp.array[float],
         velocities: wp.array[float],
         input_indices: wp.array[wp.uint32],
-        num_actuators: int,
         device: wp.Device | None = None,
     ) -> None:
         """Read forces from src, apply clamping, write to dst.
@@ -59,7 +68,6 @@ class Clamping:
             positions: Joint positions [m or rad] (global array).
             velocities: Joint velocities [m/s or rad/s] (global array).
             input_indices: Indices into positions/velocities.
-            num_actuators: Number of actuators N.
             device: Warp device for kernel launches.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement modify_forces")

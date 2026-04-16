@@ -81,18 +81,18 @@ when the model is finalized:
 .. code-block:: python
 
    import newton
-   from newton.actuators import ControllerPD, ClampingMaxForce, Delay
+   from newton.actuators import ClampingMaxForce, ControllerPD
 
    builder = newton.ModelBuilder()
    # ... add links, joints, articulations ...
 
    builder.add_actuator(
-       controller_type=ControllerPD,
+       ControllerPD,
        index=dof_index,
        kp=100.0,
        kd=10.0,
-       clamping_types=[ClampingMaxForce],
-       max_force=50.0,
+       delay=5,
+       clamping=[(ClampingMaxForce, {"max_force": 50.0})],
    )
 
    model = builder.finalize()
@@ -112,8 +112,8 @@ components directly:
 
    actuator = Actuator(
        indices,
-       delay=Delay(delay=5),
        controller=ControllerPD(kp=kp, kd=kd),
+       delay=Delay(delay=5),
        clamping=[ClampingMaxForce(max_force=max_f)],
    )
 
@@ -140,7 +140,11 @@ after each step:
        state_a, state_b = state_b, state_a  # swap
 
 Stateless actuators (e.g. a plain PD controller without delay) do not require
-state objects — pass ``None`` for both.
+state objects — simply omit them:
+
+.. code-block:: python
+
+   actuator.step(sim_state, sim_control)
 
 Differentiability and Graph Capture
 -----------------------------------

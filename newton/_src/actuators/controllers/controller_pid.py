@@ -98,7 +98,7 @@ class ControllerPID(Controller):
             ki: Integral gains. Shape (N,).
             kd: Derivative gains. Shape (N,).
             integral_max: Anti-windup limits. Shape (N,).
-            constant_force: Constant force offsets. Shape (N,). None to skip.
+            constant_force: Constant force offsets [N or N·m]. Shape (N,). None to skip.
         """
         self.kp = kp
         self.ki = ki

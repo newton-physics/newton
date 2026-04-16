@@ -5,9 +5,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from .clamping import Clamping, ClampingDCMotor, ClampingMaxForce
+from .clamping import Clamping, ClampingDCMotor, ClampingMaxForce, ClampingPositionBased
 from .controllers import Controller, ControllerNetLSTM, ControllerNetMLP, ControllerPD, ControllerPID
 from .delay import Delay
 
@@ -20,6 +21,26 @@ class SchemaEntry:
     param_map: dict[str, str]
     is_controller: bool = False
     validate: Callable[[dict[str, Any]], None] | None = None
+
+
+def _validate_clamp_position_based(kwargs: dict[str, Any]) -> None:
+    path = kwargs.get("lookup_table_path")
+    if not path:
+        raise ValueError("NewtonClampingPositionBasedAPI requires a lookupTablePath attribute")
+    table_path = Path(path)
+    if not table_path.is_file():
+        raise ValueError(f"Lookup table file not found: {path}")
+    angles, torques = [], []
+    for line in table_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.replace(",", " ").split()
+        angles.append(float(parts[0]))
+        torques.append(float(parts[1]))
+    kwargs.pop("lookup_table_path")
+    kwargs["lookup_angles"] = angles
+    kwargs["lookup_torques"] = torques
 
 
 def _validate_clamp_velocity_based(kwargs: dict[str, Any]) -> None:
@@ -55,6 +76,15 @@ SCHEMA_REGISTRY: dict[str, SchemaEntry] = {
         component_class=ClampingDCMotor,
         param_map={"saturationEffort": "saturation_effort", "velocityLimit": "velocity_limit", "maxForce": "max_force"},
         validate=_validate_clamp_velocity_based,
+    ),
+    # Position-based clamping uses a file path rather than inline USD
+    # attributes because lookup tables can have 100+ entries, which would
+    # be unwieldy as individual prim attributes.  This mirrors the
+    # networkPath convention used by the neural-network controllers.
+    "NewtonClampingPositionBasedAPI": SchemaEntry(
+        component_class=ClampingPositionBased,
+        param_map={"lookupTablePath": "lookup_table_path"},
+        validate=_validate_clamp_position_based,
     ),
     # Neural-network controllers
     "NewtonControllerNetMLPAPI": SchemaEntry(

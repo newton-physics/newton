@@ -125,6 +125,8 @@ class Actuator:
         controller.finalize(self.device, self.num_actuators)
         if delay is not None:
             delay.finalize(self.indices, self.num_actuators)
+        for clamp in self.clamping:
+            clamp.finalize(self.device, self.num_actuators)
 
     def get_param(self, name: str) -> wp.array | None:
         """Search for a named warp array parameter across controller and clamping.
@@ -256,7 +258,6 @@ class Actuator:
                         positions,
                         velocities,
                         self.indices,
-                        self.num_actuators,
                         device=self.device,
                     )
                     src = self._applied_forces

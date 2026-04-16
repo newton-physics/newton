@@ -17,6 +17,7 @@ Covers the full actuator lifecycle:
 
 import importlib.util
 import os
+import tempfile
 import unittest
 from typing import ClassVar
 
@@ -177,9 +178,14 @@ class TestResolveArguments(unittest.TestCase):
         with self.assertRaises(ValueError):
             ClampingDCMotor.resolve_arguments({})
 
-    def test_dc_motor_accepts_velocity_limit(self):
-        r = ClampingDCMotor.resolve_arguments({"velocity_limit": 10.0})
+    def test_dc_motor_requires_saturation_effort(self):
+        with self.assertRaises(ValueError):
+            ClampingDCMotor.resolve_arguments({"velocity_limit": 10.0})
+
+    def test_dc_motor_accepts_valid_args(self):
+        r = ClampingDCMotor.resolve_arguments({"velocity_limit": 10.0, "saturation_effort": 100.0})
         self.assertEqual(r["velocity_limit"], 10.0)
+        self.assertEqual(r["saturation_effort"], 100.0)
 
     def test_position_based_requires_lookup(self):
         with self.assertRaises(ValueError):
@@ -261,6 +267,36 @@ class TestActuatorParser(unittest.TestCase):
     def test_non_actuator_type_returns_none(self):
         p = _MockPrim("Mesh")
         self.assertIsNone(parse_actuator_prim(p))
+
+    def test_pd_with_position_based_clamping(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("# angle  torque\n-1.0  10.0\n0.0  30.0\n1.0  50.0\n")
+            table_path = f.name
+
+        try:
+            r = parse_actuator_prim(
+                self._prim(
+                    attrs={"newton:actuator:kp": 100.0, "newton:actuator:lookupTablePath": table_path},
+                    schemas=["NewtonControllerPDAPI", "NewtonClampingPositionBasedAPI"],
+                )
+            )
+            self.assertEqual(r.controller_class, ControllerPD)
+            self.assertEqual(len(r.component_specs), 1)
+            cls, kwargs = r.component_specs[0]
+            self.assertIs(cls, ClampingPositionBased)
+            self.assertEqual(kwargs["lookup_angles"], [-1.0, 0.0, 1.0])
+            self.assertEqual(kwargs["lookup_torques"], [10.0, 30.0, 50.0])
+        finally:
+            os.unlink(table_path)
+
+    def test_position_based_missing_path_raises(self):
+        with self.assertRaises(ValueError):
+            parse_actuator_prim(
+                self._prim(
+                    attrs={"newton:actuator:kp": 100.0},
+                    schemas=["NewtonControllerPDAPI", "NewtonClampingPositionBasedAPI"],
+                )
+            )
 
     def test_missing_target_returns_none(self):
         p = _MockPrim("NewtonActuator", attrs={"newton:actuator:kp": 100.0})
@@ -672,6 +708,27 @@ class TestActuatorStep(unittest.TestCase):
         self.assertAlmostEqual(self._step_position_based(0.0), 30.0, places=2)
         self.assertAlmostEqual(self._step_position_based(-0.5), 20.0, places=2)
         self.assertAlmostEqual(self._step_position_based(0.5), 40.0, places=2)
+
+    def test_position_based_different_tables_split(self):
+        """DOFs with different lookup tables are placed in separate actuator groups."""
+        table_a = {"lookup_angles": (-1.0, 0.0, 1.0), "lookup_torques": (10.0, 30.0, 50.0)}
+        table_b = {"lookup_angles": (-1.0, 1.0), "lookup_torques": (100.0, 200.0)}
+
+        builder = newton.ModelBuilder()
+        links = [builder.add_link() for _ in range(3)]
+        joints = []
+        for i, link in enumerate(links):
+            parent = -1 if i == 0 else links[i - 1]
+            joints.append(builder.add_joint_revolute(parent=parent, child=link, axis=newton.Axis.Z))
+        builder.add_articulation(joints)
+        dofs = [builder.joint_qd_start[j] for j in joints]
+
+        builder.add_actuator(ControllerPD, index=dofs[0], kp=1000.0, clamping=[(ClampingPositionBased, table_a)])
+        builder.add_actuator(ControllerPD, index=dofs[1], kp=1000.0, clamping=[(ClampingPositionBased, table_a)])
+        builder.add_actuator(ControllerPD, index=dofs[2], kp=1000.0, clamping=[(ClampingPositionBased, table_b)])
+        model = builder.finalize()
+
+        self.assertEqual(len(model.actuators), 2, "Same table should group, different table should split")
 
 
 # ---------------------------------------------------------------------------

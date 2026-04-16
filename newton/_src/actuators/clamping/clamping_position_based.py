@@ -56,9 +56,12 @@ class ClampingPositionBased(Clamping):
     """Angle-dependent torque clamping via lookup table.
 
     Replaces a fixed ±max_force box clamp with angle-dependent torque
-    limits interpolated from a lookup table. Models actuators where
+    limits interpolated from a lookup table.  Models actuators where
     the transmission ratio and thus maximum output torque vary with
     joint angle (e.g., linkage-driven joints).
+
+    The lookup table is a shared parameter: all DOFs within one
+    :class:`~newton.actuators.Actuator` group share the same table.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"lookup_angles", "lookup_torques"}
@@ -67,35 +70,38 @@ class ClampingPositionBased(Clamping):
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         if "lookup_angles" not in args or "lookup_torques" not in args:
             raise ValueError("ClampingPositionBased requires 'lookup_angles' and 'lookup_torques' arguments")
-        return {
-            "lookup_angles": tuple(args["lookup_angles"]),
-            "lookup_torques": tuple(args["lookup_torques"]),
-        }
+        angles = tuple(args["lookup_angles"])
+        torques = tuple(args["lookup_torques"])
+        if len(angles) != len(torques):
+            raise ValueError(f"lookup_angles length ({len(angles)}) must match lookup_torques length ({len(torques)})")
+        if any(v < 0 for v in torques):
+            raise ValueError("lookup_torques must contain non-negative values for symmetric clamping")
+        return {"lookup_angles": angles, "lookup_torques": torques}
 
     def __init__(
         self,
-        lookup_angles: wp.array[float] | tuple[float, ...] | list[float],
-        lookup_torques: wp.array[float] | tuple[float, ...] | list[float],
+        lookup_angles: tuple[float, ...],
+        lookup_torques: tuple[float, ...],
     ):
         """Initialize position-based clamp.
 
         Args:
-            lookup_angles: Sorted joint angles [rad] for the torque lookup table. Shape (K,).
-            lookup_torques: Max output torques [N·m] corresponding to lookup_angles. Shape (K,).
+            lookup_angles: Sorted joint angles [rad] for the torque
+                lookup table.  Shape ``(K,)``.
+            lookup_torques: Max output torques [N·m] corresponding to
+                *lookup_angles*.  Shape ``(K,)``.
         """
-        if len(lookup_angles) != len(lookup_torques):
-            raise ValueError(
-                f"lookup_angles length ({len(lookup_angles)}) must match lookup_torques length ({len(lookup_torques)})"
-            )
-        if not isinstance(lookup_torques, wp.array) and any(t < 0 for t in lookup_torques):
-            raise ValueError("lookup_torques must contain non-negative values for symmetric clamping")
+        self._angles_tuple = lookup_angles
+        self._torques_tuple = lookup_torques
         self.lookup_size = len(lookup_angles)
-        if not isinstance(lookup_angles, wp.array):
-            lookup_angles = wp.array(np.array(lookup_angles, dtype=np.float32))
-        if not isinstance(lookup_torques, wp.array):
-            lookup_torques = wp.array(np.array(lookup_torques, dtype=np.float32))
-        self.lookup_angles = lookup_angles
-        self.lookup_torques = lookup_torques
+        self.lookup_angles: wp.array[float] | None = None
+        self.lookup_torques: wp.array[float] | None = None
+
+    def finalize(self, device: wp.Device, num_actuators: int) -> None:
+        self.lookup_angles = wp.array(np.array(self._angles_tuple, dtype=np.float32), dtype=wp.float32, device=device)
+        self.lookup_torques = wp.array(np.array(self._torques_tuple, dtype=np.float32), dtype=wp.float32, device=device)
+        self._angles_tuple = None
+        self._torques_tuple = None
 
     def modify_forces(
         self,
@@ -104,12 +110,11 @@ class ClampingPositionBased(Clamping):
         positions: wp.array[float],
         velocities: wp.array[float],
         input_indices: wp.array[wp.uint32],
-        num_actuators: int,
         device: wp.Device | None = None,
     ) -> None:
         wp.launch(
             kernel=_position_based_clamp_kernel,
-            dim=num_actuators,
+            dim=len(src_forces),
             inputs=[
                 positions,
                 input_indices,

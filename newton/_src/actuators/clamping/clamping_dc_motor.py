@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import math
-import warnings
 from typing import Any
 
 import warp as wp
@@ -54,27 +53,15 @@ class ClampingDCMotor(Clamping):
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         if "velocity_limit" not in args:
-            raise ValueError("ClampingDCMotor requires 'velocity_limit' argument")
+            raise ValueError("ClampingDCMotor requires 'velocity_limit'")
         vel_lim = args["velocity_limit"]
         if vel_lim <= 0.0:
-            warnings.warn(
-                f"ClampingDCMotor: velocity_limit must be > 0 (used as divisor "
-                f"in torque-speed computation); got {vel_lim}, falling back to 1e6",
-                stacklevel=2,
-            )
-            vel_lim = 1e6
-        sat = args.get("saturation_effort", math.inf)
-        if math.isinf(sat):
-            max_force = args.get("max_force", math.inf)
-            if not math.isinf(max_force):
-                sat = max_force
-            else:
-                sat = 1e6
-            warnings.warn(
-                f"ClampingDCMotor: saturation_effort not set or infinite, "
-                f"defaulting to {sat} to avoid inf*0 in torque-speed computation",
-                stacklevel=2,
-            )
+            raise ValueError(f"ClampingDCMotor: velocity_limit must be > 0, got {vel_lim}")
+        if "saturation_effort" not in args:
+            raise ValueError("ClampingDCMotor requires 'saturation_effort'")
+        sat = args["saturation_effort"]
+        if sat <= 0.0:
+            raise ValueError(f"ClampingDCMotor: saturation_effort must be > 0, got {sat}")
         return {
             "saturation_effort": sat,
             "velocity_limit": vel_lim,
@@ -90,9 +77,9 @@ class ClampingDCMotor(Clamping):
         """Initialize DC motor saturation.
 
         Args:
-            saturation_effort: Peak motor torque at stall. Shape (N,).
-            velocity_limit: Maximum joint velocity for torque-speed curve. Shape (N,).
-            max_force: Absolute effort limits (continuous-rated). Shape (N,).
+            saturation_effort: Peak motor torque at stall [N·m]. Shape (N,).
+            velocity_limit: Maximum joint velocity [rad/s] for the torque-speed curve. Shape (N,).
+            max_force: Absolute effort limits [N or N·m] (continuous-rated). Shape (N,).
         """
         self.saturation_effort = saturation_effort
         self.velocity_limit = velocity_limit
@@ -105,12 +92,11 @@ class ClampingDCMotor(Clamping):
         positions: wp.array[float],
         velocities: wp.array[float],
         input_indices: wp.array[wp.uint32],
-        num_actuators: int,
         device: wp.Device | None = None,
     ) -> None:
         wp.launch(
             kernel=_clamp_dc_motor_kernel,
-            dim=num_actuators,
+            dim=len(src_forces),
             inputs=[
                 velocities,
                 input_indices,

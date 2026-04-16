@@ -36,7 +36,7 @@ class ClampingMaxForce(Clamping):
         """Initialize max-force clamp.
 
         Args:
-            max_force: Per-actuator force limits. Shape (N,).
+            max_force: Per-actuator force limits [N or N·m]. Shape (N,).
         """
         self.max_force = max_force
 
@@ -47,12 +47,11 @@ class ClampingMaxForce(Clamping):
         positions: wp.array[float],
         velocities: wp.array[float],
         input_indices: wp.array[wp.uint32],
-        num_actuators: int,
         device: wp.Device | None = None,
     ) -> None:
         wp.launch(
             kernel=_box_clamp_kernel,
-            dim=num_actuators,
+            dim=len(src_forces),
             inputs=[self.max_force, src_forces],
             outputs=[dst_forces],
             device=device,
