@@ -5,11 +5,43 @@
 ### Added
 
 - Add `SolverXPBD.update_contacts()` to populate `contacts.force` with per-contact spatial forces (linear force and torque) derived from XPBD constraint impulses
+- Raise process priority automatically in `--benchmark` mode for more stable measurements; add `--realtime` for maximum priority.
+- Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
+- Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
+- Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
+- Add `ViewerBase.log_arrows()` for arrow rendering (wide line + arrowhead) in the GL viewer with a dedicated geometry shader
+- Add `enable_multiccd` parameter to `SolverMuJoCo` for multi-CCD contact generation (up to 4 contact points per geom pair)
+- Add `ViewerViser.log_scalar()` for live scalar time-series plots via uPlot
+
+### Changed
+
+- Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
+- Pin `mujoco` and `mujoco-warp` dependencies to `~=3.6.0`
+- Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
+- Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
+
+### Fixed
+
+- Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
+- Show prismatic joints in the GL viewer when "Show Joints" is enabled
+- Fix connect constraint anchor computation to account for joint reference positions when `SolverMuJoCo` is the chosen solver.
+- Fix mesh-convex back-face contacts generating inverted normals that trap shapes inside meshes and cause solver divergence (NaN)
+- Fix MPR convergence failure on large and extreme-aspect-ratio mesh triangles by projecting the starting point onto the triangle nearest the convex center
+- Fix O(W²·S²) memory explosion in `CollisionPipeline` shape-pair buffer allocation for NXN and SAP broad phase modes by computing per-world pair counts instead of a global N²
+- Fix `SensorRaycast` ignoring `PLANE` geometry
+- Fix SDF hydroelastic broadphase scatter kernel using a grid-stride loop with binary search instead of per-pair thread launch
+- Fix box support-map sign flips from quaternion rotation noise (~1e-14) producing invalid GJK/MPR contacts for face-touching boxes with non-trivial base rotations
+- Fix USD import of multi-DOF joints from MuJoCo-converted assets where multiple revolute joints between the same two bodies caused false cycle detection; merge them into D6 joints with correct DOF label mapping for MjcActuator target resolution
+- Fix ViewerViser mesh popping artifacts caused by viser's automatic LOD simplification creating holes in complex geometry
+
+## [1.1.0] - 2026-04-13
+
+### Added
+
 - Add repeatable `--warp-config KEY=VALUE` CLI option for overriding `warp.config` attributes when running examples
 - Add 3D texture-based SDF, replacing NanoVDB volumes in the mesh-mesh collision pipeline for improved performance and CPU compatibility.
 - Parse URDF joint `limit effort="..."` values and propagate them to imported revolute and prismatic joint `effort_limit` settings
 - Add `--benchmark [SECONDS]` flag to examples for headless FPS measurement with warmup
-- Raise process priority automatically in `--benchmark` mode for more stable measurements; add `--realtime` for maximum priority.
 - Interactive example browser in the GL viewer with tree-view navigation and switch/reset support
 - Add `TetMesh` class and USD loading API for tetrahedral mesh geometry
 - Support kinematic bodies in VBD solver
@@ -37,45 +69,42 @@
 - Add `ref` parameter to `download_asset()` to allow overriding the pinned revision
 - Add import of `UsdGeom.TetMesh` prims as soft meshes through `ModelBuilder.add_usd()`
 - Add `total_force_friction` and `force_matrix_friction` to `SensorContact` for tangential (friction) force decomposition
-- Add `compute_normals` and `compute_uvs` optional arguments to `Mesh.create_heightfield()` and `Mesh.create_terrain()`
+- Add Gaussian Splat geometry support via `ModelBuilder.add_shape_gaussian()` and USD import
+- Add configurable Gaussian sorting modes to `SensorTiledCamera`
+- Add automatic box, sphere, and capsule shape fitting for convex meshes during MJCF import
+- Add color and texture reading to `usd.utils.get_mesh()`
+- Export `ViewerBase` from `newton.viewer` public API
+- Add `custom_attributes` argument to `ModelBuilder.add_shape_convex_hull()`
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
-- Add `enable_multiccd` parameter to `SolverMuJoCo` for multi-CCD contact generation (up to 4 contact points per geom pair)
-- Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
-- Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
-- Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
-- Add `ViewerBase.log_arrows()` for arrow rendering (wide line + arrowhead) in the GL viewer with a dedicated geometry shader
-- Add `ViewerViser.log_scalar()` for live scalar time-series plots via uPlot
 
 ### Changed
 
+- Require `mujoco ~=3.6.0` and `mujoco-warp ~=3.6.0` (previously 3.5.x)
+- Replace `plyfile` dependency with `open3d` for mesh I/O. Users who depended on `plyfile` transitively should install it separately.
+- Switch Python build backend from `hatchling` to `uv_build`
 - Switch mesh-SDF collision from triangle-based gradient descent to edge-based Brent's method to reduce contact jitter
 - Unify heightfield and mesh collision pipeline paths; the separate `heightfield_midphase_kernel` and `shape_pairs_heightfield` buffer are removed in favor of the shared mesh midphase
-- Replace per-shape `Model.shape_heightfield_data` / `Model.heightfield_elevation_data` with compact `Model.shape_heightfield_index` / `Model.heightfield_data` / `Model.heightfield_elevations`, matching the SDF indirection pattern
+- Replace per-shape `Model.shape_heightfield_data` / `Model.heightfield_elevation_data` with compact `Model.shape_heightfield_index` / `Model.heightfield_data` / `Model.heightfield_elevations`, matching the SDF indirection pattern. Use `Model.heightfield_data` indexed via `Model.shape_heightfield_index` instead.
 - Standardize `rigid_contact_normal` to point from shape 0 toward shape 1 (A-to-B), matching the documented convention. Consumers that previously negated the normal on read (XPBD, VBD, MuJoCo, Kamino) no longer need to.
-- Replace `Model.sdf_data` / `sdf_volume` / `sdf_coarse_volume` with texture-based equivalents (`texture_sdf_data`, `texture_sdf_coarse_textures`, `texture_sdf_subgrid_textures`)
-- Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
+- Replace `Model.sdf_data` / `sdf_volume` / `sdf_coarse_volume` with texture-based equivalents (`texture_sdf_data`, `texture_sdf_coarse_textures`, `texture_sdf_subgrid_textures`). Use `Model.texture_sdf_data`, `texture_sdf_coarse_textures`, and `texture_sdf_subgrid_textures` instead.
 - Render inertia boxes as wireframe lines instead of solid boxes in the GL viewer to avoid occluding objects
 - Make contact reduction normal binning configurable (polyhedron, scan directions, voxel budget) via constants in ``contact_reduction.py``
 - Upgrade GL viewer lighting from Blinn-Phong to Cook-Torrance PBR with GGX distribution, Schlick-GGX geometry, Fresnel-weighted ambient, and ACES filmic tone mapping
 - Change implicit MPM residual computation to consider both infinity and l2 norm
 - Change implicit MPM hardening law from exponential to hyperbolic sine (`sinh(-h * log(Jp))`), no longer scales elastic modulus
-- Change implicit MPM collider velocity mode names: `"forward"` / `"backward"` replace `"instantaneous"` / `"finite_difference"`
+- Change implicit MPM collider velocity mode names: `"forward"` / `"backward"` replace `"instantaneous"` / `"finite_difference"`. Old names are no longer accepted.
 - Simplify `SensorContact` force output: add `total_force` (aggregate per sensing object) and `force_matrix` (per-counterpart breakdown, `None` when no counterparts)
 - Add `sensing_obj_idx` (`list[int]`), `counterpart_indices` (`list[list[int]]`), `sensing_obj_type`, and `counterpart_type` attributes. Rename `include_total` to `measure_total`
 - Replace verbose Apache 2.0 boilerplate with two-line SPDX-only license headers across all source and documentation files
-- Add `custom_attributes` argument to `ModelBuilder.add_shape_convex_hull()`
 - Improve wrench preservation in hydroelastic contacts with contact reduction.
 - Show Newton deprecation warnings during example runs started via `python -m newton.examples ...` or `python -m newton.examples.<category>.<module>`; pass `-W ignore::DeprecationWarning` if you need the previous quiet behavior.
 - Reorder `ModelBuilder.add_shape_gaussian()` parameters so `xform` precedes `gaussian`, in line with other `add_shape_*` methods. Callers using positional arguments should switch to keyword form (`gaussian=..., xform=...`); passing a `Gaussian` as the second positional argument still works but emits a `DeprecationWarning`
 - Rename `ModelBuilder.add_shape_ellipsoid()` parameters `a`, `b`, `c` to `rx`, `ry`, `rz`. Old names are still accepted as keyword arguments but emit a `DeprecationWarning`
-- Rename `collide_plane_cylinder()` parameter `cylinder_center` to `cylinder_pos` for consistency with other collide functions
+- Rename `collide_plane_cylinder()` parameter `cylinder_center` to `cylinder_pos` for consistency with other collide functions. The old name is no longer accepted.
 - Add optional `state` parameter to `SolverBase.update_contacts()` to align the base-class signature with Kamino and MuJoCo solvers
 - Use `Literal` types for `SolverImplicitMPM.Config` string fields with fixed option sets (`solver`, `warmstart_mode`, `collider_velocity_mode`, `grid_type`, `transfer_scheme`, `integration_scheme`)
 - Migrate `wp.array(dtype=X)` type annotations to `wp.array[X]` bracket syntax (Warp 1.12+).
 - Align articulated `State.body_qd` / FK / IK / Jacobian / mass-matrix linear velocity with COM-referenced motion. If you were comparing `body_qd[:3]` against finite-differenced body-origin motion, recover origin velocity via `v_origin = v_com - omega x r_com_world`. Descendant `FREE` / `DISTANCE` `joint_qd` remains parent-frame and `joint_f` remains a world-frame COM wrench.
-- Pin `mujoco` and `mujoco-warp` dependencies to `~=3.6.0`
-- Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
-- Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
 
 ### Deprecated
 
@@ -102,7 +131,6 @@
 ### Fixed
 
 - Fix GL viewer crash when enabling "Gap + Margin" for soft-body-only states with no rigid body transforms
-- Fix USD import of multi-DOF joints from MuJoCo-converted assets where multiple revolute joints between the same two bodies caused false cycle detection; merge them into D6 joints with correct DOF label mapping for MjcActuator target resolution
 - Fix inertia validation spuriously inflating small but physically valid eigenvalues for lightweight components (< ~50 g) by using a relative threshold instead of an absolute 1e-6 cutoff
 - Restore keyboard camera movement while hovering gizmos so keyboard controls remain active when the pointer is over gizmos
 - Resolve USD asset references recursively in `resolve_usd_from_url` so nested stages are fully downloaded
@@ -112,11 +140,9 @@
 - Update `ModelBuilder` internal state after fast-path (GPU kernel) inertia validation so it matches the returned `Model`
 - Fix MJCF mesh scale resolution to use the mesh asset's own class rather than the geom's default class, avoiding incorrect vertex scaling for models like Robotiq 2F-85 V4
 - Fix articulated bodies drifting laterally on the ground in XPBD solver by solving rigid contacts before joints
-- Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
 - Fix `hide_collision_shapes=True` not hiding collision meshes that have bound PBR materials
 - Filter inactive particles in viewer so only particles with `ParticleFlags.ACTIVE` are rendered
 - Fix concurrent asset download races on Windows by using content-addressed cache directories
-- Show prismatic joints in the GL viewer when "Show Joints" is enabled
 - Fix body `gravcomp` not being written to the MuJoCo spec, causing it to be absent from XML saved via `save_to_mjcf`
 - Fix `compute_world_offsets` grid ordering to match terrain grid row-major order so replicated world indices align with terrain block indices
 - Fix `eq_solimp` not being written to the MuJoCo spec for equality constraints, causing it to be absent from XML saved via `save_to_mjcf`
@@ -141,20 +167,12 @@
 - Fix heightfield bounding-sphere radius underestimating Z extent for asymmetric height ranges (e.g. `min_z=0, max_z=10`)
 - Fix VBD self-contact barrier C2 discontinuity at `d = tau` caused by a factor-of-two error in the log-barrier coefficient
 - Fix fast inertia validation treating near-symmetric tensors within `np.allclose()` default tolerances as corrections, aligning CPU and GPU validation warnings
-- Fix connect constraint anchor computation to account for joint reference positions when `SolverMuJoCo` is the chosen solver.
-- Fix forward-kinematics child-origin linear velocity for articulated translated joints
 - Fix URDF joint dynamics friction import so specified friction values are preserved during simulation
+- Fix `requires_grad` not being preserved in `ArticulationView` attribute getters, breaking gradient propagation through selection queries
 - Fix duplicate Reset button in brick stacking example when using the example browser
-- Fix mesh-convex back-face contacts generating inverted normals that trap shapes inside meshes and cause solver divergence (NaN)
-- Fix MPR convergence failure on large and extreme-aspect-ratio mesh triangles by projecting the starting point onto the triangle nearest the convex center
 - Cap `cbor2` dependency to `<6` to prevent recorder test failures caused by breaking deserialization changes in cbor2 6.0
-- Fix O(W²·S²) memory explosion in `CollisionPipeline` shape-pair buffer allocation for NXN and SAP broad phase modes by computing per-world pair counts instead of a global N²
 - Clamp viewer picking force to prevent explosion when picking light objects near stiff contacts, configurable via `pick_max_acceleration` parameter on the `Picking` class (default 5g of effective articulation mass)
 - Fix `cloth_franka` example Jacobian broken by COM-referenced `body_qd` convention change; adjust robot base height, gripper orientations, and grasp targets for improved reachability (a follow-up PR will migrate the example to `newton.ik`)
-- Fix SDF hydroelastic broadphase scatter kernel using a grid-stride loop with binary search instead of per-pair thread launch
-- Fix `SensorRaycast` ignoring `PLANE` geometry
-- Fix box support-map sign flips from quaternion rotation noise (~1e-14) producing invalid GJK/MPR contacts for face-touching boxes with non-trivial base rotations
-- Fix ViewerViser mesh popping artifacts caused by viser's automatic LOD simplification creating holes in complex geometry
 
 ## [1.0.0] - 2026-03-10
 
