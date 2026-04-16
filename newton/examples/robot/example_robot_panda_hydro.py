@@ -250,6 +250,7 @@ class Example:
             )
             cup_body = builder.add_body(label="cup", xform=cup_xform)
             builder.add_shape_mesh(body=cup_body, mesh=cup_mesh, cfg=shape_cfg_meshes)
+            self.cup_rim_z = self.cup_pos[2] + float(cup_mesh.vertices[:, 2].max())
 
         # build model for IK
         self.model_single = copy.deepcopy(builder).finalize()
@@ -431,20 +432,21 @@ class Example:
                 f"max lift={max_lift:.3f} (expected > {min_lift_height})"
             )
 
-        # Verify that the object ended up in the cup
+        # Verify that the object ended up inside the cup
         if self.put_in_cup:
             body_q = self.state_0.body_q.numpy()
             cup_x, cup_y, cup_z = self.cup_pos
-            tolerance_xy = 0.05
-            min_z = cup_z - 0.05
+            tolerance_xy = 0.03  # cup inner radius is ~0.024m
+            max_z = self.cup_rim_z  # pen COM must be below the cup rim
 
             for world_idx in range(self.world_count):
                 object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
                 x, y, z = body_q[object_body_idx][:3]
-                assert abs(x - cup_x) < tolerance_xy and abs(y - cup_y) < tolerance_xy and z > min_z, (
+                assert abs(x - cup_x) < tolerance_xy and abs(y - cup_y) < tolerance_xy and z < max_z, (
                     f"World {world_idx}: Object is not in the cup. "
                     f"Object pos=({x:.3f}, {y:.3f}, {z:.3f}), "
-                    f"cup pos=({cup_x:.3f}, {cup_y:.3f}, {cup_z:.3f})"
+                    f"cup pos=({cup_x:.3f}, {cup_y:.3f}, {cup_z:.3f}), "
+                    f"cup rim z={max_z:.3f}"
                 )
 
     def setup_ik(self):
@@ -499,7 +501,7 @@ class Example:
         ]
 
         if self.put_in_cup:
-            loose_pos = 0.72
+            loose_pos = 0.715
             wps = []
             cup_pos_higher = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest])
             cup_pos_lower = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest - 0.15])
