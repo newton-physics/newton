@@ -7733,6 +7733,103 @@ def Mesh "JustAMesh" ()
         self.assertIsNone(tm.k_lambda)
         self.assertIsNone(tm.density)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_add_usd_imports_tetmesh(self):
+        """Test that add_usd imports TetMesh prims as soft meshes."""
+        asset_path = os.path.join(os.path.dirname(__file__), "assets", "tetmesh_with_material.usda")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(asset_path)
+
+        self.assertEqual(len(builder.particle_q), 4)
+        self.assertEqual(len(builder.tet_indices), 1)
+        self.assertEqual(len(builder.tri_indices), 4)
+        self.assertAlmostEqual(builder.tet_materials[0][0], 300000.0 / (2.0 * 1.3), places=0)
+        self.assertAlmostEqual(builder.tet_materials[0][1], 300000.0 * 0.3 / (1.3 * 0.4), places=0)
+        self.assertAlmostEqual(sum(builder.particle_mass), 40.0 / 6.0, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_add_usd_imports_instanced_tetmesh_once_per_instance(self):
+        """Test that instance proxies import one TetMesh per instance."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+
+        world = UsdGeom.Xform.Define(stage, "/World")
+        stage.SetDefaultPrim(world.GetPrim())
+
+        UsdGeom.Xform.Define(stage, "/Prototypes/TetProto")
+        tetmesh = stage.DefinePrim("/Prototypes/TetProto/SoftBody", "TetMesh")
+        tetmesh.CreateAttribute("points", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        )
+        tetmesh.CreateAttribute("tetVertexIndices", Sdf.ValueTypeNames.Int4Array).Set([(0, 1, 2, 3)])
+
+        for i in range(2):
+            instance = UsdGeom.Xform.Define(stage, f"/World/Instance{i}")
+            instance_prim = instance.GetPrim()
+            instance_prim.GetReferences().AddInternalReference("/Prototypes/TetProto")
+            instance_prim.SetInstanceable(True)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(len(builder.particle_q), 8)
+        self.assertEqual(len(builder.tet_indices), 2)
+        self.assertEqual(len(builder.tri_indices), 8)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_add_usd_imports_tetmesh_with_transforms(self):
+        """Test that add_usd applies TetMesh rotation and non-uniform scale transforms."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    double3 xformOp:translate = (1, 2, 3)
+    float xformOp:rotateZ = 90
+    float3 xformOp:scale = (2, 3, 4)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ", "xformOp:scale"]
+
+    def Xform "Offset"
+    {
+        double3 xformOp:translate = (0.5, -1, 2)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def TetMesh "SoftBody" ()
+        {
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+            int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        }
+    }
+}
+"""
+        )
+
+        import_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi)
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform((4.0, 5.0, 6.0), import_quat))
+
+        positions = np.array(builder.particle_q, dtype=np.float32)
+        expected = np.array(
+            [
+                [0.0, 2.0, 17.0],
+                [0.0, 0.0, 17.0],
+                [3.0, 2.0, 17.0],
+                [0.0, 2.0, 21.0],
+            ],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(positions, expected, atol=1e-6)
+
     def test_tetmesh_save_load_npz(self):
         """Test TetMesh round-trip save/load via .npz."""
 
@@ -7970,6 +8067,61 @@ def Mesh "JustAMesh" ()
         region_arr = model.regionId.numpy()
         self.assertEqual(len(region_arr), model.tet_count)
         np.testing.assert_array_equal(region_arr, region_id)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_add_usd_does_not_mutate_loaded_tetmesh_custom_attributes(self):
+        """Test that add_usd filters TetMesh custom attributes without mutating the loaded mesh."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    defaultPrim = "World"
+)
+
+def Xform "World"
+{
+    def TetMesh "SoftBody" ()
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+    }
+}
+"""
+        )
+
+        source_tetmesh = newton.TetMesh(
+            vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32),
+            tet_indices=np.array([0, 1, 2, 3], dtype=np.int32),
+            custom_attributes={
+                "temperature": (
+                    np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32),
+                    newton.Model.AttributeFrequency.PARTICLE,
+                ),
+                "regionId": (
+                    np.array([7], dtype=np.int32),
+                    newton.Model.AttributeFrequency.TETRAHEDRON,
+                ),
+            },
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="temperature",
+                dtype=wp.float32,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+            )
+        )
+
+        with mock.patch("newton._src.utils.import_usd.usd.get_tetmesh", return_value=source_tetmesh):
+            builder.add_usd(stage)
+
+        self.assertEqual(set(source_tetmesh.custom_attributes), {"temperature", "regionId"})
+        model = builder.finalize()
+        self.assertTrue(hasattr(model, "temperature"))
+        self.assertFalse(hasattr(model, "regionId"))
 
     def test_mesh_create_from_file_obj(self):
         """Test Mesh.create_from_file with an OBJ file."""

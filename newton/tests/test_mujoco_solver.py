@@ -8785,6 +8785,56 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
             os.unlink(xml_path)
 
 
+class TestEqualityJointObjType(unittest.TestCase):
+    """Verify eq_objtype matches native MuJoCo for joint equality constraints.
+
+    Regression test: Newton's solver previously passed objtype=mjOBJ_JOINT to
+    spec.add_equality(), causing eq_objtype=3 in the compiled model. Native
+    MuJoCo (from XML) produces eq_objtype=0. The fix: don't pass objtype for
+    joint equality constraints, letting MuJoCo set it automatically.
+    """
+
+    def test_joint_equality_objtype_matches_native(self):
+        """eq_objtype should match between Newton and native for joint equality."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        b1 = builder.add_link()
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        b2 = builder.add_link()
+        j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1])
+        builder.add_articulation([j2])
+        builder.add_equality_constraint_joint(j1, j2)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model)
+
+        # Native: load equivalent MJCF
+        import mujoco
+
+        native_model = mujoco.MjModel.from_xml_string("""
+        <mujoco>
+          <worldbody>
+            <body><joint name="j1" type="hinge" axis="0 0 1"/><geom type="box" size="0.1 0.1 0.1"/></body>
+            <body><joint name="j2" type="hinge" axis="0 0 1"/><geom type="box" size="0.1 0.1 0.1"/></body>
+          </worldbody>
+          <equality>
+            <joint joint1="j1" joint2="j2"/>
+          </equality>
+        </mujoco>
+        """)
+
+        self.assertEqual(solver.mj_model.neq, native_model.neq, "neq count mismatch")
+        np.testing.assert_array_equal(
+            solver.mj_model.eq_objtype,
+            native_model.eq_objtype,
+            err_msg="eq_objtype mismatch: Newton should match native MuJoCo for joint equality",
+        )
+
+
 class TestUpdateContactsPointPositions(unittest.TestCase):
     """Test that update_contacts populates rigid_contact_point0/point1."""
 

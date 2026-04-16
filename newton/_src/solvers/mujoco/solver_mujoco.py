@@ -4814,7 +4814,7 @@ class SolverMuJoCo(SolverBase):
                     eq.solimp = eq_constraint_solimp[i]
 
             elif constraint_type == EqType.JOINT:
-                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
+                eq = spec.add_equality()
                 eq.type = mujoco.mjtEq.mjEQ_JOINT
                 eq.active = eq_constraint_enabled[i]
                 j1_idx = int(eq_constraint_joint1[i])
@@ -4953,7 +4953,7 @@ class SolverMuJoCo(SolverBase):
                 )
                 continue
 
-            eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
+            eq = spec.add_equality()
             eq.type = mujoco.mjtEq.mjEQ_JOINT
             eq.active = bool(mimic_enabled[i])
             eq.name1 = j0_name  # follower (constrained joint)
