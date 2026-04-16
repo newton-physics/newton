@@ -110,17 +110,19 @@ The tables below list every Newton property and custom attribute that
 table shows:
 
 - The Newton property or ``model.mujoco.<name>`` custom attribute.
-- The ``mjc:`` USD attribute that populates it during
-  :meth:`~newton.ModelBuilder.add_usd`, where applicable.
+- The USD attribute that populates it (standard ``physics:`` schemas,
+  ``mjc:``-prefixed attributes from the
+  `mjcPhysics USD schema <https://github.com/google-deepmind/mujoco/blob/main/src/experimental/usd/mjcPhysics/generatedSchema.usda>`_,
+  or ``newton:mujoco:`` attributes for Newton's own round-trip namespace).
+- The MJCF XML attribute that populates it during
+  :meth:`~newton.ModelBuilder.add_mjcf`, where applicable.
 - The MuJoCo model field it maps to.
 
 Standard Newton properties (``joint_limit_lower``, ``shape_material_mu``, etc.)
-are populated from USD physics schemas or set programmatically.  MuJoCo-specific
-parameters use the ``mujoco`` custom-attribute namespace and additionally
-support ``mjc:``-prefixed USD attributes from the
-`mjcPhysics USD schema <https://github.com/google-deepmind/mujoco/blob/main/src/experimental/usd/mjcPhysics/generatedSchema.usda>`_.
-Attributes marked :sup:`ext` are Newton extensions without a schema counterpart
-yet.
+are populated from standard USD physics schemas, MJCF XML elements, or set
+programmatically.  MuJoCo-specific parameters use the ``mujoco``
+custom-attribute namespace.  Attributes marked :sup:`ext` are Newton extensions
+— ``mjc:``-prefixed USD attributes without a schema counterpart yet.
 
 **Setup.**
   Call :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` on a
@@ -339,14 +341,18 @@ Joint attributes
      - ``actuatorfrcrange``
      - Per-actuator ``forcerange`` for ball joints
 
-**Properties populated from** ``mjc:`` **USD attributes** (via ``SchemaResolverMjc``):
+The ``mjc:`` USD attributes below are an alternative source for
+``armature``, ``friction``, and ``limit_ke``/``limit_kd`` (the same
+properties listed above).  When both a standard USD attribute and an
+``mjc:`` attribute are authored, the resolution order is
+Newton → PhysX → MuJoCo.
 
 .. list-table::
    :header-rows: 1
    :widths: 25 25 20 30
 
    * - Newton property
-     - USD attribute
+     - ``mjc:`` USD attribute
      - Default
      - Notes
    * - ``armature``
@@ -370,7 +376,7 @@ Joint attributes
    `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
    for details.
 
-**Custom attributes** (read from joint prims):
+**Custom attributes** (``mujoco.*`` namespace):
 
 .. list-table::
    :header-rows: 1
@@ -471,14 +477,15 @@ Shape attributes
      - ``margin``
      -
 
-**Properties populated from** ``mjc:`` **USD attributes** (via ``SchemaResolverMjc``):
+The ``mjc:`` USD attributes below are an alternative source for
+``margin``, ``gap``, ``ke``/``kd``, and ``max_hull_vertices``.
 
 .. list-table::
    :header-rows: 1
    :widths: 25 25 20 30
 
    * - Newton property
-     - USD attribute
+     - ``mjc:`` USD attribute
      - Default
      - Notes
    * - ``max_hull_vertices``
@@ -498,7 +505,7 @@ Shape attributes
      - ``[0.02, 1.0]``
      - See the ``solref`` note under :ref:`mujoco-joint-parameters`
 
-**Custom attributes** (read from collision prims):
+**Custom attributes** (``mujoco.*`` namespace):
 
 .. list-table::
    :header-rows: 1
@@ -536,7 +543,8 @@ Shape attributes
 Material attributes
 ^^^^^^^^^^^^^^^^^^^
 
-Read from ``PhysicsMaterialAPI`` prims via ``SchemaResolverMjc``:
+The ``mjc:`` USD attributes below are an alternative source for material
+properties on ``PhysicsMaterialAPI`` prims.
 
 .. list-table::
    :header-rows: 1
@@ -605,18 +613,20 @@ Body attributes
      - ``pos`` / ``quat``
      - Initial pose for free-joint bodies
 
-**Custom attributes:**
+**Custom attributes** (``mujoco.*`` namespace):
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 30 20 20
+   :widths: 25 22 18 15 20
 
    * - Custom attribute
      - USD attribute
+     - MJCF attribute
      - Default
      - Notes
    * - ``mujoco.gravcomp``
      - ``mjc:gravcomp`` :sup:`ext`
+     - ``gravcomp``
      - 0.0
      -
 
@@ -653,7 +663,7 @@ ball joints).
 Additional MuJoCo general actuators (motors, etc.) can be attached through
 custom attributes and are appended after the joint-target actuators.
 
-**Built-in properties** (read from ``MjcActuator`` prims via ``SchemaResolverMjc``):
+**Built-in properties** (from ``MjcActuator`` USD prims or MJCF ``<actuator>`` elements):
 
 .. list-table::
    :header-rows: 1
@@ -708,7 +718,7 @@ custom attributes and are appended after the joint-target actuators.
      - ``[1, 0, 0, 0, 0, 0]``
      -
 
-**Custom attributes** (read from ``MjcActuator`` prims):
+**Custom attributes** (``mujoco.*`` namespace):
 
 .. list-table::
    :header-rows: 1
@@ -875,7 +885,7 @@ Equality constraint attributes
      - ``eq_active``
      -
 
-**Custom attributes** (read from equality constraint prims):
+**Custom attributes** (``mujoco.*`` namespace):
 
 .. list-table::
    :header-rows: 1
