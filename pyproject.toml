@@ -114,7 +114,7 @@ docs = [
     "ipykernel>=6.0.0,<7.0.0",      # required by nbsphinx to execute notebooks (pinned <7 for rerun-sdk compatibility)
     "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
     "pypandoc_binary>=1.11",        # bundled pandoc binary
-    "viser>=1.0.16",                # required for ViewerViser in tutorial notebooks
+    "viser==1.0.26",                # required for ViewerViser in tutorial notebooks
 ]
 
 # Dependencies for Jupyter notebook compatibility
@@ -122,6 +122,8 @@ notebook = [
     "newton[examples]",
     "rerun-sdk[notebook]>=0.27.1; python_version < '3.14'",
     "jupyterlab>=4.4.10",
+    "jupyter-server-proxy>=4.5.0",
+    "viser==1.0.26",
 ]
 
 [tool.uv.build-backend]

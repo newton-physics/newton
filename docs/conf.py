@@ -395,21 +395,22 @@ def _copy_viser_client_into_output_static(*, outdir: Path) -> None:
     """Ensure the Viser web client assets are available at `{outdir}/_static/viser/`.
 
     This avoids relying on repo-relative `html_static_path` entries (which can break under `uv`),
-    and avoids writing generated assets into `docs/_static` in the working tree.
+    avoids writing generated assets into `docs/_static` in the working tree, and
+    keeps the copied client aligned with the installed `viser` package.
     """
 
     dest_dir = outdir / "_static" / "viser"
 
     src_candidates: list[Path] = []
 
-    # Repo checkout layout (most common for local builds).
-    src_candidates.append(project_root / "newton" / "_src" / "viewer" / "viser" / "static")
-
-    # Installed package layout (e.g. building docs from an environment where `newton` is installed).
+    # Installed viser package build. Prefer this so the copied docs assets stay in
+    # sync with the serializer version used for notebook playback.
     try:
-        import newton  # noqa: PLC0415
+        import inspect  # noqa: PLC0415
 
-        src_candidates.append(Path(newton.__file__).resolve().parent / "_src" / "viewer" / "viser" / "static")
+        import viser  # noqa: PLC0415
+
+        src_candidates.append(Path(inspect.getfile(viser)).resolve().parent / "client" / "build")
     except Exception:
         pass
 
@@ -418,7 +419,7 @@ def _copy_viser_client_into_output_static(*, outdir: Path) -> None:
         # Don't hard-fail doc builds; the viewer docs can still build without the embedded client.
         expected = ", ".join(str(p) for p in src_candidates)
         print(
-            f"Warning: could not find Viser client assets to copy. Expected `index.html` under one of: {expected}",
+            f"Warning: could not find installed Viser client assets to copy. Expected `index.html` under one of: {expected}",
             file=sys.stderr,
         )
         return
