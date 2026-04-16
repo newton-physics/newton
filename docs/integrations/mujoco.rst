@@ -294,7 +294,7 @@ Solver parameters follow a three-level resolution priority:
 
 .. _mujoco-joint-parameters:
 
-Joint parameters
+Joint attributes
 ^^^^^^^^^^^^^^^^
 
 **Standard Newton properties:**
@@ -409,7 +409,7 @@ Joint parameters
 
 .. _mujoco-shape-parameters:
 
-Shape parameters
+Shape attributes
 ^^^^^^^^^^^^^^^^
 
 **Standard Newton properties:**
@@ -495,7 +495,7 @@ Shape parameters
 
 .. _mujoco-material-parameters:
 
-Material parameters
+Material attributes
 ^^^^^^^^^^^^^^^^^^^
 
 Read from ``PhysicsMaterialAPI`` prims via ``SchemaResolverMjc``:
@@ -532,7 +532,7 @@ Read from ``PhysicsMaterialAPI`` prims via ``SchemaResolverMjc``:
 
 .. _mujoco-body-parameters:
 
-Body parameters
+Body attributes
 ^^^^^^^^^^^^^^^
 
 **Standard Newton properties:**
@@ -575,7 +575,7 @@ Body parameters
 
 .. _mujoco-actuator-parameters:
 
-Actuator parameters
+Actuator attributes
 ^^^^^^^^^^^^^^^^^^^
 
 Newton's per-DOF ``joint_target_mode`` determines which MuJoCo general
@@ -766,7 +766,7 @@ the target joint's limits as the actuator's ``ctrlrange``.
 
 .. _mujoco-equality-parameters:
 
-Equality constraint parameters
+Equality constraint attributes
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. list-table::
@@ -849,7 +849,7 @@ Equality constraint parameters
 
 .. _mujoco-tendon-parameters:
 
-Tendon parameters
+Tendon attributes
 ^^^^^^^^^^^^^^^^^
 
 .. list-table::
@@ -973,7 +973,7 @@ prefix.
 
 .. _mujoco-contact-pair-parameters:
 
-Contact pair parameters
+Contact pair attributes
 ^^^^^^^^^^^^^^^^^^^^^^^
 
 Explicit contact pairs (``mujoco:pair`` frequency) are populated from
