@@ -203,7 +203,7 @@ class ModelBuilder:
         """
 
         controller_class: type  # Controller subclass (e.g. ControllerPD)
-        delay: int | None  # Scalar delay steps, or None
+        delay: int | None  # Delay buffer depth, or None
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
         controller_shared_kwargs: dict  # Shared controller kwargs (e.g. network_path)

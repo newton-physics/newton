@@ -9,6 +9,13 @@ from typing import Any, ClassVar
 import warp as wp
 
 
+@wp.kernel
+def _masked_zero_1d(data: wp.array[float], mask: wp.array[wp.bool]):
+    i = wp.tid()
+    if mask[i]:
+        data[i] = 0.0
+
+
 class Controller:
     """Base class for controllers that compute raw forces from state error.
 
@@ -32,8 +39,13 @@ class Controller:
         state (e.g. integral accumulators, history buffers).
         """
 
-        def reset(self) -> None:
-            """Reset state to initial values."""
+        def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
+            """Reset state to initial values.
+
+            Args:
+                mask: Boolean mask of length N. ``True`` entries are reset.
+                    ``None`` resets all.
+            """
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
 

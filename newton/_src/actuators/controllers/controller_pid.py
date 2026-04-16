@@ -9,7 +9,7 @@ from typing import Any
 
 import warp as wp
 
-from .base import Controller
+from .base import Controller, _masked_zero_1d
 
 
 @wp.kernel
@@ -70,8 +70,11 @@ class ControllerPID(Controller):
         integral: wp.array[float] | None = None
         """Accumulated integral of position error, shape (N,)."""
 
-        def reset(self) -> None:
-            self.integral.zero_()
+        def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
+            if mask is None:
+                self.integral.zero_()
+            else:
+                wp.launch(_masked_zero_1d, dim=len(mask), inputs=[self.integral, mask])
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:

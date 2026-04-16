@@ -65,11 +65,17 @@ class Actuator:
         controller_state: Controller.State | None = None
         """Controller-specific state, or ``None`` if stateless."""
 
-        def reset(self) -> None:
+        def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
+            """Reset composed state.
+
+            Args:
+                mask: Boolean mask of length N. ``True`` entries are reset.
+                    ``None`` resets all.
+            """
             if self.delay_state is not None:
-                self.delay_state.reset()
+                self.delay_state.reset(mask)
             if self.controller_state is not None:
-                self.controller_state.reset()
+                self.controller_state.reset(mask)
 
     def __init__(
         self,
@@ -128,26 +134,6 @@ class Actuator:
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
 
-    def get_param(self, name: str) -> wp.array | None:
-        """Search for a named warp array parameter across controller and clamping.
-
-        Searches controller first, then each clamping object in order.
-
-        Args:
-            name: Parameter name (e.g. ``"kp"``, ``"max_force"``).
-
-        Returns:
-            The first matching :class:`warp.array`, or ``None`` if not found.
-        """
-        val = getattr(self.controller, name, None)
-        if val is not None and isinstance(val, wp.array):
-            return val
-        for clamp in self.clamping:
-            val = getattr(clamp, name, None)
-            if val is not None and isinstance(val, wp.array):
-                return val
-        return None
-
     @property
     def SHARED_PARAMS(self) -> set[str]:
         params: set[str] = set()
@@ -187,14 +173,13 @@ class Actuator:
     ) -> None:
         """Execute one control step.
 
-        1. **Delay** — read delayed targets from buffer.
-        2. **Controller** — compute raw forces into ``_computed_forces``.
-        3. **Clamping** — clamp forces from computed → ``_applied_forces``.
-        4. **Scatter** — add applied (and optionally computed) forces to output.
-        5. **State updates** — update delay buffer and controller state.
-
-        If the delay buffer is still filling, steps 2-3 are skipped
-        (no forces produced) but the buffer keeps accumulating.
+        1. **Delay update** — push current targets into the buffer.
+        2. **Delay read** — read per-DOF delayed targets (lag clamped
+           to available history so forces are always produced).
+        3. **Controller** — compute raw forces into ``_computed_forces``.
+        4. **Clamping** — clamp forces from computed → ``_applied_forces``.
+        5. **Scatter** — add applied (and optionally computed) forces to output.
+        6. **Controller state update**.
 
         Args:
             sim_state: Simulation state with position/velocity arrays.
@@ -219,79 +204,71 @@ class Actuator:
         feedforward = orig_feedforward
         target_indices = self.indices
 
-        # --- 1. Delay: read delayed targets ---
-        skip_compute = False
-        if self.delay is not None:
-            delay_state = current_act_state.delay_state if current_act_state else None
-
-            if self.delay.is_ready(delay_state):
-                target_pos, target_vel, feedforward = self.delay.get_delayed_targets(feedforward, delay_state)
-                target_indices = self._sequential_indices
-            else:
-                skip_compute = True
-
-        if not skip_compute:
-            # --- 2. Controller: compute raw forces ---
-            ctrl_state = current_act_state.controller_state if current_act_state else None
-            self.controller.compute(
-                positions,
-                velocities,
-                target_pos,
-                target_vel,
-                feedforward,
-                self.indices,
-                target_indices,
-                self._computed_forces,
-                ctrl_state,
-                dt,
-                device=self.device,
+        # --- 1. Delay: write-then-read ---
+        if self.delay is not None and has_states:
+            self.delay.update_state(
+                orig_target_pos,
+                orig_target_vel,
+                orig_feedforward,
+                current_act_state.delay_state,
+                next_act_state.delay_state,
             )
-
-            # --- 3. Clamping: computed → applied (fused copy+clamp) ---
-            if self.clamping:
-                src = self._computed_forces
-                for clamp in self.clamping:
-                    clamp.modify_forces(
-                        src,
-                        self._applied_forces,
-                        positions,
-                        velocities,
-                        self.indices,
-                        device=self.device,
-                    )
-                    src = self._applied_forces
-                output_forces = self._applied_forces
-            else:
-                output_forces = self._computed_forces
-
-            # --- 4. Scatter-add to output ---
-            applied_output = getattr(sim_control, self.control_output_attr)
-            computed_output = (
-                getattr(sim_control, self.control_computed_output_attr)
-                if self.control_computed_output_attr is not None
-                else None
+            target_pos, target_vel, feedforward = self.delay.get_delayed_targets(
+                feedforward, next_act_state.delay_state
             )
-            wp.launch(
-                kernel=_scatter_add_kernel,
-                dim=self.num_actuators,
-                inputs=[output_forces, self._computed_forces, self.indices],
-                outputs=[applied_output, computed_output],
-                device=self.device,
-            )
+            target_indices = self._sequential_indices
 
-        # --- 5. State updates ---
-        if has_states:
-            if self.delay is not None:
-                self.delay.update_state(
-                    orig_target_pos,
-                    orig_target_vel,
-                    orig_feedforward,
-                    current_act_state.delay_state,
-                    next_act_state.delay_state,
+        # --- 2. Controller: compute raw forces ---
+        ctrl_state = current_act_state.controller_state if current_act_state else None
+        self.controller.compute(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            feedforward,
+            self.indices,
+            target_indices,
+            self._computed_forces,
+            ctrl_state,
+            dt,
+            device=self.device,
+        )
+
+        # --- 3. Clamping: computed → applied (fused copy+clamp) ---
+        if self.clamping:
+            src = self._computed_forces
+            for clamp in self.clamping:
+                clamp.modify_forces(
+                    src,
+                    self._applied_forces,
+                    positions,
+                    velocities,
+                    self.indices,
+                    device=self.device,
                 )
+                src = self._applied_forces
+            output_forces = self._applied_forces
+        else:
+            output_forces = self._computed_forces
 
-            if self.controller.is_stateful() and not skip_compute:
-                self.controller.update_state(
-                    current_act_state.controller_state,
-                    next_act_state.controller_state,
-                )
+        # --- 4. Scatter-add to output ---
+        applied_output = getattr(sim_control, self.control_output_attr)
+        computed_output = (
+            getattr(sim_control, self.control_computed_output_attr)
+            if self.control_computed_output_attr is not None
+            else None
+        )
+        wp.launch(
+            kernel=_scatter_add_kernel,
+            dim=self.num_actuators,
+            inputs=[output_forces, self._computed_forces, self.indices],
+            outputs=[applied_output, computed_output],
+            device=self.device,
+        )
+
+        # --- 5. Controller state update ---
+        if has_states and self.controller.is_stateful():
+            self.controller.update_state(
+                current_act_state.controller_state,
+                next_act_state.controller_state,
+            )

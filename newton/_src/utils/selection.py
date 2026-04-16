@@ -1703,16 +1703,26 @@ class ArticulationView:
 
         return mapping
 
-    def _get_actuator_attribute_array(self, actuator: "Actuator", name: str) -> wp.array:
-        """Get actuator parameter array shaped (world_count, dofs_per_world), zeros for non-actuated DOFs."""
+    def get_actuator_parameter(self, actuator: "Actuator", component: Any, name: str) -> wp.array:
+        """Get actuator parameter values for actuators corresponding to this view's DOFs.
+
+        Args:
+            actuator: Actuator instance (used for DOF index mapping).
+            component: The component that owns the parameter — a
+                :class:`~newton._src.actuators.controllers.base.Controller`,
+                :class:`~newton._src.actuators.clamping.base.Clamping`, or
+                :class:`~newton._src.actuators.delay.Delay` instance.
+            name: Attribute name on *component* (e.g. ``"kp"``, ``"max_force"``,
+                ``"delays"``).
+
+        Returns:
+            Parameter values shaped ``(world_count, dofs_per_world)``.
+        """
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
             return wp.empty((self.world_count, 0), dtype=float, device=self.device)
 
-        # Look up the param: check top-level first, then fall through to controller/clamping
-        src = getattr(actuator, name, None)
-        if not isinstance(src, wp.array):
-            src = actuator.get_param(name)
+        src = getattr(component, name)
         dofs_per_world = len(mapping) // self.world_count
 
         dst = wp.zeros(len(mapping), dtype=src.dtype, device=self.device)
@@ -1727,38 +1737,27 @@ class ArticulationView:
         batched_shape = (self.world_count, dofs_per_world, *src.shape[1:])
         return dst.reshape(batched_shape)
 
-    def get_actuator_parameter(self, actuator: "Actuator", name: str) -> wp.array:
-        """
-        Get actuator parameter values for actuators corresponding to this view's DOFs.
-
-        Args:
-            actuator: An actuator instance with indices and parameter arrays.
-            name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
-
-        Returns:
-            wp.array: Parameter values shaped (world_count, dofs_per_world).
-        """
-        return self._get_actuator_attribute_array(actuator, name)
-
     def set_actuator_parameter(
-        self, actuator: "Actuator", name: str, values: wp.array, mask: wp.array | None = None
+        self, actuator: "Actuator", component: Any, name: str, values: wp.array, mask: wp.array | None = None
     ) -> None:
-        """
-        Set actuator parameter values for actuators corresponding to this view's DOFs.
+        """Set actuator parameter values for actuators corresponding to this view's DOFs.
 
         Args:
-            actuator: An actuator instance with indices and parameter arrays.
-            name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
-            values: New parameter values shaped (world_count, dofs_per_world). Non-actuated DOFs are ignored.
-            mask (array, optional): Per-world mask (world_count,). Only masked worlds are updated.
+            actuator: Actuator instance (used for DOF index mapping).
+            component: The component that owns the parameter — a
+                :class:`~newton._src.actuators.controllers.base.Controller`,
+                :class:`~newton._src.actuators.clamping.base.Clamping`, or
+                :class:`~newton._src.actuators.delay.Delay` instance.
+            name: Attribute name on *component* (e.g. ``"kp"``, ``"max_force"``,
+                ``"delays"``).
+            values: New parameter values shaped ``(world_count, dofs_per_world)``.
+            mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
             return
 
-        dst = getattr(actuator, name, None)
-        if not isinstance(dst, wp.array):
-            dst = actuator.get_param(name)
+        dst = getattr(component, name)
         dofs_per_world = len(mapping) // self.world_count
         expected_shape = (self.world_count, dofs_per_world, *dst.shape[1:])
 

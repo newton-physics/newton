@@ -36,9 +36,14 @@ class ControllerNetMLP(Controller):
         vel_history: torch.Tensor | None = None
         """Velocity history, shape (history_length, N)."""
 
-        def reset(self) -> None:
-            self.pos_error_history.zero_()
-            self.vel_history.zero_()
+        def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
+            if mask is None:
+                self.pos_error_history.zero_()
+                self.vel_history.zero_()
+            else:
+                t = wp.to_torch(mask).bool()
+                self.pos_error_history[:, t] = 0.0
+                self.vel_history[:, t] = 0.0
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:

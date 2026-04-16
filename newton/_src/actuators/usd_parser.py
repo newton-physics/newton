@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from .clamping import Clamping, ClampingDCMotor, ClampingMaxForce, ClampingPositionBased
@@ -21,26 +20,6 @@ class SchemaEntry:
     param_map: dict[str, str]
     is_controller: bool = False
     validate: Callable[[dict[str, Any]], None] | None = None
-
-
-def _validate_clamp_position_based(kwargs: dict[str, Any]) -> None:
-    path = kwargs.get("lookup_table_path")
-    if not path:
-        raise ValueError("NewtonClampingPositionBasedAPI requires a lookupTablePath attribute")
-    table_path = Path(path)
-    if not table_path.is_file():
-        raise ValueError(f"Lookup table file not found: {path}")
-    angles, torques = [], []
-    for line in table_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.replace(",", " ").split()
-        angles.append(float(parts[0]))
-        torques.append(float(parts[1]))
-    kwargs.pop("lookup_table_path")
-    kwargs["lookup_angles"] = angles
-    kwargs["lookup_torques"] = torques
 
 
 def _validate_clamp_velocity_based(kwargs: dict[str, Any]) -> None:
@@ -77,18 +56,16 @@ SCHEMA_REGISTRY: dict[str, SchemaEntry] = {
         param_map={"saturationEffort": "saturation_effort", "velocityLimit": "velocity_limit", "maxForce": "max_force"},
         validate=_validate_clamp_velocity_based,
     ),
-    # Position-based clamping uses a file path rather than inline USD
-    # attributes because lookup tables can have 100+ entries, which would
-    # be unwieldy as individual prim attributes.  This mirrors the
+    # Position-based clamping passes the file path directly, mirroring the
     # networkPath convention used by the neural-network controllers.
+    # The file is read in ClampingPositionBased.finalize().
     "NewtonClampingPositionBasedAPI": SchemaEntry(
         component_class=ClampingPositionBased,
         param_map={"lookupTablePath": "lookup_table_path"},
-        validate=_validate_clamp_position_based,
     ),
     # Neural-network controllers
     # input_order / input_idx (MLP) are intentionally left out of the schema;
-    # they are framework-specific (e.g. IsaacLab) and I would siggest to set programmatically.
+    # they are framework-specific and should be set programmatically.
     "NewtonControllerNetMLPAPI": SchemaEntry(
         component_class=ControllerNetMLP,
         param_map={"networkPath": "network_path"},
@@ -173,9 +150,7 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
     if not target_paths:
         return None
     if len(target_paths) != 1:
-        raise ValueError(
-            f"Actuator prim currently supports exactly one target; got {len(target_paths)}"
-        )
+        raise ValueError(f"Actuator prim currently supports exactly one target; got {len(target_paths)}")
 
     schemas = get_schemas_from_prim(prim)
     controller_class = None

@@ -284,19 +284,21 @@ class TestActuatorParser(unittest.TestCase):
             self.assertEqual(len(r.component_specs), 1)
             cls, kwargs = r.component_specs[0]
             self.assertIs(cls, ClampingPositionBased)
-            self.assertEqual(kwargs["lookup_angles"], [-1.0, 0.0, 1.0])
-            self.assertEqual(kwargs["lookup_torques"], [10.0, 30.0, 50.0])
+            self.assertEqual(kwargs["lookup_table_path"], table_path)
         finally:
             os.unlink(table_path)
 
     def test_position_based_missing_path_raises(self):
-        with self.assertRaises(ValueError):
-            parse_actuator_prim(
-                self._prim(
-                    attrs={"newton:actuator:kp": 100.0},
-                    schemas=["NewtonControllerPDAPI", "NewtonClampingPositionBasedAPI"],
-                )
+        r = parse_actuator_prim(
+            self._prim(
+                attrs={"newton:actuator:kp": 100.0},
+                schemas=["NewtonControllerPDAPI", "NewtonClampingPositionBasedAPI"],
             )
+        )
+        cls, kwargs = r.component_specs[0]
+        self.assertIs(cls, ClampingPositionBased)
+        with self.assertRaises(ValueError):
+            cls.resolve_arguments(kwargs)
 
     def test_missing_target_returns_none(self):
         p = _MockPrim("NewtonActuator", attrs={"newton:actuator:kp": 100.0})
@@ -438,14 +440,16 @@ class TestActuatorState(unittest.TestCase):
 
     def test_delay_buffer_shape(self):
         delay_steps, n = 5, 2
+        buf_depth = delay_steps + 1
         model, _dofs = _build_chain(n, ControllerPD, {"kp": 1.0}, delay=delay_steps)
         actuator = next(a for a in model.actuators if a.delay is not None)
         ds = actuator.state().delay_state
-        self.assertEqual(ds.buffer_pos.shape, (delay_steps, n))
-        self.assertEqual(ds.buffer_vel.shape, (delay_steps, n))
-        self.assertEqual(ds.buffer_act.shape, (delay_steps, n))
-        self.assertEqual(ds.write_idx, delay_steps - 1)
-        self.assertFalse(ds.is_filled)
+        self.assertEqual(ds.buffer_pos.shape, (buf_depth, n))
+        self.assertEqual(ds.buffer_vel.shape, (buf_depth, n))
+        self.assertEqual(ds.buffer_act.shape, (buf_depth, n))
+        self.assertEqual(ds.write_idx, buf_depth - 1)
+        np.testing.assert_array_equal(ds.num_pushes.numpy(), [0, 0])
+        self.assertEqual(len(actuator.delay.delays), n)
 
     def test_pid_integral_initialised_to_zero(self):
         n = 3
@@ -602,7 +606,7 @@ class TestActuatorStep(unittest.TestCase):
     # -- Delay ---------------------------------------------------------------
 
     def test_delay_behavior(self):
-        """Targets are delayed by N steps; buffer-filling steps produce zero force."""
+        """Write-then-read: forces produced from step 0, lag clamped to history."""
         delay_steps = 2
         model, dofs = _build_chain(1, ControllerPD, {"kp": 1.0}, delay=delay_steps)
         state = model.state()
@@ -622,11 +626,14 @@ class TestActuatorStep(unittest.TestCase):
             actuator.step(state, control, current, nxt, dt)
             force_history.append(control.joint_f.numpy()[dofs[0]])
 
-        for i in range(delay_steps):
-            self.assertEqual(force_history[i], 0.0, f"Step {i}: expected 0 during fill phase")
-
-        self.assertAlmostEqual(force_history[delay_steps], 10.0, places=4)
-        self.assertAlmostEqual(force_history[delay_steps + 1], 20.0, places=4)
+        # Step 0: lag clamped to 0 → reads just-pushed data (target=10) → force=10
+        self.assertAlmostEqual(force_history[0], 10.0, places=4)
+        # Step 1: lag clamped to 1 → reads step 0 data (target=10) → force=10
+        self.assertAlmostEqual(force_history[1], 10.0, places=4)
+        # Step 2: full delay=2 → reads step 0 data (target=10)
+        self.assertAlmostEqual(force_history[2], 10.0, places=4)
+        # Step 3: full delay=2 → reads step 1 data (target=20)
+        self.assertAlmostEqual(force_history[3], 20.0, places=4)
 
     # -- DC motor clamping (torque-speed curve) ------------------------------
 
@@ -800,7 +807,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
         actuator = model.actuators[0]
 
-        kp_values = joint_view.get_actuator_parameter(actuator, "kp").numpy().copy()
+        kp_values = joint_view.get_actuator_parameter(actuator, actuator.controller, "kp").numpy().copy()
 
         if use_multiple_artics_per_view:
             self.assertEqual(kp_values.shape, (num_worlds, 2))
@@ -820,7 +827,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
             mask = wp.array([False, True, False], dtype=bool, device=model.device)
 
         wp_kp = wp.array(kp_values, dtype=float, device=model.device)
-        joint_view.set_actuator_parameter(actuator, "kp", wp_kp, mask=mask)
+        joint_view.set_actuator_parameter(actuator, actuator.controller, "kp", wp_kp, mask=mask)
 
         expected_kp = []
         if use_mask:

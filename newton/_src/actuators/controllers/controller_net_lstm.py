@@ -43,9 +43,14 @@ class ControllerNetLSTM(Controller):
         cell: torch.Tensor | None = None
         """LSTM cell state, shape (num_layers, N, hidden_size)."""
 
-        def reset(self) -> None:
-            self.hidden = self.hidden.new_zeros(self.hidden.shape)
-            self.cell = self.cell.new_zeros(self.cell.shape)
+        def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
+            if mask is None:
+                self.hidden = self.hidden.new_zeros(self.hidden.shape)
+                self.cell = self.cell.new_zeros(self.cell.shape)
+            else:
+                t = wp.to_torch(mask).bool()
+                self.hidden[:, t, :] = 0.0
+                self.cell[:, t, :] = 0.0
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
