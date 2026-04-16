@@ -1314,7 +1314,7 @@ void main() {
         else:
             if xforms is not None:
                 if scales is None:
-                    scales = wp.ones(len(xforms), dtype=wp.vec3)
+                    scales = wp.ones(len(xforms), dtype=wp.vec3, device=xforms.device)
                 self._pending_xforms[name] = (xforms, scales)
 
     @override
