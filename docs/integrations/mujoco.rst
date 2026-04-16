@@ -301,35 +301,42 @@ Joint attributes
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 20 25 30
+   :widths: 20 18 22 18 22
 
    * - Newton property
      - MuJoCo field
      - USD attribute
+     - MJCF attribute
      - Notes
    * - ``joint_limit_lower`` / ``upper``
      - ``jnt_range``
      - ``physics:lowerLimit`` / ``upperLimit``
+     - ``range``
      - Angular limits converted to degrees for MuJoCo
    * - ``joint_limit_ke`` / ``kd``
      - ``jnt_solref``
      - ``newton:*:limitStiffness`` / ``Damping``
+     - ``solreflimit``
      - Forwarded as negative solref ``(-ke, -kd)``
    * - ``joint_armature``
      - ``dof_armature``
      - ``newton:armature``
+     - ``armature``
      -
    * - ``joint_friction``
      - ``dof_frictionloss``
      - ``newton:friction``
+     - ``frictionloss``
      -
    * - ``joint_target_ke`` / ``kd``
      - actuator ``gainprm`` / ``biasprm``
      - ``physics:drive:stiffness`` / ``damping``
+     -
      - See :ref:`mujoco-actuator-parameters`
    * - ``joint_effort_limit``
      - ``jnt_actfrcrange``
      - ``physics:drive:forceLimit``
+     - ``actuatorfrcrange``
      - Per-actuator ``forcerange`` for ball joints
 
 **Properties populated from** ``mjc:`` **USD attributes** (via ``SchemaResolverMjc``):
@@ -430,32 +437,38 @@ Shape attributes
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 20 25 30
+   :widths: 20 18 22 18 22
 
    * - Newton property
      - MuJoCo field
      - USD attribute
+     - MJCF attribute
      - Notes
    * - ``shape_material_mu``
      - ``geom_friction[0]``
      - ``physics:dynamicFriction``
+     - ``friction[0]``
      - Sliding friction
    * - ``shape_material_mu_torsional``
      - ``geom_friction[1]``
      - ``newton:torsionalFriction``
+     - ``friction[1]``
      -
    * - ``shape_material_mu_rolling``
      - ``geom_friction[2]``
      - ``newton:rollingFriction``
+     - ``friction[2]``
      -
    * - ``shape_material_ke`` / ``kd``
      - ``geom_solref``
      - ``newton:contact_ke`` / ``kd``
+     - ``solref``
      - Converted via ``convert_solref()``; falls back to
        ``(0.02, 1.0)`` when zero or negative
    * - ``shape_margin``
      - ``geom_margin``
      - ``newton:contactMargin``
+     - ``margin``
      -
 
 **Properties populated from** ``mjc:`` **USD attributes** (via ``SchemaResolverMjc``):
@@ -564,27 +577,32 @@ Body attributes
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 20 25 30
+   :widths: 20 18 22 18 22
 
    * - Newton property
      - MuJoCo field
      - USD attribute
+     - MJCF attribute
      - Notes
    * - ``body_mass``
      - ``body_mass``
      - ``physics:mass``
+     - ``inertial/mass``
      - Zero-mass bodies use ``inertiafromgeom="auto"``
    * - ``body_inertia``
      - ``body_inertia`` / ``body_iquat``
      - ``physics:diagonalInertia``
-     - Eigendecomposed; uses ``diaginertia`` or ``fullinertia``
+     - ``inertial/diaginertia``
+     - Eigendecomposed; ``fullinertia`` also supported
    * - ``body_com``
      - ``body_ipos``
      - ``physics:centerOfMass``
+     - ``inertial/pos``
      - Center-of-mass offset
    * - ``body_q``
      - ``body_pos`` / ``body_quat``
      - ``xformOp:*``
+     - ``pos`` / ``quat``
      - Initial pose for free-joint bodies
 
 **Custom attributes:**
