@@ -1168,8 +1168,6 @@ def backfill_model_from_native(
         if native_arr.shape == newton_arr.shape:
             newton_arr.assign(native_arr)
 
-    wp.synchronize()
-
 
 def compare_mjw_models(
     newton_mjw: Any,
