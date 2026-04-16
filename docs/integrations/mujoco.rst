@@ -105,36 +105,30 @@ tendons.
 MuJoCo parameters
 -----------------
 
-Many MuJoCo-specific parameters have no direct Newton equivalent.  These are
-stored in Newton's ``mujoco`` custom-attribute namespace and forwarded to the
-MuJoCo model at solve time.  The tables below list every parameter by entity
-type, showing:
+The tables below list every Newton property and custom attribute that
+:class:`~newton.solvers.SolverMuJoCo` reads, organized by entity type.  Each
+table shows:
 
-- How to access it in Python (``model.mujoco.<name>``).
+- The Newton property or ``model.mujoco.<name>`` custom attribute.
 - The ``mjc:`` USD attribute that populates it during
   :meth:`~newton.ModelBuilder.add_usd`, where applicable.
-- The default value.
+- The MuJoCo model field it maps to.
+
+Standard Newton properties (``joint_limit_lower``, ``shape_material_mu``, etc.)
+are populated from USD physics schemas or set programmatically.  MuJoCo-specific
+parameters use the ``mujoco`` custom-attribute namespace and additionally
+support ``mjc:``-prefixed USD attributes from the
+`mjcPhysics USD schema <https://github.com/google-deepmind/mujoco/blob/main/src/experimental/usd/mjcPhysics/generatedSchema.usda>`_.
+Attributes marked :sup:`ext` are Newton extensions without a schema counterpart
+yet.
 
 **Setup.**
   Call :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` on a
   :class:`~newton.ModelBuilder` **before** loading assets so that USD and MJCF
-  importers can populate the attributes.  After
+  importers can populate the ``mujoco.*`` attributes.  After
   :meth:`~newton.ModelBuilder.finalize`, they are accessible as
   ``model.mujoco.<name>``.  See :doc:`/concepts/custom_attributes` for
   background on Newton's custom-attribute system.
-
-When loading USD assets, Newton reads ``mjc:``-prefixed attributes authored on
-USD prims.  Most of these originate from the
-`mjcPhysics USD schema <https://github.com/google-deepmind/mujoco/blob/main/src/experimental/usd/mjcPhysics/generatedSchema.usda>`_
-developed by the MuJoCo team.  The schema is not yet published as a registered
-USD schema, so Newton reads ``mjc:``-prefixed attributes directly rather than
-relying on applied schemas.  Attributes marked :sup:`ext` are Newton extensions
-that correspond to MuJoCo XML attributes without a schema counterpart yet.
-
-.. note::
-
-   Default values shown are Newton's registration defaults, which may differ
-   from the mjcPhysics schema defaults or MuJoCo's own defaults.
 
 
 .. _mujoco-solver-options:
@@ -299,7 +293,38 @@ Solver parameters follow a three-level resolution priority:
 Joint parameters
 ^^^^^^^^^^^^^^^^
 
-**Built-in properties** (read from joint prims via ``SchemaResolverMjc``):
+**Standard Newton properties:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 25 45
+
+   * - Newton property
+     - MuJoCo field
+     - Notes
+   * - ``joint_limit_lower`` / ``joint_limit_upper``
+     - ``jnt_range``
+     - Angular limits converted to degrees for MuJoCo
+   * - ``joint_limit_ke`` / ``joint_limit_kd``
+     - ``jnt_solref``
+     - Forwarded as negative solref ``(-ke, -kd)``
+   * - ``joint_armature``
+     - ``dof_armature``
+     -
+   * - ``joint_friction``
+     - ``dof_frictionloss``
+     -
+   * - ``joint_target_ke``
+     - actuator ``gainprm`` / ``biasprm``
+     - See :ref:`mujoco-actuator-parameters`
+   * - ``joint_target_kd``
+     - actuator ``gainprm`` / ``biasprm``
+     - See :ref:`mujoco-actuator-parameters`
+   * - ``joint_effort_limit``
+     - ``jnt_actfrcrange`` or ``actuator forcerange``
+     - Per-DOF for revolute/prismatic; per-actuator for ball joints
+
+**Properties populated from** ``mjc:`` **USD attributes** (via ``SchemaResolverMjc``):
 
 .. list-table::
    :header-rows: 1
@@ -324,11 +349,9 @@ Joint parameters
 
 .. note::
 
-   The ``solref`` → ``ke``/``kd`` conversion currently produces
-   mass-normalized values rather than force-based values.
-   ``joint_limit_ke`` and ``joint_limit_kd`` are forwarded as negative
-   ``solref_limit`` values ``(-ke, -kd)``, which MuJoCo interprets as direct
-   stiffness/damping rather than time-constant/damp-ratio.  See
+   The imported ``solref`` values are currently incorrectly mapped to
+   ``ke``/``kd``: ``solref`` is mass-normalized, while the ``ke``/``kd``
+   Newton properties have force-based units.  See
    `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
    for details.
 
@@ -385,11 +408,33 @@ Joint parameters
 Shape parameters
 ^^^^^^^^^^^^^^^^
 
-Newton's ``shape_material_mu``, ``shape_material_mu_torsional``, and
-``shape_material_mu_rolling`` map directly to MuJoCo's three-element
-geom ``friction`` vector: ``(sliding, torsional, rolling)``.
+**Standard Newton properties:**
 
-**Built-in properties** (read from collision prims via ``SchemaResolverMjc``):
+.. list-table::
+   :header-rows: 1
+   :widths: 30 25 45
+
+   * - Newton property
+     - MuJoCo field
+     - Notes
+   * - ``shape_material_mu``
+     - ``geom_friction[0]``
+     - Sliding friction
+   * - ``shape_material_mu_torsional``
+     - ``geom_friction[1]``
+     -
+   * - ``shape_material_mu_rolling``
+     - ``geom_friction[2]``
+     -
+   * - ``shape_material_ke`` / ``shape_material_kd``
+     - ``geom_solref``
+     - Converted via ``convert_solref()``; falls back to
+       ``(0.02, 1.0)`` when zero or negative
+   * - ``shape_margin``
+     - ``geom_margin``
+     -
+
+**Properties populated from** ``mjc:`` **USD attributes** (via ``SchemaResolverMjc``):
 
 .. list-table::
    :header-rows: 1
@@ -485,6 +530,30 @@ Read from ``PhysicsMaterialAPI`` prims via ``SchemaResolverMjc``:
 
 Body parameters
 ^^^^^^^^^^^^^^^
+
+**Standard Newton properties:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 25 45
+
+   * - Newton property
+     - MuJoCo field
+     - Notes
+   * - ``body_mass``
+     - ``body_mass``
+     - Zero-mass bodies use ``inertiafromgeom="auto"``
+   * - ``body_inertia``
+     - ``body_inertia`` / ``body_iquat``
+     - Eigendecomposed; uses ``diaginertia`` or ``fullinertia``
+   * - ``body_com``
+     - ``body_ipos``
+     - Center-of-mass offset
+   * - ``body_q``
+     - ``body_pos`` / ``body_quat``
+     - Initial pose for free-joint bodies
+
+**Custom attributes:**
 
 .. list-table::
    :header-rows: 1
@@ -867,6 +936,69 @@ Authoring them on USD prims has no effect.
   ``mjc:option:noslip_tolerance``, ``mjc:option:actuatorgroupdisable``,
   ``mjc:option:o_friction``, ``mjc:option:o_margin``,
   ``mjc:option:o_solimp``, ``mjc:option:o_solref``
+
+
+.. _mujoco-runtime-state-and-control:
+
+Runtime state and control
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+During :meth:`~newton.solvers.SolverMuJoCo.step`, the solver reads from
+:class:`~newton.State` and :class:`~newton.Control` and writes results back to
+the next :class:`~newton.State`.
+
+**Inputs** (Newton → MuJoCo):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 30 35
+
+   * - Newton property
+     - MuJoCo field
+     - Notes
+   * - ``state.joint_q``
+     - ``qpos``
+     - Quaternion order converted (xyzw → wxyz)
+   * - ``state.joint_qd``
+     - ``qvel``
+     -
+   * - ``state.body_f``
+     - ``xfrc_applied``
+     - External body wrenches
+   * - ``control.joint_target_pos``
+     - actuator ``ctrl``
+     - For POSITION / POSITION_VELOCITY modes
+   * - ``control.joint_target_vel``
+     - actuator ``ctrl``
+     - For VELOCITY / POSITION_VELOCITY modes
+   * - ``control.joint_f``
+     - ``qfrc_applied``
+     - Joint-space forces; free-joint forces go to ``xfrc_applied``
+   * - ``control.mujoco.ctrl``
+     - ``ctrl``
+     - Direct MuJoCo actuator control (general actuators)
+
+**Outputs** (MuJoCo → Newton):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 30 35
+
+   * - Newton property
+     - MuJoCo field
+     - Notes
+   * - ``state.joint_q``
+     - ``qpos``
+     - Quaternion order converted back (wxyz → xyzw)
+   * - ``state.joint_qd``
+     - ``qvel``
+     -
+   * - ``state.body_q``
+     - *(FK)*
+     - Computed via :func:`~newton.eval_articulation_fk`
+   * - ``state.body_qd``
+     - *(FK)*
+     - Computed via :func:`~newton.eval_articulation_fk`
 
 
 Collision filtering
