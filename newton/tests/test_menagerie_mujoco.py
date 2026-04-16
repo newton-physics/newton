@@ -1823,9 +1823,8 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
 
     robot_folder = "franka_emika_panda"
     num_steps = 20
-    dynamics_tolerance = 5e-5  # eq_ diffs cause larger qvel divergence on CI
+    dynamics_tolerance = 5e-5
     fk_enabled = True
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
     backfill_model = True
 
 
@@ -1841,11 +1840,10 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-    # Dynamics disabled: eq_ model fields differ, qpos drift 3.5e-3 (#2170)
+    # Dynamics disabled: qpos drift 3.5e-3 from body_ipos diff (#2170)
     num_steps = 0
     fk_enabled = True
     fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
     backfill_model = True
 
 
