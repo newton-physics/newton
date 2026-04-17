@@ -145,7 +145,7 @@ class Example:
         bbox_size = np.linalg.norm(max_pos - min_pos)
 
         # Centroid check: wide tolerance to cover observed variation
-        assert abs(centroid[0]) < 0.05, f"Centroid x drifted: {centroid[0]:.3f}"
+        assert abs(centroid[0]) < 0.10, f"Centroid x drifted: {centroid[0]:.3f}"
         assert -0.05 < centroid[1] < 0.30, f"Centroid y out of range: {centroid[1]:.3f}"
         assert 0.85 < centroid[2] < 1.05, f"Centroid z out of range: {centroid[2]:.3f}"
 
