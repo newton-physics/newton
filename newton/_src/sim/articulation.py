@@ -12,6 +12,28 @@ from .state import State
 
 
 @wp.func
+def com_twist_to_point_velocity(qd: wp.spatial_vector, X_wb: wp.transform, body_com: wp.vec3, point: wp.vec3):
+    """Evaluate a point velocity from a COM-referenced body twist."""
+    return velocity_at_point(qd, point - wp.transform_point(X_wb, body_com))
+
+
+@wp.func
+def origin_twist_to_com_twist(qd: wp.spatial_vector, X_wb: wp.transform, body_com: wp.vec3):
+    """Shift an origin-referenced body twist to the body COM."""
+    omega = wp.spatial_bottom(qd)
+    v_com = velocity_at_point(qd, wp.transform_vector(X_wb, body_com))
+    return wp.spatial_vector(v_com, omega)
+
+
+@wp.func
+def com_twist_to_origin_twist(qd: wp.spatial_vector, X_wb: wp.transform, body_com: wp.vec3):
+    """Shift a COM-referenced body twist to the body origin."""
+    omega = wp.spatial_bottom(qd)
+    v_origin = wp.spatial_top(qd) - wp.cross(omega, wp.transform_vector(X_wb, body_com))
+    return wp.spatial_vector(v_origin, omega)
+
+
+@wp.func
 def compute_2d_rotational_dofs(
     axis_0: wp.vec3,
     axis_1: wp.vec3,
@@ -317,28 +339,39 @@ def eval_single_articulation_fk(
         # Velocity must be evaluated at the actual child-body origin. For translated
         # joints, sampling parent motion only at the fixed
         # parent anchor misses the transport term from the current joint displacement.
+        x_child_origin = wp.transform_get_translation(X_wc)
         v_parent_origin = wp.vec3()
         w_parent = wp.vec3()
         if parent >= 0:
             v_wp = body_qd[parent]
             w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = velocity_at_point(
-                v_wp, wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
-            )
+            v_parent_origin = com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_origin)
 
-        # Transform joint motion into world space. The linear part of v_j is defined
-        # at the child joint anchor; if the child body origin is offset from that
-        # anchor, transport the joint angular motion to the body origin.
-        linear_joint_anchor = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+        # Transform joint motion into world space.
+        linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
         angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-        child_origin_offset_world = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wcj)
-        linear_joint_origin = linear_joint_anchor + wp.cross(angular_joint_world, child_origin_offset_world)
+        if type == JointType.FREE or type == JointType.DISTANCE:
+            # FREE / DISTANCE joint linear DOFs follow Newton's COM-velocity
+            # convention, so convert the relative child COM twist to an
+            # origin-referenced twist before the tree recurrence.
+            v_joint_origin = com_twist_to_origin_twist(
+                wp.spatial_vector(linear_joint_world, angular_joint_world),
+                X_wc,
+                body_com[child],
+            )
+            linear_joint_origin = wp.spatial_top(v_joint_origin)
+        else:
+            # The linear part of v_j is defined at the child joint anchor; if the
+            # child body origin is offset from that anchor, transport the joint
+            # angular motion to the body origin.
+            child_origin_offset_world = x_child_origin - wp.transform_get_translation(X_wcj)
+            linear_joint_origin = linear_joint_world + wp.cross(angular_joint_world, child_origin_offset_world)
 
-        v_wc = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
+        v_wc_origin = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
 
         if (body_flags[child] & body_flag_filter) != 0:
             body_q[child] = X_wc
-            body_qd[child] = v_wc
+            body_qd[child] = origin_twist_to_com_twist(v_wc_origin, X_wc, body_com[child])
 
 
 @wp.kernel
@@ -425,6 +458,9 @@ def eval_fk(
 ):
     """
     Evaluates the model's forward kinematics given the joint coordinates and updates the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`).
+
+    The written :attr:`State.body_qd` values use Newton's public body-twist
+    convention ``(v_com_world, omega_world)``.
 
     Args:
         model: The model to evaluate.
@@ -613,7 +649,7 @@ def eval_articulation_ik(
 
         v_wp = body_qd[parent]
         w_p = wp.spatial_bottom(v_wp)
-        v_p = velocity_at_point(v_wp, wp.transform_get_translation(X_wpj) - wp.transform_get_translation(X_wp))
+        v_p = com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], wp.transform_get_translation(X_wpj))
 
     # child transform and moment arm
     X_wc = body_q[child]
@@ -622,7 +658,7 @@ def eval_articulation_ik(
     v_wc = body_qd[child]
 
     w_c = wp.spatial_bottom(v_wc)
-    v_c = velocity_at_point(v_wc, wp.transform_get_translation(X_wcj) - wp.transform_get_translation(X_wc))
+    v_c = com_twist_to_point_velocity(v_wc, X_wc, body_com[child], wp.transform_get_translation(X_wcj))
 
     # joint properties
     type = joint_type[joint_idx]
@@ -691,7 +727,11 @@ def eval_articulation_ik(
         q_pc = wp.quat_inverse(q_p) * q_c
 
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
-        v_err_c = wp.quat_rotate_inv(q_p, v_err)
+        x_child_com_world = wp.transform_point(X_wc, body_com[child])
+        v_com_err = wp.spatial_top(v_wc)
+        if parent >= 0:
+            v_com_err = v_com_err - com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_com_world)
+        v_err_c = wp.quat_rotate_inv(q_p, v_com_err)
         w_err_c = wp.quat_rotate_inv(q_p, w_err)
 
         joint_q[q_start + 0] = x_err_c[0]
@@ -775,6 +815,11 @@ def eval_ik(
     """
     Evaluates the model's inverse kinematics given the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`) and updates the generalized joint coordinates `joint_q` and `joint_qd`.
 
+    The input :attr:`State.body_qd` is interpreted using Newton's public body-twist
+    convention ``(v_com_world, omega_world)``. For FREE and DISTANCE joints,
+    the recovered ``joint_qd`` linear entries are referenced at the child COM
+    and expressed in the joint parent frame.
+
     Args:
         model: The model to evaluate.
         state: The state-like object with the body's maximal coordinates (positions :attr:`State.body_q` and velocities :attr:`State.body_qd`) to use.
@@ -835,6 +880,8 @@ def jcalc_motion_subspace(
     lin_axis_count: int,
     ang_axis_count: int,
     X_sc: wp.transform,
+    X_wc: wp.transform,
+    body_com_child: wp.vec3,
     qd_start: int,
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
@@ -895,12 +942,17 @@ def jcalc_motion_subspace(
         joint_S_s[qd_start + 2] = S_2
 
     elif type == JointType.FREE or type == JointType.DISTANCE:
-        joint_S_s[qd_start + 0] = transform_twist(X_sc, wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-        joint_S_s[qd_start + 1] = transform_twist(X_sc, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0))
-        joint_S_s[qd_start + 2] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        joint_S_s[qd_start + 3] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        joint_S_s[qd_start + 4] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
-        joint_S_s[qd_start + 5] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+        x_child_com_world = wp.transform_point(X_wc, body_com_child)
+        axis_world_x = wp.transform_vector(X_sc, wp.vec3(1.0, 0.0, 0.0))
+        axis_world_y = wp.transform_vector(X_sc, wp.vec3(0.0, 1.0, 0.0))
+        axis_world_z = wp.transform_vector(X_sc, wp.vec3(0.0, 0.0, 1.0))
+
+        joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
+        joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
+        joint_S_s[qd_start + 2] = wp.spatial_vector(axis_world_z, wp.vec3())
+        joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, x_child_com_world), axis_world_x)
+        joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, x_child_com_world), axis_world_y)
+        joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, x_child_com_world), axis_world_z)
 
 
 @wp.kernel
@@ -910,12 +962,14 @@ def eval_articulation_jacobian(
     articulation_mask: wp.array[bool],
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
+    joint_child: wp.array[int],
     joint_ancestor: wp.array[int],
     joint_qd_start: wp.array[int],
     joint_X_p: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_dof_dim: wp.array2d[int],
     body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
     # outputs
     J: wp.array3d[float],
     joint_S_s: wp.array[wp.spatial_vector],
@@ -958,13 +1012,14 @@ def eval_articulation_jacobian(
         lin_axis_count = joint_dof_dim[j, 0]
         ang_axis_count = joint_dof_dim[j, 1]
 
-        # compute motion subspace in world frame
         jcalc_motion_subspace(
             type,
             joint_axis,
             lin_axis_count,
             ang_axis_count,
             X_wpj,
+            body_q[joint_child[j]],
+            body_com[joint_child[j]],
             qd_start,
             joint_S_s,
         )
@@ -974,6 +1029,8 @@ def eval_articulation_jacobian(
         row_start = i * 6
 
         j = joint_start + i
+        child = joint_child[j]
+        x_com_world = wp.transform_point(body_q[child], body_com[child])
         while j != -1:
             joint_dof_start = joint_qd_start[j]
             joint_dof_end = joint_qd_start[j + 1]
@@ -983,9 +1040,10 @@ def eval_articulation_jacobian(
             for dof in range(joint_dof_count):
                 col = (joint_dof_start - articulation_dof_start) + dof
                 S = joint_S_s[joint_dof_start + dof]
+                S_com = wp.spatial_vector(velocity_at_point(S, x_com_world), wp.spatial_bottom(S))
 
                 for k in range(6):
-                    J[art_idx, row_start + k, col] = S[k]
+                    J[art_idx, row_start + k, col] = S_com[k]
 
             j = joint_ancestor[j]
 
@@ -1001,7 +1059,8 @@ def eval_jacobian(
 
     Computes the spatial Jacobian J that maps joint velocities to spatial
     velocities of each link in world frame. The Jacobian is computed for
-    each articulation in the model.
+    each articulation in the model and satisfies ``J_link @ joint_qd ==
+    state.body_qd[link]`` under Newton's public COM/world body-twist convention.
 
     Args:
         model: The model containing articulation definitions.
@@ -1050,12 +1109,14 @@ def eval_jacobian(
             mask,
             model.joint_type,
             model.joint_parent,
+            model.joint_child,
             model.joint_ancestor,
             model.joint_qd_start,
             model.joint_X_p,
             model.joint_axis,
             model.joint_dof_dim,
             state.body_q,
+            model.body_com,
         ],
         outputs=[J, joint_S_s],
         device=model.device,
@@ -1100,37 +1161,35 @@ def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
 def compute_body_spatial_inertia(
     body_inertia: wp.array[wp.mat33],
     body_mass: wp.array[float],
-    body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
     # outputs
     body_I_s: wp.array[wp.spatial_matrix],
 ):
-    """Compute spatial inertia for each body in world frame."""
+    """Compute COM-referenced spatial inertia for each body in world frame."""
     tid = wp.tid()
 
     I_local = body_inertia[tid]
     m = body_mass[tid]
-    com = body_com[tid]
     X_wb = body_q[tid]
+    q = wp.transform_get_rotation(X_wb)
 
-    # Build spatial inertia in body COM frame
+    r1 = wp.quat_rotate(q, wp.vec3(1.0, 0.0, 0.0))
+    r2 = wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0))
+    r3 = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
+    R = wp.matrix_from_cols(r1, r2, r3)
+    I_world = R * I_local * wp.transpose(R)
+
+    # Spatial inertia about the COM in world coordinates.
     # fmt: off
-    I_m = wp.spatial_matrix(
+    body_I_s[tid] = wp.spatial_matrix(
         m,   0.0, 0.0, 0.0,           0.0,           0.0,
         0.0, m,   0.0, 0.0,           0.0,           0.0,
         0.0, 0.0, m,   0.0,           0.0,           0.0,
-        0.0, 0.0, 0.0, I_local[0, 0], I_local[0, 1], I_local[0, 2],
-        0.0, 0.0, 0.0, I_local[1, 0], I_local[1, 1], I_local[1, 2],
-        0.0, 0.0, 0.0, I_local[2, 0], I_local[2, 1], I_local[2, 2],
+        0.0, 0.0, 0.0, I_world[0, 0], I_world[0, 1], I_world[0, 2],
+        0.0, 0.0, 0.0, I_world[1, 0], I_world[1, 1], I_world[1, 2],
+        0.0, 0.0, 0.0, I_world[2, 0], I_world[2, 1], I_world[2, 2],
     )
     # fmt: on
-
-    # Transform from COM frame to world frame
-    X_com = wp.transform(com, wp.quat_identity())
-    X_sm = X_wb * X_com
-    I_s = transform_spatial_inertia(X_sm, I_m)
-
-    body_I_s[tid] = I_s
 
 
 @wp.kernel
@@ -1206,7 +1265,8 @@ def eval_mass_matrix(
 
     Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
     Jacobian and M is the block-diagonal spatial mass matrix. The mass matrix
-    relates joint accelerations to joint forces/torques.
+    relates joint accelerations to joint forces/torques and is consistent with
+    kinetic energy computed from COM-referenced body twists.
 
     Args:
         model: The model containing articulation definitions.
@@ -1255,7 +1315,6 @@ def eval_mass_matrix(
         inputs=[
             model.body_inertia,
             model.body_mass,
-            model.body_com,
             state.body_q,
         ],
         outputs=[body_I_s],

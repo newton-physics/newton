@@ -41,6 +41,7 @@ def is_discrete_shape(shape_type: int) -> bool:
         shape_type == GeoType.BOX
         or shape_type == GeoType.CONVEX_MESH
         or shape_type == GeoTypeEx.TRIANGLE
+        or shape_type == GeoTypeEx.TRIANGLE_PRISM
         or shape_type == GeoType.PLANE
     )
 
@@ -306,6 +307,7 @@ def create_compute_gjk_mpr_contacts(
         margin_a: float,
         margin_b: float,
         writer_data: Any,
+        sort_sub_key: int = 0,
     ):
         """
         Compute contacts between two shapes using GJK/MPR algorithm and write them.
@@ -323,6 +325,7 @@ def create_compute_gjk_mpr_contacts(
             margin_a: Per-shape margin offset for shape A (signed distance padding)
             margin_b: Per-shape margin offset for shape B (signed distance padding)
             writer_data: Data structure for contact writer
+            sort_sub_key: Sub-key for deterministic contact sorting (e.g. triangle/edge index)
         """
         data_provider = SupportMapDataProvider()
 
@@ -353,6 +356,7 @@ def create_compute_gjk_mpr_contacts(
         contact_template.shape_a = shape_a
         contact_template.shape_b = shape_b
         contact_template.gap_sum = rigid_gap
+        contact_template.sort_sub_key = sort_sub_key
 
         if wp.static(ENABLE_MULTI_CONTACT):
             wp.static(create_solve_convex_multi_contact(support_func, writer_func, post_process_contact))(
@@ -362,7 +366,6 @@ def create_compute_gjk_mpr_contacts(
                 rot_b,
                 pos_a_adjusted,
                 pos_b_adjusted,
-                0.0,  # combined_margin
                 data_provider,
                 rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 type_a == GeoType.SPHERE
@@ -380,7 +383,6 @@ def create_compute_gjk_mpr_contacts(
                 rot_b,
                 pos_a_adjusted,
                 pos_b_adjusted,
-                0.0,  # combined_margin
                 data_provider,
                 rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 writer_data,

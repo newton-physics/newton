@@ -51,25 +51,21 @@ ShapeDataLike = None | Mesh | Heightfield
 
 
 def is_primitive_geo_type(geo_type: GeoType) -> bool:
-    """Returns whether the geo type is a primitive shape."""
-    return geo_type in {
-        GeoType.SPHERE,
-        GeoType.CYLINDER,
-        GeoType.CONE,
-        GeoType.CAPSULE,
-        GeoType.BOX,
-        GeoType.ELLIPSOID,
-        GeoType.PLANE,
-    }
+    """Return whether the geo type is a primitive shape.
+
+    .. deprecated::
+        Use :attr:`GeoType.is_primitive` instead.
+    """
+    return geo_type.is_primitive
 
 
 def is_explicit_geo_type(geo_type: GeoType) -> bool:
-    """Returns whether the geo type is an explicit shape (mesh, convex, heightfield)."""
-    return geo_type in {
-        GeoType.MESH,
-        GeoType.CONVEX_MESH,
-        GeoType.HFIELD,
-    }
+    """Return whether the geo type is an explicit shape (mesh, convex, heightfield).
+
+    .. deprecated::
+        Use :attr:`GeoType.is_explicit` instead.
+    """
+    return geo_type.is_explicit
 
 
 class ShapeDescriptor(ABC, Descriptor):
@@ -546,16 +542,22 @@ class MeshShape(ShapeDescriptor):
 
 
 class HFieldShape(ShapeDescriptor):
-    """
-    A shape descriptor for height-field shapes.
+    """A shape descriptor for height-field (terrain) shapes.
 
-    WARNING: This class is not yet implemented.
+    Attributes:
+        heightfield: The underlying :class:`Heightfield` data.
     """
 
-    def __init__(self, name: str = "hfield", uid: str | None = None):
+    def __init__(self, heightfield: Heightfield, name: str = "hfield", uid: str | None = None):
+        """Initialize the height-field shape descriptor.
+
+        Args:
+            heightfield: A :class:`Heightfield` instance containing elevation data.
+            name: The name of the shape descriptor.
+            uid: Optional unique identifier of the shape descriptor.
+        """
         super().__init__(GeoType.HFIELD, name, uid)
-        # TODO: Remove this when HFieldShape is implemented
-        raise NotImplementedError("HFieldShape is not yet implemented.")
+        self._data: Heightfield = heightfield
 
     @override
     def __repr__(self):
@@ -571,6 +573,11 @@ class HFieldShape(ShapeDescriptor):
     def params(self) -> tuple[float, float, float]:
         """Returns the XYZ scaling of the height-field."""
         return 1.0, 1.0, 1.0
+
+    @property
+    @override
+    def data(self) -> Heightfield:
+        return self._data
 
 
 ###
@@ -616,6 +623,12 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
     if type_a > type_b:
         type_a, type_b = type_b, type_a
 
+    # Contact counts for mesh/heightfield pairs are dynamic (bounded by the
+    # pipeline's max_contacts_per_pair setting).  The values below are
+    # conservative upper-bound estimates used for capacity allocation.
+    _MESH_CONVEX_MAX = 32
+    _MESH_MESH_MAX = 64
+
     if type_a == GeoType.SPHERE:
         return 1, 0
 
@@ -629,7 +642,7 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
         elif type_b == GeoType.BOX:
             return 8, 8
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
             return 4, 4
         elif type_b == GeoType.PLANE:
@@ -643,7 +656,7 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
         elif type_b == GeoType.BOX:
             return 8, 8
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
             return 8, 8
         elif type_b == GeoType.PLANE:
@@ -655,7 +668,7 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
         elif type_b == GeoType.BOX:
             return 8, 8
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
             return 4, 4
         elif type_b == GeoType.PLANE:
@@ -665,7 +678,7 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
         if type_b == GeoType.BOX:
             return 12, 12
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
             return 8, 8
         elif type_b == GeoType.PLANE:
@@ -673,13 +686,17 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
 
     elif type_a == GeoType.MESH or type_a == GeoType.CONVEX_MESH:
         if type_b == GeoType.HFIELD:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_MESH_MAX, 0
         elif type_b == GeoType.CONE:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.PLANE:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         else:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_MESH_MAX, 0
+
+    elif type_a == GeoType.HFIELD:
+        # Heightfield vs convex primitives
+        return _MESH_CONVEX_MAX, 0
 
     elif type_a == GeoType.CONE:
         if type_b == GeoType.CONE:

@@ -10,7 +10,16 @@ import warp as wp
 
 from ..core.types import MAXVAL, Axis, Devicelike
 from .kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_ellipsoid, sdf_sphere
-from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
+from .sdf_mc import (
+    MC_DEGENERATE_N_SQ_EPS,
+    MC_EDGE_CLAMP_MAX,
+    MC_EDGE_CLAMP_MIN,
+    MC_EDGE_VAL_DIFF_EPS,
+    get_mc_tables,
+    int_to_vec3f,
+    mc_calc_face,
+    vec8f,
+)
 from .types import GeoType, Mesh
 
 logger = logging.getLogger(__name__)
@@ -1361,10 +1370,10 @@ def _generate_dense_mc_kernel(
             p_0 = wp.vec3f(corner_offsets_table[ev[0]])
             p_1 = wp.vec3f(corner_offsets_table[ev[1]])
             val_diff = val_1 - val_0
-            if wp.abs(val_diff) < 1e-8:
+            if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
                 p = 0.5 * (p_0 + p_1)
             else:
-                t = (0.0 - val_0) / val_diff
+                t = wp.clamp((0.0 - val_0) / val_diff, wp.static(MC_EDGE_CLAMP_MIN), wp.static(MC_EDGE_CLAMP_MAX))
                 p = p_0 + t * (p_1 - p_0)
             local = base + p
             face_verts[vi] = wp.vec3(
@@ -1373,7 +1382,11 @@ def _generate_dense_mc_kernel(
                 origin[2] + local[2] * voxel_size[2],
             )
         n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
-        normal = wp.normalize(n)
+        n_sq = wp.dot(n, n)
+        if n_sq < wp.static(MC_DEGENERATE_N_SQ_EPS):
+            normal = wp.vec3(0.0, 0.0, 1.0)
+        else:
+            normal = n / wp.sqrt(n_sq)
         vertices[3 * out_idx + 3 * fi + 0] = wp.vec3(face_verts[0])
         vertices[3 * out_idx + 3 * fi + 1] = wp.vec3(face_verts[1])
         vertices[3 * out_idx + 3 * fi + 2] = wp.vec3(face_verts[2])

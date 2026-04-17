@@ -235,7 +235,7 @@ def _get_serialization_format(file_path: str) -> str:
         return "json"
     elif ext == ".bin":
         if not HAS_CBOR2:
-            raise ImportError("cbor2 library is required for .bin files. Install with: pip install cbor2")
+            raise ImportError("cbor2 library is required for .bin files. Install with: pip install 'cbor2>=5.7.0,<6'")
         return "cbor2"
     else:
         raise ValueError(f"Unsupported file extension '{ext}'. Supported extensions: .json, .bin")
@@ -1334,12 +1334,14 @@ class ViewerFile(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False, smoothing: int = 1):
         """File viewer does not visualize scalar signals.
 
         Args:
             name: Unique path/name for the scalar signal.
             value: Scalar value to visualize.
+            clear: Ignored by this backend.
+            smoothing: Ignored by this backend.
         """
         pass
 

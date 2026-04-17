@@ -32,7 +32,7 @@ from ..geometry.collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
-from ..geometry.contact_data import SHAPE_PAIR_HFIELD_BIT, ContactData, contact_passes_gap_check
+from ..geometry.contact_data import SHAPE_PAIR_HFIELD_BIT, ContactData, contact_passes_gap_check, make_contact_sort_key
 from ..geometry.contact_reduction_global import (
     GlobalContactReducer,
     create_export_reduced_contacts_kernel,
@@ -40,6 +40,7 @@ from ..geometry.contact_reduction_global import (
     reduce_buffered_contacts_kernel,
     write_contact_to_reducer,
 )
+from ..geometry.contact_sort import ContactSorter
 from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import (
     compute_block_counts_from_weights,
@@ -49,6 +50,7 @@ from ..geometry.sdf_contact import (
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_texture import TextureSDFData
 from ..geometry.support_function import (
+    GeoTypeEx,
     SupportMapDataProvider,
     extract_shape_data,
     support_map_lean,
@@ -70,6 +72,7 @@ class ContactWriterData:
     contact_normal: wp.array[wp.vec3]
     contact_penetration: wp.array[float]
     contact_tangent: wp.array[wp.vec3]
+    contact_sort_key: wp.array[wp.int64]
 
 
 @wp.func
@@ -124,6 +127,11 @@ def write_contact_simple(
             world_x = wp.vec3(0.0, 1.0, 0.0)
         writer_data.contact_tangent[index] = wp.normalize(world_x - wp.dot(world_x, normal) * normal)
 
+    if writer_data.contact_sort_key.shape[0] > 0:
+        writer_data.contact_sort_key[index] = make_contact_sort_key(
+            contact_data.shape_a, contact_data.shape_b, contact_data.sort_sub_key
+        )
+
 
 def create_narrow_phase_primitive_kernel(writer_func: Any):
     """
@@ -140,8 +148,9 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
     Returns:
         A warp kernel for primitive collision detection
     """
+    _module = f"narrow_phase_primitive_{writer_func.__name__}"
 
-    @wp.kernel(enable_backward=False, module="unique")
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_primitive_kernel(
         candidate_pair: wp.array[wp.vec2i],
         candidate_pair_count: wp.array[int],
@@ -557,6 +566,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                     if contact_0_valid:
                         contact_data.contact_point_center = contact_pos_0
                         contact_data.contact_distance = contact_dist_0
+                        contact_data.sort_sub_key = 0
                         writer_func(contact_data, writer_data, base_index)
                         base_index += 1
 
@@ -564,6 +574,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                     if contact_1_valid:
                         contact_data.contact_point_center = contact_pos_1
                         contact_data.contact_distance = contact_dist_1
+                        contact_data.sort_sub_key = 1
                         writer_func(contact_data, writer_data, base_index)
                         base_index += 1
 
@@ -571,6 +582,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                     if contact_2_valid:
                         contact_data.contact_point_center = contact_pos_2
                         contact_data.contact_distance = contact_dist_2
+                        contact_data.sort_sub_key = 2
                         writer_func(contact_data, writer_data, base_index)
                         base_index += 1
 
@@ -578,6 +590,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                     if contact_3_valid:
                         contact_data.contact_point_center = contact_pos_3
                         contact_data.contact_distance = contact_dist_3
+                        contact_data.sort_sub_key = 3
                         writer_func(contact_data, writer_data, base_index)
 
                 continue
@@ -607,8 +620,11 @@ def create_narrow_phase_kernel_gjk_mpr(
     The remaining pairs are complex convex-convex (plane-box, plane-cylinder,
     plane-cone, box-box, cylinder-cylinder, etc.) that need GJK/MPR.
     """
+    _sf = support_func.__name__ if support_func is not None else "default"
+    _ppc = post_process_contact.__name__ if post_process_contact is not None else "default"
+    _module = f"narrow_phase_gjk_mpr_{external_aabb}_{writer_func.__name__}_{_sf}_{_ppc}"
 
-    @wp.kernel(enable_backward=False, module="unique")
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_kernel_gjk_mpr(
         candidate_pair: wp.array[wp.vec2i],
         candidate_pair_count: wp.array[int],
@@ -871,7 +887,9 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
 
 
 def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
-    @wp.kernel(enable_backward=False, module="unique")
+    _module = f"narrow_phase_mesh_tri_{writer_func.__name__}"
+
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_process_mesh_triangle_contacts_kernel(
         shape_types: wp.array[int],
         shape_data: wp.array[wp.vec4],
@@ -928,9 +946,25 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
                 shape_source,
             )
 
-            # Set pos_a to be vertex A (origin of triangle in local frame)
+            # Triangle position is vertex A in world space.
+            # For heightfield prisms, edges are in heightfield-local space
+            # so we pass the heightfield rotation to let MPR/GJK work in
+            # that frame (where -Z is always the down axis).
             pos_a = v0_world
-            quat_a = wp.quat_identity()  # Triangle has no orientation, use identity
+            if type_a == GeoType.HFIELD:
+                quat_a = wp.transform_get_rotation(X_ws_a)
+            else:
+                quat_a = wp.quat_identity()
+
+            # Back-face culling: skip when the entire convex shape is behind
+            # the triangle face.  TRIANGLE_PRISM (heightfields) handles
+            # this via its extruded support function.
+            if shape_data_a.shape_type == int(GeoTypeEx.TRIANGLE):
+                face_normal = wp.cross(shape_data_a.scale, shape_data_a.auxiliary)
+                # Signed distance of shape B's center from triangle plane
+                center_dist = wp.dot(face_normal, pos_b - pos_a)
+                if center_dist < 0.0:
+                    continue
 
             # Extract margin offset for shape A (signed distance padding)
             margin_offset_a = shape_data[shape_a][3]
@@ -954,6 +988,7 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
                 margin_offset_a,
                 margin_offset_b,
                 writer_data,
+                (tri_idx << 1) | 1,
             )
 
     return narrow_phase_process_mesh_triangle_contacts_kernel
@@ -1046,8 +1081,9 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
     Returns:
         A warp kernel that processes mesh-plane collisions
     """
+    _module = f"narrow_phase_mesh_plane_{writer_func.__name__}_{reduce_contacts}"
 
-    @wp.kernel(enable_backward=False, module="unique")
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_process_mesh_plane_contacts_kernel(
         shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
@@ -1144,6 +1180,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                     contact_data.shape_a = mesh_shape
                     contact_data.shape_b = plane_shape
                     contact_data.gap_sum = gap_sum
+                    contact_data.sort_sub_key = vertex_idx
 
                     if writer_data.contact_count[0] < writer_data.contact_max:
                         writer_func(contact_data, writer_data, -1)
@@ -1152,7 +1189,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
     if not reduce_contacts:
         return narrow_phase_process_mesh_plane_contacts_kernel
 
-    @wp.kernel(enable_backward=False, module="unique")
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_process_mesh_plane_contacts_reduce_kernel(
         shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
@@ -1279,6 +1316,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                         contact_data.shape_a = mesh_shape
                         contact_data.shape_b = plane_shape
                         contact_data.gap_sum = gap_sum
+                        contact_data.sort_sub_key = vertex_idx
 
                         writer_func(contact_data, writer_data, -1)
 
@@ -1390,6 +1428,8 @@ class NarrowPhase:
         has_meshes: bool = True,
         has_heightfields: bool = False,
         use_lean_gjk_mpr: bool = False,
+        deterministic: bool = False,
+        contact_max: int | None = None,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -1413,6 +1453,14 @@ class NarrowPhase:
                 Defaults to True for safety. Set to False when constructing from a model with no meshes.
             has_heightfields: Whether the scene contains any heightfield shapes (GeoType.HFIELD). When True,
                 heightfield collision buffers and kernels are allocated. Defaults to False.
+            deterministic: Sort contacts after the narrow phase so that results are
+                independent of GPU thread scheduling.  Adds a radix sort + gather
+                pass.  Hydroelastic contacts are not yet covered.
+            contact_max: Maximum number of contacts for the deterministic sort buffer.
+                Must match the ``contact_pair`` array size passed to :meth:`launch`.
+                Defaults to ``max_candidate_pairs``.  Set this to a larger value when
+                a single candidate pair can emit multiple contacts (e.g. up to 4 for
+                primitive multi-contact paths).
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -1420,6 +1468,7 @@ class NarrowPhase:
         self.reduce_contacts = reduce_contacts
         self.has_meshes = has_meshes
         self.has_heightfields = has_heightfields
+        self.deterministic = deterministic
 
         # Warn when running on CPU with meshes: mesh-mesh SDF contacts require CUDA
         is_gpu_device = wp.get_device(device).is_cuda
@@ -1520,7 +1569,9 @@ class NarrowPhase:
             # Slot layout: NUM_SPATIAL_DIRECTIONS spatial + 1 max-depth = VALUES_PER_KEY slots per key
             self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(writer_func)
             # Global contact reducer for all mesh contact types
-            self.global_contact_reducer = GlobalContactReducer(max_triangle_pairs, device=device)
+            self.global_contact_reducer = GlobalContactReducer(
+                max_triangle_pairs, device=device, deterministic=deterministic
+            )
         else:
             self.export_reduced_contacts_kernel = None
             self.global_contact_reducer = None
@@ -1571,6 +1622,20 @@ class NarrowPhase:
             )
 
             self.empty_tangent = None
+            self._empty_sort_key = wp.zeros(0, dtype=wp.int64, device=device)
+            det_capacity = contact_max if contact_max is not None else max_candidate_pairs
+            if deterministic:
+                self._sort_key_array = wp.zeros(det_capacity, dtype=wp.int64, device=device)
+                self._contact_sorter = ContactSorter(det_capacity, device=device)
+            else:
+                self._sort_key_array = wp.zeros(0, dtype=wp.int64, device=device)
+                self._contact_sorter = None
+            # Sentinel edge buffers used when no edge data is provided.
+            # _empty_edge_range is indexed by shape id, so it must have one
+            # slot per shape (not per candidate pair).
+            num_shapes = shape_aabb_lower.shape[0] if shape_aabb_lower is not None else max_candidate_pairs
+            self._empty_edge_indices = wp.zeros(1, dtype=wp.vec2i, device=device)
+            self._empty_edge_range = wp.full(max(num_shapes, 1), (-1, 0), dtype=wp.vec2i, device=device)
 
             if hydroelastic_sdf is not None:
                 self.shape_pairs_sdf_sdf = wp.zeros(hydroelastic_sdf.max_num_shape_pairs, dtype=wp.vec2i, device=device)
@@ -1647,6 +1712,8 @@ class NarrowPhase:
         shape_heightfield_index: wp.array[wp.int32] | None = None,
         heightfield_data: wp.array[HeightfieldData] | None = None,
         heightfield_elevations: wp.array[wp.float32] | None = None,
+        mesh_edge_indices: wp.array[wp.vec2i] | None = None,
+        shape_edge_range: wp.array[wp.vec2i] | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
@@ -1671,6 +1738,8 @@ class NarrowPhase:
             shape_collision_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
+            mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
+            shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -1906,6 +1975,10 @@ class NarrowPhase:
             # as well as on-the-fly heightfield evaluation via heightfield_data.
             if texture_sdf_data is None:
                 texture_sdf_data = wp.zeros(0, dtype=TextureSDFData, device=device)
+            if mesh_edge_indices is None:
+                mesh_edge_indices = self._empty_edge_indices
+            if shape_edge_range is None:
+                shape_edge_range = self._empty_edge_range
 
             if wp.get_device(device).is_cuda and self.mesh_mesh_contacts_kernel is not None:
                 if self.reduce_contacts and self.mesh_mesh_block_offsets is not None:
@@ -1913,7 +1986,7 @@ class NarrowPhase:
                     compute_mesh_mesh_block_offsets_scan(
                         shape_pairs_mesh_mesh=self.shape_pairs_mesh_mesh,
                         shape_pairs_mesh_mesh_count=self.shape_pairs_mesh_mesh_count,
-                        shape_source=shape_source,
+                        shape_edge_range=shape_edge_range,
                         shape_heightfield_index=shape_heightfield_index,
                         heightfield_data=heightfield_data,
                         target_blocks=self.mesh_mesh_target_blocks,
@@ -1942,6 +2015,8 @@ class NarrowPhase:
                             shape_heightfield_index,
                             heightfield_data,
                             heightfield_elevations,
+                            mesh_edge_indices,
+                            shape_edge_range,
                             self.mesh_mesh_block_offsets,
                             reducer_data,
                             self.num_mesh_mesh_blocks,
@@ -1970,6 +2045,8 @@ class NarrowPhase:
                             shape_heightfield_index,
                             heightfield_data,
                             heightfield_elevations,
+                            mesh_edge_indices,
+                            shape_edge_range,
                             writer_data,
                             self.num_tile_blocks,
                         ],
@@ -1992,12 +2069,14 @@ class NarrowPhase:
                         self.global_contact_reducer.position_depth,
                         self.global_contact_reducer.normal,
                         self.global_contact_reducer.shape_pairs,
+                        self.global_contact_reducer.contact_fingerprints,
                         self.global_contact_reducer.exported_flags,
                         shape_types,
                         shape_data,
                         shape_gap,
                         writer_data,
                         self.total_num_threads,
+                        int(self.global_contact_reducer.deterministic),
                     ],
                     device=device,
                     block_dim=self.block_dim,
@@ -2104,6 +2183,8 @@ class NarrowPhase:
         # shape_local_aabb_lower/upper.
         shape_local_aabb_lower = kwargs.pop("shape_local_aabb_lower", None)
         shape_local_aabb_upper = kwargs.pop("shape_local_aabb_upper", None)
+        mesh_edge_indices = kwargs.pop("mesh_edge_indices", None)
+        shape_edge_range = kwargs.pop("shape_edge_range", None)
         if kwargs:
             unknown_keys = sorted(kwargs.keys())
             if len(unknown_keys) == 1:
@@ -2133,7 +2214,20 @@ class NarrowPhase:
         # Clear external contact count (internal counters are cleared in launch_custom_write)
         contact_count.zero_()
 
+        # Verify sort-key buffer and sorter match the contact output capacity.
+        # Raising instead of silently reallocating keeps this path
+        # CUDA-graph-capturable and consistent with CollisionPipeline.collide().
+        if self.deterministic and self._sort_key_array.shape[0] != contact_max:
+            raise ValueError(
+                f"Contact output capacity ({contact_max}) does not match the "
+                f"deterministic sort buffer size ({self._sort_key_array.shape[0]}). "
+                f"The sorter operates over fixed-capacity buffers for CUDA graph capture "
+                f"compatibility, so the sizes must match exactly."
+            )
+
         # Create ContactWriterData struct
+        sort_key_arr = self._sort_key_array if self.deterministic else self._empty_sort_key
+
         writer_data = ContactWriterData()
         writer_data.contact_max = contact_max
         writer_data.contact_count = contact_count
@@ -2142,6 +2236,7 @@ class NarrowPhase:
         writer_data.contact_normal = contact_normal
         writer_data.contact_penetration = contact_penetration
         writer_data.contact_tangent = contact_tangent
+        writer_data.contact_sort_key = sort_key_arr
 
         # Delegate to launch_custom_write
         self.launch_custom_write(
@@ -2159,6 +2254,20 @@ class NarrowPhase:
             shape_collision_aabb_lower=shape_collision_aabb_lower,
             shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
+            mesh_edge_indices=mesh_edge_indices,
+            shape_edge_range=shape_edge_range,
             writer_data=writer_data,
             device=device,
         )
+
+        if self.deterministic:
+            self._contact_sorter.sort_simple(
+                sort_key_arr,
+                contact_count,
+                contact_pair=contact_pair,
+                contact_position=contact_position,
+                contact_normal=contact_normal,
+                contact_penetration=contact_penetration,
+                contact_tangent=contact_tangent,
+                device=device,
+            )

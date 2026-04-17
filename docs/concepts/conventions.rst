@@ -135,6 +135,13 @@ convert from this convention to MuJoCo's mixed-frame format when using the
 SolverMuJoCo, including both the angular velocity frame conversion (world ↔ body)
 and the linear velocity reference point conversion (CoM ↔ body frame origin).
 
+If you need the velocity of the body-frame origin rather than the COM, shift the
+linear term by the body's COM offset in world coordinates:
+
+.. math::
+
+   v_{\text{origin}}^W = v_{\text{com}}^W - \omega^W \times r_{\text{com}}^W.
+
 
 Summary of Conventions
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -171,18 +178,10 @@ Summary of Conventions
      - COM, world frame
      - World frame
      - Not named "twist"; typically treated as :math:`[\mathbf{v}_{com}^W;\ \boldsymbol{\omega}^W]`
-   * - **Newton** (except the Featherstone solver; see below)
+   * - **Newton**
      - COM, world frame
      - World frame
      - :attr:`~newton.State.body_qd`
-
-.. warning::
-
-  :class:`~newton.solvers.SolverFeatherstone` does not correctly handle angular velocity
-  for free-floating bodies with **non-zero center of mass offsets**. The body may not
-  rotate purely about its CoM.
-
-  This issue is tracked at https://github.com/newton-physics/newton/issues/1366.
 
 Mapping Between Representations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -268,24 +267,17 @@ the wrench to a point offset by :math:`\mathbf{r}` changes the torque as:
 
    \boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}.
 
-This convention is used in all Newton solvers, except for :class:`~newton.solvers.SolverFeatherstone`, which does not correctly handle torque application for free-floating bodies with **non-zero center of mass offsets**.
-
-.. warning::
-
-  :class:`~newton.solvers.SolverFeatherstone` does not correctly handle torque application
-  for free-floating bodies with **non-zero center of mass offsets**. A pure torque will
-  incorrectly cause the CoM to translate instead of remaining stationary.
-
-  This issue is tracked at https://github.com/newton-physics/newton/issues/1366.
+This convention is used in all Newton solvers.
 
 The array of joint forces (torques) in generalized coordinates is stored in :attr:`Control.joint_f <newton.Control.joint_f>`.
-For free joints, the corresponding 6 dimensions in this array are the spatial wrench applied at the body's center of mass (COM)
-in world frame, following exactly the same convention as :attr:`State.body_f <newton.State.body_f>`.
+For ``FREE`` and ``DISTANCE`` joints, the corresponding 6 dimensions in this
+array are the physical wrench in world coordinates, with the force and torque
+referenced at the child body's center of mass (COM).
 
 .. note::
 
-  MuJoCo represents free-joint generalized forces in a mixed-frame convention in ``qfrc_applied``. To preserve Newton's
-  COM-wrench semantics, :class:`~newton.solvers.SolverMuJoCo` applies free-joint
+  MuJoCo represents root free-joint generalized forces in a mixed-frame convention in ``qfrc_applied``. To preserve Newton's
+  COM-wrench semantics for that root-free-joint case, :class:`~newton.solvers.SolverMuJoCo` applies free-joint
   :attr:`Control.joint_f <newton.Control.joint_f>` through ``xfrc_applied`` (world-frame wrench at the COM) and
   uses ``qfrc_applied`` only for non-free joints. This keeps free-joint ``joint_f`` behavior aligned with
   :attr:`State.body_f <newton.State.body_f>`.
@@ -469,7 +461,7 @@ Newton defines collision primitives with consistent conventions across all shape
    * - **Mesh**
      - User-defined
      - Vertex and triangle arrays
-     - General triangle mesh (can be non-convex)
+     - General triangle mesh (can be non-convex); CCW winding defines outward face normal
 
 **Shape Orientation and Alignment**
 

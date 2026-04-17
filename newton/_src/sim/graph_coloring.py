@@ -452,7 +452,7 @@ def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> lis
         color_groups_1, color_groups_2 = color_groups_2, color_groups_1
 
     # sort group 1 in ascending order
-    color_groups_1_sorted = sorted(color_groups_1, key=lambda group: len(group))
+    color_groups_1_sorted = sorted(color_groups_1, key=len)
     # sort group 1 in descending order
     color_groups_2_sorted = sorted(color_groups_2, key=lambda group: -len(group))
     # so that we are combining the smaller group with the larger group
