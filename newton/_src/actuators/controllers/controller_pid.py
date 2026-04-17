@@ -19,8 +19,10 @@ def _pid_force_kernel(
     target_pos: wp.array[float],
     target_vel: wp.array[float],
     control_input: wp.array[float],
-    state_indices: wp.array[wp.uint32],
-    target_indices: wp.array[wp.uint32],
+    pos_indices: wp.array[wp.uint32],
+    vel_indices: wp.array[wp.uint32],
+    target_pos_indices: wp.array[wp.uint32],
+    target_vel_indices: wp.array[wp.uint32],
     kp: wp.array[float],
     ki: wp.array[float],
     kd: wp.array[float],
@@ -33,11 +35,13 @@ def _pid_force_kernel(
 ):
     """PID force: f = constant + act + kp*e + ki*integral + kd*de."""
     i = wp.tid()
-    state_idx = state_indices[i]
-    target_idx = target_indices[i]
+    pos_idx = pos_indices[i]
+    vel_idx = vel_indices[i]
+    tgt_pos_idx = target_pos_indices[i]
+    tgt_vel_idx = target_vel_indices[i]
 
-    position_error = target_pos[target_idx] - current_pos[state_idx]
-    velocity_error = target_vel[target_idx] - current_vel[state_idx]
+    position_error = target_pos[tgt_pos_idx] - current_pos[pos_idx]
+    velocity_error = target_vel[tgt_vel_idx] - current_vel[vel_idx]
 
     integral = current_integral[i] + position_error * dt
     integral = wp.clamp(integral, -integral_max[i], integral_max[i])
@@ -48,7 +52,7 @@ def _pid_force_kernel(
 
     act = float(0.0)
     if control_input:
-        act = control_input[target_idx]
+        act = control_input[tgt_vel_idx]
 
     force = const_f + act + kp[i] * position_error + ki[i] * integral + kd[i] * velocity_error
     forces[i] = force
@@ -131,8 +135,10 @@ class ControllerPID(Controller):
         target_pos: wp.array[float],
         target_vel: wp.array[float],
         feedforward: wp.array[float] | None,
-        input_indices: wp.array[wp.uint32],
-        target_indices: wp.array[wp.uint32],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
         forces: wp.array[float],
         state: ControllerPID.State,
         dt: float,
@@ -147,8 +153,10 @@ class ControllerPID(Controller):
                 target_pos,
                 target_vel,
                 feedforward,
-                input_indices,
-                target_indices,
+                pos_indices,
+                vel_indices,
+                target_pos_indices,
+                target_vel_indices,
                 self.kp,
                 self.ki,
                 self.kd,

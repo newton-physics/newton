@@ -136,8 +136,10 @@ class ControllerNetLSTM(Controller):
         target_pos: wp.array[float],
         target_vel: wp.array[float],
         feedforward: wp.array[float] | None,
-        input_indices: wp.array[wp.uint32],
-        target_indices: wp.array[wp.uint32],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
         forces: wp.array[float],
         state: ControllerNetLSTM.State,
         dt: float,
@@ -146,18 +148,19 @@ class ControllerNetLSTM(Controller):
         import torch
 
         if self._torch_input_indices is None:
-            self._torch_input_indices = torch.tensor(input_indices.numpy(), dtype=torch.long, device=self._torch_device)
+            self._torch_input_indices = torch.tensor(pos_indices.numpy(), dtype=torch.long, device=self._torch_device)
+            self._torch_vel_indices = torch.tensor(vel_indices.numpy(), dtype=torch.long, device=self._torch_device)
 
         current_pos = wp.to_torch(positions)
         current_vel = wp.to_torch(velocities)
         target = wp.to_torch(target_pos)
 
-        torch_target_idx = (
-            self._torch_input_indices if target_indices is input_indices else self._torch_sequential_indices
+        torch_target_pos_idx = (
+            self._torch_input_indices if target_pos_indices is pos_indices else self._torch_sequential_indices
         )
 
-        pos_error = target[torch_target_idx] - current_pos[self._torch_input_indices]
-        vel = current_vel[self._torch_input_indices]
+        pos_error = target[torch_target_pos_idx] - current_pos[self._torch_input_indices]
+        vel = current_vel[self._torch_vel_indices]
 
         # (N, 1, 2): seq_len=1, features=[pos_error, velocity]
         net_input = torch.stack([pos_error, vel], dim=1).unsqueeze(1)

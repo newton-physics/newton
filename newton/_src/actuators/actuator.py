@@ -83,6 +83,8 @@ class Actuator:
         controller: Controller,
         delay: Delay | None = None,
         clamping: list[Clamping] | None = None,
+        pos_indices: wp.array[wp.uint32] | None = None,
+        frc_indices: wp.array[wp.uint32] | None = None,
         state_pos_attr: str = "joint_q",
         state_vel_attr: str = "joint_qd",
         control_target_pos_attr: str = "joint_target_pos",
@@ -95,10 +97,18 @@ class Actuator:
         """Initialize actuator.
 
         Args:
-            indices: DOF indices for reading state/targets and writing forces. Shape (N,).
+            indices: DOF indices into ``joint_qd``-shaped arrays (velocities,
+                velocity targets, feedforward). Shape ``(N,)``.
             controller: Controller that computes raw forces.
             delay: Optional Delay instance for input delay.
             clamping: List of Clamping objects (post-controller force bounds).
+            pos_indices: DOF indices into ``joint_q``-shaped arrays (positions,
+                position targets). Defaults to *indices*. Differs from
+                *indices* for floating-base or ball-joint articulations
+                where ``joint_q`` and ``joint_qd`` have different layouts.
+            frc_indices: DOF indices into ``joint_f``-shaped arrays (output
+                forces). Defaults to *indices*. Differs from *indices*
+                for coupled transmissions or tendon-driven joints.
             state_pos_attr: Attribute on sim_state for positions.
             state_vel_attr: Attribute on sim_state for velocities.
             control_target_pos_attr: Attribute on sim_control for target positions.
@@ -111,6 +121,8 @@ class Actuator:
                 for differentiable simulation.
         """
         self.indices = indices
+        self.pos_indices = pos_indices if pos_indices is not None else indices
+        self.frc_indices = frc_indices if frc_indices is not None else indices
         self.controller = controller
         self.delay = delay
         self.clamping = clamping or []
@@ -212,7 +224,8 @@ class Actuator:
         target_pos = orig_target_pos
         target_vel = orig_target_vel
         feedforward = orig_feedforward
-        target_indices = self.indices
+        target_pos_indices = self.pos_indices
+        target_vel_indices = self.indices
 
         # --- 1. Delay read (from current_state) ---
         if self.delay is not None:
@@ -220,10 +233,12 @@ class Actuator:
                 orig_target_pos,
                 orig_target_vel,
                 orig_feedforward,
+                self.pos_indices,
                 self.indices,
                 current_act_state.delay_state,
             )
-            target_indices = self._sequential_indices
+            target_pos_indices = self._sequential_indices
+            target_vel_indices = self._sequential_indices
 
         # --- 2. Controller: compute raw forces ---
         ctrl_state = current_act_state.controller_state if current_act_state else None
@@ -233,8 +248,10 @@ class Actuator:
             target_pos,
             target_vel,
             feedforward,
+            self.pos_indices,
             self.indices,
-            target_indices,
+            target_pos_indices,
+            target_vel_indices,
             self._computed_forces,
             ctrl_state,
             dt,
@@ -250,6 +267,7 @@ class Actuator:
                     self._applied_forces,
                     positions,
                     velocities,
+                    self.pos_indices,
                     self.indices,
                     device=self.device,
                 )
@@ -268,7 +286,7 @@ class Actuator:
         wp.launch(
             kernel=_scatter_add_kernel,
             dim=self.num_actuators,
-            inputs=[output_forces, self._computed_forces, self.indices],
+            inputs=[output_forces, self._computed_forces, self.frc_indices],
             outputs=[applied_output, computed_output],
             device=self.device,
         )
@@ -284,6 +302,7 @@ class Actuator:
                 orig_target_pos,
                 orig_target_vel,
                 orig_feedforward,
+                self.pos_indices,
                 self.indices,
                 current_act_state.delay_state,
                 next_act_state.delay_state,

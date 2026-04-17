@@ -14,7 +14,8 @@ def _delay_buffer_state_kernel(
     target_pos_global: wp.array[float],
     target_vel_global: wp.array[float],
     feedforward_global: wp.array[float],
-    indices: wp.array[wp.uint32],
+    pos_indices: wp.array[wp.uint32],
+    vel_indices: wp.array[wp.uint32],
     copy_idx: int,
     write_idx: int,
     buf_depth: int,
@@ -29,18 +30,19 @@ def _delay_buffer_state_kernel(
 ):
     """Update delay circular buffer: copy previous entry, write new entry, increment push count."""
     i = wp.tid()
-    global_idx = indices[i]
+    pos_idx = pos_indices[i]
+    vel_idx = vel_indices[i]
 
     next_buffer_pos[copy_idx, i] = current_buffer_pos[copy_idx, i]
     next_buffer_vel[copy_idx, i] = current_buffer_vel[copy_idx, i]
     next_buffer_act[copy_idx, i] = current_buffer_act[copy_idx, i]
 
-    next_buffer_pos[write_idx, i] = target_pos_global[global_idx]
-    next_buffer_vel[write_idx, i] = target_vel_global[global_idx]
+    next_buffer_pos[write_idx, i] = target_pos_global[pos_idx]
+    next_buffer_vel[write_idx, i] = target_vel_global[vel_idx]
 
     act = float(0.0)
     if feedforward_global:
-        act = feedforward_global[global_idx]
+        act = feedforward_global[vel_idx]
     next_buffer_act[write_idx, i] = act
 
     next_num_pushes[i] = wp.min(current_num_pushes[i] + 1, buf_depth)
@@ -58,7 +60,8 @@ def _delay_read_kernel(
     current_pos: wp.array[float],
     current_vel: wp.array[float],
     current_act: wp.array[float],
-    indices: wp.array[wp.uint32],
+    pos_indices: wp.array[wp.uint32],
+    vel_indices: wp.array[wp.uint32],
     out_pos: wp.array[float],
     out_vel: wp.array[float],
     out_act: wp.array[float],
@@ -67,12 +70,13 @@ def _delay_read_kernel(
     i = wp.tid()
     n = num_pushes[i]
     if n == 0:
-        idx = indices[i]
-        out_pos[i] = current_pos[idx]
-        out_vel[i] = current_vel[idx]
+        pos_idx = pos_indices[i]
+        vel_idx = vel_indices[i]
+        out_pos[i] = current_pos[pos_idx]
+        out_vel[i] = current_vel[vel_idx]
         act = float(0.0)
         if current_act:
-            act = current_act[idx]
+            act = current_act[vel_idx]
         out_act[i] = act
     else:
         lag = wp.min(delays[i] - 1, n - 1)
@@ -221,7 +225,8 @@ class Delay:
         target_pos: wp.array[float],
         target_vel: wp.array[float],
         feedforward: wp.array[float] | None,
-        indices: wp.array[wp.uint32],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
         current_state: Delay.State,
     ) -> tuple[wp.array[float], wp.array[float], wp.array[float]]:
         """Read per-DOF delayed targets from the circular buffer.
@@ -232,10 +237,11 @@ class Delay:
         underfilled, the lag is clamped to the oldest available entry.
 
         Args:
-            target_pos: Current target positions [m or rad] (global array).
-            target_vel: Current target velocities [m/s or rad/s] (global array).
+            target_pos: Current target positions [m or rad] (global ``joint_target_pos``).
+            target_vel: Current target velocities [m/s or rad/s] (global ``joint_target_vel``).
             feedforward: Feedforward control input [N or N·m] (global, may be None).
-            indices: DOF indices into the global arrays, shape ``(N,)``.
+            pos_indices: Indices into *target_pos* (``joint_q`` layout).
+            vel_indices: Indices into *target_vel* and *feedforward* (``joint_qd`` layout).
             current_state: Delay state to read from.
 
         Returns:
@@ -256,7 +262,8 @@ class Delay:
                 target_pos,
                 target_vel,
                 feedforward,
-                indices,
+                pos_indices,
+                vel_indices,
             ],
             outputs=[self._out_pos, self._out_vel, self._out_act],
             device=self._device,
@@ -268,17 +275,19 @@ class Delay:
         target_pos: wp.array[float],
         target_vel: wp.array[float],
         feedforward: wp.array[float] | None,
-        indices: wp.array[wp.uint32],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
         current_state: Delay.State,
         next_state: Delay.State,
     ) -> None:
         """Write current targets into the buffer and advance the write pointer.
 
         Args:
-            target_pos: Current target positions [m or rad] (global array).
-            target_vel: Current target velocities [m/s or rad/s] (global array).
-            feedforward: Current feedforward input [N or N·m] (global array, may be None).
-            indices: DOF indices into the global arrays, shape ``(N,)``.
+            target_pos: Current target positions [m or rad] (global ``joint_target_pos``).
+            target_vel: Current target velocities [m/s or rad/s] (global ``joint_target_vel``).
+            feedforward: Current feedforward input [N or N·m] (global, may be None).
+            pos_indices: Indices into *target_pos* (``joint_q`` layout).
+            vel_indices: Indices into *target_vel* and *feedforward* (``joint_qd`` layout).
             current_state: Delay state to read from.
             next_state: Delay state to write into.
         """
@@ -295,7 +304,8 @@ class Delay:
                 target_pos,
                 target_vel,
                 feedforward,
-                indices,
+                pos_indices,
+                vel_indices,
                 copy_idx,
                 write_idx,
                 self.buf_depth,

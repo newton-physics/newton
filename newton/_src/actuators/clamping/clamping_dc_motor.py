@@ -91,7 +91,8 @@ class ClampingDCMotor(Clamping):
         dst_forces: wp.array[float],
         positions: wp.array[float],
         velocities: wp.array[float],
-        input_indices: wp.array[wp.uint32],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
         device: wp.Device | None = None,
     ) -> None:
         wp.launch(
@@ -99,7 +100,7 @@ class ClampingDCMotor(Clamping):
             dim=len(src_forces),
             inputs=[
                 velocities,
-                input_indices,
+                vel_indices,
                 self.saturation_effort,
                 self.velocity_limit,
                 self.max_force,

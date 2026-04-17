@@ -207,7 +207,8 @@ class ModelBuilder:
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
         controller_shared_kwargs: dict  # Shared controller kwargs (e.g. network_path)
-        indices: list[int]  # Per-actuator DOF indices
+        indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
+        pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
         controller_args: list[dict[str, Any]]  # Per-actuator controller array params
         delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
@@ -1688,6 +1689,7 @@ class ModelBuilder:
         index: int,
         clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
         delay: int | None = None,
+        pos_index: int | None = None,
         **controller_kwargs: Any,
     ) -> None:
         """Add an external actuator for a single DOF.
@@ -1702,10 +1704,15 @@ class ModelBuilder:
 
         Args:
             controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
-            index: DOF index this actuator reads from and writes to.
+            index: DOF index into ``joint_qd``-shaped arrays (velocities,
+                velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-controller. E.g. ``[(ClampingMaxForce, {'max_force': 50.0})]``.
             delay: Optional integer number of timesteps to delay inputs.
+            pos_index: DOF index into ``joint_q``-shaped arrays (positions,
+                position targets). Defaults to *index*. Differs from
+                *index* for floating-base or ball-joint articulations
+                where ``joint_q`` and ``joint_qd`` have different layouts.
             **controller_kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
         """
         clamping = clamping or []
@@ -1754,6 +1761,7 @@ class ModelBuilder:
                 clamping_shared_kwargs=clamping_shared_kwargs,
                 controller_shared_kwargs=ctrl_shared,
                 indices=[],
+                pos_indices=[],
                 controller_args=[],
                 delay_args=[],
                 clamping_args=[],
@@ -1761,6 +1769,7 @@ class ModelBuilder:
         )
 
         entry.indices.append(index)
+        entry.pos_indices.append(pos_index if pos_index is not None else index)
         entry.controller_args.append(ctrl_array_params)
         if delay is not None:
             entry.delay_args.append({"delay": delay})
@@ -3283,6 +3292,7 @@ class ModelBuilder:
                     clamping_shared_kwargs=sub_entry.clamping_shared_kwargs,
                     controller_shared_kwargs=sub_entry.controller_shared_kwargs,
                     indices=[],
+                    pos_indices=[],
                     controller_args=[],
                     delay_args=[],
                     clamping_args=[],
@@ -3290,6 +3300,8 @@ class ModelBuilder:
             )
             for idx in sub_entry.indices:
                 entry.indices.append(idx + start_joint_dof_idx)
+            for idx in sub_entry.pos_indices:
+                entry.pos_indices.append(idx + start_joint_coord_idx)
             entry.controller_args.extend(sub_entry.controller_args)
             entry.delay_args.extend(sub_entry.delay_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
@@ -10323,6 +10335,10 @@ class ModelBuilder:
             for entry in self.actuator_entries.values():
                 indices = self._build_index_array(entry.indices, device)
 
+                pos_indices_arg = None
+                if entry.pos_indices != entry.indices:
+                    pos_indices_arg = self._build_index_array(entry.pos_indices, device)
+
                 # Build controller from stacked per-DOF arrays + shared kwargs
                 ctrl_arrays = self._stack_args_to_arrays(
                     entry.controller_args, device=device, requires_grad=requires_grad
@@ -10351,6 +10367,7 @@ class ModelBuilder:
                     controller=controller,
                     delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
+                    pos_indices=pos_indices_arg,
                     requires_grad=requires_grad,
                 )
 

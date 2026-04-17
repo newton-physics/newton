@@ -2759,13 +2759,19 @@ def parse_usd(
     path_to_dof = {
         path: builder.joint_qd_start[idx] for path, idx in path_joint_map.items() if idx < len(builder.joint_qd_start)
     }
+    path_to_coord = {
+        path: builder.joint_q_start[idx] for path, idx in path_joint_map.items() if idx < len(builder.joint_q_start)
+    }
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
         parsed = parse_actuator_prim(prim)
         if parsed is None:
             continue
         if len(parsed.target_paths) != 1 or parsed.target_paths[0] not in path_to_dof:
             continue
-        dof_index = path_to_dof[parsed.target_paths[0]]
+        target_path = parsed.target_paths[0]
+        dof_index = path_to_dof[target_path]
+        coord_index = path_to_coord.get(target_path)
+        pos_index = coord_index if coord_index is not None and coord_index != dof_index else None
 
         # Separate Delay from Clamping components in the parsed spec
         delay_val = None
@@ -2781,6 +2787,7 @@ def parse_usd(
             index=dof_index,
             clamping=clamping_specs if clamping_specs else None,
             delay=delay_val,
+            pos_index=pos_index,
             **parsed.controller_kwargs,
         )
         actuator_count += 1

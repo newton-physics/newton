@@ -195,7 +195,8 @@ class ClampingPositionBased(Clamping):
         dst_forces: wp.array[float],
         positions: wp.array[float],
         velocities: wp.array[float],
-        input_indices: wp.array[wp.uint32],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
         device: wp.Device | None = None,
     ) -> None:
         wp.launch(
@@ -203,7 +204,7 @@ class ClampingPositionBased(Clamping):
             dim=len(src_forces),
             inputs=[
                 positions,
-                input_indices,
+                pos_indices,
                 self.lookup_angles,
                 self.lookup_torques,
                 self.lookup_size,
