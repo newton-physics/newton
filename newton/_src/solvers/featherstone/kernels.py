@@ -13,6 +13,9 @@ from ...sim.articulation import (
     compute_3d_rotational_dofs,
     origin_twist_to_com_twist,
 )
+from ...sim.articulation import (
+    eval_fk as eval_fk_public,
+)
 from ..semi_implicit.kernels_body import joint_force
 
 
@@ -47,6 +50,17 @@ def compute_com_transforms(
     tid = wp.tid()
     com = body_com[tid]
     body_X_com[tid] = wp.transform(com, wp.quat_identity())
+
+
+@wp.kernel
+def compute_body_q_com(
+    body_q: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
+    # outputs
+    body_q_com: wp.array[wp.transform],
+):
+    tid = wp.tid()
+    body_q_com[tid] = body_q[tid] * body_X_com[tid]
 
 
 @wp.kernel
@@ -244,6 +258,7 @@ def jcalc_motion(
     lin_axis_count: int,
     ang_axis_count: int,
     X_sc: wp.transform,
+    x_com_world: wp.vec3,
     joint_qd: wp.array[float],
     qd_start: int,
     # outputs
@@ -313,26 +328,34 @@ def jcalc_motion(
         return wp.spatial_vector()
 
     if type == JointType.FREE or type == JointType.DISTANCE:
-        v_j_s = transform_twist(
+        axis_world_x = wp.transform_vector(X_sc, wp.vec3(1.0, 0.0, 0.0))
+        axis_world_y = wp.transform_vector(X_sc, wp.vec3(0.0, 1.0, 0.0))
+        axis_world_z = wp.transform_vector(X_sc, wp.vec3(0.0, 0.0, 1.0))
+
+        joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
+        joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
+        joint_S_s[qd_start + 2] = wp.spatial_vector(axis_world_z, wp.vec3())
+        joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, x_com_world), axis_world_x)
+        joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, x_com_world), axis_world_y)
+        joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, x_com_world), axis_world_z)
+
+        v_com_world = wp.transform_vector(
             X_sc,
-            wp.spatial_vector(
+            wp.vec3(
                 joint_qd[qd_start + 0],
                 joint_qd[qd_start + 1],
                 joint_qd[qd_start + 2],
+            ),
+        )
+        omega_world = wp.transform_vector(
+            X_sc,
+            wp.vec3(
                 joint_qd[qd_start + 3],
                 joint_qd[qd_start + 4],
                 joint_qd[qd_start + 5],
             ),
         )
-
-        joint_S_s[qd_start + 0] = transform_twist(X_sc, wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-        joint_S_s[qd_start + 1] = transform_twist(X_sc, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0))
-        joint_S_s[qd_start + 2] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        joint_S_s[qd_start + 3] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        joint_S_s[qd_start + 4] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
-        joint_S_s[qd_start + 5] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
-
-        return v_j_s
+        return wp.spatial_vector(v_com_world - wp.cross(omega_world, x_com_world), omega_world)
 
     wp.printf("jcalc_motion not implemented for joint type %d\n", type)
 
@@ -382,7 +405,7 @@ def jcalc_tau(
     if type == JointType.FREE or type == JointType.DISTANCE:
         for i in range(6):
             S_s = joint_S_s[dof_start + i]
-            tau[dof_start + i] = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
+            tau[dof_start + i] = -wp.dot(S_s, body_f_s)
 
         return
 
@@ -481,88 +504,42 @@ def jcalc_integrate(
         return
 
     if type == JointType.FREE or type == JointType.DISTANCE:
-        if parent < 0:
-            a_parent = wp.vec3(joint_qdd[dof_start + 0], joint_qdd[dof_start + 1], joint_qdd[dof_start + 2])
-            alpha = wp.vec3(joint_qdd[dof_start + 3], joint_qdd[dof_start + 4], joint_qdd[dof_start + 5])
+        a_com = wp.vec3(joint_qdd[dof_start + 0], joint_qdd[dof_start + 1], joint_qdd[dof_start + 2])
+        alpha = wp.vec3(joint_qdd[dof_start + 3], joint_qdd[dof_start + 4], joint_qdd[dof_start + 5])
 
-            v_parent = wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2])
-            omega = wp.vec3(joint_qd[dof_start + 3], joint_qd[dof_start + 4], joint_qd[dof_start + 5])
+        v_com = wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2])
+        omega = wp.vec3(joint_qd[dof_start + 3], joint_qd[dof_start + 4], joint_qd[dof_start + 5])
 
-            p = wp.vec3(joint_q[coord_start + 0], joint_q[coord_start + 1], joint_q[coord_start + 2])
-            r = wp.quat(
-                joint_q[coord_start + 3], joint_q[coord_start + 4], joint_q[coord_start + 5], joint_q[coord_start + 6]
-            )
-
-            r_com_joint = wp.transform_point(wp.transform_inverse(joint_X_c), body_com_child)
-            x_com = p + wp.quat_rotate(r, r_com_joint)
-            v_com = v_parent + wp.cross(omega, x_com)
-            a_com = a_parent + wp.cross(alpha, x_com) + wp.cross(omega, v_com)
-
-            omega_new = omega + alpha * dt
-            v_com_new = v_com + a_com * dt
-
-            drdt = wp.quat(omega_new, 0.0) * r * 0.5
-            r_new = wp.normalize(r + drdt * dt)
-            x_com_new = x_com + v_com_new * dt
-            p_new = x_com_new - wp.quat_rotate(r_new, r_com_joint)
-            v_parent_new = v_com_new - wp.cross(omega_new, x_com_new)
-
-            joint_q_new[coord_start + 0] = p_new[0]
-            joint_q_new[coord_start + 1] = p_new[1]
-            joint_q_new[coord_start + 2] = p_new[2]
-
-            joint_q_new[coord_start + 3] = r_new[0]
-            joint_q_new[coord_start + 4] = r_new[1]
-            joint_q_new[coord_start + 5] = r_new[2]
-            joint_q_new[coord_start + 6] = r_new[3]
-
-            joint_qd_new[dof_start + 0] = v_parent_new[0]
-            joint_qd_new[dof_start + 1] = v_parent_new[1]
-            joint_qd_new[dof_start + 2] = v_parent_new[2]
-            joint_qd_new[dof_start + 3] = omega_new[0]
-            joint_qd_new[dof_start + 4] = omega_new[1]
-            joint_qd_new[dof_start + 5] = omega_new[2]
-            return
-
-        a_s = wp.vec3(joint_qdd[dof_start + 0], joint_qdd[dof_start + 1], joint_qdd[dof_start + 2])
-        m_s = wp.vec3(joint_qdd[dof_start + 3], joint_qdd[dof_start + 4], joint_qdd[dof_start + 5])
-
-        v_s = wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2])
-        w_s = wp.vec3(joint_qd[dof_start + 3], joint_qd[dof_start + 4], joint_qd[dof_start + 5])
-
-        # Descendants stay in Featherstone's internal parent-origin coordinates
-        # during the integrator step. The public COM convention is restored at
-        # the solver boundary once the end-step parent pose is known.
-        w_s = w_s + m_s * dt
-        v_s = v_s + a_s * dt
-
-        p_s = wp.vec3(joint_q[coord_start + 0], joint_q[coord_start + 1], joint_q[coord_start + 2])
-
-        dpdt_s = v_s + wp.cross(w_s, p_s)
-        r_s = wp.quat(
+        p = wp.vec3(joint_q[coord_start + 0], joint_q[coord_start + 1], joint_q[coord_start + 2])
+        r = wp.quat(
             joint_q[coord_start + 3], joint_q[coord_start + 4], joint_q[coord_start + 5], joint_q[coord_start + 6]
         )
+        x_com_joint = wp.transform_point(joint_X_c, body_com_child)
+        x_com = p + wp.quat_rotate(r, x_com_joint)
 
-        drdt_s = wp.quat(w_s, 0.0) * r_s * 0.5
+        omega_new = omega + alpha * dt
+        v_com_new = v_com + a_com * dt
 
-        p_s_new = p_s + dpdt_s * dt
-        r_s_new = wp.normalize(r_s + drdt_s * dt)
+        drdt = wp.quat(omega_new, 0.0) * r * 0.5
+        r_new = wp.normalize(r + drdt * dt)
+        x_com_new = x_com + v_com_new * dt
+        p_new = x_com_new - wp.quat_rotate(r_new, x_com_joint)
 
-        joint_q_new[coord_start + 0] = p_s_new[0]
-        joint_q_new[coord_start + 1] = p_s_new[1]
-        joint_q_new[coord_start + 2] = p_s_new[2]
+        joint_q_new[coord_start + 0] = p_new[0]
+        joint_q_new[coord_start + 1] = p_new[1]
+        joint_q_new[coord_start + 2] = p_new[2]
 
-        joint_q_new[coord_start + 3] = r_s_new[0]
-        joint_q_new[coord_start + 4] = r_s_new[1]
-        joint_q_new[coord_start + 5] = r_s_new[2]
-        joint_q_new[coord_start + 6] = r_s_new[3]
+        joint_q_new[coord_start + 3] = r_new[0]
+        joint_q_new[coord_start + 4] = r_new[1]
+        joint_q_new[coord_start + 5] = r_new[2]
+        joint_q_new[coord_start + 6] = r_new[3]
 
-        joint_qd_new[dof_start + 0] = v_s[0]
-        joint_qd_new[dof_start + 1] = v_s[1]
-        joint_qd_new[dof_start + 2] = v_s[2]
-        joint_qd_new[dof_start + 3] = w_s[0]
-        joint_qd_new[dof_start + 4] = w_s[1]
-        joint_qd_new[dof_start + 5] = w_s[2]
+        joint_qd_new[dof_start + 0] = v_com_new[0]
+        joint_qd_new[dof_start + 1] = v_com_new[1]
+        joint_qd_new[dof_start + 2] = v_com_new[2]
+        joint_qd_new[dof_start + 3] = omega_new[0]
+        joint_qd_new[dof_start + 4] = omega_new[1]
+        joint_qd_new[dof_start + 5] = omega_new[2]
 
         return
 
@@ -751,6 +728,8 @@ def compute_link_velocity(
         X_wp = body_q[parent]
         X_wpj = X_wp * X_wpj
 
+    X_sm = body_q_com[child]
+
     # compute motion subspace and velocity across the joint (also stores S_s to global memory)
     lin_axis_count = joint_dof_dim[i, 0]
     ang_axis_count = joint_dof_dim[i, 1]
@@ -760,6 +739,7 @@ def compute_link_velocity(
         lin_axis_count,
         ang_axis_count,
         X_wpj,
+        wp.transform_get_translation(X_sm),
         joint_qd,
         qd_start,
         joint_S_s,
@@ -778,7 +758,6 @@ def compute_link_velocity(
     a_s = a_parent_s + spatial_cross(v_s, v_j_s)  # + joint_S_s[i]*self.joint_qdd[i]
 
     # compute body forces
-    X_sm = body_q_com[child]
     I_m = body_I_m[child]
 
     # gravity and external forces (expressed in frame aligned with s but centered at body mass)
@@ -831,8 +810,6 @@ def accumulate_free_distance_joint_f_to_body_force(
     joint_type: wp.array[int],
     joint_child: wp.array[int],
     joint_qd_start: wp.array[int],
-    body_q: wp.array[wp.transform],
-    body_X_com: wp.array[wp.transform],
     joint_f_public: wp.array[float],
     body_f_ext: wp.array[wp.spatial_vector],
 ):
@@ -844,8 +821,6 @@ def accumulate_free_distance_joint_f_to_body_force(
 
     qd_start = joint_qd_start[joint_id]
     child = joint_child[joint_id]
-    X_sm = body_q[child] * body_X_com[child]
-    r_com = wp.transform_get_translation(X_sm)
 
     force = wp.vec3(
         joint_f_public[qd_start + 0],
@@ -858,7 +833,7 @@ def accumulate_free_distance_joint_f_to_body_force(
         joint_f_public[qd_start + 5],
     )
 
-    body_f_ext[child] = body_f_ext[child] - wp.spatial_vector(force, torque_com + wp.cross(r_com, force))
+    wp.atomic_add(body_f_ext, child, wp.spatial_vector(force, torque_com))
 
 
 @wp.kernel
@@ -1104,6 +1079,8 @@ def eval_rigid_tau(
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
     body_fb_s: wp.array[wp.spatial_vector],
     body_f_ext: wp.array[wp.spatial_vector],
     # outputs
@@ -1133,7 +1110,11 @@ def eval_rigid_tau(
         # total forces on body
         f_b_s = body_fb_s[child]
         f_t_s = body_ft_s[child]
-        f_ext = body_f_ext[child]
+        f_ext_public = body_f_ext[child]
+        force = wp.spatial_top(f_ext_public)
+        torque_com = wp.spatial_bottom(f_ext_public)
+        x_com_world = wp.transform_point(body_q[child], body_com[child])
+        f_ext = -wp.spatial_vector(force, torque_com + wp.cross(x_com_world, force))
         f_s = f_b_s + f_t_s + f_ext
 
         # compute joint-space forces, writes out tau
@@ -2016,11 +1997,7 @@ def eval_fk_with_velocity_conversion(
     indices: wp.array[int] | None = None,
 ):
     """
-    Evaluates Featherstone FK from internal free-joint speeds and writes public body twists.
-
-    This helper mirrors :func:`newton.eval_fk`, but it expects Featherstone's
-    internal FREE/DISTANCE ``joint_qd`` convention as input and still writes
-    the public COM-referenced :attr:`State.body_qd` output.
+    Evaluate FK for Featherstone using Newton's public joint velocity convention.
 
     Args:
         model (Model): The model to evaluate.
@@ -2031,43 +2008,7 @@ def eval_fk_with_velocity_conversion(
         indices (array): Integer indices of articulations to update. If None, updates all articulations.
                         Cannot be used together with mask parameter.
     """
-    # Validate inputs
-    if mask is not None and indices is not None:
-        raise ValueError("Cannot specify both mask and indices parameters")
-
-    # Determine launch dimensions
-    if indices is not None:
-        num_articulations = len(indices)
-    else:
-        num_articulations = model.articulation_count
-
-    wp.launch(
-        kernel=eval_articulation_fk_with_velocity_conversion,
-        dim=num_articulations,
-        inputs=[
-            model.articulation_start,
-            model.articulation_count,
-            mask,
-            indices,
-            joint_q,
-            joint_qd,
-            model.joint_q_start,
-            model.joint_qd_start,
-            model.joint_type,
-            model.joint_parent,
-            model.joint_child,
-            model.joint_X_p,
-            model.joint_X_c,
-            model.joint_axis,
-            model.joint_dof_dim,
-            model.body_com,
-        ],
-        outputs=[
-            state.body_q,
-            state.body_qd,
-        ],
-        device=model.device,
-    )
+    eval_fk_public(model, joint_q, joint_qd, state, mask=mask, indices=indices)
 
 
 def eval_fk_with_velocity_conversion_from_joint_starts(
@@ -2078,31 +2019,5 @@ def eval_fk_with_velocity_conversion_from_joint_starts(
     joint_qd: wp.array[float],
     state: State,
 ):
-    assert len(articulation_indices) == len(articulation_joint_start)
-
-    wp.launch(
-        kernel=eval_articulation_fk_with_velocity_conversion_from_joint,
-        dim=len(articulation_indices),
-        inputs=[
-            model.articulation_start,
-            articulation_indices,
-            articulation_joint_start,
-            joint_q,
-            joint_qd,
-            model.joint_q_start,
-            model.joint_qd_start,
-            model.joint_type,
-            model.joint_parent,
-            model.joint_child,
-            model.joint_X_p,
-            model.joint_X_c,
-            model.joint_axis,
-            model.joint_dof_dim,
-            model.body_com,
-        ],
-        outputs=[
-            state.body_q,
-            state.body_qd,
-        ],
-        device=model.device,
-    )
+    del articulation_joint_start
+    eval_fk_public(model, joint_q, joint_qd, state, indices=articulation_indices)

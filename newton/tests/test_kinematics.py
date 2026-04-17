@@ -661,6 +661,63 @@ def test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite
     assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
 
 
+def test_featherstone_velocity_helper_matches_public_fk_for_descendant_free_joint_qd(test, device):
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+    base = builder.add_link()
+    child = builder.add_link()
+
+    builder.body_com[base] = wp.vec3(0.15, -0.05, 0.02)
+    builder.body_com[child] = wp.vec3(0.25, 0.11, -0.17)
+
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=base,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(
+            wp.vec3(0.2, -0.1, 0.3),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, -0.2, 1.0)), 0.55),
+        ),
+        child_xform=wp.transform_identity(),
+    )
+    j1 = builder.add_joint_free(
+        parent=base,
+        child=child,
+        parent_xform=wp.transform(
+            wp.vec3(0.7, -0.2, 0.4),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, 1.0, -0.3)), 0.7),
+        ),
+        child_xform=wp.transform(
+            wp.vec3(0.15, -0.05, 0.2),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -0.2, 0.4)), -0.9),
+        ),
+    )
+    builder.add_articulation([j0, j1])
+
+    model = builder.finalize(device=device)
+    q_start = model.joint_q_start.numpy()
+    qd_start = model.joint_qd_start.numpy()
+
+    q = model.joint_q.numpy().copy()
+    qd = model.joint_qd.numpy().copy()
+    q[q_start[0]] = 0.6
+    q[q_start[1] : q_start[1] + 7] = np.array([0.35, -0.2, 0.18, 0.1, -0.15, 0.2, 0.963068], dtype=np.float32)
+    qd[qd_start[1] : qd_start[1] + 6] = np.array([0.7, -0.3, 0.2, 0.4, -0.5, 0.6], dtype=np.float32)
+
+    state_public = model.state()
+    state_helper = model.state()
+    state_public.joint_q.assign(q)
+    state_public.joint_qd.assign(qd)
+    state_helper.joint_q.assign(q)
+    state_helper.joint_qd.assign(qd)
+
+    newton.eval_fk(model, state_public.joint_q, state_public.joint_qd, state_public)
+    eval_fk_with_velocity_conversion(model, state_helper.joint_q, state_helper.joint_qd, state_helper)
+
+    assert_np_equal(state_helper.body_q.numpy(), state_public.body_q.numpy(), tol=1.0e-6)
+    assert_np_equal(state_helper.body_qd.numpy(), state_public.body_qd.numpy(), tol=1.0e-6)
+
+
 def test_fk_with_indices(test, device):
     """Test eval_fk with articulation indices parameter"""
     builder = newton.ModelBuilder()
@@ -1145,6 +1202,12 @@ add_function_test(
     TestSimKinematics,
     "test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite_difference",
     test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestSimKinematics,
+    "test_featherstone_velocity_helper_matches_public_fk_for_descendant_free_joint_qd",
+    test_featherstone_velocity_helper_matches_public_fk_for_descendant_free_joint_qd,
     devices=devices,
 )
 add_function_test(TestSimKinematics, "test_fk_with_indices", test_fk_with_indices, devices=devices)
