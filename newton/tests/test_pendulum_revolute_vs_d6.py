@@ -87,13 +87,6 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
             traj[i, 0] = q_cur[rev_qi]
             traj[i, 1] = q_cur[d6_qi]
 
-        # Also print a small preview
-        for i in range(min(10, steps)):
-            t = i * sim_dt
-            qrev = traj[i, 0]
-            qd6 = traj[i, 1]
-            print(f"t:{t:.6f} qrev:{qrev:.6f} qd6:{qd6:.6f} diff:{abs(qrev - qd6):.6f}")
-
         # Basic checks: they should have moved and oscillated
         # Check that min and max are different (pendulum is moving)
         rev_min, rev_max = np.min(traj[:, 0]), np.max(traj[:, 0])
@@ -107,9 +100,6 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
         # Their trajectories should be close (same physics)
         diff = np.mean(np.abs(traj[:, 0] - traj[:, 1]))
         self.assertLess(diff, 0.1, f"Pendulum behaviors differ too much, mean abs diff = {diff}")
-
-        # Do not clean up to allow re-use across runs
-        # os.unlink(usd_path)
 
 
 if __name__ == "__main__":

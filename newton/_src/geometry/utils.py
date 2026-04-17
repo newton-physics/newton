@@ -88,8 +88,7 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         return np.linalg.norm(vmax)
     elif geo_type == GeoType.PLANE:
         if scale[0] > 0.0 and scale[1] > 0.0:
-            # finite plane
-            return np.linalg.norm(scale)
+            return np.linalg.norm(scale) * 0.5
         else:
             return 1.0e6
     elif geo_type == GeoType.HFIELD:

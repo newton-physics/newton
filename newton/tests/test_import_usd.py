@@ -6602,6 +6602,198 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags & ShapeFlags.VISIBLE)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_invisible_collision_shape_is_hidden(self):
+        """Effective USD invisibility clears VISIBLE on colliders while preserving collision."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        token visibility = "invisible"
+        double size = 1.0
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        collision_shape = result["path_shape_map"]["/Body/CollisionBox"]
+
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_inherited_invisible_body_hides_collider_and_visual(self):
+        """Parent invisibility propagates to child colliders and visual-only geometry."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    token visibility = "invisible"
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1.0
+    }
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        collision_shape = path_shape_map["/Body/CollisionBox"]
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+        self.assertIn("/Body/VisualSphere", path_shape_map)
+        visual_shape = path_shape_map["/Body/VisualSphere"]
+        self.assertFalse(builder.shape_flags[visual_shape] & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(builder.shape_flags[visual_shape] & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_invisible_visual_sibling_does_not_suppress_collider_visibility(self):
+        """An invisible visual shape must not prevent fallback-visible colliders."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1.0
+    }
+
+    def Sphere "InvisibleVisual"
+    {
+        token visibility = "invisible"
+        double radius = 0.3
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        # The invisible visual should still be imported (as hidden).
+        self.assertIn("/Body/InvisibleVisual", path_shape_map)
+        vis_shape = path_shape_map["/Body/InvisibleVisual"]
+        self.assertFalse(builder.shape_flags[vis_shape] & ShapeFlags.VISIBLE)
+
+        # Collider must remain visible because no *visible* visual shapes
+        # exist for this body.
+        collision_shape = path_shape_map["/Body/CollisionBox"]
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_primitive_collider_with_roughness_only_material_stays_hidden(self):
+        """Primitive (non-mesh) colliders must not become visible from roughness-only materials.
+
+        When a body already has visual shapes, ``show_collider_by_policy`` is
+        ``False``. Only ``collider_has_visual_material`` can promote a collider
+        to visible, and that promotion is restricted to mesh colliders only.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        usd_content = """#usda 1.0
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        # Add a collision box with a roughness-only PBR material.
+        box_prim = UsdGeom.Cube.Define(stage, "/Body/CollisionBox").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(box_prim)
+        material = UsdShade.Material.Define(stage, "/Materials/RoughnessOnly")
+        shader = UsdShade.Shader.Define(stage, "/Materials/RoughnessOnly/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.8)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(box_prim).Bind(material)
+
+        builder = newton.ModelBuilder()
+        # Default hide_collision_shapes=False so the MeshShape guard
+        # is the deciding factor, not the unconditional hide override.
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        collision_shape = path_shape_map["/Body/CollisionBox"]
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        # Primitive colliders should NOT be promoted to visible just because
+        # they have roughness metadata — only mesh colliders qualify.
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+
 
 class TestImportUsdMimicJoint(unittest.TestCase):
     """Tests for PhysxMimicJointAPI parsing during USD import."""

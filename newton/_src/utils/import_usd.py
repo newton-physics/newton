@@ -466,6 +466,18 @@ def parse_usd(
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
         return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
 
+    def _is_effectively_visible(prim: Usd.Prim) -> bool:
+        """Return whether ``prim`` is effectively visible in USD.
+
+        A prim is effectively visible only when it is a :class:`UsdGeom.Imageable`
+        whose inherited visibility is not ``invisible``. Non-imageable prims are
+        not renderable in USD, so they are treated as not effectively visible.
+        """
+        imageable = UsdGeom.Imageable(prim)
+        if not imageable:
+            return False
+        return imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
+
     bodies_with_visual_shapes: set[int] = set()
     warned_deprecated_body_armature_paths: set[str] = set()
 
@@ -542,6 +554,11 @@ def parse_usd(
         if not is_site and not load_visual_shapes:
             return
 
+        visual_shape_cfg_for_prim = copy.copy(visual_shape_cfg)
+        visual_shape_cfg_for_prim.is_visible = is_site or _is_effectively_visible(prim)
+        material_props = _get_material_props_cached(prim)
+        shape_color = material_props.get("color")
+
         if path_name not in path_shape_map:
             if type_name == "cube":
                 size = usd.get_float(prim, "size", 2.0)
@@ -552,7 +569,8 @@ def parse_usd(
                     hx=side_lengths[0] / 2,
                     hy=side_lengths[1] / 2,
                     hz=side_lengths[2] / 2,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -564,7 +582,8 @@ def parse_usd(
                     parent_body_id,
                     xform,
                     radius,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -580,7 +599,8 @@ def parse_usd(
                     xform=plane_xform,
                     width=width,
                     length=length,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     label=path_name,
                 )
             elif type_name == "capsule":
@@ -594,7 +614,8 @@ def parse_usd(
                     xform,
                     radius,
                     half_height,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -609,7 +630,8 @@ def parse_usd(
                     xform,
                     radius,
                     half_height,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -624,7 +646,8 @@ def parse_usd(
                     xform,
                     radius,
                     half_height,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                 )
@@ -635,7 +658,8 @@ def parse_usd(
                     xform,
                     scale=scale,
                     mesh=mesh,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     label=path_name,
                 )
             elif type_name == "particlefield3dgaussiansplat":
@@ -645,7 +669,8 @@ def parse_usd(
                     gaussian=gaussian,
                     xform=xform,
                     scale=scale,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     label=path_name,
                 )
             elif len(type_name) > 0 and type_name not in {"xform", "tetmesh"} and verbose:
@@ -654,7 +679,7 @@ def parse_usd(
             if shape_id >= 0:
                 path_shape_map[path_name] = shape_id
                 path_shape_scale[path_name] = scale
-                if not is_site:
+                if not is_site and visual_shape_cfg_for_prim.is_visible:
                     bodies_with_visual_shapes.add(parent_body_id)
                 if verbose:
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
@@ -2480,9 +2505,9 @@ def parse_usd(
                     gap_val = builder.default_shape_cfg.gap
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
+                material_props = _get_material_props_cached(prim)
                 collider_has_visual_material = (
-                    key == UsdPhysics.ObjectType.MeshShape
-                    and _has_visual_material_properties(_get_material_props_cached(prim))
+                    key == UsdPhysics.ObjectType.MeshShape and _has_visual_material_properties(material_props)
                 )
 
                 # Explicit hide_collision_shapes overrides material-based visibility:
@@ -2495,6 +2520,7 @@ def parse_usd(
                 collider_is_visible = (
                     show_collider_by_policy or collider_has_visual_material
                 ) and not hide_collider_for_body
+                collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
 
                 shape_ke = R.get_value(
                     prim,
@@ -2513,6 +2539,7 @@ def parse_usd(
                 if shape_kd is None:
                     shape_kd = builder.default_shape_cfg.kd
 
+                shape_color = material_props.get("color")
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -2537,6 +2564,7 @@ def parse_usd(
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
+                    "color": shape_color,
                 }
                 # print(path, shape_params)
                 if key == UsdPhysics.ObjectType.CubeShape:
@@ -2803,16 +2831,20 @@ def parse_usd(
 
             body_id = -1
 
-            prim_world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
+            prim_world_mat = _get_prim_world_mat(gaussian_prim, None, incoming_world_xform)
 
             g_pos, g_rot, g_scale = wp.transform_decompose(prim_world_mat)
             gaussian = usd.get_gaussian(gaussian_prim)
+            splat_cfg = copy.copy(visual_shape_cfg)
+            splat_cfg.is_visible = _is_effectively_visible(gaussian_prim)
+            splat_material_props = _get_material_props_cached(gaussian_prim)
             shape_id = builder.add_shape_gaussian(
                 body_id,
                 gaussian=gaussian,
                 xform=wp.transform(g_pos, g_rot),
                 scale=g_scale,
-                cfg=visual_shape_cfg,
+                cfg=splat_cfg,
+                color=splat_material_props.get("color"),
                 label=gaussian_path,
             )
             path_shape_map[gaussian_path] = shape_id
