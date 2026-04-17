@@ -17,6 +17,7 @@
 
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
 - Pin `mujoco` and `mujoco-warp` dependencies to `~=3.6.0`
+- Align `SolverFeatherstone` with the public Newton twist convention: FREE and DISTANCE joint `joint_qd` entries now use the COM-world basis shared with `body_qd` and other solvers, removing the internal velocity conversion step
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
 
