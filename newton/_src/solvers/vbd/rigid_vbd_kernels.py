@@ -3780,6 +3780,11 @@ def update_duals_body_body_contacts(
         C_stab_vec = C_vec - avbd_alpha * C0_vec
         C_stab_n = wp.dot(C_stab_vec, n)
 
+        # Release lambda_n at full rate on separation (bypass C0 stabilization).
+        C_n_raw = wp.dot(C_vec, n)
+        if C_n_raw < 0.0:
+            C_stab_n = C_n_raw
+
         lam_n_old = wp.dot(lam_vec, n)
 
         lam_n_new = wp.max(lam_n_old + k * C_stab_n, 0.0)
@@ -3882,6 +3887,7 @@ def update_body_velocity(
     stick_freeze_angular_eps: float,
     body_q_prev: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
+    body_qd_mirror: wp.array[wp.spatial_vector],
     body_q_out: wp.array[wp.transform],
 ):
     """
@@ -3911,7 +3917,10 @@ def update_body_velocity(
         body_q_prev: Previous body transforms (input/output, advanced to current
             pose for next step). For kinematic bodies set body_q. For dynamic
             teleportation also set body_q_prev and body_qd.
-        body_qd: Output body velocities (spatial vectors, world frame).
+        body_qd: Output body velocities (spatial vectors, world frame), bound to state_out.
+        body_qd_mirror: Output body velocities, bound to state_in. Mirrors body_qd so the
+            next step's forward integrator sees the finalized velocity even when the
+            caller's Python-level state swap is not recorded in a captured CUDA graph.
         body_q_out: Output body transforms (state_out), fused copy of body_q.
     """
     tid = wp.tid()
@@ -3958,6 +3967,9 @@ def update_body_velocity(
     omega = quat_velocity(q, q_prev, dt)
 
     body_qd[tid] = wp.spatial_vector(v, omega)
+
+    # Mirror to state_in (CUDA-graph-capture safety).
+    body_qd_mirror[tid] = wp.spatial_vector(v, omega)
 
     # Advance body_q_prev for next step (for kinematic bodies this is the only write).
     body_q_prev[tid] = pose

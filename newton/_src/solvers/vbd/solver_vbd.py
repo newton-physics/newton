@@ -2664,7 +2664,7 @@ class SolverVBD(SolverBase):
                 self.rigid_contact_stick_freeze_translation_eps,
                 self.rigid_contact_stick_freeze_angular_eps,
             ],
-            outputs=[self.body_q_prev, state_out.body_qd, state_out.body_q],
+            outputs=[self.body_q_prev, state_out.body_qd, state_in.body_qd, state_out.body_q],
             dim=model.body_count,
             device=self.device,
         )

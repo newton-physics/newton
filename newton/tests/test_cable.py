@@ -3193,6 +3193,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
 
     # Contact/friction: large mu to encourage sticking if kinematic friction is working.
     builder.default_shape_cfg.mu = 1.0e3
+    builder.default_shape_cfg.ke = 1.0e4
 
     # Payload: capsule sized to match old box AABB (0.20, 0.10, 0.10) in (X,Y,Z)
     box_hx = 0.10
