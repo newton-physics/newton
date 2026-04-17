@@ -150,10 +150,10 @@ class TestMultiworldBodyProperties(unittest.TestCase):
     pass
 
 
-# The buggy code path is warp-to-mj coordinate conversion, which only
-# runs on CUDA (SolverMuJoCo with use_mujoco_cpu=False). Skip CPU devices
-# so CPU-only CI runners don't fail.
-devices = [d for d in get_test_devices() if d.is_cuda]
+# The buggy code path (convert_warp_coords_to_mj_kernel) runs on any
+# device when SolverMuJoCo is used with use_mujoco_cpu=False (default),
+# so this test must run on all available devices.
+devices = get_test_devices()
 for device in devices:
     add_function_test(
         TestMultiworldBodyProperties,
