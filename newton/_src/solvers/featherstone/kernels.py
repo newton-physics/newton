@@ -516,7 +516,12 @@ def jcalc_integrate(
         r = wp.quat(
             joint_q[coord_start + 3], joint_q[coord_start + 4], joint_q[coord_start + 5], joint_q[coord_start + 6]
         )
-        x_com_joint = wp.transform_point(joint_X_c, body_com_child)
+        # `joint_X_c` is the pose of the joint child-anchor in the child-body
+        # frame, so converting the child COM (expressed in the child-body frame)
+        # into the child-anchor frame requires the inverse transform. Without
+        # the inverse the COM offset has the wrong sign (and is rotated the
+        # wrong way) for any non-identity `child_xform`.
+        x_com_joint = wp.transform_point(wp.transform_inverse(joint_X_c), body_com_child)
         x_com = p + wp.quat_rotate(r, x_com_joint)
 
         omega_new = omega + alpha * dt
