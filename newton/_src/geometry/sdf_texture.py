@@ -24,6 +24,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
+from .sdf_mc import MC_EDGE_CLAMP_MAX, MC_EDGE_CLAMP_MIN, MC_EDGE_VAL_DIFF_EPS
 from .sdf_utils import get_distance_to_mesh
 
 # Sentinel values for subgrid indirection slots.
@@ -1866,10 +1867,10 @@ def _generate_isomesh_texture_kernel(
             p_0 = wp.vec3f(corner_offsets_table[v_from])
             p_1 = wp.vec3f(corner_offsets_table[v_to])
             val_diff = val_1 - val_0
-            if wp.abs(val_diff) < 1e-8:
+            if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
                 p = 0.5 * (p_0 + p_1)
             else:
-                t = (isovalue - val_0) / val_diff
+                t = wp.clamp((isovalue - val_0) / val_diff, wp.static(MC_EDGE_CLAMP_MIN), wp.static(MC_EDGE_CLAMP_MAX))
                 p = p_0 + t * (p_1 - p_0)
             vol_idx = p + wp.vec3(float(x_id), float(y_id), float(z_id))
             local_pos = sdf.sdf_box_lower + wp.cw_mul(vol_idx, sdf.voxel_size)
