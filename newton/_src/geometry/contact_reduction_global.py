@@ -1452,106 +1452,127 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
     return export_reduced_contacts_kernel
 
 
-@wp.kernel(enable_backward=False, module="unique")
-def mesh_triangle_contacts_to_reducer_kernel(
-    shape_types: wp.array[int],
-    shape_data: wp.array[wp.vec4],
-    shape_transform: wp.array[wp.transform],
-    shape_source: wp.array[wp.uint64],
-    shape_gap: wp.array[float],
-    shape_heightfield_index: wp.array[wp.int32],
-    heightfield_data: wp.array[HeightfieldData],
-    heightfield_elevations: wp.array[wp.float32],
-    triangle_pairs: wp.array[wp.vec3i],
-    triangle_pairs_count: wp.array[int],
-    reducer_data: GlobalContactReducerData,
-    total_num_threads: int,
-):
-    """Process mesh/heightfield-triangle contacts and store them in GlobalContactReducer.
+def create_mesh_triangle_contacts_to_reducer_kernel(speculative: bool = False):
+    """Factory for the mesh/heightfield-triangle → reducer kernel.
 
-    This kernel processes triangle pairs (mesh-or-hfield shape, convex-shape, triangle_index)
-    and computes contacts using GJK/MPR, storing results in the GlobalContactReducer for
-    subsequent reduction and export.
-
-    Uses grid stride loop over triangle pairs.
+    When *speculative* is True the kernel reads per-shape velocity arrays and
+    extends ``gap_sum`` by a scalar speculative margin.  When False the extra
+    code is eliminated at compile time via ``wp.static``.
     """
-    tid = wp.tid()
 
-    num_triangle_pairs = triangle_pairs_count[0]
+    @wp.kernel(enable_backward=False, module="unique")
+    def mesh_triangle_contacts_to_reducer_kernel(
+        shape_types: wp.array[int],
+        shape_data: wp.array[wp.vec4],
+        shape_transform: wp.array[wp.transform],
+        shape_source: wp.array[wp.uint64],
+        shape_gap: wp.array[float],
+        shape_heightfield_index: wp.array[wp.int32],
+        heightfield_data: wp.array[HeightfieldData],
+        heightfield_elevations: wp.array[wp.float32],
+        triangle_pairs: wp.array[wp.vec3i],
+        triangle_pairs_count: wp.array[int],
+        reducer_data: GlobalContactReducerData,
+        total_num_threads: int,
+        shape_lin_vel: wp.array[wp.vec3],
+        shape_ang_speed_bound: wp.array[float],
+        speculative_dt: float,
+        max_speculative_extension: float,
+    ):
+        """Process mesh/heightfield-triangle contacts and store them in GlobalContactReducer.
 
-    for i in range(tid, num_triangle_pairs, total_num_threads):
-        if i >= triangle_pairs.shape[0]:
-            break
+        This kernel processes triangle pairs (mesh-or-hfield shape, convex-shape, triangle_index)
+        and computes contacts using GJK/MPR, storing results in the GlobalContactReducer for
+        subsequent reduction and export.
 
-        triple = triangle_pairs[i]
-        shape_a = triple[0]  # Mesh or heightfield shape
-        shape_b = triple[1]  # Convex shape
-        tri_idx = triple[2]
+        Uses grid stride loop over triangle pairs.
+        """
+        tid = wp.tid()
 
-        type_a = shape_types[shape_a]
+        num_triangle_pairs = triangle_pairs_count[0]
 
-        if type_a == GeoType.HFIELD:
-            # Heightfield triangle
-            hfd = heightfield_data[shape_heightfield_index[shape_a]]
-            X_ws_a = shape_transform[shape_a]
-            shape_data_a, v0_world = get_triangle_shape_from_heightfield(hfd, heightfield_elevations, X_ws_a, tri_idx)
-        else:
-            # Mesh triangle (mesh_id already validated by midphase)
-            mesh_id_a = shape_source[shape_a]
-            scale_data_a = shape_data[shape_a]
-            mesh_scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
-            X_ws_a = shape_transform[shape_a]
-            shape_data_a, v0_world = get_triangle_shape_from_mesh(mesh_id_a, mesh_scale_a, X_ws_a, tri_idx)
+        for i in range(tid, num_triangle_pairs, total_num_threads):
+            if i >= triangle_pairs.shape[0]:
+                break
 
-        # Extract shape B data
-        pos_b, quat_b, shape_data_b, _scale_b, margin_offset_b = extract_shape_data(
-            shape_b,
-            shape_transform,
-            shape_types,
-            shape_data,
-            shape_source,
-        )
+            triple = triangle_pairs[i]
+            shape_a = triple[0]  # Mesh or heightfield shape
+            shape_b = triple[1]  # Convex shape
+            tri_idx = triple[2]
 
-        # Triangle position is vertex A in world space.
-        # For heightfield prisms, edges are in heightfield-local space
-        # so we pass the heightfield rotation to let MPR/GJK work in
-        # that frame (where -Z is always the down axis).
-        pos_a = v0_world
-        if type_a == GeoType.HFIELD:
-            quat_a = wp.transform_get_rotation(shape_transform[shape_a])
-        else:
-            quat_a = wp.quat_identity()
+            type_a = shape_types[shape_a]
 
-        # Back-face culling: skip when the convex center is behind the
-        # triangle face.  TRIANGLE_PRISM (heightfields) handles this
-        # via its extruded support function.
-        if shape_data_a.shape_type == int(GeoTypeEx.TRIANGLE):
-            face_normal = wp.cross(shape_data_a.scale, shape_data_a.auxiliary)
-            center_dist = wp.dot(face_normal, pos_b - pos_a)
-            if center_dist < 0.0:
-                continue
+            if type_a == GeoType.HFIELD:
+                # Heightfield triangle
+                hfd = heightfield_data[shape_heightfield_index[shape_a]]
+                X_ws_a = shape_transform[shape_a]
+                shape_data_a, v0_world = get_triangle_shape_from_heightfield(
+                    hfd, heightfield_elevations, X_ws_a, tri_idx
+                )
+            else:
+                # Mesh triangle (mesh_id already validated by midphase)
+                mesh_id_a = shape_source[shape_a]
+                scale_data_a = shape_data[shape_a]
+                mesh_scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
+                X_ws_a = shape_transform[shape_a]
+                shape_data_a, v0_world = get_triangle_shape_from_mesh(mesh_id_a, mesh_scale_a, X_ws_a, tri_idx)
 
-        # Extract margin offset for shape A (signed distance padding)
-        margin_offset_a = shape_data[shape_a][3]
+            # Extract shape B data
+            pos_b, quat_b, shape_data_b, _scale_b, margin_offset_b = extract_shape_data(
+                shape_b,
+                shape_transform,
+                shape_types,
+                shape_data,
+                shape_source,
+            )
 
-        # Use additive per-shape contact gap for detection threshold
-        gap_a = shape_gap[shape_a]
-        gap_b = shape_gap[shape_b]
-        gap_sum = gap_a + gap_b
+            # Triangle position is vertex A in world space.
+            # For heightfield prisms, edges are in heightfield-local space
+            # so we pass the heightfield rotation to let MPR/GJK work in
+            # that frame (where -Z is always the down axis).
+            pos_a = v0_world
+            if type_a == GeoType.HFIELD:
+                quat_a = wp.transform_get_rotation(shape_transform[shape_a])
+            else:
+                quat_a = wp.quat_identity()
 
-        # Compute and write contacts using GJK/MPR
-        wp.static(create_compute_gjk_mpr_contacts(write_contact_to_reducer))(
-            shape_data_a,
-            shape_data_b,
-            quat_a,
-            quat_b,
-            pos_a,
-            pos_b,
-            gap_sum,
-            shape_a,
-            shape_b,
-            margin_offset_a,
-            margin_offset_b,
-            reducer_data,
-            (tri_idx << 1) | 1,
-        )
+            # Back-face culling: skip when the convex center is behind the
+            # triangle face.  TRIANGLE_PRISM (heightfields) handles this
+            # via its extruded support function.
+            if shape_data_a.shape_type == int(GeoTypeEx.TRIANGLE):
+                face_normal = wp.cross(shape_data_a.scale, shape_data_a.auxiliary)
+                center_dist = wp.dot(face_normal, pos_b - pos_a)
+                if center_dist < 0.0:
+                    continue
+
+            # Extract margin offset for shape A (signed distance padding)
+            margin_offset_a = shape_data[shape_a][3]
+
+            # Use additive per-shape contact gap for detection threshold
+            gap_a = shape_gap[shape_a]
+            gap_b = shape_gap[shape_b]
+            gap_sum = gap_a + gap_b
+
+            if wp.static(speculative):
+                vel_rel = shape_lin_vel[shape_b] - shape_lin_vel[shape_a]
+                rel_speed = wp.length(vel_rel) + shape_ang_speed_bound[shape_a] + shape_ang_speed_bound[shape_b]
+                gap_sum = gap_sum + wp.min(rel_speed * speculative_dt, max_speculative_extension)
+
+            # Compute and write contacts using GJK/MPR
+            wp.static(create_compute_gjk_mpr_contacts(write_contact_to_reducer))(
+                shape_data_a,
+                shape_data_b,
+                quat_a,
+                quat_b,
+                pos_a,
+                pos_b,
+                gap_sum,
+                shape_a,
+                shape_b,
+                margin_offset_a,
+                margin_offset_b,
+                reducer_data,
+                (tri_idx << 1) | 1,
+            )
+
+    return mesh_triangle_contacts_to_reducer_kernel

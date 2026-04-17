@@ -980,6 +980,7 @@ class Model:
         contacts: Contacts | None = None,
         *,
         collision_pipeline: CollisionPipeline | None = None,
+        dt: float | None = None,
     ) -> Contacts:
         """
         Generate contact points for the particles and rigid bodies in the model using the default collision
@@ -990,6 +991,9 @@ class Model:
             contacts: The contacts buffer to populate (will be cleared first). If None, a new
                 contacts buffer is allocated via :meth:`contacts`.
             collision_pipeline: Optional collision pipeline override.
+            dt: Override for the speculative collision update interval [s].
+                Forwarded to :meth:`CollisionPipeline.collide`. Ignored when
+                speculative contacts are disabled.
         """
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
@@ -999,7 +1003,7 @@ class Model:
         if contacts is None:
             contacts = self._collision_pipeline.contacts()
 
-        self._collision_pipeline.collide(state, contacts)
+        self._collision_pipeline.collide(state, contacts, dt=dt)
         return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:
