@@ -73,8 +73,10 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         gold_image = gold_image.reshape(test_image.shape)
 
-        # Compute absolute difference in a signed wide type to avoid unsigned underflow.
-        diff = np.abs(test_image.astype(np.int64) - gold_image.astype(np.int64))
+        # Promote to a wide type before subtracting: int64 avoids unsigned underflow for
+        # integer images, float64 preserves fractional deltas for float (e.g. depth) images.
+        wide_dtype = np.int64 if np.issubdtype(test_image.dtype, np.integer) else np.float64
+        diff = np.abs(test_image.astype(wide_dtype) - gold_image.astype(wide_dtype))
 
         divider = 1.0
         if np.issubdtype(test_image.dtype, np.integer):
