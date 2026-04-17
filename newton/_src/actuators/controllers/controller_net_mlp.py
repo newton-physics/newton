@@ -21,11 +21,20 @@ class ControllerNetMLP(Controller):
     Uses a pre-trained MLP to compute joint torques from position error
     and velocity history.
 
-    The network receives concatenated position-error and velocity history
-    as input and is expected to return torques in physical units. Scaling is left to the user.
+    The network receives concatenated, scaled position-error and velocity
+    history as input.  The output is multiplied by ``torque_scale`` to
+    convert from network units to physical torque.  All three scale
+    factors default to ``1.0`` (no scaling).
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"network_path", "input_order", "input_idx"}
+    SHARED_PARAMS: ClassVar[set[str]] = {
+        "network_path",
+        "input_order",
+        "input_idx",
+        "pos_scale",
+        "vel_scale",
+        "torque_scale",
+    }
 
     @dataclass
     class State(Controller.State):
@@ -53,12 +62,18 @@ class ControllerNetMLP(Controller):
             "network_path": args["network_path"],
             "input_order": args.get("input_order", "pos_vel"),
             "input_idx": args.get("input_idx", None),
+            "pos_scale": args.get("pos_scale", 1.0),
+            "vel_scale": args.get("vel_scale", 1.0),
+            "torque_scale": args.get("torque_scale", 1.0),
         }
 
     def __init__(
         self,
         input_order: str = "pos_vel",
         input_idx: list[int] | None = None,
+        pos_scale: float = 1.0,
+        vel_scale: float = 1.0,
+        torque_scale: float = 1.0,
         network: torch.nn.Module | None = None,
         network_path: str | None = None,
     ):
@@ -66,11 +81,11 @@ class ControllerNetMLP(Controller):
 
         Args:
             input_order: Concatenation order, ``"pos_vel"`` or ``"vel_pos"``.
-                Not part of the USD schema; pass programmatically when the
-                network expects a non-default layout.
             input_idx: History timestep indices to feed the network. ``0`` is
                 the current step, ``1`` one step ago, etc. Defaults to ``[0]``.
-                Not part of the USD schema; pass programmatically.
+            pos_scale: Scaling factor for position error inputs.
+            vel_scale: Scaling factor for velocity inputs.
+            torque_scale: Scaling factor for output torques.
             network: Pre-trained network. If None, loaded from *network_path*.
             network_path: Path to a TorchScript model file.
         """
@@ -83,6 +98,9 @@ class ControllerNetMLP(Controller):
         if any(i < 0 for i in self.input_idx):
             raise ValueError(f"input_idx must contain non-negative integers; got {self.input_idx}")
         self.history_length = max(self.input_idx) + 1
+        self.pos_scale = pos_scale
+        self.vel_scale = vel_scale
+        self.torque_scale = torque_scale
 
         self.network_path = network_path
 
@@ -160,14 +178,14 @@ class ControllerNetMLP(Controller):
         vel_input = torch.stack([state.vel_history[i] for i in self.input_idx], dim=1)
 
         if self.input_order == "pos_vel":
-            net_input = torch.cat([pos_input, vel_input], dim=1)
+            net_input = torch.cat([pos_input * self.pos_scale, vel_input * self.vel_scale], dim=1)
         else:
-            net_input = torch.cat([vel_input, pos_input], dim=1)
+            net_input = torch.cat([vel_input * self.vel_scale, pos_input * self.pos_scale], dim=1)
 
         with torch.inference_mode():
             torques = self.network(net_input)
 
-        torques = torques.reshape(len(forces))
+        torques = torques.reshape(len(forces)) * self.torque_scale
         torques_wp = wp.from_torch(torques.contiguous(), dtype=wp.float32)
         wp.copy(forces, torques_wp)
 
