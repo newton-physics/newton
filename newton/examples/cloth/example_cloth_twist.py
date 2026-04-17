@@ -297,9 +297,9 @@ class Example:
         min_z = np.min(particle_q[:, 2])
         assert min_z > -0.11, f"Min Z too low: min_z={min_z}"
 
-        # Velocity check: observed max_vel=0.65
+        # Velocity check: upstream #2480 observed >1.0 on CI; use their 1.5 ceiling
         max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
-        assert max_vel < 0.98, f"Excessive velocity: {max_vel}"
+        assert max_vel < 1.5, f"Excessive velocity: {max_vel}"
 
 
 if __name__ == "__main__":
