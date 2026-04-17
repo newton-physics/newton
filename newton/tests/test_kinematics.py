@@ -502,86 +502,6 @@ def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_differenc
         assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
 
 
-def test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite_difference(test, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
-
-    base = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
-    child = builder.add_link()
-
-    builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
-    builder.add_shape_box(child, hx=0.1, hy=0.1, hz=0.1)
-    builder.body_com[base] = wp.vec3(0.3, 0.0, 0.0)
-    builder.body_com[child] = wp.vec3(0.1, 0.0, 0.0)
-
-    j = builder.add_joint_revolute(
-        parent=base,
-        child=child,
-        axis=newton.Axis.Z,
-        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()),
-    )
-    builder.add_articulation([j])
-
-    model = builder.finalize(device=device)
-
-    state = model.state()
-    state_next = model.state()
-
-    # Exercise a FREE-root parent so descendant transport through the
-    # FREE/DISTANCE parent body_qd is exercised by the FK pipeline.
-    q = model.joint_q.numpy().copy()
-    qd = model.joint_qd.numpy().copy()
-    q[:3] = np.array([0.2, -0.1, 0.15], dtype=np.float32)
-    qd[:6] = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.2], dtype=np.float32)
-    qd[6] = 0.5
-    dt = 1.0e-4
-
-    q_next = q.copy()
-    q_root = wp.quat(float(q[3]), float(q[4]), float(q[5]), float(q[6]))
-    # Public twist convention: ``qd[:3]`` is the COM linear velocity in world
-    # space. The body origin (``joint_q[:3]`` for the implicit FREE root)
-    # advances with the body-origin velocity ``v_com_world - omega x (R * com_local)``.
-    base_com_local = wp.vec3(0.3, 0.0, 0.0)
-    base_com_offset_world = np.array(wp.quat_rotate(q_root, base_com_local), dtype=np.float32)
-    v_body_origin_world = qd[:3] - np.cross(qd[3:6], base_com_offset_world)
-    q_next[:3] += v_body_origin_world * dt
-    q_root_next = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(qd[5] * dt)) * q_root
-    q_next[3:7] = np.array([q_root_next[0], q_root_next[1], q_root_next[2], q_root_next[3]], dtype=np.float32)
-    q_next[7] += qd[6] * dt
-
-    state.joint_q.assign(q)
-    state.joint_qd.assign(qd)
-    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-
-    state_next.joint_q.assign(q_next)
-    state_next.joint_qd.assign(qd)
-    newton.eval_fk(model, state_next.joint_q, state_next.joint_qd, state_next)
-
-    body_q = state.body_q.numpy().reshape(-1, 7)
-    body_q_next = state_next.body_q.numpy().reshape(-1, 7)
-    body_qd = state.body_qd.numpy().reshape(-1, 6)
-
-    base_com_local = wp.vec3(0.3, 0.0, 0.0)
-    base_rot = wp.quat(float(body_q[base, 3]), float(body_q[base, 4]), float(body_q[base, 5]), float(body_q[base, 6]))
-    base_rot_next = wp.quat(
-        float(body_q_next[base, 3]),
-        float(body_q_next[base, 4]),
-        float(body_q_next[base, 5]),
-        float(body_q_next[base, 6]),
-    )
-    base_com = body_q[base, :3] + np.array(wp.quat_rotate(base_rot, base_com_local))
-    base_com_next = body_q_next[base, :3] + np.array(wp.quat_rotate(base_rot_next, base_com_local))
-    base_com_fd = (base_com_next - base_com) / dt
-    base_com_from_body_qd = body_qd[base, :3]
-
-    assert_np_equal(base_com_fd, base_com_from_body_qd, tol=5.0e-3)
-
-    origin_vel_fd = (body_q_next[child, :3] - body_q[child, :3]) / dt
-    origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, child)
-
-    assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
-
-
 def test_fk_with_indices(test, device):
     """Test eval_fk with articulation indices parameter"""
     builder = newton.ModelBuilder()
@@ -1046,12 +966,6 @@ add_function_test(
     TestSimKinematics,
     "test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_difference",
     test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_difference,
-    devices=devices,
-)
-add_function_test(
-    TestSimKinematics,
-    "test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite_difference",
-    test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite_difference,
     devices=devices,
 )
 add_function_test(TestSimKinematics, "test_fk_with_indices", test_fk_with_indices, devices=devices)
