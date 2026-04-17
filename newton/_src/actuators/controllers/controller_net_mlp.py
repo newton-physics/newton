@@ -27,14 +27,7 @@ class ControllerNetMLP(Controller):
     factors default to ``1.0`` (no scaling).
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {
-        "network_path",
-        "input_order",
-        "input_idx",
-        "pos_scale",
-        "vel_scale",
-        "torque_scale",
-    }
+    SHARED_PARAMS: ClassVar[set[str]] = {"network_path"}
 
     @dataclass
     class State(Controller.State):
@@ -58,14 +51,7 @@ class ControllerNetMLP(Controller):
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         if "network_path" not in args:
             raise ValueError("ControllerNetMLP requires 'network_path' argument")
-        return {
-            "network_path": args["network_path"],
-            "input_order": args.get("input_order", "pos_vel"),
-            "input_idx": args.get("input_idx", None),
-            "pos_scale": args.get("pos_scale", 1.0),
-            "vel_scale": args.get("vel_scale", 1.0),
-            "torque_scale": args.get("torque_scale", 1.0),
-        }
+        return {"network_path": args["network_path"]}
 
     def __init__(
         self,
