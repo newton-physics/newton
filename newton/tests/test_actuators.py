@@ -56,7 +56,9 @@ _HAS_TORCH = importlib.util.find_spec("torch") is not None
 # ---------------------------------------------------------------------------
 
 
-def _build_chain(num_joints, controller_class, controller_kwargs, clamping=None, delay=None):
+def _build_chain(
+    num_joints, controller_class, controller_kwargs, clamping=None, delay=None, device=None, requires_grad=False
+):
     """Build a revolute chain with one actuator per joint, return (model, dof_indices)."""
     builder = newton.ModelBuilder()
     links = [builder.add_link() for _ in range(num_joints)]
@@ -74,7 +76,7 @@ def _build_chain(num_joints, controller_class, controller_kwargs, clamping=None,
             delay=delay,
             **controller_kwargs,
         )
-    return builder.finalize(), dofs
+    return builder.finalize(device=device, requires_grad=requires_grad), dofs
 
 
 def _build_simple_model(num_joints, device="cpu"):
@@ -417,17 +419,21 @@ class TestActuatorBuilder(unittest.TestCase):
 
         model = builder.finalize()
 
-        self.assertEqual(len(model.actuators), 3)
+        self.assertEqual(len(model.actuators), 2)
 
         plain_act = next(a for a in model.actuators if a.delay is None)
-        delay3 = next(a for a in model.actuators if a.delay is not None and a.delay.delay == 3)
-        delay7 = next(a for a in model.actuators if a.delay is not None and a.delay.delay == 7)
+        delayed_act = next(a for a in model.actuators if a.delay is not None)
 
         self.assertEqual(plain_act.num_actuators, 2)
-        self.assertEqual(delay3.num_actuators, 2)
-        self.assertEqual(delay7.num_actuators, 2)
+        self.assertEqual(delayed_act.num_actuators, 4)
 
-        np.testing.assert_array_almost_equal(delay3.controller.kp.numpy(), [200.0, 250.0])
+        # Buffer sized to max delay
+        self.assertEqual(delayed_act.delay.buf_depth, 7)
+        self.assertEqual(delayed_act.delay.buf_depth, 7)
+
+        # Per-DOF delays preserved
+        np.testing.assert_array_equal(delayed_act.delay.delays.numpy(), [3, 3, 7, 7])
+        np.testing.assert_array_almost_equal(delayed_act.controller.kp.numpy(), [200.0, 250.0, 300.0, 350.0])
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +446,7 @@ class TestActuatorState(unittest.TestCase):
 
     def test_delay_buffer_shape(self):
         delay_steps, n = 5, 2
-        buf_depth = delay_steps + 1
+        buf_depth = delay_steps
         model, _dofs = _build_chain(n, ControllerPD, {"kp": 1.0}, delay=delay_steps)
         actuator = next(a for a in model.actuators if a.delay is not None)
         ds = actuator.state().delay_state
@@ -606,7 +612,7 @@ class TestActuatorStep(unittest.TestCase):
     # -- Delay ---------------------------------------------------------------
 
     def test_delay_behavior(self):
-        """Write-then-read: forces produced from step 0, lag clamped to history."""
+        """Delay=N gives exactly N steps of delay; empty buffer falls back to current targets."""
         delay_steps = 2
         model, dofs = _build_chain(1, ControllerPD, {"kp": 1.0}, delay=delay_steps)
         state = model.state()
@@ -617,7 +623,7 @@ class TestActuatorStep(unittest.TestCase):
         dt = 0.01
 
         force_history = []
-        for step_i in range(delay_steps + 2):
+        for step_i in range(delay_steps + 3):
             control = model.control()
             target_val = float(step_i + 1) * 10.0
             _write_dof_values(model, control.joint_target_pos, dofs, [target_val])
@@ -626,14 +632,16 @@ class TestActuatorStep(unittest.TestCase):
             actuator.step(state, control, current, nxt, dt)
             force_history.append(control.joint_f.numpy()[dofs[0]])
 
-        # Step 0: lag clamped to 0 → reads just-pushed data (target=10) → force=10
+        # Step 0: buffer empty → fallback to current target (10)
         self.assertAlmostEqual(force_history[0], 10.0, places=4)
-        # Step 1: lag clamped to 1 → reads step 0 data (target=10) → force=10
+        # Step 1: 1 entry, lag clamped to 0 → reads step 0 data (10)
         self.assertAlmostEqual(force_history[1], 10.0, places=4)
-        # Step 2: full delay=2 → reads step 0 data (target=10)
+        # Step 2: full delay=2 → reads step 0 data (10)
         self.assertAlmostEqual(force_history[2], 10.0, places=4)
-        # Step 3: full delay=2 → reads step 1 data (target=20)
+        # Step 3: full delay=2 → reads step 1 data (20)
         self.assertAlmostEqual(force_history[3], 20.0, places=4)
+        # Step 4: full delay=2 → reads step 2 data (30)
+        self.assertAlmostEqual(force_history[4], 30.0, places=4)
 
     # -- DC motor clamping (torque-speed curve) ------------------------------
 

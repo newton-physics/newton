@@ -39,8 +39,9 @@ An actuator is composed from three building blocks, applied in this order:
 **Delay**
    Optionally delays the control targets (e.g. position or velocity) by *N*
    timesteps before they reach the controller, allowing the actuator to model
-   communication or processing latency.  While the delay buffer is still
-   filling, no forces are produced.
+   communication or processing latency.  The delay always produces output;
+   when the buffer is still filling, the lag is clamped to the available
+   history so the most recent data is returned.
 
 **Controller**
    Computes raw forces or torques from the current simulator state and control
@@ -59,7 +60,7 @@ The per-step pipeline is:
 
 .. code-block:: text
 
-   Delay → Controller → Clamping → Scatter-add to output
+   Delay read → Controller → Clamping → Scatter-add → State updates (controller + delay write)
 
 Controllers and clamping objects are pluggable: implement the
 :class:`Controller` or :class:`Clamping` base class to add new models.
@@ -113,7 +114,7 @@ components directly:
    actuator = Actuator(
        indices,
        controller=ControllerPD(kp=kp, kd=kd),
-       delay=Delay(delay=5),
+       delay=Delay(delay=wp.array([5, 5, 5], dtype=wp.int32, device="cuda:0"), max_delay=5),
        clamping=[ClampingMaxForce(max_force=max_f)],
    )
 
@@ -217,7 +218,7 @@ For example, a custom controller needs to implement
 
        def compute(self, positions, velocities, target_pos, target_vel,
                    feedforward, input_indices, target_indices, forces,
-                   num_actuators, state, dt):
+                   state, dt, device=None):
            # Launch a Warp kernel that writes into `forces`
            ...
 

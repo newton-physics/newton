@@ -197,18 +197,19 @@ class ModelBuilder:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(controller_class, delay, clamping_key, ctrl_shared_key)`` where
-        shared params (e.g. ``delay``, ``network_path``, lookup tables) must
-        be identical across all actuators in a group.
+        ``(controller_class, delay is not None, clamping_key, ctrl_shared_key)``
+        where shared params (e.g. ``network_path``, lookup tables) must
+        be identical across all actuators in a group.  Delay values
+        are per-DOF; the buffer is sized to ``max(delay_values) + 1``.
         """
 
         controller_class: type  # Controller subclass (e.g. ControllerPD)
-        delay: int | None  # Delay buffer depth, or None
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
         controller_shared_kwargs: dict  # Shared controller kwargs (e.g. network_path)
         indices: list[int]  # Per-actuator DOF indices
         controller_args: list[dict[str, Any]]  # Per-actuator controller array params
+        delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
     @dataclass
@@ -1224,7 +1225,7 @@ class ModelBuilder:
         """Running counts for custom string frequencies used to size custom attribute arrays."""
 
         # Actuator entries (accumulated during add_actuator calls)
-        # Key is (controller_class, delay, clamping_key, ctrl_shared_key) to group compatible actuators
+        # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
         self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
         """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
 
@@ -1692,10 +1693,12 @@ class ModelBuilder:
         """Add an external actuator for a single DOF.
 
         External actuators apply forces computed outside the physics engine.
-        Multiple calls with the same *controller_class*, *delay*, *clamping*
+        Multiple calls with the same *controller_class*, *clamping*
         types, and identical shared parameters are accumulated into one
         :class:`~newton.actuators.Actuator` instance during
-        :meth:`finalize <ModelBuilder.finalize>`.
+        :meth:`finalize <ModelBuilder.finalize>`.  Different delay
+        values are supported within the same group; the buffer is
+        sized to ``max(delay_values)``.
 
         Args:
             controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
@@ -1728,8 +1731,9 @@ class ModelBuilder:
         clamping_shared_kwargs = tuple(clamping_shared_list)
 
         # --- Build entry key: identifies a group of compatible actuators ---
-        # Groups differ when controller class, delay value, clamping types/shared-params, or
-        # controller shared params (e.g. network_path) differ.
+        # Groups differ when controller class, presence of delay, clamping
+        # types/shared-params, or controller shared params differ.
+        # Delay values are per-DOF; the buffer is sized to max(delays).
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)
@@ -1740,24 +1744,26 @@ class ModelBuilder:
             (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
         )
-        entry_key = (controller_class, delay, clamping_key, ctrl_shared_key)
+        entry_key = (controller_class, delay is not None, clamping_key, ctrl_shared_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
             ModelBuilder.ActuatorEntry(
                 controller_class=controller_class,
-                delay=delay,
                 clamping_classes=clamping_classes,
                 clamping_shared_kwargs=clamping_shared_kwargs,
                 controller_shared_kwargs=ctrl_shared,
                 indices=[],
                 controller_args=[],
+                delay_args=[],
                 clamping_args=[],
             ),
         )
 
         entry.indices.append(index)
         entry.controller_args.append(ctrl_array_params)
+        if delay is not None:
+            entry.delay_args.append({"delay": delay})
         entry.clamping_args.append(clamping_array_params_list)
 
     def _stack_args_to_arrays(
@@ -1782,7 +1788,10 @@ class ModelBuilder:
         result = {}
         for key in args_list[0].keys():
             values = [args[key] for args in args_list]
-            result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            if all(isinstance(v, int) for v in values):
+                result[key] = wp.array(values, dtype=wp.int32, device=device)
+            else:
+                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
 
         return result
 
@@ -3270,18 +3279,19 @@ class ModelBuilder:
                 entry_key,
                 ModelBuilder.ActuatorEntry(
                     controller_class=sub_entry.controller_class,
-                    delay=sub_entry.delay,
                     clamping_classes=sub_entry.clamping_classes,
                     clamping_shared_kwargs=sub_entry.clamping_shared_kwargs,
                     controller_shared_kwargs=sub_entry.controller_shared_kwargs,
                     indices=[],
                     controller_args=[],
+                    delay_args=[],
                     clamping_args=[],
                 ),
             )
             for idx in sub_entry.indices:
                 entry.indices.append(idx + start_joint_dof_idx)
             entry.controller_args.extend(sub_entry.controller_args)
+            entry.delay_args.extend(sub_entry.delay_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
 
     @staticmethod
@@ -10319,8 +10329,11 @@ class ModelBuilder:
                 )
                 controller = entry.controller_class(**ctrl_arrays, **entry.controller_shared_kwargs)
 
-                # Build delay object (scalar, shared across the group)
-                delay_obj = Delay(entry.delay) if entry.delay is not None else None
+                delay_obj = None
+                if entry.delay_args:
+                    delay_arrays = self._stack_args_to_arrays(entry.delay_args, device=device)
+                    max_delay = max(d["delay"] for d in entry.delay_args)
+                    delay_obj = Delay(**delay_arrays, max_delay=max_delay)
 
                 # Build clamping objects from per-DOF arrays + shared kwargs
                 clamping_objs = []
@@ -10338,7 +10351,9 @@ class ModelBuilder:
                     controller=controller,
                     delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
+                    requires_grad=requires_grad,
                 )
+
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)

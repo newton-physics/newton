@@ -4,9 +4,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any
 
-import numpy as np
 import warp as wp
 
 
@@ -56,17 +55,31 @@ def _delay_read_kernel(
     buffer_pos: wp.array2d[float],
     buffer_vel: wp.array2d[float],
     buffer_act: wp.array2d[float],
+    current_pos: wp.array[float],
+    current_vel: wp.array[float],
+    current_act: wp.array[float],
+    indices: wp.array[wp.uint32],
     out_pos: wp.array[float],
     out_vel: wp.array[float],
     out_act: wp.array[float],
 ):
-    """Read per-DOF delayed targets, clamping lag to available history."""
+    """Read per-DOF delayed targets, falling back to current targets when buffer is empty."""
     i = wp.tid()
-    lag = wp.min(delays[i], wp.max(num_pushes[i] - 1, 0))
-    read_idx = (write_idx - lag + buf_depth) % buf_depth
-    out_pos[i] = buffer_pos[read_idx, i]
-    out_vel[i] = buffer_vel[read_idx, i]
-    out_act[i] = buffer_act[read_idx, i]
+    n = num_pushes[i]
+    if n == 0:
+        idx = indices[i]
+        out_pos[i] = current_pos[idx]
+        out_vel[i] = current_vel[idx]
+        act = float(0.0)
+        if current_act:
+            act = current_act[idx]
+        out_act[i] = act
+    else:
+        lag = wp.min(delays[i] - 1, n - 1)
+        read_idx = (write_idx - lag + buf_depth) % buf_depth
+        out_pos[i] = buffer_pos[read_idx, i]
+        out_vel[i] = buffer_vel[read_idx, i]
+        out_act[i] = buffer_act[read_idx, i]
 
 
 @wp.kernel
@@ -87,23 +100,17 @@ def _delay_masked_reset_kernel(
 class Delay:
     """Per-DOF input delay for actuator targets.
 
-    Delays targets using a circular buffer of depth ``delay + 1``.
-    Each DOF starts with a uniform lag of ``delay`` steps.  Per-DOF
-    lags can be modified directly via the :attr:`delays` attribute
-    (a ``wp.array[int]`` of shape ``(N,)`` with values in
-    ``[1, delay]``) after :meth:`finalize` has been called.
+    Delays targets using a circular buffer of depth
+    ``max_delay``.  Each DOF has its own lag stored in
+    :attr:`delays` (shape ``(N,)``).  The buffer is sized for the
+    maximum lag across all DOFs so that DOFs with different delays
+    can share the same actuator group.
 
-    The delay always produces output.  When fewer than ``lag``
-    entries have been written (e.g. right after reset), the lag is
-    clamped to the available history so the most recent data is
-    returned.
-
-    Class Attributes:
-        SHARED_PARAMS: Parameter names that are instance-level (shared across
-            all DOFs). Different values require separate actuator instances.
+    The delay always produces output.  When the buffer is empty
+    (e.g. right after reset), the current targets are returned
+    directly.  When underfilled, the lag is clamped to the
+    available history so the oldest entry is returned.
     """
-
-    SHARED_PARAMS: ClassVar[set[str]] = {"delay"}
 
     @dataclass
     class State:
@@ -136,12 +143,9 @@ class Delay:
                 self.write_idx = self.buffer_pos.shape[0] - 1
             else:
                 rows = self.buffer_pos.shape[0]
+                n = len(mask)
                 for buf in (self.buffer_pos, self.buffer_vel, self.buffer_act):
-                    wp.launch(
-                        _delay_masked_reset_kernel,
-                        dim=len(mask),
-                        inputs=[mask, rows, buf, self.num_pushes],
-                    )
+                    wp.launch(_delay_masked_reset_kernel, dim=n, inputs=[mask, rows, buf, self.num_pushes])
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
@@ -155,40 +159,43 @@ class Delay:
         """
         if "delay" not in args:
             raise ValueError("Delay requires 'delay' argument")
-        return {"delay": args["delay"]}
+        delay = args["delay"]
+        if delay < 1:
+            raise ValueError(f"delay must be >= 1, got {delay}")
+        return {"delay": delay}
 
-    def __init__(self, delay: int):
+    def __init__(self, delay: wp.array[int], max_delay: int):
         """Initialize delay.
 
         Args:
-            delay: Maximum lag in timesteps (>= 1). The internal buffer
-                allocates ``delay + 1`` rows to allow write-then-read
-                in the same step.
+            delay: Per-DOF delay values [timesteps], shape ``(N,)``.
+            max_delay: Maximum delay across all DOFs.  Determines the
+                circular-buffer depth.
         """
-        if delay < 1:
-            raise ValueError(f"delay must be >= 1, got {delay}")
-        self.delay = delay
-        self.buf_depth = delay + 1
-        self.delays: wp.array[int] | None = None
-        """Per-DOF delay in timesteps [1, delay], shape (N,)."""
-        self._indices: wp.array[wp.uint32] | None = None
+        self.buf_depth = max_delay
+        """Circular-buffer depth (equals ``max_delay``)."""
+        self.delays = delay
+        """Per-DOF delay values [timesteps], shape (N,)."""
         self._num_actuators: int = 0
         self._device: wp.Device | None = None
+        self._out_pos: wp.array[float] | None = None
+        self._out_vel: wp.array[float] | None = None
+        self._out_act: wp.array[float] | None = None
 
-    def finalize(self, indices: wp.array[wp.uint32], num_actuators: int) -> None:
+    def finalize(self, device: wp.Device, num_actuators: int, requires_grad: bool = False) -> None:
         """Called by :class:`Actuator` after construction.
 
-        Stores indices, allocates the per-DOF :attr:`delays` array
-        (initialized to uniform ``delay``).
-
         Args:
-            indices: DOF indices array.
+            device: Warp device to use.
             num_actuators: Number of actuators (DOFs).
+            requires_grad: Allocate output arrays with gradient support.
         """
-        self._indices = indices
+        self._device = device
         self._num_actuators = num_actuators
-        self._device = indices.device
-        self.delays = wp.array(np.full(num_actuators, self.delay, dtype=np.int32), dtype=int, device=self._device)
+        self._requires_grad = requires_grad
+        self._out_pos = wp.zeros(num_actuators, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+        self._out_vel = wp.zeros(num_actuators, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+        self._out_act = wp.zeros(num_actuators, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
 
     def state(self, num_actuators: int, device: wp.Device) -> Delay.State:
         """Create a new delay state with zeroed circular buffers.
@@ -200,41 +207,44 @@ class Delay:
         Returns:
             Freshly allocated :class:`Delay.State`.
         """
+        rg = self._requires_grad
         return Delay.State(
-            buffer_pos=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device),
-            buffer_vel=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device),
-            buffer_act=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device),
+            buffer_pos=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device, requires_grad=rg),
+            buffer_vel=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device, requires_grad=rg),
+            buffer_act=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device, requires_grad=rg),
             num_pushes=wp.zeros(num_actuators, dtype=int, device=device),
             write_idx=self.buf_depth - 1,
         )
 
     def get_delayed_targets(
         self,
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
         feedforward: wp.array[float] | None,
+        indices: wp.array[wp.uint32],
         current_state: Delay.State,
-    ) -> tuple[wp.array[float], wp.array[float], wp.array[float] | None]:
-        """Return per-DOF delayed targets from the circular buffer.
+    ) -> tuple[wp.array[float], wp.array[float], wp.array[float]]:
+        """Read per-DOF delayed targets from the circular buffer.
 
         Each DOF reads from its own lag offset stored in :attr:`delays`,
-        clamped to available history (per-DOF ``num_pushes``).  Always
-        produces valid output — no filling gate.
+        clamped to available history (per-DOF ``num_pushes``).  When the
+        buffer is empty, falls back to the current targets; when
+        underfilled, the lag is clamped to the oldest available entry.
 
         Args:
-            feedforward: Feedforward control input [N or N·m] (may be None).
-            current_state: Delay state to read from (the just-updated state).
+            target_pos: Current target positions [m or rad] (global array).
+            target_vel: Current target velocities [m/s or rad/s] (global array).
+            feedforward: Feedforward control input [N or N·m] (global, may be None).
+            indices: DOF indices into the global arrays, shape ``(N,)``.
+            current_state: Delay state to read from.
 
         Returns:
-            ``(delayed_pos, delayed_vel, delayed_feedforward)`` where
-            *delayed_feedforward* is ``None`` when *feedforward* is ``None``.
+            ``(delayed_pos, delayed_vel, delayed_feedforward)``.  When
+            *feedforward* is ``None``, *delayed_feedforward* is all zeros.
         """
-        n = self._num_actuators
-        out_pos = wp.zeros(n, dtype=wp.float32, device=self._device)
-        out_vel = wp.zeros(n, dtype=wp.float32, device=self._device)
-        out_act = wp.zeros(n, dtype=wp.float32, device=self._device)
-
         wp.launch(
             kernel=_delay_read_kernel,
-            dim=n,
+            dim=self._num_actuators,
             inputs=[
                 self.delays,
                 current_state.num_pushes,
@@ -243,16 +253,22 @@ class Delay:
                 current_state.buffer_pos,
                 current_state.buffer_vel,
                 current_state.buffer_act,
+                target_pos,
+                target_vel,
+                feedforward,
+                indices,
             ],
-            outputs=[out_pos, out_vel, out_act],
+            outputs=[self._out_pos, self._out_vel, self._out_act],
+            device=self._device,
         )
-        return (out_pos, out_vel, out_act if feedforward is not None else None)
+        return (self._out_pos, self._out_vel, self._out_act)
 
     def update_state(
         self,
         target_pos: wp.array[float],
         target_vel: wp.array[float],
         feedforward: wp.array[float] | None,
+        indices: wp.array[wp.uint32],
         current_state: Delay.State,
         next_state: Delay.State,
     ) -> None:
@@ -262,6 +278,7 @@ class Delay:
             target_pos: Current target positions [m or rad] (global array).
             target_vel: Current target velocities [m/s or rad/s] (global array).
             feedforward: Current feedforward input [N or N·m] (global array, may be None).
+            indices: DOF indices into the global arrays, shape ``(N,)``.
             current_state: Delay state to read from.
             next_state: Delay state to write into.
         """
@@ -278,7 +295,7 @@ class Delay:
                 target_pos,
                 target_vel,
                 feedforward,
-                self._indices,
+                indices,
                 copy_idx,
                 write_idx,
                 self.buf_depth,

@@ -44,7 +44,7 @@ class Actuator:
         actuator = Actuator(
             indices=indices,
             controller=ControllerPD(kp=kp, kd=kd),
-            delay=Delay(delay=5),
+            delay=Delay(delay=wp.array([5, 5], dtype=wp.int32), max_delay=5),
             clamping=[ClampingMaxForce(max_force=max_f)],
         )
 
@@ -90,6 +90,7 @@ class Actuator:
         control_feedforward_attr: str | None = "joint_act",
         control_output_attr: str = "joint_f",
         control_computed_output_attr: str | None = None,
+        requires_grad: bool = False,
     ):
         """Initialize actuator.
 
@@ -106,6 +107,8 @@ class Actuator:
             control_output_attr: Attribute on sim_control for clamped output forces.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
                 forces. None to skip writing computed forces.
+            requires_grad: Allocate intermediate arrays with gradient support
+                for differentiable simulation.
         """
         self.indices = indices
         self.controller = controller
@@ -122,23 +125,26 @@ class Actuator:
         self.control_computed_output_attr = control_computed_output_attr
 
         self.device = indices.device
+        self.requires_grad = requires_grad
         self._sequential_indices = wp.array(np.arange(self.num_actuators, dtype=np.uint32), device=self.device)
-        self._computed_forces = wp.zeros(self.num_actuators, dtype=wp.float32, device=self.device)
+        self._computed_forces = wp.zeros(
+            self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+        )
         self._applied_forces = (
-            wp.zeros(self.num_actuators, dtype=wp.float32, device=self.device) if self.clamping else None
+            wp.zeros(self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
+            if self.clamping
+            else None
         )
 
         controller.finalize(self.device, self.num_actuators)
         if delay is not None:
-            delay.finalize(self.indices, self.num_actuators)
+            delay.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
 
     @property
     def SHARED_PARAMS(self) -> set[str]:
         params: set[str] = set()
-        if self.delay is not None:
-            params |= self.delay.SHARED_PARAMS
         params |= self.controller.SHARED_PARAMS
         for c in self.clamping:
             params |= c.SHARED_PARAMS
@@ -173,13 +179,14 @@ class Actuator:
     ) -> None:
         """Execute one control step.
 
-        1. **Delay update** — push current targets into the buffer.
-        2. **Delay read** — read per-DOF delayed targets (lag clamped
-           to available history so forces are always produced).
-        3. **Controller** — compute raw forces into ``_computed_forces``.
-        4. **Clamping** — clamp forces from computed → ``_applied_forces``.
-        5. **Scatter** — add applied (and optionally computed) forces to output.
-        6. **Controller state update**.
+        1. **Delay read** — read per-DOF delayed targets from
+           ``current_state`` (falls back to current targets when
+           the buffer is empty).
+        2. **Controller** — compute raw forces into ``_computed_forces``.
+        3. **Clamping** — clamp forces from computed → ``_applied_forces``.
+        4. **Scatter** — add applied (and optionally computed) forces to output.
+        5. **State updates** — controller state update, then delay
+           buffer write (push current targets into ``next_state``).
 
         Args:
             sim_state: Simulation state with position/velocity arrays.
@@ -188,7 +195,10 @@ class Actuator:
             next_act_state: Next composed state (None if stateless).
             dt: Timestep [s].
         """
-        has_states = current_act_state is not None and next_act_state is not None
+        if self.is_stateful() and (current_act_state is None or next_act_state is None):
+            raise ValueError(
+                "Stateful actuator requires both current_act_state and next_act_state; create them via actuator.state()"
+            )
 
         positions = getattr(sim_state, self.state_pos_attr)
         velocities = getattr(sim_state, self.state_vel_attr)
@@ -204,17 +214,14 @@ class Actuator:
         feedforward = orig_feedforward
         target_indices = self.indices
 
-        # --- 1. Delay: write-then-read ---
-        if self.delay is not None and has_states:
-            self.delay.update_state(
+        # --- 1. Delay read (from current_state) ---
+        if self.delay is not None:
+            target_pos, target_vel, feedforward = self.delay.get_delayed_targets(
                 orig_target_pos,
                 orig_target_vel,
                 orig_feedforward,
+                self.indices,
                 current_act_state.delay_state,
-                next_act_state.delay_state,
-            )
-            target_pos, target_vel, feedforward = self.delay.get_delayed_targets(
-                feedforward, next_act_state.delay_state
             )
             target_indices = self._sequential_indices
 
@@ -266,9 +273,18 @@ class Actuator:
             device=self.device,
         )
 
-        # --- 5. Controller state update ---
-        if has_states and self.controller.is_stateful():
+        # --- 5. State updates (write to next_state) ---
+        if self.controller.is_stateful():
             self.controller.update_state(
                 current_act_state.controller_state,
                 next_act_state.controller_state,
+            )
+        if self.delay is not None:
+            self.delay.update_state(
+                orig_target_pos,
+                orig_target_vel,
+                orig_feedforward,
+                self.indices,
+                current_act_state.delay_state,
+                next_act_state.delay_state,
             )

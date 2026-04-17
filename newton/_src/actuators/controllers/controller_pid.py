@@ -78,11 +78,14 @@ class ControllerPID(Controller):
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
+        integral_max = args.get("integral_max", math.inf)
+        if integral_max < 0:
+            raise ValueError(f"integral_max must be >= 0, got {integral_max}")
         return {
             "kp": args.get("kp", 0.0),
             "ki": args.get("ki", 0.0),
             "kd": args.get("kd", 0.0),
-            "integral_max": args.get("integral_max", math.inf),
+            "integral_max": integral_max,
             "constant_force": args.get("constant_force", 0.0),
         }
 
@@ -100,7 +103,7 @@ class ControllerPID(Controller):
             kp: Proportional gains. Shape (N,).
             ki: Integral gains. Shape (N,).
             kd: Derivative gains. Shape (N,).
-            integral_max: Anti-windup limits. Shape (N,).
+            integral_max: Anti-windup limits (>= 0). Shape (N,).
             constant_force: Constant force offsets [N or N·m]. Shape (N,). None to skip.
         """
         self.kp = kp
