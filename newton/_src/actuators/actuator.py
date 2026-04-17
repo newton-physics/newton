@@ -196,7 +196,9 @@ class Actuator:
            the buffer is empty).
         2. **Controller** — compute raw forces into ``_computed_forces``.
         3. **Clamping** — clamp forces from computed → ``_applied_forces``.
-        4. **Scatter** — add applied (and optionally computed) forces to output.
+        4. **Scatter-add** — *accumulate* applied (and optionally computed)
+           forces into the output array.  The caller must zero the output
+           (e.g. ``control.joint_f.zero_()``) before looping over actuators.
         5. **State updates** — controller state update, then delay
            buffer write (push current targets into ``next_state``).
 
