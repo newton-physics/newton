@@ -1612,6 +1612,7 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
             shader,
             (
                 "diffuse_color_constant",
+                "diffuse_tint",
                 "diffuse_color",
                 "diffuseColor",
                 "base_color",
@@ -1832,6 +1833,18 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
                     fallback_props = subset_props
             if fallback_props is not None:
                 return fallback_props
+
+    # Last resort: check displayColor primvar even when no material is bound.
+    # This covers collision-only prims whose colour is set via displayColor
+    # rather than through a material binding (e.g. ground planes).
+    if UsdGeom is not None:
+        display_color = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayColor")
+        if display_color:
+            color = _coerce_color(display_color.Get())
+            if color is not None:
+                props = _empty_material_properties()
+                props["color"] = color
+                return props
 
     return _empty_material_properties()
 

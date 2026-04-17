@@ -438,11 +438,14 @@ def parse_usd(
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
             warnings.warn(
-                f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
+                f"Mesh {path_name} has a texture but no UVs; texture will use projected UVs.",
                 stacklevel=2,
             )
-            mesh.texture = None
-        if material_props.get("color") is not None and mesh.texture is None:
+        if mesh.texture is not None:
+            # Texture provides albedo; use white so it renders at full brightness.
+            # (diffuse_color_constant is the untextured fallback, not a multiplier.)
+            mesh.color = (1.0, 1.0, 1.0)
+        elif material_props.get("color") is not None:
             mesh.color = material_props["color"]
         if material_props.get("roughness") is not None:
             mesh.roughness = material_props["roughness"]
@@ -479,6 +482,42 @@ def parse_usd(
             incoming_mat = _xform_to_mat44(incoming_world_xform)
             prim_world_mat = incoming_mat @ prim_world_mat
         return prim_world_mat
+
+    def _cube_to_textured_mesh(hx: float, hy: float, hz: float, material_props: dict) -> Mesh:
+        """Convert a cube primitive to a Mesh with box-mapped UVs for texture rendering.
+
+        Creates 24 vertices (4 per face) with independent UVs so each face
+        maps the full texture via simple box projection.
+        """
+        # 6 faces, 4 verts each, 2 tris each — winding is CCW when viewed from outside
+        verts = np.array([
+            # +X face
+            [hx, -hy, -hz], [hx, hy, -hz], [hx, hy, hz], [hx, -hy, hz],
+            # -X face
+            [-hx, hy, -hz], [-hx, -hy, -hz], [-hx, -hy, hz], [-hx, hy, hz],
+            # +Y face
+            [hx, hy, -hz], [-hx, hy, -hz], [-hx, hy, hz], [hx, hy, hz],
+            # -Y face
+            [-hx, -hy, -hz], [hx, -hy, -hz], [hx, -hy, hz], [-hx, -hy, hz],
+            # +Z face
+            [-hx, -hy, hz], [hx, -hy, hz], [hx, hy, hz], [-hx, hy, hz],
+            # -Z face
+            [-hx, hy, -hz], [hx, hy, -hz], [hx, -hy, -hz], [-hx, -hy, -hz],
+        ], dtype=np.float32)
+        uvs = np.tile(np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32), (6, 1))
+        tris = np.array([[i * 4 + j for j in t] for i in range(6) for t in [[0, 1, 2], [0, 2, 3]]], dtype=np.int32)
+        mesh = Mesh(verts, tris, uvs=uvs, compute_inertia=False)
+        mesh.texture = material_props.get("texture")
+        # When a texture is present, the texture provides the albedo and the
+        # shape color acts as a multiplier.  Use white so the texture renders
+        # at full brightness (OmniPBR's diffuse_color_constant is the
+        # untextured fallback and would darken the image if used here).
+        mesh.color = (1.0, 1.0, 1.0)
+        if material_props.get("roughness") is not None:
+            mesh.roughness = material_props["roughness"]
+        if material_props.get("metallic") is not None:
+            mesh.metallic = material_props["metallic"]
+        return mesh
 
     def _load_visual_shapes_impl(
         parent_body_id: int,
@@ -543,19 +582,47 @@ def parse_usd(
             return
 
         if path_name not in path_shape_map:
+            # Resolve material properties for primitive (non-mesh) visual shapes.
+            # Walk up to the parent if the prim itself has no material bound,
+            # since USD materials are often authored on a parent Xform.
+            _prim_mat_props = {}
+            if type_name != "mesh":
+                _prim_mat_props = _get_material_props_cached(prim)
+                if _prim_mat_props.get("color") is None and _prim_mat_props.get("texture") is None:
+                    parent = prim.GetParent()
+                    if parent and parent.IsValid():
+                        _par_props = _get_material_props_cached(parent)
+                        if _par_props.get("color") is not None or _par_props.get("texture") is not None:
+                            _prim_mat_props = _par_props
+                _prim_color = _prim_mat_props.get("color")
+
             if type_name == "cube":
                 size = usd.get_float(prim, "size", 2.0)
                 side_lengths = scale * size
-                shape_id = builder.add_shape_box(
-                    parent_body_id,
-                    xform,
-                    hx=side_lengths[0] / 2,
-                    hy=side_lengths[1] / 2,
-                    hz=side_lengths[2] / 2,
-                    cfg=visual_shape_cfg,
-                    as_site=is_site,
-                    label=path_name,
-                )
+                hx, hy, hz = side_lengths[0] / 2, side_lengths[1] / 2, side_lengths[2] / 2
+                # If the material has a texture, convert the cube to a mesh
+                # with UVs so Newton's texture pipeline can render it.
+                if _prim_mat_props.get("texture") is not None:
+                    mesh = _cube_to_textured_mesh(hx, hy, hz, _prim_mat_props)
+                    shape_id = builder.add_shape_mesh(
+                        parent_body_id,
+                        xform,
+                        mesh=mesh,
+                        cfg=visual_shape_cfg,
+                        label=path_name,
+                    )
+                else:
+                    shape_id = builder.add_shape_box(
+                        parent_body_id,
+                        xform,
+                        hx=hx,
+                        hy=hy,
+                        hz=hz,
+                        cfg=visual_shape_cfg,
+                        as_site=is_site,
+                        color=_prim_color,
+                        label=path_name,
+                    )
             elif type_name == "sphere":
                 if not (scale[0] == scale[1] == scale[2]):
                     print("Warning: Non-uniform scaling of spheres is not supported.")
@@ -566,6 +633,7 @@ def parse_usd(
                     radius,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=_prim_color,
                     label=path_name,
                 )
             elif type_name == "plane":
@@ -581,6 +649,7 @@ def parse_usd(
                     width=width,
                     length=length,
                     cfg=visual_shape_cfg,
+                    color=_prim_color,
                     label=path_name,
                 )
             elif type_name == "capsule":
@@ -596,6 +665,7 @@ def parse_usd(
                     half_height,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=_prim_color,
                     label=path_name,
                 )
             elif type_name == "cylinder":
@@ -611,6 +681,7 @@ def parse_usd(
                     half_height,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
+                    color=_prim_color,
                     label=path_name,
                 )
             elif type_name == "cone":
@@ -2513,9 +2584,22 @@ def parse_usd(
                 if shape_kd is None:
                     shape_kd = builder.default_shape_cfg.kd
 
+                # Resolve material color for visible collision shapes so they
+                # render with the correct colour instead of the palette fallback.
+                # Walk up to the parent if the prim itself has no material.
+                _collider_color = None
+                if collider_is_visible:
+                    _coll_mat = _get_material_props_cached(prim)
+                    _collider_color = _coll_mat.get("color")
+                    if _collider_color is None:
+                        _coll_parent = prim.GetParent()
+                        if _coll_parent and _coll_parent.IsValid():
+                            _collider_color = _get_material_props_cached(_coll_parent).get("color")
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
+                    "color": _collider_color,
                     "cfg": ModelBuilder.ShapeConfig(
                         ke=shape_ke,
                         kd=shape_kd,
