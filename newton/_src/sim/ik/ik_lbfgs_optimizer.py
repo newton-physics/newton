@@ -93,7 +93,6 @@ class BatchCtx:
     # ANALYTIC and MIXED
     jacobian_out: wp.array3d[wp.float32] | None = None
     motion_subspace: wp.array2d[wp.spatial_vector] | None = None
-    fk_qd_zero: wp.array2d[wp.float32] | None = None
     fk_X_local: wp.array2d[wp.transform] | None = None
 
     # MIXED-only helpers
@@ -440,7 +439,6 @@ class IKOptimizerLBFGS:
             joint_qd=self.qd_zero,
             jacobian_out=self.jacobian,
             motion_subspace=self.joint_S_s,
-            fk_qd_zero=self.qd_zero,
             fk_X_local=self.X_local,
             gradient_tmp=self.gradient_tmp,
             autodiff_mask=self.autodiff_residual_mask,
@@ -497,7 +495,6 @@ class IKOptimizerLBFGS:
             joint_qd=_reshape2(cand_qd_zero) if cand_qd_zero is not None else None,
             jacobian_out=_reshape3(candidate_jacobians) if candidate_jacobians is not None else None,
             motion_subspace=_reshape2(cand_joint_S_s) if cand_joint_S_s is not None else None,
-            fk_qd_zero=_reshape2(cand_qd_zero) if cand_qd_zero is not None else None,
             fk_X_local=_reshape2(cand_X_local) if cand_X_local is not None else None,
             gradient_tmp=_reshape2(candidate_gradient_tmp) if candidate_gradient_tmp is not None else None,
             autodiff_mask=_reshape2(autodiff_mask_candidates) if autodiff_mask_candidates is not None else None,
@@ -556,8 +553,6 @@ class IKOptimizerLBFGS:
                 missing.append("jacobian_out")
             if ctx.motion_subspace is None:
                 missing.append("motion_subspace")
-            if ctx.fk_qd_zero is None:
-                missing.append("fk_qd_zero")
             if self.jacobian_mode == IKJacobianType.MIXED and self.has_analytic_objective and ctx.gradient_tmp is None:
                 missing.append("gradient_tmp")
             if require_fk_x_local and ctx.fk_X_local is None:
@@ -632,13 +627,11 @@ class IKOptimizerLBFGS:
         if not accumulate:
             self._residuals_analytic(ctx)
 
-        ctx.fk_qd_zero.zero_()
         ctx.jacobian_out.zero_()
 
         self._compute_motion_subspace(
             body_q=ctx.fk_body_q,
             joint_S_s_out=ctx.motion_subspace,
-            joint_qd_in=ctx.fk_qd_zero,
         )
 
         def _emit_jac(obj, off, body_q_view, q_view, model, J_view, S_view):
@@ -849,7 +842,6 @@ class IKOptimizerLBFGS:
         *,
         body_q: wp.array2d[wp.transform],
         joint_S_s_out: wp.array2d[wp.spatial_vector],
-        joint_qd_in: wp.array2d[wp.float32],
     ) -> None:
         n_joints = self.model.joint_count
         batch = body_q.shape[0]
@@ -859,11 +851,12 @@ class IKOptimizerLBFGS:
             inputs=[
                 self.model.joint_type,
                 self.model.joint_parent,
+                self.model.joint_child,
                 self.model.joint_qd_start,
-                joint_qd_in,
                 self.model.joint_axis,
                 self.model.joint_dof_dim,
                 body_q,
+                self.model.body_com,
                 self.model.joint_X_p,
             ],
             outputs=[
@@ -1349,10 +1342,10 @@ class IKOptimizerLBFGS:
         _select_best_step_template.__qualname__ = f"_select_best_step_tiled_{C}_{N_LINE_SEARCH}"
         _select_best_step_tiled = wp.kernel(enable_backward=False, module="unique")(_select_best_step_template)
 
-        # late-import jcalc_motion, jcalc_transform to avoid circular import error
+        # late-import jcalc_* helpers to avoid circular import error
+        from ...sim.articulation import jcalc_motion_subspace  # noqa: PLC0415
         from ...solvers.featherstone.kernels import (  # noqa: PLC0415
             jcalc_integrate,
-            jcalc_motion,
             jcalc_transform,
         )
 
@@ -1429,11 +1422,12 @@ class IKOptimizerLBFGS:
         def _compute_motion_subspace_2d(
             joint_type: wp.array[wp.int32],  # (n_joints)
             joint_parent: wp.array[wp.int32],  # (n_joints)
+            joint_child: wp.array[wp.int32],  # (n_joints)
             joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
-            joint_qd: wp.array2d[wp.float32],  # (n_batch, n_joint_dof_count)
             joint_axis: wp.array[wp.vec3],  # (n_joint_dof_count)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)
             body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
+            body_com: wp.array[wp.vec3],  # (n_bodies)
             joint_X_p: wp.array[wp.transform],  # (n_joints)
             # outputs
             joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_joint_dof_count)
@@ -1442,6 +1436,7 @@ class IKOptimizerLBFGS:
 
             type = joint_type[joint_idx]
             parent = joint_parent[joint_idx]
+            child = joint_child[joint_idx]
             qd_start = joint_qd_start[joint_idx]
 
             X_pj = joint_X_p[joint_idx]
@@ -1452,16 +1447,16 @@ class IKOptimizerLBFGS:
             lin_axis_count = joint_dof_dim[joint_idx, 0]
             ang_axis_count = joint_dof_dim[joint_idx, 1]
 
-            joint_qd_1d = joint_qd[row]
             S_s_out = joint_S_s[row]
 
-            jcalc_motion(
+            jcalc_motion_subspace(
                 type,
                 joint_axis,
                 lin_axis_count,
                 ang_axis_count,
                 X_wpj,
-                joint_qd_1d,
+                body_q[row, child],
+                body_com[child],
                 qd_start,
                 S_s_out,
             )
