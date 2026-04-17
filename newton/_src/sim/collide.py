@@ -201,6 +201,8 @@ def compute_shape_aabbs(
     is_mesh = geo_type == GeoType.MESH
     is_hfield = geo_type == GeoType.HFIELD
 
+    geom_scale = scale
+
     if is_infinite_plane:
         # Bounding sphere fallback for infinite planes
         radius = shape_collision_radius[shape_id]
@@ -239,9 +241,8 @@ def compute_shape_aabbs(
         shape_data = GenericShapeData()
         shape_data.shape_type = geo_type
         if geo_type == GeoType.PLANE:
-            shape_data.scale = wp.vec3(scale[0] * 0.5, scale[1] * 0.5, 0.0)
-        else:
-            shape_data.scale = scale
+            geom_scale = wp.vec3(scale[0] * 0.5, scale[1] * 0.5, 0.0)
+        shape_data.scale = geom_scale
         shape_data.auxiliary = wp.vec3(0.0, 0.0, 0.0)
 
         # For CONVEX_MESH, pack the mesh pointer
@@ -257,9 +258,6 @@ def compute_shape_aabbs(
         aabb_upper[shape_id] = aabb_max_world + margin_vec
 
     # Narrow-phase geometry data (reuses X_ws and scale already computed above)
-    geom_scale = scale
-    if geo_type == GeoType.PLANE:
-        geom_scale = wp.vec3(scale[0] * 0.5, scale[1] * 0.5, 0.0)
     geom_data[shape_id] = wp.vec4(geom_scale[0], geom_scale[1], geom_scale[2], margin)
     geom_xform[shape_id] = X_ws
 
