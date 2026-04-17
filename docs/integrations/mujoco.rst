@@ -446,6 +446,13 @@ Shape attributes
      - ``newton:contactMargin``
      - ``margin``
      - From ``mjc:``: ``margin = mjc:margin − mjc:gap``
+   * - ``max_hull_vertices``
+     - mesh asset ``maxhullvert``
+     - ``newton:maxHullVertices``
+     - ``maxhullvert`` (on ``<mesh>``)
+     - Maximum vertices for the convex-hull approximation of mesh
+       collisions.  Default ``-1`` = engine default.
+       From ``mjc:``: ``mjc:maxhullvert`` (on the shape prim).
 
 **Custom attributes** (``mujoco.*`` namespace):
 

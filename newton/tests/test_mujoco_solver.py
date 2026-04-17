@@ -8834,9 +8834,7 @@ class TestRegisterCustomAttributesDocstringCoverage(unittest.TestCase):
 class TestMujocoRstCoverage(unittest.TestCase):
     """Verify the mujoco.rst docs mention every mjc: USD attribute."""
 
-    RST_PATH = os.path.join(
-        os.path.dirname(__file__), "..", "..", "docs", "integrations", "mujoco.rst"
-    )
+    RST_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "integrations", "mujoco.rst")
 
     def test_custom_attributes_in_rst(self):
         """Every custom attribute with a USD path must appear in mujoco.rst."""
@@ -8861,8 +8859,7 @@ class TestMujocoRstCoverage(unittest.TestCase):
         self.assertEqual(
             missing,
             [],
-            f"The following custom attributes are registered but not "
-            f"mentioned in mujoco.rst: {missing}",
+            f"The following custom attributes are registered but not mentioned in mujoco.rst: {missing}",
         )
 
     def test_schema_resolver_in_rst(self):
@@ -8883,15 +8880,12 @@ class TestMujocoRstCoverage(unittest.TestCase):
                 # Range attrs (e.g. mjc:ctrlRange:max) — check base name
                 base = re.sub(r":(min|max)$", "", usd_name)
                 if base not in rst:
-                    missing.append(
-                        f"{newton_prop} (usd: {usd_name}, prim: {prim_type.name})"
-                    )
+                    missing.append(f"{newton_prop} (usd: {usd_name}, prim: {prim_type.name})")
 
         self.assertEqual(
             missing,
             [],
-            f"The following SchemaResolverMjc attributes are not mentioned "
-            f"in mujoco.rst: {missing}",
+            f"The following SchemaResolverMjc attributes are not mentioned in mujoco.rst: {missing}",
         )
 
 
