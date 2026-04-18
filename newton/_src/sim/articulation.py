@@ -874,6 +874,40 @@ def eval_ik(
 
 
 @wp.func
+def write_free_distance_motion_subspace(
+    X_sc: wp.transform,
+    x_child_com_world: wp.vec3,
+    qd_start: int,
+    # outputs
+    joint_S_s: wp.array[wp.spatial_vector],
+):
+    """Write the 6 motion-subspace columns for a FREE/DISTANCE joint.
+
+    Used by both the Featherstone inverse-dynamics path (``jcalc_motion``) and
+    the IK/Jacobian path (``jcalc_motion_subspace``) so they agree on the exact
+    column layout. Linear DOFs act at the child body's COM; angular DOFs are
+    world-aligned axes expressed through ``X_sc``.
+
+    Args:
+        X_sc: Joint-child transform expressed in the solver (world) frame.
+        x_child_com_world: World-space position of the child body's COM.
+        qd_start: Starting velocity-DOF index for this joint.
+        joint_S_s: Output spatial-vector subspace array; six slots starting at
+            ``qd_start`` are overwritten.
+    """
+    axis_world_x = wp.transform_vector(X_sc, wp.vec3(1.0, 0.0, 0.0))
+    axis_world_y = wp.transform_vector(X_sc, wp.vec3(0.0, 1.0, 0.0))
+    axis_world_z = wp.transform_vector(X_sc, wp.vec3(0.0, 0.0, 1.0))
+
+    joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
+    joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
+    joint_S_s[qd_start + 2] = wp.spatial_vector(axis_world_z, wp.vec3())
+    joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, x_child_com_world), axis_world_x)
+    joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, x_child_com_world), axis_world_y)
+    joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, x_child_com_world), axis_world_z)
+
+
+@wp.func
 def jcalc_motion_subspace(
     type: int,
     joint_axis: wp.array[wp.vec3],
@@ -943,16 +977,7 @@ def jcalc_motion_subspace(
 
     elif type == JointType.FREE or type == JointType.DISTANCE:
         x_child_com_world = wp.transform_point(X_wc, body_com_child)
-        axis_world_x = wp.transform_vector(X_sc, wp.vec3(1.0, 0.0, 0.0))
-        axis_world_y = wp.transform_vector(X_sc, wp.vec3(0.0, 1.0, 0.0))
-        axis_world_z = wp.transform_vector(X_sc, wp.vec3(0.0, 0.0, 1.0))
-
-        joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
-        joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
-        joint_S_s[qd_start + 2] = wp.spatial_vector(axis_world_z, wp.vec3())
-        joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, x_child_com_world), axis_world_x)
-        joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, x_child_com_world), axis_world_y)
-        joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, x_child_com_world), axis_world_z)
+        write_free_distance_motion_subspace(X_sc, x_child_com_world, qd_start, joint_S_s)
 
 
 @wp.kernel

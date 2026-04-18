@@ -10,6 +10,7 @@ from ...sim import BodyFlags, JointType
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
+    write_free_distance_motion_subspace,
 )
 from ..semi_implicit.kernels_body import joint_force
 
@@ -330,16 +331,7 @@ def jcalc_motion(
         return wp.spatial_vector()
 
     if type == JointType.FREE or type == JointType.DISTANCE:
-        axis_world_x = wp.transform_vector(X_sc, wp.vec3(1.0, 0.0, 0.0))
-        axis_world_y = wp.transform_vector(X_sc, wp.vec3(0.0, 1.0, 0.0))
-        axis_world_z = wp.transform_vector(X_sc, wp.vec3(0.0, 0.0, 1.0))
-
-        joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
-        joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
-        joint_S_s[qd_start + 2] = wp.spatial_vector(axis_world_z, wp.vec3())
-        joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, x_com_world), axis_world_x)
-        joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, x_com_world), axis_world_y)
-        joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, x_com_world), axis_world_z)
+        write_free_distance_motion_subspace(X_sc, x_com_world, qd_start, joint_S_s)
 
         v_com_world = wp.transform_vector(
             X_sc,
