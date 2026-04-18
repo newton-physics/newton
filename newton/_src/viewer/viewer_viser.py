@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import collections
 import inspect
 import os
 import warnings
@@ -103,6 +104,7 @@ class ViewerViser(ViewerBase):
         verbose: bool = True,
         share: bool = False,
         record_to_viser: str | None = None,
+        plot_history_size: int = 250,
     ):
         """
         Initialize the ViewerViser backend for Newton using the viser visualization library.
@@ -117,8 +119,24 @@ class ViewerViser(ViewerBase):
             share: If True, create a publicly accessible URL via viser's share feature.
             record_to_viser: Path to record the viewer to a ``*.viser`` recording file
                 (e.g. "my_recording.viser"). If None, the viewer will not record to a file.
+            plot_history_size: Maximum number of samples kept per
+                :meth:`log_scalar` signal for the live time-series plots.
         """
+        if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
+            raise TypeError("plot_history_size must be an integer")
+        if plot_history_size <= 0:
+            raise ValueError("plot_history_size must be > 0")
+
         viser = self._get_viser()
+
+        # Rolling buffers for log_scalar() time-series plots.
+        self._scalar_buffers: dict[str, collections.deque] = {}
+        self._scalar_accumulators: dict[str, list[float]] = {}
+        self._scalar_smoothing: dict[str, int] = {}
+        self._scalar_dirty: set[str] = set()
+        self._plot_handles: dict[str, Any] = {}
+        self._plot_folder: Any = None
+        self._plot_history_size = plot_history_size
 
         super().__init__()
 
@@ -163,6 +181,29 @@ class ViewerViser(ViewerBase):
 
         if self._serializer is not None and verbose:
             print(f"Recording to: {record_to_viser}")
+
+    @override
+    def clear_model(self):
+        """Reset model-dependent state, including scalar plot buffers."""
+        # Remove plot handles from the GUI.
+        for handle in self._plot_handles.values():
+            try:
+                handle.remove()
+            except Exception:
+                pass
+        self._plot_handles.clear()
+        if self._plot_folder is not None:
+            try:
+                self._plot_folder.remove()
+            except Exception:
+                pass
+            self._plot_folder = None
+        self._scalar_buffers.clear()
+        self._scalar_accumulators.clear()
+        self._scalar_smoothing.clear()
+        self._scalar_dirty.clear()
+
+        super().clear_model()
 
     def _setup_scene(self):
         """Set up the default scene configuration."""
@@ -578,7 +619,9 @@ class ViewerViser(ViewerBase):
         if batched_colors is None:
             batched_colors = np.full((num_instances, 3), 180, dtype=np.uint8)
 
-        # Create new batched mesh
+        # Create new batched mesh.
+        # LOD is disabled because viser's automatic mesh simplification creates
+        # holes in complex geometry (e.g. terrain), causing popping artifacts.
         if use_trimesh:
             handle = self._call_scene_method(
                 self._server.scene.add_batched_meshes_trimesh,
@@ -587,7 +630,7 @@ class ViewerViser(ViewerBase):
                 batched_positions=positions,
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
-                lod="auto",
+                lod="off",
             )
         else:
             handle = self._call_scene_method(
@@ -599,7 +642,7 @@ class ViewerViser(ViewerBase):
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
                 batched_colors=batched_colors,
-                lod="auto",
+                lod="off",
             )
 
         self._scene_handles[name] = handle
@@ -627,10 +670,53 @@ class ViewerViser(ViewerBase):
         End the current frame.
 
         If recording is active, inserts a sleep command for playback timing.
+        Updates scalar plots if any data changed since last frame.
         """
+        self._update_scalar_plots()
+
         if self._serializer is not None:
             # Insert sleep for frame timing during recording
             self._serializer.insert_sleep(self._frame_dt)
+
+    def _update_scalar_plots(self):
+        """Create or update uPlot chart handles for dirty scalar signals."""
+        if not self._scalar_dirty:
+            return
+
+        try:
+            from viser import uplot
+
+            # Create the plots folder on first use.
+            if self._plot_folder is None:
+                self._plot_folder = self._server.gui.add_folder("Plots")
+
+            n = self._plot_history_size
+            x = np.arange(n, dtype=np.float64)
+
+            for name in self._scalar_dirty:
+                buf = self._scalar_buffers[name]
+                y = np.full(n, np.nan, dtype=np.float64)
+                y[n - len(buf) :] = np.array(buf, dtype=np.float64)
+
+                handle = self._plot_handles.get(name)
+                if handle is None:
+                    with self._plot_folder:
+                        handle = self._server.gui.add_uplot(
+                            data=(x, y),
+                            series=(
+                                uplot.Series(label="step"),
+                                uplot.Series(label=name, stroke="#3b82f6", width=2),
+                            ),
+                            scales={"x": uplot.Scale(time=False)},
+                            aspect=2.0,
+                        )
+                    self._plot_handles[name] = handle
+                else:
+                    handle.data = (x, y)
+        except Exception:
+            pass
+
+        self._scalar_dirty.clear()
 
     @override
     def is_running(self) -> bool:
@@ -903,16 +989,56 @@ class ViewerViser(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False, smoothing: int = 1):
-        """Viser viewer does not visualize scalar signals.
+    def log_scalar(
+        self,
+        name: str,
+        value: int | float | bool | np.number,
+        *,
+        clear: bool = False,
+        smoothing: int = 1,
+    ):
+        """
+        Log a scalar value as a live time-series plot.
+
+        Each unique *name* creates a separate uPlot chart in a "Plots"
+        folder in the GUI sidebar.  Values are stored in a rolling
+        buffer of the last ``plot_history_size`` samples.
 
         Args:
             name: Unique path/name for the scalar signal.
-            value: Scalar value to visualize.
-            clear: Ignored by this backend.
-            smoothing: Ignored by this backend.
+            value: Scalar value to record.
+            clear: If ``True``, discard previously recorded samples for
+                *name* before logging the new value.
+            smoothing: Number of raw samples to average before committing
+                a point to the plot history.  Defaults to ``1`` (no smoothing).
         """
-        pass
+        if smoothing < 1:
+            raise ValueError("smoothing must be >= 1")
+        val = float(value.item() if hasattr(value, "item") else value)
+        buf = self._scalar_buffers.get(name)
+        if buf is None:
+            buf = collections.deque(maxlen=self._plot_history_size)
+            self._scalar_buffers[name] = buf
+        elif clear:
+            buf.clear()
+            self._scalar_accumulators.pop(name, None)
+
+        if self._scalar_smoothing.get(name, smoothing) != smoothing:
+            self._scalar_accumulators.pop(name, None)
+        self._scalar_smoothing[name] = smoothing
+        if smoothing <= 1:
+            buf.append(val)
+        else:
+            acc = self._scalar_accumulators.get(name)
+            if acc is None:
+                acc = []
+                self._scalar_accumulators[name] = acc
+            acc.append(val)
+            if len(acc) >= smoothing:
+                buf.append(sum(acc) / len(acc))
+                acc.clear()
+
+        self._scalar_dirty.add(name)
 
     def show_notebook(self, width: int | str = "100%", height: int | str = 400):
         """

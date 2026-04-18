@@ -553,7 +553,6 @@ class TestMuJoCoActuators(unittest.TestCase):
         """
 
         builder = ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_combined_joints, ctrl_direct=False)
 
         # Verify the combined joint was created

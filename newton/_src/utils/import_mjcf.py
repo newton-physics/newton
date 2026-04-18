@@ -994,10 +994,11 @@ def parse_mjcf(
             elif geom_type == "plane":
                 # Use xform directly - plane has local normal (0,0,1) and passes through origin
                 # The transform tf positions and orients the plane in world space
+                # MuJoCo planes are always infinite for collision; pass 0 extents.
                 s = builder.add_shape_plane(
                     xform=tf,
-                    width=geom_size[0],
-                    length=geom_size[1],
+                    width=0.0,
+                    length=0.0,
                     **shape_kwargs,
                 )
                 shapes.append(s)

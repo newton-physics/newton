@@ -1237,7 +1237,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
         nbTendonsPerBuilder = 2
 
         individual_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder()
         for _i in range(0, nbBuilders):
@@ -1696,7 +1695,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
@@ -1960,7 +1958,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
         nbTendons = nbBuilders * nbTendonsPerBuilder
 
         individual_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder()
         for _i in range(0, nbBuilders):
@@ -2065,7 +2062,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 </mujoco>
 """
         individual_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder()
         builder.add_world(individual_builder)
@@ -2122,7 +2118,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 </mujoco>
 """
         individual_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf, ctrl_direct=True)
         builder = newton.ModelBuilder()
         builder.add_world(individual_builder)
@@ -2176,7 +2171,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 """
         # With autolimits=true (default), actuatorfrclimited="auto" resolves to true
         builder_true = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder_true)
         builder_true.add_mjcf(mjcf_autolimits_true)
         model_true = newton.ModelBuilder()
         model_true.add_world(builder_true)
@@ -2186,7 +2180,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 
         # With autolimits=false, actuatorfrclimited="auto" should NOT apply force limit
         builder_false = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder_false)
         builder_false.add_mjcf(mjcf_autolimits_false)
         model_false = newton.ModelBuilder()
         model_false.add_world(builder_false)
@@ -2244,7 +2237,6 @@ class TestImportMjcfGeometry(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -7056,7 +7048,6 @@ class TestActuatorShortcutTypeDefaults(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(cls.builder)
         cls.builder.add_mjcf(cls.MJCF, ctrl_direct=True)
         cls.model = cls.builder.finalize()
 
@@ -7122,7 +7113,6 @@ class TestMjcfPositionDampratioParsing(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(cls.MJCF, ctrl_direct=True)
         cls.model = builder.finalize()
 
@@ -7162,7 +7152,6 @@ class TestActuatorDefaultKpKv(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf, ctrl_direct=True)
         model = builder.finalize()
 
@@ -7187,7 +7176,6 @@ class TestActuatorDefaultKpKv(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf, ctrl_direct=True)
         model = builder.finalize()
 
@@ -7217,7 +7205,6 @@ class TestActuatorDefaultKpKv(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf, ctrl_direct=True)
         model = builder.finalize()
 
@@ -7252,7 +7239,6 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
                 f.write(main)
 
             builder = newton.ModelBuilder()
-            SolverMuJoCo.register_custom_attributes(builder)
             builder.add_mjcf(main_path)
 
             iters = builder.custom_attributes["mujoco:iterations"].values
@@ -7287,7 +7273,6 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
                 f.write(main)
 
             builder = newton.ModelBuilder()
-            SolverMuJoCo.register_custom_attributes(builder)
             builder.add_mjcf(main_path)
 
             iters = builder.custom_attributes["mujoco:iterations"].values
@@ -7322,7 +7307,6 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
                 f.write(main)
 
             builder = newton.ModelBuilder()
-            SolverMuJoCo.register_custom_attributes(builder)
             builder.add_mjcf(main_path)
 
             iters = builder.custom_attributes["mujoco:iterations"].values
@@ -7407,7 +7391,6 @@ class TestContypeConaffinityZero(unittest.TestCase):
             </worldbody>
         </mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -7439,7 +7422,6 @@ class TestContypeConaffinityZero(unittest.TestCase):
             </worldbody>
         </mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -7474,7 +7456,6 @@ class TestContypeConaffinityZero(unittest.TestCase):
             </contact>
         </mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -7483,6 +7464,24 @@ class TestContypeConaffinityZero(unittest.TestCase):
         self.assertEqual(solver.mj_model.npair, 1, "Explicit pair should be in MuJoCo spec")
         solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
         self.assertGreater(solver.mj_data.ncon, 0, "Explicit <pair> should generate contacts")
+
+
+class TestMjcfPlaneInfinite(unittest.TestCase):
+    """Verify MJCF plane geoms are imported as infinite planes."""
+
+    def test_plane_scale_is_zero(self):
+        """MuJoCo plane size is visual-only; imported plane should have zero extents (infinite)."""
+        mjcf = """<mujoco><worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        scale = model.shape_scale.numpy()[0]
+        np.testing.assert_allclose(
+            scale, [0.0, 0.0, 0.0], atol=1e-7, err_msg="MJCF plane should be infinite (zero extents)"
+        )
 
 
 class TestJointFrictionloss(unittest.TestCase):
@@ -7499,7 +7498,6 @@ class TestJointFrictionloss(unittest.TestCase):
             </body>
         </worldbody></mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 5.0, atol=1e-6)
@@ -7515,7 +7513,6 @@ class TestJointFrictionloss(unittest.TestCase):
             </body>
         </worldbody></mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 2.5, atol=1e-6)
@@ -7531,7 +7528,6 @@ class TestJointFrictionloss(unittest.TestCase):
             </body>
         </worldbody></mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 0.0, atol=1e-6)
@@ -7547,7 +7543,6 @@ class TestJointFrictionloss(unittest.TestCase):
             </body>
         </worldbody></mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
@@ -7570,7 +7565,6 @@ class TestJointFrictionloss(unittest.TestCase):
             </worldbody>
         </mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         np.testing.assert_allclose(model.joint_friction.numpy()[-1], 3.3, atol=1e-5)
