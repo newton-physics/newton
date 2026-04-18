@@ -470,7 +470,6 @@ class SolverFeatherstone(SolverBase):
                             contacts.rigid_contact_stiffness,
                             contacts.rigid_contact_damping,
                             contacts.rigid_contact_friction,
-                            False,
                             self.friction_smoothing,
                         ],
                         outputs=[body_f],

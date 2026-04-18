@@ -400,7 +400,6 @@ def eval_body_contact(
     rigid_contact_stiffness: wp.array[float],
     rigid_contact_damping: wp.array[float],
     rigid_contact_friction_scale: wp.array[float],
-    force_in_world_frame: bool,
     friction_smoothing: float,
     # outputs
     body_f: wp.array[wp.spatial_vector],
@@ -489,19 +488,13 @@ def eval_body_contact(
         body_v_s_a = body_qd[body_a]
         body_w_a = wp.spatial_bottom(body_v_s_a)
         body_v_a = wp.spatial_top(body_v_s_a)
-        if force_in_world_frame:
-            bv_a = body_v_a + wp.cross(body_w_a, bx_a)
-        else:
-            bv_a = body_v_a + wp.cross(body_w_a, r_a)
+        bv_a = body_v_a + wp.cross(body_w_a, r_a)
 
     if body_b >= 0:
         body_v_s_b = body_qd[body_b]
         body_w_b = wp.spatial_bottom(body_v_s_b)
         body_v_b = wp.spatial_top(body_v_s_b)
-        if force_in_world_frame:
-            bv_b = body_v_b + wp.cross(body_w_b, bx_b)
-        else:
-            bv_b = body_v_b + wp.cross(body_w_b, r_b)
+        bv_b = body_v_b + wp.cross(body_w_b, r_b)
 
     # relative velocity
     v = bv_a - bv_b
@@ -544,16 +537,10 @@ def eval_body_contact(
     # f_total = n * fn
 
     if body_a >= 0:
-        if force_in_world_frame:
-            wp.atomic_add(body_f, body_a, wp.spatial_vector(f_total, wp.cross(bx_a, f_total)))
-        else:
-            wp.atomic_sub(body_f, body_a, wp.spatial_vector(f_total, wp.cross(r_a, f_total)))
+        wp.atomic_sub(body_f, body_a, wp.spatial_vector(f_total, wp.cross(r_a, f_total)))
 
     if body_b >= 0:
-        if force_in_world_frame:
-            wp.atomic_sub(body_f, body_b, wp.spatial_vector(f_total, wp.cross(bx_b, f_total)))
-        else:
-            wp.atomic_add(body_f, body_b, wp.spatial_vector(f_total, wp.cross(r_b, f_total)))
+        wp.atomic_add(body_f, body_b, wp.spatial_vector(f_total, wp.cross(r_b, f_total)))
 
 
 def eval_particle_contact_forces(model: Model, state: State, particle_f: wp.array):
@@ -603,7 +590,6 @@ def eval_body_contact_forces(
     state: State,
     contacts: Contacts | None,
     friction_smoothing: float = 1.0,
-    force_in_world_frame: bool = False,
     body_f_out: wp.array | None = None,
 ):
     if contacts is not None and contacts.rigid_contact_max:
@@ -633,7 +619,6 @@ def eval_body_contact_forces(
                 contacts.rigid_contact_stiffness,
                 contacts.rigid_contact_damping,
                 contacts.rigid_contact_friction,
-                force_in_world_frame,
                 friction_smoothing,
             ],
             outputs=[body_f_out],
