@@ -789,8 +789,7 @@ def eval_rigid_tau(
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
-    body_q: wp.array[wp.transform],
-    body_com: wp.array[wp.vec3],
+    body_q_com: wp.array[wp.transform],
     body_fb_s: wp.array[wp.spatial_vector],
     body_f_ext: wp.array[wp.spatial_vector],
     # outputs
@@ -823,7 +822,10 @@ def eval_rigid_tau(
         f_ext_public = body_f_ext[child]
         force = wp.spatial_top(f_ext_public)
         torque_com = wp.spatial_bottom(f_ext_public)
-        x_com_world = wp.transform_point(body_q[child], body_com[child])
+        # Reuse the cached world-frame COM transform populated by
+        # ``compute_body_q_com`` so this kernel draws from the same source as
+        # ``eval_rigid_id`` instead of recomputing ``body_q * body_com``.
+        x_com_world = wp.transform_get_translation(body_q_com[child])
         f_ext = -wp.spatial_vector(force, torque_com + wp.cross(x_com_world, force))
         f_s = f_b_s + f_t_s + f_ext
 
