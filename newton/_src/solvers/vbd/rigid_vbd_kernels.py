@@ -48,7 +48,7 @@ _USE_SMALL_ANGLE_APPROX = wp.constant(True)
 _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 """Deadband threshold for hysteresis direction selection"""
 
-_NUM_CONTACT_THREADS_PER_BODY = wp.constant(16)
+_NUM_CONTACT_THREADS_PER_BODY = wp.constant(4)
 """Threads per body for contact accumulation using strided iteration"""
 
 _CONTACT_HASH_GRID_DIM = wp.constant(128)
@@ -642,6 +642,7 @@ def evaluate_rigid_contact_from_collision(
     friction_epsilon: float,
     hard_contact: int,
     dt: float,
+    friction_c0: wp.vec3,
 ):
     """Compute augmented-Lagrangian contact forces and 3x3 Hessian blocks for a rigid contact pair.
 
@@ -710,11 +711,12 @@ def evaluate_rigid_contact_from_collision(
 
         if friction_mu > 0.0 and f_n > 0.0:
             # ALM tangential friction with Coulomb cone clamping.
-            # Tangential constraint = relative tangential displacement (body_q_prev -> body_q).
+            # Tangential constraint: rel_disp + friction_c0
+            # (friction_c0 = (1 - alpha) * C0_t, pre-scaled by the caller).
             v_t = v_rel - contact_normal * v_dot_n
             tangential_disp = -(v_t * dt)
             lam_t = contact_lam - contact_normal * lam_n
-            f_t_vec = contact_ke_t * tangential_disp + lam_t
+            f_t_vec = contact_ke_t * (tangential_disp + friction_c0) + lam_t
             f_t_len = wp.length(f_t_vec)
             cone_limit = friction_mu * f_n
             if f_t_len > cone_limit and f_t_len > 0.0:
@@ -2266,7 +2268,12 @@ def init_body_body_contacts_avbd(
         else:
             contact_lambda[i] = lam_hist
 
-        if hard_contacts == 1 and history_stick_flag[best_slot] == _STICK_FLAG_ANCHOR:
+        # Restore previous contact points when the matched slot was sticking
+        # (ANCHOR or DEADZONE) so persistent contacts keep their anchor frame.
+        if hard_contacts == 1 and (
+            history_stick_flag[best_slot] == _STICK_FLAG_ANCHOR
+            or history_stick_flag[best_slot] == _STICK_FLAG_DEADZONE
+        ):
             rigid_contact_point0[i] = history_point0[best_slot]
             rigid_contact_point1[i] = history_point1[best_slot]
     else:
@@ -2702,15 +2709,17 @@ def accumulate_body_body_contacts_per_body(
         C_eff = C_n
         lam_vec = wp.vec3(0.0)
         k = contact_penalty_k[contact_idx]
+        friction_c0 = wp.vec3(0.0)
 
         if hard_contacts == 1:
             lam_vec = contact_lambda[contact_idx]
             lam_n = wp.dot(lam_vec, contact_normal)
             C0_vec = contact_C0[contact_idx]
-            C_vec = contact_normal * thickness - d
-            C_stab_vec = C_vec - avbd_alpha * C0_vec
-            C_stab_n = wp.dot(C_stab_vec, contact_normal)
-            C_eff = C_stab_n
+            C0_n = wp.dot(contact_normal, C0_vec)
+            # Hard-contact stabilization: normal uses C_n - alpha*C0_n; tangent caches
+            # (1 - alpha)*C0_t for the later tangential update.
+            C_eff = C_n - avbd_alpha * C0_n
+            friction_c0 = (1.0 - avbd_alpha) * (C0_vec - contact_normal * C0_n)
 
         if C_n <= _SMALL_LENGTH_EPS and lam_n <= 0.0:
             i += _NUM_CONTACT_THREADS_PER_BODY
@@ -2753,6 +2762,7 @@ def accumulate_body_body_contacts_per_body(
             friction_epsilon,
             hard_contacts,
             dt,
+            friction_c0,
         )
 
         if body_id == b0:
@@ -2855,15 +2865,17 @@ def compute_rigid_contact_forces(
     C_eff = C_n
     lam_vec = wp.vec3(0.0)
     k = contact_penalty_k[contact_idx]
+    friction_c0 = wp.vec3(0.0)
 
     if hard_contacts == 1:
         lam_vec = contact_lambda[contact_idx]
         lam_n = wp.dot(lam_vec, contact_normal)
         C0_vec = contact_C0[contact_idx]
-        C_vec = contact_normal * thickness - d
-        C_stab_vec = C_vec - avbd_alpha * C0_vec
-        C_stab_n = wp.dot(C_stab_vec, contact_normal)
-        C_eff = C_stab_n
+        C0_n = wp.dot(contact_normal, C0_vec)
+        # Hard-contact stabilization: normal uses C_n - alpha*C0_n; tangent caches
+        # (1 - alpha)*C0_t for the later tangential update.
+        C_eff = C_n - avbd_alpha * C0_n
+        friction_c0 = (1.0 - avbd_alpha) * (C0_vec - contact_normal * C0_n)
 
     f_n_check = k * C_eff + lam_n
     if (C_n <= _SMALL_LENGTH_EPS or f_n_check <= 0.0) and lam_n <= 0.0:
@@ -2902,6 +2914,7 @@ def compute_rigid_contact_forces(
         friction_epsilon,
         hard_contacts,
         dt,
+        friction_c0,
     )
 
     out_force_on_body1[contact_idx] = force_1
@@ -3776,24 +3789,22 @@ def update_duals_body_body_contacts(
         lam_vec = contact_lambda[idx]
         mu = contact_material_mu[idx]
 
-        C_vec = n * thickness_total - d
-        C_stab_vec = C_vec - avbd_alpha * C0_vec
-        C_stab_n = wp.dot(C_stab_vec, n)
+        C_n_raw = thickness_total - wp.dot(n, d)
+        C0_n = wp.dot(n, C0_vec)
+        C_stab_n = C_n_raw - avbd_alpha * C0_n
 
         # Release lambda_n at full rate on separation (bypass C0 stabilization).
-        C_n_raw = wp.dot(C_vec, n)
         if C_n_raw < 0.0:
             C_stab_n = C_n_raw
 
         lam_n_old = wp.dot(lam_vec, n)
-
         lam_n_new = wp.max(lam_n_old + k * C_stab_n, 0.0)
 
         rel_disp = (p0_world - p0_prev) - (p1_world - p1_prev)
-        rel_disp_n = wp.dot(n, rel_disp)
-        tangential_disp = rel_disp - n * rel_disp_n
+        tangential_disp = rel_disp - n * wp.dot(n, rel_disp)
+        C0_t_vec = C0_vec - n * C0_n
         lam_t_old = lam_vec - n * lam_n_old
-        lam_t_new = lam_t_old + k * tangential_disp
+        lam_t_new = lam_t_old + k * (tangential_disp + (1.0 - avbd_alpha) * C0_t_vec)
         lam_t_len = wp.length(lam_t_new)
         cone_limit = mu * lam_n_new
         if lam_t_len > cone_limit and lam_t_len > 0.0:
