@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import math
 import unittest
 
 import numpy as np
@@ -61,14 +60,14 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
     direction = wp.vec3(1.0, 0.0, 0.0)
 
     identity = wp.transform_identity()
-    rot_45_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), math.pi / 4.0)
+    rot_45_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0)
 
     # (name, xform, origin, expected)
     cases = [
         ("hit", identity, wp.vec3(-2.0, 0.0, 0.0), 1.0),
         ("miss", identity, wp.vec3(-2.0, 2.0, 0.0), -1.0),
         ("inside", identity, wp.vec3(0.0, 0.0, 0.0), 1.0),
-        ("rotated", wp.transform(wp.vec3(0.0, 0.0, 0.0), rot_45_z), wp.vec3(-2.0, 0.0, 0.0), 2.0 - math.sqrt(2.0)),
+        ("rotated", wp.transform(wp.vec3(0.0, 0.0, 0.0), rot_45_z), wp.vec3(-2.0, 0.0, 0.0), 2.0 - wp.sqrt(2.0)),
     ]
 
     for name, xform, origin, expected in cases:
@@ -180,7 +179,7 @@ def test_ray_intersect_plane(test: TestRaycast, device: str):
 
     # Transforms for non-identity cases.
     xform_z3 = wp.transform(wp.vec3(0.0, 0.0, 3.0), wp.quat_identity())
-    xform_rot_x = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0))
+    xform_rot_x = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0))
 
     # (name, xform, size, origin, direction, expected)
     cases = [
@@ -285,7 +284,7 @@ def test_ray_intersect_mesh(test: TestRaycast, device: str):
 
     # Angled ray: (-2, 0, 1) + t*(1, 0, -0.5) hits the quad at (0, 0, 0).
     angled_dir = wp.normalize(wp.vec3(1.0, 0.0, -0.5))
-    angled_expected = 2.0 * math.sqrt(1.0**2 + 0.5**2)  # pre-normalize length * t=2
+    angled_expected = 2.0 * wp.sqrt(1.0**2 + 0.5**2)  # pre-normalize length * t=2
 
     # (name, origin, direction, expected, delta)
     cases = [
