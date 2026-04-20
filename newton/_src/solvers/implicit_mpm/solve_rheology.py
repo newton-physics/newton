@@ -279,6 +279,9 @@ class CollisionData:
             nodes to collider DOFs. ``None`` when unused.
         collider_impulse: In/out stored collider impulses for warm-starting
             [N s / V0], shape ``[node_count, 3]``.
+        has_colliders: True when at least one collider mesh is present in the
+            scene; used to reject linear-only solvers that do not support
+            contact.
     """
 
     collider_mat: sp.BsrMatrix
@@ -289,6 +292,7 @@ class CollisionData:
     collider_velocities: wp.array[wp.vec3]
     rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix] | None
     collider_impulse: wp.array[wp.vec3]
+    has_colliders: bool = False
 
 
 class _DelassusOperator:
@@ -1702,7 +1706,7 @@ def solve_rheology(
     solvers = solver.split("+")
 
     if len(solvers) == 1 and solvers[0] in _ITERATIVE_LINEAR_SOLVERS:
-        if collision.collider_mat.nnz > 0 or collision.collider_friction.shape[0] > 0:
+        if collision.has_colliders:
             raise ValueError(
                 f"Solver {solvers[0]!r} does not support contact; use a GS or Jacobi solver when contacts are active."
             )

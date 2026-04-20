@@ -2130,6 +2130,7 @@ class SolverImplicitMPM(SolverBase):
                 collider_velocities=scratch.collider_velocity,
                 rigidity_operator=rigidity_operator,
                 collider_impulse=scratch.impulse_field.dof_values,
+                has_colliders=self._mpm_model.collider.collider_mesh.shape[0] > 0,
             )
 
             # Retain graph to avoid immediate CPU sync
