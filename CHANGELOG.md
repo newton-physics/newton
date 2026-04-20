@@ -29,6 +29,7 @@
 - Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
 - Show prismatic joints in the GL viewer when "Show Joints" is enabled
 - Fix connect constraint anchor computation to account for joint reference positions when `SolverMuJoCo` is the chosen solver.
+- Fix `State.assign` not copying namespaced extended attributes such as `state.mujoco.qfrc_actuator`
 - Fix mesh-convex back-face contacts generating inverted normals that trap shapes inside meshes and cause solver divergence (NaN)
 - Fix finite plane geometry 2x too large in collision, bounding sphere, and raytrace sensor
 - Fix MPR convergence failure on large and extreme-aspect-ratio mesh triangles by projecting the starting point onto the triangle nearest the convex center
