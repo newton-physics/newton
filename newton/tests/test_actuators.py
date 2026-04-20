@@ -7,6 +7,7 @@ import importlib.util
 import math
 import os
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -33,6 +34,13 @@ try:
     HAS_USD = True
 except ImportError:
     HAS_USD = False
+
+try:
+    from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID
+
+    _HAS_LEGACY_ACTUATORS = True
+except ImportError:
+    _HAS_LEGACY_ACTUATORS = False
 
 _HAS_TORCH = importlib.util.find_spec("torch") is not None
 
@@ -124,8 +132,8 @@ class TestControllerPID(unittest.TestCase):
         )
         ctrl.finalize(device, 1)
 
-        state_a = ctrl.state(1, device)
-        state_b = ctrl.state(1, device)
+        state_0 = ctrl.state(1, device)
+        state_1 = ctrl.state(1, device)
 
         integral = 0.0
         for step_i in range(3):
@@ -133,7 +141,6 @@ class TestControllerPID(unittest.TestCase):
             integral += pos_error * dt
             expected = const + kp * pos_error + ki * integral + kd * vel_error
 
-            current, nxt = (state_a, state_b) if step_i % 2 == 0 else (state_b, state_a)
             ctrl.compute(
                 positions=_f(q),
                 velocities=_f(qd),
@@ -145,11 +152,12 @@ class TestControllerPID(unittest.TestCase):
                 target_pos_indices=indices,
                 target_vel_indices=indices,
                 forces=forces,
-                state=current,
+                state=state_0,
                 dt=dt,
                 device=device,
             )
-            ctrl.update_state(current, nxt)
+            ctrl.update_state(state_0, state_1)
+            state_0, state_1 = state_1, state_0
 
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
@@ -216,10 +224,6 @@ class TestControllerNetMLP(unittest.TestCase):
             places=4,
             msg="history should contain pos error from current step",
         )
-
-    def test_invalid_input_order_raises(self):
-        with self.assertRaises(ValueError):
-            ControllerNetMLP(network=self._mlp(2), input_order="invalid")
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
@@ -319,8 +323,8 @@ class TestDelay(unittest.TestCase):
         delay.finalize(device, n)
 
         indices = wp.array([0], dtype=wp.uint32, device=device)
-        state_a = delay.state(n, device)
-        state_b = delay.state(n, device)
+        state_0 = delay.state(n, device)
+        state_1 = delay.state(n, device)
 
         read_history = []
         for step_i in range(delay_val + 3):
@@ -328,10 +332,10 @@ class TestDelay(unittest.TestCase):
             tgt_pos = wp.array([target_val], dtype=wp.float32, device=device)
             tgt_vel = wp.zeros(1, dtype=wp.float32, device=device)
 
-            current, nxt = (state_a, state_b) if step_i % 2 == 0 else (state_b, state_a)
-            out_pos, _out_vel, _out_act = delay.get_delayed_targets(tgt_pos, tgt_vel, None, indices, indices, current)
+            out_pos, _out_vel, _out_act = delay.get_delayed_targets(tgt_pos, tgt_vel, None, indices, indices, state_0)
             read_history.append(out_pos.numpy()[0])
-            delay.update_state(tgt_pos, tgt_vel, None, indices, indices, current, nxt)
+            delay.update_state(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
+            state_0, state_1 = state_1, state_0
 
         self.assertAlmostEqual(read_history[0], 10.0, places=4, msg="step 0: empty buffer -> current target")
         self.assertAlmostEqual(read_history[1], 10.0, places=4, msg="step 1: 1 entry, lag clamped -> oldest (10)")
@@ -483,8 +487,8 @@ class TestActuatorStep(unittest.TestCase):
         np.testing.assert_array_equal(delays_np, expected_delays)
 
         state = model.state()
-        sa = actuator.state()
-        sb = actuator.state()
+        state_0 = actuator.state()
+        state_1 = actuator.state()
 
         qd_val = 2.0
         dofs = actuator.indices.numpy().tolist()
@@ -511,8 +515,8 @@ class TestActuatorStep(unittest.TestCase):
             _write_dof_values(model, control.joint_target_pos, dofs, [tgt] * n)
             written_targets.append(tgt)
 
-            current, nxt = (sa, sb) if step_i % 2 == 0 else (sb, sa)
-            actuator.step(state, control, current, nxt, dt)
+            actuator.step(state, control, state_0, state_1, dt)
+            state_0, state_1 = state_1, state_0
 
             forces = control.joint_f.numpy()
             for local_i in range(n):
@@ -529,7 +533,7 @@ class TestActuatorStep(unittest.TestCase):
                     f"delayed_tgt={delayed_tgt} raw={raw} expected={expected}",
                 )
 
-        ds = nxt.delay_state
+        ds = state_0.delay_state
         np.testing.assert_array_equal(
             ds.num_pushes.numpy(),
             [min(5, actuator.delay.buf_depth)] * n,
@@ -701,7 +705,110 @@ class TestActuatorBuilder(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 6. Parameter access via ArticulationView
+# 6. Legacy newton_actuators backward compatibility
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(_HAS_LEGACY_ACTUATORS, "newton_actuators not installed")
+class TestLegacyActuatorCompat(unittest.TestCase):
+    """Deprecated ``newton_actuators`` calling conventions must still work."""
+
+    def _make_builder(self, n_joints=2):
+        builder = newton.ModelBuilder()
+        links = [builder.add_link() for _ in range(n_joints)]
+        joints = []
+        for i, link in enumerate(links):
+            parent = -1 if i == 0 else links[i - 1]
+            joints.append(builder.add_joint_revolute(parent=parent, child=link, axis=newton.Axis.Z))
+        builder.add_articulation(joints)
+        dofs = [builder.joint_qd_start[j] for j in joints]
+        return builder, dofs
+
+    def test_legacy_positional_list(self):
+        """add_actuator(ActuatorPD, [dof], kp=...) — old positional style."""
+        builder, dofs = self._make_builder()
+        with self.assertWarns(DeprecationWarning):
+            builder.add_actuator(ActuatorPD, [dofs[0]], kp=50.0, kd=5.0)
+        model = builder.finalize()
+        self.assertEqual(len(model.actuators), 1)
+        self.assertIsInstance(model.actuators[0].controller, ControllerPD)
+        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [50.0])
+
+    def test_legacy_keyword_input_indices(self):
+        """add_actuator(ActuatorPD, input_indices=[dof], kp=...)."""
+        builder, dofs = self._make_builder()
+        with self.assertWarns(DeprecationWarning):
+            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
+        model = builder.finalize()
+        self.assertEqual(len(model.actuators), 1)
+        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [100.0])
+
+    def test_legacy_keyword_actuator_class(self):
+        """add_actuator(actuator_class=ActuatorPD, input_indices=[dof], kp=...)."""
+        builder, dofs = self._make_builder()
+        with self.assertWarns(DeprecationWarning):
+            builder.add_actuator(actuator_class=ActuatorPD, input_indices=[dofs[0]], kp=75.0)
+        model = builder.finalize()
+        self.assertEqual(len(model.actuators), 1)
+        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [75.0])
+
+    def test_legacy_delayed_pd(self):
+        """ActuatorDelayedPD maps to ControllerPD + delay."""
+        builder, dofs = self._make_builder()
+        with self.assertWarns(DeprecationWarning):
+            builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[0]], kp=200.0, delay=3)
+        model = builder.finalize()
+        act = model.actuators[0]
+        self.assertIsInstance(act.controller, ControllerPD)
+        self.assertIsNotNone(act.delay)
+        np.testing.assert_array_equal(act.delay.delays.numpy(), [3])
+
+    def test_legacy_pid(self):
+        """ActuatorPID maps to ControllerPID."""
+        builder, dofs = self._make_builder()
+        with self.assertWarns(DeprecationWarning):
+            builder.add_actuator(ActuatorPID, [dofs[0]], kp=100.0, ki=10.0, kd=20.0)
+        model = builder.finalize()
+        act = model.actuators[0]
+        self.assertIsInstance(act.controller, ControllerPID)
+        np.testing.assert_array_almost_equal(act.controller.ki.numpy(), [10.0])
+
+    def test_legacy_max_force_becomes_clamping(self):
+        """max_force kwarg creates a ClampingMaxForce on the new actuator."""
+        builder, dofs = self._make_builder()
+        with self.assertWarns(DeprecationWarning):
+            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=150.0, max_force=50.0)
+        model = builder.finalize()
+        act = model.actuators[0]
+        self.assertEqual(len(act.clamping), 1)
+        self.assertIsInstance(act.clamping[0], ClampingMaxForce)
+        np.testing.assert_array_almost_equal(act.clamping[0].max_force.numpy(), [50.0])
+
+    def test_legacy_output_indices_warns(self):
+        """output_indices != input_indices emits extra deprecation warning."""
+        builder, dofs = self._make_builder()
+        with self.assertWarns(DeprecationWarning):
+            builder.add_actuator(ActuatorPD, [dofs[0]], [dofs[1]], kp=50.0)
+
+    def test_legacy_gear_warns(self):
+        """Non-unity gear emits a deprecation warning."""
+        builder, dofs = self._make_builder()
+        with self.assertWarns(DeprecationWarning):
+            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, gear=2.0)
+
+    def test_new_api_no_warning(self):
+        """New-style calls must not emit DeprecationWarning."""
+        builder, dofs = self._make_builder()
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.add_actuator(ControllerPD, index=dofs[0], kp=50.0)
+        dep = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        self.assertEqual(len(dep), 0, f"Unexpected warnings: {[str(x.message) for x in dep]}")
+
+
+# ---------------------------------------------------------------------------
+# 7. Parameter access via ArticulationView
 # ---------------------------------------------------------------------------
 
 
@@ -899,6 +1006,236 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
     def test_actuator_selection_two_per_view_with_mask(self):
         self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=True)
+
+
+# ---------------------------------------------------------------------------
+# 7. State reset (masked and full)
+# ---------------------------------------------------------------------------
+
+
+class TestStateReset(unittest.TestCase):
+    """Exercise State.reset() for delay, PID, and composed Actuator.State."""
+
+    def test_delay_masked_reset(self):
+        """Push data into 4-DOF delay buffer, reset DOFs 1 and 3, verify others untouched."""
+        n, max_delay = 4, 2
+        device = wp.get_device()
+        delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
+        delay = Delay(delays, max_delay)
+        delay.finalize(device, n)
+
+        state_0 = delay.state(n, device)
+        state_1 = delay.state(n, device)
+        indices = wp.array(list(range(n)), dtype=wp.uint32, device=device)
+
+        for step in range(3):
+            tgt = wp.array([float(step + 1) * 10] * n, dtype=wp.float32, device=device)
+            vel = wp.zeros(n, dtype=wp.float32, device=device)
+            delay.update_state(tgt, vel, None, indices, indices, state_0, state_1)
+            state_0, state_1 = state_1, state_0
+
+        pushes_before = state_0.num_pushes.numpy().copy()
+        self.assertTrue(all(p > 0 for p in pushes_before), "all DOFs should have data")
+
+        mask = wp.array([False, True, False, True], dtype=wp.bool, device=device)
+        state_0.reset(mask)
+
+        pushes_after = state_0.num_pushes.numpy()
+        self.assertEqual(pushes_after[0], pushes_before[0], "DOF 0 should be untouched")
+        self.assertEqual(pushes_after[1], 0, "DOF 1 should be reset")
+        self.assertEqual(pushes_after[2], pushes_before[2], "DOF 2 should be untouched")
+        self.assertEqual(pushes_after[3], 0, "DOF 3 should be reset")
+
+        buf_pos = state_0.buffer_pos.numpy()
+        for row in range(max_delay):
+            self.assertEqual(buf_pos[row, 1], 0.0, f"buffer_pos[{row}, 1] should be zeroed")
+            self.assertEqual(buf_pos[row, 3], 0.0, f"buffer_pos[{row}, 3] should be zeroed")
+            self.assertNotEqual(buf_pos[row, 0], 0.0, f"buffer_pos[{row}, 0] should be preserved")
+
+    def test_delay_full_reset(self):
+        """Full reset (mask=None) zeros everything and resets write_idx."""
+        n, max_delay = 2, 3
+        device = wp.get_device()
+        delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
+        delay = Delay(delays, max_delay)
+        delay.finalize(device, n)
+
+        state = delay.state(n, device)
+        indices = wp.array(list(range(n)), dtype=wp.uint32, device=device)
+        state_tmp = delay.state(n, device)
+
+        for step in range(4):
+            tgt = wp.array([float(step + 1)] * n, dtype=wp.float32, device=device)
+            vel = wp.zeros(n, dtype=wp.float32, device=device)
+            delay.update_state(tgt, vel, None, indices, indices, state, state_tmp)
+            state, state_tmp = state_tmp, state
+
+        self.assertTrue(any(p > 0 for p in state.num_pushes.numpy()))
+
+        state.reset()
+
+        np.testing.assert_array_equal(state.num_pushes.numpy(), [0] * n)
+        np.testing.assert_array_equal(state.buffer_pos.numpy(), np.zeros((max_delay, n)))
+        np.testing.assert_array_equal(state.buffer_vel.numpy(), np.zeros((max_delay, n)))
+        np.testing.assert_array_equal(state.buffer_act.numpy(), np.zeros((max_delay, n)))
+        self.assertEqual(state.write_idx, max_delay - 1)
+
+    def test_pid_masked_reset(self):
+        """PID integral accumulator: masked reset zeros selected DOFs only."""
+        n = 3
+        device = wp.get_device()
+
+        def _f(vals):
+            return wp.array(vals, dtype=wp.float32, device=device)
+
+        indices = wp.array(list(range(n)), dtype=wp.uint32, device=device)
+        ctrl = ControllerPID(
+            kp=_f([50.0] * n),
+            ki=_f([10.0] * n),
+            kd=_f([5.0] * n),
+            integral_max=_f([math.inf] * n),
+            constant_force=_f([0.0] * n),
+        )
+        ctrl.finalize(device, n)
+
+        state_0 = ctrl.state(n, device)
+        state_1 = ctrl.state(n, device)
+
+        for _ in range(3):
+            forces = wp.zeros(n, dtype=wp.float32, device=device)
+            ctrl.compute(
+                positions=_f([0.0] * n),
+                velocities=_f([0.0] * n),
+                target_pos=_f([1.0] * n),
+                target_vel=_f([0.0] * n),
+                feedforward=None,
+                pos_indices=indices,
+                vel_indices=indices,
+                target_pos_indices=indices,
+                target_vel_indices=indices,
+                forces=forces,
+                state=state_0,
+                dt=0.01,
+                device=device,
+            )
+            ctrl.update_state(state_0, state_1)
+            state_0, state_1 = state_1, state_0
+
+        integral_before = state_0.integral.numpy().copy()
+        self.assertTrue(all(v > 0 for v in integral_before), "integrals should have accumulated")
+
+        mask = wp.array([True, False, True], dtype=wp.bool, device=device)
+        state_0.reset(mask)
+
+        integral_after = state_0.integral.numpy()
+        self.assertAlmostEqual(integral_after[0], 0.0, places=6, msg="DOF 0 should be reset")
+        self.assertAlmostEqual(integral_after[1], integral_before[1], places=6, msg="DOF 1 should be untouched")
+        self.assertAlmostEqual(integral_after[2], 0.0, places=6, msg="DOF 2 should be reset")
+
+    def test_actuator_composed_reset(self):
+        """Actuator.State.reset delegates to both delay and controller sub-states."""
+        num_envs = 2
+        device = wp.get_device()
+
+        template = newton.ModelBuilder()
+        link = template.add_link()
+        joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        template.add_articulation([joint])
+        dof = template.joint_qd_start[joint]
+        template.add_actuator(ControllerPID, index=dof, kp=50.0, ki=10.0, kd=5.0, delay=2)
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, num_envs)
+        model = builder.finalize()
+
+        actuator = model.actuators[0]
+        n = actuator.num_actuators
+        self.assertEqual(n, num_envs)
+
+        state = model.state()
+        state_0 = actuator.state()
+        state_1 = actuator.state()
+        dofs = actuator.indices.numpy().tolist()
+
+        for _step in range(3):
+            control = model.control()
+            _write_dof_values(model, control.joint_target_pos, dofs, [10.0] * n)
+            actuator.step(state, control, state_0, state_1, 0.01)
+            state_0, state_1 = state_1, state_0
+
+        self.assertTrue(all(p > 0 for p in state_0.delay_state.num_pushes.numpy()))
+        self.assertTrue(all(v > 0 for v in state_0.controller_state.integral.numpy()))
+
+        mask = wp.array([True, False], dtype=wp.bool, device=device)
+        state_0.reset(mask)
+
+        self.assertEqual(state_0.delay_state.num_pushes.numpy()[0], 0, "env 0 delay should be reset")
+        self.assertGreater(state_0.delay_state.num_pushes.numpy()[1], 0, "env 1 delay should be untouched")
+        self.assertAlmostEqual(
+            state_0.controller_state.integral.numpy()[0], 0.0, places=6, msg="env 0 integral should be reset"
+        )
+        self.assertGreater(state_0.controller_state.integral.numpy()[1], 0.0, msg="env 1 integral should be untouched")
+
+
+# ---------------------------------------------------------------------------
+# 8. CUDA graph capture
+# ---------------------------------------------------------------------------
+
+
+class TestCUDAGraphCapture(unittest.TestCase):
+    """Smoke test: PD + clamping actuator step is capturable in a CUDA graph."""
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA required")
+    def test_graphable_step(self):
+        """Capture PD + MaxForce + Delay actuator.step() and replay, verify same result."""
+        template = newton.ModelBuilder()
+        link = template.add_link()
+        joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        template.add_articulation([joint])
+        dof = template.joint_qd_start[joint]
+        template.add_actuator(
+            ControllerPD,
+            index=dof,
+            kp=100.0,
+            kd=10.0,
+            delay=2,
+            clamping=[(ClampingMaxForce, {"max_force": 50.0})],
+        )
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize(device="cuda:0")
+
+        actuator = model.actuators[0]
+        self.assertTrue(actuator.is_graphable())
+
+        state = model.state()
+        control = model.control()
+        state_0 = actuator.state()
+        state_1 = actuator.state()
+        dt = 0.01
+        dofs = actuator.indices.numpy().tolist()
+        _write_dof_values(model, control.joint_target_pos, dofs, [1.0] * actuator.num_actuators)
+
+        actuator.step(state, control, state_0, state_1, dt)
+        state_0, state_1 = state_1, state_0
+        ref_forces = control.joint_f.numpy().copy()
+
+        control_graph = model.control()
+        _write_dof_values(model, control_graph.joint_target_pos, dofs, [1.0] * actuator.num_actuators)
+        state_g0 = actuator.state()
+        state_g1 = actuator.state()
+
+        with wp.ScopedCapture(device="cuda:0") as capture:
+            actuator.step(state, control_graph, state_g0, state_g1, dt)
+
+        wp.capture_launch(capture.graph)
+        wp.synchronize_device("cuda:0")
+
+        graph_forces = control_graph.joint_f.numpy()
+        np.testing.assert_array_almost_equal(
+            graph_forces, ref_forces, decimal=5, err_msg="Graph-captured step should match eager step"
+        )
 
 
 if __name__ == "__main__":

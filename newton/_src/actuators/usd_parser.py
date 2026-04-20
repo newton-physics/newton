@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -91,8 +92,8 @@ class ActuatorParsed:
     controller_class: type[Controller]
     controller_kwargs: dict[str, Any] = field(default_factory=dict)
     component_specs: list[tuple[type[Clamping | Delay], dict[str, Any]]] = field(default_factory=list)
-    target_paths: list[str] = field(default_factory=list)
-    """Joint targets. Currently only a single target is supported."""
+    target_path: str = ""
+    """Joint target path (USD prim path of the driven joint)."""
 
 
 def get_attribute(prim, name: str, default: Any = None) -> Any:
@@ -137,7 +138,9 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
 
     Each detected schema directly maps to a component class with its
     extracted params. Returns ``None`` if the prim is not a
-    ``NewtonActuator`` or has no target relationship.
+    ``NewtonActuator`` or has no target relationship (0 targets is
+    treated as disabled).  If the prim has multiple targets, a warning
+    is emitted and only the first target is used.
 
     Raises:
         ValueError: If the prim is a valid actuator but has malformed
@@ -149,8 +152,13 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
     target_paths = get_relationship_targets(prim, "newton:actuator:targets")
     if not target_paths:
         return None
-    if len(target_paths) != 1:
-        raise ValueError(f"Actuator prim currently supports exactly one target; got {len(target_paths)}")
+    if len(target_paths) > 1:
+        warnings.warn(
+            f"Actuator prim {prim.GetPath()} has {len(target_paths)} targets; "
+            f"only the first is used, additional targets are ignored",
+            stacklevel=2,
+        )
+        target_paths = target_paths[:1]
 
     schemas = get_schemas_from_prim(prim)
     controller_class = None
@@ -184,12 +192,12 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
 
     if controller_class is None:
         raise ValueError(
-            f"Actuator prim has no controller schema applied (applied schemas: {prim.GetAppliedSchemas()})"
+            f"Actuator prim '{prim.GetPath()}' has no controller schema (matched schemas from metadata: {schemas})"
         )
 
     return ActuatorParsed(
         controller_class=controller_class,
         controller_kwargs=controller_kwargs,
         component_specs=component_specs,
-        target_paths=target_paths,
+        target_path=target_paths[0],
     )

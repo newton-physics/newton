@@ -79,13 +79,21 @@ Actuators are registered during model construction with
 :meth:`~newton.ModelBuilder.add_actuator` and are instantiated automatically
 when the model is finalized:
 
-.. code-block:: python
+.. testsetup:: actuator-usage
 
+   import warp as wp
    import newton
-   from newton.actuators import ClampingMaxForce, ControllerPD
+   from newton.actuators import (
+       Actuator, ClampingMaxForce, ControllerPD, Delay,
+   )
 
    builder = newton.ModelBuilder()
-   # ... add links, joints, articulations ...
+   link = builder.add_link()
+   joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+   builder.add_articulation([joint])
+   dof_index = builder.joint_qd_start[joint]
+
+.. testcode:: actuator-usage
 
    builder.add_actuator(
        ControllerPD,
@@ -101,25 +109,19 @@ when the model is finalized:
 For manual construction (outside of :class:`~newton.ModelBuilder`), compose the
 components directly:
 
-.. code-block:: python
+.. testcode:: actuator-usage
 
-   import warp as wp
-   from newton.actuators import Actuator, ControllerPD, ClampingMaxForce, Delay
-
-   indices = wp.array([0, 1, 2], dtype=wp.uint32, device="cuda:0")
-   kp = wp.array([100.0, 100.0, 100.0], dtype=wp.float32, device="cuda:0")
-   kd = wp.array([10.0, 10.0, 10.0], dtype=wp.float32, device="cuda:0")
-   max_f = wp.array([50.0, 50.0, 50.0], dtype=wp.float32, device="cuda:0")
+   indices = wp.array([0], dtype=wp.uint32)
+   kp = wp.array([100.0], dtype=wp.float32)
+   kd = wp.array([10.0], dtype=wp.float32)
+   max_f = wp.array([50.0], dtype=wp.float32)
 
    actuator = Actuator(
        indices,
        controller=ControllerPD(kp=kp, kd=kd),
-       delay=Delay(delay=wp.array([5, 5, 5], dtype=wp.int32, device="cuda:0"), max_delay=5),
+       delay=Delay(delay=wp.array([5], dtype=wp.int32), max_delay=5),
        clamping=[ClampingMaxForce(max_force=max_f)],
    )
-
-   # In the simulation loop:
-   actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
 
 
 Stateful Actuators
@@ -131,21 +133,31 @@ actuators with a :class:`Delay` require explicit double-buffered state
 management.  Create two state objects with :meth:`Actuator.state` and swap them
 after each step:
 
-.. code-block:: python
+.. testcode:: actuator-usage
 
-   state_a = actuator.state()
-   state_b = actuator.state()
+   state_0 = model.actuators[0].state()
+   state_1 = model.actuators[0].state()
+   state = model.state()
+   control = model.control()
 
-   for step in range(num_steps):
-       actuator.step(sim_state, sim_control, state_a, state_b, dt=dt)
-       state_a, state_b = state_b, state_a  # swap
+   for step in range(3):
+       model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
+       state_0, state_1 = state_1, state_0
 
 Stateless actuators (e.g. a plain PD controller without delay) do not require
 state objects — simply omit them:
 
-.. code-block:: python
+.. testcode:: actuator-usage
 
-   actuator.step(sim_state, sim_control)
+   # Build a stateless actuator (no delay, stateless controller)
+   b2 = newton.ModelBuilder()
+   lk = b2.add_link()
+   jt = b2.add_joint_revolute(parent=-1, child=lk, axis=newton.Axis.Z)
+   b2.add_articulation([jt])
+   b2.add_actuator(ControllerPD, index=b2.joint_qd_start[jt], kp=50.0)
+   m2 = b2.finalize()
+
+   m2.actuators[0].step(m2.state(), m2.control())
 
 Differentiability and Graph Capture
 -----------------------------------
@@ -204,6 +216,8 @@ For example, a custom controller needs to implement
 :meth:`~Controller.compute` and :meth:`~Controller.resolve_arguments`:
 
 .. code-block:: python
+   :caption: Skeleton — the ``compute`` body is omitted; see existing
+             controllers for complete examples.
 
    import warp as wp
    from newton.actuators import Controller
@@ -217,8 +231,9 @@ For example, a custom controller needs to implement
            self.gain = gain
 
        def compute(self, positions, velocities, target_pos, target_vel,
-                   feedforward, input_indices, target_indices, forces,
-                   state, dt, device=None):
+                   feedforward, pos_indices, vel_indices,
+                   target_pos_indices, target_vel_indices,
+                   forces, state, dt, device=None):
            # Launch a Warp kernel that writes into `forces`
            ...
 

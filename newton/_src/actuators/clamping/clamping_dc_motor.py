@@ -81,6 +81,15 @@ class ClampingDCMotor(Clamping):
             velocity_limit: Maximum joint velocity [rad/s] for the torque-speed curve. Shape (N,).
             max_force: Absolute effort limits [N or N·m] (continuous-rated). Shape (N,).
         """
+        if saturation_effort.shape != velocity_limit.shape:
+            raise ValueError(
+                f"saturation_effort shape {saturation_effort.shape} must match "
+                f"velocity_limit shape {velocity_limit.shape}"
+            )
+        if saturation_effort.shape != max_force.shape:
+            raise ValueError(
+                f"saturation_effort shape {saturation_effort.shape} must match max_force shape {max_force.shape}"
+            )
         self.saturation_effort = saturation_effort
         self.velocity_limit = velocity_limit
         self.max_force = max_force

@@ -2766,9 +2766,11 @@ def parse_usd(
         parsed = parse_actuator_prim(prim)
         if parsed is None:
             continue
-        if len(parsed.target_paths) != 1 or parsed.target_paths[0] not in path_to_dof:
-            continue
-        target_path = parsed.target_paths[0]
+        target_path = parsed.target_path
+        if target_path not in path_to_dof:
+            raise ValueError(
+                f"Actuator prim {prim.GetPath()} targets '{target_path}' which does not resolve to a known joint DOF"
+            )
         dof_index = path_to_dof[target_path]
         coord_index = path_to_coord.get(target_path)
         pos_index = coord_index if coord_index is not None and coord_index != dof_index else None

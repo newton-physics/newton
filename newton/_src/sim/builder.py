@@ -13,11 +13,14 @@ import warnings
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 import warp as wp
 
+from ..actuators.clamping.clamping_max_force import ClampingMaxForce
+from ..actuators.controllers.controller_pd import ControllerPD
+from ..actuators.controllers.controller_pid import ControllerPID
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -64,6 +67,11 @@ from .graph_coloring import (
     construct_particle_graph,
 )
 from .model import Model
+
+try:
+    from newton_actuators import Actuator as _LegacyActuator
+except ImportError:
+    _LegacyActuator = None
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -1683,14 +1691,90 @@ class ModelBuilder:
                     f"Custom attribute '{attr_key}' has unsupported frequency {custom_attr.frequency} for joints"
                 )
 
+    # Maps legacy newton_actuators class names to (newton.actuators controller class name, has_delay).
+    _LEGACY_ACTUATOR_CLASS_MAP: ClassVar[dict[str, tuple[str, bool]]] = {
+        "ActuatorPD": ("ControllerPD", False),
+        "ActuatorPID": ("ControllerPID", False),
+        "ActuatorDelayedPD": ("ControllerPD", True),
+    }
+
+    def _add_actuator_legacy(
+        self,
+        actuator_class: type,
+        input_indices: list[int] | None,
+        output_indices: list[int] | None,
+        **kwargs: Any,
+    ) -> None:
+        """Translate a legacy ``newton_actuators``-style call to the new API.
+
+        Mirrors the old ``main``-branch signature::
+
+            add_actuator(actuator_class, input_indices, output_indices=None, **kwargs)
+
+        *input_indices* / *output_indices* may arrive either as explicit
+        arguments or inside *kwargs* (keyword style).  All old per-DOF
+        params (``kp``, ``kd``, ``delay``, ``max_force``, ``gear``, …)
+        are expected in *kwargs*.
+        """
+        if input_indices is None:
+            raise TypeError("Legacy add_actuator() requires 'input_indices'")
+
+        # --- Map old class name → new controller class ---
+        class_name = actuator_class.__name__
+        mapping = self._LEGACY_ACTUATOR_CLASS_MAP.get(class_name)
+        if mapping is None:
+            raise TypeError(
+                f"Unknown legacy actuator class '{class_name}'. "
+                f"Supported: {', '.join(self._LEGACY_ACTUATOR_CLASS_MAP)}."
+            )
+
+        ctrl_name, class_has_delay = mapping
+        controller_class: type = {"ControllerPD": ControllerPD, "ControllerPID": ControllerPID}[ctrl_name]
+
+        delay_val: int | None = kwargs.pop("delay", None)
+        if class_has_delay and delay_val is None:
+            raise ValueError(f"{class_name} requires a 'delay' argument")
+
+        max_force_val = kwargs.pop("max_force", None)
+        gear_val = kwargs.pop("gear", None)
+
+        if gear_val is not None and gear_val != 1.0:
+            warnings.warn(
+                f"'gear={gear_val}' is not supported in the new actuator API and will be "
+                f"ignored. Fold the gear ratio into kp/kd/constant_force manually.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+        clamping: list[tuple[type, dict[str, Any]]] | None = None
+        if max_force_val is not None and max_force_val != math.inf:
+            clamping = [(ClampingMaxForce, {"max_force": max_force_val})]
+
+        if output_indices is not None and output_indices != input_indices:
+            warnings.warn(
+                "'output_indices' is not supported in the new actuator API and will be "
+                "ignored. Forces are written to the same DOF index by default.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+        for dof_idx in input_indices:
+            self.add_actuator(
+                controller_class,
+                index=dof_idx,
+                clamping=clamping,
+                delay=delay_val,
+                **kwargs,
+            )
+
     def add_actuator(
         self,
-        controller_class: type[Controller],
-        index: int,
+        controller_class: type[Controller] | None = None,
+        index: int | None = None,
         clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
         delay: int | None = None,
         pos_index: int | None = None,
-        **controller_kwargs: Any,
+        **kwargs: Any,
     ) -> None:
         """Add an external actuator for a single DOF.
 
@@ -1702,8 +1786,19 @@ class ModelBuilder:
         values are supported within the same group; the buffer is
         sized to ``max(delay_values)``.
 
+        .. deprecated::
+            The legacy ``newton_actuators`` signature is still accepted::
+
+                add_actuator(ActuatorPD, input_indices=[dof], kp=50.0)
+                add_actuator(ActuatorPD, [dof], kp=50.0)
+                add_actuator(actuator_class=ActuatorPD, input_indices=[dof], kp=50.0)
+
+            It will be removed in a future release.  Use the new per-DOF
+            signature instead.
+
         Args:
             controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
+                The deprecated keyword ``actuator_class`` is also accepted.
             index: DOF index into ``joint_qd``-shaped arrays (velocities,
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
@@ -1713,12 +1808,37 @@ class ModelBuilder:
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
-            **controller_kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
+            **kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
         """
+        legacy_cls = kwargs.pop("actuator_class", None)
+        if legacy_cls is None and _LegacyActuator is not None and issubclass(controller_class, _LegacyActuator):
+            legacy_cls = controller_class
+
+        if legacy_cls is not None:
+            warnings.warn(
+                "add_actuator() with a newton_actuators class is deprecated. "
+                "Use newton.actuators controller classes instead "
+                "(e.g. ControllerPD, ControllerPID).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            input_indices = kwargs.pop("input_indices", index)
+            output_indices = kwargs.pop("output_indices", clamping)
+            if delay is not None:
+                kwargs["delay"] = delay
+            self._add_actuator_legacy(legacy_cls, input_indices, output_indices, **kwargs)
+            return
+
+        if controller_class is None:
+            raise TypeError("add_actuator() requires 'controller_class'")
+
+        if index is None:
+            raise TypeError("add_actuator() missing required argument: 'index'")
+
         clamping = clamping or []
 
         # --- Resolve controller kwargs and separate shared from per-DOF ---
-        resolved_ctrl = controller_class.resolve_arguments(controller_kwargs)
+        resolved_ctrl = controller_class.resolve_arguments(kwargs)
         ctrl_shared_names = getattr(controller_class, "SHARED_PARAMS", set())
         ctrl_shared = {k: resolved_ctrl[k] for k in ctrl_shared_names if k in resolved_ctrl}
         ctrl_array_params = {k: v for k, v in resolved_ctrl.items() if k not in ctrl_shared_names}
@@ -1797,6 +1917,13 @@ class ModelBuilder:
         result = {}
         for key in args_list[0].keys():
             values = [args[key] for args in args_list]
+            for v in values:
+                if not isinstance(v, (int, float)):
+                    raise TypeError(
+                        f"add_actuator expects scalar per-DOF params, but "
+                        f"parameter '{key}' got {type(v).__name__}; pass one "
+                        f"scalar per add_actuator call"
+                    )
             if all(isinstance(v, int) for v in values):
                 result[key] = wp.array(values, dtype=wp.int32, device=device)
             else:

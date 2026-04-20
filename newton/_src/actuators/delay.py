@@ -90,14 +90,18 @@ def _delay_read_kernel(
 def _delay_masked_reset_kernel(
     mask: wp.array[wp.bool],
     rows: int,
-    buf: wp.array2d[float],
+    buf_pos: wp.array2d[float],
+    buf_vel: wp.array2d[float],
+    buf_act: wp.array2d[float],
     num_pushes: wp.array[int],
 ):
-    """Zero buffer columns and push count where mask is True."""
+    """Zero all buffer columns and push count where mask is True."""
     i = wp.tid()
     if mask[i]:
         for r in range(rows):
-            buf[r, i] = 0.0
+            buf_pos[r, i] = 0.0
+            buf_vel[r, i] = 0.0
+            buf_act[r, i] = 0.0
         num_pushes[i] = 0
 
 
@@ -148,8 +152,11 @@ class Delay:
             else:
                 rows = self.buffer_pos.shape[0]
                 n = len(mask)
-                for buf in (self.buffer_pos, self.buffer_vel, self.buffer_act):
-                    wp.launch(_delay_masked_reset_kernel, dim=n, inputs=[mask, rows, buf, self.num_pushes])
+                wp.launch(
+                    _delay_masked_reset_kernel,
+                    dim=n,
+                    inputs=[mask, rows, self.buffer_pos, self.buffer_vel, self.buffer_act, self.num_pushes],
+                )
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
@@ -175,7 +182,12 @@ class Delay:
             delay: Per-DOF delay values [timesteps], shape ``(N,)``.
             max_delay: Maximum delay across all DOFs.  Determines the
                 circular-buffer depth.
+
+        Raises:
+            ValueError: If *max_delay* < 1.
         """
+        if max_delay < 1:
+            raise ValueError(f"max_delay must be >= 1, got {max_delay}")
         self.buf_depth = max_delay
         """Circular-buffer depth (equals ``max_delay``)."""
         self.delays = delay

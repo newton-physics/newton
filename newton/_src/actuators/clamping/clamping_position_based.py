@@ -109,6 +109,8 @@ class ClampingPositionBased(Clamping):
             raise ValueError(f"lookup_angles length ({len(angles)}) must match lookup_torques length ({len(torques)})")
         if any(v < 0 for v in torques):
             raise ValueError("lookup_torques must contain non-negative values for symmetric clamping")
+        if not all(angles[i] <= angles[i + 1] for i in range(len(angles) - 1)):
+            raise ValueError("lookup_angles must be monotonically non-decreasing for interpolation")
         return {"lookup_angles": angles, "lookup_torques": torques}
 
     def __init__(
@@ -132,6 +134,14 @@ class ClampingPositionBased(Clamping):
             lookup_torques: Max output torques [N·m] corresponding to
                 *lookup_angles*.  Shape ``(K,)``.
         """
+        if lookup_table_path is None and (lookup_angles is None or lookup_torques is None):
+            raise ValueError("Provide either 'lookup_table_path' or both 'lookup_angles' and 'lookup_torques'")
+        if lookup_angles is not None and lookup_torques is not None:
+            if len(lookup_angles) != len(lookup_torques):
+                raise ValueError(
+                    f"lookup_angles length ({len(lookup_angles)}) must match "
+                    f"lookup_torques length ({len(lookup_torques)})"
+                )
         self._lookup_table_path = lookup_table_path
         self._angles_tuple = lookup_angles
         self._torques_tuple = lookup_torques
@@ -164,6 +174,8 @@ class ClampingPositionBased(Clamping):
             raise ValueError(f"Lookup table file is empty: {path}")
         if any(v < 0 for v in torques):
             raise ValueError(f"Lookup table torques must be non-negative in: {path}")
+        if not all(angles[i] <= angles[i + 1] for i in range(len(angles) - 1)):
+            raise ValueError(f"Lookup table angles must be monotonically non-decreasing in: {path}")
         return angles, torques
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:

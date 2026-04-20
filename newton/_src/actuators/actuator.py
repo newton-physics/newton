@@ -154,14 +154,6 @@ class Actuator:
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
 
-    @property
-    def SHARED_PARAMS(self) -> set[str]:
-        params: set[str] = set()
-        params |= self.controller.SHARED_PARAMS
-        for c in self.clamping:
-            params |= c.SHARED_PARAMS
-        return params
-
     def is_stateful(self) -> bool:
         """Return True if delay or controller maintains internal state."""
         return self.delay is not None or self.controller.is_stateful()

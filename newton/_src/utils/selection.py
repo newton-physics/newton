@@ -278,12 +278,12 @@ def build_actuator_dof_mapping_indices_kernel(
 
 
 @wp.kernel
-def gather_actuator_by_indices_kernel(
-    src: wp.array[float],
+def _gather_1d_kernel(
+    src: Any,
     indices: wp.array[int],
-    dst: wp.array[float],
+    dst: Any,
 ):
-    """Gather values from src at specified indices into dst. Index -1 means skip (leave dst unchanged)."""
+    """Gather ``dst[tid] = src[indices[tid]]``. Index -1 means skip (leave dst unchanged)."""
     tid = wp.tid()
     idx = indices[tid]
     if idx >= 0:
@@ -291,26 +291,22 @@ def gather_actuator_by_indices_kernel(
 
 
 @wp.kernel
-def scatter_actuator_with_mask_kernel(
-    values: wp.array2d[float],
+def _scatter_masked_2d_kernel(
+    values: Any,
     mapping: wp.array[int],
     mask: wp.array[bool],
-    dofs_per_world: int,
-    dst: wp.array[float],
+    cols: int,
+    dst: Any,
 ):
-    """Scatter actuator values with articulation mask support.
+    """Scatter ``dst[mapping[row * cols + col]] = values[row, col]`` where ``mask[row]`` is true.
 
-    values: shape (world_count, dofs_per_world)
-    mapping: flat array mapping DOF positions to actuator indices (-1 = not actuated)
-    mask: per-world mask, shape (world_count,)
-    dst: flat actuator parameter array
+    Mapping entries of -1 are skipped.
     """
-    world_idx, local_idx = wp.tid()
-    if mask[world_idx]:
-        flat_idx = world_idx * dofs_per_world + local_idx
-        actuator_idx = mapping[flat_idx]
-        if actuator_idx >= 0:
-            dst[actuator_idx] = values[world_idx, local_idx]
+    row, col = wp.tid()
+    if mask[row]:
+        dst_idx = mapping[row * cols + col]
+        if dst_idx >= 0:
+            dst[dst_idx] = values[row, col]
 
 
 # NOTE: Python slice objects are not hashable in Python < 3.12, so we use this instead.
@@ -1643,9 +1639,7 @@ class ArticulationView:
         Build mapping from view DOF positions to actuator parameter indices.
 
         Note:
-            For selection we assume that indices is 1D (one input per actuator),
-            not the general 2D case (multiple inputs per actuator) which is supported
-            by the library.
+            Assumes SISO actuators (one DOF per actuator).
 
         Returns array of shape (world_count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated
@@ -1709,9 +1703,9 @@ class ArticulationView:
         Args:
             actuator: Actuator instance (used for DOF index mapping).
             component: The component that owns the parameter — a
-                :class:`~newton._src.actuators.controllers.base.Controller`,
-                :class:`~newton._src.actuators.clamping.base.Clamping`, or
-                :class:`~newton._src.actuators.delay.Delay` instance.
+                :class:`~newton.actuators.Controller`,
+                :class:`~newton.actuators.Clamping`, or
+                :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_force"``,
                 ``"delays"``).
 
@@ -1727,15 +1721,13 @@ class ArticulationView:
 
         dst = wp.zeros(len(mapping), dtype=src.dtype, device=self.device)
         wp.launch(
-            gather_actuator_by_indices_kernel,
+            _gather_1d_kernel,
             dim=len(mapping),
             inputs=[src, mapping],
             outputs=[dst],
             device=self.device,
         )
-
-        batched_shape = (self.world_count, dofs_per_world, *src.shape[1:])
-        return dst.reshape(batched_shape)
+        return dst.reshape((self.world_count, dofs_per_world))
 
     def set_actuator_parameter(
         self, actuator: "Actuator", component: Any, name: str, values: wp.array, mask: wp.array | None = None
@@ -1745,9 +1737,9 @@ class ArticulationView:
         Args:
             actuator: Actuator instance (used for DOF index mapping).
             component: The component that owns the parameter — a
-                :class:`~newton._src.actuators.controllers.base.Controller`,
-                :class:`~newton._src.actuators.clamping.base.Clamping`, or
-                :class:`~newton._src.actuators.delay.Delay` instance.
+                :class:`~newton.actuators.Controller`,
+                :class:`~newton.actuators.Clamping`, or
+                :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_force"``,
                 ``"delays"``).
             values: New parameter values shaped ``(world_count, dofs_per_world)``.
@@ -1776,7 +1768,7 @@ class ArticulationView:
                 raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
 
         wp.launch(
-            scatter_actuator_with_mask_kernel,
+            _scatter_masked_2d_kernel,
             dim=(self.world_count, dofs_per_world),
             inputs=[values, mapping, mask, dofs_per_world],
             outputs=[dst],
