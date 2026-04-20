@@ -259,8 +259,8 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         offsets from the body origin.
         """
 
-        dt = 0.01
-        num_steps = 50
+        dt = 0.002
+        num_steps = 250
         num_worlds = self._num_worlds()
         use_mujoco_cpu = self._use_mujoco_cpu()
 
@@ -756,7 +756,6 @@ class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase,
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
-            iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=False,
             integrator="euler",
@@ -773,7 +772,6 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
-            iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,
@@ -1251,7 +1249,6 @@ class TestLoopJointConnectConstraintMuJoCoWarp(TestLoopJointConnectConstraintBas
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
-            iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=False,
             separate_worlds=True,
@@ -1264,7 +1261,6 @@ class TestLoopJointConnectConstraintMuJoCoCPU(TestLoopJointConnectConstraintBase
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
-            iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,
@@ -1433,7 +1429,6 @@ class TestMixedWeldAndConnectMuJoCoWarp(TestMixedWeldAndConnectLoopJointBase, un
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
-            iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=False,
             separate_worlds=True,
@@ -1446,7 +1441,6 @@ class TestMixedWeldAndConnectMuJoCoCPU(TestMixedWeldAndConnectLoopJointBase, uni
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
-            iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,

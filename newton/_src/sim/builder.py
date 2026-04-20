@@ -9894,6 +9894,7 @@ class ModelBuilder:
                                         margin=shape_gap,
                                         narrow_band_range=tuple(sdf_narrow_band_range),
                                         max_resolution=effective_max_resolution,
+                                        target_voxel_size=sdf_target_voxel_size,
                                         quantization_mode=_tex_fmt_map[sdf_tex_fmt],
                                         scale_baked=True,
                                         device=device,

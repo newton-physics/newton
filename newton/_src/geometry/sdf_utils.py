@@ -3,7 +3,7 @@
 
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import warp as wp
@@ -23,6 +23,8 @@ from .sdf_mc import (
 from .types import GeoType, Mesh
 
 logger = logging.getLogger(__name__)
+
+SignMethod = Literal["auto", "parity", "winding"]
 
 if TYPE_CHECKING:
     from .sdf_texture import TextureSDFData
@@ -212,8 +214,8 @@ class SDF:
         return self.texture_data
 
     def is_empty(self) -> bool:
-        """Return True when this SDF has no sparse/coarse payload."""
-        return int(self.data.sparse_sdf_ptr) == 0 and int(self.data.coarse_sdf_ptr) == 0
+        """Return True when this SDF has no sparse/coarse or texture payload."""
+        return int(self.data.sparse_sdf_ptr) == 0 and int(self.data.coarse_sdf_ptr) == 0 and self.texture_data is None
 
     def validate(self) -> None:
         """Validate consistency of kernel pointers and owned volumes."""
@@ -225,12 +227,33 @@ class SDF:
     def extract_isomesh(self, isovalue: float = 0.0, device: "Devicelike | None" = None) -> "Mesh | None":
         """Extract an isosurface mesh at the requested isovalue.
 
-        Prefers the texture SDF path when available (avoids NanoVDB volume
-        indirection); falls back to the NanoVDB sparse volume.
+        Uses the texture SDF path for mesh-generated SDFs (the only path
+        populated by :meth:`create_from_mesh`).  For primitive SDFs built
+        via :meth:`create_from_data` with a NanoVDB ``sparse_volume``, the
+        fallback branch extracts from the sparse volume instead.
+
+        The ``isovalue`` argument is always interpreted in raw mesh-distance
+        units: ``0.0`` yields the base geometry surface regardless of how
+        the SDF was constructed, and positive values give an outward
+        offset.  Both storage backends are normalized to this convention:
+
+        * Texture SDFs store unmodified signed distance ``d`` (the texture
+          builder does not bake ``shape_margin``), so the requested
+          isovalue is forwarded as-is to the isomesh extractor.
+        * NanoVDB sparse volumes built via :class:`_compute_sdf_from_shape_impl`
+          store ``d - shape_margin``.  The extractor compensates with
+          ``corrected_isovalue = isovalue - shape_margin`` so external
+          behavior matches the texture path.
+
+        As a consequence, :attr:`shape_margin` is only consulted on the
+        legacy sparse-volume branch; on the texture branch it is stored
+        for backward compatibility with callers that introspect the SDF
+        but has no effect on the extracted surface.
 
         Args:
-            isovalue: Surface level to extract [m].  ``0.0`` gives the
-                original surface; positive values give an outward offset.
+            isovalue: Surface level to extract [m] in base geometry
+                distance units.  ``0.0`` gives the original surface;
+                positive values give an outward offset.
             device: CUDA device.  When ``None`` uses the current device.
 
         Returns:
@@ -245,6 +268,8 @@ class SDF:
                 ct = self._coarse_texture
                 coarse_dims = (ct.width - 1, ct.height - 1, ct.depth - 1)
                 slots = self.texture_data.subgrid_start_slots
+                # Texture SDF stores raw mesh distance (shape_margin is not
+                # baked in), so forward isovalue directly.  See class docstring.
                 result = compute_isomesh_from_texture_sdf(
                     tex_arr, 0, slots, coarse_dims, device=device, isovalue=isovalue
                 )
@@ -252,10 +277,9 @@ class SDF:
                     return result
 
         if self.sparse_volume is not None:
-            # The sparse volume has shape_margin already baked in (subtracted
-            # from every SDF value), so its zero-isosurface sits at
-            # shape_margin from the base geometry.  Compensate so callers get
-            # the surface at the requested isovalue from the base geometry.
+            # Legacy NanoVDB sparse volumes (produced by
+            # _compute_sdf_from_shape_impl) store d - shape_margin, so
+            # compensate to match the texture branch semantics above.
             corrected_isovalue = isovalue - self.shape_margin if self.shape_margin else isovalue
             return compute_isomesh(self.sparse_volume, isovalue=corrected_isovalue, device=device)
 
@@ -330,8 +354,13 @@ class SDF:
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
         texture_format: str = "uint16",
+        sign_method: SignMethod = "auto",
     ) -> "SDF":
         """Create an SDF from a mesh in local mesh coordinates.
+
+        The SDF is built entirely via the texture-based sparse construction
+        path.  NanoVDB volumes are **not** created; all downstream collision
+        and simulation code uses the texture SDF.
 
         Args:
             mesh: Source mesh geometry.
@@ -358,69 +387,94 @@ class SDF:
                 (default) uses 16-bit normalized textures for half the memory
                 of ``"float32"`` with negligible precision loss. ``"uint8"``
                 uses 8-bit textures for minimum memory.
+            sign_method: Inside/outside sign query strategy.
+
+                * ``"auto"`` (default): use parity rays if
+                  :attr:`Mesh.is_watertight` is ``True``, else fall back to
+                  winding numbers.
+                * ``"parity"``: always use ``wp.mesh_query_point_sign_parity``.
+                  Cheaper per sample but requires a watertight mesh; results on
+                  open meshes are undefined.
+                * ``"winding"``: always use
+                  ``wp.mesh_query_point_sign_winding_number``. Robust for
+                  general (possibly open or non-manifold) meshes but more
+                  expensive to build and query.
 
         Returns:
-            A validated :class:`SDF` runtime handle with sparse/coarse volumes.
+            A validated :class:`SDF` runtime handle.
+
+        Raises:
+            RuntimeError: if no CUDA device is available. The texture SDF build
+                pipeline requires CUDA kernels and 3D textures.
+            ValueError: if ``texture_format`` or ``sign_method`` is not one of
+                the supported values.
         """
+        if not wp.is_cuda_available():
+            raise RuntimeError(
+                "SDF.create_from_mesh requires a CUDA device: the texture SDF "
+                "build pipeline uses CUDA kernels and wp.Texture3D. "
+                "No CUDA-capable device was detected."
+            )
+
+        valid_sign_methods: tuple[SignMethod, ...] = ("auto", "parity", "winding")
+        if sign_method not in valid_sign_methods:
+            raise ValueError(f"Unknown sign_method {sign_method!r}. Expected one of {list(valid_sign_methods)}.")
+
         effective_max_resolution = 64 if max_resolution is None and target_voxel_size is None else max_resolution
         bake_scale = scale is not None
         effective_scale = scale if scale is not None else (1.0, 1.0, 1.0)
-        sdf_data, sparse_volume, coarse_volume, block_coords = _compute_sdf_from_shape_impl(
-            shape_type=GeoType.MESH,
-            shape_geo=mesh,
-            shape_scale=effective_scale,
-            shape_margin=shape_margin,
-            narrow_band_distance=narrow_band_range,
-            margin=margin,
-            target_voxel_size=target_voxel_size,
-            max_resolution=effective_max_resolution if effective_max_resolution is not None else 64,
-            bake_scale=bake_scale,
-            device=device,
-        )
+        is_watertight = mesh.is_watertight
 
-        # Build texture SDF alongside NanoVDB
-        texture_data = None
-        coarse_texture = None
-        subgrid_texture = None
-        tex_block_coords = None
-        if wp.is_cuda_available():
-            from .sdf_texture import QuantizationMode, create_texture_sdf_from_mesh  # noqa: PLC0415
+        if sign_method == "auto":
+            use_parity = is_watertight
+        else:
+            use_parity = sign_method == "parity"
 
-            _tex_fmt_map = {
-                "float32": QuantizationMode.FLOAT32,
-                "uint16": QuantizationMode.UINT16,
-                "uint8": QuantizationMode.UINT8,
-            }
-            if texture_format not in _tex_fmt_map:
-                raise ValueError(f"Unknown texture_format {texture_format!r}. Expected one of {list(_tex_fmt_map)}.")
-            qmode = _tex_fmt_map[texture_format]
+        from .sdf_texture import QuantizationMode, create_texture_sdf_from_mesh  # noqa: PLC0415
 
-            with wp.ScopedDevice(device):
-                verts = mesh.vertices * np.array(effective_scale)[None, :]
-                pos = wp.array(verts, dtype=wp.vec3)
-                indices = wp.array(mesh.indices, dtype=wp.int32)
+        _tex_fmt_map = {
+            "float32": QuantizationMode.FLOAT32,
+            "uint16": QuantizationMode.UINT16,
+            "uint8": QuantizationMode.UINT8,
+        }
+        if texture_format not in _tex_fmt_map:
+            raise ValueError(f"Unknown texture_format {texture_format!r}. Expected one of {list(_tex_fmt_map)}.")
+        qmode = _tex_fmt_map[texture_format]
+
+        with wp.ScopedDevice(device):
+            verts = mesh.vertices * np.array(effective_scale)[None, :]
+            pos = wp.array(verts, dtype=wp.vec3)
+            indices = wp.array(mesh.indices, dtype=wp.int32)
+
+            winding_threshold = 0.5
+            if use_parity:
+                tex_mesh = wp.Mesh(points=pos, indices=indices)
+            else:
                 tex_mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
-
                 signed_volume = compute_mesh_signed_volume(pos, indices)
                 winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
 
-                res = effective_max_resolution if effective_max_resolution is not None else 64
-                texture_data, coarse_texture, subgrid_texture, tex_block_coords = create_texture_sdf_from_mesh(
-                    tex_mesh,
-                    margin=margin,
-                    narrow_band_range=narrow_band_range,
-                    max_resolution=res,
-                    quantization_mode=qmode,
-                    winding_threshold=winding_threshold,
-                    scale_baked=bake_scale,
-                )
-                wp.synchronize()
+            # Forward target_voxel_size so the texture SDF path honors it
+            # with the same precedence as the sparse SDF path. When provided,
+            # create_texture_sdf_from_mesh derives max_resolution from it.
+            res = effective_max_resolution if effective_max_resolution is not None else 64
+            texture_data, coarse_texture, subgrid_texture, tex_block_coords = create_texture_sdf_from_mesh(
+                tex_mesh,
+                margin=margin,
+                narrow_band_range=narrow_band_range,
+                max_resolution=res,
+                target_voxel_size=target_voxel_size,
+                quantization_mode=qmode,
+                winding_threshold=winding_threshold,
+                scale_baked=bake_scale,
+                use_parity=use_parity,
+            )
 
         sdf = SDF(
-            data=sdf_data,
-            sparse_volume=sparse_volume,
-            coarse_volume=coarse_volume,
-            block_coords=block_coords,
+            data=create_empty_sdf_data(),
+            sparse_volume=None,
+            coarse_volume=None,
+            block_coords=[],
             texture_block_coords=tex_block_coords,
             texture_data=texture_data,
             shape_margin=shape_margin,
@@ -533,6 +587,20 @@ def get_distance_to_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32, 
         if winding_threshold < 0.0:
             sign = -sign
         return sign * wp.length(vec_to_surface)
+    return max_dist
+
+
+@wp.func
+def get_distance_to_mesh_parity(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32):
+    """Signed distance using parity-based ray-cast for inside/outside classification.
+
+    Cheaper than :func:`get_distance_to_mesh` (no winding-number accumulation)
+    but requires a watertight mesh for correct results.
+    """
+    res = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
+    if res.result:
+        closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
+        return res.sign * wp.length(closest - point)
     return max_dist
 
 
@@ -758,15 +826,13 @@ def _compute_sdf_from_shape_impl(
             pos = wp.array(verts, dtype=wp.vec3)
             indices = wp.array(shape_geo.indices, dtype=wp.int32)
 
+            winding_threshold = 0.5
             mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
-            m_id = mesh.id
-
-            # Compute winding threshold based on mesh volume sign
-            # Positive volume = correct winding (threshold 0.5), negative = inverted (threshold -0.5)
             signed_volume = compute_mesh_signed_volume(pos, indices)
             winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
             if verbose and signed_volume < 0:
                 print("Mesh has inverted winding (negative volume), using threshold -0.5")
+            m_id = mesh.id
 
             min_ext = np.min(verts, axis=0).tolist()
             max_ext = np.max(verts, axis=0).tolist()
@@ -846,8 +912,6 @@ def _compute_sdf_from_shape_impl(
             bg_value=SDF_BACKGROUND_VALUE,
         )
 
-        # populate the sparse volume with the sdf values
-        # Only process allocated tiles (num_tiles x 8x8x8)
         num_allocated_tiles = len(tile_points)
         if shape_type == GeoType.MESH:
             wp.launch(
@@ -878,7 +942,6 @@ def _compute_sdf_from_shape_impl(
             bg_value=SDF_BACKGROUND_VALUE,
         )
 
-        # Populate the coarse volume with SDF values (single tile)
         if shape_type == GeoType.MESH:
             wp.launch(
                 sdf_from_mesh_kernel,

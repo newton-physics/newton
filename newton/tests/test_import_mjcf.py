@@ -3796,7 +3796,9 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf)
         model = builder.finalize()
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        # use_mujoco_contacts=False so geom_margin is restored from shape_margin
+        # (with use_mujoco_contacts=True, geom_margin stays zero for NATIVECCD compat)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_contacts=False)
 
         geom_margin = solver.mjw_model.geom_margin.numpy()
         geom_gap = solver.mjw_model.geom_gap.numpy()

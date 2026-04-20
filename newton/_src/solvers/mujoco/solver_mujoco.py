@@ -2047,10 +2047,28 @@ class SolverMuJoCo(SolverBase):
                 pair_kwargs["solreffriction"] = pair_solreffriction[i].tolist()
             if pair_solimp is not None:
                 pair_kwargs["solimp"] = pair_solimp[i].tolist()
-            if pair_margin is not None:
-                pair_kwargs["margin"] = float(pair_margin[i])
-            if pair_gap is not None:
-                pair_kwargs["gap"] = float(pair_gap[i])
+            authored_margin = float(pair_margin[i]) if pair_margin is not None else 0.0
+            authored_gap = float(pair_gap[i]) if pair_gap is not None else 0.0
+            if self._zero_margins_for_native_ccd:
+                # Zeroed in the spec for NATIVECCD/MULTICCD compatibility (#2106).
+                # When use_mujoco_contacts=False, real values are written back
+                # at runtime via notify_model_changed -> _update_pair_properties().
+                pair_kwargs["margin"] = 0.0
+                pair_kwargs["gap"] = 0.0
+                if self._use_mujoco_contacts and (authored_margin > 0.0 or authored_gap > 0.0):
+                    warnings.warn(
+                        f"Pair ({geom_name1}, {geom_name2}): authored margin={authored_margin}, "
+                        f"gap={authored_gap} zeroed for NATIVECCD/MULTICCD compatibility (#2106). "
+                        f"To honor these values, switch to Newton's collision pipeline by "
+                        f"constructing the solver with use_mujoco_contacts=False and feeding "
+                        f"Newton-generated contacts into step().",
+                        stacklevel=2,
+                    )
+            else:
+                if pair_margin is not None:
+                    pair_kwargs["margin"] = authored_margin
+                if pair_gap is not None:
+                    pair_kwargs["gap"] = authored_gap
             if pair_friction is not None:
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
@@ -2410,9 +2428,9 @@ class SolverMuJoCo(SolverBase):
 
             # Set tendon properties (shared between fixed and spatial)
             if tendon_stiffness_np is not None:
-                t.stiffness = float(tendon_stiffness_np[i])
+                t.stiffness[0] = tendon_stiffness_np[i]
             if tendon_damping_np is not None:
-                t.damping = float(tendon_damping_np[i])
+                t.damping[0] = tendon_damping_np[i]
             if tendon_frictionloss_np is not None:
                 t.frictionloss = float(tendon_frictionloss_np[i])
             if tendon_limited_np is not None:
@@ -2938,6 +2956,21 @@ class SolverMuJoCo(SolverBase):
 
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
+
+        self._use_mujoco_contacts = use_mujoco_contacts
+        """Whether MuJoCo handles collision detection.
+
+        Controls margin zeroing: when True, geom/pair margins on the MuJoCo
+        model are kept at zero for NATIVECCD compatibility (#2106)."""
+
+        # mujoco_warp.put_model() rejects non-zero margins on box-box pairs
+        # (default NATIVECCD path) or any box/mesh pair when MULTICCD is enabled.
+        # Skip the workaround entirely when no such geom types exist in the model.
+        shape_types_arr = model.shape_type.numpy()
+        has_box = bool(np.any(shape_types_arr == GeoType.BOX))
+        has_mesh = bool(np.any((shape_types_arr == GeoType.MESH) | (shape_types_arr == GeoType.CONVEX_MESH)))
+        self._zero_margins_for_native_ccd = has_box or (enable_multiccd and has_mesh)
+        """True when the NATIVECCD/MULTICCD margin workaround applies (#2106)."""
 
         enableflags = 0
         if enable_multiccd:
@@ -4410,8 +4443,25 @@ class SolverMuJoCo(SolverBase):
                     geom_params["solimp"] = shape_geom_solimp[shape]
                 if shape_geom_solmix is not None:
                     geom_params["solmix"] = shape_geom_solmix[shape]
+                # Newton does not use the MuJoCo `gap` concept, always zero.
                 geom_params["gap"] = 0.0
-                geom_params["margin"] = float(shape_margin[shape])
+                authored_margin = float(shape_margin[shape])
+                if self._zero_margins_for_native_ccd:
+                    # Zeroed in the spec for NATIVECCD/MULTICCD compatibility (#2106).
+                    # Restored at runtime when use_mujoco_contacts=False via the
+                    # update_geom_properties_kernel.
+                    geom_params["margin"] = 0.0
+                    if self._use_mujoco_contacts and authored_margin > 0.0:
+                        warnings.warn(
+                            f"Geom {name}: authored margin={authored_margin} zeroed for "
+                            f"NATIVECCD/MULTICCD compatibility (#2106). "
+                            f"To honor this value, switch to Newton's collision pipeline by "
+                            f"constructing the solver with use_mujoco_contacts=False and feeding "
+                            f"Newton-generated contacts into step().",
+                            stacklevel=2,
+                        )
+                else:
+                    geom_params["margin"] = authored_margin
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
@@ -4620,9 +4670,9 @@ class SolverMuJoCo(SolverBase):
                     if joint_dof_limit_margin is not None:
                         joint_params["margin"] = joint_dof_limit_margin[ai]
                     if joint_stiffness is not None:
-                        joint_params["stiffness"] = joint_stiffness[ai]
+                        joint_params["stiffness"] = float(joint_stiffness[ai])
                     if joint_damping is not None:
-                        joint_params["damping"] = joint_damping[ai]
+                        joint_params["damping"] = float(joint_damping[ai])
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
@@ -4718,9 +4768,9 @@ class SolverMuJoCo(SolverBase):
                     if joint_dof_limit_margin is not None:
                         joint_params["margin"] = joint_dof_limit_margin[ai]
                     if joint_stiffness is not None:
-                        joint_params["stiffness"] = joint_stiffness[ai] * (np.pi / 180)
+                        joint_params["stiffness"] = float(joint_stiffness[ai] * (np.pi / 180))
                     if joint_damping is not None:
-                        joint_params["damping"] = joint_damping[ai] * (np.pi / 180)
+                        joint_params["damping"] = float(joint_damping[ai] * (np.pi / 180))
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
@@ -6283,6 +6333,7 @@ class SolverMuJoCo(SolverBase):
                 shape_geom_solimp,
                 shape_geom_solmix,
                 self.model.shape_margin,
+                int(self._use_mujoco_contacts and self._zero_margins_for_native_ccd),
             ],
             outputs=[
                 self.mjw_model.geom_friction,
@@ -6319,8 +6370,12 @@ class SolverMuJoCo(SolverBase):
         pair_solref = getattr(mujoco_attrs, "pair_solref", None)
         pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
         pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
-        pair_margin = getattr(mujoco_attrs, "pair_margin", None)
-        pair_gap = getattr(mujoco_attrs, "pair_gap", None)
+        # Restore pair margin/gap at runtime when Newton is handling contacts.
+        # Spec-level values only carry template-world data (MuJoCo replicates the
+        # template pair across worlds), so the kernel applies per-world variance.
+        # When MuJoCo handles contacts, keep margins at zero for NATIVECCD compat (#2106).
+        pair_margin = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_margin", None)
+        pair_gap = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_gap", None)
         pair_friction = getattr(mujoco_attrs, "pair_friction", None)
 
         # Only launch kernel if at least one attribute is defined
