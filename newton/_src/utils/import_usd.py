@@ -44,6 +44,24 @@ AttributeFrequency = Model.AttributeFrequency
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 
+def _usd_bbox_diagonal(prim) -> float | None:
+    """Length of the local-space AABB diagonal for a USD prim [m].
+
+    Uses UsdGeom.BBoxCache so it works uniformly for meshes (from points)
+    and primitives (from their size/radius attributes). Returns None if
+    the bbox is empty or degenerate.
+    """
+    from pxr import Usd, UsdGeom
+
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), includedPurposes=[UsdGeom.Tokens.default_])
+    bbox = cache.ComputeLocalBound(prim)
+    rng = bbox.ComputeAlignedRange()
+    if rng.IsEmpty():
+        return None
+    diag = rng.GetSize().GetLength()
+    return float(diag) if diag > 0 else None
+
+
 def _external_stacklevel() -> int:
     """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
     frame = inspect.currentframe()
@@ -2575,6 +2593,28 @@ def parse_usd(
                     sdf_narrow_band_outer = R.get_value(
                         prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
                     )
+                    # Fractional variants: when authored non-zero, override absolute.
+                    nb_inner_frac = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner_fraction", verbose=verbose
+                    )
+                    nb_outer_frac = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer_fraction", verbose=verbose
+                    )
+                    margin_frac = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_margin_fraction", verbose=verbose
+                    )
+                    has_fractional = any(f is not None and f != 0 for f in (nb_inner_frac, nb_outer_frac, margin_frac))
+                    bbox_diag = _usd_bbox_diagonal(prim) if has_fractional else None
+                    if has_fractional and bbox_diag is None:
+                        warnings.warn(
+                            f"{prim.GetPath()}: fractional SDF attributes authored but bbox is empty; "
+                            f"falling back to absolute values.",
+                            stacklevel=_external_stacklevel(),
+                        )
+                    if nb_inner_frac is not None and nb_inner_frac != 0 and bbox_diag is not None:
+                        sdf_narrow_band_inner = nb_inner_frac * bbox_diag
+                    if nb_outer_frac is not None and nb_outer_frac != 0 and bbox_diag is not None:
+                        sdf_narrow_band_outer = nb_outer_frac * bbox_diag
                     default_nb = builder.default_shape_cfg.sdf_narrow_band_range
                     sdf_narrow_band_range = (
                         sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
@@ -2588,6 +2628,8 @@ def parse_usd(
                         sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
 
                     sdf_margin = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_margin", verbose=verbose)
+                    if margin_frac is not None and margin_frac != 0 and bbox_diag is not None:
+                        sdf_margin = margin_frac * bbox_diag
 
                     # Hydroelastic
                     hydroelastic_enabled = R.get_value(

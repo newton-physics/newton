@@ -91,9 +91,12 @@ class SchemaResolverNewton(SchemaResolver):
             "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", None),
             "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", None),
             "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", None),
+            "sdf_narrow_band_inner_fraction": SchemaAttribute("newton:sdfNarrowBandInnerFraction", None),
+            "sdf_narrow_band_outer_fraction": SchemaAttribute("newton:sdfNarrowBandOuterFraction", None),
             "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", None),
             "sdf_texture_format": SchemaAttribute("newton:sdfTextureFormat", None),
             "sdf_margin": SchemaAttribute("newton:sdfMargin", None),
+            "sdf_margin_fraction": SchemaAttribute("newton:sdfMarginFraction", None),
             # Hydroelastic contacts — from NewtonHydroelasticCollisionAPI
             "hydroelastic_enabled": SchemaAttribute("newton:hydroelasticEnabled", None),
             "kh": SchemaAttribute("newton:kh", None),
