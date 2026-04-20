@@ -2023,7 +2023,7 @@ class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     num_steps = 20
     fk_enabled = True
     backfill_model = True  # needs body_mass backfill (visual geom mesh volume diff)
-    # TODO(#2170): body_mass differs (Newton computes different masses for visual geoms)
+    # TODO(#2494): body_mass differs (Newton computes different masses for visual geoms)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
 
@@ -2207,7 +2207,7 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     num_steps = 20
     dynamics_tolerance = 1e-4  # GPU non-determinism: qvel diff up to 1.2e-5 across runs
     fk_enabled = True
-    # TODO(#2170): actuator_biasprm has tiny fp diffs (1.7e-5), likely precision issue
+    # TODO(#2495): actuator_biasprm has tiny fp diffs (1.7e-5), likely precision issue
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"actuator_biasprm"}
 
 
@@ -2360,7 +2360,7 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     num_steps = 20
     fk_enabled = True
     backfill_model = True  # needs body_mass backfill (visual geom mesh volume diff)
-    # TODO(#2170): body_mass differs for some bodies
+    # TODO(#2494): body_mass differs for some bodies
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
 
