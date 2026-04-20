@@ -4589,16 +4589,20 @@ class SolverMuJoCo(SolverBase):
                 num_qpos += 7
                 num_mjc_joints += 1
             elif j_type == JointType.BALL:
-                body.add_joint(
-                    name=name,
-                    type=mujoco.mjtJoint.mjJNT_BALL,
-                    axis=wp.quat_rotate(joint_rot, wp.vec3(1.0, 0.0, 0.0)),
-                    pos=joint_pos,
-                    damping=0.0,
-                    limited=False,
-                    armature=self._KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start],
-                    frictionloss=joint_friction[qd_start],
-                )
+                ball_params = {
+                    "name": name,
+                    "type": mujoco.mjtJoint.mjJNT_BALL,
+                    "axis": wp.quat_rotate(joint_rot, wp.vec3(1.0, 0.0, 0.0)),
+                    "pos": joint_pos,
+                    "limited": False,
+                    "armature": self._KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start],
+                    "frictionloss": joint_friction[qd_start],
+                }
+                if joint_stiffness is not None:
+                    ball_params["stiffness"] = float(joint_stiffness[qd_start])
+                if joint_damping is not None:
+                    ball_params["damping"] = float(joint_damping[qd_start])
+                body.add_joint(**ball_params)
                 mjc_joint_names.append(name)
                 # For ball joints, all 3 DOFs map to the same MuJoCo joint
                 for i in range(3):
