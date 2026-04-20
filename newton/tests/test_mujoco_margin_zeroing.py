@@ -43,7 +43,8 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
     def test_mj_model_geom_margin_zero(self):
         """The compiled MjModel must have zero geom_margin (zeroed in MjSpec before compilation)."""
         model = self._build_model_with_margin(margin=1e-5)
-        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        with self.assertWarnsRegex(UserWarning, r"zeroed for NATIVECCD/MULTICCD"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         np.testing.assert_array_equal(
             solver.mj_model.geom_margin,
             np.zeros_like(solver.mj_model.geom_margin),
@@ -53,7 +54,8 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
     def test_geom_margin_zero_with_mujoco_contacts(self):
         """When MuJoCo handles collisions, mjw_model.geom_margin must stay zero."""
         model = self._build_model_with_margin(margin=1e-5)
-        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        with self.assertWarnsRegex(UserWarning, r"zeroed for NATIVECCD/MULTICCD"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         geom_margin = solver.mjw_model.geom_margin.numpy()
         np.testing.assert_array_equal(
             geom_margin,
@@ -64,7 +66,8 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
     def test_geom_margin_stays_zero_after_notify(self):
         """Margins must stay zero after notify_model_changed with MuJoCo contacts."""
         model = self._build_model_with_margin(margin=1e-5)
-        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        with self.assertWarnsRegex(UserWarning, r"zeroed for NATIVECCD/MULTICCD"):
+            solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
         geom_margin = solver.mjw_model.geom_margin.numpy()
         np.testing.assert_array_equal(
