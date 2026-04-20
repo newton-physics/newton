@@ -100,37 +100,1084 @@ are non-colliding reference frames used for sensor attachment and spatial
 tendons.
 
 
-Shape parameters
-----------------
+.. _mujoco-parameters:
 
-**Friction.**
-  Newton's ``shape_material_mu``, ``shape_material_mu_torsional``, and
-  ``shape_material_mu_rolling`` map directly to MuJoCo's three-element
-  geom ``friction`` vector: ``(sliding, torsional, rolling)``.
+MuJoCo model attributes
+-----------------------
 
-**Stiffness and damping (solref).**
-  Newton's ``shape_material_ke`` (stiffness) and ``shape_material_kd``
-  (damping) are converted to MuJoCo's geom ``solref`` ``(timeconst, dampratio)``
-  pair.  When either value is zero or negative, the solver falls back to MuJoCo's defaults
-  (``timeconst = 0.02``, ``dampratio = 1.0``).
+The tables below list every Newton property and custom attribute that
+:class:`~newton.solvers.SolverMuJoCo` reads, organized by entity type.  Each
+table shows:
 
-**Joint-limit stiffness and damping (solref_limit).**
-  ``joint_limit_ke`` and ``joint_limit_kd`` are forwarded as negative
-  ``solref_limit`` values ``(-ke, -kd)``, which MuJoCo interprets as direct
-  stiffness/damping rather than time-constant/damp-ratio.
+- The Newton property or ``model.mujoco.<name>`` custom attribute.
+- The USD attribute that populates it (standard ``physics:`` schemas,
+  ``mjc:``-prefixed attributes from the
+  `mjcPhysics USD schema <https://github.com/google-deepmind/mujoco/blob/main/src/experimental/usd/mjcPhysics/generatedSchema.usda>`_,
+  or ``newton:mujoco:`` attributes for Newton's own round-trip namespace).
+- The MJCF XML attribute that populates it during
+  :meth:`~newton.ModelBuilder.add_mjcf`, where applicable.
+- The MuJoCo model field it maps to.
 
-**Margin.**
-  Newton's ``shape_margin`` maps to MuJoCo ``geom_margin``.
+Standard Newton properties (``joint_limit_lower``, ``shape_material_mu``, etc.)
+are populated from standard USD physics schemas, MJCF XML elements, or set
+programmatically.  MuJoCo-specific parameters use the ``mujoco``
+custom-attribute namespace — call
+:meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` on a
+:class:`~newton.ModelBuilder` **before** loading assets so that USD and MJCF
+importers can populate them.  After :meth:`~newton.ModelBuilder.finalize`, they
+are accessible as ``model.mujoco.<name>``.  See
+:doc:`/concepts/custom_attributes` for background on Newton's custom-attribute
+system.
 
-**MuJoCo-specific custom attributes.**
-  Many MuJoCo-specific parameters are stored in Newton's ``mujoco``
-  custom-attribute namespace and forwarded to the MuJoCo model when present.
-  These cover geom properties (``condim``, ``geom_priority``, ``geom_solimp``,
-  ``geom_solmix``), joint properties (``dof_passive_stiffness``,
-  ``dof_passive_damping``, ``jnt_actgravcomp``, ``dof_springref``, ``dof_ref``,
-  ``limit_margin``, ``solimplimit``, ``solreffriction``, ``solimpfriction``),
-  equality constraints (``eq_solref``), tendons, general actuators, and solver
-  options.  See :doc:`/concepts/custom_attributes` for the full list.
+
+.. _mujoco-solver-options:
+
+Solver options
+^^^^^^^^^^^^^^
+
+Solver parameters follow a three-level resolution priority:
+
+1. **Constructor argument** — value passed to :class:`~newton.solvers.SolverMuJoCo`.
+2. **Custom attribute** (``model.mujoco.<option>``) — supports per-world values.
+   These attributes are typically populated automatically when importing USD or
+   MJCF assets.
+3. **Default** — the tables below list Newton defaults alongside MuJoCo
+   defaults for reference.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 25 25 25
+
+   * - Option
+     - Newton default
+     - MuJoCo default
+     - Notes
+   * - ``solver``
+     - ``newton``
+     - ``newton``
+     -
+   * - ``integrator``
+     - ``implicitfast``
+     - ``euler``
+     - ``implicitfast`` provides better stability for stiff systems.
+   * - ``cone``
+     - ``pyramidal``
+     - ``pyramidal``
+     -
+   * - ``iterations``
+     - 100
+     - 100
+     -
+   * - ``ls_iterations``
+     - 50
+     - 50
+     -
+
+**Per-world options** (one value per Newton world, read from ``PhysicsScene``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 30 20 20
+
+   * - Custom attribute
+     - USD attribute
+     - Default
+     - Notes
+   * - ``mujoco.impratio``
+     - ``mjc:option:impratio``
+     - 1.0
+     -
+   * - ``mujoco.tolerance``
+     - ``mjc:option:tolerance``
+     - 1e-8
+     -
+   * - ``mujoco.ls_tolerance``
+     - ``mjc:option:ls_tolerance``
+     - 0.01
+     -
+   * - ``mujoco.ccd_tolerance``
+     - ``mjc:option:ccd_tolerance``
+     - 1e-6
+     -
+   * - ``mujoco.density``
+     - ``mjc:option:density``
+     - 0.0
+     - Medium density [kg/m\ :sup:`3`]
+   * - ``mujoco.viscosity``
+     - ``mjc:option:viscosity``
+     - 0.0
+     - Medium viscosity [Pa·s]
+   * - ``mujoco.wind``
+     - ``mjc:option:wind``
+     - ``(0, 0, 0)``
+     - Wind velocity [m/s]
+   * - ``mujoco.magnetic``
+     - ``mjc:option:magnetic``
+     - ``(0, -0.5, 0)``
+     - Magnetic flux [T]
+
+**Per-model options** (single value, read from ``PhysicsScene``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 30 20 20
+
+   * - Custom attribute
+     - USD attribute
+     - Default
+     - Notes
+   * - ``mujoco.iterations``
+     - ``mjc:option:iterations``
+     - 100
+     - Also sets built-in ``max_solver_iterations``
+   * - ``mujoco.ls_iterations``
+     - ``mjc:option:ls_iterations``
+     - 50
+     -
+   * - ``mujoco.ccd_iterations``
+     - ``mjc:option:ccd_iterations``
+     - 35
+     -
+   * - ``mujoco.sdf_iterations``
+     - ``mjc:option:sdf_iterations``
+     - 10
+     -
+   * - ``mujoco.sdf_initpoints``
+     - ``mjc:option:sdf_initpoints``
+     - 40
+     -
+   * - ``mujoco.integrator``
+     - ``mjc:option:integrator``
+     - 3 (``implicitfast``)
+     -
+   * - ``mujoco.solver``
+     - ``mjc:option:solver``
+     - 2 (``newton``)
+     -
+   * - ``mujoco.cone``
+     - ``mjc:option:cone``
+     - 0 (``pyramidal``)
+     -
+   * - ``mujoco.jacobian``
+     - ``mjc:option:jacobian``
+     - 2 (``auto``)
+     -
+
+**Scene — built-in properties** (read from ``PhysicsScene`` via ``SchemaResolverMjc``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 30 20 20
+
+   * - Newton property
+     - USD attribute
+     - Default
+     - Notes
+   * - ``max_solver_iterations``
+     - ``mjc:option:iterations``
+     - 100
+     -
+   * - ``time_steps_per_second``
+     - ``mjc:option:timestep``
+     - 0.002 (→ 500 Hz)
+     - USD stores the step *duration*; Newton inverts it
+   * - ``gravity_enabled``
+     - ``mjc:flag:gravity``
+     - ``True``
+     -
+   * - ``gravity``
+     -
+     - ``(0, 0, -9.81)``
+     - 3D gravity vector → MuJoCo ``opt.gravity``
+
+
+.. _mujoco-joint-attributes:
+
+Joint attributes
+^^^^^^^^^^^^^^^^
+
+**Standard Newton properties:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 18 22 18 22
+
+   * - Newton property
+     - MuJoCo field
+     - USD attribute
+     - MJCF attribute
+     - Notes
+   * - ``joint_limit_lower`` / ``upper``
+     - ``jnt_range``
+     - ``physics:lowerLimit`` / ``upperLimit``
+     - ``range``
+     - Angular limits converted to degrees for MuJoCo
+   * - ``joint_limit_ke`` / ``kd``
+     - ``jnt_solref``
+     - ``newton:*:limitStiffness`` / ``Damping``
+     - ``solreflimit``
+     - Forwarded as negative solref ``(-ke, -kd)``
+   * - ``joint_armature``
+     - ``dof_armature``
+     - ``newton:armature``
+     - ``armature``
+     -
+   * - ``joint_friction``
+     - ``dof_frictionloss``
+     - ``newton:friction``
+     - ``frictionloss``
+     -
+   * - ``joint_target_ke`` / ``kd``
+     - actuator ``gainprm`` / ``biasprm``
+     - ``physics:drive:stiffness`` / ``damping``
+     -
+     - See :ref:`mujoco-actuator-attributes`
+   * - ``joint_effort_limit``
+     - ``jnt_actfrcrange``
+     - ``physics:drive:forceLimit``
+     - ``actuatorfrcrange``
+     - Per-actuator ``forcerange`` for ball joints
+
+.. note::
+
+   The imported ``solref`` values are currently incorrectly mapped to
+   ``ke``/``kd``: ``solref`` is mass-normalized, while the ``ke``/``kd``
+   Newton properties have force-based units.  See
+   `issue #2009 <https://github.com/newton-physics/newton/issues/2009>`_
+   for details.
+
+**Custom attributes** (``mujoco.*`` namespace):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 22 18 15 20
+
+   * - Custom attribute
+     - USD attribute
+     - MJCF attribute
+     - Default
+     - Notes
+   * - ``mujoco.limit_margin``
+     - ``mjc:margin``
+     - ``margin``
+     - 0.0
+     - [m or rad]
+   * - ``mujoco.solimplimit``
+     - ``mjc:solimplimit``
+     -
+     - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
+     -
+   * - ``mujoco.solreffriction``
+     - ``mjc:solreffriction``
+     -
+     - ``(0.02, 1.0)``
+     -
+   * - ``mujoco.solimpfriction``
+     - ``mjc:solimpfriction``
+     -
+     - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
+     -
+   * - ``mujoco.dof_passive_stiffness``
+     - ``mjc:stiffness``
+     - ``stiffness``
+     - 0.0
+     -
+   * - ``mujoco.dof_passive_damping``
+     - ``mjc:damping``
+     - ``damping``
+     - 0.0
+     -
+   * - ``mujoco.dof_springref``
+     - ``mjc:springref``
+     - ``springref``
+     - 0.0
+     - [m or rad]
+   * - ``mujoco.dof_ref``
+     - ``mjc:ref``
+     - ``ref``
+     - 0.0
+     - [m or rad]
+   * - ``mujoco.jnt_actgravcomp``
+     - ``mjc:actuatorgravcomp``
+     - ``actuatorgravcomp``
+     - ``False``
+     -
+
+
+.. _mujoco-shape-attributes:
+
+Shape attributes
+^^^^^^^^^^^^^^^^
+
+**Standard Newton properties:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 18 22 18 22
+
+   * - Newton property
+     - MuJoCo field
+     - USD attribute
+     - MJCF attribute
+     - Notes
+   * - ``shape_material_mu``
+     - ``geom_friction[0]``
+     - ``physics:dynamicFriction``
+     - ``friction[0]``
+     - Sliding friction
+   * - ``shape_material_mu_torsional``
+     - ``geom_friction[1]``
+     - ``newton:torsionalFriction``
+     - ``friction[1]``
+     -
+   * - ``shape_material_mu_rolling``
+     - ``geom_friction[2]``
+     - ``newton:rollingFriction``
+     - ``friction[2]``
+     -
+   * - ``shape_material_ke`` / ``kd``
+     - ``geom_solref``
+     - ``newton:contact_ke`` / ``kd``
+     - ``solref``
+     - Converted via ``convert_solref()``; falls back to
+       ``(0.02, 1.0)`` when zero or negative
+   * - ``shape_margin``
+     - ``geom_margin``
+     - ``newton:contactMargin``
+     - ``margin``
+     - From ``mjc:``: ``margin = mjc:margin − mjc:gap``
+   * - ``max_hull_vertices``
+     - mesh asset ``maxhullvert``
+     - ``newton:maxHullVertices``
+     - ``maxhullvert`` (on ``<mesh>``)
+     - Maximum vertices for the convex-hull approximation of mesh
+       collisions.  Default ``-1`` = engine default.
+       From ``mjc:``: ``mjc:maxhullvert`` (on the shape prim).
+
+**Custom attributes** (``mujoco.*`` namespace):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 22 18 15 20
+
+   * - Custom attribute
+     - USD attribute
+     - MJCF attribute
+     - Default
+     - Notes
+   * - ``mujoco.condim``
+     - ``mjc:condim``
+     -
+     - 3
+     -
+   * - ``mujoco.geom_priority``
+     - ``mjc:priority``
+     - ``priority``
+     - 0
+     -
+   * - ``mujoco.geom_solimp``
+     - ``mjc:solimp``
+     - ``solimp``
+     - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
+     -
+   * - ``mujoco.geom_solmix``
+     - ``mjc:solmix``
+     - ``solmix``
+     - 1.0
+     -
+
+
+.. _mujoco-material-attributes:
+
+Material attributes
+^^^^^^^^^^^^^^^^^^^
+
+The ``mjc:`` USD attributes below are an alternative source for material
+properties on ``PhysicsMaterialAPI`` prims.  These map to the same Newton
+properties listed in the :ref:`mujoco-shape-attributes` standard table
+(e.g. ``mu_torsional``, ``stiffness``) but are read from the material prim
+rather than the collision prim.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 25 20 30
+
+   * - Newton property
+     - USD attribute
+     - Default
+     - Notes
+   * - ``mu_torsional``
+     - ``mjc:torsionalfriction``
+     - 0.005
+     -
+   * - ``mu_rolling``
+     - ``mjc:rollingfriction``
+     - 0.0001
+     -
+   * - ``priority``
+     - ``mjc:priority``
+     - 0
+     -
+   * - ``weight``
+     - ``mjc:solmix``
+     - 1.0
+     -
+   * - ``stiffness`` / ``damping``
+     - ``mjc:solref``
+     - ``[0.02, 1.0]``
+     - See the ``solref`` note under :ref:`mujoco-joint-attributes`
+
+
+.. _mujoco-body-attributes:
+
+Body attributes
+^^^^^^^^^^^^^^^
+
+**Standard Newton properties:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 18 22 18 22
+
+   * - Newton property
+     - MuJoCo field
+     - USD attribute
+     - MJCF attribute
+     - Notes
+   * - ``body_mass``
+     - ``body_mass``
+     - ``physics:mass``
+     - ``inertial/mass``
+     - Zero-mass bodies use ``inertiafromgeom="auto"``
+   * - ``body_inertia``
+     - ``body_inertia`` / ``body_iquat``
+     - ``physics:diagonalInertia``
+     - ``inertial/diaginertia``
+     - Eigendecomposed; ``fullinertia`` also supported
+   * - ``body_com``
+     - ``body_ipos``
+     - ``physics:centerOfMass``
+     - ``inertial/pos``
+     - Center-of-mass offset
+   * - ``body_q``
+     - ``body_pos`` / ``body_quat``
+     - ``xformOp:*``
+     - ``pos`` / ``quat``
+     - Initial pose for free-joint bodies
+
+**Custom attributes** (``mujoco.*`` namespace):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 22 18 15 20
+
+   * - Custom attribute
+     - USD attribute
+     - MJCF attribute
+     - Default
+     - Notes
+   * - ``mujoco.gravcomp``
+     - ``mjc:gravcomp``
+     - ``gravcomp``
+     - 0.0
+     -
+
+
+.. _mujoco-actuator-attributes:
+
+Actuator attributes
+^^^^^^^^^^^^^^^^^^^
+
+Newton's per-DOF ``joint_target_mode`` determines which MuJoCo general
+actuators are created:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Mode
+     - MuJoCo actuator(s)
+   * - ``POSITION``
+     - One actuator: ``gainprm = [kp]``, ``biasprm = [0, -kp, -kd]``.
+   * - ``VELOCITY``
+     - One actuator: ``gainprm = [kd]``, ``biasprm = [0, 0, -kd]``.
+   * - ``POSITION_VELOCITY``
+     - Two actuators — a position actuator (``gainprm = [kp]``,
+       ``biasprm = [0, -kp, 0]``) and a velocity actuator
+       (``gainprm = [kd]``, ``biasprm = [0, 0, -kd]``).
+   * - ``NONE``
+     - No actuator created for this DOF.
+
+``joint_effort_limit`` is forwarded as ``actfrcrange`` on the joint (for
+prismatic, revolute, and D6 joints) or as ``forcerange`` on the actuator (for
+ball joints).
+
+Additional MuJoCo general actuators (motors, etc.) can be attached through
+custom attributes and are appended after the joint-target actuators.
+
+**Built-in properties** (from ``MjcActuator`` USD prims or MJCF ``<actuator>`` elements):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 30 20 25
+
+   * - Newton property
+     - USD attribute
+     - Default
+     - Notes
+   * - ``ctrl_low`` / ``ctrl_high``
+     - ``mjc:ctrlRange:min`` / ``max``
+     - 0.0
+     -
+   * - ``force_low`` / ``force_high``
+     - ``mjc:forceRange:min`` / ``max``
+     - 0.0
+     - [N]
+   * - ``act_low`` / ``act_high``
+     - ``mjc:actRange:min`` / ``max``
+     - 0.0
+     -
+   * - ``length_low`` / ``length_high``
+     - ``mjc:lengthRange:min`` / ``max``
+     - 0.0
+     - [m]
+   * - ``gainPrm``
+     - ``mjc:gainPrm``
+     - ``[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]``
+     -
+   * - ``gainType``
+     - ``mjc:gainType``
+     - ``"fixed"``
+     -
+   * - ``biasPrm``
+     - ``mjc:biasPrm``
+     - ``[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]``
+     -
+   * - ``biasType``
+     - ``mjc:biasType``
+     - ``"none"``
+     -
+   * - ``dynPrm``
+     - ``mjc:dynPrm``
+     - ``[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]``
+     -
+   * - ``dynType``
+     - ``mjc:dynType``
+     - ``"none"``
+     -
+   * - ``gear``
+     - ``mjc:gear``
+     - ``[1, 0, 0, 0, 0, 0]``
+     -
+
+**Custom attributes** (``mujoco.*`` namespace):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 30 15 20
+
+   * - Custom attribute
+     - USD attribute
+     - Default
+     - Notes
+   * - ``mujoco.actuator_gainprm``
+     - ``mjc:gainPrm``
+     - *(see above)*
+     - Same USD attr as built-in ``gainPrm``
+   * - ``mujoco.actuator_gaintype``
+     - ``mjc:gainType``
+     - *(see above)*
+     - Same USD attr as built-in ``gainType``
+   * - ``mujoco.actuator_biasprm``
+     - ``mjc:biasPrm``
+     - *(see above)*
+     - Same USD attr as built-in ``biasPrm``
+   * - ``mujoco.actuator_biastype``
+     - ``mjc:biasType``
+     - *(see above)*
+     - Same USD attr as built-in ``biasType``
+   * - ``mujoco.actuator_dynprm``
+     - ``mjc:dynPrm``
+     - *(see above)*
+     - Same USD attr as built-in ``dynPrm``
+   * - ``mujoco.actuator_dyntype``
+     - ``mjc:dynType``
+     - *(see above)*
+     - Same USD attr as built-in ``dynType``
+   * - ``mujoco.actuator_gear``
+     - ``mjc:gear``
+     - *(see above)*
+     - Same USD attr as built-in ``gear``
+   * - ``mujoco.actuator_actdim``
+     - ``mjc:actDim``
+     - -1 (auto)
+     -
+   * - ``mujoco.actuator_actearly``
+     - ``mjc:actEarly``
+     - ``False``
+     -
+   * - ``mujoco.actuator_ctrllimited``
+     - ``mjc:ctrlLimited``
+     - 2 (auto)
+     - Tri-state: 0 = no, 1 = yes, 2 = auto
+   * - ``mujoco.actuator_forcelimited``
+     - ``mjc:forceLimited``
+     - 2 (auto)
+     - Tri-state
+   * - ``mujoco.actuator_actlimited``
+     - ``mjc:actLimited``
+     - 2 (auto)
+     - Tri-state
+   * - ``mujoco.actuator_ctrlrange``
+     - ``mjc:ctrlRange:min`` / ``max``
+     - ``(0, 0)``
+     -
+   * - ``mujoco.actuator_forcerange``
+     - ``mjc:forceRange:min`` / ``max``
+     - ``(0, 0)``
+     - [N]
+   * - ``mujoco.actuator_actrange``
+     - ``mjc:actRange:min`` / ``max``
+     - ``(0, 0)``
+     -
+
+The ``mjc:target`` relationship on ``MjcActuator`` prims resolves the
+transmission target.  ``mjc:inheritRange`` (default: 0 = disabled) copies
+the target joint's limits as the actuator's ``ctrlrange``.
+
+**Internal attributes** (``newton:mujoco:*`` USD namespace):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - Custom attribute
+     - USD attribute
+     - Notes
+   * - ``mujoco.actuator_trnid``
+     - ``newton:mujoco:actuator_trnid``
+     - Transmission target index pair
+   * - ``mujoco.actuator_world``
+     - ``newton:mujoco:actuator_world``
+     - World index
+   * - ``mujoco.actuator_cranklength``
+     - ``newton:mujoco:actuator_cranklength``
+     - Slider-crank length [m]
+   * - ``mujoco.ctrl``
+     - ``newton:mujoco:ctrl``
+     - Direct MuJoCo actuator control signal
+   * - ``mujoco.ctrl_source``
+     - ``newton:mujoco:ctrl_source``
+     - Control source (direct / joint target)
+   * - ``mujoco.autolimits``
+     - ``newton:mujoco:autolimits``
+     - Auto-compute joint limits (default: ``True``)
+
+
+.. _mujoco-equality-attributes:
+
+Equality constraint attributes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Newton type
+     - MuJoCo type
+     - Notes
+   * - ``CONNECT``
+     - ``mjEQ_CONNECT``
+     - Anchor forwarded in ``data[0:3]``.
+   * - ``WELD``
+     - ``mjEQ_WELD``
+     - Relative pose and torque scale forwarded.
+   * - ``JOINT``
+     - ``mjEQ_JOINT``
+     - Polynomial coefficients forwarded in ``data[0:5]``.
+   * - Mimic
+     - ``mjEQ_JOINT``
+     - ``coef0`` / ``coef1`` mapped to polynomial coefficients.
+       Only ``REVOLUTE`` and ``PRISMATIC`` joints are supported.
+
+**Standard Newton properties:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 30 35
+
+   * - Newton property
+     - MuJoCo field
+     - Notes
+   * - ``equality_constraint_type``
+     - ``eq_type``
+     -
+   * - ``equality_constraint_anchor``
+     - ``eq_data[0:3]``
+     - CONNECT anchor point
+   * - ``equality_constraint_relpose``
+     - ``eq_data``
+     - WELD relative pose
+   * - ``equality_constraint_polycoef``
+     - ``eq_data[0:5]``
+     - JOINT polynomial coefficients
+   * - ``equality_constraint_torquescale``
+     - ``eq_data[10]``
+     - WELD torque scale
+   * - ``equality_constraint_enabled``
+     - ``eq_active``
+     -
+   * - ``constraint_mimic_joint0`` / ``joint1``
+     - ``eq_obj1id`` / ``eq_obj2id``
+     - Mimic follower / leader joint
+   * - ``constraint_mimic_coef0`` / ``coef1``
+     - ``eq_data[0:2]``
+     - Mimic polynomial coefficients
+   * - ``constraint_mimic_enabled``
+     - ``eq_active``
+     -
+
+**Custom attributes** (``mujoco.*`` namespace):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 22 18 15 20
+
+   * - Custom attribute
+     - USD attribute
+     - MJCF attribute
+     - Default
+     - Notes
+   * - ``mujoco.eq_solref``
+     - ``mjc:solref``
+     - ``solref``
+     - ``(0.02, 1.0)``
+     -
+   * - ``mujoco.eq_solimp``
+     - ``mjc:solimp``
+     - ``solimp``
+     - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
+     -
+
+
+.. _mujoco-tendon-attributes:
+
+Tendon attributes
+^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 22 18 15 20
+
+   * - Custom attribute
+     - USD attribute
+     - MJCF attribute
+     - Default
+     - Notes
+   * - ``mujoco.tendon_stiffness``
+     - ``mjc:stiffness``
+     - ``stiffness``
+     - 0.0
+     - [N/m]
+   * - ``mujoco.tendon_damping``
+     - ``mjc:damping``
+     - ``damping``
+     - 0.0
+     - [N·s/m]
+   * - ``mujoco.tendon_frictionloss``
+     - ``mjc:frictionloss``
+     - ``frictionloss``
+     - 0.0
+     - [N]
+   * - ``mujoco.tendon_limited``
+     - ``mjc:limited``
+     - ``limited``
+     - 2 (auto)
+     - Tri-state
+   * - ``mujoco.tendon_range``
+     - ``mjc:range:min`` / ``max``
+     - ``range``
+     - ``(0, 0)``
+     - [m]
+   * - ``mujoco.tendon_margin``
+     - ``mjc:margin``
+     - ``margin``
+     - 0.0
+     - [m]
+   * - ``mujoco.tendon_solref_limit``
+     - ``mjc:solreflimit``
+     - ``solreflimit``
+     - ``(0.02, 1.0)``
+     -
+   * - ``mujoco.tendon_solimp_limit``
+     - ``mjc:solimplimit``
+     - ``solimplimit``
+     - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
+     -
+   * - ``mujoco.tendon_solref_friction``
+     - ``mjc:solreffriction``
+     - ``solreffriction``
+     - ``(0.02, 1.0)``
+     -
+   * - ``mujoco.tendon_solimp_friction``
+     - ``mjc:solimpfriction``
+     - ``solimpfriction``
+     - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
+     -
+   * - ``mujoco.tendon_armature``
+     - ``mjc:armature``
+     - ``armature``
+     - 0.0
+     - [kg]
+   * - ``mujoco.tendon_springlength``
+     - ``mjc:springlength``
+     - ``springlength``
+     - ``(-1, -1)``
+     - [m]; ``-1`` = use model length
+   * - ``mujoco.tendon_actuator_force_limited``
+     - ``mjc:actuatorfrclimited``
+     - ``actuatorfrclimited``
+     - 2 (auto)
+     - Tri-state
+   * - ``mujoco.tendon_actuator_force_range``
+     - ``mjc:actuatorfrcrange:min`` / ``max``
+     - ``actuatorfrcrange``
+     - ``(0, 0)``
+     - [N]
+
+Spatial tendons additionally use ``mjc:path`` (relationship),
+``mjc:path:indices``, and ``mjc:path:coef`` to describe the wrap path.
+
+**Internal attributes** (``newton:mujoco:*`` USD namespace):
+
+These are populated automatically during MJCF/USD import or set
+programmatically.  Newton reads them from USD using the ``newton:mujoco:``
+prefix.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - Custom attribute
+     - USD attribute
+     - Notes
+   * - ``mujoco.tendon_world``
+     - ``newton:mujoco:tendon_world``
+     - World index
+   * - ``mujoco.tendon_type``
+     - ``newton:mujoco:tendon_type``
+     - 0 = fixed, 1 = spatial
+   * - ``mujoco.tendon_joint_adr``
+     - *(computed)*
+     - Start address into fixed-tendon joint arrays
+   * - ``mujoco.tendon_joint_num``
+     - *(computed)*
+     - Number of joints in fixed tendon
+   * - ``mujoco.tendon_wrap_adr``
+     - ``newton:mujoco:tendon_wrap_adr``
+     - Start address into wrap arrays
+   * - ``mujoco.tendon_wrap_num``
+     - ``newton:mujoco:tendon_wrap_num``
+     - Number of wrap elements
+   * - ``mujoco.tendon_joint``
+     - ``newton:mujoco:tendon_joint``
+     - Joint index per fixed-tendon entry
+   * - ``mujoco.tendon_coef``
+     - ``newton:mujoco:tendon_coef``
+     - Joint coefficient per fixed-tendon entry
+   * - ``mujoco.tendon_wrap_type``
+     - ``newton:mujoco:tendon_wrap_type``
+     - Wrap element type (site / geom / pulley)
+   * - ``mujoco.tendon_wrap_shape``
+     - ``newton:mujoco:tendon_wrap_shape``
+     - Wrap element shape index
+   * - ``mujoco.tendon_wrap_sidesite``
+     - ``newton:mujoco:tendon_wrap_sidesite``
+     - Side-site shape index
+   * - ``mujoco.tendon_wrap_prm``
+     - ``newton:mujoco:tendon_wrap_prm``
+     - Wrap element parameter
+
+
+.. _mujoco-contact-pair-attributes:
+
+Contact pair attributes
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Explicit contact pairs (``mujoco:pair`` frequency) are populated from
+MJCF import, USD import (via ``newton:mujoco:*`` attributes), or
+programmatic assignment.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 22 18 15 20
+
+   * - Custom attribute
+     - USD attribute
+     - MJCF attribute
+     - Default
+     - Notes
+   * - ``mujoco.pair_world``
+     - ``newton:mujoco:pair_world``
+     -
+     - 0
+     - World index
+   * - ``mujoco.pair_geom1`` / ``pair_geom2``
+     - ``newton:mujoco:pair_geom1`` / ``newton:mujoco:pair_geom2``
+     - ``geom1`` / ``geom2``
+     - -1
+     - Shape indices
+   * - ``mujoco.pair_condim``
+     - ``newton:mujoco:pair_condim``
+     - ``condim``
+     - 3
+     -
+   * - ``mujoco.pair_solref``
+     - ``newton:mujoco:pair_solref``
+     - ``solref``
+     - ``(0.02, 1.0)``
+     -
+   * - ``mujoco.pair_solreffriction``
+     - ``newton:mujoco:pair_solreffriction``
+     - ``solreffriction``
+     - ``(0.02, 1.0)``
+     -
+   * - ``mujoco.pair_solimp``
+     - ``newton:mujoco:pair_solimp``
+     - ``solimp``
+     - ``(0.9, 0.95, 0.001, 0.5, 2.0)``
+     -
+   * - ``mujoco.pair_margin``
+     - ``newton:mujoco:pair_margin``
+     - ``margin``
+     - 0.0
+     -
+   * - ``mujoco.pair_gap``
+     - ``newton:mujoco:pair_gap``
+     - ``gap``
+     - 0.0
+     -
+   * - ``mujoco.pair_friction``
+     - ``newton:mujoco:pair_friction``
+     - ``friction``
+     - ``(1, 1, 0.005, 0.0001, 0.0001)``
+     - ``(slide, slide, torsion, roll, roll)``
+
+
+.. _mujoco-custom-frequencies:
+
+Custom frequencies
+^^^^^^^^^^^^^^^^^^
+
+:meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` also registers
+five custom frequencies for variable-length entity types:
+
+- ``mujoco:pair`` — explicit contact pairs
+- ``mujoco:actuator`` — general MuJoCo actuators
+- ``mujoco:tendon`` — fixed and spatial tendons
+- ``mujoco:tendon_joint`` — per-joint entries in fixed tendons
+- ``mujoco:tendon_wrap`` — wrap path elements in spatial tendons
+
+.. _mujoco-unsupported-attributes:
+
+Unsupported mjcPhysics schema attributes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The following mjcPhysics schema attributes are **not** parsed by Newton
+from USD.  Authoring them on USD prims has no effect.  Some of these are
+parsed from MJCF (noted below).
+
+- **Compiler options** (``mjc:compiler:*``): all 14 compiler attributes
+  (``alignFree``, ``angle``, ``autoLimits``, ``balanceInertia``, etc.)
+- **Flags** (``mjc:flag:*``): all flags except ``mjc:flag:gravity``
+  (``actuation``, ``clampctrl``, ``contact``, ``equality``, ``multiccd``,
+  ``nativeccd``, ``warmstart``, etc.)
+- **Keyframe** (``MjcKeyframe``): ``mjc:qpos``, ``mjc:qvel``,
+  ``mjc:mpos``, ``mjc:mquat``
+- **Shape / collision**: ``mjc:inertia`` (mesh inertia mode),
+  ``mjc:shellinertia``, ``mjc:group``
+- **Actuator**: ``mjc:act``,
+  ``mjc:jointInParent``, ``mjc:refSite``, ``mjc:sliderSite``,
+  ``mjc:group``.
+  Note: ``mjc:crankLength`` and ``mjc:ctrl`` are not parsed from USD but
+  **are** parsed from MJCF (see ``mujoco.actuator_cranklength`` and
+  ``mujoco.ctrl`` above).
+- **Solver options**: ``mjc:option:noslip_iterations``,
+  ``mjc:option:noslip_tolerance``, ``mjc:option:actuatorgroupdisable``,
+  ``mjc:option:o_friction``, ``mjc:option:o_margin``,
+  ``mjc:option:o_solimp``, ``mjc:option:o_solref``
+
+
+.. _mujoco-runtime-state-and-control:
+
+Runtime state and control
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+During :meth:`~newton.solvers.SolverMuJoCo.step`, the solver reads from
+:class:`~newton.State` and :class:`~newton.Control` and writes results back to
+the next :class:`~newton.State`.
+
+**Inputs** (Newton → MuJoCo):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 30 35
+
+   * - Newton property
+     - MuJoCo field
+     - Notes
+   * - ``state.joint_q``
+     - ``qpos``
+     - Quaternion order converted (xyzw → wxyz)
+   * - ``state.joint_qd``
+     - ``qvel``
+     -
+   * - ``state.body_f``
+     - ``xfrc_applied``
+     - External body wrenches
+   * - ``control.joint_target_pos``
+     - actuator ``ctrl``
+     - For POSITION / POSITION_VELOCITY modes
+   * - ``control.joint_target_vel``
+     - actuator ``ctrl``
+     - For VELOCITY / POSITION_VELOCITY modes
+   * - ``control.joint_f``
+     - ``qfrc_applied``
+     - Joint-space forces; free-joint forces go to ``xfrc_applied``
+   * - ``control.mujoco.ctrl``
+     - ``ctrl``
+     - Direct MuJoCo actuator control (general actuators)
+
+**Outputs** (MuJoCo → Newton):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 30 35
+
+   * - Newton property
+     - MuJoCo field
+     - Notes
+   * - ``state.joint_q``
+     - ``qpos``
+     - Quaternion order converted back (wxyz → xyzw)
+   * - ``state.joint_qd``
+     - ``qvel``
+     -
+   * - ``state.body_q``
+     - *(FK)*
+     - Computed via :func:`~newton.eval_articulation_fk`
+   * - ``state.body_qd``
+     - *(FK)*
+     - Computed via :func:`~newton.eval_articulation_fk`
+   * - ``state.body_qdd``
+     - ``cacc``
+     - Body accelerations; only when field is non-None
+   * - ``state.body_parent_f``
+     - ``cfrc_int``
+     - Incoming joint wrenches; only when field is non-None
+   * - ``state.mujoco.qfrc_actuator``
+     - ``qfrc_actuator``
+     - Actuator forces in joint space; only when field is non-None
 
 
 Collision filtering
@@ -166,106 +1213,6 @@ inertia tensor is diagonal the solver uses ``diaginertia``; otherwise it uses
 
 Zero-mass bodies (e.g. sensor frames) omit mass and inertia entirely, letting
 MuJoCo derive them from child geoms (``inertiafromgeom="auto"``).
-
-
-Actuators
----------
-
-Newton's per-DOF ``joint_target_mode`` determines which MuJoCo general
-actuators are created:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 75
-
-   * - Mode
-     - MuJoCo actuator(s)
-   * - ``POSITION``
-     - One actuator: ``gainprm = [kp]``, ``biasprm = [0, -kp, -kd]``.
-   * - ``VELOCITY``
-     - One actuator: ``gainprm = [kd]``, ``biasprm = [0, 0, -kd]``.
-   * - ``POSITION_VELOCITY``
-     - Two actuators — a position actuator (``gainprm = [kp]``,
-       ``biasprm = [0, -kp, 0]``) and a velocity actuator
-       (``gainprm = [kd]``, ``biasprm = [0, 0, -kd]``).
-   * - ``NONE``
-     - No actuator created for this DOF.
-
-``joint_effort_limit`` is forwarded as ``actfrcrange`` on the joint (for
-prismatic, revolute, and D6 joints) or as ``forcerange`` on the actuator (for
-ball joints).
-
-Additional MuJoCo general actuators (motors, etc.) can be attached through
-custom attributes and are appended after the joint-target actuators.
-
-
-Equality constraints
---------------------
-
-.. list-table::
-   :header-rows: 1
-   :widths: 20 20 60
-
-   * - Newton type
-     - MuJoCo type
-     - Notes
-   * - ``CONNECT``
-     - ``mjEQ_CONNECT``
-     - Anchor forwarded in ``data[0:3]``.
-   * - ``WELD``
-     - ``mjEQ_WELD``
-     - Relative pose and torque scale forwarded.
-   * - ``JOINT``
-     - ``mjEQ_JOINT``
-     - Polynomial coefficients forwarded in ``data[0:5]``.
-   * - Mimic
-     - ``mjEQ_JOINT``
-     - ``coef0`` / ``coef1`` mapped to polynomial coefficients.
-       Only ``REVOLUTE`` and ``PRISMATIC`` joints are supported.
-
-``eq_solref`` custom attributes are forwarded when present.
-
-
-Solver options
---------------
-
-Solver parameters follow a three-level resolution priority:
-
-1. **Constructor argument** — value passed to :class:`~newton.solvers.SolverMuJoCo`.
-2. **Custom attribute** (``model.mujoco.<option>``) — supports per-world values.
-   These attributes are typically populated automatically when importing USD or
-   MJCF assets.
-3. **Default** — the table below lists Newton defaults alongside MuJoCo
-   defaults for reference.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 25 25 25
-
-   * - Option
-     - Newton default
-     - MuJoCo default
-     - Notes
-   * - ``solver``
-     - ``newton``
-     - ``newton``
-     -
-   * - ``integrator``
-     - ``implicitfast``
-     - ``euler``
-     - ``implicitfast`` provides better stability for stiff systems.
-   * - ``cone``
-     - ``pyramidal``
-     - ``pyramidal``
-     -
-   * - ``iterations``
-     - 100
-     - 100
-     -
-   * - ``ls_iterations``
-     - 50
-     - 50
-     -
 
 
 Multi-world support
@@ -319,6 +1266,12 @@ Caveats
 **Velocity limits are not forwarded.**
   Newton's ``joint_velocity_limit`` has no MuJoCo equivalent and is ignored.
 
+**joint_enabled is not supported.**
+  Newton's per-joint ``joint_enabled`` flag has no effect in the MuJoCo solver.
+
+**DISTANCE and CABLE joints are not supported.**
+  These joint types cannot be represented in MuJoCo and will raise an error.
+
 **Body ordering must be depth-first.**
   The solver sorts joints in depth-first topological order for MuJoCo's
   kinematic tree.  If the Newton model's joint order differs, a warning is
@@ -365,3 +1318,5 @@ If you edit :attr:`newton.Model.joint_X_p` or :attr:`newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
 ``solver.notify_model_changed(newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES)``
 to synchronize the updated fixed-root poses into MuJoCo.
+
+

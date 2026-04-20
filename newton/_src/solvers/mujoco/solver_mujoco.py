@@ -405,10 +405,315 @@ class SolverMuJoCo(SolverBase):
     @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
-        """
-        Declare custom attributes to be allocated on the Model object within the ``mujoco`` namespace.
-        Custom attributes use ``CustomAttribute.usd_attribute_name`` with the ``mjc:`` prefix (e.g. ``"mjc:condim"``)
-        to leverage the MuJoCo USD schema where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
+        """Declare MuJoCo custom attributes and frequencies on the builder.
+
+        Registers all custom frequencies and custom attributes in the
+        ``mujoco`` namespace so they are allocated on the
+        :class:`~newton.Model`, :class:`~newton.State`, or
+        :class:`~newton.Control` objects after
+        :meth:`~newton.ModelBuilder.finalize`.  Attributes use
+        ``usd_attribute_name`` with the ``"mjc"`` prefix to leverage the
+        MuJoCo USD schema (``mjc:attr`` instead of
+        ``newton:mujoco:attr``).
+
+        Call this method on a :class:`~newton.ModelBuilder` **before**
+        loading MJCF, URDF, or USD assets that contain MuJoCo-specific
+        data.
+
+        For detailed semantics of individual attributes, see the
+        `MuJoCo XML Reference <https://mujoco.readthedocs.io/en/latest/XMLreference.html>`_
+        and `mjModel documentation <https://mujoco.readthedocs.io/en/latest/APIreference.html#mjmodel>`_.
+
+        Custom Frequencies:
+            The following custom frequencies are registered.  Each one
+            defines a variable-length entity type whose count is
+            independent of Newton's built-in entity types.
+
+            ``mujoco:pair``
+                Explicit contact pairs (from MJCF ``<contact><pair>``).
+            ``mujoco:actuator``
+                General MuJoCo actuators (from MJCF ``<actuator>`` or
+                USD ``MjcActuator`` prims).
+            ``mujoco:tendon``
+                Fixed and spatial tendons (from MJCF ``<tendon>`` or
+                USD ``MjcTendon`` prims).
+            ``mujoco:tendon_joint``
+                Per-joint entries inside fixed tendons (one row per
+                joint contribution in a tendon's linear combination).
+            ``mujoco:tendon_wrap``
+                Per-element entries inside spatial tendon wrap paths.
+
+        Custom Attributes:
+            All attributes below are in the ``mujoco`` namespace and
+            are accessible after finalization as
+            ``model.mujoco.<name>``, ``state.mujoco.<name>``, or
+            ``control.mujoco.<name>`` depending on their assignment.
+
+            **Geom / shape attributes** (frequency: ``SHAPE``):
+
+            ``condim``
+                Contact dimensionality (default 3).
+            ``geom_priority``
+                Contact-parameter mixing priority (default 0).
+            ``geom_solimp``
+                Solver impedance parameters, ``vec5``
+                (default ``(0.9, 0.95, 0.001, 0.5, 2.0)``).
+            ``geom_solmix``
+                Solver mixing weight (default ``1.0``).
+
+            **Joint / DOF attributes** (frequency: ``JOINT_DOF``
+            unless noted):
+
+            ``limit_margin``
+                Joint-limit margin [m or rad] (default ``0.0``).
+            ``solimplimit``
+                Solver impedance for joint limits, ``vec5``.
+            ``solreffriction``
+                Solver reference for joint friction, ``vec2``
+                (default ``(0.02, 1.0)``).
+            ``solimpfriction``
+                Solver impedance for joint friction, ``vec5``.
+            ``dof_passive_stiffness``
+                Passive spring stiffness [N/m or N·m/rad]
+                (default ``0.0``).
+            ``dof_passive_damping``
+                Passive damping coefficient [N·s/m or N·m·s/rad]
+                (default ``0.0``).
+            ``dof_springref``
+                Spring reference position [m or rad] (default ``0.0``).
+            ``dof_ref``
+                Joint reference position [m or rad] (default ``0.0``).
+            ``jnt_actgravcomp``
+                Per-DOF actuator gravity compensation flag (default
+                ``False``).
+
+            **Body attributes** (frequency: ``BODY``):
+
+            ``gravcomp``
+                Gravity compensation scaling factor (default ``0.0``).
+
+            **Equality constraint attributes** (frequency:
+            ``EQUALITY_CONSTRAINT``):
+
+            ``eq_solref``
+                Solver reference for equality constraints, ``vec2``
+                (default ``(0.02, 1.0)``).
+            ``eq_solimp``
+                Solver impedance for equality constraints, ``vec5``.
+
+            **Solver options — per-world** (frequency: ``WORLD``):
+
+            ``impratio``
+                Impedance ratio (default ``1.0``).
+            ``tolerance``
+                Solver tolerance (default ``1e-8``).
+            ``ls_tolerance``
+                Line-search tolerance (default ``0.01``).
+            ``ccd_tolerance``
+                CCD tolerance (default ``1e-6``).
+            ``density``
+                Medium density [kg/m³] (default ``0.0``).
+            ``viscosity``
+                Medium viscosity [Pa·s] (default ``0.0``).
+            ``wind``
+                Wind velocity [m/s], ``vec3``
+                (default ``(0, 0, 0)``).
+            ``magnetic``
+                Magnetic flux [T], ``vec3``
+                (default ``(0, -0.5, 0)``).
+
+            **Solver options — per-model** (frequency: ``ONCE``):
+
+            ``iterations``
+                Maximum solver iterations (default ``100``).
+            ``ls_iterations``
+                Maximum line-search iterations (default ``50``).
+            ``ccd_iterations``
+                Maximum CCD iterations (default ``35``).
+            ``sdf_iterations``
+                Maximum SDF iterations (default ``10``).
+            ``sdf_initpoints``
+                SDF initial sample points (default ``40``).
+            ``integrator``
+                Integration scheme as ``int`` enum (default ``3`` =
+                ``implicitfast``).
+            ``solver``
+                Constraint solver as ``int`` enum (default ``2`` =
+                ``newton``).
+            ``cone``
+                Friction cone type as ``int`` enum (default ``0`` =
+                ``pyramidal``).
+            ``jacobian``
+                Jacobian type as ``int`` enum (default ``2`` =
+                ``auto``).
+
+            **Compiler options** (frequency: ``ONCE``):
+
+            ``autolimits``
+                Enable automatic limit inference (default ``True``).
+
+            **Pair attributes** (frequency: ``mujoco:pair``):
+
+            ``pair_world``
+                World index for this pair.
+            ``pair_geom1``
+                First shape index.
+            ``pair_geom2``
+                Second shape index.
+            ``pair_condim``
+                Contact dimensionality (default ``3``).
+            ``pair_solref``
+                Solver reference ``vec2`` (default ``(0.02, 1.0)``).
+            ``pair_solreffriction``
+                Solver reference for friction ``vec2``
+                (default ``(0.02, 1.0)``).
+            ``pair_solimp``
+                Solver impedance ``vec5``.
+            ``pair_margin``
+                Contact margin [m] (default ``0.0``).
+            ``pair_gap``
+                Contact gap [m] (default ``0.0``).
+            ``pair_friction``
+                Five-element friction ``vec5``
+                (default ``(1, 1, 0.005, 0.0001, 0.0001)``).
+
+            **Actuator attributes** (frequency: ``mujoco:actuator``
+            unless noted):
+
+            ``joint_dof_label``
+                DOF label strings derived from USD prim paths
+                (frequency: ``JOINT_DOF``).
+            ``actuator_trnid``
+                Transmission target index pair ``vec2i``
+                (default ``(-1, -1)``).
+            ``actuator_target_label``
+                Target path label resolved from USD.
+            ``actuator_trntype``
+                Transmission type as ``int`` enum (default ``0`` =
+                joint).
+            ``actuator_dyntype``
+                Activation dynamics type as ``int`` enum (default
+                ``0`` = none).
+            ``actuator_gaintype``
+                Gain type as ``int`` enum (default ``0`` = fixed).
+            ``actuator_biastype``
+                Bias type as ``int`` enum (default ``0`` = none).
+            ``actuator_world``
+                World index (default ``-1``).
+            ``actuator_ctrllimited``
+                Control-range limiting tri-state (default ``2`` =
+                auto).
+            ``actuator_forcelimited``
+                Force-range limiting tri-state (default ``2`` = auto).
+            ``actuator_ctrlrange``
+                Control range ``vec2`` (default ``(0, 0)``).
+            ``actuator_has_ctrlrange``
+                Whether ``ctrlrange`` was explicitly authored
+                (default ``0``).
+            ``actuator_forcerange``
+                Force range [N] ``vec2`` (default ``(0, 0)``).
+            ``actuator_has_forcerange``
+                Whether ``forcerange`` was explicitly authored
+                (default ``0``).
+            ``actuator_gear``
+                Gear ratio vector, length 6 (default
+                ``(1, 0, 0, 0, 0, 0)``).
+            ``actuator_cranklength``
+                Crank length for slider-crank transmissions [m]
+                (default ``0.0``).
+            ``actuator_dynprm``
+                Activation dynamics parameters ``vec10``.
+            ``actuator_gainprm``
+                Gain parameters ``vec10``
+                (default ``(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)``).
+            ``actuator_biasprm``
+                Bias parameters ``vec10`` (default all zeros).
+            ``actuator_actlimited``
+                Activation-range limiting tri-state (default ``2`` =
+                auto).
+            ``actuator_actrange``
+                Activation range ``vec2`` (default ``(0, 0)``).
+            ``actuator_has_actrange``
+                Whether ``actrange`` was explicitly authored
+                (default ``0``).
+            ``actuator_actdim``
+                Activation state dimension (default ``-1`` = auto).
+            ``actuator_actearly``
+                Apply activation at start of step (default ``False``).
+            ``ctrl``
+                Control signal (assignment: ``CONTROL``,
+                default ``0.0``).
+            ``ctrl_source``
+                Control source enum (default ``CTRL_DIRECT``).
+
+            **Tendon attributes** (frequency: ``mujoco:tendon`` unless
+            noted):
+
+            ``tendon_world``
+                World index.
+            ``tendon_stiffness``
+                Spring stiffness [N/m] (default ``0.0``).
+            ``tendon_damping``
+                Damping coefficient [N·s/m] (default ``0.0``).
+            ``tendon_frictionloss``
+                Friction loss [N] (default ``0.0``).
+            ``tendon_limited``
+                Length-limit tri-state (default ``2`` = auto).
+            ``tendon_range``
+                Length range [m] ``vec2`` (default ``(0, 0)``).
+            ``tendon_margin``
+                Length-limit margin [m] (default ``0.0``).
+            ``tendon_solref_limit``
+                Solver reference for length limits ``vec2``
+                (default ``(0.02, 1.0)``).
+            ``tendon_solimp_limit``
+                Solver impedance for length limits ``vec5``.
+            ``tendon_solref_friction``
+                Solver reference for friction ``vec2``
+                (default ``(0.02, 1.0)``).
+            ``tendon_solimp_friction``
+                Solver impedance for friction ``vec5``.
+            ``tendon_armature``
+                Armature [kg] (default ``0.0``).
+            ``tendon_springlength``
+                Spring rest length [m], ``vec2``
+                (default ``(-1, -1)`` = use model length).
+            ``tendon_joint_adr``
+                Start address into joint arrays.
+            ``tendon_joint_num``
+                Number of joints in this tendon.
+            ``tendon_actuator_force_range``
+                Actuator force range [N] ``vec2`` (default ``(0, 0)``).
+            ``tendon_actuator_force_limited``
+                Actuator force limiting tri-state (default ``2`` =
+                auto).
+            ``tendon_label``
+                Tendon name string.
+            ``tendon_type``
+                Tendon type (``0`` = fixed, ``1`` = spatial).
+            ``tendon_wrap_adr``
+                Start address into wrap-path arrays.
+            ``tendon_wrap_num``
+                Number of wrap elements.
+            ``tendon_joint``
+                Joint index per entry (frequency:
+                ``mujoco:tendon_joint``).
+            ``tendon_coef``
+                Joint coefficient per entry (frequency:
+                ``mujoco:tendon_joint``).
+
+            **Spatial tendon wrap attributes** (frequency:
+            ``mujoco:tendon_wrap``):
+
+            ``tendon_wrap_type``
+                Wrap element type (``0`` = site, ``1`` = geom,
+                ``2`` = pulley).
+            ``tendon_wrap_shape``
+                Shape index for geom wraps (default ``-1``).
+            ``tendon_wrap_sidesite``
+                Side-site shape index (default ``-1``).
+            ``tendon_wrap_prm``
+                Wrap parameter (default ``0.0``).
         """
         # Register custom frequencies before adding attributes that use them
         # This is required as custom frequencies must be registered before use
