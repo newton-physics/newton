@@ -23,31 +23,31 @@ from .contact_solver_kernels import (
 )
 from .rheology_solver_kernels import (
     YieldParamVec,
-    build_flat_color_offsets,
-    build_flat_offsets,
-    build_batch_transpose_offsets,
-    build_strain_to_batch,
-    compute_batch_base_offsets,
-    globalize_batch_offsets,
-    compute_vel_node_multiplicity,
-    expand_flat_ids,
-    fill_batch_transpose,
-    reorder_strain_mat,
     apply_stress_delta_jacobi,
     apply_stress_gs,
     apply_velocity_delta,
-    compute_delassus_diagonal,
-    evaluate_strain_residual,
     batched_scatter,
+    build_batch_transpose_offsets,
+    build_flat_color_offsets,
+    build_flat_offsets,
+    build_strain_to_batch,
+    compute_batch_base_offsets,
+    compute_delassus_diagonal,
+    compute_vel_node_multiplicity,
+    evaluate_strain_residual,
+    expand_flat_ids,
+    fill_batch_transpose,
+    globalize_batch_offsets,
     jacobi_preconditioner,
-    make_gs_solve_kernel,
     make_batched_solve_kernel,
+    make_gs_solve_kernel,
     make_jacobi_solve_kernel,
     make_reordered_gs_solve_kernel,
     mat13,
     mat55,
     postprocess_stress_and_strain,
     preprocess_stress_and_strain,
+    reorder_strain_mat,
     vec6,
 )
 
@@ -954,9 +954,7 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         # ── Build per-batch mass-split Delassus diagonal ───────────
 
         # Step 1: strain → batch mapping
-        self._strain_batch = fem.borrow_temporary(
-            temporary_store, shape=(n_total,), dtype=int, device=self.device
-        )
+        self._strain_batch = fem.borrow_temporary(temporary_store, shape=(n_total,), dtype=int, device=self.device)
         self._strain_batch.fill_(-1)
         wp.launch(
             kernel=build_strain_to_batch,
@@ -1069,9 +1067,7 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             wp.utils.array_scan(batch_counts[bi], batch_local_offsets[bi], inclusive=False)
 
         # Step 3: compute per-batch base offsets (single-threaded kernel; fully written)
-        sc_bases = fem.borrow_temporary(
-            temporary_store, shape=(self.n_batches,), dtype=int, device=self.device
-        )
+        sc_bases = fem.borrow_temporary(temporary_store, shape=(self.n_batches,), dtype=int, device=self.device)
         wp.launch(
             kernel=compute_batch_base_offsets,
             dim=1,
@@ -1093,12 +1089,8 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         )
 
         # Step 5: allocate flat arrays and fill all SCs in one pass
-        self._batch_columns = fem.borrow_temporary(
-            temporary_store, shape=(total_nnz,), dtype=int, device=self.device
-        )
-        self._batch_values = fem.borrow_temporary(
-            temporary_store, shape=(total_nnz,), dtype=mat13, device=self.device
-        )
+        self._batch_columns = fem.borrow_temporary(temporary_store, shape=(total_nnz,), dtype=int, device=self.device)
+        self._batch_values = fem.borrow_temporary(temporary_store, shape=(total_nnz,), dtype=mat13, device=self.device)
         batch_write_cursors = fem.borrow_temporary(
             temporary_store, shape=(self.n_batches, n_vel + 1), dtype=int, device=self.device
         )
@@ -1744,10 +1736,7 @@ def solve_rheology(
         )
     rheology_solver_class = _RHEOLOGY_SOLVERS.get(solvers[0])
     if rheology_solver_class is None:
-        raise ValueError(
-            f"Invalid solver {solvers[0]!r}. "
-            f"Accepted values: {list(_RHEOLOGY_SOLVERS)}."
-        )
+        raise ValueError(f"Invalid solver {solvers[0]!r}. Accepted values: {list(_RHEOLOGY_SOLVERS)}.")
 
     rheology_solver = rheology_solver_class(delassus_operator, temporary_store)
     rheology_solver.apply_initial_guess()

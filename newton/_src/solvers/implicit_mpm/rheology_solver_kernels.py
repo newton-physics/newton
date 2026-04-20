@@ -137,7 +137,7 @@ def compute_vel_node_multiplicity(
     transposed_strain_mat_columns: wp.array[int],
     strain_batch: wp.array[int],
     n_batches: int,
-    multiplicity: wp.array2d(dtype=float),
+    multiplicity: wp.array2d[float],
 ):
     """Compute per-velocity-node per-batch multiplicity.
 
@@ -177,7 +177,7 @@ def compute_delassus_diagonal(
 
     For each strain node:
 
-    1. Assembles the 6×6 diagonal block by summing velocity-node contributions,
+    1. Assembles the 6x6 diagonal block by summing velocity-node contributions,
        each scaled by ``inv_volume[u_i] * mass_multiplicity[bi, u_i]`` where
        ``bi = strain_batch[tau_i]``.
     2. Zeros the shear-divergence coupling.
@@ -1061,7 +1061,7 @@ def make_gs_solve_kernel(
 
 @wp.kernel
 def build_flat_offsets(
-    color_blocks: wp.array2d(dtype=int),
+    color_blocks: wp.array2d[int],
     color_offsets: wp.array[int],
     out: wp.array[int],
 ):
@@ -1090,7 +1090,7 @@ def build_flat_color_offsets(
 
 @wp.kernel
 def expand_flat_ids(
-    color_blocks: wp.array2d(dtype=int),
+    color_blocks: wp.array2d[int],
     color_offsets: wp.array[int],
     block_flat_offsets: wp.array[int],
     flat_constraint_ids: wp.array[int],
@@ -1111,10 +1111,10 @@ def reorder_strain_mat(
     strain_mat_offsets: wp.array[int],
     strain_mat_columns: wp.array[int],
     strain_mat_values: wp.array[mat13],
-    reordered_cols: wp.array2d(dtype=int),
-    reordered_vals_x: wp.array2d(dtype=float),
-    reordered_vals_y: wp.array2d(dtype=float),
-    reordered_vals_z: wp.array2d(dtype=float),
+    reordered_cols: wp.array2d[int],
+    reordered_vals_x: wp.array2d[float],
+    reordered_vals_y: wp.array2d[float],
+    reordered_vals_z: wp.array2d[float],
     reordered_n_entries: wp.array[int],
 ):
     """Reorder strain_mat into entry-major SoA layout for coalesced access."""
@@ -1156,10 +1156,10 @@ def make_reordered_gs_solve_kernel(
         flat_color_offsets: wp.array[int],
         flat_constraint_ids: wp.array[int],
         reordered_n_entries: wp.array[int],
-        reordered_cols: wp.array2d(dtype=int),
-        reordered_vals_x: wp.array2d(dtype=float),
-        reordered_vals_y: wp.array2d(dtype=float),
-        reordered_vals_z: wp.array2d(dtype=float),
+        reordered_cols: wp.array2d[int],
+        reordered_vals_x: wp.array2d[float],
+        reordered_vals_y: wp.array2d[float],
+        reordered_vals_z: wp.array2d[float],
         yield_params: wp.array[YieldParamVec],
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
@@ -1190,7 +1190,13 @@ def make_reordered_gs_solve_kernel(
                     tau += compliance_mat_values[b] @ local_stress[compliance_mat_columns[b]]
 
             ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
-                tau_i, tau, yield_params, strain_node_volume, delassus_diagonal, delassus_rotation, local_stress,
+                tau_i,
+                tau,
+                yield_params,
+                strain_node_volume,
+                delassus_diagonal,
+                delassus_rotation,
+                local_stress,
             )
             local_stress[tau_i] += ds
             delta_correction[tau_i] = ds
@@ -1252,10 +1258,10 @@ def make_batched_solve_kernel(
         flat_color_offsets: wp.array[int],
         colors_per_batch: int,
         flat_constraint_ids: wp.array[int],
-        reordered_cols: wp.array2d(dtype=int),
-        reordered_vals_x: wp.array2d(dtype=float),
-        reordered_vals_y: wp.array2d(dtype=float),
-        reordered_vals_z: wp.array2d(dtype=float),
+        reordered_cols: wp.array2d[int],
+        reordered_vals_x: wp.array2d[float],
+        reordered_vals_y: wp.array2d[float],
+        reordered_vals_z: wp.array2d[float],
         yield_params: wp.array[YieldParamVec],
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
@@ -1270,10 +1276,12 @@ def make_batched_solve_kernel(
     ):
         i = wp.tid()
         batch_beg = flat_color_offsets[batch_index * colors_per_batch]
-        batch_end = flat_color_offsets[wp.min(
-            (batch_index + 1) * colors_per_batch,
-            flat_color_offsets.shape[0] - 1,
-        )]
+        batch_end = flat_color_offsets[
+            wp.min(
+                (batch_index + 1) * colors_per_batch,
+                flat_color_offsets.shape[0] - 1,
+            )
+        ]
 
         for fi in range(batch_beg + i, batch_end, launch_dim):
             tau_i = flat_constraint_ids[fi]
@@ -1290,8 +1298,13 @@ def make_batched_solve_kernel(
                     tau += compliance_mat_values[b] @ local_stress[compliance_mat_columns[b]]
 
             ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
-                tau_i, tau, yield_params, strain_node_volume,
-                delassus_diagonal, delassus_rotation, local_stress,
+                tau_i,
+                tau,
+                yield_params,
+                strain_node_volume,
+                delassus_diagonal,
+                delassus_rotation,
+                local_stress,
             )
             local_stress[tau_i] += ds
             delta_correction[tau_i] = ds
@@ -1305,7 +1318,7 @@ def build_batch_transpose_offsets(
     transposed_strain_mat_columns: wp.array[int],
     strain_batch: wp.array[int],
     n_batches: int,
-    batch_transpose_offsets: wp.array2d(dtype=int),
+    batch_transpose_offsets: wp.array2d[int],
 ):
     """Count per-velocity-node per-batch entries for the filtered transpose.
 
@@ -1325,8 +1338,8 @@ def build_batch_transpose_offsets(
 
 @wp.kernel
 def compute_batch_base_offsets(
-    batch_counts: wp.array2d(dtype=int),
-    batch_local_offsets: wp.array2d(dtype=int),
+    batch_counts: wp.array2d[int],
+    batch_local_offsets: wp.array2d[int],
     batch_bases: wp.array[int],
 ):
     """Compute per-batch totals and base offsets (single-threaded).
@@ -1349,10 +1362,10 @@ def compute_batch_base_offsets(
 
 @wp.kernel
 def globalize_batch_offsets(
-    batch_counts: wp.array2d(dtype=int),
-    batch_local_offsets: wp.array2d(dtype=int),
+    batch_counts: wp.array2d[int],
+    batch_local_offsets: wp.array2d[int],
     batch_bases: wp.array[int],
-    batch_global_offsets: wp.array2d(dtype=int),
+    batch_global_offsets: wp.array2d[int],
 ):
     """Convert local per-batch prefix sums to global offsets into a flat array.
 
@@ -1377,7 +1390,7 @@ def fill_batch_transpose(
     transposed_strain_mat_columns: wp.array[int],
     transposed_strain_mat_values: wp.array[mat13],
     strain_batch: wp.array[int],
-    batch_write_cursors: wp.array2d(dtype=int),
+    batch_write_cursors: wp.array2d[int],
     batch_columns: wp.array[int],
     batch_values: wp.array[mat13],
 ):

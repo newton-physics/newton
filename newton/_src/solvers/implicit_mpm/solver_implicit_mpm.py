@@ -2132,22 +2132,7 @@ class SolverImplicitMPM(SolverBase):
                 collider_impulse=scratch.impulse_field.dof_values,
             )
 
-            if getattr(self, "dump_rheology_path", None):
-                from ._debug_rheology_io import dump_rheology_data
-
-                wp.synchronize_device()
-                dump_rheology_data(
-                    self.dump_rheology_path,
-                    self.solver,
-                    self.max_iterations,
-                    self.tolerance,
-                    momentum_data,
-                    rheology_data,
-                    collision_data,
-                )
-                self.dump_rheology_path = None
-
-            # Retain graph to avoid immediate CPU synch
+            # Retain graph to avoid immediate CPU sync
             solve_graph = solve_rheology(
                 self.solver,
                 self.max_iterations,

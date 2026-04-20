@@ -128,7 +128,10 @@ class Example:
 
         # Solver parameters
         parser.add_argument(
-            "--solver", "-s", type=str, default="auto",
+            "--solver",
+            "-s",
+            type=str,
+            default="auto",
         )
         parser.add_argument("--max-iterations", "-it", type=int, default=250)
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
