@@ -49,24 +49,6 @@ def compute_com_transforms(
 
 
 @wp.kernel
-def compute_body_q_com(
-    body_q: wp.array[wp.transform],
-    body_X_com: wp.array[wp.transform],
-    # outputs
-    body_q_com: wp.array[wp.transform],
-):
-    """Compose body-to-COM transforms into world-to-COM transforms.
-
-    ``body_q_com[i] = body_q[i] * body_X_com[i]`` maps the COM of body ``i``
-    from its local frame into world space. The result is consumed by the
-    Featherstone inverse-dynamics kernels which expect body COM poses in the
-    world frame.
-    """
-    tid = wp.tid()
-    body_q_com[tid] = body_q[tid] * body_X_com[tid]
-
-
-@wp.kernel
 def zero_kinematic_body_forces(
     body_flags: wp.array[wp.int32],
     body_f: wp.array[wp.spatial_vector],
@@ -599,16 +581,21 @@ def compute_link_velocity(
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
     joint_qd: wp.array[float],
     joint_axis: wp.array[wp.vec3],
     joint_dof_dim: wp.array2d[int],
     body_I_m: wp.array[wp.spatial_matrix],
-    body_q: wp.array[wp.transform],
-    body_q_com: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
     joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
     body_world: wp.array[wp.int32],
     gravity: wp.array[wp.vec3],
+    # in/outputs (written for this joint's child, read for earlier joints' children)
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
     body_I_s: wp.array[wp.spatial_matrix],
@@ -616,64 +603,103 @@ def compute_link_velocity(
     body_f_s: wp.array[wp.spatial_vector],
     body_a_s: wp.array[wp.spatial_vector],
 ):
+    """FK + inverse-dynamics first sweep for a single joint.
+
+    The world-frame child pose ``body_q[child]`` and the Newton public
+    COM-referenced twist ``body_qd[child]`` are derived from the current
+    ``joint_q`` / ``joint_qd`` while walking the articulation tree. The
+    world-frame COM transform ``X_sm`` is computed inline from
+    ``body_X_com`` instead of being read from a pre-staged ``body_q_com``
+    buffer, so the solver no longer needs a separate ``eval_fk`` or
+    ``compute_body_q_com`` launch before the Featherstone ID kernel.
+    """
     type = joint_type[i]
     child = joint_child[i]
     parent = joint_parent[i]
+    q_start = joint_q_start[i]
     qd_start = joint_qd_start[i]
-
-    X_pj = joint_X_p[i]
-    # X_cj = joint_X_c[i]
-
-    # parent anchor frame in world space
-    X_wpj = X_pj
-    if parent >= 0:
-        X_wp = body_q[parent]
-        X_wpj = X_wp * X_wpj
-
-    X_sm = body_q_com[child]
-
-    # compute motion subspace and velocity across the joint (also stores S_s to global memory)
     lin_axis_count = joint_dof_dim[i, 0]
     ang_axis_count = joint_dof_dim[i, 1]
+
+    X_pj = joint_X_p[i]
+    X_cj = joint_X_c[i]
+
+    # Joint transform from current joint_q (same formulation as eval_fk).
+    X_j = jcalc_transform(
+        type,
+        joint_axis,
+        qd_start,
+        lin_axis_count,
+        ang_axis_count,
+        joint_q,
+        q_start,
+    )
+
+    # Parent body pose in world space; identity for root joints.
+    X_wp = wp.transform_identity()
+    if parent >= 0:
+        X_wp = body_q[parent]
+
+    # Parent anchor frame in world space.
+    X_wpj = X_wp * X_pj
+    # Child joint-anchor frame in world space.
+    X_wcj = X_wpj * X_j
+    # Child body frame in world space; matches eval_single_articulation_fk.
+    X_wc = X_wcj * wp.transform_inverse(X_cj)
+
+    # Refresh the public body pose before the velocity and force stages so
+    # subsequent joints in this articulation (and any downstream consumers
+    # reading ``state_in.body_q``) see the current value derived from joint_q.
+    body_q[child] = X_wc
+
+    # World-frame COM transform. ``X_sm.pos`` is the absolute COM position
+    # in world space and is needed by both the motion subspace
+    # (FREE/DISTANCE) and the spatial-inertia / gravity terms below.
+    X_sm = X_wc * body_X_com[child]
+    x_com_world = wp.transform_get_translation(X_sm)
+
+    # Motion subspace + joint-space velocity contribution. For every joint
+    # type the return ``v_j_s`` is an s-frame (world-origin referenced)
+    # twist, matching the existing Featherstone convention.
     v_j_s = jcalc_motion(
         type,
         joint_axis,
         lin_axis_count,
         ang_axis_count,
         X_wpj,
-        wp.transform_get_translation(X_sm),
+        x_com_world,
         joint_qd,
         qd_start,
         joint_S_s,
     )
 
-    # parent velocity
+    # Parent s-frame velocity / acceleration for the recurrence.
     v_parent_s = wp.spatial_vector()
     a_parent_s = wp.spatial_vector()
-
     if parent >= 0:
         v_parent_s = body_v_s[parent]
         a_parent_s = body_a_s[parent]
 
-    # body velocity, acceleration
+    # Child s-frame velocity and acceleration.
     v_s = v_parent_s + v_j_s
-    a_s = a_parent_s + spatial_cross(v_s, v_j_s)  # + joint_S_s[i]*self.joint_qdd[i]
+    a_s = a_parent_s + spatial_cross(v_s, v_j_s)  # + joint_S_s[i]*joint_qdd[i]
 
-    # compute body forces
+    # Convert the world-origin referenced twist to Newton's public
+    # (v_com_world, omega_world) convention: v_com = v_s.lin + omega x x_com.
+    omega_world = wp.spatial_bottom(v_s)
+    v_com_world = wp.spatial_top(v_s) + wp.cross(omega_world, x_com_world)
+    body_qd[child] = wp.spatial_vector(v_com_world, omega_world)
+
+    # Body inertia / gravity / Coriolis terms (unchanged).
     I_m = body_I_m[child]
-
-    # gravity and external forces (expressed in frame aligned with s but centered at body mass)
     m = I_m[0, 0]
 
     world_idx = body_world[child]
     world_g = gravity[wp.max(world_idx, 0)]
     f_g = m * world_g
-    r_com = wp.transform_get_translation(X_sm)
-    f_g_s = wp.spatial_vector(f_g, wp.cross(r_com, f_g))
+    f_g_s = wp.spatial_vector(f_g, wp.cross(x_com_world, f_g))
 
-    # body forces
     I_s = transform_spatial_inertia(X_sm, I_m)
-
     f_b_s = I_s * a_s + spatial_cross_dual(v_s, I_s * v_s)
 
     body_v_s[child] = v_s
@@ -714,23 +740,32 @@ def accumulate_free_distance_joint_f_to_body_force(
 
 
 # Inverse dynamics via Recursive Newton-Euler algorithm (Featherstone Table 5.1)
+#
+# This kernel now also runs the forward-kinematics pass for the articulation:
+# it derives ``body_q`` / ``body_qd`` from the current ``joint_q`` /
+# ``joint_qd`` as it walks the tree, eliminating the previously redundant
+# ``eval_fk`` + ``compute_body_q_com`` launches that preceded it.
 @wp.kernel
 def eval_rigid_id(
     articulation_start: wp.array[int],
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
     joint_qd: wp.array[float],
     joint_axis: wp.array[wp.vec3],
     joint_dof_dim: wp.array2d[int],
     body_I_m: wp.array[wp.spatial_matrix],
-    body_q: wp.array[wp.transform],
-    body_q_com: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
     joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
     body_world: wp.array[wp.int32],
     gravity: wp.array[wp.vec3],
     # outputs
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
     joint_S_s: wp.array[wp.spatial_vector],
     body_I_s: wp.array[wp.spatial_matrix],
     body_v_s: wp.array[wp.spatial_vector],
@@ -743,23 +778,27 @@ def eval_rigid_id(
     start = articulation_start[index]
     end = articulation_start[index + 1]
 
-    # compute link velocities and coriolis forces
+    # compute FK, link velocities, and coriolis forces in a single tree walk
     for i in range(start, end):
         compute_link_velocity(
             i,
             joint_type,
             joint_parent,
             joint_child,
+            joint_q_start,
             joint_qd_start,
+            joint_q,
             joint_qd,
             joint_axis,
             joint_dof_dim,
             body_I_m,
-            body_q,
-            body_q_com,
+            body_X_com,
             joint_X_p,
+            joint_X_c,
             body_world,
             gravity,
+            body_q,
+            body_qd,
             joint_S_s,
             body_I_s,
             body_v_s,
@@ -789,7 +828,8 @@ def eval_rigid_tau(
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
-    body_q_com: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
     body_fb_s: wp.array[wp.spatial_vector],
     body_f_ext: wp.array[wp.spatial_vector],
     # outputs
@@ -822,10 +862,10 @@ def eval_rigid_tau(
         f_ext_public = body_f_ext[child]
         force = wp.spatial_top(f_ext_public)
         torque_com = wp.spatial_bottom(f_ext_public)
-        # Reuse the cached world-frame COM transform populated by
-        # ``compute_body_q_com`` so this kernel draws from the same source as
-        # ``eval_rigid_id`` instead of recomputing ``body_q * body_com``.
-        x_com_world = wp.transform_get_translation(body_q_com[child])
+        # Compose the world-frame body COM translation from the freshly-written
+        # ``body_q`` and the cached ``body_X_com``. Keeps the dependency local
+        # to this kernel and removes the previous ``body_q_com`` scratch buffer.
+        x_com_world = wp.transform_get_translation(body_q[child] * body_X_com[child])
         f_ext = -wp.spatial_vector(force, torque_com + wp.cross(x_com_world, force))
         f_s = f_b_s + f_t_s + f_ext
 

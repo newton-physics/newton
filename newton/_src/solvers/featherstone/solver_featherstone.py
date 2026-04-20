@@ -24,7 +24,6 @@ from ..semi_implicit.kernels_particle import (
 from ..solver import SolverBase
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
-    compute_body_q_com,
     compute_com_transforms,
     compute_spatial_inertia,
     copy_kinematic_joint_state,
@@ -302,7 +301,6 @@ class SolverFeatherstone(SolverBase):
             )
 
             # derived rigid body data (maximal coordinates)
-            target.body_q_com = wp.empty_like(model.body_q, requires_grad=requires_grad)
             target.body_I_s = wp.empty(
                 (model.body_count,), dtype=wp.spatial_matrix, device=model.device, requires_grad=requires_grad
             )
@@ -349,18 +347,10 @@ class SolverFeatherstone(SolverBase):
             control = model.control(clone_variables=False)
 
         with wp.ScopedTimer("simulate", False):
-            if model.joint_count:
-                # Keep public maximal coordinates current before any body/world-frame
-                # force accumulation. Featherstone now consumes the public Newton
-                # FREE/DISTANCE joint velocity convention directly.
-                eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-                wp.launch(
-                    compute_body_q_com,
-                    dim=model.body_count,
-                    inputs=[state_in.body_q, self.body_X_com],
-                    outputs=[state_aug.body_q_com],
-                    device=model.device,
-                )
+            # Forward kinematics is now folded into ``eval_rigid_id`` below. The
+            # Featherstone ID kernel derives ``body_q`` / ``body_qd`` from
+            # ``joint_q`` / ``joint_qd`` in a single tree walk, eliminating the
+            # previous pre-step ``eval_fk`` + ``compute_body_q_com`` launches.
 
             particle_f = None
             body_f = None
@@ -400,17 +390,15 @@ class SolverFeatherstone(SolverBase):
             # particle-particle interactions
             eval_particle_contact_forces(model, state_in, particle_f)
 
-            # particle shape contact
-            eval_particle_body_contact_forces(
-                model, state_in, contacts, particle_f, body_f, body_f_in_world_frame=False
-            )
-
-            # muscles
-            if False:
-                eval_muscle_forces(model, state_in, control, body_f)
-
             # ----------------------------
-            # articulations
+            # articulations: forward kinematics + Featherstone ID pass
+            #
+            # Must run before ``eval_particle_body_contact_forces`` so the
+            # contact kernel sees fresh ``body_q`` / ``body_qd``. The fused
+            # ``eval_rigid_id`` kernel below derives both from ``joint_q`` /
+            # ``joint_qd`` during the same tree walk that builds the spatial
+            # inertias and motion vectors, replacing the old pre-step
+            # ``eval_fk`` + ``compute_body_q_com`` launches.
 
             if model.joint_count:
                 # evaluate joint inertias, motion vectors, and forces
@@ -424,18 +412,22 @@ class SolverFeatherstone(SolverBase):
                         model.joint_type,
                         model.joint_parent,
                         model.joint_child,
+                        model.joint_q_start,
                         model.joint_qd_start,
+                        state_in.joint_q,
                         state_in.joint_qd,
                         model.joint_axis,
                         model.joint_dof_dim,
                         self.body_I_m,
-                        state_in.body_q,
-                        state_aug.body_q_com,
+                        self.body_X_com,
                         model.joint_X_p,
+                        model.joint_X_c,
                         model.body_world,
                         model.gravity,
                     ],
                     outputs=[
+                        state_in.body_q,
+                        state_in.body_qd,
                         state_aug.joint_S_s,
                         state_aug.body_I_s,
                         state_aug.body_v_s,
@@ -445,6 +437,19 @@ class SolverFeatherstone(SolverBase):
                     device=model.device,
                 )
 
+            # particle shape contact (reads fresh body_q / body_qd from ID pass)
+            eval_particle_body_contact_forces(
+                model, state_in, contacts, particle_f, body_f, body_f_in_world_frame=False
+            )
+
+            # muscles
+            if False:
+                eval_muscle_forces(model, state_in, control, body_f)
+
+            # ----------------------------
+            # articulations: rigid-body contacts and joint-torque assembly
+
+            if model.joint_count:
                 if contacts is not None and contacts.rigid_contact_max:
                     wp.launch(
                         kernel=eval_body_contact,
@@ -511,7 +516,8 @@ class SolverFeatherstone(SolverBase):
                             model.joint_limit_ke,
                             model.joint_limit_kd,
                             state_aug.joint_S_s,
-                            state_aug.body_q_com,
+                            state_in.body_q,
+                            self.body_X_com,
                             state_aug.body_f_s,
                             body_f,
                         ],
