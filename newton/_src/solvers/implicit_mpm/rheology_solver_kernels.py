@@ -1221,7 +1221,6 @@ def build_strain_to_batch(
 ):
     """Assign each strain node to its batch based on the flat ordering."""
     fi = wp.tid()
-    # Binary search: find which batch fi belongs to
     for bi in range(n_batches):
         batch_beg = flat_color_offsets[bi * colors_per_batch]
         batch_end_idx = wp.min((bi + 1) * colors_per_batch, flat_color_offsets.shape[0] - 1)
@@ -1229,25 +1228,6 @@ def build_strain_to_batch(
         if fi >= batch_beg and fi < batch_end:
             strain_batch[flat_constraint_ids[fi]] = bi
             return
-
-
-@wp.kernel
-def compute_batch_sharing_counts(
-    transposed_strain_mat_offsets: wp.array[int],
-    transposed_strain_mat_columns: wp.array[int],
-    strain_batch: wp.array[int],
-    n_batches: int,
-    batch_sharing: wp.array2d(dtype=float),
-):
-    """For each velocity node, count how many same-batch strain nodes connect to it."""
-    u_i = wp.tid()
-    beg = transposed_strain_mat_offsets[u_i]
-    end = transposed_strain_mat_offsets[u_i + 1]
-    for b in range(beg, end):
-        tau_i = transposed_strain_mat_columns[b]
-        bi = strain_batch[tau_i]
-        if bi >= 0 and bi < n_batches:
-            batch_sharing[bi, u_i] += 1.0
 
 
 def make_batched_solve_kernel(

@@ -29,7 +29,6 @@ from .rheology_solver_kernels import (
     build_strain_to_batch,
     compute_batch_base_offsets,
     globalize_batch_offsets,
-    compute_batch_sharing_counts,
     compute_vel_node_multiplicity,
     expand_flat_ids,
     fill_batch_transpose,
@@ -640,7 +639,7 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
     Reorders the BSR strain matrix into a flat, entry-major SoA layout at
     construction time.  The solve kernel statically unrolls the velocity
     gather loop for coalesced memory access, giving significant speedups
-    on higher-order bases (B2/P1d: ~73% faster than the baseline GS solver).
+    on higher-order bases at the cost of increased memory usage.
     """
 
     def __init__(
@@ -670,8 +669,10 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
         # block count is color_offsets[-1], read on device to avoid sync.
         num_blocks_capacity = self.rheology.color_blocks.shape[1]
 
-        # Flat offsets: prefix sum over color-block sizes
-        block_flat_offsets = wp.zeros(shape=(num_blocks_capacity + 1,), dtype=int, device=self.device)
+        # Flat offsets: prefix sum over color-block sizes (fully written by kernel)
+        block_flat_offsets = fem.borrow_temporary(
+            temporary_store, shape=(num_blocks_capacity + 1,), dtype=int, device=self.device
+        )
         wp.launch(
             kernel=build_flat_offsets,
             dim=1,
@@ -680,8 +681,10 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        # Flat color offsets
-        self._flat_color_offsets = wp.zeros(shape=(self.color_count + 1,), dtype=int, device=self.device)
+        # Flat color offsets (fully written by kernel)
+        self._flat_color_offsets = fem.borrow_temporary(
+            temporary_store, shape=(self.color_count + 1,), dtype=int, device=self.device
+        )
         wp.launch(
             kernel=build_flat_color_offsets,
             dim=self.color_count + 1,
@@ -690,8 +693,10 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        # Expand color blocks into flat constraint IDs
-        self._flat_constraint_ids = wp.zeros(shape=(n_total,), dtype=int, device=self.device)
+        # Expand color blocks into flat constraint IDs (fully written by kernel)
+        self._flat_constraint_ids = fem.borrow_temporary(
+            temporary_store, shape=(n_total,), dtype=int, device=self.device
+        )
         wp.launch(
             kernel=expand_flat_ids,
             dim=num_blocks_capacity,
@@ -700,12 +705,28 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        # Reorder strain matrix into entry-major SoA
-        self._reordered_n_entries = wp.zeros(shape=(n_total,), dtype=int, device=self.device)
-        self._reordered_cols = wp.zeros(shape=(max_entries, n_total), dtype=int, device=self.device)
-        self._reordered_vals_x = wp.zeros(shape=(max_entries, n_total), dtype=float, device=self.device)
-        self._reordered_vals_y = wp.zeros(shape=(max_entries, n_total), dtype=float, device=self.device)
-        self._reordered_vals_z = wp.zeros(shape=(max_entries, n_total), dtype=float, device=self.device)
+        # Reorder strain matrix into entry-major SoA.
+        # cols/vals are zero-padded: excess entries must be zero so the
+        # statically-unrolled gather loop contributes nothing for them.
+        self._reordered_n_entries = fem.borrow_temporary(
+            temporary_store, shape=(n_total,), dtype=int, device=self.device
+        )
+        self._reordered_cols = fem.borrow_temporary(
+            temporary_store, shape=(max_entries, n_total), dtype=int, device=self.device
+        )
+        self._reordered_cols.zero_()
+        self._reordered_vals_x = fem.borrow_temporary(
+            temporary_store, shape=(max_entries, n_total), dtype=float, device=self.device
+        )
+        self._reordered_vals_x.zero_()
+        self._reordered_vals_y = fem.borrow_temporary(
+            temporary_store, shape=(max_entries, n_total), dtype=float, device=self.device
+        )
+        self._reordered_vals_y.zero_()
+        self._reordered_vals_z = fem.borrow_temporary(
+            temporary_store, shape=(max_entries, n_total), dtype=float, device=self.device
+        )
+        self._reordered_vals_z.zero_()
         wp.launch(
             kernel=reorder_strain_mat,
             dim=n_total,
@@ -811,16 +832,24 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
             self.solve_local_launch.set_param_at_index(0, color)
             self.solve_local_launch.launch()
 
+    def release(self):
+        super().release()
+        self._flat_color_offsets.release()
+        self._flat_constraint_ids.release()
+        self._reordered_n_entries.release()
+        self._reordered_cols.release()
+        self._reordered_vals_x.release()
+        self._reordered_vals_y.release()
+        self._reordered_vals_z.release()
+
 
 class _BatchedGaussSeidelSolver(_RheologySolver):
     """Batched GS-Jacobi solver with batch grouping.
 
-    Merges the original colors into fewer batchs.  Within each
+    Merges the original colors into fewer batches.  Within each
     batch, constraints are solved in parallel (Jacobi-like) with a
     mass-split Delassus diagonal and atomic velocity scatter.  Between
-    batchs, GS ordering applies.  Gives 3–4× wall-clock speedup
-    over the reordered GS solver for higher-order bases (B2/P1d) at
-    moderate tolerances.
+    batches, GS ordering applies.
     """
 
     def __init__(
@@ -850,7 +879,9 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         n_total = self.size
         num_blocks_capacity = self.rheology.color_blocks.shape[1]
 
-        block_flat_offsets = wp.zeros(shape=(num_blocks_capacity + 1,), dtype=int, device=self.device)
+        block_flat_offsets = fem.borrow_temporary(
+            temporary_store, shape=(num_blocks_capacity + 1,), dtype=int, device=self.device
+        )
         wp.launch(
             kernel=build_flat_offsets,
             dim=1,
@@ -859,7 +890,9 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        self._flat_color_offsets = wp.zeros(shape=(self.color_count + 1,), dtype=int, device=self.device)
+        self._flat_color_offsets = fem.borrow_temporary(
+            temporary_store, shape=(self.color_count + 1,), dtype=int, device=self.device
+        )
         wp.launch(
             kernel=build_flat_color_offsets,
             dim=self.color_count + 1,
@@ -868,7 +901,9 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        self._flat_constraint_ids = wp.zeros(shape=(n_total,), dtype=int, device=self.device)
+        self._flat_constraint_ids = fem.borrow_temporary(
+            temporary_store, shape=(n_total,), dtype=int, device=self.device
+        )
         wp.launch(
             kernel=expand_flat_ids,
             dim=num_blocks_capacity,
@@ -877,11 +912,25 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        self._reordered_n_entries = wp.zeros(shape=(n_total,), dtype=int, device=self.device)
-        self._reordered_cols = wp.zeros(shape=(max_entries, n_total), dtype=int, device=self.device)
-        self._reordered_vals_x = wp.zeros(shape=(max_entries, n_total), dtype=float, device=self.device)
-        self._reordered_vals_y = wp.zeros(shape=(max_entries, n_total), dtype=float, device=self.device)
-        self._reordered_vals_z = wp.zeros(shape=(max_entries, n_total), dtype=float, device=self.device)
+        self._reordered_n_entries = fem.borrow_temporary(
+            temporary_store, shape=(n_total,), dtype=int, device=self.device
+        )
+        self._reordered_cols = fem.borrow_temporary(
+            temporary_store, shape=(max_entries, n_total), dtype=int, device=self.device
+        )
+        self._reordered_cols.zero_()
+        self._reordered_vals_x = fem.borrow_temporary(
+            temporary_store, shape=(max_entries, n_total), dtype=float, device=self.device
+        )
+        self._reordered_vals_x.zero_()
+        self._reordered_vals_y = fem.borrow_temporary(
+            temporary_store, shape=(max_entries, n_total), dtype=float, device=self.device
+        )
+        self._reordered_vals_y.zero_()
+        self._reordered_vals_z = fem.borrow_temporary(
+            temporary_store, shape=(max_entries, n_total), dtype=float, device=self.device
+        )
+        self._reordered_vals_z.zero_()
         wp.launch(
             kernel=reorder_strain_mat,
             dim=n_total,
@@ -902,7 +951,9 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         # ── Build per-batch mass-split Delassus diagonal ───────────
 
         # Step 1: strain → batch mapping
-        self._strain_batch = wp.zeros(shape=(n_total,), dtype=int, device=self.device)
+        self._strain_batch = fem.borrow_temporary(
+            temporary_store, shape=(n_total,), dtype=int, device=self.device
+        )
         self._strain_batch.fill_(-1)
         wp.launch(
             kernel=build_strain_to_batch,
@@ -912,12 +963,15 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        # Step 2: per-velocity-node per-batch sharing counts
+        # Step 2: per-velocity-node per-batch sharing counts (accumulator: must be zero)
         self.delassus_operator.require_strain_mat_transpose()
         n_vel = self.momentum.velocity.shape[0]
-        self._batch_sharing = wp.zeros(shape=(self.n_batches, n_vel), dtype=float, device=self.device)
+        batch_sharing = fem.borrow_temporary(
+            temporary_store, shape=(self.n_batches, n_vel), dtype=float, device=self.device
+        )
+        batch_sharing.zero_()
         wp.launch(
-            kernel=compute_batch_sharing_counts,
+            kernel=compute_vel_node_multiplicity,
             dim=n_vel,
             inputs=[
                 self.rheology.transposed_strain_mat.offsets,
@@ -925,14 +979,14 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
                 self._strain_batch,
                 self.n_batches,
             ],
-            outputs=[self._batch_sharing],
+            outputs=[batch_sharing],
             device=self.device,
         )
 
         # Step 3: compute Delassus diagonal with per-batch mass splitting
         self.delassus_operator.compute_diagonal_factorization(
             strain_batch=self._strain_batch,
-            mass_multiplicity=self._batch_sharing,
+            mass_multiplicity=batch_sharing,
         )
 
         # ── Launch config ────────────────────────────────────────────────
@@ -988,10 +1042,13 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
 
         n_vel = self.momentum.velocity.shape[0]
         t_mat = self.rheology.transposed_strain_mat
-        total_nnz = t_mat.nnz  # total entries across all batchs
+        total_nnz = t_mat.nnz  # total entries across all batches
 
-        # Step 1: count entries per (batch, velocity-node)
-        batch_counts = wp.zeros(shape=(self.n_batches, n_vel), dtype=int, device=self.device)
+        # Step 1: count entries per (batch, velocity-node) (accumulator: must be zero)
+        batch_counts = fem.borrow_temporary(
+            temporary_store, shape=(self.n_batches, n_vel), dtype=int, device=self.device
+        )
+        batch_counts.zero_()
         wp.launch(
             kernel=build_batch_transpose_offsets,
             dim=n_vel,
@@ -1000,13 +1057,17 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        # Step 2: per-row exclusive prefix scan (local offsets per batch)
-        batch_local_offsets = wp.zeros(shape=(self.n_batches, n_vel), dtype=int, device=self.device)
+        # Step 2: per-row exclusive prefix scan (local offsets per batch; fully written)
+        batch_local_offsets = fem.borrow_temporary(
+            temporary_store, shape=(self.n_batches, n_vel), dtype=int, device=self.device
+        )
         for bi in range(self.n_batches):
             wp.utils.array_scan(batch_counts[bi], batch_local_offsets[bi], inclusive=False)
 
-        # Step 3: compute per-batch base offsets (single-threaded kernel)
-        sc_bases = wp.zeros(shape=(self.n_batches,), dtype=int, device=self.device)
+        # Step 3: compute per-batch base offsets (single-threaded kernel; fully written)
+        sc_bases = fem.borrow_temporary(
+            temporary_store, shape=(self.n_batches,), dtype=int, device=self.device
+        )
         wp.launch(
             kernel=compute_batch_base_offsets,
             dim=1,
@@ -1015,8 +1076,10 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        # Step 4: globalize local offsets → sc_global_offsets[n_batches, n_vel+1]
-        self._batch_global_offsets = wp.zeros(shape=(self.n_batches, n_vel + 1), dtype=int, device=self.device)
+        # Step 4: globalize local offsets → _batch_global_offsets[n_batches, n_vel+1]
+        self._batch_global_offsets = fem.borrow_temporary(
+            temporary_store, shape=(self.n_batches, n_vel + 1), dtype=int, device=self.device
+        )
         wp.launch(
             kernel=globalize_batch_offsets,
             dim=n_vel,
@@ -1026,10 +1089,16 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         )
 
         # Step 5: allocate flat arrays and fill all SCs in one pass
-        self._batch_columns = wp.zeros(shape=(total_nnz,), dtype=int, device=self.device)
-        self._batch_values = wp.zeros(shape=(total_nnz,), dtype=mat13, device=self.device)
-        # Write cursors: copy of global offsets, incremented during fill
-        batch_write_cursors = wp.clone(self._batch_global_offsets)
+        self._batch_columns = fem.borrow_temporary(
+            temporary_store, shape=(total_nnz,), dtype=int, device=self.device
+        )
+        self._batch_values = fem.borrow_temporary(
+            temporary_store, shape=(total_nnz,), dtype=mat13, device=self.device
+        )
+        batch_write_cursors = fem.borrow_temporary(
+            temporary_store, shape=(self.n_batches, n_vel + 1), dtype=int, device=self.device
+        )
+        wp.copy(dest=batch_write_cursors, src=self._batch_global_offsets)
         wp.launch(
             kernel=fill_batch_transpose,
             dim=n_vel,
@@ -1043,6 +1112,7 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             outputs=[self._batch_columns, self._batch_values],
             device=self.device,
         )
+        batch_write_cursors.release()
 
         # Phase 2: scatter launches (one recorded launch per batch)
         # Each batch uses its row of batch_global_offsets as CSR offsets into
@@ -1093,6 +1163,20 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             self._solve_launch.set_param_at_index(0, bi)
             self._solve_launch.launch()
             self._scatter_launches[bi].launch()
+
+    def release(self):
+        super().release()
+        self._flat_color_offsets.release()
+        self._flat_constraint_ids.release()
+        self._reordered_n_entries.release()
+        self._reordered_cols.release()
+        self._reordered_vals_x.release()
+        self._reordered_vals_y.release()
+        self._reordered_vals_z.release()
+        self._strain_batch.release()
+        self._batch_global_offsets.release()
+        self._batch_columns.release()
+        self._batch_values.release()
 
 
 class _JacobiSolver(_RheologySolver):
@@ -1581,7 +1665,7 @@ def solve_rheology(
             ``"gauss-seidel-soa"`` uses an entry-major SoA strain
             matrix layout for improved memory coalescing.
             ``"gauss-seidel-batched"`` additionally merges colors into
-            batchs with Jacobi-style mass splitting within each
+            batches with Jacobi-style mass splitting within each
             batch. Good for wide velocity stencils (B2/B3).
             The iterative linear solvers (``"cg"``, ``"cr"``, ``"gmres"``)
             only support solid materials without contacts.
