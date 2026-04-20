@@ -1,0 +1,29 @@
+[automation]
+name = "Nightly Upstream Repair"
+cwd = "/home/jkuzm/biomotions/newton"
+schedule = "15 6-11 * * *"  # Hourly from 6:15 AM through 11:15 AM
+
+[prompt]
+content = """
+Read AGENTS.md and then prepare exactly one queued repair:
+
+uv run --script scripts/nightly_upstream_repair.py prepare
+
+If there are no queued failures, append a short dated note to this automation's `memory.md` and stop.
+
+If a repair is prepared:
+1. Open `.codex/automations/nightly-upstream-repair/current_repair.json`.
+2. Work only inside the listed `worktree_path`.
+3. If `merge_status` is `merge_conflict`, resolve the conflicts first.
+4. If the queue item came from a test failure, fix the code until the listed `validation_commands` pass.
+5. Keep the run bounded: attempt at most 3 edit/test cycles for this branch.
+6. If you get the branch green, run:
+
+   uv run --script scripts/nightly_upstream_repair.py finalize --success --push
+
+7. If you cannot get it green within the bounded attempt budget, run:
+
+   uv run --script scripts/nightly_upstream_repair.py finalize --failure --message "short reason"
+
+8. Append a short dated summary to this automation's `memory.md` describing what you fixed, what remains broken, and whether the branch was pushed.
+"""

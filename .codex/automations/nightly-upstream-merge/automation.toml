@@ -1,0 +1,25 @@
+[automation]
+name = "Nightly Upstream Merge"
+cwd = "/home/jkuzm/biomotions/newton"
+schedule = "0 6 * * *"  # Daily at 6:00 AM
+
+[prompt]
+content = """
+Read AGENTS.md and then run the repo-owned nightly sync runner:
+
+uv run --script scripts/nightly_upstream_merge.py --push
+
+The runner will:
+- fetch `origin` and `upstream`
+- fast-forward `origin/main` to `upstream/main` when safe
+- merge `upstream/main` into each active origin branch in disposable worktrees
+- validate `research/pressure-field` with focused pressure-field tests and the hydro pressure slice example
+- refuse to push a branch when the merge or validation fails
+- update `.codex/automations/nightly-upstream-merge/failures.json` with any branches that still need repair
+
+After it finishes:
+1. Open the report path printed by the script.
+2. Append a short dated summary to `memory.md` in this automation directory.
+3. If any branch hit a merge conflict, test failure, or push failure, make that explicit in the final message and do not suggest that the run succeeded.
+4. If everything passed, summarize which branches were updated and which validation commands ran.
+"""
