@@ -132,17 +132,32 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        # Test that bounding box size is reasonable (not exploding)
+        # Empirical state at 200 frames (CUDA, 6 runs):
+        #   centroid x in [-0.02, 0.02], y in [0.04, 0.20], z in [0.92, 0.97]
+        #   bbox_diag in [2.85, 3.67], min_z in [0.09, 0.88], max_vel in [1.0, 5.2]
+        #   Cloth sag introduces run-to-run variation in y and z.
         particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
+
         min_pos = np.min(particle_q, axis=0)
         max_pos = np.max(particle_q, axis=0)
+        centroid = np.mean(particle_q, axis=0)
         bbox_size = np.linalg.norm(max_pos - min_pos)
 
-        # Check bbox size is reasonable (cloth stretches as soft body deforms it)
-        assert bbox_size < 20.0, f"Bounding box exploded: size={bbox_size:.2f}"
+        # Centroid check: wide tolerance to cover observed variation
+        assert abs(centroid[0]) < 0.10, f"Centroid x drifted: {centroid[0]:.3f}"
+        assert -0.05 < centroid[1] < 0.30, f"Centroid y out of range: {centroid[1]:.3f}"
+        assert 0.85 < centroid[2] < 1.05, f"Centroid z out of range: {centroid[2]:.3f}"
 
-        # Check no excessive penetration
-        assert min_pos[2] > -0.5, f"Excessive penetration: z_min={min_pos[2]:.4f}"
+        # Bounding box diagonal check: observed up to 3.67, allow up to 4.0
+        assert bbox_size < 4.0, f"Bounding box too large: {bbox_size:.2f}"
+
+        # Min Z check: observed as low as 0.09 when cloth sags, allow down to -0.05
+        assert min_pos[2] > -0.05, f"Excessive ground penetration: z_min={min_pos[2]:.4f}"
+
+        # Velocity check: observed up to 5.2, allow up to 8.0
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+        assert max_vel < 8.0, f"Particle velocity too high: {max_vel:.2f}"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

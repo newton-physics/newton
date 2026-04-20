@@ -250,8 +250,25 @@ class Example:
             self.model,
             self.state_0,
             "all bodies are above the ground",
-            lambda q, qd: q[2] > 0.01,
+            lambda q, qd: q[2] > 0.5,
         )
+        if wp.get_device().is_cuda:
+            # After 100 frames the ants have settled
+            newton.examples.test_body_state(
+                self.model,
+                self.state_0,
+                "all bodies have settled",
+                lambda q, qd: wp.length(qd) < 0.1,
+            )
+        else:
+            # CPU runs only 10 frames; ants are still moving.
+            # Check that the simulation hasn't diverged.
+            newton.examples.test_body_state(
+                self.model,
+                self.state_0,
+                "all body velocities are finite",
+                lambda q, qd: wp.length(qd) < 100.0,
+            )
 
     @staticmethod
     def create_parser():

@@ -273,6 +273,11 @@ class Example:
             lambda q, qd: q[2] > -voxel_size,
         )
 
+        # Empirical body velocity check (80 frames, 6 bodies)
+        body_qd = self.state_0.body_qd.numpy()
+        max_body_vel = np.max(np.linalg.norm(body_qd[:, 3:], axis=1))
+        assert max_body_vel < max(0.002, 0.81 * 1.5), f"Max body velocity too high: {max_body_vel}"
+
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)

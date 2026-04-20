@@ -288,8 +288,8 @@ class Example:
             # Test 1: Check for numerical stability (NaN/inf values and reasonable ranges)
             assert np.isfinite(body_positions).all(), "Non-finite values in body positions"
             assert np.isfinite(body_velocities).all(), "Non-finite values in body velocities"
-            assert (np.abs(body_positions) < 1e3).all(), "Body positions too large (>1000)"
-            assert (np.abs(body_velocities) < 5e2).all(), "Body velocities too large (>500)"
+            assert (np.abs(body_positions) < 1e2).all(), "Body positions too large (>100)"
+            assert (np.abs(body_velocities) < 2.0).all(), "Body velocities too large (>2.0)"
 
             # Test 2: Check cable connectivity (joint constraints)
             for cable_idx, cable_bodies in enumerate(self.cable_bodies_list):
@@ -310,9 +310,12 @@ class Example:
 
             # Test 3: Check ground interaction
             # Cables should stay near ground (z~=0) since they start on the ground plane
-            ground_tolerance = 0.5  # Larger tolerance for zigzag cables with dynamic spinning
-            min_z = np.min(body_positions[:, 2])  # Z positions (Newton uses Z-up)
+            z_positions = body_positions[:, 2]  # Z positions (Newton uses Z-up)
+            min_z = np.min(z_positions)
+            max_z = np.max(z_positions)
+            ground_tolerance = 0.05  # Observed min_z ~0.018
             assert min_z > -ground_tolerance, f"Cable penetrated ground too much: min_z = {min_z:.3f}"
+            assert max_z < 0.15, f"Cable rose too high above ground: max_z = {max_z:.3f}"
 
 
 if __name__ == "__main__":

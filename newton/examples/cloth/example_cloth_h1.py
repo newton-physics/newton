@@ -304,12 +304,31 @@ class Example:
         self.frame_index += 1
 
     def test_final(self):
-        p_lower = wp.vec3(-0.3, -0.8, 0.8)
-        p_upper = wp.vec3(0.5, 0.8, 1.8)
-        newton.examples.test_particle_state(
+        particle_q = self.state.particle_q.numpy()
+        particle_qd = self.state.particle_qd.numpy()
+
+        # Centroid check: observed [0.02, 0.0, 1.30]
+        centroid = np.mean(particle_q, axis=0)
+        assert np.allclose(centroid, [0.02, 0.0, 1.30], atol=[0.05, 0.05, 0.10]), f"Centroid drift: {centroid}"
+
+        # Bounding box check: observed 0.74
+        bbox_size = np.max(np.max(particle_q, axis=0) - np.min(particle_q, axis=0))
+        assert bbox_size < 0.78, f"Bbox too large: {bbox_size}"
+
+        # Ground penetration check: observed min_z=0.96
+        min_z = np.min(particle_q[:, 2])
+        assert min_z > 0.94, f"Ground penetration: min_z={min_z}"
+
+        # Velocity check: observed max_vel=0.97-2.27
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+        assert max_vel < 3.5, f"Excessive velocity: {max_vel}"
+
+        # Body state check (46 bodies - H1 robot)
+        newton.examples.test_body_state(
+            self.model,
             self.state,
-            "particles are within a reasonable volume",
-            lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
+            "body velocities are within a reasonable range",
+            lambda q, qd: max(abs(qd)) < 5.0,
         )
 
     def render(self):

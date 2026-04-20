@@ -120,9 +120,12 @@ class Example:
     def test_final(self):
         """Verify all spheres are resting on the heightfield (not fallen through)."""
         body_q = self.state_0.body_q.numpy()
+        body_qd = self.state_0.body_qd.numpy()
         for body_idx in self.sphere_bodies:
             z = float(body_q[body_idx, 2])
-            assert z > -1.0, f"Sphere body {body_idx} fell through heightfield: z={z:.4f}"
+            assert z > -0.2, f"Sphere body {body_idx} fell through heightfield: z={z:.4f}"
+            vel = float(np.linalg.norm(body_qd[body_idx]))
+            assert vel < 15.0, f"Sphere body {body_idx} moving too fast: vel={vel:.4f}"
 
 
 if __name__ == "__main__":

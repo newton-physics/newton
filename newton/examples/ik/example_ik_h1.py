@@ -14,6 +14,7 @@
 # Command: python -m newton.examples ik_h1
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -147,7 +148,26 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        pass
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
+
+        body_q = self.state.body_q.numpy()
+        body_qd = self.state.body_qd.numpy()
+
+        # Verify end-effector positions match expected IK solution
+        ee_expected = {
+            5: np.array([0.039, 0.203, 0.126]),  # left_foot (left_ankle_link)
+            10: np.array([0.039, -0.203, 0.126]),  # right_foot (right_ankle_link)
+            16: np.array([0.279, 0.214, 1.188]),  # left_hand
+            33: np.array([0.279, -0.214, 1.188]),  # right_hand
+        }
+        for idx, expected_pos in ee_expected.items():
+            actual_pos = body_q[idx, :3]
+            assert np.allclose(actual_pos, expected_pos, atol=0.01), (
+                f"EE body {idx} at {actual_pos}, expected ~{expected_pos}"
+            )
+
+        # Verify all body velocities are zero
+        assert np.allclose(body_qd, 0.0, atol=1e-10), "Non-zero body velocities in IK example"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

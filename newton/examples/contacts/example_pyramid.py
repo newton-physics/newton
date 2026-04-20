@@ -182,6 +182,7 @@ class Example:
         within ``max_displacement`` of its initial position.
         """
         body_q = self.state_0.body_q.numpy()
+        body_qd = self.state_0.body_qd.numpy()
         max_displacement = 0.5  # [m]
         for idx in self.top_body_indices:
             current_pos = body_q[idx, :3]
@@ -190,6 +191,11 @@ class Example:
             assert displacement < max_displacement, (
                 f"Top cube body {idx}: displaced {displacement:.4f} m (max allowed {max_displacement:.4f} m)"
             )
+
+        # Verify all bodies have settled (low velocity)
+        for idx in range(self.model.body_count):
+            vel = float(np.linalg.norm(body_qd[idx]))
+            assert vel < 0.01, f"Body {idx} not settled: vel={vel:.6f}"
 
     @staticmethod
     def create_parser():

@@ -12,6 +12,7 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -119,18 +120,43 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        # Test that particles are in a reasonable range (soft body may settle or deform)
-        # We check that they haven't exploded or collapsed completely
-        # 4 grids, each roughly 1.2 x 0.4 x 0.4 in size, positioned along Y-axis
-        # Initial positions: Y from 1.0 to ~3.2, X from 0 to 1.2, Z around 1.0 to 1.4
-        # With fix_left=True, grids hang and sag significantly towards the ground
-        p_lower = wp.vec3(-1.0, -0.5, 0.0)
-        p_upper = wp.vec3(3.0, 4.0, 3.0)
+        # Empirical state at 120 frames (CUDA, deterministic):
+        #   centroid=[0.57, 2.10, 1.03], bbox_diag=2.78, max_vel=1.26
+        #   min_pos=[0.0, 1.0, 0.23], max_pos=[1.23, 3.20, 1.40]
+        particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
+
+        min_pos = np.min(particle_q, axis=0)
+        max_pos = np.max(particle_q, axis=0)
+        centroid = np.mean(particle_q, axis=0)
+
+        # Centroid check: observed [0.57, 2.10, 1.03], tolerance ±max(0.02, |val|*0.05)
+        expected_centroid = np.array([0.57, 2.10, 1.03])
+        centroid_tol = np.maximum(0.02, np.abs(expected_centroid) * 0.05)
+        for i, axis in enumerate("xyz"):
+            assert abs(centroid[i] - expected_centroid[i]) < centroid_tol[i], (
+                f"Centroid {axis} drifted: {centroid[i]:.3f} vs expected {expected_centroid[i]:.3f}"
+            )
+
+        # Bounding box diagonal check: observed 2.78, allow up to 2.92
+        bbox_size = np.linalg.norm(max_pos - min_pos)
+        assert bbox_size < 2.92, f"Bounding box too large: {bbox_size:.2f}"
+
+        # Particle position bounds (tightened from observed min/max with small margin)
+        p_lower = wp.vec3(-0.02, 0.98, 0.21)
+        p_upper = wp.vec3(1.25, 3.22, 1.42)
         newton.examples.test_particle_state(
             self.state_0,
-            "particles are within a reasonable volume",
+            "particles are within the expected volume",
             lambda q, _qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
         )
+
+        # Min Z check: observed 0.23, allow down to 0.21
+        assert min_pos[2] > 0.21, f"Excessive ground penetration: z_min={min_pos[2]:.4f}"
+
+        # Velocity check: observed max 1.26, allow up to 1.89
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+        assert max_vel < 1.89, f"Particle velocity too high: {max_vel:.2f}"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

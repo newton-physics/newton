@@ -280,18 +280,29 @@ class Example:
         particle_q = self.state_0.particle_q.numpy()
         particle_qd = self.state_0.particle_qd.numpy()
 
-        # Check velocity (cards should be settling)
+        # Centroid check: observed [0.0, 0.0, 0.22]
+        centroid = np.mean(particle_q, axis=0)
+        assert np.allclose(centroid, [0.0, 0.0, 0.22], atol=[0.02, 0.02, 0.02]), f"Centroid drift: {centroid}"
+
+        # Bounding box check: observed 0.11
+        bbox_size = np.max(np.max(particle_q, axis=0) - np.min(particle_q, axis=0))
+        assert bbox_size < 0.12, f"Bbox too large: {bbox_size}"
+
+        # Ground penetration check: observed min_z=0.20
+        min_z = np.min(particle_q[:, 2])
+        assert min_z > 0.18, f"Ground penetration: min_z={min_z}"
+
+        # Velocity check: observed max_vel=0.003
         max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
-        assert max_vel < 0.5, f"Cards moving too fast: max_vel={max_vel:.4f} m/s"
+        assert max_vel < 0.005, f"Excessive velocity: {max_vel}"
 
-        # Check bbox size is reasonable (not exploding)
-        min_pos = np.min(particle_q, axis=0)
-        max_pos = np.max(particle_q, axis=0)
-        bbox_size = np.linalg.norm(max_pos - min_pos)
-        assert bbox_size < 2.0, f"Bounding box exploded: size={bbox_size:.2f}"
-
-        # Check no excessive penetration
-        assert min_pos[2] > -0.1, f"Excessive penetration: z_min={min_pos[2]:.4f}"
+        # Body state check (cube and sphere)
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "body velocities are within a reasonable range",
+            lambda q, qd: max(abs(qd)) < 0.75,
+        )
 
 
 if __name__ == "__main__":

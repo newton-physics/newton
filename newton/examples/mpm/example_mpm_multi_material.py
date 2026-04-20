@@ -90,6 +90,20 @@ class Example:
             lambda q, qd: q[2] > -0.05,
         )
 
+        # Empirical centroid, bbox, and velocity checks (10 frames)
+        positions = self.state_0.particle_q.numpy()
+        velocities = self.state_0.particle_qd.numpy()
+        centroid = np.mean(positions, axis=0)
+        bbox = np.max(np.max(positions, axis=0) - np.min(positions, axis=0))
+        max_vel = np.max(np.linalg.norm(velocities, axis=1))
+
+        assert abs(centroid[0] - 0.0) < 0.02, f"Centroid X out of range: {centroid[0]}"
+        assert abs(centroid[1] - 0.0) < 0.02, f"Centroid Y out of range: {centroid[1]}"
+        assert abs(centroid[2] - 0.56) < max(0.02, 0.56 * 0.05), f"Centroid Z out of range: {centroid[2]}"
+        assert bbox < 1.52 + max(0.05, 1.52 * 0.05), f"Bounding box too large: {bbox}"
+        assert max_vel < max(0.002, 1.64 * 1.5), f"Max velocity too high: {max_vel}"
+        assert np.min(positions[:, 2]) > -0.008 - 0.02, f"Min Z too low: {np.min(positions[:, 2])}"
+
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_points(

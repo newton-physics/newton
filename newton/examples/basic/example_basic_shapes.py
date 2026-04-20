@@ -207,7 +207,7 @@ class Example:
             self.model,
             self.state_0,
             "box at rest pose",
-            lambda q, qd: newton.math.vec_allclose(q, box_q, atol=0.1),
+            lambda q, qd: newton.math.vec_allclose(q, box_q, atol=1e-2),
             [4],
         )
         # we only test that the bunny didn't fall through the ground and didn't slide too far

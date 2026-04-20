@@ -235,7 +235,7 @@ class Example:
         layers = 4
 
         # Use same tolerance for ground penetration and pile height offset
-        tolerance = 0.1  # Soft contacts allow some penetration and gaps
+        tolerance = 0.05  # Observed min_z ~0.009; tighter than previous 0.1
 
         # Calculate maximum expected height for SETTLED pile
         # After gravity settles the pile, cables should be stacked:
@@ -267,7 +267,8 @@ class Example:
             )
 
             # Test 3: Velocity should be reasonable (pile shouldn't explode)
-            assert (np.abs(body_velocities) < 5e2).all(), "Velocities too large"
+            # Observed max_body_vel ~0.94 at 20 frames
+            assert (np.abs(body_velocities) < 2.0).all(), "Velocities too large (>2.0)"
 
 
 if __name__ == "__main__":

@@ -206,10 +206,21 @@ class Example:
             raise ValueError("NaN/Inf in cable body transforms.")
 
         pos = body_q_np[:, 0:3]
-        if np.max(np.abs(pos[:, 0])) > 2.0 or np.max(np.abs(pos[:, 1])) > 2.0:
+        if np.max(np.abs(pos[:, 0])) > 1.0 or np.max(np.abs(pos[:, 1])) > 1.0:
             raise ValueError("Cable bodies drifted too far in X/Y.")
-        if np.min(pos[:, 2]) < -0.2 or np.max(pos[:, 2]) > 3.0:
-            raise ValueError("Cable bodies out of Z bounds.")
+        # Observed z_range=[0.793, 1.250]; tighten from [-0.2, 3.0] accordingly
+        if np.min(pos[:, 2]) < 0.5 or np.max(pos[:, 2]) > 1.5:
+            raise ValueError(
+                f"Cable bodies out of Z bounds: min_z={np.min(pos[:, 2]):.3f}, max_z={np.max(pos[:, 2]):.3f}"
+            )
+
+        # Velocity sanity check: observed max_body_vel ~3.71
+        body_qd_np = self.state_0.body_qd.numpy()[rod_bodies]
+        if not np.all(np.isfinite(body_qd_np)):
+            raise ValueError("NaN/Inf in cable body velocities.")
+        max_vel = np.max(np.abs(body_qd_np))
+        if max_vel > 8.0:
+            raise ValueError(f"Cable body velocity too large: {max_vel:.3f} > 8.0")
 
         # Pinned body should not drift.
         q_now = self.state_0.body_q.numpy()[self.pinned_body]

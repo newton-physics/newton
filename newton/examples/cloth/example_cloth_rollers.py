@@ -496,28 +496,35 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Test that cloth centroid has moved (unrolling has started)."""
+        """Test that cloth centroid has moved and state is within expected bounds."""
         # Get cloth particle positions (exclude cylinder particles)
         particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
         cloth_q = particle_q[: self.num_cloth_verts]
+        cloth_qd = particle_qd[: self.num_cloth_verts]
 
         # Calculate center of mass
         com = np.mean(cloth_q, axis=0)
 
-        # Initial COM is at X ≈ -25.72 (near cylinder 1 at X=-27.2)
-        # After 200 frames (~3.3 seconds), expect COM to shift noticeably
+        # Centroid shift check: initial COM X ~ -25.72, observed COM [-12.12, 50.02, 6.23]
         initial_com_x = -25.72
-        min_shift = 5.0  # Require at least 5 units of movement to verify simulation is working
-
+        min_shift = 5.0
         actual_shift = com[0] - initial_com_x
-
         assert actual_shift > min_shift, (
             f"Cloth centroid hasn't moved enough: shift={actual_shift:.1f} < {min_shift:.1f}, COM X={com[0]:.1f}"
         )
 
-        # Ensure bbox hasn't exploded
-        bbox_size = np.linalg.norm(np.max(cloth_q, axis=0) - np.min(cloth_q, axis=0))
-        assert bbox_size < 150.0, f"Bbox exploded: size={bbox_size:.2f}"
+        # Centroid check (cm scale): observed [-12.12, 50.02, 6.23] to [-15.90, 49.49, 6.60]
+        # Active rollers cause higher run-to-run variation, especially in X
+        assert np.allclose(com, [-14.0, 50.0, 6.4], atol=[5.0, 3.0, 3.0]), f"Centroid drift: {com}"
+
+        # Bounding box check (cm scale): observed 120.0
+        bbox_size = np.max(np.max(cloth_q, axis=0) - np.min(cloth_q, axis=0))
+        assert bbox_size < 126.0, f"Bbox too large: {bbox_size}"
+
+        # Velocity check (cm/s): observed max_vel=63.80-104.34
+        max_vel = np.max(np.linalg.norm(cloth_qd, axis=1))
+        assert max_vel < 160.0, f"Excessive velocity: {max_vel}"
 
 
 if __name__ == "__main__":

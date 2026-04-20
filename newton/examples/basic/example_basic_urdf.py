@@ -144,7 +144,7 @@ class Example:
             self.model,
             self.state_0,
             "quadruped links are not moving too fast",
-            lambda q, qd: max(abs(qd)) < 0.15,
+            lambda q, qd: max(abs(qd)) < 0.05,
         )
 
         bodies_per_world = self.model.body_count // self.world_count

@@ -418,7 +418,31 @@ class Example:
 
     def test_final(self):
         """Test cable bundle hysteresis simulation for stability and correctness (called after simulation)."""
-        pass
+        if self.state_0.body_q is not None and self.state_0.body_qd is not None:
+            body_positions = self.state_0.body_q.numpy()
+            body_velocities = self.state_0.body_qd.numpy()
+
+            # Numerical stability
+            assert np.isfinite(body_positions).all(), "Non-finite values in body positions"
+            assert np.isfinite(body_velocities).all(), "Non-finite values in body velocities"
+
+            # Exclude kinematic obstacle bodies (they teleport during release phase)
+            obstacle_set = set(self.obstacle_bodies)
+            cable_indices = [i for i in range(body_positions.shape[0]) if i not in obstacle_set]
+            cable_positions = body_positions[cable_indices]
+            cable_velocities = body_velocities[cable_indices]
+
+            # Position bounds for cable bodies (observed z_range=[0.019, 0.300])
+            z_positions = cable_positions[:, 2]
+            min_z = np.min(z_positions)
+            max_z = np.max(z_positions)
+            assert min_z > -0.05, f"Cable penetrated ground: min_z = {min_z:.3f}"
+            assert max_z < 0.6, f"Cables too high: max_z = {max_z:.3f}"
+
+            # Velocity bounds for cable bodies (observed max_body_vel ~1.41)
+            assert (np.abs(cable_velocities) < 3.0).all(), (
+                f"Cable velocities too large: max = {np.max(np.abs(cable_velocities)):.3f}"
+            )
 
     @staticmethod
     def create_parser():

@@ -405,6 +405,7 @@ class Example:
 
     def test_final(self):
         body_q = self.state_0.body_q.numpy()
+        body_qd = self.state_0.body_qd.numpy()
         belt_z = float(body_q[self.belt_body][2])
         assert abs(belt_z - BELT_CENTER_Z) < 0.15, f"Belt body drifted off the conveyor plane: z={belt_z:.4f}"
 
@@ -413,8 +414,10 @@ class Example:
             y = float(body_q[body_idx][1])
             z = float(body_q[body_idx][2])
             assert np.isfinite(x) and np.isfinite(y) and np.isfinite(z), f"Bag {body_idx} has non-finite pose values."
-            assert z > -0.5, f"Bag body {body_idx} fell through the floor: z={z:.4f}"
-            assert abs(x) < 4.0 and abs(y) < 4.0, f"Bag body {body_idx} left the scene bounds: ({x:.3f}, {y:.3f})"
+            assert z > 0.5, f"Bag body {body_idx} fell below conveyor surface: z={z:.4f}"
+            assert abs(x) < 2.5 and abs(y) < 2.5, f"Bag body {body_idx} left the scene bounds: ({x:.3f}, {y:.3f})"
+            vel = float(np.linalg.norm(body_qd[body_idx]))
+            assert vel < 8.0, f"Bag body {body_idx} moving too fast: vel={vel:.4f}"
 
 
 if __name__ == "__main__":

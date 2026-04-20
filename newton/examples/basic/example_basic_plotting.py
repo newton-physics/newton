@@ -137,7 +137,14 @@ class Example:
             self.model,
             self.state_0,
             "bodies above ground",
-            lambda q, qd: q[2] > -0.1,
+            lambda q, qd: q[2] > 0.1,
+        )
+        # Verify the humanoid is settled (low velocity)
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "bodies have low velocity",
+            lambda q, qd: wp.length(qd) < 0.5,
         )
 
         self._plot()

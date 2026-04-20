@@ -356,8 +356,22 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are within the terrain domain",
-            lambda q, qd: q[2] > -20.0 and q[2] < 30.0,
+            lambda q, qd: q[2] > -7.0 and q[2] < 17.0,
         )
+
+        # Empirical centroid, bbox, and velocity checks (30 frames, --voxel-size 0.2)
+        positions = self.state_0.particle_q.numpy()
+        velocities = self.state_0.particle_qd.numpy()
+        centroid = np.mean(positions, axis=0)
+        bbox = np.max(np.max(positions, axis=0) - np.min(positions, axis=0))
+        max_vel = np.max(np.linalg.norm(velocities, axis=1))
+
+        assert abs(centroid[0] - (-0.05)) < max(0.02, 0.05 * 0.05), f"Centroid X out of range: {centroid[0]}"
+        assert abs(centroid[1] - (-0.30)) < max(0.02, 0.30 * 0.05), f"Centroid Y out of range: {centroid[1]}"
+        assert abs(centroid[2] - 1.27) < max(0.02, 1.27 * 0.05), f"Centroid Z out of range: {centroid[2]}"
+        assert bbox < 22.05 + max(0.05, 22.05 * 0.05), f"Bounding box too large: {bbox}"
+        assert max_vel < max(0.002, 4.90 * 1.5), f"Max velocity too high: {max_vel}"
+        assert np.min(positions[:, 2]) > -6.28 - 0.02, f"Min Z too low: {np.min(positions[:, 2])}"
 
     def render_ui(self, imgui):
         _changed, self.show_compression = imgui.checkbox("Show Compression", self.show_compression)
