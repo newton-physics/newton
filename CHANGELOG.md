@@ -20,6 +20,7 @@
 - Support `<joint type="ball"/>` in the MJCF importer, and preserve authored damping, stiffness, and frictionloss when exporting ball joints to MuJoCo specs (previously silently dropped)
 - Add `ViewerViser.log_scalar()` for live scalar time-series plots via uPlot
 - Honor `UsdGeomImageable` visibility (including inherited `invisible`) on USD prims imported via `ModelBuilder.add_usd()`; visual shapes, gaussian splats, and collider shapes are imported with `ShapeFlags.VISIBLE` cleared when the prim is effectively invisible, while collision behavior is preserved
+- Add more solver options to implicit MPM: `gs-soa` (or `gauss-seidel-soa`) for improved memory coalescing, `gs-batched` (or `gauss-seidel-batched`) merging GS colors with Jacobi-style mass-split parallelism, plus `cr` (Conjugate Residual) and `gmres` linear solver options. Default solver is now `auto`, selecting `gs` for trilinear and `gs-batched` for higher-order velocity bases.
 
 ### Changed
 
@@ -66,11 +67,6 @@
 ### Added
 
 - Add repeatable `--warp-config KEY=VALUE` CLI option for overriding `warp.config` attributes when running examples
-- Add `gauss-seidel-reordered` rheology solver variant with entry-major SoA strain matrix layout for improved memory coalescing
-- Add `gauss-seidel-hybrid` rheology solver variant combining GS super-color ordering with Jacobi-style mass-split parallelism for faster wall-clock convergence on higher-order bases
-- Add `gs-soa` (or `gauss-seidel-soa`) rheology solver variant with entry-major SoA strain matrix layout for improved memory coalescing
-- Add `gs-batched` (or `gauss-seidel-batched`) rheology solver variant combining GS super-color ordering with Jacobi-style mass-split parallelism for faster wall-clock convergence on higher-order bases
-- Default solver is now `auto`, selecting `gs` for Q1 and `gs-batched` for higher-order velocity bases
 - Add 3D texture-based SDF, replacing NanoVDB volumes in the mesh-mesh collision pipeline for improved performance and CPU compatibility.
 - Parse URDF joint `limit effort="..."` values and propagate them to imported revolute and prismatic joint `effort_limit` settings
 - Add `--benchmark [SECONDS]` flag to examples for headless FPS measurement with warmup

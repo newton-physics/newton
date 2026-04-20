@@ -275,7 +275,7 @@ class Example:
             "--solver",
             "-s",
             type=str,
-            default="cg",
+            default="cr",
         )
         parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])
 
