@@ -306,6 +306,7 @@ class _DelassusOperator:
 
         self._computed = False
         self._split_mass = False
+        self._mass_multiplicity_used = False
 
         self._has_strain_mat_transpose = False
 
@@ -330,7 +331,7 @@ class _DelassusOperator:
                 multiplicity (float 2D array, shape ``[n_batches, n_vel]``).
                 Overrides *split_mass* when provided.
         """
-        if mass_multiplicity is None and self._computed and self._split_mass == split_mass:
+        if mass_multiplicity is None and self._computed and not self._mass_multiplicity_used and self._split_mass == split_mass:
             return
 
         device = self.momentum.velocity.device
@@ -384,6 +385,7 @@ class _DelassusOperator:
 
         self._computed = True
         self._split_mass = split_mass
+        self._mass_multiplicity_used = mass_multiplicity is not None
 
     def require_strain_mat_transpose(self):
         if not self._has_strain_mat_transpose:
@@ -1698,6 +1700,12 @@ def solve_rheology(
 
     # Check for iterative method prefix (cg, cr, gmres), optionally followed by +<solver>
     solvers = solver.split("+")
+
+    if len(solvers) == 1 and solvers[0] in _ITERATIVE_LINEAR_SOLVERS:
+        if collision.collider_mat.nnz > 0 or collision.collider_friction.shape[0] > 0:
+            raise ValueError(
+                f"Solver {solvers[0]!r} does not support contact; use a GS or Jacobi solver when contacts are active."
+            )
 
     if solvers[0] in _ITERATIVE_LINEAR_SOLVERS:
         rheology_solver = _LinearSolver(delassus_operator, method=solvers[0], temporary_store=temporary_store)
