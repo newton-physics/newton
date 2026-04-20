@@ -8,7 +8,7 @@ import warp as wp
 
 import newton
 from newton import GeoType
-from newton._src.geometry.raycast import ray_intersect_geom
+from newton._src.geometry.raycast import ray_intersect_geom, ray_intersect_mesh
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -28,6 +28,20 @@ def kernel_test_geom(
 ):
     tid = wp.tid()
     t, _n = ray_intersect_geom(geom_to_world, size, geomtype, ray_origin, ray_direction, mesh_id)
+    out_t[tid] = t
+
+
+@wp.kernel
+def kernel_test_mesh(
+    out_t: wp.array[float],
+    geom_to_world: wp.transform,
+    ray_origin: wp.vec3,
+    ray_direction: wp.vec3,
+    size: wp.vec3,
+    mesh_id: wp.uint64,
+):
+    tid = wp.tid()
+    t, _n, _u, _v, _f = ray_intersect_mesh(geom_to_world, ray_origin, ray_direction, size, mesh_id, False, 1.0e6)
     out_t[tid] = t
 
 
@@ -201,6 +215,7 @@ def test_ray_intersect_plane(test: TestRaycast, device: str):
         ("finite_miss_y", identity, wp.vec3(10.0, 2.0, 0.0), wp.vec3(0.0, 0.0, 4.0), wp.vec3(0.0, 3.0, -4.0), -1.0),
         ("hit_from_below", identity, infinite, wp.vec3(0.0, 0.0, -4.0), wp.vec3(0.0, 3.0, 4.0), 1.0),
         ("rotated_plane", xform_rot_x, infinite, wp.vec3(0.0, -5.0, 0.0), wp.vec3(0.0, 1.0, 0.0), 5.0),
+        ("axial_hit", identity, infinite, wp.vec3(0.0, 0.0, 5.0), wp.vec3(0.0, 0.0, -1.0), 5.0),
     ]
 
     for name, xform, size, origin, direction, expected in cases:
@@ -209,56 +224,6 @@ def test_ray_intersect_plane(test: TestRaycast, device: str):
                 kernel_test_geom, dim=1, inputs=[out_t, xform, size, GeoType.PLANE, origin, direction, 0], device=device
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
-
-
-def test_geom_ray_intersect(test: TestRaycast, device: str):
-    out_t = wp.zeros(1, dtype=float, device=device)
-    geom_to_world = wp.transform_identity()
-
-    # (name, geomtype, size, origin, direction, expected, delta)
-    cases = [
-        ("plane", GeoType.PLANE, wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 5.0), wp.vec3(0.0, 0.0, -1.0), 5.0, 1e-5),
-        ("sphere", GeoType.SPHERE, wp.vec3(1.0, 0.0, 0.0), wp.vec3(-2.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0), 1.0, 1e-5),
-        ("box", GeoType.BOX, wp.vec3(1.0, 1.0, 1.0), wp.vec3(-2.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0), 1.0, 1e-5),
-        (
-            "capsule",
-            GeoType.CAPSULE,
-            wp.vec3(0.5, 1.0, 0.0),
-            wp.vec3(-2.0, 0.0, 0.0),
-            wp.vec3(1.0, 0.0, 0.0),
-            1.5,
-            1e-5,
-        ),
-        (
-            "cylinder",
-            GeoType.CYLINDER,
-            wp.vec3(0.5, 1.0, 0.0),
-            wp.vec3(-2.0, 0.0, 0.0),
-            wp.vec3(1.0, 0.0, 0.0),
-            1.5,
-            1e-5,
-        ),
-        ("cone", GeoType.CONE, wp.vec3(1.0, 1.0, 0.0), wp.vec3(-2.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0), 1.5, 1e-3),
-        (
-            "ellipsoid",
-            GeoType.ELLIPSOID,
-            wp.vec3(1.0, 0.5, 0.5),
-            wp.vec3(-2.0, 0.0, 0.0),
-            wp.vec3(1.0, 0.0, 0.0),
-            1.0,
-            1e-5,
-        ),
-    ]
-
-    for name, geomtype, size, origin, direction, expected, delta in cases:
-        with test.subTest(name):
-            wp.launch(
-                kernel_test_geom,
-                dim=1,
-                inputs=[out_t, geom_to_world, size, geomtype, origin, direction, 0],
-                device=device,
-            )
-            test.assertAlmostEqual(out_t.numpy()[0], expected, delta=delta)
 
 
 def test_ray_intersect_mesh(test: TestRaycast, device: str):
@@ -297,15 +262,15 @@ def test_ray_intersect_mesh(test: TestRaycast, device: str):
     for name, origin, direction, expected, delta in cases:
         with test.subTest(name):
             wp.launch(
-                kernel_test_geom,
+                kernel_test_mesh,
                 dim=1,
-                inputs=[out_t, xform, size, GeoType.MESH, origin, direction, mesh_id],
+                inputs=[out_t, xform, origin, direction, size, mesh_id],
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=delta)
 
 
-def test_mesh_ray_intersect_via_geom(test: TestRaycast, device: str):
+def test_mesh_ray_intersect(test: TestRaycast, device: str):
     """Test mesh raycasting through the ray_intersect_geom interface."""
     out_t = wp.zeros(1, dtype=float, device=device)
 
@@ -369,9 +334,8 @@ add_function_test(TestRaycast, "test_ray_intersect_capsule", test_ray_intersect_
 add_function_test(TestRaycast, "test_ray_intersect_cylinder", test_ray_intersect_cylinder, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_cone", test_ray_intersect_cone, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_ellipsoid", test_ray_intersect_ellipsoid, devices=devices)
-add_function_test(TestRaycast, "test_geom_ray_intersect", test_geom_ray_intersect, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_mesh", test_ray_intersect_mesh, devices=devices)
-add_function_test(TestRaycast, "test_mesh_ray_intersect_via_geom", test_mesh_ray_intersect_via_geom, devices=devices)
+add_function_test(TestRaycast, "test_mesh_ray_intersect", test_mesh_ray_intersect, devices=devices)
 add_function_test(
     TestRaycast, "test_convex_hull_ray_intersect_via_geom", test_convex_hull_ray_intersect_via_geom, devices=devices
 )
