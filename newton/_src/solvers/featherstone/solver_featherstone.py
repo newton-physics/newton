@@ -5,7 +5,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import BodyFlags, Contacts, Control, Model, State, eval_fk
+from ...sim import BodyFlags, Contacts, Control, Model, State
 from ..flags import SolverNotifyFlags
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
@@ -26,7 +26,6 @@ from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
     compute_com_transforms,
     compute_spatial_inertia,
-    copy_kinematic_joint_state,
     create_inertia_matrix_cholesky_kernel,
     create_inertia_matrix_kernel,
     eval_dense_cholesky_batched,
@@ -36,7 +35,7 @@ from .kernels import (
     eval_rigid_jacobian,
     eval_rigid_mass,
     eval_rigid_tau,
-    integrate_generalized_joints,
+    integrate_and_fk_articulation,
     zero_kinematic_body_forces,
     zero_kinematic_joint_qdd,
 )
@@ -725,44 +724,45 @@ class SolverFeatherstone(SolverBase):
             # integrate bodies
 
             if model.joint_count:
+                # Fused symplectic integrate + forward kinematics per
+                # articulation. Walking joints in parent-before-child
+                # order inside one kernel lets FREE/DISTANCE descendants
+                # apply the transport rotation for the rotating parent
+                # anchor frame using the parent's freshly-integrated
+                # ``body_qd`` / ``body_q``. Replaces the former
+                # ``integrate_generalized_joints`` + ``copy_kinematic_joint_state``
+                # + ``eval_fk`` pipeline with no scratch buffers and no
+                # world-frame intermediates - the solver stays in the
+                # public parent-anchor-frame convention end-to-end.
                 wp.launch(
-                    kernel=integrate_generalized_joints,
-                    dim=model.joint_count,
+                    kernel=integrate_and_fk_articulation,
+                    dim=model.articulation_count,
                     inputs=[
+                        model.articulation_start,
                         model.joint_type,
                         model.joint_parent,
                         model.joint_child,
                         model.joint_q_start,
                         model.joint_qd_start,
                         model.joint_dof_dim,
+                        model.joint_axis,
+                        model.joint_X_p,
                         model.joint_X_c,
                         model.body_com,
+                        model.body_flags,
                         state_in.joint_q,
                         state_in.joint_qd,
                         state_aug.joint_qdd,
                         dt,
                     ],
-                    outputs=[state_out.joint_q, state_out.joint_qd],
+                    outputs=[
+                        state_out.joint_q,
+                        state_out.joint_qd,
+                        state_out.body_q,
+                        state_out.body_qd,
+                    ],
                     device=model.device,
                 )
-
-                if self.has_kinematic_joints:
-                    wp.launch(
-                        copy_kinematic_joint_state,
-                        dim=model.joint_count,
-                        inputs=[
-                            model.joint_child,
-                            model.body_flags,
-                            model.joint_q_start,
-                            model.joint_qd_start,
-                            state_in.joint_q,
-                            state_in.joint_qd,
-                        ],
-                        outputs=[state_out.joint_q, state_out.joint_qd],
-                        device=model.device,
-                    )
-
-                eval_fk(model, state_out.joint_q, state_out.joint_qd, state_out)
 
             self.integrate_particles(model, state_in, state_out, dt)
 

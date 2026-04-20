@@ -8,8 +8,11 @@ import warp as wp
 from ...math import transform_twist
 from ...sim import BodyFlags, JointType
 from ...sim.articulation import (
+    com_twist_to_origin_twist,
+    com_twist_to_point_velocity,
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
+    origin_twist_to_com_twist,
     write_free_distance_motion_subspace,
 )
 from ..semi_implicit.kernels_body import joint_force
@@ -1324,53 +1327,6 @@ def eval_dense_solve_batched(
 
 
 @wp.kernel
-def integrate_generalized_joints(
-    joint_type: wp.array[int],
-    joint_parent: wp.array[int],
-    joint_child: wp.array[int],
-    joint_q_start: wp.array[int],
-    joint_qd_start: wp.array[int],
-    joint_dof_dim: wp.array2d[int],
-    joint_X_c: wp.array[wp.transform],
-    body_com: wp.array[wp.vec3],
-    joint_q: wp.array[float],
-    joint_qd: wp.array[float],
-    joint_qdd: wp.array[float],
-    dt: float,
-    # outputs
-    joint_q_new: wp.array[float],
-    joint_qd_new: wp.array[float],
-):
-    # one thread per-articulation
-    index = wp.tid()
-
-    type = joint_type[index]
-    parent = joint_parent[index]
-    child = joint_child[index]
-    coord_start = joint_q_start[index]
-    dof_start = joint_qd_start[index]
-    lin_axis_count = joint_dof_dim[index, 0]
-    ang_axis_count = joint_dof_dim[index, 1]
-
-    jcalc_integrate(
-        parent,
-        joint_X_c[index],
-        body_com[child],
-        type,
-        joint_q,
-        joint_qd,
-        joint_qdd,
-        coord_start,
-        dof_start,
-        lin_axis_count,
-        ang_axis_count,
-        dt,
-        joint_q_new,
-        joint_qd_new,
-    )
-
-
-@wp.kernel
 def zero_kinematic_joint_qdd(
     joint_child: wp.array[int],
     body_flags: wp.array[wp.int32],
@@ -1389,29 +1345,402 @@ def zero_kinematic_joint_qdd(
         joint_qdd[i] = 0.0
 
 
-@wp.kernel
-def copy_kinematic_joint_state(
-    joint_child: wp.array[int],
+@wp.func
+def _anchor_basis_change_quat(omega_parent_new_world: wp.vec3, q_anchor_old: wp.quat, dt: float):
+    """Quaternion that rotates vectors from the old anchor basis to the new anchor basis.
+
+    Parent body rotates during the step, so the anchor frame rigidly attached
+    to the parent rotates with it. For symplectic Euler we use the parent's
+    post-step world angular velocity (``omega_parent_new_world``). The anchor
+    basis rotates by ``omega_parent_new_world * dt`` in the world frame; in
+    the old anchor basis this is ``omega_pa = R_a_old^T * omega_parent_new``.
+    A vector's components transform from old to new basis via the inverse of
+    that rotation: ``dq = exp(-omega_pa * dt / 2)`` as a unit quaternion.
+    """
+    omega_pa = wp.quat_rotate_inv(q_anchor_old, omega_parent_new_world)
+    omega_mag = wp.length(omega_pa)
+    # Guard against division by zero. When the parent is stationary ``dq`` is
+    # identity and the transport correction collapses to a no-op.
+    if omega_mag < 1.0e-12:
+        return wp.quat_identity()
+    axis = omega_pa / omega_mag
+    return wp.quat_from_axis_angle(axis, -omega_mag * dt)
+
+
+@wp.func
+def _apply_free_distance_transport(
+    joint_id: int,
+    coord_start: int,
+    dof_start: int,
+    joint_X_p_i: wp.transform,
+    parent_body_q_new: wp.transform,
+    omega_parent_new_world: wp.vec3,
+    dt: float,
+    # in/out
+    joint_q_new: wp.array[float],
+    joint_qd_new: wp.array[float],
+):
+    """Rotate FREE/DISTANCE ``joint_q``/``joint_qd`` from old anchor basis to new anchor basis.
+
+    ``jcalc_integrate`` does symplectic Euler on ``joint_qd`` and ``joint_q``
+    in parent-anchor coordinates, but CRBA's ``qdd`` is evaluated in the old
+    anchor basis (its ``S`` matrix uses ``X_sc`` at ``t_0``). The resulting
+    ``joint_q_new`` / ``joint_qd_new`` are therefore coordinates at
+    ``t_0 + dt`` expressed in the **old** anchor basis. Since ``eval_fk``
+    interprets them in the **new** anchor basis (using the parent's
+    post-step pose), we must pre-rotate the stored quantities by
+    ``R_a_new^T * R_a_old`` to express them in the new basis before anyone
+    reads them.
+
+    This is equivalent to the "Coriolis transport" correction for a vector
+    stored in a rotating frame, applied symplectically using the parent's
+    post-integration angular velocity.
+    """
+    q_anchor_old = wp.transform_get_rotation(parent_body_q_new) * wp.transform_get_rotation(joint_X_p_i)
+    # The parent's post-step body_q already encodes its new orientation, but
+    # we need the rotation that took us from the old anchor basis to the new
+    # one. Using symplectic ``omega_parent_new_world * dt`` as the rotation
+    # vector (and the anchor rotation at ``t_0`` - which equals
+    # ``q_parent_old * q_X_p`` - to project it) gives us that small rotation.
+    #
+    # Note: we pass ``q_anchor_old`` computed from ``parent_body_q_new``
+    # because the symplectic anchor rotation applied to basis vectors is
+    # ``R_a_new * dR_pa^T = R_a_old``, so the "old" rotation equivalently
+    # equals ``R_a_new * (dR_pa)^{-1}``. In practice the difference between
+    # using ``R_a_old`` and ``R_a_new`` to project ``omega_parent_new`` is
+    # ``O(dt)`` which is absorbed into the ``O(dt^2)`` truncation error of
+    # symplectic Euler.
+    dq = _anchor_basis_change_quat(omega_parent_new_world, q_anchor_old, dt)
+
+    v_com = wp.vec3(joint_qd_new[dof_start + 0], joint_qd_new[dof_start + 1], joint_qd_new[dof_start + 2])
+    omega = wp.vec3(joint_qd_new[dof_start + 3], joint_qd_new[dof_start + 4], joint_qd_new[dof_start + 5])
+    p = wp.vec3(joint_q_new[coord_start + 0], joint_q_new[coord_start + 1], joint_q_new[coord_start + 2])
+    r = wp.quat(
+        joint_q_new[coord_start + 3],
+        joint_q_new[coord_start + 4],
+        joint_q_new[coord_start + 5],
+        joint_q_new[coord_start + 6],
+    )
+
+    v_com = wp.quat_rotate(dq, v_com)
+    omega = wp.quat_rotate(dq, omega)
+    p = wp.quat_rotate(dq, p)
+    r = wp.normalize(dq * r)
+
+    joint_qd_new[dof_start + 0] = v_com[0]
+    joint_qd_new[dof_start + 1] = v_com[1]
+    joint_qd_new[dof_start + 2] = v_com[2]
+    joint_qd_new[dof_start + 3] = omega[0]
+    joint_qd_new[dof_start + 4] = omega[1]
+    joint_qd_new[dof_start + 5] = omega[2]
+
+    joint_q_new[coord_start + 0] = p[0]
+    joint_q_new[coord_start + 1] = p[1]
+    joint_q_new[coord_start + 2] = p[2]
+    joint_q_new[coord_start + 3] = r[0]
+    joint_q_new[coord_start + 4] = r[1]
+    joint_q_new[coord_start + 5] = r[2]
+    joint_q_new[coord_start + 6] = r[3]
+
+    return joint_id  # dummy return to keep Warp happy with void-ish funcs
+
+
+@wp.func
+def _fk_single_joint(
+    i: int,
+    type: int,
+    parent: int,
+    child: int,
+    coord_start: int,
+    dof_start: int,
+    lin_axis_count: int,
+    ang_axis_count: int,
+    joint_X_p_i: wp.transform,
+    joint_X_c_i: wp.transform,
+    joint_axis: wp.array[wp.vec3],
+    body_com: wp.array[wp.vec3],
     body_flags: wp.array[wp.int32],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    # in/outputs (parent entries are read, child entries are written)
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    """Forward kinematics for a single joint using its freshly-integrated state.
+
+    Mirrors the body of :func:`eval_single_articulation_fk` for one joint.
+    The parent's ``body_q`` / ``body_qd`` entries must already be at
+    ``t_0 + dt`` when this runs, which is guaranteed by walking the
+    articulation tree in parent-before-child order inside
+    :kernel:`integrate_and_fk_articulation`.
+    """
+    X_j = wp.transform_identity()
+    v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
+
+    if type == JointType.PRISMATIC:
+        axis = joint_axis[dof_start]
+        q = joint_q[coord_start]
+        qd = joint_qd[dof_start]
+        X_j = wp.transform(axis * q, wp.quat_identity())
+        v_j = wp.spatial_vector(axis * qd, wp.vec3())
+
+    if type == JointType.REVOLUTE:
+        axis = joint_axis[dof_start]
+        q = joint_q[coord_start]
+        qd = joint_qd[dof_start]
+        X_j = wp.transform(wp.vec3(), wp.quat_from_axis_angle(axis, q))
+        v_j = wp.spatial_vector(wp.vec3(), axis * qd)
+
+    if type == JointType.BALL:
+        r = wp.quat(
+            joint_q[coord_start + 0],
+            joint_q[coord_start + 1],
+            joint_q[coord_start + 2],
+            joint_q[coord_start + 3],
+        )
+        w = wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2])
+        X_j = wp.transform(wp.vec3(), r)
+        v_j = wp.spatial_vector(wp.vec3(), w)
+
+    if type == JointType.FREE or type == JointType.DISTANCE:
+        t = wp.transform(
+            wp.vec3(joint_q[coord_start + 0], joint_q[coord_start + 1], joint_q[coord_start + 2]),
+            wp.quat(
+                joint_q[coord_start + 3],
+                joint_q[coord_start + 4],
+                joint_q[coord_start + 5],
+                joint_q[coord_start + 6],
+            ),
+        )
+        v = wp.spatial_vector(
+            wp.vec3(joint_qd[dof_start + 0], joint_qd[dof_start + 1], joint_qd[dof_start + 2]),
+            wp.vec3(joint_qd[dof_start + 3], joint_qd[dof_start + 4], joint_qd[dof_start + 5]),
+        )
+        X_j = t
+        v_j = v
+
+    if type == JointType.D6:
+        pos = wp.vec3(0.0)
+        rot = wp.quat_identity()
+        vel_v = wp.vec3(0.0)
+        vel_w = wp.vec3(0.0)
+
+        if lin_axis_count > 0:
+            axis = joint_axis[dof_start + 0]
+            pos += axis * joint_q[coord_start + 0]
+            vel_v += axis * joint_qd[dof_start + 0]
+        if lin_axis_count > 1:
+            axis = joint_axis[dof_start + 1]
+            pos += axis * joint_q[coord_start + 1]
+            vel_v += axis * joint_qd[dof_start + 1]
+        if lin_axis_count > 2:
+            axis = joint_axis[dof_start + 2]
+            pos += axis * joint_q[coord_start + 2]
+            vel_v += axis * joint_qd[dof_start + 2]
+
+        iq = coord_start + lin_axis_count
+        iqd = dof_start + lin_axis_count
+        if ang_axis_count == 1:
+            axis = joint_axis[iqd]
+            rot = wp.quat_from_axis_angle(axis, joint_q[iq])
+            vel_w = joint_qd[iqd] * axis
+        if ang_axis_count == 2:
+            rot, vel_w = compute_2d_rotational_dofs(
+                joint_axis[iqd + 0],
+                joint_axis[iqd + 1],
+                joint_q[iq + 0],
+                joint_q[iq + 1],
+                joint_qd[iqd + 0],
+                joint_qd[iqd + 1],
+            )
+        if ang_axis_count == 3:
+            rot, vel_w = compute_3d_rotational_dofs(
+                joint_axis[iqd + 0],
+                joint_axis[iqd + 1],
+                joint_axis[iqd + 2],
+                joint_q[iq + 0],
+                joint_q[iq + 1],
+                joint_q[iq + 2],
+                joint_qd[iqd + 0],
+                joint_qd[iqd + 1],
+                joint_qd[iqd + 2],
+            )
+
+        X_j = wp.transform(pos, rot)
+        v_j = wp.spatial_vector(vel_v, vel_w)
+
+    # Parent anchor frame in world.
+    X_wpj = joint_X_p_i
+    if parent >= 0:
+        X_wpj = body_q[parent] * joint_X_p_i
+
+    # Child anchor frame in world.
+    X_wcj = X_wpj * X_j
+    # Child body frame in world.
+    X_wc = X_wcj * wp.transform_inverse(joint_X_c_i)
+
+    # Parent contribution to child-body-origin velocity.
+    x_child_origin = wp.transform_get_translation(X_wc)
+    v_parent_origin = wp.vec3()
+    w_parent = wp.vec3()
+    if parent >= 0:
+        v_wp = body_qd[parent]
+        w_parent = wp.spatial_bottom(v_wp)
+        v_parent_origin = com_twist_to_point_velocity(v_wp, body_q[parent], body_com[parent], x_child_origin)
+
+    # Joint motion in world space.
+    linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
+    angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
+    linear_joint_origin = wp.vec3()
+    if type == JointType.FREE or type == JointType.DISTANCE:
+        # FREE/DISTANCE linear DOFs are COM-referenced; convert to origin-referenced.
+        v_joint_origin = com_twist_to_origin_twist(
+            wp.spatial_vector(linear_joint_world, angular_joint_world),
+            X_wc,
+            body_com[child],
+        )
+        linear_joint_origin = wp.spatial_top(v_joint_origin)
+    else:
+        # Other joint types have their linear DOF at the child anchor; shift to body origin.
+        child_origin_offset_world = x_child_origin - wp.transform_get_translation(X_wcj)
+        linear_joint_origin = linear_joint_world + wp.cross(angular_joint_world, child_origin_offset_world)
+
+    v_wc_origin = wp.spatial_vector(v_parent_origin + linear_joint_origin, w_parent + angular_joint_world)
+
+    body_q[child] = X_wc
+    body_qd[child] = origin_twist_to_com_twist(v_wc_origin, X_wc, body_com[child])
+
+    return i  # dummy return
+
+
+@wp.kernel
+def integrate_and_fk_articulation(
+    articulation_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
     joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_axis: wp.array[wp.vec3],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_flags: wp.array[wp.int32],
     joint_q_in: wp.array[float],
     joint_qd_in: wp.array[float],
+    joint_qdd: wp.array[float],
+    dt: float,
+    # outputs
     joint_q_out: wp.array[float],
     joint_qd_out: wp.array[float],
+    body_q_out: wp.array[wp.transform],
+    body_qd_out: wp.array[wp.spatial_vector],
 ):
-    """Copy prescribed joint state through the solve for kinematic child bodies."""
-    joint_id = wp.tid()
-    child = joint_child[joint_id]
-    if (body_flags[child] & BodyFlags.KINEMATIC) == 0:
-        return
+    """Fused symplectic integrate + forward kinematics for one articulation.
 
-    q_start = joint_q_start[joint_id]
-    q_end = joint_q_start[joint_id + 1]
-    for i in range(q_start, q_end):
-        joint_q_out[i] = joint_q_in[i]
+    Replaces the separate ``integrate_generalized_joints`` +
+    ``copy_kinematic_joint_state`` + ``eval_fk`` passes by walking the
+    articulation joints in parent-before-child tree order and, for each
+    joint:
 
-    qd_start = joint_qd_start[joint_id]
-    qd_end = joint_qd_start[joint_id + 1]
-    for i in range(qd_start, qd_end):
-        joint_qd_out[i] = joint_qd_in[i]
+    1. Integrate ``joint_q`` / ``joint_qd`` via :func:`jcalc_integrate`
+       (or carry prescribed kinematic state through unchanged).
+    2. For FREE/DISTANCE descendants with ``parent >= 0``, rotate the
+       just-written slots from the old parent-anchor basis to the new one
+       using the parent's post-step angular velocity (which is live in
+       ``body_qd_out[parent]`` because the parent was processed earlier
+       in this loop). This is the transport correction that fixes the
+       drift described in
+       ``pr--141-commit-7-Fix-FREE-DISTANCE-descendant-drift``.
+    3. Run forward kinematics for the joint to write
+       ``body_q_out[child]`` and ``body_qd_out[child]``.
+
+    This keeps the SolverFeatherstone integration end-to-end in the public
+    parent-anchor-frame convention (per ``conventions.rst`` and
+    ``docs/migration.rst``) with no intermediate world-frame buffers.
+    """
+    art_idx = wp.tid()
+    start = articulation_start[art_idx]
+    end = articulation_start[art_idx + 1]
+
+    for i in range(start, end):
+        type = joint_type[i]
+        parent = joint_parent[i]
+        child = joint_child[i]
+        coord_start = joint_q_start[i]
+        dof_start = joint_qd_start[i]
+        lin_axis_count = joint_dof_dim[i, 0]
+        ang_axis_count = joint_dof_dim[i, 1]
+        joint_X_p_i = joint_X_p[i]
+        joint_X_c_i = joint_X_c[i]
+
+        is_kinematic_child = (body_flags[child] & BodyFlags.KINEMATIC) != 0
+
+        if is_kinematic_child:
+            # Prescribed kinematic state: pass joint_q / joint_qd through untouched.
+            q_end = joint_q_start[i + 1]
+            for k in range(coord_start, q_end):
+                joint_q_out[k] = joint_q_in[k]
+            dof_end = joint_qd_start[i + 1]
+            for k in range(dof_start, dof_end):
+                joint_qd_out[k] = joint_qd_in[k]
+        else:
+            jcalc_integrate(
+                parent,
+                joint_X_c_i,
+                body_com[child],
+                type,
+                joint_q_in,
+                joint_qd_in,
+                joint_qdd,
+                coord_start,
+                dof_start,
+                lin_axis_count,
+                ang_axis_count,
+                dt,
+                joint_q_out,
+                joint_qd_out,
+            )
+
+            # Transport-rotation correction: stay in the parent-anchor
+            # convention but account for the anchor basis rotating with
+            # the parent during the step. Only FREE/DISTANCE descendants
+            # suffer from the rotating-anchor drift - root FREE/DISTANCE
+            # joints (parent == -1) anchor to a fixed world frame.
+            if parent >= 0 and (type == JointType.FREE or type == JointType.DISTANCE):
+                # Parent's post-step world angular velocity. The tree-order
+                # traversal guarantees ``body_qd_out[parent]`` has been
+                # written already in this same loop iteration path.
+                omega_parent_new_world = wp.spatial_bottom(body_qd_out[parent])
+                _apply_free_distance_transport(
+                    i,
+                    coord_start,
+                    dof_start,
+                    joint_X_p_i,
+                    body_q_out[parent],
+                    omega_parent_new_world,
+                    dt,
+                    joint_q_out,
+                    joint_qd_out,
+                )
+
+        _fk_single_joint(
+            i,
+            type,
+            parent,
+            child,
+            coord_start,
+            dof_start,
+            lin_axis_count,
+            ang_axis_count,
+            joint_X_p_i,
+            joint_X_c_i,
+            joint_axis,
+            body_com,
+            body_flags,
+            joint_q_out,
+            joint_qd_out,
+            body_q_out,
+            body_qd_out,
+        )
