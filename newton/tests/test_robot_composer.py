@@ -514,7 +514,6 @@ add_function_test(
     "test_robot_composer",
     test_robot_composer,
     devices=devices,
-    check_output=False,
 )
 
 

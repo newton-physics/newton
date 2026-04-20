@@ -3,9 +3,9 @@
 
 """Test examples in the newton.examples package.
 
-Currently, this script mainly checks that the examples can run. It also treats
-deprecation warnings as failures by default so examples do not regress onto
-deprecated APIs.
+Currently, this script mainly checks that the examples can run. Unexpected
+stdout, stderr, and warnings from newton are treated as test failures via
+CheckOutput.
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -13,22 +13,20 @@ manipulating cloth example, which takes approximately 35 seconds to run on a
 CUDA device.
 """
 
+import importlib
 import os
-import subprocess
-import sys
-import tempfile
 import unittest
 from typing import Any
 
 import warp as wp
 
-import newton.tests.unittest_utils
+import newton.examples
+import newton.viewer
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
-    sanitize_identifier,
 )
 
 
@@ -65,10 +63,25 @@ def add_example_test(
     test_options: dict[str, Any] | None = None,
     test_options_cpu: dict[str, Any] | None = None,
     test_options_cuda: dict[str, Any] | None = None,
-    use_viewer: bool = False,
     test_suffix: str | None = None,
+    expected_output: list[str] | None = None,
+    expected_output_cpu: list[str] | None = None,
+    allowed_output: list[str] | None = None,
 ):
-    """Registers a Newton example to run on ``devices`` as a TestCase."""
+    """Registers a Newton example to run on ``devices`` as a TestCase.
+
+    Stdout and warnings are captured by :class:`CheckOutput` and validated
+    against the pattern lists.
+
+    Args:
+        expected_output: Regex patterns that must each match at least once
+            in the combined stdout + warning text.  Also act as an
+            allow-list so matching lines are not flagged as unexpected.
+        expected_output_cpu: Like *expected_output* but only required (and
+            allowed) on CPU devices.
+        allowed_output: Regex patterns that suppress unexpected-output
+            failures without requiring a match.
+    """
 
     # verify the module exists (use package-relative path so this works from any CWD)
     _examples_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
@@ -95,7 +108,6 @@ def add_example_test(
                 import torch
 
                 if wp.get_device(device).is_cuda and not torch.cuda.is_available():
-                    # Ensure torch has CUDA support
                     test.skipTest("Torch not compiled with CUDA support")
 
             except Exception as e:
@@ -106,95 +118,58 @@ def add_example_test(
         if usd_required and not USD_AVAILABLE:
             test.skipTest("Requires usd-core")
 
-        # Deprecations should fail example tests by default. Opt out only for
-        # a known third-party or asset issue that still needs follow-up.
-        allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
+        # Import the example module and get its parser
+        mod = importlib.import_module(f"newton.examples.{name}")
+        parser = getattr(mod.Example, "create_parser", newton.examples.create_parser)()
 
-        # Find the current Warp cache
-        warp_cache_path = wp.config.kernel_cache_dir
+        # Build CLI args and parse through the example's own parser.
+        # Use parse_known_args so options not in the parser (e.g. --solver
+        # for examples that only define it in __main__) don't cause errors.
+        # Any unrecognized options are set directly on the namespace so they
+        # are available via args.<name> in the Example constructor.
+        num_frames = options.pop("num-frames", options.pop("num_frames", 100))
+        cli_args = [
+            "--device",
+            str(device),
+            "--test",
+            "--quiet",
+            "--viewer",
+            "null",
+            "--num-frames",
+            str(num_frames),
+        ]
+        cli_args.extend(_build_command_line_options(options))
+        args, remaining = parser.parse_known_args(cli_args)
+        # Set unrecognized --key value pairs on args namespace
+        i = 0
+        while i < len(remaining):
+            if remaining[i].startswith("--"):
+                key = remaining[i].lstrip("-").replace("-", "_")
+                if i + 1 < len(remaining) and not remaining[i + 1].startswith("--"):
+                    setattr(args, key, remaining[i + 1])
+                    i += 2
+                else:
+                    setattr(args, key, True)
+                    i += 1
+            else:
+                i += 1
 
-        env_vars = os.environ.copy()
-        if warp_cache_path is not None:
-            env_vars["WARP_CACHE_PATH"] = warp_cache_path
-        if not allow_deprecation_warnings:
-            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
-        else:
-            env_vars.pop("PYTHONWARNINGS", None)
-
-        if newton.tests.unittest_utils.coverage_enabled:
-            # Generate a random coverage data file name - file is deleted along with containing directory
-            with tempfile.NamedTemporaryFile(
-                dir=newton.tests.unittest_utils.coverage_temp_dir, delete=False
-            ) as coverage_file:
-                pass
-
-            command = ["coverage", "run", f"--data-file={coverage_file.name}"]
-
-            if newton.tests.unittest_utils.coverage_branch:
-                command.append("--branch")
-
-        else:
-            command = [sys.executable]
-
-        # Append Warp commands
-        command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
-
-        if not use_viewer:
-            stage_path = (
-                options.pop(
-                    "stage_path",
-                    os.path.join(os.path.dirname(__file__), f"outputs/{name}_{sanitize_identifier(device)}.usd"),
-                )
-                if USD_AVAILABLE
-                else "None"
-            )
-
-            if stage_path:
-                command.extend(["--stage-path", stage_path])
-                try:
-                    os.remove(stage_path)
-                except OSError:
-                    pass
-        else:
-            # new-style example, use null viewer for tests (no disk I/O needed)
-            stage_path = "None"
-            command.extend(["--viewer", "null"])
-            # Remove viewer/stage_path from options so they can't override the null viewer
-            options.pop("viewer", None)
-            options.pop("stage_path", None)
-
-        command.extend(_build_command_line_options(options))
-
-        # Set the test timeout in seconds
-        test_timeout = options.pop("test_timeout", 600)
-
-        # Can set active=True when tuning the test parameters
-        with wp.ScopedTimer(f"{name}_{sanitize_identifier(device)}", active=False):
-            # Run the script as a subprocess
-            result = subprocess.run(
-                command, capture_output=True, text=True, env=env_vars, timeout=test_timeout, check=False
-            )
-
-        # print any error messages (e.g.: module not found)
-        if result.stderr != "":
-            print(result.stderr)
-
-        # Check the return code (0 is standard for success)
-        test.assertEqual(
-            result.returncode,
-            0,
-            msg=f"Failed with return code {result.returncode}, command: {' '.join(command)}\n\nOutput:\n{result.stdout}\n{result.stderr}",
-        )
-
-        # Clean up output file for old-style examples that may have created one
-        if stage_path and stage_path != "None" and result.returncode == 0:
-            try:
-                os.remove(stage_path)
-            except OSError:
-                pass
+        viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
+        factory = getattr(mod, "create_example", None) or mod.Example
+        with wp.ScopedDevice(device):
+            example = factory(viewer, args)
+            newton.examples.run(example, args)
 
     test_name = f"test_{name}_{test_suffix}" if test_suffix else f"test_{name}"
-    add_function_test(cls, test_name, run, devices=devices, check_output=False)
+    add_function_test(
+        cls,
+        test_name,
+        run,
+        devices=devices,
+        expected_patterns=expected_output,
+        expected_patterns_cpu=expected_output_cpu,
+        allowed_patterns=allowed_output,
+    )
 
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
@@ -205,7 +180,7 @@ class TestBasicExamples(unittest.TestCase):
     pass
 
 
-add_example_test(TestBasicExamples, name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+add_example_test(TestBasicExamples, name="basic.example_basic_pendulum", devices=test_devices)
 
 add_example_test(
     TestBasicExamples,
@@ -214,7 +189,6 @@ add_example_test(
     test_options={"num-frames": 200},
     test_options_cpu={"world_count": 16},
     test_options_cuda={"world_count": 64},
-    use_viewer=True,
     test_suffix="xpbd",
 )
 add_example_test(
@@ -224,20 +198,21 @@ add_example_test(
     test_options={"num-frames": 200, "solver": "vbd"},
     test_options_cpu={"world_count": 16},
     test_options_cuda={"world_count": 64},
-    use_viewer=True,
     test_suffix="vbd",
 )
 
-add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
+add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices)
 
-add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=test_devices, use_viewer=True)
+add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=test_devices)
 
 add_example_test(
     TestBasicExamples,
     name="basic.example_basic_shapes",
     devices=test_devices,
-    use_viewer=True,
     test_options={"num-frames": 150},
+    expected_output_cpu=[
+        "mesh-mesh contacts will be skipped",
+    ],
 )
 
 
@@ -249,28 +224,24 @@ add_example_test(
     TestCableExamples,
     name="cable.example_cable_twist",
     devices=test_devices,
-    use_viewer=True,
     test_options={"num-frames": 20},
 )
 add_example_test(
     TestCableExamples,
     name="cable.example_cable_y_junction",
     devices=test_devices,
-    use_viewer=True,
     test_options={"num-frames": 20},
 )
 add_example_test(
     TestCableExamples,
     name="cable.example_cable_bundle_hysteresis",
     devices=test_devices,
-    use_viewer=True,
     test_options={"num-frames": 20},
 )
 add_example_test(
     TestCableExamples,
     name="cable.example_cable_pile",
     devices=test_devices,
-    use_viewer=True,
     test_options={"num-frames": 20},
 )
 
@@ -284,7 +255,6 @@ add_example_test(
     name="cloth.example_cloth_bending",
     devices=test_devices,
     test_options={"num-frames": 400},
-    use_viewer=True,
 )
 add_example_test(
     TestClothExamples,
@@ -292,7 +262,6 @@ add_example_test(
     devices=test_devices,
     test_options={},
     test_options_cpu={"width": 32, "height": 16, "num-frames": 10},
-    use_viewer=True,
     test_suffix="vbd",
 )
 add_example_test(
@@ -301,7 +270,6 @@ add_example_test(
     devices=test_devices,
     test_options={"solver": "style3d"},
     test_options_cpu={"width": 32, "height": 16, "num-frames": 10},
-    use_viewer=True,
     test_suffix="style3d",
 )
 add_example_test(
@@ -310,7 +278,11 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={},
     test_options_cuda={"num-frames": 32},
-    use_viewer=True,
+    expected_output=[
+        "texture inputs are not yet supported",
+        "2-dimensional vectors are deprecated",
+        "SolverStyle3D::precompute",
+    ],
 )
 add_example_test(
     TestClothExamples,
@@ -318,28 +290,29 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={},
     test_options_cuda={"num-frames": 32},
-    use_viewer=True,
+    expected_output=[
+        "texture inputs are not yet supported",
+        "2-dimensional vectors are deprecated",
+        "SolverStyle3D::precompute",
+    ],
 )
 add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_franka",
     devices=cuda_test_devices,
     test_options={"num-frames": 50},
-    use_viewer=True,
 )
 add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_twist",
     devices=cuda_test_devices,
     test_options={"num-frames": 100},
-    use_viewer=True,
 )
 add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_rollers",
     devices=cuda_test_devices,
     test_options={"num-frames": 200},
-    use_viewer=True,
 )
 
 
@@ -353,14 +326,12 @@ add_example_test(
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_c_walk",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500, "torch_required": True},
-    use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
@@ -368,21 +339,21 @@ add_example_test(
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
-    use_viewer=True,
+    expected_output_cpu=[
+        "mesh-mesh contacts will be skipped",
+    ],
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_g1",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
-    use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_h1",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
-    use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
@@ -390,21 +361,21 @@ add_example_test(
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 500},
     test_options_cpu={"num-frames": 10},
-    use_viewer=True,
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_allegro_hand",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 500},
-    use_viewer=True,
+    expected_output=[
+        "authored mass and density without authored diagonalInertia",
+    ],
 )
 add_example_test(
     TestRobotExamples,
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 720},
-    use_viewer=True,
 )
 
 
@@ -418,40 +389,40 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_29dof"},
     test_options_cpu={"num-frames": 10},
-    use_viewer=True,
     test_suffix="G1_29dof",
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof"},
-    use_viewer=True,
     test_suffix="G1_23dof",
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
-    use_viewer=True,
     test_suffix="G1_23dof_Physx",
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "anymal"},
-    use_viewer=True,
     test_suffix="Anymal",
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
     test_options={"num-frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
-    use_viewer=True,
     test_suffix="Anymal_Physx",
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -459,8 +430,8 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"torch_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2"},
-    use_viewer=True,
     test_suffix="Go2",
+    expected_output=["\\[INFO\\]"],
 )
 add_example_test(
     TestRobotPolicyExamples,
@@ -468,8 +439,8 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"torch_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
-    use_viewer=True,
     test_suffix="Go2_Physx",
+    expected_output=["\\[INFO\\]"],
 )
 
 
@@ -482,7 +453,6 @@ add_example_test(
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
     test_options={"num-frames": 100, "torch_required": True},
-    use_viewer=True,
 )
 
 
@@ -490,18 +460,30 @@ class TestIKExamples(unittest.TestCase):
     pass
 
 
-add_example_test(TestIKExamples, name="ik.example_ik_franka", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_franka",
+    devices=test_devices,
+)
 
-add_example_test(TestIKExamples, name="ik.example_ik_h1", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_h1",
+    devices=test_devices,
+)
 
-add_example_test(TestIKExamples, name="ik.example_ik_custom", devices=cuda_test_devices, use_viewer=True)
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_custom",
+    devices=cuda_test_devices,
+)
 
 add_example_test(
     TestIKExamples,
     name="ik.example_ik_cube_stacking",
     test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,
-    use_viewer=True,
+    expected_output=["World success rate"],
 )
 
 
@@ -515,7 +497,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    use_viewer=True,
+    expected_output=["Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -523,7 +505,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    use_viewer=True,
+    expected_output=["Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -531,7 +513,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    use_viewer=True,
+    expected_output=["Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 add_example_test(
     TestSelectionAPIExamples,
@@ -539,7 +521,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
-    use_viewer=True,
+    expected_output=["Articulation|Link|Joint|Shape|Fixed|Floating|DOF|\\["],
 )
 
 
@@ -553,7 +535,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2 * 36},
-    use_viewer=True,
+    expected_output=["numeric grad:", "analytic grad:"],
 )
 
 add_example_test(
@@ -562,7 +544,6 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 4 * 120},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2 * 120},
-    use_viewer=True,
 )
 
 add_example_test(
@@ -571,7 +552,7 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 180},  # sim_steps
     test_options_cpu={"num-frames": 10},
-    use_viewer=True,
+    expected_output=["loss=", "flight target"],
 )
 
 add_example_test(
@@ -580,7 +561,6 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 4 * 30},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2 * 30},
-    use_viewer=True,
 )
 
 add_example_test(
@@ -589,7 +569,6 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 4 * 60},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2 * 60},
-    use_viewer=True,
 )
 
 add_example_test(
@@ -598,7 +577,6 @@ add_example_test(
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 4 * 60},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2, "sim-steps": 10},
-    use_viewer=True,
 )
 
 
@@ -611,7 +589,12 @@ add_example_test(
     name="sensors.example_sensor_contact",
     devices=test_devices,
     test_options={"num-frames": 160},  # required for ball to reach plate
-    use_viewer=True,
+    expected_output=[
+        "zero mass and zero inertia",
+        "SensorContact initialized",
+        "Sensing objects|Counterpart|total_force|force_matrix",
+        "Resetting",
+    ],
 )
 
 add_example_test(
@@ -619,7 +602,6 @@ add_example_test(
     name="sensors.example_sensor_tiled_camera",
     devices=cuda_test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
-    use_viewer=True,
 )
 
 add_example_test(
@@ -627,7 +609,6 @@ add_example_test(
     name="sensors.example_sensor_imu",
     devices=test_devices,
     test_options={"num-frames": 200},  # allow cubes to settle
-    use_viewer=True,
 )
 
 
@@ -640,7 +621,6 @@ add_example_test(
     name="mpm.example_mpm_granular",
     devices=cuda_test_devices,
     test_options={"num-frames": 100},
-    use_viewer=True,
 )
 
 add_example_test(
@@ -648,7 +628,6 @@ add_example_test(
     name="mpm.example_mpm_multi_material",
     devices=cuda_test_devices,
     test_options={"num-frames": 10},
-    use_viewer=True,
 )
 
 add_example_test(
@@ -656,7 +635,7 @@ add_example_test(
     name="mpm.example_mpm_grain_rendering",
     devices=cuda_test_devices,
     test_options={"num-frames": 10},
-    use_viewer=True,
+    expected_output=["quadrature.*deprecated|Please use.*instead"],
 )
 
 add_example_test(
@@ -664,7 +643,6 @@ add_example_test(
     name="mpm.example_mpm_twoway_coupling",
     devices=cuda_test_devices,
     test_options={"num-frames": 80},
-    use_viewer=True,
 )
 
 add_example_test(
@@ -672,7 +650,6 @@ add_example_test(
     name="mpm.example_mpm_beam_twist",
     devices=cuda_test_devices,
     test_options={"num-frames": 100},
-    use_viewer=True,
 )
 
 add_example_test(
@@ -680,7 +657,7 @@ add_example_test(
     name="mpm.example_mpm_snow_ball",
     devices=cuda_test_devices,
     test_options={"num-frames": 30, "voxel-size": 0.2},
-    use_viewer=True,
+    expected_output=["Generating.*particles"],
 )
 
 add_example_test(
@@ -688,7 +665,6 @@ add_example_test(
     name="mpm.example_mpm_viscous",
     devices=cuda_test_devices,
     test_options={"num-frames": 30, "voxel-size": 0.01},
-    use_viewer=True,
 )
 
 
@@ -697,7 +673,11 @@ add_example_test(
     name="basic.example_basic_plotting",
     devices=test_devices,
     test_options={"num-frames": 200},
-    use_viewer=True,
+    expected_output=["Diagnostics plot saved to|Simulation diagnostics summary"],
+    allowed_output=[
+        r"^\s+(Iterations|Kinetic E|Potential E|Constraints):",
+        "Matplotlib is building the font cache",
+    ],
 )
 
 
@@ -710,28 +690,29 @@ add_example_test(
     name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
-    use_viewer=True,
+    expected_output=["Downloading nut/bolt assets", "Assets downloaded to"],
+    allowed_output=["Cloning ", "Successfully downloaded folder to", "New version of .* found"],
 )
 add_example_test(
     TestContactsExamples,
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
-    use_viewer=True,
+    expected_output=["Downloading nut/bolt assets", "Assets downloaded to"],
+    allowed_output=["Cloning ", "Successfully downloaded folder to", "New version of .* found"],
 )
 add_example_test(
     TestContactsExamples,
     name="contacts.example_brick_stacking",
     devices=cuda_test_devices,
     test_options={"num-frames": 1200},
-    use_viewer=True,
 )
 add_example_test(
     TestContactsExamples,
     name="contacts.example_pyramid",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5},
-    use_viewer=True,
+    expected_output=["Built.*pyramids"],
 )
 
 
@@ -744,21 +725,19 @@ add_example_test(
     name="multiphysics.example_softbody_gift",
     devices=cuda_test_devices,
     test_options={"num-frames": 200},
-    use_viewer=True,
+    expected_output=["Detected non-manifold edge"],
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="cloth.example_cloth_poker_cards",
     devices=cuda_test_devices,
     test_options={"num-frames": 30},
-    use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_softbody_dropping_to_cloth",
     devices=cuda_test_devices,
     test_options={"num-frames": 200},
-    use_viewer=True,
 )
 
 
@@ -771,7 +750,6 @@ add_example_test(
     name="softbody.example_softbody_hanging",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
-    use_viewer=True,
 )
 
 
