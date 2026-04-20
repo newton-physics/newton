@@ -488,6 +488,7 @@ class _RheologySolver:
         delassus_operator: _DelassusOperator,
         split_mass: bool,
         temporary_store: fem.TemporaryStore | None = None,
+        skip_factorization: bool = False,
     ):
         self.delassus_operator = delassus_operator
         self.momentum = delassus_operator.momentum
@@ -500,7 +501,8 @@ class _RheologySolver:
         )
         self.strain_residual.zero_()
 
-        self.delassus_operator.compute_diagonal_factorization(split_mass)
+        if not skip_factorization:
+            self.delassus_operator.compute_diagonal_factorization(split_mass)
 
         self._evaluate_strain_residual_launch = wp.launch(
             kernel=evaluate_strain_residual,
@@ -858,8 +860,9 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         temporary_store: fem.TemporaryStore | None = None,
         n_batches: int = 16,
     ) -> None:
-        # split_mass=False — we compute the diagonal ourselves with per-batch mass splitting
-        super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store)
+        # split_mass=False, skip_factorization=True — we compute the diagonal ourselves
+        # with per-batch mass splitting after building the batch structures below
+        super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store, skip_factorization=True)
 
         self.color_count = self.rheology.color_offsets.shape[0] - 1
         self.n_batches = min(n_batches, self.color_count)
@@ -1012,6 +1015,7 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             dim=color_launch_dim,
             inputs=[
                 0,
+                color_launch_dim,
                 self._flat_color_offsets,
                 self.colors_per_batch,
                 self._flat_constraint_ids,
@@ -1732,9 +1736,18 @@ def solve_rheology(
         # continue with next solver
         solvers = solvers[1:]
 
+    if len(solvers) != 1:
+        raise ValueError(
+            f"Invalid solver string {solver!r}: unexpected tokens {solvers[1:]!r}. "
+            f"Accepted form: [linear+][jacobi+]<final>, where linear is one of "
+            f"{list(_ITERATIVE_LINEAR_SOLVERS)} and final is one of {list(_RHEOLOGY_SOLVERS)}."
+        )
     rheology_solver_class = _RHEOLOGY_SOLVERS.get(solvers[0])
     if rheology_solver_class is None:
-        raise ValueError(f"Invalid solver: {solvers[0]}")
+        raise ValueError(
+            f"Invalid solver {solvers[0]!r}. "
+            f"Accepted values: {list(_RHEOLOGY_SOLVERS)}."
+        )
 
     rheology_solver = rheology_solver_class(delassus_operator, temporary_store)
     rheology_solver.apply_initial_guess()

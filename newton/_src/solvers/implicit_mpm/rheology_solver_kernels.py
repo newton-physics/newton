@@ -1248,6 +1248,7 @@ def make_batched_solve_kernel(
     @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
     def batched_solve_impl(
         batch_index: int,
+        launch_dim: int,
         flat_color_offsets: wp.array[int],
         colors_per_batch: int,
         flat_constraint_ids: wp.array[int],
@@ -1273,7 +1274,6 @@ def make_batched_solve_kernel(
             (batch_index + 1) * colors_per_batch,
             flat_color_offsets.shape[0] - 1,
         )]
-        launch_dim = batch_end - batch_beg
 
         for fi in range(batch_beg + i, batch_end, launch_dim):
             tau_i = flat_constraint_ids[fi]
