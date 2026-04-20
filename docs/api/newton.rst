@@ -69,6 +69,7 @@ newton
    eval_ik
    eval_jacobian
    eval_mass_matrix
+   reset_state
 
 .. rubric:: Constants
 

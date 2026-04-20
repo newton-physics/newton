@@ -188,7 +188,6 @@ class _ExampleBrowser:
     def __init__(self, viewer):
         self.viewer = viewer
         self.switch_target: str | None = None
-        self._reset_requested = False
         self.callback = None
         self._tree: dict[str, list[tuple[str, str]]] = {}
 
@@ -215,7 +214,7 @@ class _ExampleBrowser:
                         imgui.tree_pop()
                 imgui.separator()
                 if imgui.button("Reset"):
-                    self._reset_requested = True
+                    self.viewer.request_reset()
 
         self.callback = _browser_ui
         viewer.register_ui_callback(_browser_ui, position="panel")
@@ -241,7 +240,6 @@ class _ExampleBrowser:
 
     def reset(self, example_class):
         """Reset the current example by re-creating it. Returns the new example or None."""
-        self._reset_requested = False
         self.viewer.clear_model()
         try:
             parser = getattr(example_class, "create_parser", create_parser)()
@@ -280,8 +278,17 @@ def run(example, args):
             example, example_class = browser.switch(example_class)
             continue
 
-        if browser is not None and browser._reset_requested:
-            example = browser.reset(example_class)
+        if viewer.is_reset_requested():
+            viewer.clear_reset_request()
+            if hasattr(example, "reset"):
+                example.reset()
+            elif hasattr(example, "model"):
+                for attr in ("state_0", "state_1"):
+                    s = getattr(example, attr, None)
+                    if s is not None:
+                        example.model.reset_state(s)
+                if hasattr(example, "sim_time"):
+                    example.sim_time = 0.0
             continue
 
         if example is None:
