@@ -217,6 +217,7 @@ def mc_calc_face_texture(
     return area, normal, center, pen_depth, face_verts
 
 
+@wp.func
 def hydroelastic_mode_from_flags(flags: wp.int32) -> wp.int32:
     """Decode hydroelastic mode from shape flags inside Warp kernels."""
     if (flags & wp.int32(ShapeFlags.HYDROELASTIC_RIGID)) != 0:
