@@ -213,10 +213,6 @@ class ViewerRTX(ViewerUSD):
 
         # Build-time line instancers plus runtime-authored capsule layers
 
-        # Screenshot pixels are captured lazily to avoid a per-frame CPU copy.
-        self._last_frame_pixels: np.ndarray | None = None
-        self._has_presented_frame = False
-
         # Camera (shared Camera class with ViewerGL)
         self.camera = Camera(width=self._width, height=self._height, up_axis=up_axis)
         self._camera_prim_path = "/World/Camera"
@@ -229,6 +225,9 @@ class ViewerRTX(ViewerUSD):
 
         # async rendering
         self._render_result = None
+
+        # last frame's render products (used for screenshots)
+        self._render_products = None
 
         # Window is deferred until _init_ovrtx to avoid pyglet/Warp
         # kernel compilation deadlock on Windows.
@@ -1296,14 +1295,14 @@ void main() {
     def end_frame(self):
         if self._phase == self._PHASE_BUILD:
             self._init_ovrtx()
-        elif self._phase == self._PHASE_RENDER:
-            with wp.ScopedTimer("ViewerRTX::end_frame", active=PROFILE_ENABLED, use_nvtx=True):
-                self._update_ovrtx_camera()
-                self._update_ovrtx_transforms()
-                self._update_ovrtx_line_batches()
-                self._update_ovrtx_point_batches()
-                self._update_ovrtx_mesh_points()
-                self._render_and_display()
+
+        with wp.ScopedTimer("ViewerRTX::end_frame", active=PROFILE_ENABLED, use_nvtx=True):
+            self._update_ovrtx_camera()
+            self._update_ovrtx_transforms()
+            self._update_ovrtx_line_batches()
+            self._update_ovrtx_point_batches()
+            self._update_ovrtx_mesh_points()
+            self._render_and_display()
 
     @override
     def log_mesh(
@@ -1638,24 +1637,28 @@ void main() {
     def _render_and_display(self):
         if self._rtx is None or self._should_close:
             return
+
         with wp.ScopedTimer("ViewerRTX::render_and_display", active=PROFILE_ENABLED, use_nvtx=True):
             from ovrtx import Device
+
+            self._render_products = None
 
             if self._async:
                 # wait for async rendering to complete
                 with wp.ScopedTimer("ViewerRTX::rtx_wait", active=PROFILE_ENABLED, use_nvtx=True):
-                    products = self._render_result.wait() if self._render_result is not None else None
+                    if self._render_result is not None:
+                        self._render_products = self._render_result.wait()
             else:
                 # render synchronously
                 with wp.ScopedTimer("ViewerRTX::rtx_step", active=PROFILE_ENABLED, use_nvtx=True):
-                    products = self._rtx.step(
+                    self._render_products = self._rtx.step(
                         render_products={self._render_product_path},
                         delta_time=1.0 / self.fps,
                     )
 
             # blit to window if not headless
-            if products is not None and self._window is not None and self._window.context is not None:
-                for _pname, product in products.items():
+            if self._render_products is not None and self._window is not None and self._window.context is not None:
+                for _pname, product in self._render_products.items():
                     for frame in product.frames:
                         if "LdrColor" in frame.render_vars:
                             with wp.ScopedTimer("ViewerRTX::fb_map", active=PROFILE_ENABLED, use_nvtx=True):
@@ -1728,60 +1731,24 @@ void main() {
         with wp.ScopedTimer("ViewerRTX::swap_buffers", active=PROFILE_ENABLED, use_nvtx=True):
             self._window.flip()
 
-        self._has_presented_frame = True
-
-    def _read_window_texture_pixels(self) -> np.ndarray:
-        """Read back the last presented GL texture for screenshot capture."""
-        gl = self._pyglet_gl
-
-        if self._window is None or self._window.context is None:
-            raise RuntimeError("save_screenshot() requires an active presentation window")
-
-        pixels = np.empty((self.camera.height, self.camera.width, 4), dtype=np.uint8)
-        self._window.switch_to()
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self._gl_texture)
-        gl.glGetTexImage(
-            gl.GL_TEXTURE_2D,
-            0,
-            gl.GL_RGBA,
-            gl.GL_UNSIGNED_BYTE,
-            pixels.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
-        )
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-        self._last_frame_pixels = pixels
-        return pixels
-
-    def _capture_pending_render_pixels(self) -> np.ndarray:
-        """Wait for the current async render and copy its pixels for screenshot capture."""
-        if self._render_result is None:
+    def _capture_screenshot_pixels(self) -> np.ndarray:
+        if self._render_products is not None:
+            products = self._render_products
+        elif self._render_result is not None:
+            products = self._render_result.wait()
+        else:
             raise RuntimeError("save_screenshot() requires at least one completed render frame")
 
         from ovrtx import Device
-
-        products = self._render_result.wait()
-        self._render_result = None
-        if products is None:
-            raise RuntimeError("save_screenshot() requires at least one completed render frame")
 
         for _pname, product in products.items():
             for frame in product.frames:
                 if "LdrColor" in frame.render_vars:
                     with frame.render_vars["LdrColor"].map(device=Device.CPU) as mapping:
                         pixels = np.array(np.from_dlpack(mapping.tensor), copy=True)
-                    self._last_frame_pixels = pixels
                     return pixels
 
         raise RuntimeError("save_screenshot() could not find the LdrColor render output")
-
-    def _capture_screenshot_pixels(self) -> np.ndarray:
-        """Capture the most recent render output without adding per-frame overhead."""
-        if self._has_presented_frame and self._window is not None and self._window.context is not None:
-            return self._read_window_texture_pixels()
-        if self._render_result is not None:
-            return self._capture_pending_render_pixels()
-        if self._last_frame_pixels is not None:
-            return self._last_frame_pixels
-        raise RuntimeError("save_screenshot() requires at least one completed render frame")
 
     def save_screenshot(self, path: str) -> None:
         """Save the last rendered frame to an image file.
@@ -1826,8 +1793,6 @@ void main() {
         self._point_batch_paths = {}
         self._point_batch_colors = {}
         self._point_batch_synced_counts = {}
-        self._has_presented_frame = False
-        self._last_frame_pixels = None
         self._last_state = None
         self._last_control = None
         super().clear_model()
@@ -1858,11 +1823,18 @@ void main() {
             self._render_result.wait()
             self._render_result = None
 
+        # release render products
+        if self._render_products is not None:
+            self._render_products = None
+
+        # release transform binding
         if self._transform_binding is not None:
             self._transform_binding.unbind()
             self._transform_binding = None
 
+        # release ovrtx renderer
         self._rtx = None
+
         if self.ui:
             self.ui.shutdown()
 
