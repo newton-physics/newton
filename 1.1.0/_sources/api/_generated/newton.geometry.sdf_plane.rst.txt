@@ -1,0 +1,6 @@
+﻿newton.geometry.sdf\_plane
+==========================
+
+.. currentmodule:: newton.geometry
+
+.. autowarpfunc:: sdf_plane

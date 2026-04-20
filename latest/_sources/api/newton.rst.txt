@@ -1,0 +1,83 @@
+.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-License-Identifier: CC-BY-4.0
+
+newton
+======
+
+.. py:module:: newton
+.. currentmodule:: newton
+
+.. toctree::
+   :hidden:
+
+   newton_geometry
+   newton_ik
+   newton_math
+   newton_selection
+   newton_sensors
+   newton_solvers
+   newton_usd
+   newton_utils
+   newton_viewer
+
+.. rubric:: Submodules
+
+- :doc:`newton.geometry <newton_geometry>`
+- :doc:`newton.ik <newton_ik>`
+- :doc:`newton.math <newton_math>`
+- :doc:`newton.selection <newton_selection>`
+- :doc:`newton.sensors <newton_sensors>`
+- :doc:`newton.solvers <newton_solvers>`
+- :doc:`newton.usd <newton_usd>`
+- :doc:`newton.utils <newton_utils>`
+- :doc:`newton.viewer <newton_viewer>`
+
+.. rubric:: Classes
+
+.. autosummary::
+   :toctree: _generated
+   :nosignatures:
+
+   Axis
+   BodyFlags
+   CollisionPipeline
+   Contacts
+   Control
+   EqType
+   Gaussian
+   GeoType
+   Heightfield
+   JointTargetMode
+   JointType
+   Mesh
+   Model
+   ModelBuilder
+   ParticleFlags
+   SDF
+   ShapeFlags
+   State
+   TetMesh
+
+.. rubric:: Functions
+
+.. autosummary::
+   :toctree: _generated
+   :signatures: long
+
+   AxisType
+   eval_fk
+   eval_ik
+   eval_jacobian
+   eval_mass_matrix
+
+.. rubric:: Constants
+
+.. list-table::
+   :header-rows: 1
+
+   * - Name
+     - Value
+   * - ``MAXVAL``
+     - ``10000000000.0``
+   * - ``__version__``
+     - ``1.2.0.dev0``
