@@ -1761,17 +1761,22 @@ void main() {
         raise RuntimeError("save_screenshot() requires at least one completed render frame")
 
     def save_screenshot(self, path: str) -> None:
-        """Save the last rendered frame to a JPEG file.
+        """Save the last rendered frame to an image file.
 
+        The file format is inferred from the extension (e.g. ``.png``, ``.jpg``).
         Call this after at least one completed frame has been rendered (e.g.
         after the simulation loop). Works in headless mode.
         """
         from PIL import Image
 
-        img = self._capture_screenshot_pixels()
-        if img.ndim == 3 and img.shape[2] == 4:
-            img = img[:, :, :3]  # drop alpha for JPEG
-        Image.fromarray(img).save(path, "JPEG", quality=92)
+        pixels = self._capture_screenshot_pixels()
+        pil_img = Image.fromarray(pixels)
+        ext = os.path.splitext(path)[1].lower()
+        if ext in {".jpg", ".JPG", ".jpeg", ".JPEG"}:
+            pil_img = pil_img.convert("RGB")
+            pil_img.save(path, quality=92)
+        else:
+            pil_img.save(path)
 
     # ----------------------------------------------------------- viewer API
 
