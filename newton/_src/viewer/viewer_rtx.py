@@ -276,8 +276,8 @@ class ViewerRTX(ViewerUSD):
             gl.GL_TEXTURE_2D,
             0,
             gl.GL_RGBA8,
-            self._width,
-            self._height,
+            self.camera.width,
+            self.camera.height,
             0,
             gl.GL_RGBA,
             gl.GL_UNSIGNED_BYTE,
@@ -379,11 +379,8 @@ void main() {
 
         @self._window.event
         def on_resize(width, height):
-            # OVRTX render resolution is fixed; only update the camera aspect ratio
-            # so that F-key framing stays correct. The blit uses a letterbox viewport.
-            if width != self._width or height != self._height:
-                self.camera.width = width
-                self.camera.height = height
+            self._width = width
+            self._height = height
 
         @self._window.event
         def on_close():
@@ -439,9 +436,33 @@ void main() {
         return mat
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
-        if self.gui:
-            return self.gui.map_window_to_target_coords(x, y, self._window, target_size=(self._width, self._height))
-        return float(x), float(y)
+        """Map a window-space mouse point to render-target pixel coordinates.
+
+        Accounts for the letterbox/pillarbox viewport so that picking works
+        correctly after a window resize.
+        """
+        if self._window is None:
+            return float(x), float(y)
+        win_w, win_h = self._window.get_size()
+        if win_w <= 0 or win_h <= 0:
+            return float(x), float(y)
+        render_aspect = self.camera.width / max(self.camera.height, 1)
+        window_aspect = win_w / max(win_h, 1)
+        if window_aspect >= render_aspect:
+            # Pillarbox: black bars left/right
+            vp_h = win_h
+            vp_w = win_h * render_aspect
+            vp_x = (win_w - vp_w) / 2.0
+            vp_y = 0.0
+        else:
+            # Letterbox: black bars top/bottom
+            vp_w = win_w
+            vp_h = win_w / render_aspect
+            vp_x = 0.0
+            vp_y = (win_h - vp_h) / 2.0
+        rx = (x - vp_x) / vp_w * self.camera.width
+        ry = (y - vp_y) / vp_h * self.camera.height
+        return float(rx), float(ry)
 
     def _frame_camera_on_model(self):
         """Frame the camera to show all visible objects in the scene."""
@@ -456,7 +477,7 @@ void main() {
         # ---- Camera ----------------------------------------------------------
         cam = UsdGeom.Camera.Define(self.stage, self._camera_prim_path)
 
-        aspect = self._width / max(self._height, 1)
+        aspect = self.camera.width / max(self.camera.height, 1)
         # camera.fov is vertical FOV, so derive focal length from the vertical aperture.
         v_aperture = 20.955
         h_aperture = v_aperture * aspect
@@ -511,7 +532,9 @@ void main() {
             ),
         )
         rp.CreateRelationship("camera").SetTargets([Sdf.Path(self._camera_prim_path)])
-        rp.CreateAttribute("resolution", Sdf.ValueTypeNames.Int2, custom=False).Set(Gf.Vec2i(self._width, self._height))
+        rp.CreateAttribute("resolution", Sdf.ValueTypeNames.Int2, custom=False).Set(
+            Gf.Vec2i(self.camera.width, self.camera.height)
+        )
 
         # RenderVar lives at /Render/Vars/LdrColor (NOT nested under the product)
         rv_path = "/Render/Vars/LdrColor"
@@ -1666,7 +1689,7 @@ void main() {
         fb_w, fb_h = self._window.get_framebuffer_size()
 
         # Compute a letterbox viewport that preserves the OVRTX render aspect ratio.
-        render_aspect = self._width / max(self._height, 1)
+        render_aspect = self.camera.width / max(self.camera.height, 1)
         window_aspect = fb_w / max(fb_h, 1)
         if window_aspect >= render_aspect:
             # Window is wider than render — pillarbox (black bars left/right)
@@ -1714,7 +1737,7 @@ void main() {
         if self._window is None or self._window.context is None:
             raise RuntimeError("save_screenshot() requires an active presentation window")
 
-        pixels = np.empty((self._height, self._width, 4), dtype=np.uint8)
+        pixels = np.empty((self.camera.height, self.camera.width, 4), dtype=np.uint8)
         self._window.switch_to()
         gl.glBindTexture(gl.GL_TEXTURE_2D, self._gl_texture)
         gl.glGetTexImage(
