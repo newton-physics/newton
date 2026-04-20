@@ -121,6 +121,10 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version-file: ".python-version"
+      - name: Detect CPU ISA features for cache key
+        id: cpu-id
+        shell: bash
+        run: echo "cpu-hash=$(python3 scripts/ci/cpu_isa_hash.py)" >> "$GITHUB_OUTPUT"
       - name: Restore Warp kernel cache
         if: github.event_name != 'merge_group'
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
@@ -129,9 +133,9 @@ jobs:
             ~/.cache/warp
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
-          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ steps.cpu-id.outputs.cpu-hash }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-${{ runner.os }}-${{ runner.arch }}-
+            warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ steps.cpu-id.outputs.cpu-hash }}-
       - name: Run Tests
         run: uv run --extra dev -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
       - name: Test Summary
