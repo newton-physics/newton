@@ -235,7 +235,7 @@ def _get_serialization_format(file_path: str) -> str:
         return "json"
     elif ext == ".bin":
         if not HAS_CBOR2:
-            raise ImportError("cbor2 library is required for .bin files. Install with: pip install 'cbor2>=5.7.0,<6'")
+            raise ImportError("cbor2 library is required for .bin files. Install with: pip install 'cbor2>=5.7.0'")
         return "cbor2"
     else:
         raise ValueError(f"Unsupported file extension '{ext}'. Supported extensions: .json, .bin")
@@ -614,8 +614,9 @@ def transfer_to_model(source_dict, target_obj, post_load_init_callback=None, _pa
     if not hasattr(target_obj, "__dict__"):
         return
 
-    # Handle case where source_dict is not a dict (primitive value)
-    if not isinstance(source_dict, dict):
+    # Handle case where source_dict is not a mapping (primitive value).
+    # Use Mapping to support cbor2 6.x frozendict.
+    if not isinstance(source_dict, Mapping):
         return
 
     # Iterate through all attributes of the target object
@@ -641,7 +642,7 @@ def transfer_to_model(source_dict, target_obj, post_load_init_callback=None, _pa
             continue
 
         # Handle different types of values
-        if hasattr(target_value, "__dict__") and isinstance(source_value, dict):
+        if hasattr(target_value, "__dict__") and isinstance(source_value, Mapping):
             # Recursively transfer for custom objects
             # Build path only when needed (optimization: lazy string formatting)
             current_path = f"{_path}.{attr_name}" if _path else attr_name
@@ -693,8 +694,10 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
     if result is not data:
         return result
 
-    # If not a dict with __type__, return as-is
-    if not isinstance(data, dict) or "__type__" not in data:
+    # If not a mapping with __type__, return as-is.
+    # Use Mapping rather than dict to support cbor2 6.x, which returns frozendict
+    # (a Mapping but not a dict subclass) instead of plain dict.
+    if not isinstance(data, Mapping) or "__type__" not in data:
         return data
 
     type_name = data["__type__"]
@@ -909,8 +912,9 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
     """
 
     def callback(x, path):
-        # Optimization: extract type once to avoid repeated isinstance and dict lookups
-        x_type = x.get("__type__") if isinstance(x, dict) else None
+        # Optimization: extract type once to avoid repeated isinstance and dict lookups.
+        # Use Mapping to support cbor2 6.x frozendict (not a dict subclass).
+        x_type = x.get("__type__") if isinstance(x, Mapping) else None
 
         if x_type == "warp.array_ref":
             if cache is None:
@@ -997,14 +1001,15 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
     result = deserialize(data, callback, format_type=format_type, cache=cache)
 
     def _resolve_cache_refs(obj):
-        if isinstance(obj, dict):
+        # Use Mapping to support cbor2 6.x frozendict (not a dict subclass).
+        if isinstance(obj, Mapping):
             # Optimization: single dict lookup instead of checking membership then accessing
             cache_ref = obj.get("__cache_ref__")
             if cache_ref is not None:
                 idx = int(cache_ref["index"])
                 # Will raise KeyError with clear message if still missing
                 return cache.try_get_value(idx) if cache is not None else obj
-            # Recurse into dict
+            # Recurse into mapping; always return a plain dict
             return {k: _resolve_cache_refs(v) for k, v in obj.items()}
         if isinstance(obj, list):
             return [_resolve_cache_refs(v) for v in obj]
