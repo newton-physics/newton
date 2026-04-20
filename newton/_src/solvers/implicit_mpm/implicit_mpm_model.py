@@ -324,6 +324,15 @@ class ImplicitMPMModel:
         else:
             self.has_dilatancy = False
 
+        # Recompute particle volume and density from available particle data
+        with wp.ScopedDevice(model.device):
+            # Assume that particles represent a cuboid volume of space, i.e, V = 8 r**3
+            # (particles are typically laid out in a grid, and represent an uniform material)
+            num_particles = model.particle_q.shape[0]
+            self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
+            self.particle_volume = wp.array(8.0 * self.particle_radius.numpy() ** 3)
+            self.particle_density = model.particle_mass / self.particle_volume
+
     def notify_collider_changed(self):
         """Refresh cached extrema for collider parameters.
 
@@ -350,15 +359,6 @@ class ImplicitMPMModel:
         (registered via :meth:`SolverImplicitMPM.register_custom_attributes`).
         """
         model = self.model
-
-        num_particles = model.particle_q.shape[0]
-
-        with wp.ScopedDevice(model.device):
-            # Assume that particles represent a cuboid volume of space, i.e, V = 8 r**3
-            # (particles are typically laid out in a grid, and represent an uniform material)
-            self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
-            self.particle_volume = wp.array(8.0 * self.particle_radius.numpy() ** 3)
-            self.particle_density = model.particle_mass / self.particle_volume
 
         self.material_parameters.young_modulus = model.mpm.young_modulus
         self.material_parameters.poisson_ratio = model.mpm.poisson_ratio

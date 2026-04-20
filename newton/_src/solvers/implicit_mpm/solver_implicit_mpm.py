@@ -15,6 +15,7 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
+from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .rasterized_collisions import (
@@ -1046,7 +1047,8 @@ class SolverImplicitMPM(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        self._mpm_model.setup_particle_material()
+        if flags & SolverNotifyFlags.MODEL_PROPERTIES:
+            self._mpm_model.notify_particle_material_changed()
 
     def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.

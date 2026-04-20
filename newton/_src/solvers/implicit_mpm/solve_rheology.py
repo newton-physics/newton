@@ -335,7 +335,12 @@ class _DelassusOperator:
                 multiplicity (float 2D array, shape ``[n_batches, n_vel]``).
                 Overrides *split_mass* when provided.
         """
-        if mass_multiplicity is None and self._computed and not self._mass_multiplicity_used and self._split_mass == split_mass:
+        if (
+            mass_multiplicity is None
+            and self._computed
+            and not self._mass_multiplicity_used
+            and self._split_mass == split_mass
+        ):
             return
 
         device = self.momentum.velocity.device
