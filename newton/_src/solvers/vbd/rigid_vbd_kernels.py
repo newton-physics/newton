@@ -314,21 +314,13 @@ def build_joint_projectors(
     ang_count: int,
     q_wp_rot: wp.quat,
 ):
-    """Build orthogonal-complement projectors P_lin and P_ang for a joint.
+    """Build orthogonal-complement projectors P_lin and P_ang.
 
-    P = I - sum(ai * ai^T) removes free DOF directions.
-    Invariant: free axes must be orthonormal for P to be a valid projector (P^2 = P).
-
-    Args:
-        jt: Joint type (JointType enum).
-        joint_axis: Per-DOF axis directions.
-        qd_start: Start index into joint_axis for this joint's DOFs.
-        lin_count: Number of free linear DOFs (0 for most joints; 1 for PRISMATIC; 0-3 for D6).
-        ang_count: Number of free angular DOFs (0 for most joints; 1 for REVOLUTE; 0-3 for D6).
-        q_wp_rot: Parent joint frame rotation (world). Used to rotate linear axes to world space.
-
-    Returns:
-        (P_lin, P_ang): Orthogonal-complement projectors for linear and angular constraints.
+    P = I - sum(ai * ai^T) over free axes (must be orthonormal).
+    P_lin projects the world linear residual: axes rotated by q_wp_rot per call,
+      so re-project stored multipliers at each read site.
+    P_ang projects the parent-frame angular residual (kappa): axes constant,
+      so stored multipliers stay in-basis automatically.
     """
     P_lin = wp.identity(3, float)
     P_ang = wp.identity(3, float)
@@ -463,6 +455,7 @@ def evaluate_angular_constraint_force_hessian(
     kappa_stab = kappa_now_vec - alpha * C0_ang
     kappa_perp = P * kappa_stab
 
+    # P_ang constant -> lambda_ang in-basis by construction (see build_joint_projectors).
     f_local = penalty_k * kappa_perp + sigma0 + lambda_ang
 
     H_local = penalty_k * P + wp.mat33(
@@ -551,7 +544,8 @@ def evaluate_linear_constraint_force_hessian(
     C_stab = C_vec - alpha * C0_lin
     C_perp = P * C_stab
 
-    f_attachment = penalty_k * C_perp + lambda_lin
+    # P_lin rotates per call -> must re-project lambda_lin (see build_joint_projectors).
+    f_attachment = penalty_k * C_perp + P * lambda_lin
 
     # Fold damping into effective stiffness: K_eff = k*(1 + d/dt)*P
     if damping > 0.0:

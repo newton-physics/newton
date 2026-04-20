@@ -238,6 +238,23 @@ def _set_kinematic_d6_pose(
 
 
 @wp.kernel
+def _apply_y_axis_torque(
+    body_id: wp.int32,
+    sim_time: wp.array[float],
+    tau_amp: float,
+    tau_freq: float,
+    body_f: wp.array[wp.spatial_vector],
+):
+    """Write an oscillating world-Y torque to body_f[body_id] (no linear force)."""
+    t = wp.float32(sim_time[0])
+    tau_y = tau_amp * wp.sin(tau_freq * t)
+    body_f[body_id] = wp.spatial_vector(
+        wp.vec3(0.0, 0.0, 0.0),
+        wp.vec3(0.0, tau_y, 0.0),
+    )
+
+
+@wp.kernel
 def _set_kinematic_linear_rotating_pose(
     body_id: wp.int32,
     sim_time: wp.array[float],
@@ -2436,18 +2453,19 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
 
 
 def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
-    """Cable VBD: D6 joint (free linear X + free angular Y) should keep constrained DOFs locked.
+    """Cable VBD: D6 joint (free linear X + free angular Y), locked DOFs stay locked
+    and free DOFs respond to their drivers.
 
     Vertical cable hanging -Z from a kinematic anchor. D6 joint with 1 free linear
     axis (X) and 1 free angular axis (Y) in the joint parent anchor frame.
     For -Z cables the parent frame rotates +Z to -Z (180 deg about Y), so
     joint-frame X maps to world -X and Y stays world Y.
 
-    Anchor oscillates in X and rotates around Y. The free linear axis
-    allows the cable to slide (not follow the X motion). Gravity in -Z
-    stresses the locked Z linear constraint. The anchor rotation around Y
-    directly exercises the free angular Y axis - the cable should not
-    follow the rotation.
+    Free linear X is driven by the anchor X oscillation, coupled through the
+    locked angular X/Z constraints. Free angular Y is driven by an external
+    oscillating world-Y torque applied to rod[0]; the locked angular X/Z resist
+    anything other than world-Y rotation, leaving the torque to spin the free Y.
+    Gravity in -Z stresses the locked Z linear constraint.
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e4
@@ -2521,6 +2539,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
 
     sim_time_arr = wp.zeros(1, dtype=float, device=device)
     anchor_id = wp.int32(anchor)
+    rod0_id = wp.int32(rod_bodies[0])
     anchor_z = float(anchor_pos[2])
 
     def simulate():
@@ -2540,6 +2559,12 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
                     state0.body_q,
                     state0.body_qd,
                 ],
+                device=device,
+            )
+            wp.launch(
+                _apply_y_axis_torque,
+                dim=1,
+                inputs=[rod0_id, sim_time_arr, 1.0e-2, 2.0, state0.body_f],
                 device=device,
             )
             model.collide(state0, contacts)
@@ -2571,7 +2596,10 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
         context="Cable D6 joint attachment",
     )
 
-    # Free DOF freedom: a D6 that secretly locks all DOFs must not pass.
+    # Free linear X freedom: anchor X oscillation couples through the locked
+    # angular constraints to slide the rod along the free X axis.
+    # Free angular Y freedom: an oscillating world-Y torque on rod[0] rotates
+    # the rod about the free Y axis (locked X/Z angular axes resist anything else).
     _, _, d_along, rot_free = _compute_d6_joint_error(model, state0.body_q, j_d6)
     test.assertGreater(
         abs(d_along),
@@ -2580,7 +2608,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     )
     test.assertGreater(
         rot_free,
-        0.005,
+        0.01,
         msg=f"D6 free angular Y not exercised: rot_free={rot_free:.4f} rad",
     )
 
