@@ -2,23 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example for basic four-bar mechanism
+# Example demonstrating all supported geometry types
 #
-# Shows how to simulate a basic four-bar linkage with multiple worlds using SolverKamino.
+# Demonstrates the different geometry shape combinations that can collide in SolverKamino.
 #
-# Command: python -m newton.examples kamino_basic_fourbar --world-count 16
+# Command: python -m newton.examples kamino_basic_all_geoms
 #
 ###########################################################################
-
-import argparse
-import os
 
 import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
-from newton._src.solvers.kamino._src.models.builders import basics_newton
+from newton._src.solvers.kamino._src.geometry.primitive.broadphase import PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES
+from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS
+from newton._src.solvers.kamino._src.models.builders import testing_newton
 from newton._src.solvers.kamino._src.utils import logger as msg
 
 
@@ -30,41 +28,64 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
-        self.world_count = args.world_count if args else 1
         self.viewer = viewer
         self.device = wp.get_device()
 
+        # Define excluded shape types for broadphase / narrowphase (temporary)
+        excluded_types = [
+            newton.GeoType.NONE,  # NOTE: Need to skip empty shapes
+            newton.GeoType.PLANE,  # NOTE: Currently not supported well by the viewer
+            newton.GeoType.ELLIPSOID,  # NOTE: Currently not supported well by the viewer
+            newton.GeoType.MESH,  # NOTE: Currently not supported any pipeline
+            newton.GeoType.CONVEX_MESH,  # NOTE: Currently not supported any pipeline
+            newton.GeoType.HFIELD,  # NOTE: Currently not supported any pipeline
+            newton.GeoType.GAUSSIAN,  # NOTE: Render-only, no collision shape pairs
+        ]
+
+        # Generate a list of all supported shape-pair combinations for the configured pipeline
+        supported_shape_pairs: list[tuple[str, str]] = []
+        if args.pipeline == "unified":
+            supported_shape_types = [st.value for st in newton.GeoType]
+            for shape_bottom in supported_shape_types:
+                shape_bottom_name = newton.GeoType(shape_bottom).name.lower()
+                for shape_top in supported_shape_types:
+                    shape_top_name = newton.GeoType(shape_top).name.lower()
+                    if shape_top in excluded_types or shape_bottom in excluded_types:
+                        continue
+                    supported_shape_pairs.append((shape_top_name, shape_bottom_name))
+        elif args.pipeline == "primitive":
+            excluded_types.extend([newton.GeoType.CYLINDER])
+            supported_shape_types = list(PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES)
+            supported_type_pairs = list(PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS)
+            supported_type_pairs_reversed = [(b, a) for (a, b) in supported_type_pairs]
+            supported_type_pairs.extend(supported_type_pairs_reversed)
+            for shape_bottom in supported_shape_types:
+                shape_bottom_name = shape_bottom.name.lower()
+                for shape_top in supported_shape_types:
+                    shape_top_name = shape_top.name.lower()
+                    if shape_top in excluded_types or shape_bottom in excluded_types:
+                        continue
+                    if (shape_top, shape_bottom) in supported_type_pairs:
+                        supported_shape_pairs.append((shape_top_name, shape_bottom_name))
+        else:
+            raise ValueError(f"Unsupported collision pipeline type: {args.pipeline}")
+        msg.notif(f"Supported shape pairs for pipeline '{args.pipeline}': {supported_shape_pairs}")
+
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         msg.notif("Creating and configuring the model builder for Kamino...")
-        robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
-        robot_builder.default_shape_cfg.margin = 0.0
-        robot_builder.default_shape_cfg.gap = 0.0
-
-        # Load the basic box pendulum either from USD or by manually building it
-        # with the builder API, depending on the command-line argument `--from-usd`
-        if args.from_usd:
-            # Load the basic box pendulum USD and add it to the builder
-            msg.notif("Loading USD asset and adding it to the model builder...")
-            asset_file = os.path.join(get_basics_usd_assets_path(), "box_pendulum.usda")
-            robot_builder.add_usd(
-                asset_file,
-                joint_ordering=None,
-                force_show_colliders=True,
-                force_position_velocity_actuation=True,
-                enable_self_collisions=False,
-                hide_collision_shapes=False,
-            )
-        else:
-            # Manually build the basic box pendulum using the builder API
-            basics_newton.build_box_pendulum(builder=robot_builder)
-
-        # Create the multi-world model by duplicating the single-robot
-        # builder for the specified number of worlds
-        msg.notif(f"Duplicating the model builder for {self.world_count} worlds and finalizing the model...")
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        for _ in range(self.world_count):
-            builder.add_world(robot_builder)
+        newton.solvers.SolverKamino.register_custom_attributes(builder)
+        builder.default_shape_cfg.margin = 0.0
+        builder.default_shape_cfg.gap = 0.0
+
+        # Manually build the basic box on plane using the builder API
+        testing_newton.build_shape_pairs_test(
+            builder=builder,
+            shape_pairs=supported_shape_pairs,
+            distance=0.0,
+            ground_box=True,
+            ground_z=-2.0,
+        )
 
         # Create the model from the builder
         msg.notif("Creating the model from the builder...")
@@ -72,17 +93,12 @@ class Example:
 
         # Create and configure settings for SolverKamino and the collision detector
         solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
+        solver_config.collision_detector.pipeline = args.pipeline
         solver_config.use_collision_detector = True
-        solver_config.use_fk_solver = False
-        solver_config.dynamics.preconditioning = True
         solver_config.padmm.primal_tolerance = 1e-6
         solver_config.padmm.dual_tolerance = 1e-6
         solver_config.padmm.compl_tolerance = 1e-6
-        solver_config.padmm.max_iterations = 200
         solver_config.padmm.rho_0 = 0.1
-        solver_config.padmm.use_acceleration = True
-        solver_config.padmm.warmstart_mode = "containers"
-        solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
 
         # Create the Kamino solver for the given model
         msg.notif("Creating the Kamino solver for the given model...")
@@ -96,6 +112,7 @@ class Example:
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets(spacing=(6.0, 6.0, 0.0))
 
         # Warm-start the simulation
         self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
@@ -107,11 +124,16 @@ class Example:
 
         # If only a single-world is created, set initial
         # camera position for better view of the system
-        if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
-            camera_pos = wp.vec3(-2.0, -2.0, 1.0)
-            pitch = -5.0
-            yaw = 45.0
+        if hasattr(self.viewer, "set_camera"):
+            camera_pos = wp.vec3(30.0, 18.0, 10.0)
+            pitch = -20.0
+            yaw = -140.0
             self.viewer.set_camera(camera_pos, pitch, yaw)
+
+        # Set the viewer to start in paused mode so that the user can
+        # observe the initial state before stepping the simulation
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
+            self.viewer._paused = True
 
     def capture(self):
         self.graph = None
@@ -168,14 +190,12 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
-        newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
-        parser.set_defaults(world_count=1)
         parser.add_argument(
-            "--from-usd",
-            type=argparse.BooleanOptionalAction,
-            default=False,
-            help="Load the basic four-bar mechanism from USD.",
+            "--pipeline",
+            type=str,
+            default="unified",
+            help="Sets the collision pipeline to be used by SolverKamino.",
         )
         return parser
 

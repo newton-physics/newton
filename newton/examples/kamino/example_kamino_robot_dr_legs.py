@@ -18,7 +18,7 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 
 
 class Example:
-    def __init__(self, viewer, args=None):
+    def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
         # Set simulation run-time configurations
         self.fps = 50
         self.sim_dt = 0.01
@@ -91,15 +91,19 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
+        # Attach the model to the viewer for visualization
+        self.viewer.set_model(self.model)
+
+        # Warm-start the simulation
+        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+        self.solver.reset(self.state_0)
+
         # Reset the simulation state to a valid initial configuration above the ground
         self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
         q_b = wp.quat_identity(dtype=wp.float32)
         q_base = wp.transformf((0.0, 0.0, 0.4), q_b)
         self.base_q.assign([q_base] * self.world_count)
         self.solver.reset(state_out=self.state_0, base_q=self.base_q)
-
-        # Attach the model to the viewer for visualization
-        self.viewer.set_model(self.model)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
