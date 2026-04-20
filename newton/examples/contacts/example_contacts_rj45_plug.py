@@ -26,10 +26,13 @@ import newton.utils
 from newton.math import quat_between_vectors_robust
 from newton.solvers import SolverVBD
 
+CONTACT_KE = 1.0e4
+CONTACT_KD = 1.0e-2
+
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     mu=0.1,
-    ke=1.0e6,
-    kd=1.0e3,
+    ke=CONTACT_KE,
+    kd=CONTACT_KD,
     gap=0.002,
     density=1.0e6,
     mu_torsional=0.0,
@@ -45,8 +48,6 @@ CABLE_RADIUS = 0.00325
 CABLE_KINEMATIC_COUNT = 4  # first N rod bodies are inside the plug and follow it
 
 # Contact parameters for cable and ground plane (tuned for VBD).
-CABLE_KE = 1.0e8
-CABLE_KD = 1.0e-3
 CABLE_MU = 2.0
 
 # Latch revolute-joint tuning.
@@ -317,14 +318,12 @@ class Example:
             radius=CABLE_RADIUS,
             cfg=dataclasses.replace(
                 builder.default_shape_cfg,
-                ke=CABLE_KE,
-                kd=CABLE_KD,
+                ke=CONTACT_KE,
+                kd=CONTACT_KD,
                 mu=CABLE_MU,
             ),
             bend_stiffness=1.0e-1,
             bend_damping=1.0e-1,
-            stretch_stiffness=1.0e9,
-            stretch_damping=1.0e-1,
             label="cable",
         )
 
@@ -384,10 +383,10 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
-            friction_epsilon=0.1,
-            rigid_contact_k_start=1.0e5,
             rigid_body_contact_buffer_size=256,
         )
+        for j in range(self.model.joint_count):
+            self.solver.set_joint_constraint_mode(j, False)
 
         self._rest_pos = plug_pos
         self.gizmo_tf = wp.transform(plug_pos, wp.quat_identity())
