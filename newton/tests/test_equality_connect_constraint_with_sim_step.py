@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.mujoco.solver_mujoco import HINGE_CONNECT_AXIS_OFFSET
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 
 
@@ -258,8 +259,8 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         offsets from the body origin.
         """
 
-        dt = 0.01
-        num_steps = 50
+        dt = 0.002
+        num_steps = 250
         num_worlds = self._num_worlds()
         use_mujoco_cpu = self._use_mujoco_cpu()
 
@@ -755,8 +756,6 @@ class TestConnectConstraintJointMuJoCoWarp(TestConnectConstraintWithSimStepBase,
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
-            iterations=1,
-            ls_iterations=1,
             disable_contacts=True,
             use_mujoco_cpu=False,
             integrator="euler",
@@ -773,8 +772,675 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
     def _create_solver(self, model):
         return SolverMuJoCo(
             model,
-            iterations=1,
-            ls_iterations=1,
+            disable_contacts=True,
+            use_mujoco_cpu=True,
+            separate_worlds=True,
+            integrator="euler",
+        )
+
+
+class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
+    """Test that loop-joint-synthesized CONNECT constraints update when dof_ref changes.
+
+    Creates a single articulation with a revolute loop joint closing back to
+    its root body. The loop joint generates 2 CONNECT constraints in MuJoCo. Verifies that changing
+    dof_ref at runtime correctly recomputes the CONNECT anchors.
+    """
+
+    def _build_loop_joint_model(
+        self,
+        loop_joint_axis,
+        joint0_axis,
+        joint1_axis,
+        joint0_type,
+        joint1_type,
+        dof_refs,
+        num_worlds,
+    ):
+        """Build a model with a single articulation and a revolute loop joint.
+
+        Topology per world:
+            Articulation: world -> fixed -> root_body -> joint0 -> body_a -> joint1 -> body_b
+            Loop joint: revolute from body_b (parent) to root_body (child), not in articulation
+
+        Bodies per world (3 total): root_body(0), body_a(1), body_b(2)
+        Joints per world (4 total): root_fixed(0), joint0(1), joint1(2), loop_joint(3)
+
+        Args:
+            loop_joint_axis: Axis for the loop revolute joint (0=X, 1=Y, 2=Z).
+            joint0_axis: Axis for joint0 (0=X, 1=Y, 2=Z).
+            joint1_axis: Axis for joint1 (0=X, 1=Y, 2=Z).
+            joint0_type: Type of joint0 (``"revolute"`` or ``"prismatic"``).
+            joint1_type: Type of joint1 (``"revolute"`` or ``"prismatic"``).
+            dof_refs: Per-world DOF reference values, shape ``[num_worlds][2]``
+                (one per articulation joint). The loop joint has no DOF ref.
+            num_worlds: Number of worlds.
+
+        Returns:
+            A :class:`Sim` containing the model, solver, states, and control.
+        """
+        body_inertia = 1.0
+        inertia_mat = wp.mat33(
+            body_inertia,
+            0.0,
+            0.0,
+            0.0,
+            body_inertia,
+            0.0,
+            0.0,
+            0.0,
+            body_inertia,
+        )
+
+        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+
+        for w in range(num_worlds):
+            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+
+            # root_body (body 0), fixed to world
+            root_body = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            root_joint = builder.add_joint_fixed(parent=-1, child=root_body)
+
+            # body_a (body 1), connected to root_body via joint0
+            # Use parent_xform offsets so bodies are not co-located at the origin;
+            # this ensures all CONNECT constraints are active after mj_forward
+            # (needed to avoid a mujoco_warp put_data reshape issue).
+            joint0_xform = wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity())
+            body_a = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            if joint0_type == "prismatic":
+                joint0 = builder.add_joint_prismatic(
+                    parent=root_body,
+                    child=body_a,
+                    axis=joint0_axis,
+                    parent_xform=joint0_xform,
+                    armature=1000000000000.0,
+                    custom_attributes={"mujoco:dof_ref": dof_refs[w][0]},
+                )
+            else:
+                joint0 = builder.add_joint_revolute(
+                    parent=root_body,
+                    child=body_a,
+                    axis=joint0_axis,
+                    parent_xform=joint0_xform,
+                    armature=1000000000000.0,
+                    custom_attributes={"mujoco:dof_ref": dof_refs[w][0]},
+                )
+
+            # body_b (body 2), connected to body_a via joint1
+            joint1_xform = wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity())
+            body_b = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            if joint1_type == "prismatic":
+                joint1 = builder.add_joint_prismatic(
+                    parent=body_a,
+                    child=body_b,
+                    axis=joint1_axis,
+                    parent_xform=joint1_xform,
+                    armature=1000000000000.0,
+                    custom_attributes={"mujoco:dof_ref": dof_refs[w][1]},
+                )
+            else:
+                joint1 = builder.add_joint_revolute(
+                    parent=body_a,
+                    child=body_b,
+                    axis=joint1_axis,
+                    parent_xform=joint1_xform,
+                    armature=1000000000000.0,
+                    custom_attributes={"mujoco:dof_ref": dof_refs[w][1]},
+                )
+
+            builder.add_articulation(joints=[root_joint, joint0, joint1])
+
+            # Loop joint: revolute from body_b (parent) to root_body (child),
+            # not added to articulation
+            builder.add_joint_revolute(
+                parent=body_b,
+                child=root_body,
+                axis=loop_joint_axis,
+                armature=0.0,
+            )
+
+            all_worlds_builder.add_world(builder)
+
+        model = all_worlds_builder.finalize()
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        solver = self._create_solver(model)
+
+        return Sim(model, solver, state_in, state_out, control)
+
+    def _compute_loop_joint_expected_anchors(
+        self,
+        joint0_axis,
+        joint1_axis,
+        joint0_type,
+        joint1_type,
+        dof_ref0,
+        dof_ref1,
+        joint_X_p_np,
+        joint_X_c_np,
+        joint_axis_np,
+        joint_qd_start_np,
+        joint0_idx,
+        joint1_idx,
+        loop_joint_idx,
+    ):
+        """Compute expected anchor1 and anchor2 for both CONNECT constraints from a revolute loop joint.
+
+        Args:
+            joint0_axis: Axis index for joint0.
+            joint1_axis: Axis index for joint1.
+            joint0_type: Type of joint0.
+            joint1_type: Type of joint1.
+            dof_ref0: Reference position for joint0 [rad or m].
+            dof_ref1: Reference position for joint1 [rad or m].
+            joint_X_p_np: Numpy array of joint parent transforms.
+            joint_X_c_np: Numpy array of joint child transforms.
+            joint_axis_np: Numpy array of joint axes.
+            joint_qd_start_np: Numpy array of joint qd starts.
+            joint0_idx: Index of joint0 in the model arrays.
+            joint1_idx: Index of joint1 in the model arrays.
+            loop_joint_idx: Index of the loop joint in the model arrays.
+
+        Returns:
+            Tuple of (anchor1_a, anchor2_a, anchor1_b, anchor2_b) where
+            anchor1/anchor2 are for the first and second CONNECT constraints.
+        """
+        axes_vec = [wp.vec3(1, 0, 0), wp.vec3(0, 1, 0), wp.vec3(0, 0, 1)]
+
+        # Compute world poses via FK at ref positions.
+        # Topology: root_body(identity) -> joint0(X_p0) -> body_a -> joint1(X_p1) -> body_b
+        # Loop joint: body_b (parent) -> root_body (child)
+        # T_child = T_parent * X_p * J(q) * inv(X_c)
+
+        # Joint 0: T_body_a = T_root * X_p0 * J0(dof_ref0) * inv(X_c0)
+        X_p0 = wp.transform(
+            wp.vec3(
+                float(joint_X_p_np[joint0_idx][0]),
+                float(joint_X_p_np[joint0_idx][1]),
+                float(joint_X_p_np[joint0_idx][2]),
+            ),
+            wp.quat(
+                float(joint_X_p_np[joint0_idx][3]),
+                float(joint_X_p_np[joint0_idx][4]),
+                float(joint_X_p_np[joint0_idx][5]),
+                float(joint_X_p_np[joint0_idx][6]),
+            ),
+        )
+        X_c0 = wp.transform(
+            wp.vec3(
+                float(joint_X_c_np[joint0_idx][0]),
+                float(joint_X_c_np[joint0_idx][1]),
+                float(joint_X_c_np[joint0_idx][2]),
+            ),
+            wp.quat(
+                float(joint_X_c_np[joint0_idx][3]),
+                float(joint_X_c_np[joint0_idx][4]),
+                float(joint_X_c_np[joint0_idx][5]),
+                float(joint_X_c_np[joint0_idx][6]),
+            ),
+        )
+        if joint0_type == "prismatic":
+            pos0 = [0.0, 0.0, 0.0]
+            pos0[joint0_axis] = dof_ref0
+            J0 = wp.transform(pos0, wp.quat_identity())
+        else:
+            J0 = wp.transform(
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.quat_from_axis_angle(axes_vec[joint0_axis], dof_ref0),
+            )
+
+        # Joint 1: T_body_b = T_body_a * X_p1 * J1(dof_ref1) * inv(X_c1)
+        X_p1 = wp.transform(
+            wp.vec3(
+                float(joint_X_p_np[joint1_idx][0]),
+                float(joint_X_p_np[joint1_idx][1]),
+                float(joint_X_p_np[joint1_idx][2]),
+            ),
+            wp.quat(
+                float(joint_X_p_np[joint1_idx][3]),
+                float(joint_X_p_np[joint1_idx][4]),
+                float(joint_X_p_np[joint1_idx][5]),
+                float(joint_X_p_np[joint1_idx][6]),
+            ),
+        )
+        X_c1 = wp.transform(
+            wp.vec3(
+                float(joint_X_c_np[joint1_idx][0]),
+                float(joint_X_c_np[joint1_idx][1]),
+                float(joint_X_c_np[joint1_idx][2]),
+            ),
+            wp.quat(
+                float(joint_X_c_np[joint1_idx][3]),
+                float(joint_X_c_np[joint1_idx][4]),
+                float(joint_X_c_np[joint1_idx][5]),
+                float(joint_X_c_np[joint1_idx][6]),
+            ),
+        )
+        if joint1_type == "prismatic":
+            pos1 = [0.0, 0.0, 0.0]
+            pos1[joint1_axis] = dof_ref1
+            J1 = wp.transform(pos1, wp.quat_identity())
+        else:
+            J1 = wp.transform(
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.quat_from_axis_angle(axes_vec[joint1_axis], dof_ref1),
+            )
+
+        T_root = wp.transform_identity()
+        X_c0_inv = wp.transform_inverse(X_c0)
+        X_c1_inv = wp.transform_inverse(X_c1)
+        T_body_a = wp.transform_multiply(wp.transform_multiply(wp.transform_multiply(T_root, X_p0), J0), X_c0_inv)
+        T_body_b = wp.transform_multiply(wp.transform_multiply(wp.transform_multiply(T_body_a, X_p1), J1), X_c1_inv)
+
+        # Get the loop joint's parent transform to extract anchor
+        loop_xform = joint_X_p_np[loop_joint_idx]
+        parent_anchor = wp.vec3(loop_xform[0], loop_xform[1], loop_xform[2])
+        parent_quat = wp.quat(loop_xform[3], loop_xform[4], loop_xform[5], loop_xform[6])
+
+        # Hinge axis in parent body frame (body_b's frame)
+        qd_start = int(joint_qd_start_np[loop_joint_idx])
+        hinge_axis_local = wp.vec3(
+            float(joint_axis_np[qd_start][0]),
+            float(joint_axis_np[qd_start][1]),
+            float(joint_axis_np[qd_start][2]),
+        )
+        hinge_axis = wp.quat_rotate(parent_quat, hinge_axis_local)
+
+        # First CONNECT anchor1 = parent_anchor (in body_b frame)
+        anchor1_a = parent_anchor
+        # Second CONNECT anchor1 = parent_anchor + offset * hinge_axis (in body_b frame)
+        d = HINGE_CONNECT_AXIS_OFFSET
+        anchor1_b = parent_anchor + wp.vec3(d * hinge_axis[0], d * hinge_axis[1], d * hinge_axis[2])
+
+        # Compute anchor2 using relative transform between parent (body_b) and child (root_body)
+        # q_rel = inv(q_child) * q_parent
+        # t_rel = quat_rotate(inv(q_child), pos_parent - pos_child)
+        q_parent = wp.transform_get_rotation(T_body_b)
+        pos_parent = wp.transform_get_translation(T_body_b)
+        q_child = wp.transform_get_rotation(T_root)
+        pos_child = wp.transform_get_translation(T_root)
+
+        q_child_inv = wp.quat_inverse(q_child)
+        q_rel = q_child_inv * q_parent
+        t_rel = wp.quat_rotate(q_child_inv, pos_parent - pos_child)
+
+        anchor2_a = wp.quat_rotate(q_rel, anchor1_a) + t_rel
+        anchor2_b = wp.quat_rotate(q_rel, anchor1_b) + t_rel
+
+        return anchor1_a, anchor2_a, anchor1_b, anchor2_b
+
+    def _assert_loop_joint_eq_data(self, sim, w, anchor1_a, anchor2_a, anchor1_b, anchor2_b):
+        """Assert that measured eq_data anchors match expected values for two CONNECT constraints."""
+        measured_eq_data = sim.solver.mjw_model.eq_data.numpy()
+        measured_a1_0 = wp.vec3(measured_eq_data[w][0][0], measured_eq_data[w][0][1], measured_eq_data[w][0][2])
+        measured_a2_0 = wp.vec3(measured_eq_data[w][0][3], measured_eq_data[w][0][4], measured_eq_data[w][0][5])
+        measured_a1_1 = wp.vec3(measured_eq_data[w][1][0], measured_eq_data[w][1][1], measured_eq_data[w][1][2])
+        measured_a2_1 = wp.vec3(measured_eq_data[w][1][3], measured_eq_data[w][1][4], measured_eq_data[w][1][5])
+
+        for k in range(3):
+            self.assertAlmostEqual(float(anchor1_a[k]), float(measured_a1_0[k]), places=4)
+            self.assertAlmostEqual(float(anchor2_a[k]), float(measured_a2_0[k]), places=4)
+            self.assertAlmostEqual(float(anchor1_b[k]), float(measured_a1_1[k]), places=4)
+            self.assertAlmostEqual(float(anchor2_b[k]), float(measured_a2_1[k]), places=4)
+
+        # CPU-path: mj_model.eq_data is synced from world 0 only
+        if sim.solver.use_mujoco_cpu and w == 0:
+            mj_eq_data = sim.solver.mj_model.eq_data
+            for k in range(3):
+                self.assertAlmostEqual(float(anchor1_a[k]), float(mj_eq_data[0][k]), places=4)
+                self.assertAlmostEqual(float(anchor2_a[k]), float(mj_eq_data[0][3 + k]), places=4)
+                self.assertAlmostEqual(float(anchor1_b[k]), float(mj_eq_data[1][k]), places=4)
+                self.assertAlmostEqual(float(anchor2_b[k]), float(mj_eq_data[1][3 + k]), places=4)
+
+    def _test_loop_joint_connect_constraint(self):
+        """Verify that loop-joint CONNECT constraint anchors update when dof_ref changes."""
+
+        num_worlds = 2
+
+        # Test a few joint type combinations
+        joint_type_combos = [
+            ["revolute", "revolute"],
+            ["prismatic", "revolute"],
+            ["revolute", "prismatic"],
+            ["prismatic", "prismatic"],
+        ]
+        loop_joint_axis = 2  # Z axis for the loop revolute joint
+        joint0_axis = 1  # Y axis for joint0
+        joint1_axis = 0  # X axis for joint1
+
+        dof_refs = [[0.5, -0.3], [0.7, -0.5]]
+        changed_dof_refs = [[0.2, -0.8], [0.4, -0.6]]
+
+        for combo_idx in range(len(joint_type_combos)):
+            joint0_type = joint_type_combos[combo_idx][0]
+            joint1_type = joint_type_combos[combo_idx][1]
+
+            with self.subTest(joint0=joint0_type, joint1=joint1_type):
+                sim = self._build_loop_joint_model(
+                    loop_joint_axis=loop_joint_axis,
+                    joint0_axis=joint0_axis,
+                    joint1_axis=joint1_axis,
+                    joint0_type=joint0_type,
+                    joint1_type=joint1_type,
+                    dof_refs=dof_refs,
+                    num_worlds=num_worlds,
+                )
+
+                # 4 joints per world: root_fixed(0), joint0(1), joint1(2), loop_joint(3)
+                joints_per_world = 4
+                joint_X_p_np = sim.model.joint_X_p.numpy()
+                joint_X_c_np = sim.model.joint_X_c.numpy()
+                joint_axis_np = sim.model.joint_axis.numpy()
+                joint_qd_start_np = sim.model.joint_qd_start.numpy()
+
+                # There should be 2 CONNECT equality constraints from the loop joint
+                # (revolute loop joint creates 2 CONNECT constraints)
+                neq = sim.solver.mj_model.neq
+                self.assertEqual(neq, 2, "Expected 2 CONNECT constraints from revolute loop joint")
+
+                # Verify initial eq_data is correct
+                for w in range(num_worlds):
+                    loop_joint_idx = w * joints_per_world + 3
+
+                    anchor1_a, anchor2_a, anchor1_b, anchor2_b = self._compute_loop_joint_expected_anchors(
+                        joint0_axis=joint0_axis,
+                        joint1_axis=joint1_axis,
+                        joint0_type=joint0_type,
+                        joint1_type=joint1_type,
+                        dof_ref0=dof_refs[w][0],
+                        dof_ref1=dof_refs[w][1],
+                        joint_X_p_np=joint_X_p_np,
+                        joint_X_c_np=joint_X_c_np,
+                        joint_axis_np=joint_axis_np,
+                        joint_qd_start_np=joint_qd_start_np,
+                        joint0_idx=w * joints_per_world + 1,
+                        joint1_idx=w * joints_per_world + 2,
+                        loop_joint_idx=loop_joint_idx,
+                    )
+
+                    self._assert_loop_joint_eq_data(sim, w, anchor1_a, anchor2_a, anchor1_b, anchor2_b)
+
+                ##############
+                # TEST: Change dof_ref and verify CONNECT anchors are recomputed
+                ##############
+
+                # Build flat dof_ref array. Per world, the DOF layout in Newton is:
+                # joint0 (1 DOF) + joint1 (1 DOF) + loop_joint (1 DOF) = 3 DOFs per world.
+                # The loop joint DOF exists in Newton even though it is excluded from MuJoCo's
+                # joint list. dof_ref is indexed by Newton DOF, so we must include the loop
+                # joint's entry (kept at 0.0).
+                flat_changed_dof_ref = []
+                for w in range(num_worlds):
+                    flat_changed_dof_ref.append(changed_dof_refs[w][0])
+                    flat_changed_dof_ref.append(changed_dof_refs[w][1])
+                    flat_changed_dof_ref.append(0.0)  # loop joint DOF (unchanged)
+
+                sim.model.mujoco.dof_ref.assign(np.array(flat_changed_dof_ref, dtype=np.float32))
+                sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+                # Verify eq_data was updated with new anchors
+                for w in range(num_worlds):
+                    loop_joint_idx = w * joints_per_world + 3
+
+                    anchor1_a, anchor2_a, anchor1_b, anchor2_b = self._compute_loop_joint_expected_anchors(
+                        joint0_axis=joint0_axis,
+                        joint1_axis=joint1_axis,
+                        joint0_type=joint0_type,
+                        joint1_type=joint1_type,
+                        dof_ref0=changed_dof_refs[w][0],
+                        dof_ref1=changed_dof_refs[w][1],
+                        joint_X_p_np=joint_X_p_np,
+                        joint_X_c_np=joint_X_c_np,
+                        joint_axis_np=joint_axis_np,
+                        joint_qd_start_np=joint_qd_start_np,
+                        joint0_idx=w * joints_per_world + 1,
+                        joint1_idx=w * joints_per_world + 2,
+                        loop_joint_idx=loop_joint_idx,
+                    )
+
+                    self._assert_loop_joint_eq_data(sim, w, anchor1_a, anchor2_a, anchor1_b, anchor2_b)
+
+                ##############
+                # TEST: Change joint_X_p of the loop joint and verify CONNECT anchors are recomputed
+                ##############
+
+                # Shift the loop joint's parent transform for each world
+                joint_X_p_np = sim.model.joint_X_p.numpy()
+                for w in range(num_worlds):
+                    loop_joint_idx = w * joints_per_world + 3
+                    # Apply a per-world translation offset to the loop joint
+                    joint_X_p_np[loop_joint_idx][0] += 0.3 + 0.1 * w
+                    joint_X_p_np[loop_joint_idx][1] += 0.2
+                sim.model.joint_X_p.assign(joint_X_p_np)
+                sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+
+                # Re-read after modification
+                joint_X_p_np = sim.model.joint_X_p.numpy()
+                joint_axis_np = sim.model.joint_axis.numpy()
+
+                for w in range(num_worlds):
+                    loop_joint_idx = w * joints_per_world + 3
+
+                    anchor1_a, anchor2_a, anchor1_b, anchor2_b = self._compute_loop_joint_expected_anchors(
+                        joint0_axis=joint0_axis,
+                        joint1_axis=joint1_axis,
+                        joint0_type=joint0_type,
+                        joint1_type=joint1_type,
+                        dof_ref0=changed_dof_refs[w][0],
+                        dof_ref1=changed_dof_refs[w][1],
+                        joint_X_p_np=joint_X_p_np,
+                        joint_X_c_np=joint_X_c_np,
+                        joint_axis_np=joint_axis_np,
+                        joint_qd_start_np=joint_qd_start_np,
+                        joint0_idx=w * joints_per_world + 1,
+                        joint1_idx=w * joints_per_world + 2,
+                        loop_joint_idx=loop_joint_idx,
+                    )
+
+                    self._assert_loop_joint_eq_data(sim, w, anchor1_a, anchor2_a, anchor1_b, anchor2_b)
+
+    def test_loop_joint_connect_constraint(self):
+        self._test_loop_joint_connect_constraint()
+
+
+class TestLoopJointConnectConstraintMuJoCoWarp(TestLoopJointConnectConstraintBase, unittest.TestCase):
+    def _create_solver(self, model):
+        return SolverMuJoCo(
+            model,
+            disable_contacts=True,
+            use_mujoco_cpu=False,
+            separate_worlds=True,
+            njmax=100,
+            integrator="euler",
+        )
+
+
+class TestLoopJointConnectConstraintMuJoCoCPU(TestLoopJointConnectConstraintBase, unittest.TestCase):
+    def _create_solver(self, model):
+        return SolverMuJoCo(
+            model,
+            disable_contacts=True,
+            use_mujoco_cpu=True,
+            separate_worlds=True,
+            integrator="euler",
+        )
+
+
+class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase):
+    """Test that WELD (FIXED) loop joint eq_data is not corrupted by CONNECT kernel updates.
+
+    Creates a model with both a revolute loop joint (2 CONNECT constraints) and
+    a FIXED loop joint (1 WELD constraint).  Verifies that after
+    ``notify_model_changed(JOINT_DOF_PROPERTIES)`` the WELD constraint's
+    ``eq_data`` retains its anchor and relpose values.
+    """
+
+    def _build_mixed_weld_and_connect_model(self, num_worlds):
+        """Build a model with a revolute loop joint and a FIXED loop joint.
+
+        Topology per world:
+            Articulation: world -> fixed -> root_body -> rev_joint -> body_a -> rev_joint2 -> body_b
+            Revolute loop joint: body_b (parent) -> root_body (child), not in articulation
+            Fixed loop joint: body_a (parent) -> root_body (child), not in articulation
+
+        The revolute loop joint creates 2 CONNECT constraints.
+        The fixed loop joint creates 1 WELD constraint.
+        Total: 3 MuJoCo equality constraints per model.
+
+        Args:
+            num_worlds: Number of worlds.
+
+        Returns:
+            A :class:`Sim` containing the model, solver, states, and control.
+        """
+        body_inertia = 1.0
+        inertia_mat = wp.mat33(
+            body_inertia,
+            0.0,
+            0.0,
+            0.0,
+            body_inertia,
+            0.0,
+            0.0,
+            0.0,
+            body_inertia,
+        )
+
+        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+
+        for _w in range(num_worlds):
+            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+
+            # root_body (body 0), fixed to world
+            root_body = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            root_joint = builder.add_joint_fixed(parent=-1, child=root_body)
+
+            # body_a (body 1), connected to root_body via revolute joint
+            joint0_xform = wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity())
+            body_a = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            joint0 = builder.add_joint_revolute(
+                parent=root_body,
+                child=body_a,
+                axis=1,  # Y axis
+                parent_xform=joint0_xform,
+                armature=1000000000000.0,
+                custom_attributes={"mujoco:dof_ref": 0.5},
+            )
+
+            # body_b (body 2), connected to body_a via revolute joint
+            joint1_xform = wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity())
+            body_b = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            joint1 = builder.add_joint_revolute(
+                parent=body_a,
+                child=body_b,
+                axis=0,  # X axis
+                parent_xform=joint1_xform,
+                armature=1000000000000.0,
+                custom_attributes={"mujoco:dof_ref": -0.3},
+            )
+
+            builder.add_articulation(joints=[root_joint, joint0, joint1])
+
+            # Revolute loop joint: body_b (parent) -> root_body (child)
+            # Creates 2 CONNECT constraints
+            builder.add_joint_revolute(
+                parent=body_b,
+                child=root_body,
+                axis=2,  # Z axis
+                armature=0.0,
+            )
+
+            # FIXED loop joint: body_a (parent) -> root_body (child)
+            # Creates 1 WELD constraint
+            builder.add_joint_fixed(
+                parent=body_a,
+                child=root_body,
+                parent_xform=wp.transform(wp.vec3(0.0, 0.2, 0.0), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0.0, 0.1, 0.0), wp.quat_identity()),
+            )
+
+            all_worlds_builder.add_world(builder)
+
+        model = all_worlds_builder.finalize()
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        solver = self._create_solver(model)
+
+        return Sim(model, solver, state_in, state_out, control)
+
+    def test_weld_eq_data_not_corrupted_by_connect_update(self):
+        """Verify WELD eq_data matches MuJoCo ground truth and is not overwritten by CONNECT kernels.
+
+        The CONNECT kernels launched by ``_notify_connect_constraints_changed``
+        must skip WELD entries.  This test compares ``mjw_model.eq_data`` for
+        the WELD constraint against the ground truth computed by MuJoCo's
+        ``spec.compile()`` (stored in ``mj_model.eq_data``).  The corruption
+        happens at init time (during ``notify_model_changed(ALL)``), so a
+        before-vs-after comparison would not catch it.
+        """
+        num_worlds = 2
+        sim = self._build_mixed_weld_and_connect_model(num_worlds)
+
+        import mujoco
+
+        # The revolute loop joint creates 2 CONNECT, the FIXED creates 1 WELD = 3 total
+        neq = sim.solver.mj_model.neq
+        self.assertEqual(neq, 3, "Expected 3 equality constraints (2 CONNECT + 1 WELD)")
+
+        eq_types = sim.solver.mj_model.eq_type
+        connect_type = int(mujoco.mjtEq.mjEQ_CONNECT)
+        weld_type = int(mujoco.mjtEq.mjEQ_WELD)
+        self.assertEqual(int(eq_types[0]), connect_type)
+        self.assertEqual(int(eq_types[1]), connect_type)
+        self.assertEqual(int(eq_types[2]), weld_type)
+
+        weld_eq_idx = 2
+
+        # Ground truth: mj_model.eq_data is set by spec.compile() and is not
+        # modified by GPU kernel launches. Use it as the reference for the WELD relpose.
+        expected_weld_data = np.array(sim.solver.mj_model.eq_data[weld_eq_idx], dtype=np.float32)
+
+        # The WELD relpose translation (data[3:6]) must be non-trivial
+        # because the parent/child xforms have different offsets.
+        self.assertFalse(
+            np.allclose(expected_weld_data[3:6], 0.0, atol=1e-10),
+            f"WELD relpose translation should be non-zero, got {expected_weld_data[3:6]}",
+        )
+
+        # Check that mjw_model.eq_data matches the ground truth for all worlds
+        mjw_eq_data = sim.solver.mjw_model.eq_data.numpy()
+        for w in range(num_worlds):
+            np.testing.assert_allclose(
+                mjw_eq_data[w, weld_eq_idx, :],
+                expected_weld_data,
+                atol=1e-5,
+                err_msg=(
+                    f"World {w}: WELD eq_data in mjw_model does not match "
+                    f"MuJoCo ground truth — CONNECT kernels likely overwrote it"
+                ),
+            )
+
+
+class TestMixedWeldAndConnectMuJoCoWarp(TestMixedWeldAndConnectLoopJointBase, unittest.TestCase):
+    def _create_solver(self, model):
+        return SolverMuJoCo(
+            model,
+            disable_contacts=True,
+            use_mujoco_cpu=False,
+            separate_worlds=True,
+            njmax=100,
+            integrator="euler",
+        )
+
+
+class TestMixedWeldAndConnectMuJoCoCPU(TestMixedWeldAndConnectLoopJointBase, unittest.TestCase):
+    def _create_solver(self, model):
+        return SolverMuJoCo(
+            model,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,

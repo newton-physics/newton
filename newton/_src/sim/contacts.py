@@ -20,6 +20,26 @@ def _increment_contact_generation(generation: wp.array[wp.int32]):
     generation[0] = g
 
 
+@wp.kernel(enable_backward=False)
+def _clear_counters_and_bump_generation(
+    counters: wp.array[wp.int32],
+    generation: wp.array[wp.int32],
+    num_counters: int,
+    bump_generation: int,
+):
+    """Zero counter array and optionally increment generation in one kernel launch."""
+    tid = wp.tid()
+    if tid < num_counters:
+        counters[tid] = 0
+    if tid == 0 and bump_generation != 0:
+        g = generation[0]
+        if g == 2147483647:
+            g = 0
+        else:
+            g = g + 1
+        generation[0] = g
+
+
 class Contacts:
     """
     Stores contact information for rigid and soft body collisions, to be consumed by a solver.
@@ -90,9 +110,9 @@ class Contacts:
             device: Device to allocate buffers on
             per_contact_shape_properties: Enable per-contact stiffness/damping/friction arrays
             clear_buffers: If True, clear() will zero all contact buffers (slower but conservative).
-                If False (default), clear() only resets counts, relying on collision detection
-                to overwrite active contacts. This is much faster (86-90% fewer kernel launches)
-                and safe since solvers only read up to contact_count.
+                If False (default), clear() only resets counts in a single fused kernel launch,
+                relying on collision detection to overwrite active contacts. This is much faster
+                than the conservative path and safe since solvers only read up to contact_count.
             requested_attributes: Set of extended contact attribute names to allocate.
                 See :attr:`EXTENDED_ATTRIBUTES` for available options.
 
@@ -103,11 +123,13 @@ class Contacts:
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
         with wp.ScopedDevice(device):
-            # Consolidated counter array to minimize kernel launches for zeroing
-            # Layout: [rigid_contact_count, soft_contact_count]
-            self._counter_array = wp.zeros(2, dtype=wp.int32)
+            # Packed counter array [rigid_contact_count, soft_contact_count] so
+            # all counts can be zeroed together in one fused kernel launch.
+            # Every entry must be safe to reset to zero at the start of a
+            # collision pass.
+            self.contact_counters = wp.zeros(2, dtype=wp.int32)
             # Create sliced views for individual counters (no additional allocation)
-            self.rigid_contact_count = self._counter_array[0:1]
+            self.rigid_contact_count = self.contact_counters[0:1]
 
             self.contact_generation = wp.zeros(1, dtype=wp.int32)
             """Device-side generation counter, incremented each time :meth:`clear` is called.
@@ -189,7 +211,7 @@ class Contacts:
                 """Per-contact friction coefficient [dimensionless], shape (rigid_contact_max,), dtype float."""
 
             # soft contacts — requires_grad flows through here for differentiable simulation
-            self.soft_contact_count = self._counter_array[1:2]
+            self.soft_contact_count = self.contact_counters[1:2]
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
@@ -218,32 +240,37 @@ class Contacts:
         self.rigid_contact_max = rigid_contact_max
         self.soft_contact_max = soft_contact_max
 
-    def clear(self):
+    def clear(self, bump_generation: bool = True):
         """
         Clear contact data, resetting counts and optionally clearing all buffers.
 
         By default (clear_buffers=False), only resets contact counts. This is highly optimized,
-        requiring just 2 kernel launches. Collision detection overwrites all data up to the new
+        requiring just a single fused kernel launch that zeroes all counters and bumps the
+        generation counter. Collision detection overwrites all data up to the new
         contact_count, and solvers only read up to count, so clearing stale data is unnecessary.
 
         If clear_buffers=True (conservative mode), performs full buffer clearing with sentinel
-        values and zeros. This requires 7-10 kernel launches but may be useful for debugging.
-        """
-        # Clear all counters with a single kernel launch (consolidated counter array)
-        self._counter_array.zero_()
+        values and zeros. This requires several additional kernel launches but may be useful for debugging.
 
-        # Bump generation so solvers know the contact set changed (graph-capture safe)
+        Args:
+            bump_generation: If True (default), increment ``contact_generation`` to invalidate
+                previously-observed contact data. Callers that will immediately re-bump the
+                generation via another fused kernel (e.g. :func:`compute_shape_aabbs`) can pass
+                ``False`` to avoid an unnecessary double-bump per collision pass.
+        """
+        # Clear all counters and (optionally) bump generation in a single kernel launch.
+        num_counters = self.contact_counters.shape[0]
         wp.launch(
-            _increment_contact_generation,
-            dim=1,
-            inputs=[self.contact_generation],
+            _clear_counters_and_bump_generation,
+            dim=max(num_counters, 1),
+            inputs=[self.contact_counters, self.contact_generation, num_counters, int(bump_generation)],
             device=self.contact_generation.device,
             record_tape=False,
         )
 
         if self.clear_buffers:
-            # Conservative path: clear all buffers (7-10 kernel launches)
-            # This is slower but may be useful for debugging or special cases
+            # Conservative path: clear all buffers with sentinel values and zeros.
+            # Slower than the fast path but may be useful for debugging or special cases.
             self.rigid_contact_shape0.fill_(-1)
             self.rigid_contact_shape1.fill_(-1)
             self.rigid_contact_tids.fill_(-1)

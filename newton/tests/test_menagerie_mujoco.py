@@ -134,7 +134,6 @@ def create_newton_model_from_mjcf(
     """
     # Create articulation builder for the robot
     robot_builder = newton.ModelBuilder()
-    SolverMuJoCo.register_custom_attributes(robot_builder)
 
     # floating defaults to None, which honors the MJCF's explicit joint definitions.
     # Menagerie models define their own <freejoint> tags for floating-base robots.
@@ -263,6 +262,8 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # TileSet types: comparison function doesn't handle these
     "qM_tiles",
     "qLD_tiles",
+    "qLD_all_updates",
+    "qLD_level_offsets",
     "qLDiagInv_tiles",
     # Visualization group: Newton defaults to 0, native may use other groups
     "geom_group",
@@ -1105,6 +1106,7 @@ def _expand_batched_fields(target_obj: Any, reference_obj: Any, field_names: lis
 # - body_pos, body_quat: Newton recomputes from joint transforms (~3e-8 float diff)
 MODEL_BACKFILL_FIELDS: list[str] = [
     "body_inertia",
+    "body_ipos",
     "body_iquat",
     "body_invweight0",
     "dof_invweight0",
@@ -1167,8 +1169,6 @@ def backfill_model_from_native(
 
         if native_arr.shape == newton_arr.shape:
             newton_arr.assign(native_arr)
-
-    wp.synchronize()
 
 
 def compare_mjw_models(
@@ -1524,6 +1524,11 @@ class TestMenagerieBase(unittest.TestCase):
         mj_data = _mujoco.MjData(mj_model)
         _mujoco.mj_forward(mj_model, mj_data)
 
+        # Zero geom margins for NATIVECCD compatibility — mujoco_warp rejects
+        # non-zero margins at put_model() time for BOX/MESH pairs (#2106).
+        # This mirrors the Newton solver's approach in SolverMuJoCo.
+        mj_model.geom_margin[:] = 0.0
+
         # Create mujoco_warp model/data with multiple worlds
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)
@@ -1825,9 +1830,8 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
 
     robot_folder = "franka_emika_panda"
     num_steps = 20
-    dynamics_tolerance = 5e-5  # eq_ diffs cause larger qvel divergence on CI
+    dynamics_tolerance = 5e-5
     fk_enabled = True
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
     backfill_model = True
 
 
@@ -1843,11 +1847,10 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-    # Dynamics disabled: eq_ model fields differ, qpos drift 3.5e-3 (#2170)
+    # Dynamics disabled: qpos drift 3.5e-3 from body_ipos diff (#2170)
     num_steps = 0
     fk_enabled = True
     fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_", "neq"}
     backfill_model = True
 
 
@@ -1994,8 +1997,8 @@ class TestMenagerie_ShadowHand(TestMenagerieMJCF):
 
     robot_folder = "shadow_hand"
     robot_xml = "scene_right.xml"
-    # Dynamics disabled: tendon_invweight0 diff causes qvel drift 2.3e-5 (#2170)
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 5e-5  # GPU float32 noise accumulates over steps
     fk_enabled = True
     # tendon_invweight0 is compilation-dependent (derived from inertia)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"tendon_invweight0"}
@@ -2129,8 +2132,8 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
 
     robot_folder = "apptronik_apollo"
     backfill_model = True
-    # Dynamics disabled: qvel divergence 5.8e-5 (model compilation diffs amplified by free joint)
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 5e-3  # non-deterministic on GPU: qvel diff 4.3e-5 to 1.3e-3 across runs
     fk_enabled = True
     njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
@@ -2252,9 +2255,10 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
-    # Dynamics disabled: qvel divergence 7.2e-5 (model compilation diffs amplified by free joint)
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 1e-4
     fk_enabled = True
+    backfill_model = True
 
 
 class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
