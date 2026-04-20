@@ -2803,6 +2803,20 @@ def parse_usd(
                 else:
                     raise NotImplementedError(f"Shape type {key} not supported yet")
 
+                # For hydroelastic primitives, a texture SDF is built from a generated
+                # watertight mesh during finalize() using shape_gap as the SDF margin.
+                # ShapeConfig has no sdf_margin field, so we write it here after shape
+                # creation to match the mesh path's handling.
+                primitive_shape_types = (
+                    UsdPhysics.ObjectType.CubeShape,
+                    UsdPhysics.ObjectType.SphereShape,
+                    UsdPhysics.ObjectType.CapsuleShape,
+                    UsdPhysics.ObjectType.CylinderShape,
+                    UsdPhysics.ObjectType.ConeShape,
+                )
+                if key in primitive_shape_types and is_hydroelastic and sdf_margin is not None:
+                    builder.shape_gap[shape_id] = sdf_margin
+
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
 

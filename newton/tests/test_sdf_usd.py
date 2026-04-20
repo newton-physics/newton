@@ -15,6 +15,7 @@
 
 """Tests for SDF USD attribute parsing."""
 
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -341,8 +342,6 @@ class TestSDFUSDParsing(unittest.TestCase):
             result = parse_usd(builder, str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
-            import math
-
             expected_diag = math.sqrt(3)  # unit cube [-0.5, 0.5]^3
             inner, outer = builder.shape_sdf_narrow_band_range[s1]
             self.assertAlmostEqual(inner, -0.01 * expected_diag, places=5)
@@ -374,12 +373,40 @@ class TestSDFUSDParsing(unittest.TestCase):
             result = parse_usd(builder, str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
-            import math
-
             expected_diag = math.sqrt(3)
             _inner, outer = builder.shape_sdf_narrow_band_range[s1]
             # Fraction (0.02 * sqrt(3) ≈ 0.0346) should win over absolute (0.5)
             self.assertAlmostEqual(outer, 0.02 * expected_diag, places=5)
+
+    def test_usd_sdf_margin_hydroelastic_primitive(self, device=None):
+        """newton:sdfMargin on a hydroelastic primitive (Sphere) is applied to shape_gap."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("SDF tests require CUDA device")
+
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_sdf_margin_sphere.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            sphere = UsdGeom.Sphere.Define(stage, "/World/Body1/CollisionSphere")
+            sphere.CreateRadiusAttr(0.2)
+            UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+            p1 = sphere.GetPrim()
+            p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(32)
+            p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
+            p1.CreateAttribute("newton:sdfMargin", Sdf.ValueTypeNames.Float, custom=True).Set(0.03)
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = parse_usd(builder, str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
+
+            self.assertTrue(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
+            self.assertAlmostEqual(builder.shape_gap[s1], 0.03, places=5)
 
     def test_usd_sdf_fractional_margin(self, device=None):
         """Fractional margin overrides absolute, scaled by local bbox diagonal."""
@@ -404,8 +431,6 @@ class TestSDFUSDParsing(unittest.TestCase):
             builder = newton.ModelBuilder()
             result = parse_usd(builder, str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
-
-            import math
 
             # Unit cube bbox diagonal = sqrt(3). For meshes, sdfMargin is stored in shape_gap.
             expected_diag = math.sqrt(3)
@@ -463,6 +488,12 @@ add_function_test(
     TestSDFUSDParsing,
     "test_usd_sdf_fractional_margin",
     TestSDFUSDParsing.test_usd_sdf_fractional_margin,
+    devices=devices,
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_sdf_margin_hydroelastic_primitive",
+    TestSDFUSDParsing.test_usd_sdf_margin_hydroelastic_primitive,
     devices=devices,
 )
 
