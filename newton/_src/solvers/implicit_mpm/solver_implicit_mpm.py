@@ -634,10 +634,6 @@ class SolverImplicitMPM(SolverBase):
             Aliases ``'instantaneous'`` (= ``'forward'``) and ``'finite_difference'``
             (= ``'backward'``) are deprecated and will be removed in a future release.
         """
-        warmstart_mode: str = "auto"
-        """Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid, smoothed."""
-        collider_velocity_mode: str = "forward"
-        """Collider velocity computation mode, may be one of 'forward' or 'backward'. 'forward' uses the current velocity, 'backward' uses the previous timestep position. Deprecated aliases 'instantaneous' (='forward') and 'finite_difference' (='backward') are also accepted."""
 
         # grid
         voxel_size: float = 0.1
