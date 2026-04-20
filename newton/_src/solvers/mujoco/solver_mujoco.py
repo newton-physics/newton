@@ -6370,11 +6370,12 @@ class SolverMuJoCo(SolverBase):
         pair_solref = getattr(mujoco_attrs, "pair_solref", None)
         pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
         pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
-        # Restore pair margin/gap at runtime only when the spec was zeroed for the
-        # NATIVECCD/MULTICCD workaround (#2106) and Newton is handling contacts.
-        needs_pair_restore = self._zero_margins_for_native_ccd and not self._use_mujoco_contacts
-        pair_margin = getattr(mujoco_attrs, "pair_margin", None) if needs_pair_restore else None
-        pair_gap = getattr(mujoco_attrs, "pair_gap", None) if needs_pair_restore else None
+        # Restore pair margin/gap at runtime when Newton is handling contacts.
+        # Spec-level values only carry template-world data (MuJoCo replicates the
+        # template pair across worlds), so the kernel applies per-world variance.
+        # When MuJoCo handles contacts, keep margins at zero for NATIVECCD compat (#2106).
+        pair_margin = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_margin", None)
+        pair_gap = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_gap", None)
         pair_friction = getattr(mujoco_attrs, "pair_friction", None)
 
         # Only launch kernel if at least one attribute is defined
