@@ -6523,9 +6523,10 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], np.deg2rad(45), places=4)
         self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], np.deg2rad(30), places=4)
 
-        # stiffness/damping: converted from Nm/deg to Nm/rad (10 Nm/deg -> 10 * 180/pi Nm/rad)
-        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10 * (180 / np.pi), places=2)
-        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5 * (180 / np.pi), places=2)
+        # stiffness/damping: MuJoCo stores these in Nm/rad and Nm*s/rad regardless of
+        # compiler.angle (velocity is always rad/s internally), so values pass through unchanged.
+        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10.0, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5.0, places=4)
 
 
 class TestMjcfMultipleWorldbody(unittest.TestCase):
@@ -6908,16 +6909,16 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         np.testing.assert_allclose(m.solimplimit.numpy()[j_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
         np.testing.assert_allclose(m.solreffriction.numpy()[j_def], [0.05, 2.0], atol=1e-4)
         np.testing.assert_allclose(m.solimpfriction.numpy()[j_def], [0.7, 0.85, 0.02, 0.3, 1.5], atol=1e-4)
-        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_def]), 2.0 * self.RAD2DEG, places=2)
-        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_def]), 3.0 * self.RAD2DEG, places=2)
+        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_def]), 2.0, places=5)
+        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_def]), 3.0, places=5)
         self.assertAlmostEqual(float(m.dof_springref.numpy()[j_def]), 45.0 * self.DEG2RAD, places=4)
         self.assertAlmostEqual(float(m.dof_ref.numpy()[j_def]), 30.0 * self.DEG2RAD, places=4)
         self.assertEqual(bool(m.jnt_actgravcomp.numpy()[j_def]), True)
 
         j_cls = idx(f"{wb}/b_class/j_class")
         self.assertAlmostEqual(float(m.limit_margin.numpy()[j_cls]), 10.0, places=5)
-        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_cls]), 20.0 * self.RAD2DEG, places=1)
-        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_cls]), 30.0 * self.RAD2DEG, places=1)
+        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_cls]), 20.0, places=5)
+        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_cls]), 30.0, places=5)
         self.assertAlmostEqual(float(m.dof_springref.numpy()[j_cls]), 90.0 * self.DEG2RAD, places=4)
         self.assertAlmostEqual(float(m.dof_ref.numpy()[j_cls]), 60.0 * self.DEG2RAD, places=4)
 
