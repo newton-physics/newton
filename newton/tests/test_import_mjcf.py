@@ -3796,7 +3796,9 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf)
         model = builder.finalize()
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        # use_mujoco_contacts=False so geom_margin is restored from shape_margin
+        # (with use_mujoco_contacts=True, geom_margin stays zero for NATIVECCD compat)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_contacts=False)
 
         geom_margin = solver.mjw_model.geom_margin.numpy()
         geom_gap = solver.mjw_model.geom_gap.numpy()
@@ -7464,6 +7466,24 @@ class TestContypeConaffinityZero(unittest.TestCase):
         self.assertEqual(solver.mj_model.npair, 1, "Explicit pair should be in MuJoCo spec")
         solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
         self.assertGreater(solver.mj_data.ncon, 0, "Explicit <pair> should generate contacts")
+
+
+class TestMjcfPlaneInfinite(unittest.TestCase):
+    """Verify MJCF plane geoms are imported as infinite planes."""
+
+    def test_plane_scale_is_zero(self):
+        """MuJoCo plane size is visual-only; imported plane should have zero extents (infinite)."""
+        mjcf = """<mujoco><worldbody>
+            <geom name="floor" type="plane" size="5 5 0.1"/>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        scale = model.shape_scale.numpy()[0]
+        np.testing.assert_allclose(
+            scale, [0.0, 0.0, 0.0], atol=1e-7, err_msg="MJCF plane should be infinite (zero extents)"
+        )
 
 
 class TestJointFrictionloss(unittest.TestCase):
