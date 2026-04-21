@@ -395,12 +395,12 @@ class SDF:
                 signed_volume = compute_mesh_signed_volume(pos, indices)
                 winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
 
-                res = effective_max_resolution if effective_max_resolution is not None else 64
                 texture_data, coarse_texture, subgrid_texture, tex_block_coords = create_texture_sdf_from_mesh(
                     tex_mesh,
                     margin=margin,
                     narrow_band_range=narrow_band_range,
-                    max_resolution=res,
+                    target_voxel_size=target_voxel_size,
+                    max_resolution=effective_max_resolution,
                     quantization_mode=qmode,
                     winding_threshold=winding_threshold,
                     scale_baked=bake_scale,

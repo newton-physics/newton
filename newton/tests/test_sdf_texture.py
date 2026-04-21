@@ -1215,6 +1215,34 @@ def test_build_sdf_texture_format_parameter(test, device):
     test.assertEqual(sdf_f32._subgrid_texture.dtype, wp.float32)
 
 
+def test_build_sdf_target_voxel_size_propagates_to_texture(test, device):
+    """``target_voxel_size`` must parameterize the texture SDF, not just the sparse grid.
+
+    When only ``target_voxel_size`` was supplied, the texture path silently fell
+    back to ``max_resolution=64``, producing a dramatically coarser secondary
+    representation than the sparse grid.
+    """
+    margin = 0.05
+
+    # Pick a voxel size small enough that the resulting texture SDF is clearly
+    # finer than the old ``max_resolution=64`` fallback would have produced.
+    mesh_default = _create_sphere_mesh(radius=0.5, subdivisions=2)
+    sdf_default = mesh_default.build_sdf(margin=margin, device=device)
+    default_subgrid_width = sdf_default._subgrid_texture.width
+
+    mesh_fine = _create_sphere_mesh(radius=0.5, subdivisions=2)
+    sdf_fine = mesh_fine.build_sdf(target_voxel_size=0.01, margin=margin, device=device)
+
+    # With the bug, ``target_voxel_size`` is ignored by the texture path and
+    # the subgrid texture matches the default (max_resolution=64) fallback.
+    test.assertGreater(sdf_fine._subgrid_texture.width, default_subgrid_width)
+
+    # The texture grid dx should reflect the requested voxel size (within a
+    # small rounding tolerance from the ceil-based sizing).
+    sampled_dx = 1.0 / float(sdf_fine.texture_data.inv_sdf_dx[0])
+    test.assertAlmostEqual(sampled_dx, 0.01, delta=5e-4)
+
+
 # Register tests for CUDA devices
 devices = get_cuda_test_devices()
 add_function_test(TestTextureSDF, "test_texture_sdf_construction", test_texture_sdf_construction, devices=devices)
@@ -1259,6 +1287,12 @@ add_function_test(
 )
 add_function_test(
     TestTextureSDF, "test_build_sdf_texture_format_parameter", test_build_sdf_texture_format_parameter, devices=devices
+)
+add_function_test(
+    TestTextureSDF,
+    "test_build_sdf_target_voxel_size_propagates_to_texture",
+    test_build_sdf_target_voxel_size_propagates_to_texture,
+    devices=devices,
 )
 add_function_test(
     TestTextureSDF,

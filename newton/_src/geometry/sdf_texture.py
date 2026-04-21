@@ -1268,7 +1268,8 @@ def create_texture_sdf_from_mesh(
     *,
     margin: float = 0.05,
     narrow_band_range: tuple[float, float] = (-0.1, 0.1),
-    max_resolution: int = 64,
+    target_voxel_size: float | None = None,
+    max_resolution: int | None = None,
     subgrid_size: int = 8,
     quantization_mode: int = QuantizationMode.UINT16,
     winding_threshold: float = 0.5,
@@ -1284,7 +1285,11 @@ def create_texture_sdf_from_mesh(
         mesh: Warp mesh with ``support_winding_number=True``.
         margin: extra AABB padding [m].
         narrow_band_range: signed narrow-band distance range [m] as ``(inner, outer)``.
-        max_resolution: maximum grid dimension [voxel].
+        target_voxel_size: target grid cell size [m]. If provided, takes
+            precedence over ``max_resolution``.
+        max_resolution: maximum grid dimension [voxel]. Used when
+            ``target_voxel_size`` is not provided. Defaults to ``64`` if both
+            parameters are ``None``.
         subgrid_size: cells per subgrid.
         quantization_mode: :class:`QuantizationMode` value.
         winding_threshold: winding number threshold for inside/outside classification.
@@ -1312,7 +1317,10 @@ def create_texture_sdf_from_mesh(
     max_ext_scalar = np.max(ext)
     if max_ext_scalar < 1e-10:
         return create_empty_texture_sdf_data(), None, None, []
-    cell_size_scalar = max_ext_scalar / max_resolution
+    if target_voxel_size is not None:
+        cell_size_scalar = target_voxel_size
+    else:
+        cell_size_scalar = max_ext_scalar / (max_resolution if max_resolution is not None else 64)
     dims = np.ceil(ext / cell_size_scalar).astype(int) + 1
     grid_x, grid_y, grid_z = int(dims[0]), int(dims[1]), int(dims[2])
     cell_size = ext / (dims - 1)
