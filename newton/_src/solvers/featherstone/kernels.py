@@ -1490,7 +1490,7 @@ def _fk_single_joint(
     The parent's ``body_q`` / ``body_qd`` entries must already be at
     ``t_0 + dt`` when this runs, which is guaranteed by walking the
     articulation tree in parent-before-child order inside
-    :kernel:`integrate_and_fk_articulation`.
+    :func:`integrate_and_fk_articulation`.
     """
     X_j = wp.transform_identity()
     v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
