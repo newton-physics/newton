@@ -46,7 +46,7 @@ class BatchedLinearOperator:
         n_worlds: int,
         max_dim: int,
         active_dims: wp.array,
-        device: wp.context.Device,
+        device: wp.Device,
         dtype: type,
         matvec_fn: Callable | None = None,
     ):
