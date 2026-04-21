@@ -390,7 +390,10 @@ def compare_compiled_model_fields(
         fields = MODEL_BACKFILL_FIELDS
 
     # Validated by compare_inertia_tensors() with physics-equivalence check
-    skip_fields = {"body_inertia", "body_iquat"}
+    # eq_data for CONNECT constraints is body-frame dependent: when body_quat differs
+    # due to inertia re-diagonalization, the body2-frame anchor differs structurally
+    # but remains physically equivalent (validated by dynamics after backfill).
+    skip_fields = {"body_inertia", "body_iquat", "eq_data"}
 
     for field in fields:
         if field in skip_fields:
@@ -2236,7 +2239,36 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     """Agility Robotics Cassie biped."""
 
     robot_folder = "agility_cassie"
-    skip_reason = "Closed-loop kinematic chains cause different DOF layout"
+    num_steps = 20
+    # On CPU the Newton-vs-native qvel diff is effectively bit-exact after
+    # backfill (~5e-7 float accumulation over 20 steps). On AWS EC2 GPU the
+    # mjwarp constraint solver's atomic reductions are non-deterministic for
+    # Cassie's closed-loop chain (verified: two native-vs-native runs on
+    # identical inputs peaked at 5e-6 on some runs, 5e-5 on others). The
+    # Newton-vs-native diff rides on top of this noise. Tolerance set above
+    # the observed native-vs-native variance with safety margin.
+    dynamics_tolerance = 1e-4
+    backfill_model = True
+    # Cassie's MJCF doesn't specify <option integrator=...>, so native uses
+    # MuJoCo's default (Euler). Pin Newton's integrator to match.
+    solver_integrator = "euler"
+    # eq_data: compilation-dependent for CONNECT constraints; body2 anchor is
+    # derived from body_quat, which differs due to inertia re-diagonalization.
+    # jnt_actfrclimited: Newton unconditionally sets True with effort_limit=1e6,
+    # while native keeps False when no actuatorfrcrange is specified. Flagged as
+    # "no effect" in DEFAULT_MODEL_SKIP_FIELDS, but Cassie's closed-loop dynamics
+    # show a measurable divergence without this backfill (qvel step 0 diff ~2e-5).
+    # jnt_solref: Newton's solref standard->direct conversion omits the dmax
+    # (solimp[0]) factor, so its stored direct-mode values are ~11% lower
+    # stiffness/damping than native's internal values for the same MJCF input
+    # (tracked in #2515). Cassie's closed-loop limit constraints amplify this
+    # into measurable qvel divergence; backfill until the conversion is fixed.
+    backfill_fields = MODEL_BACKFILL_FIELDS + [  # noqa: RUF005
+        "eq_data",
+        "jnt_actfrclimited",
+        "jnt_solref",
+    ]
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_data"}
 
 
 # -----------------------------------------------------------------------------
