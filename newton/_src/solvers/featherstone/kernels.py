@@ -1477,7 +1477,6 @@ def _fk_single_joint(
     joint_X_c_i: wp.transform,
     joint_axis: wp.array[wp.vec3],
     body_com: wp.array[wp.vec3],
-    body_flags: wp.array[wp.int32],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
     # in/outputs (parent entries are read, child entries are written)
@@ -1755,7 +1754,6 @@ def integrate_and_fk_articulation(
             joint_X_c_i,
             joint_axis,
             body_com,
-            body_flags,
             joint_q_out,
             joint_qd_out,
             body_q_out,
