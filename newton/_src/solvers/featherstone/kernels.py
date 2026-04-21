@@ -1361,18 +1361,25 @@ def zero_kinematic_joint_qdd(
 
 
 @wp.func
-def _anchor_basis_change_quat(omega_parent_new_world: wp.vec3, q_anchor_old: wp.quat, dt: float):
+def _anchor_basis_change_quat(omega_parent_new_world: wp.vec3, q_anchor: wp.quat, dt: float):
     """Quaternion that rotates vectors from the old anchor basis to the new anchor basis.
 
     Parent body rotates during the step, so the anchor frame rigidly attached
     to the parent rotates with it. For symplectic Euler we use the parent's
     post-step world angular velocity (``omega_parent_new_world``). The anchor
     basis rotates by ``omega_parent_new_world * dt`` in the world frame; in
-    the old anchor basis this is ``omega_pa = R_a_old^T * omega_parent_new``.
-    A vector's components transform from old to new basis via the inverse of
+    the anchor basis this is ``omega_pa = R_a^T * omega_parent_new``. A
+    vector's components transform from old to new basis via the inverse of
     that rotation: ``dq = exp(-omega_pa * dt / 2)`` as a unit quaternion.
+
+    ``q_anchor`` may be either ``R_a_old`` or ``R_a_new``; the two agree up
+    to a rotation by ``omega_parent_new_world * dt``, which contributes an
+    ``O(dt^2)`` perturbation to ``omega_pa`` that is absorbed into the
+    symplectic-Euler truncation error. Callers typically pass the
+    post-step anchor rotation since it is already in hand from the
+    parent's freshly written ``body_q``.
     """
-    omega_pa = wp.quat_rotate_inv(q_anchor_old, omega_parent_new_world)
+    omega_pa = wp.quat_rotate_inv(q_anchor, omega_parent_new_world)
     omega_mag = wp.length(omega_pa)
     # Guard against division by zero. When the parent is stationary ``dq`` is
     # identity and the transport correction collapses to a no-op.
