@@ -1101,8 +1101,9 @@ def _expand_batched_fields(target_obj: Any, reference_obj: Any, field_names: lis
 
 
 # Model fields to backfill from native MuJoCo to eliminate compilation differences:
-# - body_inertia, body_iquat: Newton re-diagonalizes inertia (different eig3 ordering)
-# - body_invweight0: Derived from inertia, used in make_constraint for efc_D scaling
+# - body_inertia, body_ipos, body_iquat: Newton re-diagonalizes inertia differently
+# - body_mass, body_subtreemass: Newton computes EXACT mesh volume, native uses LEGACY
+# - body_invweight0, dof_invweight0, actuator_acc0: derived from inertia/mass
 # - body_pos, body_quat: Newton recomputes from joint transforms (~3e-8 float diff)
 MODEL_BACKFILL_FIELDS: list[str] = [
     "body_inertia",
@@ -1110,6 +1111,7 @@ MODEL_BACKFILL_FIELDS: list[str] = [
     "body_iquat",
     "body_invweight0",
     "dof_invweight0",
+    "body_mass",
     "body_pos",
     "body_quat",
     "body_subtreemass",
@@ -1847,7 +1849,7 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-    # Dynamics disabled: qpos drift 3.5e-3 from body_ipos diff (#2170)
+    # Dynamics disabled: qvel diverges ~5x at step 0 even with ctrl=0 (#2491)
     num_steps = 0
     fk_enabled = True
     fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
@@ -2025,12 +2027,11 @@ class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
 
     robot_folder = "wonik_allegro"
     robot_xml = "scene_right.xml"
-    # Dynamics disabled: body_mass diff causes qpos divergence 3.4e-3 (#2170)
-    num_steps = 0
+    num_steps = 20
     fk_enabled = True
-    # TODO(#2170): body_mass differs — Newton computes different masses for visual geoms
+    backfill_model = True  # needs body_mass backfill (visual geom mesh volume diff)
+    # TODO(#2494): body_mass differs (Newton computes different masses for visual geoms)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
-    # Step response disabled: body_mass diffs cause constraint mismatch
 
 
 class TestMenagerie_IitSoftfoot(TestMenagerieMJCF):
@@ -2050,10 +2051,10 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-    # Dynamics disabled: multiple import issues — dof_damping, eq_, ngeom (#2170)
+    # Dynamics and FK disabled: multiple MJCF import issues (#2492)
     num_steps = 0
-    fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2170)
-    # TODO(#2170): dof_damping, jnt_range, eq_, ngeom differ
+    fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2492)
+    # TODO(#2492): dof_damping, jnt_range, eq_, ngeom differ
     # jnt_ is broad but needed: compare_jnt_range runs outside model_skip_fields
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
 
@@ -2210,10 +2211,10 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
-    # Dynamics disabled: actuator_biasprm diff causes qvel divergence 3.3e-6 (#2170)
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 1e-4  # GPU non-determinism: qvel diff up to 1.2e-5 across runs
     fk_enabled = True
-    # TODO(#2170): actuator_biasprm has tiny fp diffs (1.7e-5) — likely precision issue
+    # TODO(#2495): actuator_biasprm has tiny fp diffs (1.7e-5), likely precision issue
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"actuator_biasprm"}
 
 
@@ -2307,8 +2308,8 @@ class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
-    # Dynamics disabled: qvel drift 1.2e-5 (model compilation diffs amplified by free joint)
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 5e-4  # qvel drifts over steps; exact cause unclear
     fk_enabled = True
 
 
@@ -2363,10 +2364,10 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
-    # Dynamics disabled: body_mass diff causes qpos divergence 3.4e-5 (#2170)
-    num_steps = 0
+    num_steps = 20
     fk_enabled = True
-    # TODO(#2170): body_mass differs for some bodies
+    backfill_model = True  # needs body_mass backfill (visual geom mesh volume diff)
+    # TODO(#2494): body_mass differs for some bodies
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
 
