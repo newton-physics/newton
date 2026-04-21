@@ -35,7 +35,7 @@ import newton.solvers
 # --- Timing / solver defaults ---
 
 DT_OUTER = 0.01
-TOL = 1e-3
+TOL = 1e-4
 DT_INNER_MIN = 1e-6
 LOG_EVERY = 250
 
@@ -81,8 +81,7 @@ _ASSET_CATALOG: dict[str, tuple[Path, Path, float | None, float, str]] = {
 }
 
 OBJECT_MIX: tuple[tuple[str, int], ...] = (
-    ("mug", 1),
-    ("fork", 2),
+    ("fork", 1),
 )
 OBJECTS_PER_WORLD = sum(count for _, count in OBJECT_MIX)
 
@@ -146,15 +145,10 @@ def _parse_lbm_inertial(sdf_path: Path) -> tuple[float, np.ndarray, np.ndarray]:
     return mass, com, inertia
 
 
-# Per-mesh convex-hull vertex budget.  MuJoCo Warp auto-hulls every mesh to
-# this many vertices via QHull's TA flag.  The default of 64 (Newton's
-# :attr:`newton.Mesh.MAX_HULL_VERTICES`) produces near-coplanar hulls for
-# thin LBM parts (fork, rack base, utensil cup), which yield redundant
-# contact points along ridges and visible jitter even at 0.1 ms dt.  Raising
-# the budget makes the hull actually match the source geometry.  Cost is
-# per-contact narrowphase work, roughly O(hull_verts); 1024 still runs
-# real-time for this scene because contact pairs are few.
-_HULL_BUDGET = 10000  # effectively unlimited (QHull returns the full hull)
+# MuJoCo Warp requires a convex hull for its internal geom representation,
+# but with use_mujoco_contacts=False the hull is never used for collision --
+# Newton's CollisionPipeline handles contact via SDF.  Minimum budget.
+_HULL_BUDGET = 64
 
 
 def _load_lbm_mesh(
@@ -329,28 +323,23 @@ def _add_drainer(builder: newton.ModelBuilder, cfg, voxel: float) -> None:
 
 def build_template(
     *,
-    # MuJoCo Warp has no CCD.  Halo = obj_margin + rack_margin must exceed
-    # max per-step displacement (v_max * dt_inner_max) or thin bodies tunnel
-    # through the tray.  Objects drop from up to ~0.7 m above the floor and
-    # hit at ~3.8 m/s, so dt_max = 5 ms needs a halo of at least 19 mm; we
-    # budget 35 mm (15 mm object + 20 mm rack) for headroom.
-    obj_margin: float = 0.015,
-    rack_margin: float = 0.020,
+    # With Newton's CollisionPipeline handling geometry queries externally,
+    # margin only needs to be large enough for the narrow phase to detect
+    # contact before penetration.  A few mm suffices for dish-rack objects.
+    obj_margin: float = 0.005,
+    rack_margin: float = 0.005,
 ) -> newton.ModelBuilder:
     template = newton.ModelBuilder()
     newton.solvers.SolverMuJoCoCENIC.register_custom_attributes(template)
 
-    # Contact stiffness / damping tuned for the shared dt_inner = 2 ms floor
-    # (see make_solver / make_solver_fixed).  ke/kd map to MuJoCo solref via
-    # convert_solref() in newton/_src/solvers/mujoco/kernels.py:171:
+    # Contact stiffness / damping.  ke/kd map to MuJoCo solref via
+    # convert_solref() in newton/_src/solvers/mujoco/kernels.py:
     #   timeconst = 2/kd        -- must stay above 2*dt for stability
     #   dampratio = kd/(2*sqrt(ke))
-    # MuJoCo folds the constraint mass matrix in internally, so dampratio is
-    # dimensionless and mass-independent here.  With dt_inner=2 ms we need
-    # timeconst >= 4 ms, i.e. kd <= 500.  Pick kd=400 (timeconst=5 ms, 2.5x
-    # margin).  For critical damping: ke = (kd/2)^2 = 40000.
+    # Tuned for dt ~ 2 ms (the adaptive solver's typical contact-regime dt).
+    # dt_inner_max is capped to 2 ms in make_solver to match.
     _KD = 400.0
-    _KE = 40000.0  # kd/(2*sqrt(ke)) = 1.0 -> critically damped contact
+    _KE = 40000.0  # dampratio = kd/(2*sqrt(ke)) = 1.0 -> critically damped
 
     # SDF-SDF contact for both rack and objects: the wireframe rack is
     # genuinely hollow (a wire cage), so convex hulls cannot represent it --
@@ -363,40 +352,50 @@ def build_template(
     _RACK_VOXEL = 0.001   # 1 mm -- resolves wire cage
     _OBJ_VOXEL = 0.003    # 3 mm -- bulk objects
 
+    _KH = 1e8  # hydroelastic modulus [Pa]
+
     cfg_rack = newton.ModelBuilder.ShapeConfig(
         ke=_KE,
         kd=_KD,
+        kh=_KH,
         mu=0.3,
         margin=rack_margin,
         collision_group=-1,
+        is_hydroelastic=False,
     )
     cfg_by_material = {
         "ceramic": newton.ModelBuilder.ShapeConfig(
             ke=_KE,
             kd=_KD,
+            kh=_KH,
             mu=0.4,
             mu_rolling=5e-3,
             mu_torsional=5e-3,
             margin=obj_margin,
             collision_group=1,
+            is_hydroelastic=False,
         ),
         "rubber": newton.ModelBuilder.ShapeConfig(
             ke=_KE,
             kd=_KD,
+            kh=_KH,
             mu=0.9,
             mu_rolling=1e-2,
             mu_torsional=1e-2,
             margin=obj_margin,
             collision_group=1,
+            is_hydroelastic=False,
         ),
         "metal": newton.ModelBuilder.ShapeConfig(
             ke=_KE,
             kd=_KD,
+            kh=_KH,
             mu=0.25,
             mu_rolling=5e-3,
             mu_torsional=5e-3,
             margin=obj_margin,
             collision_group=1,
+            is_hydroelastic=False,
         ),
     }
     _add_drainer(template, cfg_rack, voxel=_RACK_VOXEL)
@@ -491,7 +490,7 @@ def make_solver(
 
 # Inner step for the fixed-step baseline.  2 ms stays below solref
 # timeconst = 2/kd = 5 ms (kd=400), matching CENIC's dt_inner_max.
-FIXED_DT_INNER = 0.002
+FIXED_DT_INNER = 0.01
 
 
 def make_solver_fixed(model: newton.Model) -> newton.solvers.SolverMuJoCo:
@@ -500,10 +499,12 @@ def make_solver_fixed(model: newton.Model) -> newton.solvers.SolverMuJoCo:
     Same MuJoCo settings as :func:`make_solver` so only the adaptive-step
     wrapper differs -- use this as an oracle when debugging CENIC behavior.
     Caller is responsible for substepping ``step(..., dt=FIXED_DT_INNER)``
-    inside each ``DT_OUTER`` control period.
+    inside each ``DT_OUTER`` control period and calling
+    ``pipeline.collide(state, contacts)`` before each ``step()``.
     """
     return newton.solvers.SolverMuJoCo(
         model,
+        use_mujoco_contacts=False,
         njmax=8192,
         nconmax=2048,
         cone="elliptic",
@@ -512,3 +513,12 @@ def make_solver_fixed(model: newton.Model) -> newton.solvers.SolverMuJoCo:
         ccd_iterations=100,
         solver="newton",
     )
+
+
+def make_pipeline(model: newton.Model, solver: newton.solvers.SolverMuJoCo) -> tuple:
+    """Create a CollisionPipeline and contact buffer sized to match the solver."""
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="sap", rigid_contact_max=solver.mjw_data.naconmax,
+    )
+    contacts = pipeline.contacts()
+    return pipeline, contacts

@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
+import newton
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
 from ...utils.benchmark import event_scope
@@ -341,7 +342,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         """
         if dt_mode not in ("per_world", "global"):
             raise ValueError(f"dt_mode must be 'per_world' or 'global', got {dt_mode!r}")
-        super().__init__(model, separate_worlds=True, use_mujoco_cpu=False, **kwargs)
+        super().__init__(model, separate_worlds=True, use_mujoco_cpu=False, use_mujoco_contacts=False, **kwargs)
 
         world_count = model.world_count
         device = model.device
@@ -411,26 +412,31 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         q_weights = np.clip(q_weights, 1.0, 10.0)
         self._q_weights = wp.array(q_weights, dtype=wp.float32, device=device)
 
-
+        self._pipeline = newton.CollisionPipeline(
+            model, broad_phase="sap", rigid_contact_max=self.mjw_data.naconmax,
+        )
+        self._contacts_start = self._pipeline.contacts()
 
 
     def _run_substep(
         self,
         state_in: State,
         state_out: State,
-        contacts: Contacts,
         dt_array: wp.array,
     ) -> None:
-        """Run one MuJoCo step: sync state_in, set timestep, step, write state_out."""
+        """Run one MuJoCo step: sync state_in, set timestep, step, write state_out.
+
+        Contacts must already be written to ``mjw_data`` before calling this
+        (via :meth:`_convert_contacts_to_mjwarp`).  Converting once per
+        iteration and reusing across the three step-doubling substeps ensures
+        the error estimate only reflects integration error, not contact-set
+        discrepancy from differing body transforms.
+        """
         self._update_mjc_data(self.mjw_data, self.model, state_in)
         wp.copy(self.mjw_model.opt.timestep, dt_array)
 
         with wp.ScopedDevice(self.model.device):
-            if self.mjw_model.opt.run_collision_detection:
-                self._mujoco_warp_step()
-            else:
-                self._convert_contacts_to_mjwarp(self.model, state_in, contacts)
-                self._mujoco_warp_step()
+            self._mujoco_warp_step()
 
         self._update_newton_state(self.model, state_out, self.mjw_data)
 
@@ -458,10 +464,16 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         if self._state_cur.body_qd is not None and self._state_saved.body_qd is not None:
             wp.copy(self._state_saved.body_qd, self._state_cur.body_qd)
 
+        # Convert contacts once using state_cur transforms so all 3 substeps
+        # see identical MuJoCo contacts (avoids error-estimate corruption from
+        # the third substep using scratch_mid's different body transforms).
+        if not self.mjw_model.opt.run_collision_detection:
+            self._convert_contacts_to_mjwarp(self.model, self._state_cur, self._contacts_start)
+
         # 3 MuJoCo evals: full dt, half dt, half dt.
-        self._run_substep(self._state_cur, self._scratch_full, None, self._dt)
-        self._run_substep(self._state_cur, self._scratch_mid, None, self._dt_half)
-        self._run_substep(self._scratch_mid, self._scratch_double, None, self._dt_half)
+        self._run_substep(self._state_cur, self._scratch_full, self._dt)
+        self._run_substep(self._state_cur, self._scratch_mid, self._dt_half)
+        self._run_substep(self._scratch_mid, self._scratch_double, self._dt_half)
 
         wp.launch(
             _inf_norm_state_error_kernel,
@@ -575,7 +587,7 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
             state_in: Input state.
             state_out: Output state (written in place).
             control: Control inputs.
-            contacts: Contact data (when ``use_mujoco_contacts`` is False).
+            contacts: Unused. Contacts are generated internally via :class:`CollisionPipeline`.
 
         Returns:
             state_out
@@ -587,9 +599,14 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._apply_mjc_control(model, state_in, control, self.mjw_data)
         self._enable_rne_postconstraint(state_out)
 
-        self._run_substep(state_in, self._scratch_full, contacts, self._dt)
-        self._run_substep(state_in, self._scratch_mid, contacts, self._dt_half)
-        self._run_substep(self._scratch_mid, self._scratch_double, contacts, self._dt_half)
+        self._pipeline.collide(state_in, self._contacts_start)
+
+        if not self.mjw_model.opt.run_collision_detection:
+            self._convert_contacts_to_mjwarp(self.model, state_in, self._contacts_start)
+
+        self._run_substep(state_in, self._scratch_full, self._dt)
+        self._run_substep(state_in, self._scratch_mid, self._dt_half)
+        self._run_substep(self._scratch_mid, self._scratch_double, self._dt_half)
 
         wp.launch(
             _inf_norm_state_error_kernel,
@@ -722,6 +739,12 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
         self._iteration_count_buf.fill_(0)
         self._boundary_flag.fill_(1)
 
+        # Detect contacts once per boundary.  Body-frame contact points are
+        # converted to world-frame in _run_iteration_body using the current
+        # state transforms, so they track body motion across iterations.
+        if not self.mjw_model.opt.run_collision_detection:
+            self._pipeline.collide(self._state_cur, self._contacts_start)
+
         while True:
             self._run_iteration_body(effective_dt_max)
             if self._boundary_flag.numpy()[0] == 0:
@@ -768,6 +791,17 @@ class SolverMuJoCoCENIC(SolverMuJoCo):
     def accepted(self) -> wp.array:
         """Per-world accept flags from the most recent step, shape ``[world_count]``, bool, on device."""
         return self._accepted
+
+    @property
+    def contacts(self) -> Contacts:
+        """Contacts from the most recent :meth:`step_dt` boundary.
+
+        Populated once per outer step by the solver's internal
+        :class:`~newton.CollisionPipeline` and reused across all inner
+        iterations.  Pass to ``viewer.log_contacts`` for rendering without
+        duplicating the collision pass.
+        """
+        return self._contacts_start
 
     def get_status_summary(self) -> dict[str, float]:
         """Reduce per-world arrays to a 6-scalar summary via one GPU transfer."""

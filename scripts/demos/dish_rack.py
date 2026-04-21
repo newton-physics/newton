@@ -24,6 +24,7 @@ from scripts.scenes.dish_rack import (
     FIXED_DT_INNER,
     LOG_EVERY,
     build_model_randomized,
+    make_pipeline,
     make_solver,
     make_solver_fixed,
 )
@@ -118,11 +119,11 @@ def main():
         yaw=135.0,
     )
 
-    contacts = newton.Contacts(
-        rigid_contact_max=solver.mjw_data.naconmax,
-        soft_contact_max=0,
-        requested_attributes={"force"},
-    )
+    pipeline, contacts = make_pipeline(model, solver)
+    if args.solver == "cenic":
+        # CENIC owns its own pipeline; render its internal contacts buffer
+        # instead of the unused external one.
+        contacts = solver.contacts
 
     step = 0
     t = 0.0
@@ -143,6 +144,7 @@ def main():
                 state_0.clear_forces()
                 if viewer.apply_forces is not None:
                     viewer.apply_forces(state_0)
+                pipeline.collide(state_0, contacts)
                 solver.step(state_0, state_1, control, contacts, FIXED_DT_INNER)
                 state_0, state_1 = state_1, state_0
         t += DT_OUTER
@@ -153,13 +155,6 @@ def main():
 
         if args.num_steps > 0 and step >= args.num_steps:
             break
-
-        # Both solvers use MuJoCo's internal contact solver (use_mujoco_contacts=True),
-        # so the Newton-side Contacts struct is NOT filled by step().  Copy
-        # MuJoCo's contacts across every frame so the viewer's "Show Contacts"
-        # toggle reflects the current sim state immediately when switched on.
-        # log_contacts gates rendering itself.
-        solver.update_contacts(contacts, state_0)
         viewer.begin_frame(t)
         viewer.log_state(state_0)
         viewer.log_contacts(contacts, state_0)
