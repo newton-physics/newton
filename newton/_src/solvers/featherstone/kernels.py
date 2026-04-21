@@ -1369,7 +1369,6 @@ def _anchor_basis_change_quat(omega_parent_new_world: wp.vec3, q_anchor_old: wp.
 
 @wp.func
 def _apply_free_distance_transport(
-    joint_id: int,
     coord_start: int,
     dof_start: int,
     joint_X_p_i: wp.transform,
@@ -1442,12 +1441,9 @@ def _apply_free_distance_transport(
     joint_q_new[coord_start + 5] = r[2]
     joint_q_new[coord_start + 6] = r[3]
 
-    return joint_id  # dummy return to keep Warp happy with void-ish funcs
-
 
 @wp.func
 def _fk_single_joint(
-    i: int,
     type: int,
     parent: int,
     child: int,
@@ -1610,8 +1606,6 @@ def _fk_single_joint(
     body_q[child] = X_wc
     body_qd[child] = origin_twist_to_com_twist(v_wc_origin, X_wc, body_com[child])
 
-    return i  # dummy return
-
 
 @wp.kernel
 def integrate_and_fk_articulation(
@@ -1714,7 +1708,6 @@ def integrate_and_fk_articulation(
                 # written already in this same loop iteration path.
                 omega_parent_new_world = wp.spatial_bottom(body_qd_out[parent])
                 _apply_free_distance_transport(
-                    i,
                     coord_start,
                     dof_start,
                     joint_X_p_i,
@@ -1726,7 +1719,6 @@ def integrate_and_fk_articulation(
                 )
 
         _fk_single_joint(
-            i,
             type,
             parent,
             child,
