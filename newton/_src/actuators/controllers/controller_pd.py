@@ -76,6 +76,10 @@ class ControllerPD(Controller):
             kd: Derivative gains. Shape (N,).
             constant_force: Constant force offsets [N or N·m]. Shape (N,). None to skip.
         """
+        if kp.shape != kd.shape:
+            raise ValueError(f"kp shape {kp.shape} must match kd shape {kd.shape}")
+        if constant_force is not None and constant_force.shape != kp.shape:
+            raise ValueError(f"constant_force shape {constant_force.shape} must match kp shape {kp.shape}")
         self.kp = kp
         self.kd = kd
         self.constant_force = constant_force

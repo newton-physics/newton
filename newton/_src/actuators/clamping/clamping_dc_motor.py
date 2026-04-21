@@ -55,17 +55,20 @@ class ClampingDCMotor(Clamping):
         if "velocity_limit" not in args:
             raise ValueError("ClampingDCMotor requires 'velocity_limit'")
         vel_lim = args["velocity_limit"]
-        if vel_lim <= 0.0:
-            raise ValueError(f"ClampingDCMotor: velocity_limit must be > 0, got {vel_lim}")
+        if vel_lim <= 0:
+            raise ValueError(f"velocity_limit must be positive, got {vel_lim}")
         if "saturation_effort" not in args:
             raise ValueError("ClampingDCMotor requires 'saturation_effort'")
         sat = args["saturation_effort"]
-        if sat <= 0.0:
-            raise ValueError(f"ClampingDCMotor: saturation_effort must be > 0, got {sat}")
+        if sat <= 0:
+            raise ValueError(f"saturation_effort must be positive, got {sat}")
+        max_force = args.get("max_force", math.inf)
+        if max_force < 0:
+            raise ValueError(f"max_force must be non-negative, got {max_force}")
         return {
             "saturation_effort": sat,
             "velocity_limit": vel_lim,
-            "max_force": args.get("max_force", math.inf),
+            "max_force": max_force,
         }
 
     def __init__(
@@ -83,12 +86,13 @@ class ClampingDCMotor(Clamping):
         """
         if saturation_effort.shape != velocity_limit.shape:
             raise ValueError(
-                f"saturation_effort shape {saturation_effort.shape} must match "
-                f"velocity_limit shape {velocity_limit.shape}"
+                f"saturation_effort shape {saturation_effort.shape} "
+                f"must match velocity_limit shape {velocity_limit.shape}"
             )
         if saturation_effort.shape != max_force.shape:
             raise ValueError(
-                f"saturation_effort shape {saturation_effort.shape} must match max_force shape {max_force.shape}"
+                f"saturation_effort shape {saturation_effort.shape} "
+                f"must match max_force shape {max_force.shape}"
             )
         self.saturation_effort = saturation_effort
         self.velocity_limit = velocity_limit

@@ -58,7 +58,7 @@ SCHEMA_REGISTRY: dict[str, SchemaEntry] = {
         validate=_validate_clamp_velocity_based,
     ),
     # Position-based clamping passes the file path directly, mirroring the
-    # networkPath convention used by the neural-network controllers.
+    # modelPath convention used by the neural-network controllers.
     # The file is read in ClampingPositionBased.finalize().
     "NewtonClampingPositionBasedAPI": SchemaEntry(
         component_class=ClampingPositionBased,
@@ -69,12 +69,12 @@ SCHEMA_REGISTRY: dict[str, SchemaEntry] = {
     # they are framework-specific and should be set programmatically.
     "NewtonControllerNetMLPAPI": SchemaEntry(
         component_class=ControllerNetMLP,
-        param_map={"networkPath": "network_path"},
+        param_map={"modelPath": "model_path"},
         is_controller=True,
     ),
     "NewtonControllerNetLSTMAPI": SchemaEntry(
         component_class=ControllerNetLSTM,
-        param_map={"networkPath": "network_path"},
+        param_map={"modelPath": "model_path"},
         is_controller=True,
     ),
 }

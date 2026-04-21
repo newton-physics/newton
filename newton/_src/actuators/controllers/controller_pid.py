@@ -84,7 +84,7 @@ class ControllerPID(Controller):
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         integral_max = args.get("integral_max", math.inf)
         if integral_max < 0:
-            raise ValueError(f"integral_max must be >= 0, got {integral_max}")
+            raise ValueError(f"integral_max must be non-negative, got {integral_max}")
         return {
             "kp": args.get("kp", 0.0),
             "ki": args.get("ki", 0.0),
@@ -110,6 +110,14 @@ class ControllerPID(Controller):
             integral_max: Anti-windup limits (>= 0). Shape (N,).
             constant_force: Constant force offsets [N or N·m]. Shape (N,). None to skip.
         """
+        if kp.shape != ki.shape:
+            raise ValueError(f"kp shape {kp.shape} must match ki shape {ki.shape}")
+        if kp.shape != kd.shape:
+            raise ValueError(f"kp shape {kp.shape} must match kd shape {kd.shape}")
+        if kp.shape != integral_max.shape:
+            raise ValueError(f"kp shape {kp.shape} must match integral_max shape {integral_max.shape}")
+        if constant_force is not None and constant_force.shape != kp.shape:
+            raise ValueError(f"constant_force shape {constant_force.shape} must match kp shape {kp.shape}")
         self.kp = kp
         self.ki = ki
         self.kd = kd

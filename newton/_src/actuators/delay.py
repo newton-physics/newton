@@ -66,10 +66,10 @@ def _delay_read_kernel(
     out_vel: wp.array[float],
     out_act: wp.array[float],
 ):
-    """Read per-DOF delayed targets, falling back to current targets when buffer is empty."""
+    """Read per-DOF delayed targets, falling back to current targets when buffer is empty or delay is zero."""
     i = wp.tid()
     n = num_pushes[i]
-    if n == 0:
+    if n == 0 or delays[i] == 0:
         pos_idx = pos_indices[i]
         vel_idx = vel_indices[i]
         out_pos[i] = current_pos[pos_idx]
@@ -115,9 +115,10 @@ class Delay:
     can share the same actuator group.
 
     The delay always produces output.  When the buffer is empty
-    (e.g. right after reset), the current targets are returned
-    directly.  When underfilled, the lag is clamped to the
-    available history so the oldest entry is returned.
+    (e.g. right after reset) or a DOF has ``delay == 0``, the
+    current targets are returned directly.  When underfilled, the
+    lag is clamped to the available history so the oldest entry is
+    returned.
     """
 
     @dataclass
@@ -171,8 +172,8 @@ class Delay:
         if "delay" not in args:
             raise ValueError("Delay requires 'delay' argument")
         delay = args["delay"]
-        if delay < 1:
-            raise ValueError(f"delay must be >= 1, got {delay}")
+        if delay < 0:
+            raise ValueError(f"delay must be >= 0, got {delay}")
         return {"delay": delay}
 
     def __init__(self, delay: wp.array[int], max_delay: int):

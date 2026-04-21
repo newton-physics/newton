@@ -9,6 +9,8 @@ from typing import Any, ClassVar
 
 import warp as wp
 
+from newton._src.actuators.utils import load_checkpoint
+
 from .base import Controller
 
 if typing.TYPE_CHECKING:
@@ -19,20 +21,26 @@ class ControllerNetLSTM(Controller):
     """LSTM-based neural network controller.
 
     Uses a pre-trained LSTM network to compute joint torques from position
-    error and velocity. The network maintains hidden and cell state across
-    timesteps to capture temporal patterns.
+    error and velocity error. The network maintains hidden and cell state
+    across timesteps to capture temporal patterns.
 
     The network must be callable as:
         torques, (hidden_new, cell_new) = network(input, (hidden, cell))
 
-    where input has shape (batch, 1, 2) with features [pos_error, velocity],
-    and hidden/cell have shape (num_layers, batch, hidden_size).
+    where input has shape (batch, 1, 2) with features
+    [pos_error, vel_error], and hidden/cell have shape
+    (num_layers, batch, hidden_size).
 
-    The network is expected to have a ``lstm`` attribute (torch.nn.LSTM) so
-    that num_layers and hidden_size can be inferred automatically.
+    The network is expected to have a ``lstm`` attribute (``torch.nn.LSTM``) so
+    that ``num_layers`` and ``hidden_size`` can be inferred automatically.
+
+    Scale factors (``pos_scale``, ``vel_scale``, ``torque_scale``) are
+    read from checkpoint metadata, falling back to ``1.0`` when absent.
+    See :func:`~newton._src.actuators.utils.load_checkpoint` for
+    supported checkpoint formats.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"network_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
 
     @dataclass
     class State(Controller.State):
@@ -54,37 +62,38 @@ class ControllerNetLSTM(Controller):
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        if "network_path" not in args:
-            raise ValueError("ControllerNetLSTM requires 'network_path' argument")
-        return {
-            "network_path": args["network_path"],
-        }
+        if "model_path" not in args:
+            raise ValueError("ControllerNetLSTM requires 'model_path' argument")
+        model_path = args["model_path"]
+        if not model_path:
+            raise ValueError("ControllerNetLSTM requires a non-empty 'model_path'")
+        return {"model_path": model_path}
 
-    def __init__(
-        self,
-        network: torch.nn.Module | None = None,
-        network_path: str | None = None,
-    ):
-        """Initialize LSTM controller.
+    def __init__(self, model_path: str):
+        """Initialize LSTM controller from a checkpoint file.
+
+        See :func:`~newton._src.actuators.utils.load_checkpoint` for
+        supported checkpoint formats.
+
+        Configuration is read from checkpoint metadata:
+
+        - ``pos_scale`` (float): position-error scaling (default ``1.0``).
+        - ``vel_scale`` (float): velocity-error scaling (default ``1.0``).
+        - ``torque_scale`` (float): output torque scaling (default ``1.0``).
 
         Args:
-            network: Pre-trained LSTM network.
-                If None, loaded from network_path.
-            network_path: Path to a TorchScript model file.
+            model_path: Path to the checkpoint (``.pt``).
         """
         import torch
 
-        self.network_path = network_path
+        self.model_path = model_path
+        self._torch_device = torch.device("cpu")
 
-        if network is not None:
-            params = list(network.parameters())
-            self._torch_device = params[0].device if params else torch.device("cpu")
-            self.network = network.eval()
-        elif network_path is not None:
-            self._torch_device = torch.device("cpu")
-            self.network = torch.jit.load(network_path, map_location="cpu").eval()
-        else:
-            raise ValueError("Either 'network' or 'network_path' must be provided")
+        self.network, metadata = load_checkpoint(model_path)
+
+        self.pos_scale = metadata.get("pos_scale", 1.0)
+        self.vel_scale = metadata.get("vel_scale", 1.0)
+        self.torque_scale = metadata.get("torque_scale", 1.0)
 
         if not hasattr(self.network, "lstm"):
             raise ValueError("network must expose a 'lstm' attribute (torch.nn.LSTM)")
@@ -94,7 +103,7 @@ class ControllerNetLSTM(Controller):
         if not lstm.batch_first:
             raise ValueError("network.lstm.batch_first must be True")
         if lstm.input_size != 2:
-            raise ValueError(f"network.lstm.input_size must be 2 (pos_error, velocity); got {lstm.input_size}")
+            raise ValueError(f"network.lstm.input_size must be 2 (pos_error, vel_error); got {lstm.input_size}")
         if lstm.bidirectional:
             raise ValueError("network.lstm must not be bidirectional")
         if getattr(lstm, "proj_size", 0) != 0:
@@ -153,17 +162,21 @@ class ControllerNetLSTM(Controller):
 
         current_pos = wp.to_torch(positions)
         current_vel = wp.to_torch(velocities)
-        target = wp.to_torch(target_pos)
+        target_p = wp.to_torch(target_pos)
+        target_v = wp.to_torch(target_vel)
 
         torch_target_pos_idx = (
             self._torch_input_indices if target_pos_indices is pos_indices else self._torch_sequential_indices
         )
+        torch_target_vel_idx = (
+            self._torch_vel_indices if target_vel_indices is vel_indices else self._torch_sequential_indices
+        )
 
-        pos_error = target[torch_target_pos_idx] - current_pos[self._torch_input_indices]
-        vel = current_vel[self._torch_vel_indices]
+        pos_error = target_p[torch_target_pos_idx] - current_pos[self._torch_input_indices]
+        vel_error = target_v[torch_target_vel_idx] - current_vel[self._torch_vel_indices]
 
-        # (N, 1, 2): seq_len=1, features=[pos_error, velocity]
-        net_input = torch.stack([pos_error, vel], dim=1).unsqueeze(1)
+        # (N, 1, 2): seq_len=1, features=[pos_error * scale, vel_error * scale]
+        net_input = torch.stack([pos_error * self.pos_scale, vel_error * self.vel_scale], dim=1).unsqueeze(1)
 
         with torch.inference_mode():
             torques, (self._hidden, self._cell) = self.network(
@@ -171,7 +184,7 @@ class ControllerNetLSTM(Controller):
                 (state.hidden, state.cell),
             )
 
-        torques = torques.reshape(len(forces))
+        torques = torques.reshape(len(forces)) * self.torque_scale
         torques_wp = wp.from_torch(torques.contiguous(), dtype=wp.float32)
         wp.copy(forces, torques_wp)
 

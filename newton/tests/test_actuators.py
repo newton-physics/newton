@@ -4,6 +4,7 @@
 """Tests for Newton actuators."""
 
 import importlib.util
+import json
 import math
 import os
 import unittest
@@ -43,6 +44,25 @@ except ImportError:
     _HAS_LEGACY_ACTUATORS = False
 
 _HAS_TORCH = importlib.util.find_spec("torch") is not None
+
+if _HAS_TORCH:
+    import torch as _torch
+
+    class _LSTMNet(_torch.nn.Module):
+        """Simple LSTM network for testing."""
+
+        def __init__(self, hidden: int = 8, layers: int = 1):
+            super().__init__()
+            self.lstm = _torch.nn.LSTM(2, hidden, layers, batch_first=True)
+            self.dec = _torch.nn.Linear(hidden, 1)
+
+        def forward(
+            self,
+            x: _torch.Tensor,
+            hc: tuple[_torch.Tensor, _torch.Tensor],
+        ) -> tuple[_torch.Tensor, tuple[_torch.Tensor, _torch.Tensor]]:
+            out, (h, c) = self.lstm(x, hc)
+            return self.dec(out[:, -1, :]), (h, c)
 
 
 # ---------------------------------------------------------------------------
@@ -164,21 +184,29 @@ class TestControllerPID(unittest.TestCase):
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
 class TestControllerNetMLP(unittest.TestCase):
-    """ControllerNetMLP — construct controller, call compute() directly."""
+    """ControllerNetMLP — load via model_path, call compute() directly."""
 
     def setUp(self):
+        import tempfile
+
         import torch
 
         self.torch = torch
         self.device = wp.get_device()
         self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._tmp_dir = tempfile.mkdtemp()
 
-    def _mlp(self, in_dim, hidden=32):
-        return self.torch.nn.Sequential(
-            self.torch.nn.Linear(in_dim, hidden),
-            self.torch.nn.ELU(),
-            self.torch.nn.Linear(hidden, 1),
-        ).to(self._torch_dev)
+    def _save_torchscript(self, net, filename="mlp.pt", metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        scripted = self.torch.jit.script(net)
+        extra = {"metadata.json": json.dumps(metadata)} if metadata else {}
+        self.torch.jit.save(scripted, path, _extra_files=extra)
+        return path
+
+    def _save_dict(self, net, filename="mlp_dict.pt", metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        self.torch.save({"model": net, "metadata": metadata or {}}, path)
+        return path
 
     def test_compute(self):
         """Constant-bias network produces known output; history rolls after update_state."""
@@ -187,8 +215,9 @@ class TestControllerNetMLP(unittest.TestCase):
             net[0].weight.fill_(0.0)
             net[0].bias.fill_(42.0)
 
+        path = self._save_torchscript(net)
         n = 1
-        ctrl = ControllerNetMLP(network=net)
+        ctrl = ControllerNetMLP(model_path=path)
         ctrl.finalize(self.device, n)
         state_a = ctrl.state(n, self.device)
         state_b = ctrl.state(n, self.device)
@@ -225,38 +254,84 @@ class TestControllerNetMLP(unittest.TestCase):
             msg="history should contain pos error from current step",
         )
 
+    def test_dict_checkpoint(self):
+        """Load MLP from a dict checkpoint with metadata."""
+        net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
+        with self.torch.no_grad():
+            net[0].weight.fill_(0.0)
+            net[0].bias.fill_(5.0)
+
+        path = self._save_dict(net, metadata={"torque_scale": 4.0})
+        ctrl = ControllerNetMLP(model_path=path)
+        self.assertAlmostEqual(ctrl.torque_scale, 4.0)
+
+    def test_metadata_scales(self):
+        """Metadata torque_scale is applied to the network output."""
+        net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
+        with self.torch.no_grad():
+            net[0].weight.fill_(0.0)
+            net[0].bias.fill_(10.0)
+
+        path = self._save_torchscript(net, metadata={"torque_scale": 3.0})
+
+        n = 1
+        ctrl = ControllerNetMLP(model_path=path)
+        self.assertAlmostEqual(ctrl.torque_scale, 3.0)
+        ctrl.finalize(self.device, n)
+        state_a = ctrl.state(n, self.device)
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+        ctrl.compute(
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            wp.array([1.0], dtype=wp.float32, device=self.device),
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        self.assertAlmostEqual(forces.numpy()[0], 30.0, places=3, msg="bias=10 * torque_scale=3 -> 30")
+
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
 class TestControllerNetLSTM(unittest.TestCase):
-    """ControllerNetLSTM — construct controller, call compute() directly."""
+    """ControllerNetLSTM — load via model_path, call compute() directly."""
 
     def setUp(self):
+        import tempfile
+
         import torch
 
         self.torch = torch
         self.device = wp.get_device()
         self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._tmp_dir = tempfile.mkdtemp()
 
-    def _lstm(self, hidden=8, layers=1):
-        import torch
+    def _make_lstm(self, hidden=8, layers=1):
+        return _LSTMNet(hidden=hidden, layers=layers).to(self._torch_dev)
 
-        class Net(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.lstm = torch.nn.LSTM(2, hidden, layers, batch_first=True)
-                self.dec = torch.nn.Linear(hidden, 1)
+    def _save_torchscript(self, net, filename="lstm.pt", metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        scripted = self.torch.jit.script(net)
+        extra = {"metadata.json": json.dumps(metadata)} if metadata else {}
+        self.torch.jit.save(scripted, path, _extra_files=extra)
+        return path
 
-            def forward(self, x, hc):
-                out, (h, c) = self.lstm(x, hc)
-                return self.dec(out[:, -1, :]), (h, c)
+    def _save_dict(self, net, filename="lstm_dict.pt", metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        self.torch.save({"model": net, "metadata": metadata or {}}, path)
+        return path
 
-        return Net().to(self._torch_dev)
-
-    def test_compute(self):
-        """compute() produces non-zero force; hidden state evolves after update_state."""
+    def _run_lstm_compute(self, ctrl):
+        """Run a single compute step with the given LSTM controller and verify output."""
         n = 1
-        hidden, layers = 8, 1
-        ctrl = ControllerNetLSTM(network=self._lstm(hidden=hidden, layers=layers))
         ctrl.finalize(self.device, n)
 
         state_a = ctrl.state(n, self.device)
@@ -289,6 +364,35 @@ class TestControllerNetLSTM(unittest.TestCase):
 
         self.assertNotAlmostEqual(forces.numpy()[0], 0.0, places=5, msg="LSTM should produce non-zero force")
         self.assertFalse(self.torch.all(state_b.hidden == 0.0).item(), "hidden state should evolve")
+        return forces.numpy()[0]
+
+    def test_compute(self):
+        """LSTM produces non-zero output; hidden state evolves after update_state."""
+        net = self._make_lstm(hidden=8, layers=1)
+        path = self._save_torchscript(net)
+        ctrl = ControllerNetLSTM(model_path=path)
+        self._run_lstm_compute(ctrl)
+
+    def test_dict_checkpoint(self):
+        """Load LSTM from a dict checkpoint with metadata."""
+        net = self._make_lstm(hidden=8, layers=1)
+        path = self._save_dict(net, metadata={"torque_scale": 5.0})
+        ctrl = ControllerNetLSTM(model_path=path)
+        self.assertAlmostEqual(ctrl.torque_scale, 5.0)
+        self._run_lstm_compute(ctrl)
+
+    def test_metadata_scales(self):
+        """Scale factors from metadata are applied during compute."""
+        net = self._make_lstm(hidden=8, layers=1)
+        metadata = {"pos_scale": 2.0, "vel_scale": 0.5, "torque_scale": 10.0}
+        path = self._save_torchscript(net, metadata=metadata)
+
+        ctrl = ControllerNetLSTM(model_path=path)
+        self.assertAlmostEqual(ctrl.pos_scale, 2.0)
+        self.assertAlmostEqual(ctrl.vel_scale, 0.5)
+        self.assertAlmostEqual(ctrl.torque_scale, 10.0)
+
+        self._run_lstm_compute(ctrl)
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +446,44 @@ class TestDelay(unittest.TestCase):
         self.assertAlmostEqual(read_history[2], 10.0, places=4, msg="step 2: full delay=2 -> reads step 0 (10)")
         self.assertAlmostEqual(read_history[3], 20.0, places=4, msg="step 3: full delay=2 -> reads step 1 (20)")
         self.assertAlmostEqual(read_history[4], 30.0, places=4, msg="step 4: full delay=2 -> reads step 2 (30)")
+
+    def test_mixed_delay_zero_and_nonzero(self):
+        """delay=0 DOFs pass through current targets; delay=1 DOFs lag by one step."""
+        n = 2
+        device = wp.get_device()
+        delays = wp.array([0, 1], dtype=wp.int32, device=device)
+        delay = Delay(delays, max_delay=1)
+        delay.finalize(device, n)
+
+        indices = wp.array([0, 1], dtype=wp.uint32, device=device)
+        state_0 = delay.state(n, device)
+        state_1 = delay.state(n, device)
+
+        history_dof0 = []
+        history_dof1 = []
+        for step_i in range(4):
+            target_val = float(step_i + 1) * 10.0
+            tgt_pos = wp.array([target_val, target_val], dtype=wp.float32, device=device)
+            tgt_vel = wp.zeros(n, dtype=wp.float32, device=device)
+
+            out_pos, _, _ = delay.get_delayed_targets(tgt_pos, tgt_vel, None, indices, indices, state_0)
+            result = out_pos.numpy()
+            history_dof0.append(result[0])
+            history_dof1.append(result[1])
+            delay.update_state(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
+            state_0, state_1 = state_1, state_0
+
+        # DOF 0 (delay=0): always sees current target
+        self.assertAlmostEqual(history_dof0[0], 10.0, places=4, msg="dof0 step 0")
+        self.assertAlmostEqual(history_dof0[1], 20.0, places=4, msg="dof0 step 1")
+        self.assertAlmostEqual(history_dof0[2], 30.0, places=4, msg="dof0 step 2")
+        self.assertAlmostEqual(history_dof0[3], 40.0, places=4, msg="dof0 step 3")
+
+        # DOF 1 (delay=1): empty buffer fallback then one-step lag
+        self.assertAlmostEqual(history_dof1[0], 10.0, places=4, msg="dof1 step 0: empty -> current")
+        self.assertAlmostEqual(history_dof1[1], 10.0, places=4, msg="dof1 step 1: reads step 0 (10)")
+        self.assertAlmostEqual(history_dof1[2], 20.0, places=4, msg="dof1 step 2: reads step 1 (20)")
+        self.assertAlmostEqual(history_dof1[3], 30.0, places=4, msg="dof1 step 3: reads step 2 (30)")
 
 
 # ---------------------------------------------------------------------------

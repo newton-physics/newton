@@ -1698,10 +1698,16 @@ class ArticulationView:
         return mapping
 
     def get_actuator_parameter(self, actuator: "Actuator", component: Any, name: str) -> wp.array:
-        """Get actuator parameter values for actuators corresponding to this view's DOFs.
+        """Read an actuator-component parameter for every DOF in this view.
+
+        The returned array covers all DOFs selected by the view (one column
+        per DOF, one row per world).  DOFs that are not driven by
+        *actuator* are left at zero; driven DOFs contain the
+        corresponding value gathered from ``component.<name>``.
 
         Args:
-            actuator: Actuator instance (used for DOF index mapping).
+            actuator: Actuator instance whose DOF indices determine which
+                view DOFs are considered actuated.
             component: The component that owns the parameter — a
                 :class:`~newton.actuators.Controller`,
                 :class:`~newton.actuators.Clamping`, or
@@ -1710,7 +1716,9 @@ class ArticulationView:
                 ``"delays"``).
 
         Returns:
-            Parameter values shaped ``(world_count, dofs_per_world)``.
+            Parameter values shaped ``(world_count, dofs_per_world)`` where
+            ``dofs_per_world`` is the total number of DOFs in the view (not
+            just the actuated subset).
         """
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
@@ -1732,17 +1740,23 @@ class ArticulationView:
     def set_actuator_parameter(
         self, actuator: "Actuator", component: Any, name: str, values: wp.array, mask: wp.array | None = None
     ) -> None:
-        """Set actuator parameter values for actuators corresponding to this view's DOFs.
+        """Write an actuator-component parameter for every DOF in this view.
+
+        *values* must cover all DOFs in the view (one column per DOF, one row
+        per world).  Only entries whose DOFs are actually driven by *actuator*
+        are written back to ``component.<name>``; the rest are ignored.
 
         Args:
-            actuator: Actuator instance (used for DOF index mapping).
+            actuator: Actuator instance whose DOF indices determine which
+                view DOFs are considered actuated.
             component: The component that owns the parameter — a
                 :class:`~newton.actuators.Controller`,
                 :class:`~newton.actuators.Clamping`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_force"``,
                 ``"delays"``).
-            values: New parameter values shaped ``(world_count, dofs_per_world)``.
+            values: New parameter values shaped ``(world_count, dofs_per_world)``
+                where ``dofs_per_world`` is the total number of DOFs in the view.
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
         mapping = self._get_actuator_dof_mapping(actuator)

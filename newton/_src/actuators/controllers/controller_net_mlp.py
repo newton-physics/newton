@@ -9,6 +9,8 @@ from typing import Any, ClassVar
 
 import warp as wp
 
+from newton._src.actuators.utils import load_checkpoint
+
 from .base import Controller
 
 if typing.TYPE_CHECKING:
@@ -19,15 +21,21 @@ class ControllerNetMLP(Controller):
     """MLP-based neural network controller.
 
     Uses a pre-trained MLP to compute joint torques from position error
-    and velocity history.
+    and velocity error history.
 
-    The network receives concatenated, scaled position-error and velocity
-    history as input.  The output is multiplied by ``torque_scale`` to
-    convert from network units to physical torque.  All three scale
-    factors default to ``1.0`` (no scaling).
+    The network receives concatenated, scaled position-error and
+    velocity-error history as input.  The output is multiplied by
+    ``torque_scale`` to convert from network units to physical torque.
+    All three scale factors default to ``1.0`` (no scaling).
+
+    Configuration parameters (``input_order``, ``input_idx``,
+    ``pos_scale``, ``vel_scale``, ``torque_scale``) are read from the
+    checkpoint metadata, falling back to defaults when absent.
+    See :func:`~newton._src.actuators.utils.load_checkpoint` for
+    supported checkpoint formats.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"network_path"}
+    SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
 
     @dataclass
     class State(Controller.State):
@@ -35,70 +43,63 @@ class ControllerNetMLP(Controller):
 
         pos_error_history: torch.Tensor | None = None
         """Position error history, shape (history_length, N)."""
-        vel_history: torch.Tensor | None = None
-        """Velocity history, shape (history_length, N)."""
+        vel_error_history: torch.Tensor | None = None
+        """Velocity error history, shape (history_length, N)."""
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             if mask is None:
                 self.pos_error_history.zero_()
-                self.vel_history.zero_()
+                self.vel_error_history.zero_()
             else:
                 t = wp.to_torch(mask).bool()
                 self.pos_error_history[:, t] = 0.0
-                self.vel_history[:, t] = 0.0
+                self.vel_error_history[:, t] = 0.0
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        if "network_path" not in args:
-            raise ValueError("ControllerNetMLP requires 'network_path' argument")
-        return {"network_path": args["network_path"]}
+        if "model_path" not in args:
+            raise ValueError("ControllerNetMLP requires 'model_path' argument")
+        model_path = args["model_path"]
+        if not model_path:
+            raise ValueError("ControllerNetMLP requires a non-empty 'model_path'")
+        return {"model_path": model_path}
 
-    def __init__(
-        self,
-        input_order: str = "pos_vel",
-        input_idx: list[int] | None = None,
-        pos_scale: float = 1.0,
-        vel_scale: float = 1.0,
-        torque_scale: float = 1.0,
-        network: torch.nn.Module | None = None,
-        network_path: str | None = None,
-    ):
-        """Initialize MLP controller.
+    def __init__(self, model_path: str):
+        """Initialize MLP controller from a checkpoint file.
+
+        See :func:`~newton._src.actuators.utils.load_checkpoint` for
+        supported checkpoint formats.
+
+        Configuration is read from checkpoint metadata:
+
+        - ``input_order`` (str): ``"pos_vel"`` or ``"vel_pos"`` (default ``"pos_vel"``).
+        - ``input_idx`` (list[int]): history timestep indices (default ``[0]``).
+        - ``pos_scale`` (float): position-error scaling (default ``1.0``).
+        - ``vel_scale`` (float): velocity-error scaling (default ``1.0``).
+        - ``torque_scale`` (float): output torque scaling (default ``1.0``).
 
         Args:
-            input_order: Concatenation order, ``"pos_vel"`` or ``"vel_pos"``.
-            input_idx: History timestep indices to feed the network. ``0`` is
-                the current step, ``1`` one step ago, etc. Defaults to ``[0]``.
-            pos_scale: Scaling factor for position error inputs.
-            vel_scale: Scaling factor for velocity inputs.
-            torque_scale: Scaling factor for output torques.
-            network: Pre-trained network. If None, loaded from *network_path*.
-            network_path: Path to a TorchScript model file.
+            model_path: Path to the checkpoint (``.pt``).
         """
         import torch
 
-        if input_order not in ("pos_vel", "vel_pos"):
-            raise ValueError(f"input_order must be 'pos_vel' or 'vel_pos'; got '{input_order}'")
-        self.input_order = input_order
-        self.input_idx = input_idx if input_idx else [0]
+        self.model_path = model_path
+        self._torch_device = torch.device("cpu")
+
+        self.network, metadata = load_checkpoint(model_path)
+
+        self.input_order = metadata.get("input_order", "pos_vel")
+        if self.input_order not in ("pos_vel", "vel_pos"):
+            raise ValueError(f"input_order must be 'pos_vel' or 'vel_pos'; got '{self.input_order}'")
+
+        self.input_idx = metadata.get("input_idx", [0])
         if any(i < 0 for i in self.input_idx):
             raise ValueError(f"input_idx must contain non-negative integers; got {self.input_idx}")
         self.history_length = max(self.input_idx) + 1
-        self.pos_scale = pos_scale
-        self.vel_scale = vel_scale
-        self.torque_scale = torque_scale
 
-        self.network_path = network_path
-
-        if network is not None:
-            params = list(network.parameters())
-            self._torch_device = params[0].device if params else torch.device("cpu")
-            self.network = network.eval()
-        elif network_path is not None:
-            self._torch_device = torch.device("cpu")
-            self.network = torch.jit.load(network_path, map_location="cpu").eval()
-        else:
-            raise ValueError("Either 'network' or 'network_path' must be provided")
+        self.pos_scale = metadata.get("pos_scale", 1.0)
+        self.vel_scale = metadata.get("vel_scale", 1.0)
+        self.torque_scale = metadata.get("torque_scale", 1.0)
 
         self._torch_input_indices: torch.Tensor | None = None
         self._torch_sequential_indices: torch.Tensor | None = None
@@ -121,7 +122,7 @@ class ControllerNetMLP(Controller):
 
         return ControllerNetMLP.State(
             pos_error_history=torch.zeros(self.history_length, num_actuators, device=self._torch_device),
-            vel_history=torch.zeros(self.history_length, num_actuators, device=self._torch_device),
+            vel_error_history=torch.zeros(self.history_length, num_actuators, device=self._torch_device),
         )
 
     def compute(
@@ -148,20 +149,24 @@ class ControllerNetMLP(Controller):
 
         current_pos = wp.to_torch(positions)
         current_vel = wp.to_torch(velocities)
-        target = wp.to_torch(target_pos)
+        target_p = wp.to_torch(target_pos)
+        target_v = wp.to_torch(target_vel)
 
         torch_target_pos_idx = (
             self._torch_input_indices if target_pos_indices is pos_indices else self._torch_sequential_indices
         )
+        torch_target_vel_idx = (
+            self._torch_vel_indices if target_vel_indices is vel_indices else self._torch_sequential_indices
+        )
 
-        pos_error = target[torch_target_pos_idx] - current_pos[self._torch_input_indices]
-        vel = current_vel[self._torch_vel_indices]
+        pos_error = target_p[torch_target_pos_idx] - current_pos[self._torch_input_indices]
+        vel_error = target_v[torch_target_vel_idx] - current_vel[self._torch_vel_indices]
 
         state.pos_error_history[0] = pos_error
-        state.vel_history[0] = vel
+        state.vel_error_history[0] = vel_error
 
         pos_input = torch.stack([state.pos_error_history[i] for i in self.input_idx], dim=1)
-        vel_input = torch.stack([state.vel_history[i] for i in self.input_idx], dim=1)
+        vel_input = torch.stack([state.vel_error_history[i] for i in self.input_idx], dim=1)
 
         if self.input_order == "pos_vel":
             net_input = torch.cat([pos_input * self.pos_scale, vel_input * self.vel_scale], dim=1)
@@ -183,4 +188,4 @@ class ControllerNetMLP(Controller):
         if next_state is None:
             return
         next_state.pos_error_history = current_state.pos_error_history.roll(1, 0)
-        next_state.vel_history = current_state.vel_history.roll(1, 0)
+        next_state.vel_error_history = current_state.vel_error_history.roll(1, 0)

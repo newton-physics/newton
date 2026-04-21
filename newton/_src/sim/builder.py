@@ -206,7 +206,7 @@ class ModelBuilder:
 
         Each element in ``indices`` is a single DOF index.  The entry key is
         ``(controller_class, delay is not None, clamping_key, ctrl_shared_key)``
-        where shared params (e.g. ``network_path``, lookup tables) must
+        where shared params (e.g. ``model_path``, lookup tables) must
         be identical across all actuators in a group.  Delay values
         are per-DOF; the buffer is sized to ``max(delay_values) + 1``.
         """
@@ -214,7 +214,7 @@ class ModelBuilder:
         controller_class: type  # Controller subclass (e.g. ControllerPD)
         clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
         clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
-        controller_shared_kwargs: dict  # Shared controller kwargs (e.g. network_path)
+        controller_shared_kwargs: dict  # Shared controller kwargs (e.g. model_path)
         indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
         pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
         controller_args: list[dict[str, Any]]  # Per-actuator controller array params
