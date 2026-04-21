@@ -36,7 +36,8 @@ def kernel_test_sphere(
     r: float,
 ):
     tid = wp.tid()
-    out_t[tid] = ray_intersect_sphere(geom_to_world, ray_origin, ray_direction, r)
+    t, _n = ray_intersect_sphere(geom_to_world, ray_origin, ray_direction, r)
+    out_t[tid] = t
 
 
 @wp.kernel
@@ -48,7 +49,8 @@ def kernel_test_box(
     size: wp.vec3,
 ):
     tid = wp.tid()
-    out_t[tid] = ray_intersect_box(geom_to_world, ray_origin, ray_direction, size)
+    t, _n = ray_intersect_box(geom_to_world, ray_origin, ray_direction, size)
+    out_t[tid] = t
 
 
 @wp.kernel
@@ -61,7 +63,8 @@ def kernel_test_capsule(
     h: float,
 ):
     tid = wp.tid()
-    out_t[tid] = ray_intersect_capsule(geom_to_world, ray_origin, ray_direction, r, h)
+    t, _n = ray_intersect_capsule(geom_to_world, ray_origin, ray_direction, r, h)
+    out_t[tid] = t
 
 
 @wp.kernel
@@ -74,7 +77,8 @@ def kernel_test_cylinder(
     h: float,
 ):
     tid = wp.tid()
-    out_t[tid] = ray_intersect_cylinder(geom_to_world, ray_origin, ray_direction, r, h)
+    t, _n = ray_intersect_cylinder(geom_to_world, ray_origin, ray_direction, r, h)
+    out_t[tid] = t
 
 
 @wp.kernel
@@ -87,7 +91,8 @@ def kernel_test_cone(
     h: float,
 ):
     tid = wp.tid()
-    out_t[tid] = ray_intersect_cone(geom_to_world, ray_origin, ray_direction, r, h)
+    t, _n = ray_intersect_cone(geom_to_world, ray_origin, ray_direction, r, h)
+    out_t[tid] = t
 
 
 @wp.kernel
@@ -99,7 +104,8 @@ def kernel_test_ellipsoid(
     semi_axes: wp.vec3,
 ):
     tid = wp.tid()
-    out_t[tid] = ray_intersect_ellipsoid(geom_to_world, ray_origin, ray_direction, semi_axes)
+    t, _n = ray_intersect_ellipsoid(geom_to_world, ray_origin, ray_direction, semi_axes)
+    out_t[tid] = t
 
 
 @wp.kernel
@@ -111,7 +117,8 @@ def kernel_test_plane(
     size: wp.vec3,
 ):
     tid = wp.tid()
-    out_t[tid] = ray_intersect_plane(geom_to_world, ray_origin, ray_direction, size)
+    t, _n = ray_intersect_plane(geom_to_world, ray_origin, ray_direction, size)
+    out_t[tid] = t
 
 
 @wp.kernel
@@ -125,7 +132,8 @@ def kernel_test_geom(
     mesh_id: wp.uint64,
 ):
     tid = wp.tid()
-    out_t[tid] = ray_intersect_geom(geom_to_world, size, geomtype, ray_origin, ray_direction, mesh_id)
+    t, _n = ray_intersect_geom(geom_to_world, size, geomtype, ray_origin, ray_direction, mesh_id)
+    out_t[tid] = t
 
 
 @wp.kernel
@@ -138,7 +146,8 @@ def kernel_test_mesh(
     mesh_id: wp.uint64,
 ):
     tid = wp.tid()
-    out_t[tid] = ray_intersect_mesh(geom_to_world, ray_origin, ray_direction, size, mesh_id)
+    t, _n, _u, _v, _f = ray_intersect_mesh(geom_to_world, ray_origin, ray_direction, size, mesh_id, False, 1.0e6)
+    out_t[tid] = t
 
 
 # Test functions
