@@ -13,10 +13,12 @@ For generalized coordinate solvers (MuJoCo, Featherstone), velocity is set via j
 For maximal coordinate solvers (XPBD, SemiImplicit), velocity is set via body_qd.
 
 Note on tolerances:
-- MuJoCo/Featherstone use body origin velocity internally, which introduces small
-  numerical integration errors when converting back to CoM velocity (~1e-3 after 10 steps).
-- Maximal coordinate solvers (XPBD, SemiImplicit) directly integrate CoM velocity,
-  so they have much tighter numerical precision (~1e-6).
+- MuJoCo converts the public COM-referenced ``joint_qd`` into its own body-origin
+  twist representation internally, which introduces small numerical integration
+  errors when converting back to CoM velocity (~1e-3 after 10 steps).
+- Featherstone and the maximal-coordinate solvers (XPBD, SemiImplicit) stay in
+  the public COM-referenced twist convention end-to-end and achieve much
+  tighter numerical precision (~1e-6).
 """
 
 import unittest
