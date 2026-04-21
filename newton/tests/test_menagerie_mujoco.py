@@ -262,6 +262,8 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # TileSet types: comparison function doesn't handle these
     "qM_tiles",
     "qLD_tiles",
+    "qLD_all_updates",
+    "qLD_level_offsets",
     "qLDiagInv_tiles",
     # Visualization group: Newton defaults to 0, native may use other groups
     "geom_group",
@@ -1521,6 +1523,11 @@ class TestMenagerieBase(unittest.TestCase):
             mj_model = _mujoco.MjModel.from_xml_path(str(self.mjcf_path))
         mj_data = _mujoco.MjData(mj_model)
         _mujoco.mj_forward(mj_model, mj_data)
+
+        # Zero geom margins for NATIVECCD compatibility — mujoco_warp rejects
+        # non-zero margins at put_model() time for BOX/MESH pairs (#2106).
+        # This mirrors the Newton solver's approach in SolverMuJoCo.
+        mj_model.geom_margin[:] = 0.0
 
         # Create mujoco_warp model/data with multiple worlds
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models

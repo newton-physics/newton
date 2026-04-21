@@ -887,6 +887,16 @@ full contact detection range. Pass ``scale`` when the shape will be added with n
 to bake it into the SDF grid. ``shape_margin`` is mainly useful for hydroelastic collision
 where a compliant-layer offset is desired.
 
+.. note::
+   **Watertight meshes are preferred.** An SDF works best on a closed
+   surface, so meshes whose every edge is shared by exactly two triangles give the most
+   reliable inside/outside classification. Newton detects this automatically via
+   :attr:`~Mesh.is_watertight` and switches to a faster parity-based construction path
+   when it applies. Non-watertight meshes fall back to the slower winding-number path;
+   SDFs on terrain meshes work too, but mind the resolution (terrains have large
+   extents so surface features are easy to under-resolve) and expect noticeably
+   longer construction times.
+
 **Mesh simplification for collision**
 
 For imported models (URDF, MJCF, USD) whose visual meshes are too detailed for efficient
