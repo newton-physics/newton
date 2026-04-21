@@ -875,7 +875,7 @@ def eval_ik(
 
 @wp.func
 def write_free_distance_motion_subspace(
-    X_sc: wp.transform,
+    X_pa_world: wp.transform,
     x_child_com_world: wp.vec3,
     qd_start: int,
     # outputs
@@ -886,18 +886,22 @@ def write_free_distance_motion_subspace(
     Used by both the Featherstone inverse-dynamics path (``jcalc_motion``) and
     the IK/Jacobian path (``jcalc_motion_subspace``) so they agree on the exact
     column layout. Linear DOFs act at the child body's COM; angular DOFs are
-    world-aligned axes expressed through ``X_sc``.
+    world-aligned axes expressed through ``X_pa_world``.
 
     Args:
-        X_sc: Joint-child transform expressed in the solver (world) frame.
+        X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
+            to rotate the joint's parent-anchor axes into the world frame.
+            This is *not* the classical Featherstone ``X_sc`` (spatial-to-
+            child); Newton's FREE/DISTANCE joint coordinates live in the
+            parent-anchor basis.
         x_child_com_world: World-space position of the child body's COM.
         qd_start: Starting velocity-DOF index for this joint.
         joint_S_s: Output spatial-vector subspace array; six slots starting at
             ``qd_start`` are overwritten.
     """
-    axis_world_x = wp.transform_vector(X_sc, wp.vec3(1.0, 0.0, 0.0))
-    axis_world_y = wp.transform_vector(X_sc, wp.vec3(0.0, 1.0, 0.0))
-    axis_world_z = wp.transform_vector(X_sc, wp.vec3(0.0, 0.0, 1.0))
+    axis_world_x = wp.transform_vector(X_pa_world, wp.vec3(1.0, 0.0, 0.0))
+    axis_world_y = wp.transform_vector(X_pa_world, wp.vec3(0.0, 1.0, 0.0))
+    axis_world_z = wp.transform_vector(X_pa_world, wp.vec3(0.0, 0.0, 1.0))
 
     joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
     joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
@@ -913,7 +917,7 @@ def jcalc_motion_subspace(
     joint_axis: wp.array[wp.vec3],
     lin_axis_count: int,
     ang_axis_count: int,
-    X_sc: wp.transform,
+    X_pa_world: wp.transform,
     X_wc: wp.transform,
     body_com_child: wp.vec3,
     qd_start: int,
@@ -925,6 +929,18 @@ def jcalc_motion_subspace(
     This populates joint_S_s with the motion subspace vectors for each DoF,
     which represent how each joint coordinate affects the spatial velocity.
 
+    Args:
+        X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
+            to rotate the joint's parent-anchor axes into the world frame.
+            This is *not* the classical Featherstone ``X_sc`` (spatial-to-
+            child); Newton's joint axes are defined in the parent-anchor
+            basis.
+        X_wc: Child body pose in world space.
+        body_com_child: Child body's COM offset (in the child body frame).
+        qd_start: Starting velocity-DOF index for this joint.
+        joint_S_s: Output motion-subspace array; the joint's columns
+            starting at ``qd_start`` are overwritten.
+
     Note:
         CABLE joints are not currently supported. CABLE joints have complex,
         configuration-dependent motion subspaces (dynamic stretch direction and
@@ -933,51 +949,51 @@ def jcalc_motion_subspace(
     """
     if type == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+        S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
         joint_S_s[qd_start] = S_s
 
     elif type == JointType.REVOLUTE:
         axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+        S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
         joint_S_s[qd_start] = S_s
 
     elif type == JointType.D6:
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 0] = S_s
         if lin_axis_count > 1:
             axis = joint_axis[qd_start + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 1] = S_s
         if lin_axis_count > 2:
             axis = joint_axis[qd_start + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 2] = S_s
         if ang_axis_count > 0:
             axis = joint_axis[qd_start + lin_axis_count + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
             joint_S_s[qd_start + lin_axis_count + 0] = S_s
         if ang_axis_count > 1:
             axis = joint_axis[qd_start + lin_axis_count + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
             joint_S_s[qd_start + lin_axis_count + 1] = S_s
         if ang_axis_count > 2:
             axis = joint_axis[qd_start + lin_axis_count + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
             joint_S_s[qd_start + lin_axis_count + 2] = S_s
 
     elif type == JointType.BALL:
-        S_0 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        S_1 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
-        S_2 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+        S_0 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        S_1 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
+        S_2 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
         joint_S_s[qd_start + 0] = S_0
         joint_S_s[qd_start + 1] = S_1
         joint_S_s[qd_start + 2] = S_2
 
     elif type == JointType.FREE or type == JointType.DISTANCE:
         x_child_com_world = wp.transform_point(X_wc, body_com_child)
-        write_free_distance_motion_subspace(X_sc, x_child_com_world, qd_start, joint_S_s)
+        write_free_distance_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
 
 
 @wp.kernel

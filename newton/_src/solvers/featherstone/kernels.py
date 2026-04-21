@@ -245,23 +245,27 @@ def jcalc_motion(
     joint_axis: wp.array[wp.vec3],
     lin_axis_count: int,
     ang_axis_count: int,
-    X_sc: wp.transform,
+    X_pa_world: wp.transform,
     x_com_world: wp.vec3,
     joint_qd: wp.array[float],
     qd_start: int,
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
 ):
+    # ``X_pa_world`` is the world-space parent anchor (``X_wp * joint_X_p``),
+    # *not* the classical Featherstone ``X_sc`` (spatial-to-child). Newton's
+    # joint axes are defined in the parent-anchor basis, so this transform
+    # rotates them into world coordinates for the motion-subspace columns.
     if type == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+        S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
         v_j_s = S_s * joint_qd[qd_start]
         joint_S_s[qd_start] = S_s
         return v_j_s
 
     if type == JointType.REVOLUTE:
         axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+        S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
         v_j_s = S_s * joint_qd[qd_start]
         joint_S_s[qd_start] = S_s
         return v_j_s
@@ -270,41 +274,41 @@ def jcalc_motion(
         v_j_s = wp.spatial_vector()
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 0]
             joint_S_s[qd_start + 0] = S_s
         if lin_axis_count > 1:
             axis = joint_axis[qd_start + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 1]
             joint_S_s[qd_start + 1] = S_s
         if lin_axis_count > 2:
             axis = joint_axis[qd_start + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 2]
             joint_S_s[qd_start + 2] = S_s
         if ang_axis_count > 0:
             axis = joint_axis[qd_start + lin_axis_count + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
             v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 0]
             joint_S_s[qd_start + lin_axis_count + 0] = S_s
         if ang_axis_count > 1:
             axis = joint_axis[qd_start + lin_axis_count + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
             v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 1]
             joint_S_s[qd_start + lin_axis_count + 1] = S_s
         if ang_axis_count > 2:
             axis = joint_axis[qd_start + lin_axis_count + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
             v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 2]
             joint_S_s[qd_start + lin_axis_count + 2] = S_s
 
         return v_j_s
 
     if type == JointType.BALL:
-        S_0 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        S_1 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
-        S_2 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+        S_0 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        S_1 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
+        S_2 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
 
         joint_S_s[qd_start + 0] = S_0
         joint_S_s[qd_start + 1] = S_1
@@ -316,10 +320,10 @@ def jcalc_motion(
         return wp.spatial_vector()
 
     if type == JointType.FREE or type == JointType.DISTANCE:
-        write_free_distance_motion_subspace(X_sc, x_com_world, qd_start, joint_S_s)
+        write_free_distance_motion_subspace(X_pa_world, x_com_world, qd_start, joint_S_s)
 
         v_com_world = wp.transform_vector(
-            X_sc,
+            X_pa_world,
             wp.vec3(
                 joint_qd[qd_start + 0],
                 joint_qd[qd_start + 1],
@@ -327,7 +331,7 @@ def jcalc_motion(
             ),
         )
         omega_world = wp.transform_vector(
-            X_sc,
+            X_pa_world,
             wp.vec3(
                 joint_qd[qd_start + 3],
                 joint_qd[qd_start + 4],
