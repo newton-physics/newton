@@ -437,9 +437,7 @@ class SolverFeatherstone(SolverBase):
                 )
 
             # particle shape contact (reads fresh body_q / body_qd from ID pass)
-            eval_particle_body_contact_forces(
-                model, state_in, contacts, particle_f, body_f, body_f_in_world_frame=False
-            )
+            eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
 
             # muscles
             if False:

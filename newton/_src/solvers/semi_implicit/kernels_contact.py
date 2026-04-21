@@ -167,7 +167,6 @@ def eval_particle_body_contact(
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
     contact_max: int,
-    body_f_in_world_frame: bool,
     # outputs
     particle_f: wp.array[wp.vec3],
     body_f: wp.array[wp.spatial_vector],
@@ -215,12 +214,10 @@ def eval_particle_body_contact(
     body_w = wp.spatial_bottom(body_v_s)
     body_v = wp.spatial_top(body_v_s)
 
-    # compute the body velocity at the particle position
-    bv = body_v + wp.transform_vector(X_wb, contact_body_vel[tid])
-    if body_f_in_world_frame:
-        bv += wp.cross(body_w, bx)
-    else:
-        bv += wp.cross(body_w, r)
+    # body velocity at the particle position. The body twist is the public
+    # COM-referenced spatial vector (v_com_world, omega_world), so the lever
+    # arm for the angular component is ``bx - x_com_world`` == ``r``.
+    bv = body_v + wp.transform_vector(X_wb, contact_body_vel[tid]) + wp.cross(body_w, r)
 
     # relative velocity
     v = pv - bv
@@ -255,10 +252,10 @@ def eval_particle_body_contact(
     wp.atomic_sub(particle_f, particle_index, f_total)
 
     if body_index >= 0:
-        if body_f_in_world_frame:
-            wp.atomic_sub(body_f, body_index, wp.spatial_vector(f_total, wp.cross(bx, f_total)))
-        else:
-            wp.atomic_add(body_f, body_index, wp.spatial_vector(f_total, wp.cross(r, f_total)))
+        # Torque about the body's COM: r x f_total. The reaction wrench is
+        # accumulated into ``body_f`` which the solver interprets as a COM
+        # spatial vector (force, torque_com) matching the public convention.
+        wp.atomic_add(body_f, body_index, wp.spatial_vector(f_total, wp.cross(r, f_total)))
 
 
 @wp.kernel
@@ -632,7 +629,6 @@ def eval_particle_body_contact_forces(
     contacts: Contacts | None,
     particle_f: wp.array,
     body_f: wp.array,
-    body_f_in_world_frame: bool = False,
 ):
     if contacts is not None and contacts.soft_contact_max:
         wp.launch(
@@ -664,7 +660,6 @@ def eval_particle_body_contact_forces(
                 contacts.soft_contact_body_vel,
                 contacts.soft_contact_normal,
                 contacts.soft_contact_max,
-                body_f_in_world_frame,
             ],
             # outputs
             outputs=[particle_f, body_f],
