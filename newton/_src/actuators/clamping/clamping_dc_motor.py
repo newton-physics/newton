@@ -21,10 +21,10 @@ def _clamp_dc_motor_kernel(
     src: wp.array[float],
     dst: wp.array[float],
 ):
-    """DC motor velocity-dependent saturation: read src, write to dst.
+    """DC motor four-quadrant torque-speed saturation: read src, write to dst.
 
-    τ_max(v) = clamp(τ_sat*(1 - v/v_max),  0,  max_force)
-    τ_min(v) = clamp(τ_sat*(-1 - v/v_max), -max_force, 0)
+    τ_max(v) = min(τ_sat*(1 - v/v_max),  max_force)
+    τ_min(v) = max(τ_sat*(-1 - v/v_max), -max_force)
     """
     i = wp.tid()
     state_idx = state_indices[i]
@@ -33,17 +33,17 @@ def _clamp_dc_motor_kernel(
     vel_lim = velocity_limit[i]
     max_f = max_force[i]
 
-    max_torque = wp.clamp(sat * (1.0 - vel / vel_lim), 0.0, max_f)
-    min_torque = wp.clamp(sat * (-1.0 - vel / vel_lim), -max_f, 0.0)
+    max_torque = wp.min(sat * (1.0 - vel / vel_lim), max_f)
+    min_torque = wp.max(sat * (-1.0 - vel / vel_lim), -max_f)
     dst[i] = wp.clamp(src[i], min_torque, max_torque)
 
 
 class ClampingDCMotor(Clamping):
-    """DC motor velocity-dependent torque saturation.
+    """DC motor four-quadrant torque-speed saturation.
 
-    Clips controller output using the torque-speed characteristic:
-        τ_max(v) = clamp(τ_sat*(1 - v/v_max),  0,  effort_limit)
-        τ_min(v) = clamp(τ_sat*(-1 - v/v_max), -effort_limit, 0)
+    Clips controller output using the linear torque-speed characteristic:
+        τ_max(v) = min(τ_sat*(1 - v/v_max),  effort_limit)
+        τ_min(v) = max(τ_sat*(-1 - v/v_max), -effort_limit)
 
     At zero velocity the motor can produce up to ±τ_sat (capped by
     effort_limit). As velocity approaches v_max, available torque in
@@ -60,8 +60,8 @@ class ClampingDCMotor(Clamping):
         if "saturation_effort" not in args:
             raise ValueError("ClampingDCMotor requires 'saturation_effort'")
         sat = args["saturation_effort"]
-        if sat <= 0:
-            raise ValueError(f"saturation_effort must be positive, got {sat}")
+        if sat <= 0 or not math.isfinite(sat):
+            raise ValueError(f"saturation_effort must be finite and positive, got {sat}")
         max_force = args.get("max_force", math.inf)
         if max_force < 0:
             raise ValueError(f"max_force must be non-negative, got {max_force}")

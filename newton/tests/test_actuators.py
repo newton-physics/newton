@@ -534,8 +534,8 @@ class TestClampingDCMotor(unittest.TestCase):
 
             clamp.modify_forces(src, dst, wp.zeros(1, dtype=wp.float32), vel, indices, indices)
 
-            tau_max = max(min(sat * (1.0 - qd / v_lim), max_f), 0.0)
-            tau_min = max(min(sat * (-1.0 - qd / v_lim), 0.0), -max_f)
+            tau_max = min(sat * (1.0 - qd / v_lim), max_f)
+            tau_min = max(sat * (-1.0 - qd / v_lim), -max_f)
             expected = max(min(raw_force, tau_max), tau_min)
             self.assertAlmostEqual(dst.numpy()[0], expected, places=3, msg=f"qd={qd}")
 
@@ -640,8 +640,8 @@ class TestActuatorStep(unittest.TestCase):
         written_targets: list[float] = []
 
         def _dc_clamp(raw: float, vel: float) -> float:
-            tau_max = max(min(sat * (1.0 - vel / v_lim), 1e6), 0.0)
-            tau_min = max(min(sat * (-1.0 - vel / v_lim), 0.0), -1e6)
+            tau_max = min(sat * (1.0 - vel / v_lim), 1e6)
+            tau_min = max(sat * (-1.0 - vel / v_lim), -1e6)
             return max(min(raw, tau_max), tau_min)
 
         def _delayed_target(step_i: int, dof_delay: int) -> float:
