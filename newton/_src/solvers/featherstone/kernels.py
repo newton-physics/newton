@@ -613,8 +613,9 @@ def compute_link_velocity(
     ``joint_q`` / ``joint_qd`` while walking the articulation tree. The
     world-frame COM transform ``X_sm`` is computed inline from
     ``body_X_com`` instead of being read from a pre-staged ``body_q_com``
-    buffer, so the solver no longer needs a separate ``eval_fk`` or
-    ``compute_body_q_com`` launch before the Featherstone ID kernel.
+    buffer, so the solver no longer needs a separate ``eval_fk`` or a
+    dedicated COM-staging pass (formerly a ``compute_body_q_com`` helper,
+    now removed) before the Featherstone ID kernel.
     """
     type = joint_type[i]
     child = joint_child[i]
@@ -747,7 +748,8 @@ def accumulate_free_distance_joint_f_to_body_force(
 # This kernel now also runs the forward-kinematics pass for the articulation:
 # it derives ``body_q`` / ``body_qd`` from the current ``joint_q`` /
 # ``joint_qd`` as it walks the tree, eliminating the previously redundant
-# ``eval_fk`` + ``compute_body_q_com`` launches that preceded it.
+# ``eval_fk`` + COM-staging launches (the latter was a now-deleted
+# ``compute_body_q_com`` helper) that preceded it.
 @wp.kernel
 def eval_rigid_id(
     articulation_start: wp.array[int],
@@ -1644,9 +1646,12 @@ def integrate_and_fk_articulation(
        just-written slots from the old parent-anchor basis to the new one
        using the parent's post-step angular velocity (which is live in
        ``body_qd_out[parent]`` because the parent was processed earlier
-       in this loop). This is the transport correction that fixes the
-       drift described in
-       ``pr--141-commit-7-Fix-FREE-DISTANCE-descendant-drift``.
+       in this loop). This is the transport correction for a vector
+       stored in a rotating frame; see
+       :func:`_apply_free_distance_transport` for the derivation.
+       Without it, FREE/DISTANCE descendants drift against their parent
+       whenever the parent carries non-trivial angular velocity during
+       a step.
     3. Run forward kinematics for the joint to write
        ``body_q_out[child]`` and ``body_qd_out[child]``.
 

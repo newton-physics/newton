@@ -349,7 +349,8 @@ class SolverFeatherstone(SolverBase):
             # Forward kinematics is now folded into ``eval_rigid_id`` below. The
             # Featherstone ID kernel derives ``body_q`` / ``body_qd`` from
             # ``joint_q`` / ``joint_qd`` in a single tree walk, eliminating the
-            # previous pre-step ``eval_fk`` + ``compute_body_q_com`` launches.
+            # previous pre-step ``eval_fk`` + COM-staging launches (the latter
+            # was a now-deleted ``compute_body_q_com`` helper).
 
             particle_f = None
             body_f = None
@@ -397,7 +398,8 @@ class SolverFeatherstone(SolverBase):
             # ``eval_rigid_id`` kernel below derives both from ``joint_q`` /
             # ``joint_qd`` during the same tree walk that builds the spatial
             # inertias and motion vectors, replacing the old pre-step
-            # ``eval_fk`` + ``compute_body_q_com`` launches.
+            # ``eval_fk`` + COM-staging launches (the latter was a
+            # now-deleted ``compute_body_q_com`` helper).
 
             if model.joint_count:
                 # evaluate joint inertias, motion vectors, and forces
