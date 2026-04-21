@@ -312,7 +312,11 @@ class SolverFeatherstone(SolverBase):
             target.body_f_s = wp.zeros(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
-            target.body_f_ext = wp.zeros(
+            # ``body_f_ext`` is fully overwritten at the top of every
+            # :meth:`step` via ``wp.copy(body_f_ext, state_in.body_f)``, so the
+            # initial contents are never observed. Use ``wp.empty`` to skip the
+            # one-time zero-fill on allocation.
+            target.body_f_ext = wp.empty(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
             target.body_ft_s = wp.zeros(
