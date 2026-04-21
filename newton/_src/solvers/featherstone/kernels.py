@@ -1361,32 +1361,21 @@ def zero_kinematic_joint_qdd(
 
 
 @wp.func
-def _anchor_basis_change_quat(omega_parent_new_world: wp.vec3, q_anchor: wp.quat, dt: float):
-    """Quaternion that rotates vectors from the old anchor basis to the new anchor basis.
+def _anchor_basis_change_quat(
+    joint_X_p_i: wp.transform,
+    parent_body_q_old: wp.transform,
+    parent_body_q_new: wp.transform,
+):
+    """Quaternion that rotates coordinates from the old anchor basis to the new one.
 
-    Parent body rotates during the step, so the anchor frame rigidly attached
-    to the parent rotates with it. For symplectic Euler we use the parent's
-    post-step world angular velocity (``omega_parent_new_world``). The anchor
-    basis rotates by ``omega_parent_new_world * dt`` in the world frame; in
-    the anchor basis this is ``omega_pa = R_a^T * omega_parent_new``. A
-    vector's components transform from old to new basis via the inverse of
-    that rotation: ``dq = exp(-omega_pa * dt / 2)`` as a unit quaternion.
+    The exact basis change is the relative rotation between the parent anchor's
+    pre-step and post-step world orientations:
 
-    ``q_anchor`` may be either ``R_a_old`` or ``R_a_new``; the two agree up
-    to a rotation by ``omega_parent_new_world * dt``, which contributes an
-    ``O(dt^2)`` perturbation to ``omega_pa`` that is absorbed into the
-    symplectic-Euler truncation error. Callers typically pass the
-    post-step anchor rotation since it is already in hand from the
-    parent's freshly written ``body_q``.
+    ``dq = R_anchor_new^T * R_anchor_old``.
     """
-    omega_pa = wp.quat_rotate_inv(q_anchor, omega_parent_new_world)
-    omega_mag = wp.length(omega_pa)
-    # Guard against division by zero. When the parent is stationary ``dq`` is
-    # identity and the transport correction collapses to a no-op.
-    if omega_mag < 1.0e-12:
-        return wp.quat_identity()
-    axis = omega_pa / omega_mag
-    return wp.quat_from_axis_angle(axis, -omega_mag * dt)
+    q_anchor_old = wp.transform_get_rotation(parent_body_q_old) * wp.transform_get_rotation(joint_X_p_i)
+    q_anchor_new = wp.transform_get_rotation(parent_body_q_new) * wp.transform_get_rotation(joint_X_p_i)
+    return wp.quat_inverse(q_anchor_new) * q_anchor_old
 
 
 @wp.func
@@ -1394,9 +1383,8 @@ def _apply_free_distance_transport(
     coord_start: int,
     dof_start: int,
     joint_X_p_i: wp.transform,
+    parent_body_q_old: wp.transform,
     parent_body_q_new: wp.transform,
-    omega_parent_new_world: wp.vec3,
-    dt: float,
     # in/out
     joint_q_new: wp.array[float],
     joint_qd_new: wp.array[float],
@@ -1413,25 +1401,11 @@ def _apply_free_distance_transport(
     ``R_a_new^T * R_a_old`` to express them in the new basis before anyone
     reads them.
 
-    This is equivalent to the "Coriolis transport" correction for a vector
-    stored in a rotating frame, applied symplectically using the parent's
-    post-integration angular velocity.
+    This is equivalent to changing coordinates with the exact parent-anchor
+    rotation ``R_anchor_new^T * R_anchor_old`` after integrating in the old
+    basis.
     """
-    q_anchor_old = wp.transform_get_rotation(parent_body_q_new) * wp.transform_get_rotation(joint_X_p_i)
-    # The parent's post-step body_q already encodes its new orientation, but
-    # we need the rotation that took us from the old anchor basis to the new
-    # one. Using symplectic ``omega_parent_new_world * dt`` as the rotation
-    # vector (and the anchor rotation at ``t_0`` - which equals
-    # ``q_parent_old * q_X_p`` - to project it) gives us that small rotation.
-    #
-    # Note: we pass ``q_anchor_old`` computed from ``parent_body_q_new``
-    # because the symplectic anchor rotation applied to basis vectors is
-    # ``R_a_new * dR_pa^T = R_a_old``, so the "old" rotation equivalently
-    # equals ``R_a_new * (dR_pa)^{-1}``. In practice the difference between
-    # using ``R_a_old`` and ``R_a_new`` to project ``omega_parent_new`` is
-    # ``O(dt)`` which is absorbed into the ``O(dt^2)`` truncation error of
-    # symplectic Euler.
-    dq = _anchor_basis_change_quat(omega_parent_new_world, q_anchor_old, dt)
+    dq = _anchor_basis_change_quat(joint_X_p_i, parent_body_q_old, parent_body_q_new)
 
     v_com = wp.vec3(joint_qd_new[dof_start + 0], joint_qd_new[dof_start + 1], joint_qd_new[dof_start + 2])
     omega = wp.vec3(joint_qd_new[dof_start + 3], joint_qd_new[dof_start + 4], joint_qd_new[dof_start + 5])
@@ -1462,6 +1436,126 @@ def _apply_free_distance_transport(
     joint_q_new[coord_start + 4] = r[1]
     joint_q_new[coord_start + 5] = r[2]
     joint_q_new[coord_start + 6] = r[3]
+
+
+@wp.func
+def _integrate_body_pose_from_com_twist(
+    X_wb: wp.transform,
+    body_com: wp.vec3,
+    qd_com_world: wp.spatial_vector,
+    dt: float,
+):
+    """Advance a body pose with a COM-referenced world twist using symplectic Euler."""
+    q = wp.transform_get_rotation(X_wb)
+    x_com = wp.transform_point(X_wb, body_com)
+
+    v_com = wp.spatial_top(qd_com_world)
+    w = wp.spatial_bottom(qd_com_world)
+
+    drdt = wp.quat(w, 0.0) * q * 0.5
+    q_new = wp.normalize(q + drdt * dt)
+    x_com_new = x_com + v_com * dt
+    x_origin_new = x_com_new - wp.quat_rotate(q_new, body_com)
+
+    return wp.transform(x_origin_new, q_new)
+
+
+@wp.func
+def _reconstruct_free_distance_joint_q_qd_from_body_state(
+    coord_start: int,
+    dof_start: int,
+    parent_body_q_new: wp.transform,
+    parent_body_qd_new: wp.spatial_vector,
+    parent_body_com: wp.vec3,
+    child_body_q_new: wp.transform,
+    child_body_qd_new: wp.spatial_vector,
+    child_body_com: wp.vec3,
+    joint_X_p_i: wp.transform,
+    joint_X_c_i: wp.transform,
+    joint_q_new: wp.array[float],
+    joint_qd_new: wp.array[float],
+):
+    """Recover FREE/DISTANCE generalized state from corrected body pose/twist."""
+    X_wpj = parent_body_q_new * joint_X_p_i
+    X_wcj = child_body_q_new * joint_X_c_i
+
+    x_p = wp.transform_get_translation(X_wpj)
+    x_c = wp.transform_get_translation(X_wcj)
+    q_p = wp.transform_get_rotation(X_wpj)
+    q_c = wp.transform_get_rotation(X_wcj)
+
+    x_err_c = wp.quat_rotate_inv(q_p, x_c - x_p)
+    q_pc = wp.quat_inverse(q_p) * q_c
+
+    x_child_com_world = wp.transform_point(child_body_q_new, child_body_com)
+    v_com_err = wp.spatial_top(child_body_qd_new) - com_twist_to_point_velocity(
+        parent_body_qd_new,
+        parent_body_q_new,
+        parent_body_com,
+        x_child_com_world,
+    )
+    w_err = wp.spatial_bottom(child_body_qd_new) - wp.spatial_bottom(parent_body_qd_new)
+    v_err_c = wp.quat_rotate_inv(q_p, v_com_err)
+    w_err_c = wp.quat_rotate_inv(q_p, w_err)
+
+    joint_q_new[coord_start + 0] = x_err_c[0]
+    joint_q_new[coord_start + 1] = x_err_c[1]
+    joint_q_new[coord_start + 2] = x_err_c[2]
+    joint_q_new[coord_start + 3] = q_pc[0]
+    joint_q_new[coord_start + 4] = q_pc[1]
+    joint_q_new[coord_start + 5] = q_pc[2]
+    joint_q_new[coord_start + 6] = q_pc[3]
+
+    joint_qd_new[dof_start + 0] = v_err_c[0]
+    joint_qd_new[dof_start + 1] = v_err_c[1]
+    joint_qd_new[dof_start + 2] = v_err_c[2]
+    joint_qd_new[dof_start + 3] = w_err_c[0]
+    joint_qd_new[dof_start + 4] = w_err_c[1]
+    joint_qd_new[dof_start + 5] = w_err_c[2]
+
+
+@wp.func
+def _compute_free_distance_body_qd_from_joint_qd(
+    dof_start: int,
+    parent_body_q_new: wp.transform,
+    parent_body_qd_new: wp.spatial_vector,
+    parent_body_com: wp.vec3,
+    child_body_q_estimate: wp.transform,
+    child_body_com: wp.vec3,
+    joint_X_p_i: wp.transform,
+    joint_qd_new: wp.array[float],
+):
+    """Evaluate the child COM/world twist from FREE/DISTANCE joint_qd."""
+    X_wpj = parent_body_q_new * joint_X_p_i
+    q_p = wp.transform_get_rotation(X_wpj)
+
+    v_rel_world = wp.quat_rotate(
+        q_p,
+        wp.vec3(
+            joint_qd_new[dof_start + 0],
+            joint_qd_new[dof_start + 1],
+            joint_qd_new[dof_start + 2],
+        ),
+    )
+    w_rel_world = wp.quat_rotate(
+        q_p,
+        wp.vec3(
+            joint_qd_new[dof_start + 3],
+            joint_qd_new[dof_start + 4],
+            joint_qd_new[dof_start + 5],
+        ),
+    )
+
+    x_child_com_world = wp.transform_point(child_body_q_estimate, child_body_com)
+    v_parent_at_child_com = com_twist_to_point_velocity(
+        parent_body_qd_new,
+        parent_body_q_new,
+        parent_body_com,
+        x_child_com_world,
+    )
+    w_parent_world = wp.spatial_bottom(parent_body_qd_new)
+
+    return wp.spatial_vector(v_parent_at_child_com + v_rel_world, w_parent_world + w_rel_world)
 
 
 @wp.func
@@ -1644,6 +1738,7 @@ def integrate_and_fk_articulation(
     body_flags: wp.array[wp.int32],
     joint_q_in: wp.array[float],
     joint_qd_in: wp.array[float],
+    body_q_in: wp.array[wp.transform],
     joint_qdd: wp.array[float],
     dt: float,
     # outputs
@@ -1661,18 +1756,14 @@ def integrate_and_fk_articulation(
 
     1. Integrate ``joint_q`` / ``joint_qd`` via :func:`jcalc_integrate`
        (or carry prescribed kinematic state through unchanged).
-    2. For FREE/DISTANCE descendants with ``parent >= 0``, rotate the
-       just-written slots from the old parent-anchor basis to the new one
-       using the parent's post-step angular velocity (which is live in
-       ``body_qd_out[parent]`` because the parent was processed earlier
-       in this loop). This is the transport correction for a vector
-       stored in a rotating frame; see
-       :func:`_apply_free_distance_transport` for the derivation.
-       Without it, FREE/DISTANCE descendants drift against their parent
-       whenever the parent carries non-trivial angular velocity during
-       a step.
-    3. Run forward kinematics for the joint to write
-       ``body_q_out[child]`` and ``body_qd_out[child]``.
+    2. For FREE/DISTANCE descendants with ``parent >= 0``, re-express the
+       integrated ``joint_qd`` in the new parent-anchor basis using the
+       exact pre-step to post-step anchor rotation.
+    3. Rebuild the descendant's world pose by integrating its COM/world
+       twist from the pre-step body pose, then reconstruct ``joint_q`` and
+       ``joint_qd`` from that corrected body state in the new parent-anchor
+       basis.
+    4. Run the standard FK path for all remaining joint types.
 
     This keeps the SolverFeatherstone integration end-to-end in the public
     parent-anchor-frame convention (per ``conventions.rst`` and
@@ -1721,26 +1812,77 @@ def integrate_and_fk_articulation(
                 joint_qd_out,
             )
 
-            # Transport-rotation correction: stay in the parent-anchor
-            # convention but account for the anchor basis rotating with
-            # the parent during the step. Only FREE/DISTANCE descendants
-            # suffer from the rotating-anchor drift - root FREE/DISTANCE
-            # joints (parent == -1) anchor to a fixed world frame.
+            # Transport only the FREE/DISTANCE velocity coordinates into the
+            # new parent-anchor basis. Their pose update is rebuilt below
+            # directly from the world-space body motion.
             if parent >= 0 and (type == JointType.FREE or type == JointType.DISTANCE):
-                # Parent's post-step world angular velocity. The tree-order
-                # traversal guarantees ``body_qd_out[parent]`` has been
-                # written already in this same loop iteration path.
-                omega_parent_new_world = wp.spatial_bottom(body_qd_out[parent])
                 _apply_free_distance_transport(
                     coord_start,
                     dof_start,
                     joint_X_p_i,
+                    body_q_in[parent],
                     body_q_out[parent],
-                    omega_parent_new_world,
-                    dt,
                     joint_q_out,
                     joint_qd_out,
                 )
+
+        if parent >= 0 and (type == JointType.FREE or type == JointType.DISTANCE):
+            # Descendant FREE/DISTANCE pose integration is done in world space
+            # from the pre-step body pose, then projected back into the new
+            # parent-anchor basis. This avoids the large-angle rotating-frame
+            # drift that accumulates when the position coordinates are updated
+            # purely in the old anchor basis.
+            body_qd_out[child] = _compute_free_distance_body_qd_from_joint_qd(
+                dof_start,
+                body_q_out[parent],
+                body_qd_out[parent],
+                body_com[parent],
+                body_q_in[child],
+                body_com[child],
+                joint_X_p_i,
+                joint_qd_out,
+            )
+            body_q_out[child] = _integrate_body_pose_from_com_twist(
+                body_q_in[child],
+                body_com[child],
+                body_qd_out[child],
+                dt,
+            )
+            body_qd_out[child] = _compute_free_distance_body_qd_from_joint_qd(
+                dof_start,
+                body_q_out[parent],
+                body_qd_out[parent],
+                body_com[parent],
+                body_q_out[child],
+                body_com[child],
+                joint_X_p_i,
+                joint_qd_out,
+            )
+            _reconstruct_free_distance_joint_q_qd_from_body_state(
+                coord_start,
+                dof_start,
+                body_q_out[parent],
+                body_qd_out[parent],
+                body_com[parent],
+                body_q_out[child],
+                body_qd_out[child],
+                body_com[child],
+                joint_X_p_i,
+                joint_X_c_i,
+                joint_q_out,
+                joint_qd_out,
+            )
+            body_qd_out[child] = _compute_free_distance_body_qd_from_joint_qd(
+                dof_start,
+                body_q_out[parent],
+                body_qd_out[parent],
+                body_com[parent],
+                body_q_out[child],
+                body_com[child],
+                joint_X_p_i,
+                joint_qd_out,
+            )
+            continue
 
         _fk_single_joint(
             type,
