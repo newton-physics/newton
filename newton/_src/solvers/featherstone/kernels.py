@@ -724,7 +724,14 @@ def accumulate_free_distance_joint_f_to_body_force(
     joint_f_public: wp.array[float],
     body_f_ext: wp.array[wp.spatial_vector],
 ):
-    """Accumulate FREE/DISTANCE control wrenches into Featherstone body forces."""
+    """Accumulate FREE/DISTANCE control wrenches into Featherstone body forces.
+
+    Each Newton body can be the child of at most one joint, so the mapping
+    ``joint_id -> joint_child[joint_id]`` is unique across threads of this
+    kernel. That means no two threads will ever write the same
+    ``body_f_ext`` slot, and a plain read-modify-write is race-free - no
+    ``wp.atomic_add`` is required.
+    """
     joint_id = wp.tid()
     jtype = joint_type[joint_id]
     if jtype != JointType.FREE and jtype != JointType.DISTANCE:
@@ -744,7 +751,9 @@ def accumulate_free_distance_joint_f_to_body_force(
         joint_f_public[qd_start + 5],
     )
 
-    wp.atomic_add(body_f_ext, child, wp.spatial_vector(force, torque_com))
+    # Unique child guarantee (see docstring): plain accumulation is safe
+    # and avoids an atomic on every FREE/DISTANCE joint per step.
+    body_f_ext[child] = body_f_ext[child] + wp.spatial_vector(force, torque_com)
 
 
 # Inverse dynamics via Recursive Newton-Euler algorithm (Featherstone Table 5.1)
