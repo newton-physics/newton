@@ -1484,7 +1484,7 @@ def validate_triangle_mesh(
     msg = (
         f"Mesh quality warning ({n_verts} vertices, {n_faces} triangles):\n"
         + "\n".join(f"  - {issue}" for issue in issues)
-        + "\nConsider remeshing the input geometry in your DCC tool or mesh processing pipeline."
+        + "\nConsider remeshing the input geometry."
     )
     warnings.warn(msg, stacklevel=stacklevel)
 
