@@ -2154,7 +2154,7 @@ class TestMenagerie_BoosterT1(TestMenagerieMJCF):
 
     robot_folder = "booster_t1"
     num_steps = 20
-    dynamics_tolerance = 2e-5  # float32 noise varies when running in batch
+    dynamics_tolerance = 1e-4  # GPU atomic-reduction non-determinism: qvel diff up to 4.8e-5 observed on CI (#2526)
     fk_enabled = True
     backfill_model = True
 
