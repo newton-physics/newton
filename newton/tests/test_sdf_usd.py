@@ -189,7 +189,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             self.assertIsNotNone(mesh1.sdf, "Expected SDF built from default_shape_cfg during finalize")
 
     def test_usd_hydroelastic_attributes(self, device=None):
-        """Presence of newton:kh signals hydroelastic opt-in (NewtonHydroelasticCollisionAPI)."""
+        """Applying NewtonHydroelasticCollisionAPI with kh authored opts into hydroelastic."""
         if device is None or not wp.get_device(device).is_cuda:
             self.skipTest("SDF tests require CUDA device")
 
@@ -203,7 +203,10 @@ class TestSDFUSDParsing(unittest.TestCase):
             _add_rigid_body(stage, "/World/Body1")
             m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
             p1 = m1.GetPrim()
-            # Set SDF + hydroelastic (kh presence = opt-in, no isHydroelastic bool)
+            # Apply the hydro API (explicit opt-in via schema default
+            # hydroelasticEnabled=true) and author kh and resolution.
+            p1.AddAppliedSchema("NewtonSDFCollisionAPI")
+            p1.AddAppliedSchema("NewtonHydroelasticCollisionAPI")
             p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(128)
             p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
 
@@ -395,6 +398,8 @@ class TestSDFUSDParsing(unittest.TestCase):
             sphere.CreateRadiusAttr(0.2)
             UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
             p1 = sphere.GetPrim()
+            p1.AddAppliedSchema("NewtonSDFCollisionAPI")
+            p1.AddAppliedSchema("NewtonHydroelasticCollisionAPI")
             p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(32)
             p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
             p1.CreateAttribute("newton:sdfMargin", Sdf.ValueTypeNames.Float, custom=True).Set(0.03)
@@ -454,6 +459,8 @@ class TestSDFUSDParsing(unittest.TestCase):
             sphere.CreateRadiusAttr(0.2)
             UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
             p1 = sphere.GetPrim()
+            p1.AddAppliedSchema("NewtonSDFCollisionAPI")
+            p1.AddAppliedSchema("NewtonHydroelasticCollisionAPI")
             p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(32)
             p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
             p1.CreateAttribute("newton:sdfMargin", Sdf.ValueTypeNames.Float, custom=True).Set(0.03)
@@ -469,11 +476,11 @@ class TestSDFUSDParsing(unittest.TestCase):
             self.assertAlmostEqual(builder.shape_gap[s1], 0.07, places=5)
 
     def test_usd_sdf_api_applied_no_authored_attrs(self, device=None):
-        """Applying NewtonSDFCollisionAPI with no authored attrs enables SDF with defaults."""
+        """Applying NewtonSDFCollisionAPI enables SDF via the schema default sdfEnabled=true."""
         if device is None or not wp.get_device(device).is_cuda:
             self.skipTest("SDF tests require CUDA device")
 
-        from pxr import Sdf, Usd, UsdPhysics
+        from pxr import Usd, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
             usd_path = Path(tmpdir) / "test_sdf_api_only.usda"
@@ -483,14 +490,10 @@ class TestSDFUSDParsing(unittest.TestCase):
             _add_rigid_body(stage, "/World/Body1")
             m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
             p1 = m1.GetPrim()
-            # Apply the codeless Newton API by appending to the apiSchemas metadata;
-            # preserves the prior PhysicsCollisionAPI entry and works whether or not
-            # the schema is registered with the USD runtime.
+            # Apply the API without authoring any attributes. The schema default
+            # sdfEnabled=true must make the importer enable SDF with schema
+            # defaults (sdfMaxResolution=64).
             p1.AddAppliedSchema("NewtonSDFCollisionAPI")
-            # Author newton:sdfMaxResolution so finalize has something to build
-            # (Newton's default for sdf_max_resolution is None; we only want to
-            # verify sdfEnabled defaults to true when the API is applied).
-            p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(64)
 
             stage.Save()
 
@@ -498,7 +501,6 @@ class TestSDFUSDParsing(unittest.TestCase):
             result = parse_usd(builder, str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
-            # SDF params should be stored — API-applied treats sdfEnabled as true by default.
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
 
             builder.finalize(device=device)
@@ -506,7 +508,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             self.assertIsNotNone(mesh1.sdf, "Applied SDF API should enable SDF building")
 
     def test_usd_hydroelastic_api_applied_no_authored_attrs(self, device=None):
-        """Applying NewtonHydroelasticCollisionAPI with no authored attrs enables hydroelastic."""
+        """Applying NewtonHydroelasticCollisionAPI enables hydroelastic via the schema default."""
         if device is None or not wp.get_device(device).is_cuda:
             self.skipTest("SDF tests require CUDA device")
 
@@ -534,6 +536,35 @@ class TestSDFUSDParsing(unittest.TestCase):
             self.assertTrue(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
             self.assertAlmostEqual(builder.shape_material_kh[s1], builder.default_shape_cfg.kh, places=5)
 
+    def test_usd_kh_alone_does_not_enable_hydroelastic(self, device=None):
+        """Authoring newton:kh without the hydro API or hydroelasticEnabled must not turn hydro on."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("SDF tests require CUDA device")
+
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_kh_alone.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            sphere = UsdGeom.Sphere.Define(stage, "/World/Body1/CollisionSphere")
+            sphere.CreateRadiusAttr(0.2)
+            UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+            p1 = sphere.GetPrim()
+            # kh is just a material parameter. Without the hydro API or
+            # hydroelasticEnabled=true, the importer must not flip hydro on.
+            p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = parse_usd(builder, str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
+
+            self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
+
     def test_usd_hydroelastic_mesh_without_sdf_config_raises(self, device=None):
         """Hydroelastic mesh without SDF resolution or voxel size raises at import."""
         del device  # validation is host-side and independent of device
@@ -548,8 +579,11 @@ class TestSDFUSDParsing(unittest.TestCase):
             _add_rigid_body(stage, "/World/Body1")
             m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
             p1 = m1.GetPrim()
-            # kh authored but no SDF resolution/voxel size — should fail early.
-            p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
+            # hydroelasticEnabled=true opts into hydro explicitly, but the API is
+            # not applied so the importer does not fill in a default
+            # sdfMaxResolution. The mesh has no attached SDF — validation should
+            # fail at parse time.
+            p1.CreateAttribute("newton:hydroelasticEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
 
             stage.Save()
 
@@ -633,6 +667,12 @@ add_function_test(
     TestSDFUSDParsing,
     "test_usd_hydroelastic_api_applied_no_authored_attrs",
     TestSDFUSDParsing.test_usd_hydroelastic_api_applied_no_authored_attrs,
+    devices=devices,
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_kh_alone_does_not_enable_hydroelastic",
+    TestSDFUSDParsing.test_usd_kh_alone_does_not_enable_hydroelastic,
     devices=devices,
 )
 add_function_test(

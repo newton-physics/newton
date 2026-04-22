@@ -857,12 +857,18 @@ verifying the Newton import.
 
 .. tip::
 
-   Applying only a Newton API schema without authoring its attributes is still
-   meaningful: Newton's importer treats an applied ``NewtonSDFCollisionAPI`` as
-   a request to enable SDF collision using the schema defaults
-   (``sdfMaxResolution=64``, ``sdfMargin=0.05``, ``sdfTextureFormat="uint16"``,
-   etc.). Applying ``NewtonHydroelasticCollisionAPI`` additionally enables
-   hydroelastic contacts with ``kh=1e10``.
+   Applying ``NewtonSDFCollisionAPI`` declares the prim's SDF configuration;
+   the importer treats that as opting in to SDF generation via the schema
+   default ``sdfEnabled=true`` and fills in schema defaults for any attributes
+   that are not authored (e.g. ``sdfMaxResolution=64``, ``sdfMargin=0.05``).
+   Applying ``NewtonHydroelasticCollisionAPI`` additionally enables
+   hydroelastic contacts via the schema default ``hydroelasticEnabled=true``,
+   with ``kh=1e10``. ``newton:kh`` authored on its own is a material
+   parameter and does **not** flip hydroelastic contacts on — the user must
+   either apply the API or author ``newton:hydroelasticEnabled=true`` to
+   explicitly opt in. ``newton:sdfEnabled=false`` and
+   ``newton:hydroelasticEnabled=false`` always win as explicit disables and
+   preserve the other authored values.
 
 
 Limitations

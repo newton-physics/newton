@@ -2581,21 +2581,22 @@ def parse_usd(
 
                 shape_color = material_props.get("color")
 
-                # SDF parameters
+                # SDF parameters.
+                # Feature activation is explicit. Applying NewtonSDFCollisionAPI
+                # (or the hydro API that inherits from it) implies the schema
+                # default newton:sdfEnabled=true, mirroring the OpenUSD convention
+                # for physics:rigidBodyEnabled. Authored newton:sdfEnabled always
+                # wins — in particular newton:sdfEnabled=false is the explicit
+                # disable that preserves the other authored values. Presence of
+                # newton:sdfMaxResolution or newton:sdfTargetVoxelSize alone is
+                # also treated as intent to enable, for compatibility with assets
+                # that predate the dedicated API schema.
                 sdf_enabled = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_enabled", verbose=verbose)
-                # Applied API schemas: applying NewtonSDFCollisionAPI or
-                # NewtonHydroelasticCollisionAPI without authoring attributes must
-                # still enable the feature (matches schema default sdfEnabled=true /
-                # hydroelasticEnabled=true and the PhysicsCollisionAPI applied-API
-                # convention). Read apiSchemas metadata directly so detection works
-                # even when schemas are not registered with the USD runtime.
                 has_hydro_api = _prim_has_applied_schema(prim, "NewtonHydroelasticCollisionAPI")
                 # Hydro inherits from SDF in the schema; treat hydro-applied as SDF-applied too.
                 has_sdf_api = has_hydro_api or _prim_has_applied_schema(prim, "NewtonSDFCollisionAPI")
                 if sdf_enabled is None and has_sdf_api:
                     sdf_enabled = True
-                # None means no newton:sdfEnabled attr authored and the API is not
-                # applied — fall through to param-based detection.
                 if sdf_enabled is False:
                     # Explicitly disabled: skip all SDF/hydro param resolution
                     sdf_max_resolution = None
@@ -2671,11 +2672,14 @@ def parse_usd(
                         # Applied API, no authored margin: fall back to schema default.
                         sdf_margin = 0.05
 
-                    # Hydroelastic
+                    # Hydroelastic activation is driven by newton:hydroelasticEnabled
+                    # only. Applying NewtonHydroelasticCollisionAPI implies the
+                    # schema default (true). newton:kh alone is a material parameter
+                    # and does NOT flip the feature on — users must explicitly
+                    # signal intent via the enable bool or the applied API.
                     hydroelastic_enabled = R.get_value(
                         prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
                     )
-                    # Applied hydro API with no authored enable bool implies on.
                     if hydroelastic_enabled is None and has_hydro_api:
                         hydroelastic_enabled = True
                     kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
@@ -2684,7 +2688,7 @@ def parse_usd(
                     elif hydroelastic_enabled is True:
                         is_hydroelastic = True
                     else:
-                        is_hydroelastic = kh is not None or builder.default_shape_cfg.is_hydroelastic
+                        is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
                     if kh is None:
                         kh = builder.default_shape_cfg.kh
 
