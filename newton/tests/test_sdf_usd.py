@@ -379,7 +379,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             self.assertAlmostEqual(outer, 0.02 * expected_diag, places=5)
 
     def test_usd_sdf_margin_hydroelastic_primitive(self, device=None):
-        """newton:sdfMargin on a hydroelastic primitive (Sphere) is applied to shape_gap."""
+        """newton:sdfMargin on a hydroelastic primitive (Sphere) is routed to shape_sdf_margin."""
         if device is None or not wp.get_device(device).is_cuda:
             self.skipTest("SDF tests require CUDA device")
 
@@ -406,7 +406,8 @@ class TestSDFUSDParsing(unittest.TestCase):
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertTrue(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
-            self.assertAlmostEqual(builder.shape_gap[s1], 0.03, places=5)
+            # sdfMargin lives in its own per-shape list, not the collision gap.
+            self.assertAlmostEqual(builder.shape_sdf_margin[s1], 0.03, places=5)
 
     def test_usd_sdf_fractional_margin(self, device=None):
         """Fractional margin overrides absolute, scaled by local bbox diagonal."""
@@ -432,9 +433,129 @@ class TestSDFUSDParsing(unittest.TestCase):
             result = parse_usd(builder, str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
-            # Unit cube bbox diagonal = sqrt(3). For meshes, sdfMargin is stored in shape_gap.
+            # Unit cube bbox diagonal = sqrt(3). sdfMargin routes to shape_sdf_margin.
             expected_diag = math.sqrt(3)
-            self.assertAlmostEqual(builder.shape_gap[s1], 0.05 * expected_diag, places=5)
+            self.assertAlmostEqual(builder.shape_sdf_margin[s1], 0.05 * expected_diag, places=5)
+
+    def test_usd_sdf_margin_does_not_affect_shape_gap(self, device=None):
+        """newton:sdfMargin and newton:contactGap populate distinct per-shape lists."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("SDF tests require CUDA device")
+
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_sdf_margin_vs_gap.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            sphere = UsdGeom.Sphere.Define(stage, "/World/Body1/CollisionSphere")
+            sphere.CreateRadiusAttr(0.2)
+            UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+            p1 = sphere.GetPrim()
+            p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(32)
+            p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
+            p1.CreateAttribute("newton:sdfMargin", Sdf.ValueTypeNames.Float, custom=True).Set(0.03)
+            p1.CreateAttribute("newton:contactGap", Sdf.ValueTypeNames.Float, custom=True).Set(0.07)
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = parse_usd(builder, str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
+
+            self.assertAlmostEqual(builder.shape_sdf_margin[s1], 0.03, places=5)
+            self.assertAlmostEqual(builder.shape_gap[s1], 0.07, places=5)
+
+    def test_usd_sdf_api_applied_no_authored_attrs(self, device=None):
+        """Applying NewtonSDFCollisionAPI with no authored attrs enables SDF with defaults."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("SDF tests require CUDA device")
+
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_sdf_api_only.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
+            p1 = m1.GetPrim()
+            # Apply the codeless Newton API by appending to the apiSchemas metadata;
+            # preserves the prior PhysicsCollisionAPI entry and works whether or not
+            # the schema is registered with the USD runtime.
+            p1.AddAppliedSchema("NewtonSDFCollisionAPI")
+            # Author newton:sdfMaxResolution so finalize has something to build
+            # (Newton's default for sdf_max_resolution is None; we only want to
+            # verify sdfEnabled defaults to true when the API is applied).
+            p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(64)
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = parse_usd(builder, str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
+
+            # SDF params should be stored — API-applied treats sdfEnabled as true by default.
+            self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
+
+            builder.finalize(device=device)
+            mesh1 = builder.shape_source[s1]
+            self.assertIsNotNone(mesh1.sdf, "Applied SDF API should enable SDF building")
+
+    def test_usd_hydroelastic_api_applied_no_authored_attrs(self, device=None):
+        """Applying NewtonHydroelasticCollisionAPI with no authored attrs enables hydroelastic."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("SDF tests require CUDA device")
+
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_hydro_api_only.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            sphere = UsdGeom.Sphere.Define(stage, "/World/Body1/CollisionSphere")
+            sphere.CreateRadiusAttr(0.2)
+            UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+            p1 = sphere.GetPrim()
+            p1.AddAppliedSchema("NewtonSDFCollisionAPI")
+            p1.AddAppliedSchema("NewtonHydroelasticCollisionAPI")
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = parse_usd(builder, str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
+
+            self.assertTrue(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
+            self.assertAlmostEqual(builder.shape_material_kh[s1], builder.default_shape_cfg.kh, places=5)
+
+    def test_usd_hydroelastic_mesh_without_sdf_config_raises(self, device=None):
+        """Hydroelastic mesh without SDF resolution or voxel size raises at import."""
+        del device  # validation is host-side and independent of device
+
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_hydro_mesh_invalid.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
+            p1 = m1.GetPrim()
+            # kh authored but no SDF resolution/voxel size — should fail early.
+            p1.CreateAttribute("newton:kh", Sdf.ValueTypeNames.Float, custom=True).Set(1e7)
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertRaisesRegex(ValueError, "hydroelastic mesh requires"):
+                parse_usd(builder, str(usd_path))
 
 
 devices = get_selected_cuda_test_devices()
@@ -494,6 +615,30 @@ add_function_test(
     TestSDFUSDParsing,
     "test_usd_sdf_margin_hydroelastic_primitive",
     TestSDFUSDParsing.test_usd_sdf_margin_hydroelastic_primitive,
+    devices=devices,
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_sdf_margin_does_not_affect_shape_gap",
+    TestSDFUSDParsing.test_usd_sdf_margin_does_not_affect_shape_gap,
+    devices=devices,
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_sdf_api_applied_no_authored_attrs",
+    TestSDFUSDParsing.test_usd_sdf_api_applied_no_authored_attrs,
+    devices=devices,
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_hydroelastic_api_applied_no_authored_attrs",
+    TestSDFUSDParsing.test_usd_hydroelastic_api_applied_no_authored_attrs,
+    devices=devices,
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_hydroelastic_mesh_without_sdf_config_raises",
+    TestSDFUSDParsing.test_usd_hydroelastic_mesh_without_sdf_config_raises,
     devices=devices,
 )
 
