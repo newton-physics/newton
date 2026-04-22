@@ -2432,7 +2432,7 @@ class ViewerGL(ViewerBase):
         if not np.any(finite_mask):
             rgba = np.empty((*array.shape, 4), dtype=np.uint8)
             rgba[...] = self._heatmap_nan_rgba
-            return np.ascontiguousarray(rgba[::-1]), float("nan"), float("nan")
+            return np.ascontiguousarray(rgba), float("nan"), float("nan")
 
         finite_values = array[finite_mask]
         value_min = float(np.min(finite_values))
@@ -2447,7 +2447,7 @@ class ViewerGL(ViewerBase):
         lut_indices = np.rint(normalized * 255.0).astype(np.uint8)
         rgba = self._heatmap_color_lut[lut_indices].copy()
         rgba[~finite_mask] = self._heatmap_nan_rgba
-        return np.ascontiguousarray(rgba[::-1]), value_min, value_max
+        return np.ascontiguousarray(rgba), value_min, value_max
 
     def _ensure_array_texture(self, name: str, width: int, height: int) -> dict[str, Any]:
         texture_state = self._array_textures.get(name)
