@@ -3989,6 +3989,41 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
 
+    def test_eq_solref_from_default(self):
+        """Regression test: <default><equality solref="..."/></default> attributes propagate.
+
+        Before the fix, equality constraints that didn't specify solref inline
+        fell back to MuJoCo's hardcoded [0.02, 1] instead of the class default.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <default>
+        <equality solref="0.005 1"/>
+    </default>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+    <equality>
+        <connect body1="body1" body2="body2" anchor="0 0 0"/>
+    </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertEqual(model.equality_constraint_count, 1)
+        eq_solref = model.mujoco.eq_solref.numpy()[0].tolist()
+        self.assertAlmostEqual(eq_solref[0], 0.005, places=6)
+        self.assertAlmostEqual(eq_solref[1], 1.0, places=6)
+
     def test_parse_mujoco_options_disabled(self):
         """Test that solver options from <option> tag are not parsed when parse_mujoco_options=False."""
         mjcf = """<?xml version="1.0" ?>

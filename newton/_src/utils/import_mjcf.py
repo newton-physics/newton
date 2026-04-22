@@ -1823,10 +1823,20 @@ def parse_mjcf(
         )
 
     def parse_equality_constraints(equality):
-        def parse_common_attributes(element):
+        def merge_equality_defaults(element):
+            """Merge <default><equality .../></default> attributes into the element's attrib.
+
+            Supports a per-element ``class="..."`` override like other defaults.
+            Explicit element attributes take precedence over defaults.
+            """
+            cls = element.attrib.get("class", "__all__")
+            defaults = class_defaults.get(cls, {}).get("equality", {})
+            return merge_attrib(defaults, element.attrib)
+
+        def parse_common_attributes(attribs):
             return {
-                "name": element.attrib.get("name"),
-                "active": element.attrib.get("active", "true").lower() == "true",
+                "name": attribs.get("name"),
+                "active": attribs.get("active", "true").lower() == "true",
             }
 
         def get_site_body_and_anchor(site_name: str) -> tuple[int, wp.vec3] | None:
@@ -1850,15 +1860,14 @@ def parse_mjcf(
             return (body_idx, anchor)
 
         for connect in equality.findall("connect"):
-            common = parse_common_attributes(connect)
-            custom_attrs = parse_custom_attributes(connect.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
-            body1_name = sanitize_name(connect.attrib.get("body1", "")) if connect.attrib.get("body1") else None
-            body2_name = (
-                sanitize_name(connect.attrib.get("body2", "worldbody")) if connect.attrib.get("body2") else None
-            )
-            anchor = connect.attrib.get("anchor")
-            site1 = connect.attrib.get("site1")
-            site2 = connect.attrib.get("site2")
+            attribs = merge_equality_defaults(connect)
+            common = parse_common_attributes(attribs)
+            custom_attrs = parse_custom_attributes(attribs, builder_custom_attr_eq, parsing_mode="mjcf")
+            body1_name = sanitize_name(attribs.get("body1", "")) if attribs.get("body1") else None
+            body2_name = sanitize_name(attribs.get("body2", "worldbody")) if attribs.get("body2") else None
+            anchor = attribs.get("anchor")
+            site1 = attribs.get("site1")
+            site2 = attribs.get("site2")
 
             if body1_name and anchor:
                 if verbose:
@@ -1912,15 +1921,16 @@ def parse_mjcf(
                         )
 
         for weld in equality.findall("weld"):
-            common = parse_common_attributes(weld)
-            custom_attrs = parse_custom_attributes(weld.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
-            body1_name = sanitize_name(weld.attrib.get("body1", "")) if weld.attrib.get("body1") else None
-            body2_name = sanitize_name(weld.attrib.get("body2", "worldbody")) if weld.attrib.get("body2") else None
-            anchor = weld.attrib.get("anchor", "0 0 0")
-            relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
-            torquescale = parse_float(weld.attrib, "torquescale", 1.0)
-            site1 = weld.attrib.get("site1")
-            site2 = weld.attrib.get("site2")
+            attribs = merge_equality_defaults(weld)
+            common = parse_common_attributes(attribs)
+            custom_attrs = parse_custom_attributes(attribs, builder_custom_attr_eq, parsing_mode="mjcf")
+            body1_name = sanitize_name(attribs.get("body1", "")) if attribs.get("body1") else None
+            body2_name = sanitize_name(attribs.get("body2", "worldbody")) if attribs.get("body2") else None
+            anchor = attribs.get("anchor", "0 0 0")
+            relpose = attribs.get("relpose", "0 1 0 0 0 0 0")
+            torquescale = parse_float(attribs, "torquescale", 1.0)
+            site1 = attribs.get("site1")
+            site2 = attribs.get("site2")
 
             if body1_name:
                 if verbose:
@@ -1987,11 +1997,12 @@ def parse_mjcf(
                         )
 
         for joint in equality.findall("joint"):
-            common = parse_common_attributes(joint)
-            custom_attrs = parse_custom_attributes(joint.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
-            joint1_name = joint.attrib.get("joint1")
-            joint2_name = joint.attrib.get("joint2")
-            polycoef = joint.attrib.get("polycoef", "0 1 0 0 0")
+            attribs = merge_equality_defaults(joint)
+            common = parse_common_attributes(attribs)
+            custom_attrs = parse_custom_attributes(attribs, builder_custom_attr_eq, parsing_mode="mjcf")
+            joint1_name = attribs.get("joint1")
+            joint2_name = attribs.get("joint2")
+            polycoef = attribs.get("polycoef", "0 1 0 0 0")
 
             if joint1_name:
                 if verbose:
