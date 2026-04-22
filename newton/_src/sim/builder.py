@@ -286,11 +286,14 @@ class ModelBuilder:
             Users should choose kh to match their desired force-to-penetration ratio.
         """
         sdf_margin: float | None = None
-        """SDF generation margin [m] for primitive texture SDFs. When a texture SDF is
-        generated from a primitive mesh during :meth:`ModelBuilder.finalize`, this value
-        is used as the expansion distance around the surface. Independent of
-        :attr:`gap` and :attr:`margin`, which control collision-pipeline inflation.
-        When ``None``, falls back to :attr:`gap`."""
+        """SDF generation margin [m] for primitive shapes. When a texture SDF is
+        generated from a primitive (box, sphere, capsule, cylinder, cone) during
+        :meth:`ModelBuilder.finalize`, this value is used as the expansion distance
+        around the surface. Independent of :attr:`gap` and :attr:`margin`, which
+        control collision-pipeline inflation. When ``None``, falls back to
+        :attr:`gap`. Not accepted on mesh shapes — for user meshes, pass ``margin``
+        to :meth:`~newton.geometry.Mesh.build_sdf` before calling
+        :meth:`ModelBuilder.add_shape_mesh`."""
 
         def configure_sdf(
             self,
@@ -5236,6 +5239,7 @@ class ModelBuilder:
                 or cfg.sdf_target_voxel_size is not None
                 or cfg.sdf_narrow_band_range != (-0.1, 0.1)
                 or cfg.sdf_texture_format != "uint16"
+                or cfg.sdf_margin is not None
             ):
                 raise ValueError(
                     "Mesh shapes do not use cfg.sdf_* for SDF generation. "

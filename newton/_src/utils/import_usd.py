@@ -2820,6 +2820,7 @@ def parse_usd(
                         sdf_target_voxel_size=None,
                         sdf_narrow_band_range=(-0.1, 0.1),
                         sdf_texture_format="uint16",
+                        sdf_margin=None,
                         is_hydroelastic=False,
                     )
                     shape_id = builder.add_shape_mesh(
@@ -2828,11 +2829,11 @@ def parse_usd(
                         **mesh_shape_params,
                     )
                     # Store SDF intent on the builder (deferred to finalize).
-                    # cfg.sdf_margin is already appended to shape_sdf_margin via add_shape.
                     builder.shape_sdf_max_resolution[shape_id] = sdf_max_resolution
                     builder.shape_sdf_target_voxel_size[shape_id] = sdf_target_voxel_size
                     builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
                     builder.shape_sdf_texture_format[shape_id] = sdf_texture_format
+                    builder.shape_sdf_margin[shape_id] = sdf_margin
                     if is_hydroelastic:
                         builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
                         builder.shape_material_kh[shape_id] = kh
