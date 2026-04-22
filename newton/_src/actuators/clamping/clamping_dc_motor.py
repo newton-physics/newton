@@ -17,37 +17,38 @@ def _clamp_dc_motor_kernel(
     state_indices: wp.array[wp.uint32],
     saturation_effort: wp.array[float],
     velocity_limit: wp.array[float],
-    max_force: wp.array[float],
+    max_motor_effort: wp.array[float],
     src: wp.array[float],
     dst: wp.array[float],
 ):
-    """DC motor four-quadrant torque-speed saturation: read src, write to dst.
+    """DC motor four-quadrant effort-speed saturation: read src, write to dst.
 
-    τ_max(v) = min(τ_sat*(1 - v/v_max),  max_force)
-    τ_min(v) = max(τ_sat*(-1 - v/v_max), -max_force)
+    τ_max(v) = min(τ_sat*(1 - v/v_max),  max_motor_effort)
+    τ_min(v) = max(τ_sat*(-1 - v/v_max), -max_motor_effort)
     """
     i = wp.tid()
     state_idx = state_indices[i]
     vel = current_vel[state_idx]
     sat = saturation_effort[i]
     vel_lim = velocity_limit[i]
-    max_f = max_force[i]
+    max_e = max_motor_effort[i]
 
-    max_torque = wp.min(sat * (1.0 - vel / vel_lim), max_f)
-    min_torque = wp.max(sat * (-1.0 - vel / vel_lim), -max_f)
+    max_torque = wp.min(sat * (1.0 - vel / vel_lim), max_e)
+    min_torque = wp.max(sat * (-1.0 - vel / vel_lim), -max_e)
     dst[i] = wp.clamp(src[i], min_torque, max_torque)
 
 
 class ClampingDCMotor(Clamping):
-    """DC motor four-quadrant torque-speed saturation.
+    """DC motor four-quadrant effort-speed saturation.
 
-    Clips controller output using the linear torque-speed characteristic:
-        τ_max(v) = min(τ_sat*(1 - v/v_max),  effort_limit)
-        τ_min(v) = max(τ_sat*(-1 - v/v_max), -effort_limit)
+    Clips controller output using the linear effort-speed characteristic::
+
+        τ_max(v) = min(τ_sat*(1 - v/v_max),  max_motor_effort)
+        τ_min(v) = max(τ_sat*(-1 - v/v_max), -max_motor_effort)
 
     At zero velocity the motor can produce up to ±τ_sat (capped by
-    effort_limit). As velocity approaches v_max, available torque in
-    the direction of motion drops to zero.
+    ``max_motor_effort``). As velocity approaches ``v_max``, available
+    effort in the direction of motion drops to zero.
     """
 
     @classmethod
@@ -62,41 +63,43 @@ class ClampingDCMotor(Clamping):
         sat = args["saturation_effort"]
         if sat <= 0 or not math.isfinite(sat):
             raise ValueError(f"saturation_effort must be finite and positive, got {sat}")
-        max_force = args.get("max_force", math.inf)
-        if max_force < 0:
-            raise ValueError(f"max_force must be non-negative, got {max_force}")
+        max_motor_effort = args.get("max_motor_effort", math.inf)
+        if max_motor_effort < 0:
+            raise ValueError(f"max_motor_effort must be non-negative, got {max_motor_effort}")
         return {
             "saturation_effort": sat,
             "velocity_limit": vel_lim,
-            "max_force": max_force,
+            "max_motor_effort": max_motor_effort,
         }
 
     def __init__(
         self,
         saturation_effort: wp.array[float],
         velocity_limit: wp.array[float],
-        max_force: wp.array[float],
+        max_motor_effort: wp.array[float],
     ):
         """Initialize DC motor saturation.
 
         Args:
-            saturation_effort: Peak motor torque at stall [N·m]. Shape (N,).
-            velocity_limit: Maximum joint velocity [rad/s] for the torque-speed curve. Shape (N,).
-            max_force: Absolute effort limits [N or N·m] (continuous-rated). Shape (N,).
+            saturation_effort: Peak motor effort at stall [N·m or N]. Shape ``(N,)``.
+            velocity_limit: Maximum joint velocity [rad/s or m/s] for
+                the effort-speed curve. Shape ``(N,)``.
+            max_motor_effort: Effort limit for the effort-speed curve
+                [N·m or N]. Shape ``(N,)``.
         """
         if saturation_effort.shape != velocity_limit.shape:
             raise ValueError(
                 f"saturation_effort shape {saturation_effort.shape} "
                 f"must match velocity_limit shape {velocity_limit.shape}"
             )
-        if saturation_effort.shape != max_force.shape:
+        if saturation_effort.shape != max_motor_effort.shape:
             raise ValueError(
                 f"saturation_effort shape {saturation_effort.shape} "
-                f"must match max_force shape {max_force.shape}"
+                f"must match max_motor_effort shape {max_motor_effort.shape}"
             )
         self.saturation_effort = saturation_effort
         self.velocity_limit = velocity_limit
-        self.max_force = max_force
+        self.max_motor_effort = max_motor_effort
 
     def modify_forces(
         self,
@@ -116,7 +119,7 @@ class ClampingDCMotor(Clamping):
                 vel_indices,
                 self.saturation_effort,
                 self.velocity_limit,
-                self.max_force,
+                self.max_motor_effort,
                 src_forces,
             ],
             outputs=[dst_forces],

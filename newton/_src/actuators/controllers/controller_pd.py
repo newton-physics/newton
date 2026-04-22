@@ -11,22 +11,22 @@ from .base import Controller
 
 
 @wp.kernel
-def _pd_force_kernel(
+def _pd_effort_kernel(
     current_pos: wp.array[float],
     current_vel: wp.array[float],
     target_pos: wp.array[float],
     target_vel: wp.array[float],
-    control_input: wp.array[float],
+    feedforward: wp.array[float],
     pos_indices: wp.array[wp.uint32],
     vel_indices: wp.array[wp.uint32],
     target_pos_indices: wp.array[wp.uint32],
     target_vel_indices: wp.array[wp.uint32],
     kp: wp.array[float],
     kd: wp.array[float],
-    constant_force: wp.array[float],
-    forces: wp.array[float],
+    const_effort: wp.array[float],
+    efforts: wp.array[float],
 ):
-    """PD force: f = constant + act + kp*(target_pos - q) + kd*(target_vel - v)."""
+    """PD effort: e = const_effort + feedforward + kp*(target_pos - q) + kd*(target_vel - v)."""
     i = wp.tid()
     pos_idx = pos_indices[i]
     vel_idx = vel_indices[i]
@@ -36,53 +36,56 @@ def _pd_force_kernel(
     position_error = target_pos[tgt_pos_idx] - current_pos[pos_idx]
     velocity_error = target_vel[tgt_vel_idx] - current_vel[vel_idx]
 
-    const_f = float(0.0)
-    if constant_force:
-        const_f = constant_force[i]
+    const_e = float(0.0)
+    if const_effort:
+        const_e = const_effort[i]
 
-    act = float(0.0)
-    if control_input:
-        act = control_input[tgt_vel_idx]
+    ff = float(0.0)
+    if feedforward:
+        ff = feedforward[tgt_vel_idx]
 
-    force = const_f + act + kp[i] * position_error + kd[i] * velocity_error
-    forces[i] = force
+    effort = const_e + ff + kp[i] * position_error + kd[i] * velocity_error
+    efforts[i] = effort
 
 
 class ControllerPD(Controller):
-    """Stateless PD controller.
+    """Stateless PD (Proportional-Derivative) controller.
 
-    Force law: f = constant + act + Kp*(target_pos - q) + Kd*(target_vel - v)
+    Effort law::
 
+        effort = constEffort + feedforward + kp * (target_pos - q) + kd * (target_vel - v)
     """
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "kp": args.get("kp", 0.0),
-            "kd": args.get("kd", 0.0),
-            "constant_force": args.get("constant_force", 0.0),
-        }
+        kp = args.get("kp", 0.0)
+        if kp < 0:
+            raise ValueError(f"kp must be non-negative, got {kp}")
+        kd = args.get("kd", 0.0)
+        if kd < 0:
+            raise ValueError(f"kd must be non-negative, got {kd}")
+        return {"kp": kp, "kd": kd, "const_effort": args.get("const_effort", 0.0)}
 
     def __init__(
         self,
         kp: wp.array[float],
         kd: wp.array[float],
-        constant_force: wp.array[float] | None = None,
+        const_effort: wp.array[float] | None = None,
     ):
         """Initialize PD controller.
 
         Args:
-            kp: Proportional gains. Shape (N,).
-            kd: Derivative gains. Shape (N,).
-            constant_force: Constant force offsets [N or N·m]. Shape (N,). None to skip.
+            kp: Proportional gains (in joint space). Shape ``(N,)``.
+            kd: Derivative gains (in joint space). Shape ``(N,)``.
+            const_effort: Constant bias effort [N or N·m]. Shape ``(N,)``. ``None`` to skip.
         """
         if kp.shape != kd.shape:
             raise ValueError(f"kp shape {kp.shape} must match kd shape {kd.shape}")
-        if constant_force is not None and constant_force.shape != kp.shape:
-            raise ValueError(f"constant_force shape {constant_force.shape} must match kp shape {kp.shape}")
+        if const_effort is not None and const_effort.shape != kp.shape:
+            raise ValueError(f"const_effort shape {const_effort.shape} must match kp shape {kp.shape}")
         self.kp = kp
         self.kd = kd
-        self.constant_force = constant_force
+        self.const_effort = const_effort
 
     def compute(
         self,
@@ -101,7 +104,7 @@ class ControllerPD(Controller):
         device: wp.Device | None = None,
     ) -> None:
         wp.launch(
-            kernel=_pd_force_kernel,
+            kernel=_pd_effort_kernel,
             dim=len(forces),
             inputs=[
                 positions,
@@ -115,7 +118,7 @@ class ControllerPD(Controller):
                 target_vel_indices,
                 self.kp,
                 self.kd,
-                self.constant_force,
+                self.const_effort,
             ],
             outputs=[forces],
             device=device,

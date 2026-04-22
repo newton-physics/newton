@@ -1712,7 +1712,7 @@ class ArticulationView:
                 :class:`~newton.actuators.Controller`,
                 :class:`~newton.actuators.Clamping`, or
                 :class:`~newton.actuators.Delay` instance.
-            name: Attribute name on *component* (e.g. ``"kp"``, ``"max_force"``,
+            name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
                 ``"delays"``).
 
         Returns:
@@ -1753,7 +1753,7 @@ class ArticulationView:
                 :class:`~newton.actuators.Controller`,
                 :class:`~newton.actuators.Clamping`, or
                 :class:`~newton.actuators.Delay` instance.
-            name: Attribute name on *component* (e.g. ``"kp"``, ``"max_force"``,
+            name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
                 ``"delays"``).
             values: New parameter values shaped ``(world_count, dofs_per_world)``
                 where ``dofs_per_world`` is the total number of DOFs in the view.

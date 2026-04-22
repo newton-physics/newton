@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .actuator import Actuator
-from .clamping import Clamping, ClampingDCMotor, ClampingMaxForce, ClampingPositionBased
+from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .controllers import Controller, ControllerNetLSTM, ControllerNetMLP, ControllerPD, ControllerPID
 from .delay import Delay
 from .usd_parser import ActuatorParsed, parse_actuator_prim
@@ -12,7 +12,7 @@ __all__ = [
     "ActuatorParsed",
     "Clamping",
     "ClampingDCMotor",
-    "ClampingMaxForce",
+    "ClampingMaxEffort",
     "ClampingPositionBased",
     "Controller",
     "ControllerNetLSTM",

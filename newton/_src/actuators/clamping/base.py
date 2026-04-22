@@ -9,13 +9,12 @@ import warp as wp
 
 
 class Clamping:
-    """Base class for post-controller force clamping.
+    """Base class for actuator output effort clamping.
 
-    Clamping objects are stacked on top of a controller to bound
-    clamp forces — symmetric limits, velocity-dependent saturation,
-    angle-dependent torque curves, etc. They read from a source force
-    buffer and write bounded values to a destination buffer.
-
+    Clamping objects are stacked on top of a controller to constrain
+    actuator output effort — symmetric limits, velocity-dependent
+    saturation, position-dependent curves, etc.  They read from a
+    source effort buffer and write bounded values to a destination buffer.
 
     Class Attributes:
         SHARED_PARAMS: Parameter names that are instance-level (shared across
@@ -56,7 +55,7 @@ class Clamping:
         vel_indices: wp.array[wp.uint32],
         device: wp.Device | None = None,
     ) -> None:
-        """Read forces from src, apply clamping, write to dst.
+        """Read effort from *src*, apply clamping, write to *dst*.
 
         When src and dst are the same array, this is an in-place update.
         The Actuator uses different arrays for the first clamping
@@ -64,8 +63,8 @@ class Clamping:
         for subsequent clampings.
 
         Args:
-            src_forces: Input force buffer [N or N·m] to read. Shape (N,).
-            dst_forces: Output force buffer [N or N·m] to write. Shape (N,).
+            src_forces: Input effort buffer [N or N·m] to read. Shape ``(N,)``.
+            dst_forces: Output effort buffer [N or N·m] to write. Shape ``(N,)``.
             positions: Joint positions [m or rad] (global ``joint_q`` array).
             velocities: Joint velocities [m/s or rad/s] (global ``joint_qd`` array).
             pos_indices: Indices into *positions* (``joint_q`` layout).

@@ -13,32 +13,35 @@ from .base import Clamping
 
 @wp.kernel
 def _box_clamp_kernel(
-    max_force: wp.array[float],
+    max_effort: wp.array[float],
     src: wp.array[float],
     dst: wp.array[float],
 ):
-    """Clamp src forces to ±max_force, write to dst."""
+    """Clamp src efforts to ±max_effort, write to dst."""
     i = wp.tid()
-    dst[i] = wp.clamp(src[i], -max_force[i], max_force[i])
+    dst[i] = wp.clamp(src[i], -max_effort[i], max_effort[i])
 
 
-class ClampingMaxForce(Clamping):
-    """Box-clamp forces to ±max_force per actuator."""
+class ClampingMaxEffort(Clamping):
+    """Symmetric clamp on actuator output effort.
+
+    Clamps the actuator output to ``[-max_effort, +max_effort]``.
+    """
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        max_force = args.get("max_force", math.inf)
-        if max_force < 0:
-            raise ValueError(f"max_force must be non-negative, got {max_force}")
-        return {"max_force": max_force}
+        max_effort = args.get("max_effort", math.inf)
+        if max_effort < 0:
+            raise ValueError(f"max_effort must be non-negative, got {max_effort}")
+        return {"max_effort": max_effort}
 
-    def __init__(self, max_force: wp.array[float]):
-        """Initialize max-force clamp.
+    def __init__(self, max_effort: wp.array[float]):
+        """Initialize max-effort clamp.
 
         Args:
-            max_force: Per-actuator force limits [N or N·m]. Shape (N,).
+            max_effort: Per-actuator effort limits [N or N·m]. Shape ``(N,)``.
         """
-        self.max_force = max_force
+        self.max_effort = max_effort
 
     def modify_forces(
         self,
@@ -53,7 +56,7 @@ class ClampingMaxForce(Clamping):
         wp.launch(
             kernel=_box_clamp_kernel,
             dim=len(src_forces),
-            inputs=[self.max_force, src_forces],
+            inputs=[self.max_effort, src_forces],
             outputs=[dst_forces],
             device=device,
         )

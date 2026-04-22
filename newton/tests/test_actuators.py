@@ -18,7 +18,7 @@ from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     ActuatorParsed,
     ClampingDCMotor,
-    ClampingMaxForce,
+    ClampingMaxEffort,
     ClampingPositionBased,
     ControllerNetLSTM,
     ControllerNetMLP,
@@ -102,7 +102,7 @@ class TestControllerPD(unittest.TestCase):
             return wp.array(vals, dtype=wp.float32)
 
         indices = wp.array(list(range(n)), dtype=wp.uint32)
-        ctrl = ControllerPD(kp=_f(kp_vals), kd=_f(kd_vals), constant_force=_f(const_vals))
+        ctrl = ControllerPD(kp=_f(kp_vals), kd=_f(kd_vals), const_effort=_f(const_vals))
         forces = wp.zeros(n, dtype=wp.float32)
 
         ctrl.compute(
@@ -148,7 +148,7 @@ class TestControllerPID(unittest.TestCase):
             ki=_f([ki]),
             kd=_f([kd]),
             integral_max=_f([math.inf]),
-            constant_force=_f([const]),
+            const_effort=_f([const]),
         )
         ctrl.finalize(device, 1)
 
@@ -491,14 +491,14 @@ class TestDelay(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestClampingMaxForce(unittest.TestCase):
-    """ClampingMaxForce: output is clamped to +/-max_force."""
+class TestClampingMaxEffort(unittest.TestCase):
+    """ClampingMaxEffort: output is clamped to +/-max_effort."""
 
     def test_modify_forces(self):
         """Construct clamping directly and call modify_forces()."""
         max_f = 50.0
         n = 3
-        clamp = ClampingMaxForce(max_force=wp.array([max_f] * n, dtype=wp.float32))
+        clamp = ClampingMaxEffort(max_effort=wp.array([max_f] * n, dtype=wp.float32))
 
         src_vals = [100.0, -80.0, 30.0]
         src = wp.array(src_vals, dtype=wp.float32)
@@ -522,7 +522,7 @@ class TestClampingDCMotor(unittest.TestCase):
         clamp = ClampingDCMotor(
             saturation_effort=wp.array([sat], dtype=wp.float32),
             velocity_limit=wp.array([v_lim], dtype=wp.float32),
-            max_force=wp.array([max_f], dtype=wp.float32),
+            max_motor_effort=wp.array([max_f], dtype=wp.float32),
         )
         indices = wp.array([0], dtype=wp.uint32)
         raw_force = 500.0
@@ -548,7 +548,7 @@ class TestClampingPositionBased(unittest.TestCase):
         angles = (-1.0, 0.0, 1.0)
         torques = (10.0, 30.0, 50.0)
         device = wp.get_device()
-        clamp = ClampingPositionBased(lookup_angles=angles, lookup_torques=torques)
+        clamp = ClampingPositionBased(lookup_positions=angles, lookup_efforts=torques)
         clamp.finalize(device, 1)
 
         raw_force = 999.0
@@ -597,7 +597,7 @@ class TestActuatorStep(unittest.TestCase):
         template.add_articulation([joint_a, joint_b])
         dof_a = template.joint_qd_start[joint_a]
         dof_b = template.joint_qd_start[joint_b]
-        dc_args = {"saturation_effort": sat, "velocity_limit": v_lim, "max_force": 1e6}
+        dc_args = {"saturation_effort": sat, "velocity_limit": v_lim, "max_motor_effort": 1e6}
         template.add_actuator(
             ControllerPD,
             index=dof_a,
@@ -717,8 +717,8 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(clamped.num_actuators, 1)
         self.assertAlmostEqual(clamped.controller.kp.numpy()[0], 100.0, places=3)
         self.assertAlmostEqual(clamped.controller.kd.numpy()[0], 10.0, places=3)
-        self.assertIsInstance(clamped.clamping[0], ClampingMaxForce)
-        self.assertAlmostEqual(clamped.clamping[0].max_force.numpy()[0], 50.0, places=3)
+        self.assertIsInstance(clamped.clamping[0], ClampingMaxEffort)
+        self.assertAlmostEqual(clamped.clamping[0].max_effort.numpy()[0], 50.0, places=3)
 
         self.assertEqual(delayed.num_actuators, 1)
         self.assertAlmostEqual(delayed.controller.kp.numpy()[0], 200.0, places=3)
@@ -747,14 +747,16 @@ class TestActuatorBuilder(unittest.TestCase):
         builder.add_articulation(joints)
         dofs = [builder.joint_qd_start[j] for j in joints]
 
-        builder.add_actuator(ControllerPD, index=dofs[0], kp=50.0, kd=5.0, constant_force=1.0)
+        builder.add_actuator(ControllerPD, index=dofs[0], kp=50.0, kd=5.0, const_effort=1.0)
         builder.add_actuator(
             ControllerPID,
             index=dofs[1],
             kp=100.0,
             ki=10.0,
             kd=20.0,
-            clamping=[(ClampingDCMotor, {"saturation_effort": 80.0, "velocity_limit": 15.0, "max_force": 200.0})],
+            clamping=[
+                (ClampingDCMotor, {"saturation_effort": 80.0, "velocity_limit": 15.0, "max_motor_effort": 200.0})
+            ],
         )
         builder.add_actuator(ControllerPD, index=dofs[2], kp=150.0, delay=4)
 
@@ -768,7 +770,7 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(pd_plain.num_actuators, 1)
         np.testing.assert_array_almost_equal(pd_plain.controller.kp.numpy(), [50.0])
         np.testing.assert_array_almost_equal(pd_plain.controller.kd.numpy(), [5.0])
-        np.testing.assert_array_almost_equal(pd_plain.controller.constant_force.numpy(), [1.0])
+        np.testing.assert_array_almost_equal(pd_plain.controller.const_effort.numpy(), [1.0])
         self.assertIsNone(pd_plain.state())
 
         self.assertEqual(pid_act.num_actuators, 1)
@@ -777,6 +779,7 @@ class TestActuatorBuilder(unittest.TestCase):
         np.testing.assert_array_almost_equal(pid_act.controller.kd.numpy(), [20.0])
         self.assertIsInstance(pid_act.clamping[0], ClampingDCMotor)
         self.assertAlmostEqual(pid_act.clamping[0].saturation_effort.numpy()[0], 80.0, places=3)
+        self.assertAlmostEqual(pid_act.clamping[0].max_motor_effort.numpy()[0], 200.0, places=3)
         pid_state = pid_act.state()
         self.assertIsNotNone(pid_state.controller_state)
         self.assertEqual(pid_state.controller_state.integral.shape, (1,))
@@ -916,15 +919,15 @@ class TestLegacyActuatorCompat(unittest.TestCase):
         np.testing.assert_array_almost_equal(act.controller.ki.numpy(), [10.0])
 
     def test_legacy_max_force_becomes_clamping(self):
-        """max_force kwarg creates a ClampingMaxForce on the new actuator."""
+        """max_force kwarg creates a ClampingMaxEffort on the new actuator."""
         builder, dofs = self._make_builder()
         with self.assertWarns(DeprecationWarning):
             builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=150.0, max_force=50.0)
         model = builder.finalize()
         act = model.actuators[0]
         self.assertEqual(len(act.clamping), 1)
-        self.assertIsInstance(act.clamping[0], ClampingMaxForce)
-        np.testing.assert_array_almost_equal(act.clamping[0].max_force.numpy(), [50.0])
+        self.assertIsInstance(act.clamping[0], ClampingMaxEffort)
+        np.testing.assert_array_almost_equal(act.clamping[0].max_effort.numpy(), [50.0])
 
     def test_legacy_output_indices_warns(self):
         """output_indices != input_indices emits extra deprecation warning."""
@@ -1236,7 +1239,7 @@ class TestStateReset(unittest.TestCase):
             ki=_f([10.0] * n),
             kd=_f([5.0] * n),
             integral_max=_f([math.inf] * n),
-            constant_force=_f([0.0] * n),
+            const_effort=_f([0.0] * n),
         )
         ctrl.finalize(device, n)
 
@@ -1341,7 +1344,7 @@ class TestCUDAGraphCapture(unittest.TestCase):
             kp=100.0,
             kd=10.0,
             delay=2,
-            clamping=[(ClampingMaxForce, {"max_force": 50.0})],
+            clamping=[(ClampingMaxEffort, {"max_effort": 50.0})],
         )
 
         builder = newton.ModelBuilder()

@@ -17,12 +17,12 @@ def _masked_zero_1d(data: wp.array[float], mask: wp.array[wp.bool]):
 
 
 class Controller:
-    """Base class for controllers that compute raw forces from state error.
+    """Base class for actuator control laws.
 
-    Controllers are the core computation component in an actuator. They read
-    positions, velocities, and targets, then write raw (unclamped) forces to
-    a scratch buffer. Clamping and other post-processing is handled by
-    Clamping objects composed on top.
+    Control laws compute actuator output effort from authored controller
+    parameters, commanded inputs (targets, feedforward), and simulation
+    state. The output may still be constrained by one or more
+    :class:`~newton._src.actuators.clamping.base.Clamping` objects.
 
     Subclasses must override ``compute`` and ``resolve_arguments``.
 
@@ -89,20 +89,20 @@ class Controller:
         dt: float,
         device: wp.Device | None = None,
     ) -> None:
-        """Compute raw forces and write to ``forces[i]``.
+        """Compute actuator output effort and write to ``forces[i]``.
 
         Args:
             positions: Joint positions [m or rad] (global ``joint_q`` array).
             velocities: Joint velocities [m/s or rad/s] (global ``joint_qd`` array).
             target_pos: Target positions [m or rad] (global or compact array).
             target_vel: Target velocities [m/s or rad/s] (global or compact array).
-            feedforward: Feedforward control input [N or N·m] (may be None).
+            feedforward: Feedforward effort [N or N·m] (may be ``None``).
             pos_indices: Indices into *positions* (``joint_q`` layout).
             vel_indices: Indices into *velocities* (``joint_qd`` layout).
             target_pos_indices: Indices into *target_pos*.
             target_vel_indices: Indices into *target_vel* and *feedforward*.
-            forces: Scratch buffer to write forces [N or N·m] to. Shape (N,).
-            state: Controller state (None if stateless).
+            forces: Scratch buffer to write effort [N or N·m] to. Shape ``(N,)``.
+            state: Controller state (``None`` if stateless).
             dt: Timestep [s].
             device: Warp device for kernel launches.
         """

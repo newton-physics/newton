@@ -13,12 +13,12 @@ from .base import Controller, _masked_zero_1d
 
 
 @wp.kernel
-def _pid_force_kernel(
+def _pid_effort_kernel(
     current_pos: wp.array[float],
     current_vel: wp.array[float],
     target_pos: wp.array[float],
     target_vel: wp.array[float],
-    control_input: wp.array[float],
+    feedforward: wp.array[float],
     pos_indices: wp.array[wp.uint32],
     vel_indices: wp.array[wp.uint32],
     target_pos_indices: wp.array[wp.uint32],
@@ -27,13 +27,13 @@ def _pid_force_kernel(
     ki: wp.array[float],
     kd: wp.array[float],
     integral_max: wp.array[float],
-    constant_force: wp.array[float],
+    const_effort: wp.array[float],
     dt: float,
     current_integral: wp.array[float],
-    forces: wp.array[float],
+    efforts: wp.array[float],
     next_integral: wp.array[float],
 ):
-    """PID force: f = constant + act + kp*e + ki*integral + kd*de."""
+    """PID effort: e = const_effort + feedforward + kp*err + ki*integral + kd*derr."""
     i = wp.tid()
     pos_idx = pos_indices[i]
     vel_idx = vel_indices[i]
@@ -46,25 +46,28 @@ def _pid_force_kernel(
     integral = current_integral[i] + position_error * dt
     integral = wp.clamp(integral, -integral_max[i], integral_max[i])
 
-    const_f = float(0.0)
-    if constant_force:
-        const_f = constant_force[i]
+    const_e = float(0.0)
+    if const_effort:
+        const_e = const_effort[i]
 
-    act = float(0.0)
-    if control_input:
-        act = control_input[tgt_vel_idx]
+    ff = float(0.0)
+    if feedforward:
+        ff = feedforward[tgt_vel_idx]
 
-    force = const_f + act + kp[i] * position_error + ki[i] * integral + kd[i] * velocity_error
-    forces[i] = force
+    effort = const_e + ff + kp[i] * position_error + ki[i] * integral + kd[i] * velocity_error
+    efforts[i] = effort
     next_integral[i] = integral
 
 
 class ControllerPID(Controller):
-    """Stateful PID controller.
+    """Stateful PID (Proportional-Integral-Derivative) controller.
 
-    Force law: f = constant + act + Kp*e + Ki*∫e·dt + Kd*de
+    Effort law::
 
-    Maintains an integral term with integral clamping.
+        effort = constEffort + feedforward + kp*(target_pos - q)
+               + ki*integral(target_pos - q) + kd*(target_vel - v)
+
+    Maintains an integral term with anti-windup clamping.
     """
 
     @dataclass
@@ -72,7 +75,7 @@ class ControllerPID(Controller):
         """Integral state for PID controller."""
 
         integral: wp.array[float] | None = None
-        """Accumulated integral of position error, shape (N,)."""
+        """Accumulated integral of position error, shape ``(N,)``."""
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             if mask is None:
@@ -82,15 +85,24 @@ class ControllerPID(Controller):
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
+        kp = args.get("kp", 0.0)
+        if kp < 0:
+            raise ValueError(f"kp must be non-negative, got {kp}")
+        ki = args.get("ki", 0.0)
+        if ki < 0:
+            raise ValueError(f"ki must be non-negative, got {ki}")
+        kd = args.get("kd", 0.0)
+        if kd < 0:
+            raise ValueError(f"kd must be non-negative, got {kd}")
         integral_max = args.get("integral_max", math.inf)
         if integral_max < 0:
             raise ValueError(f"integral_max must be non-negative, got {integral_max}")
         return {
-            "kp": args.get("kp", 0.0),
-            "ki": args.get("ki", 0.0),
-            "kd": args.get("kd", 0.0),
+            "kp": kp,
+            "ki": ki,
+            "kd": kd,
             "integral_max": integral_max,
-            "constant_force": args.get("constant_force", 0.0),
+            "const_effort": args.get("const_effort", 0.0),
         }
 
     def __init__(
@@ -99,16 +111,16 @@ class ControllerPID(Controller):
         ki: wp.array[float],
         kd: wp.array[float],
         integral_max: wp.array[float],
-        constant_force: wp.array[float] | None = None,
+        const_effort: wp.array[float] | None = None,
     ):
         """Initialize PID controller.
 
         Args:
-            kp: Proportional gains. Shape (N,).
-            ki: Integral gains. Shape (N,).
-            kd: Derivative gains. Shape (N,).
-            integral_max: Anti-windup limits (>= 0). Shape (N,).
-            constant_force: Constant force offsets [N or N·m]. Shape (N,). None to skip.
+            kp: Proportional gains (in joint space). Shape ``(N,)``.
+            ki: Integral gains. Shape ``(N,)``.
+            kd: Derivative gains (in joint space). Shape ``(N,)``.
+            integral_max: Anti-windup limits (>= 0). Shape ``(N,)``.
+            const_effort: Constant bias effort [N or N·m]. Shape ``(N,)``. ``None`` to skip.
         """
         if kp.shape != ki.shape:
             raise ValueError(f"kp shape {kp.shape} must match ki shape {ki.shape}")
@@ -116,13 +128,13 @@ class ControllerPID(Controller):
             raise ValueError(f"kp shape {kp.shape} must match kd shape {kd.shape}")
         if kp.shape != integral_max.shape:
             raise ValueError(f"kp shape {kp.shape} must match integral_max shape {integral_max.shape}")
-        if constant_force is not None and constant_force.shape != kp.shape:
-            raise ValueError(f"constant_force shape {constant_force.shape} must match kp shape {kp.shape}")
+        if const_effort is not None and const_effort.shape != kp.shape:
+            raise ValueError(f"const_effort shape {const_effort.shape} must match kp shape {kp.shape}")
         self.kp = kp
         self.ki = ki
         self.kd = kd
         self.integral_max = integral_max
-        self.constant_force = constant_force
+        self.const_effort = const_effort
         self._next_integral: wp.array[float] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
@@ -153,7 +165,7 @@ class ControllerPID(Controller):
         device: wp.Device | None = None,
     ) -> None:
         wp.launch(
-            kernel=_pid_force_kernel,
+            kernel=_pid_effort_kernel,
             dim=len(forces),
             inputs=[
                 positions,
@@ -169,7 +181,7 @@ class ControllerPID(Controller):
                 self.ki,
                 self.kd,
                 self.integral_max,
-                self.constant_force,
+                self.const_effort,
                 dt,
                 state.integral,
             ],

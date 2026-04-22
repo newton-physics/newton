@@ -45,7 +45,7 @@ class Actuator:
             indices=indices,
             controller=ControllerPD(kp=kp, kd=kd),
             delay=Delay(delay=wp.array([5, 5], dtype=wp.int32), max_delay=5),
-            clamping=[ClampingMaxForce(max_force=max_f)],
+            clamping=[ClampingMaxEffort(max_effort=max_f)],
         )
 
         # Simulation loop
