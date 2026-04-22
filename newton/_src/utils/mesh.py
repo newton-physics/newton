@@ -1398,3 +1398,151 @@ def solidify_mesh(
     faces = out_faces.numpy()
     vertices = out_vertices.numpy()
     return faces, vertices
+
+
+def validate_triangle_mesh(
+    vertices: np.ndarray,
+    indices: np.ndarray,
+    particle_radius: float | None = None,
+    *,
+    stacklevel: int = 2,
+) -> None:
+    """Check a triangle mesh for quality issues and emit warnings.
+
+    Inspects the input triangle mesh for degenerate or sliver triangles,
+    extreme angles, short edges, and non-manifold topology. Each detected
+    problem is reported via :func:`warnings.warn`.
+
+    Args:
+        vertices: Vertex positions, shape ``(N, 3)``.
+        indices: Triangle vertex indices, shape ``(F, 3)``.
+        particle_radius: If given, edges shorter than this value are flagged.
+        stacklevel: Passed to :func:`warnings.warn` so the warning points at
+            the caller's frame.
+    """
+    vertices = np.asarray(vertices, dtype=float)
+    indices = np.asarray(indices, dtype=np.intp).reshape(-1, 3)
+    n_verts = len(vertices)
+    n_faces = len(indices)
+
+    if n_faces == 0:
+        warnings.warn("Cloth mesh has no triangles.", stacklevel=stacklevel)
+        return
+
+    v0 = vertices[indices[:, 0]]
+    v1 = vertices[indices[:, 1]]
+    v2 = vertices[indices[:, 2]]
+
+    e01 = v1 - v0
+    e12 = v2 - v1
+    e20 = v0 - v2
+
+    len01 = np.linalg.norm(e01, axis=1)
+    len12 = np.linalg.norm(e12, axis=1)
+    len20 = np.linalg.norm(e20, axis=1)
+    longest = np.maximum(len01, np.maximum(len12, len20))
+
+    cross = np.cross(e01, -e20)
+    area = 0.5 * np.linalg.norm(cross, axis=1)
+
+    eps = 1e-20
+    shortest_alt = 2.0 * area / np.maximum(longest, eps)
+    aspect = longest / np.maximum(shortest_alt, eps)
+
+    def _ang(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        an = np.maximum(np.linalg.norm(a, axis=1), eps)
+        bn = np.maximum(np.linalg.norm(b, axis=1), eps)
+        cos = np.einsum("ij,ij->i", a, b) / (an * bn)
+        return np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+
+    min_angle = np.minimum(_ang(e01, -e20), np.minimum(_ang(-e01, e12), _ang(-e12, e20)))
+
+    issues: list[str] = []
+
+    n_degen = int(np.sum(area < 1e-10))
+    if n_degen > 0:
+        issues.append(f"{n_degen} degenerate triangle(s) with near-zero area")
+
+    n_sliver = int(np.sum(aspect > 10.0))
+    if n_sliver > 0:
+        issues.append(f"{n_sliver} sliver triangle(s) with aspect ratio > 10 (worst: {float(aspect.max()):.1f})")
+
+    n_small_angle = int(np.sum(min_angle < 5.0))
+    if n_small_angle > 0:
+        issues.append(
+            f"{n_small_angle} triangle(s) with minimum angle < 5\u00b0 (smallest: {float(min_angle.min()):.1f}\u00b0)"
+        )
+
+    if particle_radius is not None and particle_radius > 0:
+        edges = np.concatenate([indices[:, [0, 1]], indices[:, [1, 2]], indices[:, [2, 0]]])
+        unique_edges = np.unique(np.sort(edges, axis=1), axis=0)
+        edge_lens = np.linalg.norm(vertices[unique_edges[:, 0]] - vertices[unique_edges[:, 1]], axis=1)
+        n_short = int(np.sum(edge_lens < particle_radius))
+        if n_short > 0:
+            issues.append(
+                f"{n_short}/{len(unique_edges)} edge(s) shorter than particle_radius "
+                f"({particle_radius:.4g}); shortest edge: {float(edge_lens.min()):.4g}"
+            )
+
+    edges_all = np.concatenate([indices[:, [0, 1]], indices[:, [1, 2]], indices[:, [2, 0]]])
+    edges_sorted = np.sort(edges_all, axis=1)
+    _, counts = np.unique(edges_sorted, axis=0, return_counts=True)
+    n_nonmanifold = int(np.sum(counts > 2))
+    if n_nonmanifold > 0:
+        issues.append(f"{n_nonmanifold} non-manifold edge(s) shared by more than 2 triangles")
+
+    if not issues:
+        return
+
+    msg = (
+        f"Mesh quality warning ({n_verts} vertices, {n_faces} triangles):\n"
+        + "\n".join(f"  - {issue}" for issue in issues)
+        + "\nConsider using newton.utils.remesh_mesh() to improve mesh quality."
+    )
+    warnings.warn(msg, stacklevel=stacklevel)
+
+
+def validate_tet_mesh(
+    vertices: np.ndarray,
+    indices: np.ndarray,
+    *,
+    stacklevel: int = 2,
+) -> None:
+    """Check a tetrahedral mesh for inverted or degenerate elements.
+
+    Args:
+        vertices: Vertex positions, shape ``(N, 3)``.
+        indices: Tetrahedron vertex indices, shape ``(T, 4)``.
+        stacklevel: Passed to :func:`warnings.warn`.
+    """
+    vertices = np.asarray(vertices, dtype=float)
+    indices = np.asarray(indices, dtype=np.intp).reshape(-1, 4)
+    n_tets = len(indices)
+
+    if n_tets == 0:
+        warnings.warn("Soft mesh has no tetrahedra.", stacklevel=stacklevel)
+        return
+
+    v0 = vertices[indices[:, 0]]
+    d1 = vertices[indices[:, 1]] - v0
+    d2 = vertices[indices[:, 2]] - v0
+    d3 = vertices[indices[:, 3]] - v0
+    vol = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) / 6.0
+
+    issues: list[str] = []
+
+    n_inverted = int(np.sum(vol < 0))
+    if n_inverted > 0:
+        issues.append(f"{n_inverted}/{n_tets} inverted tetrahedron/a (negative volume)")
+
+    n_degen = int(np.sum(np.abs(vol) < 1e-20))
+    if n_degen > 0:
+        issues.append(f"{n_degen}/{n_tets} degenerate tetrahedron/a (near-zero volume)")
+
+    if not issues:
+        return
+
+    msg = f"Tet mesh quality warning ({len(vertices)} vertices, {n_tets} tetrahedra):\n" + "\n".join(
+        f"  - {issue}" for issue in issues
+    )
+    warnings.warn(msg, stacklevel=stacklevel)

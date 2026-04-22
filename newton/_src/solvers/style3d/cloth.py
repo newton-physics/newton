@@ -203,6 +203,7 @@ def add_cloth_mesh(
     particle_radius: float | None = None,
     custom_attributes_particles: dict[str, Any] | None = None,
     custom_attributes_springs: dict[str, Any] | None = None,
+    validate_mesh: bool = False,
 ) -> None:
     """Add a Style3D cloth mesh using :class:`newton.ModelBuilder` custom attributes.
 
@@ -257,6 +258,10 @@ def add_cloth_mesh(
             :attr:`newton.ModelBuilder.default_particle_radius`).
         custom_attributes_particles: Extra custom attributes for particles.
         custom_attributes_springs: Extra custom attributes for springs.
+        validate_mesh: If True, run quality checks on the input mesh and
+            emit warnings for degenerate or sliver triangles, short edges,
+            and non-manifold topology. See
+            :func:`newton.utils.validate_triangle_mesh`.
     """
     vertices_np = np.array(vertices, dtype=float) * scale
     rot_mat = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
@@ -266,6 +271,13 @@ def add_cloth_mesh(
     panel_indices_np = np.array(panel_indices if panel_indices is not None else indices, dtype=int).reshape(-1, 3)
 
     tri_indices_np = np.array(indices, dtype=int).reshape(-1, 3)
+
+    if validate_mesh:
+        from ...utils.mesh import validate_triangle_mesh  # noqa: PLC0415
+
+        radius_value = particle_radius if particle_radius is not None else builder.default_particle_radius
+        validate_triangle_mesh(vertices_np, tri_indices_np, radius_value, stacklevel=3)
+
     panel_inv_D_all, panel_areas_all = _compute_panel_triangles(panel_verts_np, panel_indices_np)
     valid_inds = (panel_areas_all > 0.0).nonzero()[0]
     if len(valid_inds) < len(panel_areas_all):
