@@ -2667,6 +2667,9 @@ def parse_usd(
                     sdf_margin = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_margin", verbose=verbose)
                     if margin_frac is not None and margin_frac != 0 and bbox_diag is not None:
                         sdf_margin = margin_frac * bbox_diag
+                    elif sdf_margin is None and has_sdf_api:
+                        # Applied API, no authored margin: fall back to schema default.
+                        sdf_margin = 0.05
 
                     # Hydroelastic
                     hydroelastic_enabled = R.get_value(

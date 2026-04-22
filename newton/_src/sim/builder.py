@@ -9837,9 +9837,8 @@ class ModelBuilder:
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
                 sdf_margin = self.shape_sdf_margin[i]
-                # SDF generation margin: prefer the dedicated sdf_margin, fall back
-                # to shape_gap for backward compatibility with shapes that never
-                # set sdf_margin explicitly.
+                # SDF generation margin: use the per-shape sdf_margin when set;
+                # otherwise use shape_gap as the expansion distance.
                 sdf_gen_margin = sdf_margin if sdf_margin is not None else shape_gap
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
