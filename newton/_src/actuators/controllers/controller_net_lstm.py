@@ -113,6 +113,7 @@ class ControllerNetLSTM(Controller):
         self._hidden_size = lstm.hidden_size
 
         self._torch_input_indices: torch.Tensor | None = None
+        self._torch_vel_indices: torch.Tensor | None = None
         self._torch_sequential_indices: torch.Tensor | None = None
         self._hidden: torch.Tensor | None = None
         self._cell: torch.Tensor | None = None

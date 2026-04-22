@@ -102,7 +102,10 @@ class ControllerNetMLP(Controller):
         self.torque_scale = metadata.get("torque_scale", 1.0)
 
         self._torch_input_indices: torch.Tensor | None = None
+        self._torch_vel_indices: torch.Tensor | None = None
         self._torch_sequential_indices: torch.Tensor | None = None
+        self._current_pos_error: torch.Tensor | None = None
+        self._current_vel_error: torch.Tensor | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         import torch
@@ -162,11 +165,15 @@ class ControllerNetMLP(Controller):
         pos_error = target_p[torch_target_pos_idx] - current_pos[self._torch_input_indices]
         vel_error = target_v[torch_target_vel_idx] - current_vel[self._torch_vel_indices]
 
-        state.pos_error_history[0] = pos_error
-        state.vel_error_history[0] = vel_error
+        self._current_pos_error = pos_error
+        self._current_vel_error = vel_error
 
-        pos_input = torch.stack([state.pos_error_history[i] for i in self.input_idx], dim=1)
-        vel_input = torch.stack([state.vel_error_history[i] for i in self.input_idx], dim=1)
+        pos_input = torch.stack(
+            [pos_error if i == 0 else state.pos_error_history[i - 1] for i in self.input_idx], dim=1
+        )
+        vel_input = torch.stack(
+            [vel_error if i == 0 else state.vel_error_history[i - 1] for i in self.input_idx], dim=1
+        )
 
         if self.input_order == "pos_vel":
             net_input = torch.cat([pos_input * self.pos_scale, vel_input * self.vel_scale], dim=1)
@@ -189,3 +196,5 @@ class ControllerNetMLP(Controller):
             return
         next_state.pos_error_history = current_state.pos_error_history.roll(1, 0)
         next_state.vel_error_history = current_state.vel_error_history.roll(1, 0)
+        next_state.pos_error_history[0] = self._current_pos_error
+        next_state.vel_error_history[0] = self._current_vel_error

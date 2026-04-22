@@ -32,9 +32,9 @@ An actuator is composed from three building blocks, applied in this order:
    ├── Delay       (optional: delays control targets by N timesteps)
    ├── Controller  (control law that computes raw forces)
    └── Clamping[]  (clamps raw forces based on motor-limit modeling)
-       ├── ClampingMaxForce        (±max_force box clamp)
+       ├── ClampingMaxEffort        (±max_effort box clamp)
        ├── ClampingDCMotor         (velocity-dependent saturation)
-       └── ClampingPositionBased   (angle-dependent lookup table)
+       └── ClampingPositionBased   (position-dependent lookup table)
 
 **Delay**
    Optionally delays the control targets (e.g. position or velocity) by *N*
@@ -84,7 +84,7 @@ when the model is finalized:
    import warp as wp
    import newton
    from newton.actuators import (
-       Actuator, ClampingMaxForce, ControllerPD, Delay,
+       Actuator, ClampingMaxEffort, ControllerPD, Delay,
    )
 
    builder = newton.ModelBuilder()
@@ -101,7 +101,7 @@ when the model is finalized:
        kp=100.0,
        kd=10.0,
        delay=5,
-       clamping=[(ClampingMaxForce, {"max_force": 50.0})],
+       clamping=[(ClampingMaxEffort, {"max_effort": 50.0})],
    )
 
    model = builder.finalize()
@@ -114,13 +114,13 @@ components directly:
    indices = wp.array([0], dtype=wp.uint32)
    kp = wp.array([100.0], dtype=wp.float32)
    kd = wp.array([10.0], dtype=wp.float32)
-   max_f = wp.array([50.0], dtype=wp.float32)
+   max_e = wp.array([50.0], dtype=wp.float32)
 
    actuator = Actuator(
        indices,
        controller=ControllerPD(kp=kp, kd=kd),
        delay=Delay(delay=wp.array([5], dtype=wp.int32), max_delay=5),
-       clamping=[ClampingMaxForce(max_force=max_f)],
+       clamping=[ClampingMaxEffort(max_effort=max_e)],
    )
 
 
@@ -195,10 +195,10 @@ See the API documentation for each controller's control-law equations.
 Clamping
 ^^^^^^^^
 
-* :class:`ClampingMaxForce` — symmetric box clamp to ±max_force per actuator.
-* :class:`ClampingDCMotor` — velocity-dependent torque saturation using the DC
-  motor torque-speed characteristic.
-* :class:`ClampingPositionBased` — angle-dependent torque limits via
+* :class:`ClampingMaxEffort` — symmetric box clamp to ±max_effort per actuator.
+* :class:`ClampingDCMotor` — velocity-dependent effort saturation using the DC
+  motor effort-speed characteristic.
+* :class:`ClampingPositionBased` — position-dependent effort limits via
   interpolated lookup table (e.g. for linkage-driven joints).
 
 Multiple clamping objects can be stacked on a single actuator; they are applied

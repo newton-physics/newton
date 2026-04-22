@@ -25,7 +25,7 @@ construction.
    ActuatorParsed
    Clamping
    ClampingDCMotor
-   ClampingMaxForce
+   ClampingMaxEffort
    ClampingPositionBased
    Controller
    ControllerNetLSTM

@@ -75,8 +75,8 @@ class ControllerPD(Controller):
         """Initialize PD controller.
 
         Args:
-            kp: Proportional gains (in joint space). Shape ``(N,)``.
-            kd: Derivative gains (in joint space). Shape ``(N,)``.
+            kp: Proportional gains [N/m or N·m/rad]. Shape ``(N,)``.
+            kd: Derivative gains [N·s/m or N·m·s/rad]. Shape ``(N,)``.
             const_effort: Constant bias effort [N or N·m]. Shape ``(N,)``. ``None`` to skip.
         """
         if kp.shape != kd.shape:

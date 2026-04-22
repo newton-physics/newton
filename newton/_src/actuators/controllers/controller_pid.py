@@ -116,10 +116,10 @@ class ControllerPID(Controller):
         """Initialize PID controller.
 
         Args:
-            kp: Proportional gains (in joint space). Shape ``(N,)``.
-            ki: Integral gains. Shape ``(N,)``.
-            kd: Derivative gains (in joint space). Shape ``(N,)``.
-            integral_max: Anti-windup limits (>= 0). Shape ``(N,)``.
+            kp: Proportional gains [N/m or N·m/rad]. Shape ``(N,)``.
+            ki: Integral gains [N/(m·s) or N·m/(rad·s)]. Shape ``(N,)``.
+            kd: Derivative gains [N·s/m or N·m·s/rad]. Shape ``(N,)``.
+            integral_max: Anti-windup limits [m·s or rad·s]. Shape ``(N,)``.
             const_effort: Constant bias effort [N or N·m]. Shape ``(N,)``. ``None`` to skip.
         """
         if kp.shape != ki.shape:

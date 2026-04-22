@@ -230,7 +230,7 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
         if entry.is_controller:
             if controller_class is not None:
                 raise ValueError(
-                    f"Actuator prim has multiple controllers: "
+                    f"Actuator prim '{prim.GetPath()}' has multiple controllers: "
                     f"{controller_class.__name__} and {entry.component_class.__name__}"
                 )
             if schema_name == "NewtonNeuralControlAPI":
