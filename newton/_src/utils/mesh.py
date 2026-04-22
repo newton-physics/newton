@@ -1460,9 +1460,9 @@ def validate_triangle_mesh(
 
     issues: list[str] = []
 
-    n_degen = int(np.sum(area < 1e-10))
+    n_degen = int(np.sum(area < 1e-6))
     if n_degen > 0:
-        issues.append(f"{n_degen} degenerate triangle(s) with near-zero area")
+        issues.append(f"{n_degen} triangle(s) with area < 1 mm\u00b2 (1e-6 m\u00b2)")
 
     n_sliver = int(np.sum(aspect > 10.0))
     if n_sliver > 0:
@@ -1536,9 +1536,9 @@ def validate_tet_mesh(
     if n_inverted > 0:
         issues.append(f"{n_inverted}/{n_tets} inverted tetrahedron/a (negative volume)")
 
-    n_degen = int(np.sum(np.abs(vol) < 1e-20))
+    n_degen = int(np.sum(np.abs(vol) < 1e-9))
     if n_degen > 0:
-        issues.append(f"{n_degen}/{n_tets} degenerate tetrahedron/a (near-zero volume)")
+        issues.append(f"{n_degen}/{n_tets} tetrahedron/a with volume < 1 mm\u00b3 (1e-9 m\u00b3)")
 
     if not issues:
         return
