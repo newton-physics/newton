@@ -285,6 +285,12 @@ class ModelBuilder:
             For MuJoCo, stiffness values will internally be scaled by masses.
             Users should choose kh to match their desired force-to-penetration ratio.
         """
+        sdf_margin: float | None = None
+        """SDF generation margin [m] for primitive texture SDFs. When a texture SDF is
+        generated from a primitive mesh during :meth:`ModelBuilder.finalize`, this value
+        is used as the expansion distance around the surface. Independent of
+        :attr:`gap` and :attr:`margin`, which control collision-pipeline inflation.
+        When ``None``, falls back to :attr:`gap`."""
 
         def configure_sdf(
             self,
@@ -942,6 +948,9 @@ class ModelBuilder:
         """Per-shape SDF maximum resolutions retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_texture_format: list[str] = []
         """Per-shape SDF texture format retained until :meth:`finalize <ModelBuilder.finalize>`."""
+        self.shape_sdf_margin: list[float | None] = []
+        """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
+        When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
 
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
@@ -3103,6 +3112,7 @@ class ModelBuilder:
             "shape_sdf_max_resolution",
             "shape_sdf_target_voxel_size",
             "shape_sdf_texture_format",
+            "shape_sdf_margin",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -5314,6 +5324,7 @@ class ModelBuilder:
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
+        self.shape_sdf_margin.append(cfg.sdf_margin)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
@@ -9825,6 +9836,11 @@ class ModelBuilder:
                 sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
+                sdf_margin = self.shape_sdf_margin[i]
+                # SDF generation margin: prefer the dedicated sdf_margin, fall back
+                # to shape_gap for backward compatibility with shapes that never
+                # set sdf_margin explicitly.
+                sdf_gen_margin = sdf_margin if sdf_margin is not None else shape_gap
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
@@ -9842,7 +9858,7 @@ class ModelBuilder:
                             sdf_kwargs["max_resolution"] = sdf_max_resolution
                         if sdf_target_voxel_size is not None:
                             sdf_kwargs["target_voxel_size"] = sdf_target_voxel_size
-                        sdf_kwargs["margin"] = shape_gap
+                        sdf_kwargs["margin"] = sdf_gen_margin
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
                         shape_src.build_sdf(**sdf_kwargs)
@@ -9862,7 +9878,7 @@ class ModelBuilder:
                     cache_key = (
                         "primitive_generated",
                         shape_type,
-                        shape_gap,
+                        sdf_gen_margin,
                         tuple(sdf_narrow_band_range),
                         sdf_target_voxel_size,
                         effective_max_resolution,
@@ -9904,7 +9920,7 @@ class ModelBuilder:
                                 try:
                                     tex_data, c_tex, s_tex, tex_bc = create_texture_sdf_from_mesh(
                                         prim_wp_mesh,
-                                        margin=shape_gap,
+                                        margin=sdf_gen_margin,
                                         narrow_band_range=tuple(sdf_narrow_band_range),
                                         max_resolution=effective_max_resolution,
                                         target_voxel_size=sdf_target_voxel_size,
