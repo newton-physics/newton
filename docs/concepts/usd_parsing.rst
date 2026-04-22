@@ -537,6 +537,334 @@ After importing the USD file with the custom attributes shown above, they become
 
 Attributes with the same name in different namespaces are completely independent and stored separately. This allows the same attribute name to be used for different purposes across namespaces. In the example above, ``mass_scale`` appears in both the default namespace (as a model attribute) and in ``namespace_a`` (as a state attribute). These are treated as completely separate attributes with independent values, assignments, and storage locations.
 
+.. _porting_physx_sdf_assets:
+
+Porting PhysX SDF Assets to Newton
+----------------------------------
+
+USD assets authored for PhysX commonly configure SDF-based mesh collision through
+``PhysxSDFMeshCollisionAPI`` and configure collision margins through
+``PhysxCollisionAPI``. Newton defines its own codeless API schemas
+(``NewtonSDFCollisionAPI``, ``NewtonHydroelasticCollisionAPI``, and
+``NewtonCollisionAPI``) for the same concepts, with naming and unit conventions
+chosen to match Newton's internal representation.
+
+Newton's USD importer reads only the ``newton:*`` attributes for SDF and
+hydroelastic configuration. ``physxSDFMeshCollision:*`` attributes are collected
+(see :ref:`schema_resolvers`) but not applied. To use SDF or hydroelastic contacts
+on an asset authored for PhysX, author the Newton schemas alongside (or in place
+of) the PhysX ones.
+
+Attribute Mapping
+~~~~~~~~~~~~~~~~~
+
+The following tables show the one-to-one mapping between PhysX and Newton schema
+attributes, along with any unit or semantic differences.
+
+**Collision margin (applies to any collider):**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 35 30
+
+   * - **PhysX**
+     - **Newton**
+     - **Notes**
+   * - ``physxCollision:restOffset``
+     - ``newton:contactMargin``
+     - Direct mapping [m].
+   * - ``physxCollision:contactOffset``
+     - ``newton:contactGap``
+     - **Semantic difference.** Newton's ``contactGap`` is additive on top of
+       ``contactMargin``; PhysX's ``contactOffset`` is measured from the original
+       shape surface. Convert as
+       ``newton:contactGap = physxCollision:contactOffset - physxCollision:restOffset``.
+
+**SDF collision configuration (per mesh shape):**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 38 38 24
+
+   * - **PhysX**
+     - **Newton**
+     - **Notes**
+   * - ``physxSDFMeshCollision:sdfResolution``
+     - ``newton:sdfMaxResolution``
+     - Direct mapping (must be divisible by 8).
+   * - ``physxSDFMeshCollision:sdfNarrowBandThickness``
+     - ``newton:sdfNarrowBandOuterFraction``
+     - PhysX authors a single fraction of the mesh AABB diagonal. Newton splits
+       the narrow band into inner/outer halves: set the inner fraction to the
+       negated value (e.g. ``-0.01``) and the outer fraction to the positive
+       value (e.g. ``0.01``).
+   * - *(derived as above)*
+     - ``newton:sdfNarrowBandInnerFraction``
+     - Typically ``-physxSDFMeshCollision:sdfNarrowBandThickness``.
+   * - ``physxSDFMeshCollision:sdfMargin``
+     - ``newton:sdfMarginFraction``
+     - Both are fractions of the mesh AABB diagonal. Direct mapping.
+   * - ``physxSDFMeshCollision:sdfBitsPerSubgridPixel``
+     - ``newton:sdfTextureFormat``
+     - Token translation: ``BitsPerPixel8`` → ``uint8``, ``BitsPerPixel16`` →
+       ``uint16``, ``BitsPerPixel32`` → ``float32``.
+   * - *(no PhysX equivalent)*
+     - ``newton:sdfEnabled``
+     - Optional toggle. When ``NewtonSDFCollisionAPI`` is applied, SDF is
+       enabled by default.
+   * - *(no PhysX equivalent)*
+     - ``newton:sdfTargetVoxelSize``
+     - Optional absolute target voxel size [m]; when authored (> 0) it takes
+       precedence over ``sdfMaxResolution``.
+
+.. note::
+
+   Newton also exposes absolute-distance variants (``newton:sdfNarrowBandInner``,
+   ``newton:sdfNarrowBandOuter``, ``newton:sdfMargin``) in meters. When both an
+   absolute and a fractional value are authored, the fractional form overrides the
+   absolute form at parse time. PhysX-ported assets naturally use the fractional
+   form.
+
+**Hydroelastic contacts (per mesh shape, opt-in):**
+
+PhysX does not expose a hydroelastic configuration schema for rigid-body contacts.
+Hydroelastic contacts in Newton are enabled by applying
+``NewtonHydroelasticCollisionAPI`` (which inherits ``NewtonSDFCollisionAPI``) and
+authoring ``newton:kh`` [N/m^3] for the contact stiffness coefficient.
+
+Before and After
+~~~~~~~~~~~~~~~~
+
+A typical PhysX-authored SDF mesh collider looks like this:
+
+.. code-block:: usda
+
+   #usda 1.0
+
+   def Xform "Body"
+   (
+       prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+   )
+   {
+       def Mesh "CollisionMesh"
+       (
+           prepend apiSchemas = [
+               "PhysicsCollisionAPI",
+               "PhysxCollisionAPI",
+               "PhysxSDFMeshCollisionAPI",
+           ]
+       )
+       {
+           float physxCollision:restOffset = 0.002
+           float physxCollision:contactOffset = 0.005
+           uint physxSDFMeshCollision:sdfResolution = 256
+           float physxSDFMeshCollision:sdfNarrowBandThickness = 0.01
+           float physxSDFMeshCollision:sdfMargin = 0.01
+           token physxSDFMeshCollision:sdfBitsPerSubgridPixel = "BitsPerPixel16"
+       }
+   }
+
+The same asset using Newton schemas:
+
+.. code-block:: usda
+
+   #usda 1.0
+
+   def Xform "Body"
+   (
+       prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+   )
+   {
+       def Mesh "CollisionMesh"
+       (
+           prepend apiSchemas = [
+               "PhysicsCollisionAPI",
+               "NewtonCollisionAPI",
+               "NewtonSDFCollisionAPI",
+           ]
+       )
+       {
+           float newton:contactMargin = 0.002
+           float newton:contactGap = 0.003
+           uniform int newton:sdfMaxResolution = 256
+           uniform float newton:sdfNarrowBandInnerFraction = -0.01
+           uniform float newton:sdfNarrowBandOuterFraction = 0.01
+           uniform float newton:sdfMarginFraction = 0.01
+           uniform token newton:sdfTextureFormat = "uint16"
+       }
+   }
+
+Two details are worth highlighting:
+
+* ``newton:contactGap = 0.003`` (PhysX ``contactOffset=0.005`` minus
+  ``restOffset=0.002``), because Newton's gap is additive on top of the margin.
+* The single PhysX narrow-band thickness ``0.01`` becomes an inner/outer pair
+  ``(-0.01, 0.01)`` as fractions of the mesh AABB diagonal.
+
+To also opt into hydroelastic contacts, apply ``NewtonHydroelasticCollisionAPI``
+and author ``newton:kh``:
+
+.. code-block:: usda
+
+   def Mesh "CollisionMesh"
+   (
+       prepend apiSchemas = [
+           "PhysicsCollisionAPI",
+           "NewtonCollisionAPI",
+           "NewtonSDFCollisionAPI",
+           "NewtonHydroelasticCollisionAPI",
+       ]
+   )
+   {
+       uniform int newton:sdfMaxResolution = 256
+       float newton:kh = 1e7
+   }
+
+Programmatic Porting
+~~~~~~~~~~~~~~~~~~~~
+
+The following helper rewrites PhysX SDF attributes to their Newton equivalents
+on every prim that has ``PhysxSDFMeshCollisionAPI`` applied. It is a starting
+point — edit the token map if your assets use different bit-depth or texture
+conventions. The snippet below is executed as part of the documentation test
+suite, so it doubles as an end-to-end regression against Newton's importer.
+
+.. testcode::
+
+   from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+   _BITS_TO_FORMAT = {
+       "BitsPerPixel8": "uint8",
+       "BitsPerPixel16": "uint16",
+       "BitsPerPixel32": "float32",
+   }
+
+   def _get(prim, name):
+       attr = prim.GetAttribute(name)
+       if not attr or not attr.HasAuthoredValue():
+           return None
+       return attr.Get()
+
+   def _set(prim, name, type_name, value):
+       prim.CreateAttribute(name, type_name, custom=False).Set(value)
+
+   def _has_applied_schema(prim, name):
+       # Read apiSchemas metadata directly so detection works even when the
+       # schema type is not registered with the USD runtime.
+       op = prim.GetMetadata("apiSchemas")
+       if op is None:
+           return False
+       return any(name in items for items in (op.explicitItems, op.prependedItems,
+                                              op.appendedItems, op.addedItems,
+                                              op.orderedItems) if items)
+
+   def port_physx_sdf_to_newton(stage: Usd.Stage) -> int:
+       """Rewrite PhysxSDFMeshCollisionAPI / PhysxCollisionAPI attrs on each
+       prim as NewtonSDFCollisionAPI / NewtonCollisionAPI attrs. Returns the
+       number of prims modified."""
+       modified = 0
+       for prim in stage.Traverse():
+           if not _has_applied_schema(prim, "PhysxSDFMeshCollisionAPI"):
+               continue
+
+           # Margins: newton:contactMargin == restOffset;
+           # newton:contactGap == contactOffset - restOffset.
+           rest = _get(prim, "physxCollision:restOffset")
+           contact = _get(prim, "physxCollision:contactOffset")
+           if rest is not None:
+               _set(prim, "newton:contactMargin", Sdf.ValueTypeNames.Float, float(rest))
+           if rest is not None and contact is not None:
+               _set(prim, "newton:contactGap", Sdf.ValueTypeNames.Float,
+                    float(contact) - float(rest))
+
+           # SDF resolution (direct).
+           res = _get(prim, "physxSDFMeshCollision:sdfResolution")
+           if res is not None:
+               _set(prim, "newton:sdfMaxResolution", Sdf.ValueTypeNames.UInt, int(res))
+
+           # Narrow band: single fraction -> (inner=-t, outer=+t).
+           t = _get(prim, "physxSDFMeshCollision:sdfNarrowBandThickness")
+           if t is not None:
+               t = float(t)
+               _set(prim, "newton:sdfNarrowBandInnerFraction", Sdf.ValueTypeNames.Float, -t)
+               _set(prim, "newton:sdfNarrowBandOuterFraction", Sdf.ValueTypeNames.Float, t)
+
+           # Margin (fractional on both sides).
+           m = _get(prim, "physxSDFMeshCollision:sdfMargin")
+           if m is not None:
+               _set(prim, "newton:sdfMarginFraction", Sdf.ValueTypeNames.Float, float(m))
+
+           # Texture format token translation.
+           bits = _get(prim, "physxSDFMeshCollision:sdfBitsPerSubgridPixel")
+           if bits is not None:
+               fmt = _BITS_TO_FORMAT.get(str(bits))
+               if fmt is not None:
+                   _set(prim, "newton:sdfTextureFormat", Sdf.ValueTypeNames.Token, fmt)
+
+           # Apply the Newton API schemas so the importer honors schema defaults
+           # for any attributes left unauthored.
+           prim.AddAppliedSchema("NewtonCollisionAPI")
+           prim.AddAppliedSchema("NewtonSDFCollisionAPI")
+           modified += 1
+       return modified
+
+   # Round-trip demo: build a tiny PhysX-authored stage in memory, port it,
+   # reload it, and verify the Newton-schema attributes landed correctly.
+   stage = Usd.Stage.CreateInMemory()
+   UsdPhysics.Scene.Define(stage, "/World")
+   body = stage.DefinePrim("/World/Body", "Xform")
+   UsdPhysics.RigidBodyAPI.Apply(body)
+   mesh = UsdGeom.Mesh.Define(stage, "/World/Body/CollisionMesh")
+   mesh.CreatePointsAttr([(-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.5, 0.5, -0.5),
+                          (-0.5, 0.5, -0.5), (-0.5, -0.5, 0.5), (0.5, -0.5, 0.5),
+                          (0.5, 0.5, 0.5), (-0.5, 0.5, 0.5)])
+   mesh.CreateFaceVertexCountsAttr([4, 4, 4, 4, 4, 4])
+   mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 5, 4,
+                                     2, 3, 7, 6, 0, 3, 7, 4, 1, 2, 6, 5])
+   p = mesh.GetPrim()
+   UsdPhysics.CollisionAPI.Apply(p)
+   p.AddAppliedSchema("PhysxCollisionAPI")
+   p.AddAppliedSchema("PhysxSDFMeshCollisionAPI")
+   p.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(0.002)
+   p.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.005)
+   p.CreateAttribute("physxSDFMeshCollision:sdfResolution", Sdf.ValueTypeNames.UInt).Set(256)
+   p.CreateAttribute("physxSDFMeshCollision:sdfNarrowBandThickness",
+                     Sdf.ValueTypeNames.Float).Set(0.01)
+   p.CreateAttribute("physxSDFMeshCollision:sdfMargin", Sdf.ValueTypeNames.Float).Set(0.02)
+   p.CreateAttribute("physxSDFMeshCollision:sdfBitsPerSubgridPixel",
+                     Sdf.ValueTypeNames.Token).Set("BitsPerPixel16")
+
+   assert port_physx_sdf_to_newton(stage) == 1
+
+   # After porting, each mapped Newton attribute is authored with the
+   # expected value and the Newton API schemas are applied. Float comparisons
+   # are approximate because USD stores floats as float32.
+   def _close(a, b, tol=1e-6):
+       return abs(a - b) <= tol
+
+   assert _close(_get(p, "newton:contactMargin"), 0.002)
+   assert _close(_get(p, "newton:contactGap"), 0.003)
+   assert _get(p, "newton:sdfMaxResolution") == 256
+   assert _close(_get(p, "newton:sdfNarrowBandInnerFraction"), -0.01)
+   assert _close(_get(p, "newton:sdfNarrowBandOuterFraction"), 0.01)
+   assert _close(_get(p, "newton:sdfMarginFraction"), 0.02)
+   assert _get(p, "newton:sdfTextureFormat") == "uint16"
+   assert _has_applied_schema(p, "NewtonSDFCollisionAPI")
+
+The helper leaves the original ``PhysxSDFMeshCollisionAPI`` attributes in place
+so the asset continues to work with PhysX; you can optionally remove them after
+verifying the Newton import.
+
+.. tip::
+
+   Applying only a Newton API schema without authoring its attributes is still
+   meaningful: Newton's importer treats an applied ``NewtonSDFCollisionAPI`` as
+   a request to enable SDF collision using the schema defaults
+   (``sdfMaxResolution=64``, ``sdfMargin=0.05``, ``sdfTextureFormat="uint16"``,
+   etc.). Applying ``NewtonHydroelasticCollisionAPI`` additionally enables
+   hydroelastic contacts with ``kh=1e10``.
+
+
 Limitations
 -----------
 
