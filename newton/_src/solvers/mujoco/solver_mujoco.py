@@ -284,22 +284,6 @@ class SolverMuJoCo(SolverBase):
         return parsed
 
     @staticmethod
-    def _per_angle_value_transformer(value: str, context: dict[str, Any] | None) -> float:
-        """Transform per-angle values from MJCF, converting Nm/deg to Nm/rad for angular joints.
-
-        For attributes like stiffness (Nm/rad) and damping (Nm·s/rad) that have angle in the denominator,
-        parses the string value and multiplies by 180/pi when use_degrees=True and joint is angular.
-        """
-        parsed = string_to_warp(value, wp.float32, 0.0)
-        if context is not None:
-            joint_type = context.get("joint_type")
-            use_degrees = context.get("use_degrees", False)
-            is_angular = joint_type in ["hinge", "ball"]
-            if is_angular and use_degrees:
-                return parsed * (180 / np.pi)
-        return parsed
-
-    @staticmethod
     def _is_mjc_actuator_prim(prim: Any, _context: dict[str, Any]) -> bool:
         """Filter for prims of type ``MjcActuator`` for USD parsing.
 
@@ -562,7 +546,6 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:stiffness",
                 mjcf_attribute_name="stiffness",
-                mjcf_value_transformer=cls._per_angle_value_transformer,
             )
         )
         builder.add_custom_attribute(
@@ -575,7 +558,6 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:damping",
                 mjcf_attribute_name="damping",
-                mjcf_value_transformer=cls._per_angle_value_transformer,
             )
         )
         builder.add_custom_attribute(
@@ -4768,9 +4750,9 @@ class SolverMuJoCo(SolverBase):
                     if joint_dof_limit_margin is not None:
                         joint_params["margin"] = joint_dof_limit_margin[ai]
                     if joint_stiffness is not None:
-                        joint_params["stiffness"] = float(joint_stiffness[ai] * (np.pi / 180))
+                        joint_params["stiffness"] = float(joint_stiffness[ai])
                     if joint_damping is not None:
-                        joint_params["damping"] = float(joint_damping[ai] * (np.pi / 180))
+                        joint_params["damping"] = float(joint_damping[ai])
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]

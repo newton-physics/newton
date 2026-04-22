@@ -1506,8 +1506,11 @@ def parse_mjcf(
                     break
                 is_angular = joint_type_str == "hinge"
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 1.0))
-                limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
-                limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
+                # Only convert deg->rad when an explicit range is given; the default
+                # sentinel (+/-MAXVAL) represents "unlimited" and must not be scaled.
+                has_range = "range" in joint_attrib
+                limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
+                limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
 
                 # Parse solreflimit for joint limit stiffness and damping
                 solreflimit = parse_vec(joint_attrib, "solreflimit", (0.02, 1.0))
