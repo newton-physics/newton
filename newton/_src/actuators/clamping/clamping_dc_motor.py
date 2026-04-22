@@ -54,16 +54,12 @@ class ClampingDCMotor(Clamping):
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        if "velocity_limit" not in args:
-            raise ValueError("ClampingDCMotor requires 'velocity_limit'")
-        vel_lim = args["velocity_limit"]
+        sat = args.get("saturation_effort", math.inf)
+        if sat < 0:
+            raise ValueError(f"saturation_effort must be non-negative, got {sat}")
+        vel_lim = args.get("velocity_limit", math.inf)
         if vel_lim <= 0:
             raise ValueError(f"velocity_limit must be positive, got {vel_lim}")
-        if "saturation_effort" not in args:
-            raise ValueError("ClampingDCMotor requires 'saturation_effort'")
-        sat = args["saturation_effort"]
-        if sat <= 0 or not math.isfinite(sat):
-            raise ValueError(f"saturation_effort must be finite and positive, got {sat}")
         max_motor_effort = args.get("max_motor_effort", math.inf)
         if max_motor_effort < 0:
             raise ValueError(f"max_motor_effort must be non-negative, got {max_motor_effort}")

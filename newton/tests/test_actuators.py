@@ -1317,10 +1317,6 @@ class TestStateReset(unittest.TestCase):
         self.assertGreater(state_0.controller_state.integral.numpy()[1], 0.0, msg="env 1 integral should be untouched")
 
 
-# ---------------------------------------------------------------------------
-# 8. CUDA graph capture
-# ---------------------------------------------------------------------------
-
 
 
 if __name__ == "__main__":

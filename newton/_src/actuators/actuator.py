@@ -44,7 +44,7 @@ class Actuator:
         actuator = Actuator(
             indices=indices,
             controller=ControllerPD(kp=kp, kd=kd),
-            delay=Delay(delay=wp.array([5, 5], dtype=wp.int32), max_delay=5),
+            delay=Delay(delay_steps=wp.array([5, 5], dtype=wp.int32), max_delay=5),
             clamping=[ClampingMaxEffort(max_effort=max_effort)],
         )
 
@@ -252,7 +252,7 @@ class Actuator:
             device=self.device,
         )
 
-        # --- 3. Clamping: computed → applied (fused copy+clamp) ---
+        # --- 3. Clamping: computed → applied ---
         if self.clamping:
             src = self._computed_forces
             for clamp in self.clamping:
