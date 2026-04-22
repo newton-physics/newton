@@ -2838,9 +2838,12 @@ def parse_usd(
                     builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
                     builder.shape_sdf_texture_format[shape_id] = sdf_texture_format
                     builder.shape_sdf_margin[shape_id] = sdf_margin
+                    # kh is a material parameter; persist it regardless of
+                    # hydroelastic state so overrides survive even when hydro
+                    # is disabled.
+                    builder.shape_material_kh[shape_id] = kh
                     if is_hydroelastic:
                         builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
-                        builder.shape_material_kh[shape_id] = kh
                     if not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:

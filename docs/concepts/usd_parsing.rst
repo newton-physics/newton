@@ -629,8 +629,10 @@ attributes, along with any unit or semantic differences.
 
 PhysX does not expose a hydroelastic configuration schema for rigid-body contacts.
 Hydroelastic contacts in Newton are enabled by applying
-``NewtonHydroelasticCollisionAPI`` (which inherits ``NewtonSDFCollisionAPI``) and
-authoring ``newton:kh`` [N/m^3] for the contact stiffness coefficient.
+``NewtonHydroelasticCollisionAPI`` (which inherits ``NewtonSDFCollisionAPI``); the
+schema default ``newton:hydroelasticEnabled=true`` turns the feature on. Author
+``newton:kh`` [N/m^3] only when you need to override the default contact
+stiffness coefficient.
 
 Before and After
 ~~~~~~~~~~~~~~~~
@@ -780,7 +782,7 @@ suite, so it doubles as an end-to-end regression against Newton's importer.
            # SDF resolution (direct).
            res = _get(prim, "physxSDFMeshCollision:sdfResolution")
            if res is not None:
-               _set(prim, "newton:sdfMaxResolution", Sdf.ValueTypeNames.UInt, int(res))
+               _set(prim, "newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, int(res))
 
            # Narrow band: single fraction -> (inner=-t, outer=+t).
            t = _get(prim, "physxSDFMeshCollision:sdfNarrowBandThickness")
