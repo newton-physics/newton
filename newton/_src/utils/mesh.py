@@ -1414,9 +1414,10 @@ def validate_triangle_mesh(
     problem is reported via :func:`warnings.warn`.
 
     Args:
-        vertices: Vertex positions, shape ``(N, 3)``.
+        vertices: Vertex positions [m], shape ``(N, 3)``.
         indices: Triangle vertex indices, shape ``(F, 3)``.
-        particle_radius: If given, edges shorter than this value are flagged.
+        particle_radius: Contact radius [m]. If given, edges shorter than
+            this value are flagged.
         stacklevel: Passed to :func:`warnings.warn` so the warning points at
             the caller's frame.
     """
@@ -1511,7 +1512,7 @@ def validate_tet_mesh(
     """Check a tetrahedral mesh for inverted or degenerate elements.
 
     Args:
-        vertices: Vertex positions, shape ``(N, 3)``.
+        vertices: Vertex positions [m], shape ``(N, 3)``.
         indices: Tetrahedron vertex indices, shape ``(T, 4)``.
         stacklevel: Passed to :func:`warnings.warn`.
     """
