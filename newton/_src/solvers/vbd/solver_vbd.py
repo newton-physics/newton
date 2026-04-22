@@ -358,7 +358,9 @@ class SolverVBD(SolverBase):
         """Initialize particle-specific data structures and settings."""
         _tri_models = {"stvk": 0, "neohookean": 1}
         if particle_tri_material_model not in _tri_models:
-            raise ValueError(f"Unknown tri_material_model: {particle_tri_material_model!r}. Choose from {list(_tri_models)}")
+            raise ValueError(
+                f"Unknown tri_material_model: {particle_tri_material_model!r}. Choose from {list(_tri_models)}"
+            )
         self._tri_material_model = _tri_models[particle_tri_material_model]
 
         # Early exit if no particles

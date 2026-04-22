@@ -1026,9 +1026,9 @@ def evaluate_stvk_force_hessian(
 def evaluate_neo_hookean_membrane_force_hessian(
     face: int,
     v_order: int,
-    pos: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     tri_pose: wp.mat22,
     area: float,
     mu: float,
