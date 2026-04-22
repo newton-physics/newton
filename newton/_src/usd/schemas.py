@@ -336,10 +336,6 @@ class SchemaResolverMjc(SchemaResolver):
             "stiffness": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
             "damping": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },
-        PrimType.BODY: {
-            # Rigid body / joint domain
-            "rigid_body_linear_damping": SchemaAttribute("mjc:damping", 0.0),
-        },
         PrimType.ACTUATOR: {
             # Actuators
             "ctrl_low": SchemaAttribute("mjc:ctrlRange:min", 0.0),
