@@ -392,14 +392,16 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
     )
 
     # ============ Stress ============
-    P_vec = rest_volume * (mu * f + lmbd * (J - alpha) * cof_vec)
+    s = lmbd * (J - alpha)
+    P_vec = rest_volume * (mu * f + s * cof_vec)
 
-    # ============ Hessian ============
-    H = (
-        mu * wp.identity(n=9, dtype=float)
-        + lmbd * wp.outer(cof_vec, cof_vec)
-        + compute_cofactor_derivative(F, lmbd * (J - alpha))
-    )
+    # ============ Hessian (SPD-projected) ============
+    # The cofactor-derivative term s * d(cof F)/dF is indefinite in general.
+    # Clamp s -> max(0, s) so the whole contribution is dropped when the tet
+    # is compressed below rest (J < alpha), matching the membrane SPD-projection
+    # strategy. Stretched regime (s >= 0) uses the raw derivative.
+    s_clamp = wp.max(0.0, s)
+    H = mu * wp.identity(n=9, dtype=float) + lmbd * wp.outer(cof_vec, cof_vec) + compute_cofactor_derivative(F, s_clamp)
     H = rest_volume * H
 
     # ============ Assemble Pointwise Force ============
