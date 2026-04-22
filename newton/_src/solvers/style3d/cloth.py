@@ -259,8 +259,8 @@ def add_cloth_mesh(
         custom_attributes_particles: Extra custom attributes for particles.
         custom_attributes_springs: Extra custom attributes for springs.
         validate_mesh: If True, run quality checks on the input mesh and
-            emit warnings for degenerate or sliver triangles, short edges,
-            and non-manifold topology. See
+            emit warnings for degenerate or sliver triangles, extreme
+            angles, and non-manifold topology. See
             :func:`newton.utils.validate_triangle_mesh`.
     """
     vertices_np = np.array(vertices, dtype=float) * scale
