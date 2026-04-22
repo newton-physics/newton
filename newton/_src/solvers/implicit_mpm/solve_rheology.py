@@ -638,7 +638,7 @@ class _JacobiSolver(_RheologySolver):
         self.solve_local_launch.launch()
         # Add jacobi delta
         self.apply_stress_launch.launch()
-        fem.utils.array_axpy(x=self.delta_stress, y=self.rheology.stress, alpha=1.0, beta=1.0)
+        fem.linalg.array_axpy(x=self.delta_stress, y=self.rheology.stress, alpha=1.0, beta=1.0)
 
 
 class _CGSolver:
