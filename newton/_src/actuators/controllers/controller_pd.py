@@ -26,7 +26,7 @@ def _pd_effort_kernel(
     const_effort: wp.array[float],
     efforts: wp.array[float],
 ):
-    """PD effort: e = const_effort + feedforward + kp*(target_pos - current_pos) + kd*(target_vel - current_vel)."""
+    """effort = const_effort + feedforward + kp*(target_pos - current_pos) + kd*(target_vel - current_vel)."""
     i = wp.tid()
     pos_idx = pos_indices[i]
     vel_idx = vel_indices[i]

@@ -211,10 +211,10 @@ class ModelBuilder:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(controller_class, delay is not None, clamping_key, ctrl_shared_key)``
+        ``(controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
-        be identical across all actuators in a group.  Delay values
-        are per-DOF; the buffer is sized to ``max(delay_values) + 1``.
+        be identical across all actuators in a group.  Delay step values
+        are per-DOF; the buffer is sized to ``max(delay_step_values) + 1``.
         """
 
         controller_class: type  # Controller subclass (e.g. ControllerPD)
@@ -1737,9 +1737,9 @@ class ModelBuilder:
         ctrl_name, class_has_delay = mapping
         controller_class: type = {"ControllerPD": ControllerPD, "ControllerPID": ControllerPID}[ctrl_name]
 
-        delay_val: int | None = kwargs.pop("delay", None)
+        delay_val: int | None = kwargs.pop("delay_steps", kwargs.pop("delay", None))
         if class_has_delay and delay_val is None:
-            raise ValueError(f"{class_name} requires a 'delay' argument")
+            raise ValueError(f"{class_name} requires a 'delay_steps' argument")
 
         max_effort_val = kwargs.pop("max_force", None)
         gear_val = kwargs.pop("gear", None)
@@ -1769,7 +1769,7 @@ class ModelBuilder:
                 controller_class,
                 index=dof_idx,
                 clamping=clamping,
-                delay=delay_val,
+                delay_steps=delay_val,
                 **kwargs,
             )
 
@@ -1778,7 +1778,7 @@ class ModelBuilder:
         controller_class: type[Controller] | None = None,
         index: int | None = None,
         clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
-        delay: int | None = None,
+        delay_steps: int | None = None,
         pos_index: int | None = None,
         **kwargs: Any,
     ) -> None:
@@ -1790,7 +1790,7 @@ class ModelBuilder:
         :class:`~newton.actuators.Actuator` instance during
         :meth:`finalize <ModelBuilder.finalize>`.  Different delay
         values are supported within the same group; the buffer is
-        sized to ``max(delay_values)``.
+        sized to ``max(delay_step_values)``.
 
         .. deprecated::
             The legacy ``newton_actuators`` signature is still accepted::
@@ -1809,7 +1809,7 @@ class ModelBuilder:
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-controller. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
-            delay: Optional integer number of timesteps to delay inputs.
+            delay_steps: Optional number of timesteps [timesteps] to delay inputs.
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *index*. Differs from
                 *index* for floating-base or ball-joint articulations
@@ -1830,8 +1830,8 @@ class ModelBuilder:
             )
             input_indices = kwargs.pop("input_indices", index)
             output_indices = kwargs.pop("output_indices", clamping)
-            if delay is not None:
-                kwargs["delay"] = delay
+            if delay_steps is not None:
+                kwargs["delay_steps"] = delay_steps
             self._add_actuator_legacy(legacy_cls, input_indices, output_indices, **kwargs)
             return
 
@@ -1877,7 +1877,7 @@ class ModelBuilder:
             (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
         )
-        entry_key = (controller_class, delay is not None, clamping_key, ctrl_shared_key)
+        entry_key = (controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
@@ -1897,8 +1897,8 @@ class ModelBuilder:
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
         entry.controller_args.append(ctrl_array_params)
-        if delay is not None:
-            entry.delay_args.append({"delay": delay})
+        if delay_steps is not None:
+            entry.delay_args.append({"delay_steps": delay_steps})
         entry.clamping_args.append(clamping_array_params_list)
 
     def _stack_args_to_arrays(
@@ -10523,7 +10523,7 @@ class ModelBuilder:
                 delay_obj = None
                 if entry.delay_args:
                     delay_arrays = self._stack_args_to_arrays(entry.delay_args, device=device)
-                    max_delay = max(d["delay"] for d in entry.delay_args)
+                    max_delay = max(d["delay_steps"] for d in entry.delay_args)
                     delay_obj = Delay(**delay_arrays, max_delay=max_delay)
 
                 # Build clamping objects from per-DOF arrays + shared kwargs

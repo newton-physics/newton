@@ -65,10 +65,10 @@ class Clamping:
         Args:
             src_forces: Input effort buffer [N or N·m] to read. Shape ``(N,)``.
             dst_forces: Output effort buffer [N or N·m] to write. Shape ``(N,)``.
-            positions: Joint positions [m or rad] (global ``joint_q`` array).
-            velocities: Joint velocities [m/s or rad/s] (global ``joint_qd`` array).
-            pos_indices: Indices into *positions* (``joint_q`` layout).
-            vel_indices: Indices into *velocities* (``joint_qd`` layout).
+            positions: Joint positions [m or rad].
+            velocities: Joint velocities [m/s or rad/s].
+            pos_indices: Indices into *positions* for each DOF.
+            vel_indices: Indices into *velocities* for each DOF.
             device: Warp device for kernel launches.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement modify_forces")

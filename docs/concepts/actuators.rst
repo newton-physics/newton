@@ -7,10 +7,11 @@ Actuators
 =========
 
 Actuators provide composable implementations that read physics simulation
-state, compute effort, and write the effort back to control arrays for
-application to the simulation.  The simulator does not need to be part of
-Newton: actuators are designed to be reusable anywhere the caller can provide
-state arrays and consume effort.
+state, compute effort, and **accumulate** (scatter-add) the effort into
+control arrays for application to the simulation.  The caller must zero the
+output array before stepping actuators each frame.  The simulator does not
+need to be part of Newton: actuators are designed to be reusable anywhere the
+caller can provide state arrays and consume effort.
 
 Each :class:`Actuator` instance is **vectorized**: a single actuator object
 operates on a batch of DOF indices in global state and control arrays, allowing
@@ -100,7 +101,7 @@ when the model is finalized:
        index=dof_index,
        kp=100.0,
        kd=10.0,
-       delay=5,
+       delay_steps=5,
        clamping=[(ClampingMaxEffort, {"max_effort": 50.0})],
    )
 
@@ -119,7 +120,7 @@ components directly:
    actuator = Actuator(
        indices,
        controller=ControllerPD(kp=kp, kd=kd),
-       delay=Delay(delay=wp.array([5], dtype=wp.int32), max_delay=5),
+       delay=Delay(delay_steps=wp.array([5], dtype=wp.int32), max_delay=5),
        clamping=[ClampingMaxEffort(max_effort=max_e)],
    )
 
@@ -141,6 +142,7 @@ after each step:
    control = model.control()
 
    for step in range(3):
+       control.joint_f.zero_()  # zero output before stepping actuators
        model.actuators[0].step(state, control, state_0, state_1, dt=0.01)
        state_0, state_1 = state_1, state_0
 

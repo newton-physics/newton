@@ -1722,7 +1722,7 @@ class ArticulationView:
                 :class:`~newton.actuators.Clamping`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
-                ``"delays"``).
+                ``"delay_steps"``).
 
         Returns:
             Parameter values shaped ``(world_count, dofs_per_world)`` where
@@ -1763,7 +1763,7 @@ class ArticulationView:
                 :class:`~newton.actuators.Clamping`, or
                 :class:`~newton.actuators.Delay` instance.
             name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
-                ``"delays"``).
+                ``"delay_steps"``).
             values: New parameter values shaped ``(world_count, dofs_per_world)``
                 where ``dofs_per_world`` is the total number of DOFs in the view.
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.

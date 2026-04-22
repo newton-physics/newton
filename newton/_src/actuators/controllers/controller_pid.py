@@ -33,7 +33,7 @@ def _pid_effort_kernel(
     efforts: wp.array[float],
     next_integral: wp.array[float],
 ):
-    """PID effort: e = const_effort + feedforward + kp*(target_pos - current_pos) + ki*integral(target_pos - current_pos) + kd*(target_vel - current_vel)."""
+    """effort = const_effort + feedforward + kp*(target_pos - current_pos) + ki*integral(target_pos - current_pos) + kd*(target_vel - current_vel)."""
     i = wp.tid()
     pos_idx = pos_indices[i]
     vel_idx = vel_indices[i]

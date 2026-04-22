@@ -11,6 +11,7 @@ from typing import Any
 from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .controllers import Controller, ControllerNetLSTM, ControllerNetMLP, ControllerPD, ControllerPID
 from .delay import Delay
+from .utils import load_metadata
 
 
 @dataclass
@@ -39,14 +40,11 @@ def _resolve_neural_controller(kwargs: dict[str, Any]) -> tuple[type[Controller]
     """Read checkpoint metadata and dispatch to MLP or LSTM runtime.
 
     The checkpoint must contain ``"model_type"`` in its metadata
-    (``"mlp"`` or ``"lstm"``).  Only the metadata is loaded here;
-    the full model is loaded later by the controller constructor.
+    (``"mlp"`` or ``"lstm"``).
 
     Raises:
         ValueError: If ``model_type`` is missing or not recognised.
     """
-    from .utils import load_metadata
-
     model_path = kwargs["model_path"]
     metadata = load_metadata(model_path)
 
@@ -120,7 +118,7 @@ SCHEMA_REGISTRY: dict[str, SchemaEntry] = {
     # ── Delay ──────────────────────────────────────────────────────────
     "NewtonActuatorDelayAPI": SchemaEntry(
         component_class=Delay,
-        param_map={"delaySteps": "delay"},
+        param_map={"delaySteps": "delay_steps"},
     ),
 }
 

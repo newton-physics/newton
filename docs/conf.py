@@ -183,6 +183,7 @@ autodoc_type_aliases = {
     "UsdGeom.Mesh": "pxr.UsdGeom.Mesh",
     "UsdShade.Material": "pxr.UsdShade.Material",
     "UsdShade.Shader": "pxr.UsdShade.Shader",
+    "State": "newton.State",
 }
 
 

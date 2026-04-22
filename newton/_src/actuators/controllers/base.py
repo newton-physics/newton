@@ -92,13 +92,13 @@ class Controller:
         """Compute actuator output effort and write to ``forces[i]``.
 
         Args:
-            positions: Joint positions [m or rad] (global ``joint_q`` array).
-            velocities: Joint velocities [m/s or rad/s] (global ``joint_qd`` array).
-            target_pos: Target positions [m or rad] (global or compact array).
-            target_vel: Target velocities [m/s or rad/s] (global or compact array).
+            positions: Joint positions [m or rad].
+            velocities: Joint velocities [m/s or rad/s].
+            target_pos: Target positions [m or rad].
+            target_vel: Target velocities [m/s or rad/s].
             feedforward: Feedforward effort [N or N·m] (may be ``None``).
-            pos_indices: Indices into *positions* (``joint_q`` layout).
-            vel_indices: Indices into *velocities* (``joint_qd`` layout).
+            pos_indices: Indices into *positions* for each DOF.
+            vel_indices: Indices into *velocities* for each DOF.
             target_pos_indices: Indices into *target_pos*.
             target_vel_indices: Indices into *target_vel* and *feedforward*.
             forces: Scratch buffer to write effort [N or N·m] to. Shape ``(N,)``.

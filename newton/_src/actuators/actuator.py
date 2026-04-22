@@ -14,7 +14,6 @@ from .controllers.base import Controller
 from .delay import Delay
 
 
-# TODO: replace with a Transmission class that does J multiplication before accumulating into the output array.
 @wp.kernel
 def _scatter_add_kernel(
     forces: wp.array[float],
@@ -36,8 +35,9 @@ class Actuator:
 
     An actuator reads from simulation state/control arrays, optionally
     delays the control targets, computes effort via a controller, applies
-    clamping (effort limits, saturation, etc.), and writes the result to
-    the output array.
+    clamping (effort limits, saturation, etc.), and **accumulates** the
+    result into the output array (scatter-add).  The caller must zero the
+    output array before stepping actuators.
 
     Usage::
 
@@ -45,7 +45,7 @@ class Actuator:
             indices=indices,
             controller=ControllerPD(kp=kp, kd=kd),
             delay=Delay(delay=wp.array([5, 5], dtype=wp.int32), max_delay=5),
-            clamping=[ClampingMaxEffort(max_effort=max_f)],
+            clamping=[ClampingMaxEffort(max_effort=max_effort)],
         )
 
         # Simulation loop
@@ -97,18 +97,18 @@ class Actuator:
         """Initialize actuator.
 
         Args:
-            indices: DOF indices into ``joint_qd``-shaped arrays (velocities,
-                velocity targets, feedforward). Shape ``(N,)``.
+            indices: DOF indices into velocity-shaped arrays (velocities,
+                velocity targets, feedforward, effort output). Shape ``(N,)``.
             controller: Controller that computes raw effort.
             delay: Optional Delay instance for input delay.
             clamping: List of Clamping objects (post-controller effort bounds).
-            pos_indices: DOF indices into ``joint_q``-shaped arrays (positions,
+            pos_indices: DOF indices into position-shaped arrays (positions,
                 position targets). Defaults to *indices*. Differs from
-                *indices* for floating-base or ball-joint articulations
-                where ``joint_q`` and ``joint_qd`` have different layouts.
-            frc_indices: DOF indices into ``joint_f``-shaped arrays (output
-                effort). Defaults to *indices*. Differs from *indices*
-                for coupled transmissions or tendon-driven joints.
+                *indices* when position and velocity arrays have different
+                layouts (e.g. floating-base or ball-joint articulations).
+            frc_indices: DOF indices into effort output arrays. Defaults to
+                *indices*. Differs from *indices* for coupled transmissions
+                or tendon-driven joints.
             state_pos_attr: Attribute on sim_state for positions.
             state_vel_attr: Attribute on sim_state for velocities.
             control_target_pos_attr: Attribute on sim_control for target positions.

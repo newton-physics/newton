@@ -110,12 +110,12 @@ class Delay:
 
     Delays targets using a circular buffer of depth
     ``max_delay``.  Each DOF has its own lag stored in
-    :attr:`delays` (shape ``(N,)``).  The buffer is sized for the
-    maximum lag across all DOFs so that DOFs with different delays
+    :attr:`delay_steps` (shape ``(N,)``).  The buffer is sized for the
+    maximum lag across all DOFs so that DOFs with different delay steps
     can share the same actuator group.
 
     The delay always produces output.  When the buffer is empty
-    (e.g. right after reset) or a DOF has ``delay == 0``, the
+    (e.g. right after reset) or a DOF has ``delay_steps == 0``, the
     current targets are returned directly.  When underfilled, the
     lag is clamped to the available history so the oldest entry is
     returned.
@@ -169,18 +169,18 @@ class Delay:
         Returns:
             Complete arguments with defaults filled in.
         """
-        if "delay" not in args:
-            raise ValueError("Delay requires 'delay' argument")
-        delay = args["delay"]
-        if delay < 0:
-            raise ValueError(f"delay must be >= 0, got {delay}")
-        return {"delay": delay}
+        if "delay_steps" not in args:
+            raise ValueError("Delay requires 'delay_steps' argument")
+        delay_steps = args["delay_steps"]
+        if delay_steps < 0:
+            raise ValueError(f"delay_steps must be >= 0, got {delay_steps}")
+        return {"delay_steps": delay_steps}
 
-    def __init__(self, delay: wp.array[int], max_delay: int):
+    def __init__(self, delay_steps: wp.array[int], max_delay: int):
         """Initialize delay.
 
         Args:
-            delay: Per-DOF delay values [timesteps], shape ``(N,)``.
+            delay_steps: Per-DOF delay values [timesteps], shape ``(N,)``.
             max_delay: Maximum delay across all DOFs.  Determines the
                 circular-buffer depth.
 
@@ -191,7 +191,7 @@ class Delay:
             raise ValueError(f"max_delay must be >= 1, got {max_delay}")
         self.buf_depth = max_delay
         """Circular-buffer depth (equals ``max_delay``)."""
-        self.delays = delay
+        self.delay_steps = delay_steps
         """Per-DOF delay values [timesteps], shape (N,)."""
         self._num_actuators: int = 0
         self._device: wp.Device | None = None
@@ -244,17 +244,17 @@ class Delay:
     ) -> tuple[wp.array[float], wp.array[float], wp.array[float]]:
         """Read per-DOF delayed targets from the circular buffer.
 
-        Each DOF reads from its own lag offset stored in :attr:`delays`,
+        Each DOF reads from its own lag offset stored in :attr:`delay_steps`,
         clamped to available history (per-DOF ``num_pushes``).  When the
         buffer is empty, falls back to the current targets; when
         underfilled, the lag is clamped to the oldest available entry.
 
         Args:
-            target_pos: Current target positions [m or rad] (global ``joint_target_pos``).
-            target_vel: Current target velocities [m/s or rad/s] (global ``joint_target_vel``).
-            feedforward: Feedforward control input [N or N·m] (global, may be None).
-            pos_indices: Indices into *target_pos* (``joint_q`` layout).
-            vel_indices: Indices into *target_vel* and *feedforward* (``joint_qd`` layout).
+            target_pos: Current target positions [m or rad].
+            target_vel: Current target velocities [m/s or rad/s].
+            feedforward: Feedforward control input [N or N·m] (may be ``None``).
+            pos_indices: Indices into *target_pos* for each DOF.
+            vel_indices: Indices into *target_vel* and *feedforward* for each DOF.
             current_state: Delay state to read from.
 
         Returns:
@@ -265,7 +265,7 @@ class Delay:
             kernel=_delay_read_kernel,
             dim=self._num_actuators,
             inputs=[
-                self.delays,
+                self.delay_steps,
                 current_state.num_pushes,
                 current_state.write_idx,
                 self.buf_depth,
@@ -296,11 +296,11 @@ class Delay:
         """Write current targets into the buffer and advance the write pointer.
 
         Args:
-            target_pos: Current target positions [m or rad] (global ``joint_target_pos``).
-            target_vel: Current target velocities [m/s or rad/s] (global ``joint_target_vel``).
-            feedforward: Current feedforward input [N or N·m] (global, may be None).
-            pos_indices: Indices into *target_pos* (``joint_q`` layout).
-            vel_indices: Indices into *target_vel* and *feedforward* (``joint_qd`` layout).
+            target_pos: Current target positions [m or rad].
+            target_vel: Current target velocities [m/s or rad/s].
+            feedforward: Current feedforward input [N or N·m] (may be ``None``).
+            pos_indices: Indices into *target_pos* for each DOF.
+            vel_indices: Indices into *target_vel* and *feedforward* for each DOF.
             current_state: Delay state to read from.
             next_state: Delay state to write into.
         """

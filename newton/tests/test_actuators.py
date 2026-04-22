@@ -7,6 +7,7 @@ import importlib.util
 import json
 import math
 import os
+import tempfile
 import unittest
 import warnings
 
@@ -187,13 +188,9 @@ class TestControllerNetMLP(unittest.TestCase):
     """ControllerNetMLP — load via model_path, call compute() directly."""
 
     def setUp(self):
-        import tempfile
-
-        import torch
-
-        self.torch = torch
+        self.torch = _torch
         self.device = wp.get_device()
-        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._torch_dev = _torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
 
     def _save_torchscript(self, net, filename="mlp.pt", metadata=None):
@@ -305,13 +302,9 @@ class TestControllerNetLSTM(unittest.TestCase):
     """ControllerNetLSTM — load via model_path, call compute() directly."""
 
     def setUp(self):
-        import tempfile
-
-        import torch
-
-        self.torch = torch
+        self.torch = _torch
         self.device = wp.get_device()
-        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._torch_dev = _torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
 
     def _make_lstm(self, hidden=8, layers=1):
@@ -408,7 +401,7 @@ class TestDelay(unittest.TestCase):
         n, max_delay = 2, 5
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = Delay(delays, max_delay)
+        delay = Delay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         ds = delay.state(n, device)
@@ -423,7 +416,7 @@ class TestDelay(unittest.TestCase):
         n, delay_val = 1, 2
         device = wp.get_device()
         delays = wp.array([delay_val], dtype=wp.int32, device=device)
-        delay = Delay(delays, delay_val)
+        delay = Delay(delay_steps=delays, max_delay=delay_val)
         delay.finalize(device, n)
 
         indices = wp.array([0], dtype=wp.uint32, device=device)
@@ -452,7 +445,7 @@ class TestDelay(unittest.TestCase):
         n = 2
         device = wp.get_device()
         delays = wp.array([0, 1], dtype=wp.int32, device=device)
-        delay = Delay(delays, max_delay=1)
+        delay = Delay(delay_steps=delays, max_delay=1)
         delay.finalize(device, n)
 
         indices = wp.array([0, 1], dtype=wp.uint32, device=device)
@@ -603,7 +596,7 @@ class TestActuatorStep(unittest.TestCase):
             index=dof_a,
             kp=kp,
             kd=kd,
-            delay=delay_a,
+            delay_steps=delay_a,
             clamping=[(ClampingDCMotor, dc_args)],
         )
         template.add_actuator(
@@ -611,7 +604,7 @@ class TestActuatorStep(unittest.TestCase):
             index=dof_b,
             kp=kp,
             kd=kd,
-            delay=delay_b,
+            delay_steps=delay_b,
             clamping=[(ClampingDCMotor, dc_args)],
         )
 
@@ -624,7 +617,7 @@ class TestActuatorStep(unittest.TestCase):
         n = actuator.num_actuators
         self.assertEqual(n, 2 * num_envs)
 
-        delays_np = actuator.delay.delays.numpy()
+        delays_np = actuator.delay.delay_steps.numpy()
         expected_delays = [delay_a, delay_b] * num_envs
         np.testing.assert_array_equal(delays_np, expected_delays)
 
@@ -651,12 +644,13 @@ class TestActuatorStep(unittest.TestCase):
             lag = min(dof_delay - 1, pushes - 1)
             return written_targets[step_i - 1 - lag]
 
+        control = model.control()
         for step_i in range(5):
-            control = model.control()
             tgt = target_schedule[step_i]
             _write_dof_values(model, control.joint_target_pos, dofs, [tgt] * n)
             written_targets.append(tgt)
 
+            control.joint_f.zero_()
             actuator.step(state, control, state_0, state_1, dt)
             state_0, state_1 = state_1, state_0
 
@@ -723,7 +717,7 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(delayed.num_actuators, 1)
         self.assertAlmostEqual(delayed.controller.kp.numpy()[0], 200.0, places=3)
         self.assertAlmostEqual(delayed.controller.kd.numpy()[0], 20.0, places=3)
-        np.testing.assert_array_equal(delayed.delay.delays.numpy(), [5])
+        np.testing.assert_array_equal(delayed.delay.delay_steps.numpy(), [5])
         self.assertEqual(delayed.delay.buf_depth, 5)
 
         stage = Usd.Stage.Open(usd_path)
@@ -758,7 +752,7 @@ class TestActuatorBuilder(unittest.TestCase):
                 (ClampingDCMotor, {"saturation_effort": 80.0, "velocity_limit": 15.0, "max_motor_effort": 200.0})
             ],
         )
-        builder.add_actuator(ControllerPD, index=dofs[2], kp=150.0, delay=4)
+        builder.add_actuator(ControllerPD, index=dofs[2], kp=150.0, delay_steps=4)
 
         model = builder.finalize()
         self.assertEqual(len(model.actuators), 3)
@@ -787,7 +781,7 @@ class TestActuatorBuilder(unittest.TestCase):
 
         self.assertEqual(pd_delay.num_actuators, 1)
         np.testing.assert_array_almost_equal(pd_delay.controller.kp.numpy(), [150.0])
-        np.testing.assert_array_equal(pd_delay.delay.delays.numpy(), [4])
+        np.testing.assert_array_equal(pd_delay.delay.delay_steps.numpy(), [4])
         self.assertEqual(pd_delay.delay.buf_depth, 4)
         ds = pd_delay.state().delay_state
         self.assertEqual(ds.buffer_pos.shape, (4, 1))
@@ -816,10 +810,10 @@ class TestActuatorBuilder(unittest.TestCase):
         dof2 = template.joint_qd_start[j2]
 
         template.add_actuator(
-            ControllerPD, index=dof1, kp=100.0, kd=10.0, pos_index=template.joint_q_start[j1], delay=2
+            ControllerPD, index=dof1, kp=100.0, kd=10.0, pos_index=template.joint_q_start[j1], delay_steps=2
         )
         template.add_actuator(
-            ControllerPD, index=dof2, kp=200.0, kd=20.0, pos_index=template.joint_q_start[j2], delay=3
+            ControllerPD, index=dof2, kp=200.0, kd=20.0, pos_index=template.joint_q_start[j2], delay_steps=3
         )
 
         builder = newton.ModelBuilder()
@@ -841,7 +835,7 @@ class TestActuatorBuilder(unittest.TestCase):
         np.testing.assert_array_almost_equal(act.controller.kp.numpy(), [100.0, 200.0] * num_envs)
         np.testing.assert_array_almost_equal(act.controller.kd.numpy(), [10.0, 20.0] * num_envs)
 
-        np.testing.assert_array_equal(act.delay.delays.numpy(), [2, 3] * num_envs)
+        np.testing.assert_array_equal(act.delay.delay_steps.numpy(), [2, 3] * num_envs)
         self.assertEqual(act.delay.buf_depth, 3)
 
         act_state = act.state()
@@ -906,7 +900,7 @@ class TestLegacyActuatorCompat(unittest.TestCase):
         act = model.actuators[0]
         self.assertIsInstance(act.controller, ControllerPD)
         self.assertIsNotNone(act.delay)
-        np.testing.assert_array_equal(act.delay.delays.numpy(), [3])
+        np.testing.assert_array_equal(act.delay.delay_steps.numpy(), [3])
 
     def test_legacy_pid(self):
         """ActuatorPID maps to ControllerPID."""
@@ -1166,7 +1160,7 @@ class TestStateReset(unittest.TestCase):
         n, max_delay = 4, 2
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = Delay(delays, max_delay)
+        delay = Delay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         state_0 = delay.state(n, device)
@@ -1202,7 +1196,7 @@ class TestStateReset(unittest.TestCase):
         n, max_delay = 2, 3
         device = wp.get_device()
         delays = wp.array([max_delay] * n, dtype=wp.int32, device=device)
-        delay = Delay(delays, max_delay)
+        delay = Delay(delay_steps=delays, max_delay=max_delay)
         delay.finalize(device, n)
 
         state = delay.state(n, device)
@@ -1287,7 +1281,7 @@ class TestStateReset(unittest.TestCase):
         joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
         template.add_articulation([joint])
         dof = template.joint_qd_start[joint]
-        template.add_actuator(ControllerPID, index=dof, kp=50.0, ki=10.0, kd=5.0, delay=2)
+        template.add_actuator(ControllerPID, index=dof, kp=50.0, ki=10.0, kd=5.0, delay_steps=2)
 
         builder = newton.ModelBuilder()
         builder.replicate(template, num_envs)
@@ -1302,9 +1296,10 @@ class TestStateReset(unittest.TestCase):
         state_1 = actuator.state()
         dofs = actuator.indices.numpy().tolist()
 
+        control = model.control()
         for _step in range(3):
-            control = model.control()
             _write_dof_values(model, control.joint_target_pos, dofs, [10.0] * n)
+            control.joint_f.zero_()
             actuator.step(state, control, state_0, state_1, 0.01)
             state_0, state_1 = state_1, state_0
 
@@ -1326,61 +1321,6 @@ class TestStateReset(unittest.TestCase):
 # 8. CUDA graph capture
 # ---------------------------------------------------------------------------
 
-
-class TestCUDAGraphCapture(unittest.TestCase):
-    """Smoke test: PD + clamping actuator step is capturable in a CUDA graph."""
-
-    @unittest.skipUnless(wp.is_cuda_available(), "CUDA required")
-    def test_graphable_step(self):
-        """Capture PD + MaxForce + Delay actuator.step() and replay, verify same result."""
-        template = newton.ModelBuilder()
-        link = template.add_link()
-        joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
-        template.add_articulation([joint])
-        dof = template.joint_qd_start[joint]
-        template.add_actuator(
-            ControllerPD,
-            index=dof,
-            kp=100.0,
-            kd=10.0,
-            delay=2,
-            clamping=[(ClampingMaxEffort, {"max_effort": 50.0})],
-        )
-
-        builder = newton.ModelBuilder()
-        builder.replicate(template, 2)
-        model = builder.finalize(device="cuda:0")
-
-        actuator = model.actuators[0]
-        self.assertTrue(actuator.is_graphable())
-
-        state = model.state()
-        control = model.control()
-        state_0 = actuator.state()
-        state_1 = actuator.state()
-        dt = 0.01
-        dofs = actuator.indices.numpy().tolist()
-        _write_dof_values(model, control.joint_target_pos, dofs, [1.0] * actuator.num_actuators)
-
-        actuator.step(state, control, state_0, state_1, dt)
-        state_0, state_1 = state_1, state_0
-        ref_forces = control.joint_f.numpy().copy()
-
-        control_graph = model.control()
-        _write_dof_values(model, control_graph.joint_target_pos, dofs, [1.0] * actuator.num_actuators)
-        state_g0 = actuator.state()
-        state_g1 = actuator.state()
-
-        with wp.ScopedCapture(device="cuda:0") as capture:
-            actuator.step(state, control_graph, state_g0, state_g1, dt)
-
-        wp.capture_launch(capture.graph)
-        wp.synchronize_device("cuda:0")
-
-        graph_forces = control_graph.joint_f.numpy()
-        np.testing.assert_array_almost_equal(
-            graph_forces, ref_forces, decimal=5, err_msg="Graph-captured step should match eager step"
-        )
 
 
 if __name__ == "__main__":

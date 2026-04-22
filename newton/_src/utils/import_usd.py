@@ -3243,7 +3243,7 @@ def parse_usd(
         clamping_specs = []
         for comp_class, comp_kwargs in parsed.component_specs:
             if comp_class is Delay:
-                delay_val = comp_kwargs.get("delay")
+                delay_val = comp_kwargs.get("delay_steps")
             else:
                 clamping_specs.append((comp_class, comp_kwargs))
 
@@ -3251,7 +3251,7 @@ def parse_usd(
             parsed.controller_class,
             index=dof_index,
             clamping=clamping_specs if clamping_specs else None,
-            delay=delay_val,
+            delay_steps=delay_val,
             pos_index=pos_index,
             **parsed.controller_kwargs,
         )
