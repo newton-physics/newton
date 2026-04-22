@@ -857,172 +857,6 @@ def _test_compute_force_element_adjacency(
 
 
 @wp.func
-def evaluate_stvk_force_hessian(
-    face: int,
-    v_order: int,
-    pos: wp.array[wp.vec3],
-    pos_anchor: wp.array[wp.vec3],
-    tri_indices: wp.array2d[wp.int32],
-    tri_pose: wp.mat22,
-    area: float,
-    mu: float,
-    lmbd: float,
-    damping: float,
-    dt: float,
-):
-    # StVK energy density: psi = mu * ||G||_F^2 + 0.5 * lambda * (trace(G))^2
-
-    # Deformation gradient F = [f0, f1] (3x2 matrix as two 3D column vectors)
-    v0 = tri_indices[face, 0]
-    v1 = tri_indices[face, 1]
-    v2 = tri_indices[face, 2]
-
-    x0 = pos[v0]
-    x01 = pos[v1] - x0
-    x02 = pos[v2] - x0
-
-    # Cache tri_pose elements
-    DmInv00 = tri_pose[0, 0]
-    DmInv01 = tri_pose[0, 1]
-    DmInv10 = tri_pose[1, 0]
-    DmInv11 = tri_pose[1, 1]
-
-    # Compute F columns directly: F = [x01, x02] * tri_pose = [f0, f1]
-    f0 = x01 * DmInv00 + x02 * DmInv10
-    f1 = x01 * DmInv01 + x02 * DmInv11
-
-    # Green strain tensor: G = 0.5(F^T F - I) = [[G00, G01], [G01, G11]] (symmetric 2x2)
-    f0_dot_f0 = wp.dot(f0, f0)
-    f1_dot_f1 = wp.dot(f1, f1)
-    f0_dot_f1 = wp.dot(f0, f1)
-
-    G00 = 0.5 * (f0_dot_f0 - 1.0)
-    G11 = 0.5 * (f1_dot_f1 - 1.0)
-    G01 = 0.5 * f0_dot_f1
-
-    # Frobenius norm squared of Green strain: ||G||_F^2 = G00^2 + G11^2 + 2 * G01^2
-    G_frobenius_sq = G00 * G00 + G11 * G11 + 2.0 * G01 * G01
-    if G_frobenius_sq < 1.0e-20:
-        return wp.vec3(0.0), wp.mat33(0.0)
-
-    trace_G = G00 + G11
-
-    # First Piola-Kirchhoff stress tensor (StVK model)
-    # PK1 = 2*mu*F*G + lambda*trace(G)*F = [PK1_col0, PK1_col1] (3x2)
-    lambda_trace_G = lmbd * trace_G
-    two_mu = 2.0 * mu
-
-    PK1_col0 = f0 * (two_mu * G00 + lambda_trace_G) + f1 * (two_mu * G01)
-    PK1_col1 = f0 * (two_mu * G01) + f1 * (two_mu * G11 + lambda_trace_G)
-
-    # Vertex selection using masks to avoid branching
-    mask0 = float(v_order == 0)
-    mask1 = float(v_order == 1)
-    mask2 = float(v_order == 2)
-
-    # Deformation gradient derivatives w.r.t. current vertex position
-    df0_dx = DmInv00 * (mask1 - mask0) + DmInv10 * (mask2 - mask0)
-    df1_dx = DmInv01 * (mask1 - mask0) + DmInv11 * (mask2 - mask0)
-
-    # Force via chain rule: force = -(dpsi/dF) : (dF/dx)
-    dpsi_dx = PK1_col0 * df0_dx + PK1_col1 * df1_dx
-    force = -dpsi_dx
-
-    # Hessian computation using Cauchy-Green invariants
-    df0_dx_sq = df0_dx * df0_dx
-    df1_dx_sq = df1_dx * df1_dx
-    df0_df1_cross = df0_dx * df1_dx
-
-    Ic = f0_dot_f0 + f1_dot_f1
-    two_dpsi_dIc = -mu + (0.5 * Ic - 1.0) * lmbd
-    I33 = wp.identity(n=3, dtype=float)
-
-    f0_outer_f0 = wp.outer(f0, f0)
-    f1_outer_f1 = wp.outer(f1, f1)
-    f0_outer_f1 = wp.outer(f0, f1)
-    f1_outer_f0 = wp.outer(f1, f0)
-
-    H_IIc00_scaled = mu * (f0_dot_f0 * I33 + 2.0 * f0_outer_f0 + f1_outer_f1)
-    H_IIc11_scaled = mu * (f1_dot_f1 * I33 + 2.0 * f1_outer_f1 + f0_outer_f0)
-    H_IIc01_scaled = mu * (f0_dot_f1 * I33 + f1_outer_f0)
-
-    # d2(psi)/dF^2 components
-    d2E_dF2_00 = lmbd * f0_outer_f0 + two_dpsi_dIc * I33 + H_IIc00_scaled
-    d2E_dF2_01 = lmbd * f0_outer_f1 + H_IIc01_scaled
-    d2E_dF2_11 = lmbd * f1_outer_f1 + two_dpsi_dIc * I33 + H_IIc11_scaled
-
-    # Chain rule: H = (dF/dx)^T * (d2(psi)/dF^2) * (dF/dx)
-    hessian = df0_dx_sq * d2E_dF2_00 + df1_dx_sq * d2E_dF2_11 + df0_df1_cross * (d2E_dF2_01 + wp.transpose(d2E_dF2_01))
-
-    if damping > 0.0:
-        inv_dt = 1.0 / dt
-
-        # Previous deformation gradient for velocity
-        x0_prev = pos_anchor[v0]
-        x01_prev = pos_anchor[v1] - x0_prev
-        x02_prev = pos_anchor[v2] - x0_prev
-
-        vel_x01 = (x01 - x01_prev) * inv_dt
-        vel_x02 = (x02 - x02_prev) * inv_dt
-
-        df0_dt = vel_x01 * DmInv00 + vel_x02 * DmInv10
-        df1_dt = vel_x01 * DmInv01 + vel_x02 * DmInv11
-
-        # First constraint: Cmu = ||G||_F (Frobenius norm of Green strain)
-        Cmu = wp.sqrt(G_frobenius_sq)
-
-        G00_normalized = G00 / Cmu
-        G01_normalized = G01 / Cmu
-        G11_normalized = G11 / Cmu
-
-        # Time derivative of Green strain: dG/dt = 0.5 * (F^T * dF/dt + (dF/dt)^T * F)
-        dG_dt_00 = wp.dot(f0, df0_dt)  # dG00/dt
-        dG_dt_11 = wp.dot(f1, df1_dt)  # dG11/dt
-        dG_dt_01 = 0.5 * (wp.dot(f0, df1_dt) + wp.dot(f1, df0_dt))  # dG01/dt
-
-        # Time derivative of first constraint: dCmu/dt = (1/||G||_F) * (G : dG/dt)
-        dCmu_dt = G00_normalized * dG_dt_00 + G11_normalized * dG_dt_11 + 2.0 * G01_normalized * dG_dt_01
-
-        # Gradient of first constraint w.r.t. deformation gradient: dCmu/dF = (G/||G||_F) * F
-        dCmu_dF_col0 = G00_normalized * f0 + G01_normalized * f1  # dCmu/df0
-        dCmu_dF_col1 = G01_normalized * f0 + G11_normalized * f1  # dCmu/df1
-
-        # Gradient of constraint w.r.t. vertex position: dCmu/dx = (dCmu/dF) : (dF/dx)
-        dCmu_dx = df0_dx * dCmu_dF_col0 + df1_dx * dCmu_dF_col1
-
-        # Damping force from first constraint: -mu * damping * (dCmu/dt) * (dCmu/dx)
-        kd_mu = mu * damping
-        force += -kd_mu * dCmu_dt * dCmu_dx
-
-        # Damping Hessian: mu * damping * (1/dt) * (dCmu/dx) x (dCmu/dx)
-        hessian += kd_mu * inv_dt * wp.outer(dCmu_dx, dCmu_dx)
-
-        # Second constraint: Clmbd = trace(G) = G00 + G11 (trace of Green strain)
-        # Time derivative of second constraint: dClmbd/dt = trace(dG/dt)
-        dClmbd_dt = dG_dt_00 + dG_dt_11
-
-        # Gradient of second constraint w.r.t. deformation gradient: dClmbd/dF = F
-        dClmbd_dF_col0 = f0  # dClmbd/df0
-        dClmbd_dF_col1 = f1  # dClmbd/df1
-
-        # Gradient of Clmbd w.r.t. vertex position: dClmbd/dx = (dClmbd/dF) : (dF/dx)
-        dClmbd_dx = df0_dx * dClmbd_dF_col0 + df1_dx * dClmbd_dF_col1
-
-        # Damping force from second constraint: -lambda * damping * (dClmbd/dt) * (dClmbd/dx)
-        kd_lmbd = lmbd * damping
-        force += -kd_lmbd * dClmbd_dt * dClmbd_dx
-
-        # Damping Hessian from second constraint: lambda * damping * (1/dt) * (dClmbd/dx) x (dClmbd/dx)
-        hessian += kd_lmbd * inv_dt * wp.outer(dClmbd_dx, dClmbd_dx)
-
-    # Apply area scaling
-    force *= area
-    hessian *= area
-
-    return force, hessian
-
-
-@wp.func
 def evaluate_neo_hookean_membrane_force_hessian(
     face: int,
     v_order: int,
@@ -1115,24 +949,63 @@ def evaluate_neo_hookean_membrane_force_hessian(
     I33 = wp.identity(n=3, dtype=float)
     hessian = I_coeff * I33 + c1 * wp.outer(dJ_dx, dJ_dx) - r * wp.outer(w, w)
 
-    # Absolute damping (Newtonian viscosity: P_damp = damping * F_dot)
+    # Rayleigh damping (matches the original StVK damping model on upstream):
+    #   Cmu   = ||G||_F       (Frobenius norm of Green strain)
+    #   Clmbd = trace(G)
+    # with coefficients kd_mu = mu * damping and kd_lmbd = lmbd * damping.
+    # G is computed locally — the NH elastic part does not use it.
     if damping > 0.0:
-        inv_dt = 1.0 / dt
+        G00 = 0.5 * (f0_dot_f0 - 1.0)
+        G11 = 0.5 * (f1_dot_f1 - 1.0)
+        G01 = 0.5 * f0_dot_f1
+        G_frobenius_sq = G00 * G00 + G11 * G11 + 2.0 * G01 * G01
 
-        x0_prev = pos_anchor[v0]
-        x01_prev = pos_anchor[v1] - x0_prev
-        x02_prev = pos_anchor[v2] - x0_prev
+        # Cmu normalization is ill-defined at rest; skip damping near zero strain.
+        if G_frobenius_sq >= 1.0e-20:
+            inv_dt = 1.0 / dt
 
-        vel_x01 = (x01 - x01_prev) * inv_dt
-        vel_x02 = (x02 - x02_prev) * inv_dt
+            x0_prev = pos_anchor[v0]
+            x01_prev = pos_anchor[v1] - x0_prev
+            x02_prev = pos_anchor[v2] - x0_prev
 
-        df0_dt = vel_x01 * DmInv00 + vel_x02 * DmInv10
-        df1_dt = vel_x01 * DmInv01 + vel_x02 * DmInv11
+            vel_x01 = (x01 - x01_prev) * inv_dt
+            vel_x02 = (x02 - x02_prev) * inv_dt
 
-        f_damp = damping * (df0_dt * df0_dx + df1_dt * df1_dx)
-        force += -f_damp
+            df0_dt = vel_x01 * DmInv00 + vel_x02 * DmInv10
+            df1_dt = vel_x01 * DmInv01 + vel_x02 * DmInv11
 
-        hessian += damping * inv_dt * (df0_dx_sq + df1_dx_sq) * I33
+            # First constraint: Cmu = ||G||_F
+            Cmu = wp.sqrt(G_frobenius_sq)
+            G00_normalized = G00 / Cmu
+            G01_normalized = G01 / Cmu
+            G11_normalized = G11 / Cmu
+
+            dG_dt_00 = wp.dot(f0, df0_dt)
+            dG_dt_11 = wp.dot(f1, df1_dt)
+            dG_dt_01 = 0.5 * (wp.dot(f0, df1_dt) + wp.dot(f1, df0_dt))
+
+            dCmu_dt = G00_normalized * dG_dt_00 + G11_normalized * dG_dt_11 + 2.0 * G01_normalized * dG_dt_01
+
+            dCmu_dF_col0 = G00_normalized * f0 + G01_normalized * f1
+            dCmu_dF_col1 = G01_normalized * f0 + G11_normalized * f1
+
+            dCmu_dx = df0_dx * dCmu_dF_col0 + df1_dx * dCmu_dF_col1
+
+            kd_mu = mu * damping
+            force += -kd_mu * dCmu_dt * dCmu_dx
+            hessian += kd_mu * inv_dt * wp.outer(dCmu_dx, dCmu_dx)
+
+            # Second constraint: Clmbd = trace(G)
+            dClmbd_dt = dG_dt_00 + dG_dt_11
+
+            dClmbd_dF_col0 = f0
+            dClmbd_dF_col1 = f1
+
+            dClmbd_dx = df0_dx * dClmbd_dF_col0 + df1_dx * dClmbd_dF_col1
+
+            kd_lmbd = lmbd * damping
+            force += -kd_lmbd * dClmbd_dt * dClmbd_dx
+            hessian += kd_lmbd * inv_dt * wp.outer(dClmbd_dx, dClmbd_dx)
 
     # Apply area scaling
     force *= area
@@ -3098,7 +2971,6 @@ def solve_elasticity_tile(
     tri_poses: wp.array[wp.mat22],
     tri_materials: wp.array2d[float],
     tri_areas: wp.array[float],
-    tri_material_model: int,
     edge_indices: wp.array2d[wp.int32],
     edge_rest_angles: wp.array[float],
     edge_rest_length: wp.array[float],
@@ -3159,34 +3031,19 @@ def solve_elasticity_tile(
             # fmt: on
 
             if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
-                if tri_material_model == 0:
-                    f_tri, h_tri = evaluate_stvk_force_hessian(
-                        tri_index,
-                        vertex_order,
-                        pos,
-                        pos_prev,
-                        tri_indices,
-                        tri_poses[tri_index],
-                        tri_areas[tri_index],
-                        tri_materials[tri_index, 0],
-                        tri_materials[tri_index, 1],
-                        tri_materials[tri_index, 2],
-                        dt,
-                    )
-                else:
-                    f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
-                        tri_index,
-                        vertex_order,
-                        pos,
-                        pos_prev,
-                        tri_indices,
-                        tri_poses[tri_index],
-                        tri_areas[tri_index],
-                        tri_materials[tri_index, 0],
-                        tri_materials[tri_index, 1],
-                        tri_materials[tri_index, 2],
-                        dt,
-                    )
+                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                    tri_index,
+                    vertex_order,
+                    pos,
+                    pos_prev,
+                    tri_indices,
+                    tri_poses[tri_index],
+                    tri_areas[tri_index],
+                    tri_materials[tri_index, 0],
+                    tri_materials[tri_index, 1],
+                    tri_materials[tri_index, 2],
+                    dt,
+                )
 
                 f += f_tri
                 h += h_tri
@@ -3279,7 +3136,6 @@ def solve_elasticity(
     tri_poses: wp.array[wp.mat22],
     tri_materials: wp.array2d[float],
     tri_areas: wp.array[float],
-    tri_material_model: int,
     edge_indices: wp.array2d[wp.int32],
     edge_rest_angles: wp.array[float],
     edge_rest_length: wp.array[float],
@@ -3337,34 +3193,19 @@ def solve_elasticity(
             # fmt: on
 
             if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
-                if tri_material_model == 0:
-                    f_tri, h_tri = evaluate_stvk_force_hessian(
-                        tri_index,
-                        vertex_order,
-                        pos,
-                        pos_prev,
-                        tri_indices,
-                        tri_poses[tri_index],
-                        tri_areas[tri_index],
-                        tri_materials[tri_index, 0],
-                        tri_materials[tri_index, 1],
-                        tri_materials[tri_index, 2],
-                        dt,
-                    )
-                else:
-                    f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
-                        tri_index,
-                        vertex_order,
-                        pos,
-                        pos_prev,
-                        tri_indices,
-                        tri_poses[tri_index],
-                        tri_areas[tri_index],
-                        tri_materials[tri_index, 0],
-                        tri_materials[tri_index, 1],
-                        tri_materials[tri_index, 2],
-                        dt,
-                    )
+                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                    tri_index,
+                    vertex_order,
+                    pos,
+                    pos_prev,
+                    tri_indices,
+                    tri_poses[tri_index],
+                    tri_areas[tri_index],
+                    tri_materials[tri_index, 0],
+                    tri_materials[tri_index, 1],
+                    tri_materials[tri_index, 2],
+                    dt,
+                )
 
                 f = f + f_tri
                 h = h + h_tri
