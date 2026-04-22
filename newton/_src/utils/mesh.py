@@ -1495,7 +1495,21 @@ def validate_tet_mesh(
     *,
     stacklevel: int = 2,
 ) -> None:
-    """Check a tetrahedral mesh for inverted or degenerate elements.
+    """Check a tetrahedral mesh for quality issues and emit warnings.
+
+    Inspects the input tet mesh for inverted elements, small volumes,
+    sliver tetrahedra, and non-manifold faces. Each detected problem is
+    reported via :func:`warnings.warn`.
+
+    The shape quality metric used is:
+
+    .. math::
+
+        \\eta = \\frac{12\\,(3\\,|V|)^{2/3}}{\\sum_i l_i^2}
+
+    where *V* is the signed volume and *l_i* are the six edge lengths.
+    For a regular tetrahedron :math:`\\eta = 1`; degenerate elements
+    approach zero.
 
     Args:
         vertices: Vertex positions [m], shape ``(N, 3)``.
@@ -1511,20 +1525,58 @@ def validate_tet_mesh(
         return
 
     v0 = vertices[indices[:, 0]]
-    d1 = vertices[indices[:, 1]] - v0
-    d2 = vertices[indices[:, 2]] - v0
-    d3 = vertices[indices[:, 3]] - v0
+    v1 = vertices[indices[:, 1]]
+    v2 = vertices[indices[:, 2]]
+    v3 = vertices[indices[:, 3]]
+
+    d1 = v1 - v0
+    d2 = v2 - v0
+    d3 = v3 - v0
     vol = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) / 6.0
 
     issues: list[str] = []
 
+    # 1. Inverted tets
     n_inverted = int(np.sum(vol < 0))
     if n_inverted > 0:
         issues.append(f"{n_inverted}/{n_tets} inverted tetrahedron/a (negative volume)")
 
+    # 2. Small tets
     n_degen = int(np.sum(np.abs(vol) < 1e-9))
     if n_degen > 0:
         issues.append(f"{n_degen}/{n_tets} tetrahedron/a with volume < 1 mm\u00b3 (1e-9 m\u00b3)")
+
+    # 3. Shape quality (eta metric)
+    e01 = v1 - v0
+    e02 = v2 - v0
+    e03 = v3 - v0
+    e12 = v2 - v1
+    e13 = v3 - v1
+    e23 = v3 - v2
+    l_sq_sum = (
+        np.sum(e01**2, axis=1)
+        + np.sum(e02**2, axis=1)
+        + np.sum(e03**2, axis=1)
+        + np.sum(e12**2, axis=1)
+        + np.sum(e13**2, axis=1)
+        + np.sum(e23**2, axis=1)
+    )
+    eps = 1e-30
+    abs_vol = np.abs(vol)
+    eta = 12.0 * np.cbrt(3.0 * abs_vol) ** 2 / np.maximum(l_sq_sum, eps)
+    n_sliver = int(np.sum(eta < 0.01))
+    if n_sliver > 0:
+        issues.append(
+            f"{n_sliver}/{n_tets} sliver tetrahedron/a (shape quality eta < 0.01; worst: {float(eta.min()):.4f})"
+        )
+
+    # 4. Non-manifold faces (shared by > 2 tets)
+    face_combos = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]
+    all_faces = np.concatenate([np.sort(indices[:, combo], axis=1) for combo in face_combos])
+    _, counts = np.unique(all_faces, axis=0, return_counts=True)
+    n_nonmanifold = int(np.sum(counts > 2))
+    if n_nonmanifold > 0:
+        issues.append(f"{n_nonmanifold} non-manifold face(s) shared by more than 2 tetrahedra")
 
     if not issues:
         return
