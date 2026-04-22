@@ -1403,21 +1403,18 @@ def solidify_mesh(
 def validate_triangle_mesh(
     vertices: np.ndarray,
     indices: np.ndarray,
-    particle_radius: float | None = None,
     *,
     stacklevel: int = 2,
 ) -> None:
     """Check a triangle mesh for quality issues and emit warnings.
 
     Inspects the input triangle mesh for degenerate or sliver triangles,
-    extreme angles, short edges, and non-manifold topology. Each detected
-    problem is reported via :func:`warnings.warn`.
+    extreme angles, and non-manifold topology. Each detected problem is
+    reported via :func:`warnings.warn`.
 
     Args:
         vertices: Vertex positions [m], shape ``(N, 3)``.
         indices: Triangle vertex indices, shape ``(F, 3)``.
-        particle_radius: Contact radius [m]. If given, edges shorter than
-            this value are flagged.
         stacklevel: Passed to :func:`warnings.warn` so the warning points at
             the caller's frame.
     """
@@ -1473,17 +1470,6 @@ def validate_triangle_mesh(
         issues.append(
             f"{n_small_angle} triangle(s) with minimum angle < 5\u00b0 (smallest: {float(min_angle.min()):.1f}\u00b0)"
         )
-
-    if particle_radius is not None and particle_radius > 0:
-        edges = np.concatenate([indices[:, [0, 1]], indices[:, [1, 2]], indices[:, [2, 0]]])
-        unique_edges = np.unique(np.sort(edges, axis=1), axis=0)
-        edge_lens = np.linalg.norm(vertices[unique_edges[:, 0]] - vertices[unique_edges[:, 1]], axis=1)
-        n_short = int(np.sum(edge_lens < particle_radius))
-        if n_short > 0:
-            issues.append(
-                f"{n_short}/{len(unique_edges)} edge(s) shorter than particle_radius "
-                f"({particle_radius:.4g}); shortest edge: {float(edge_lens.min()):.4g}"
-            )
 
     edges_all = np.concatenate([indices[:, [0, 1]], indices[:, [1, 2]], indices[:, [2, 0]]])
     edges_sorted = np.sort(edges_all, axis=1)

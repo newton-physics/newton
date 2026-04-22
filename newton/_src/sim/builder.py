@@ -7678,7 +7678,7 @@ class ModelBuilder:
 
             verts_np = np.array(vertices, dtype=float) * scale
             inds_np = np.array(indices, dtype=np.intp).reshape(-1, 3)
-            validate_triangle_mesh(verts_np, inds_np, particle_radius, stacklevel=3)
+            validate_triangle_mesh(verts_np, inds_np, stacklevel=3)
 
         num_verts = int(len(vertices))
         num_tris = int(len(indices) / 3)
