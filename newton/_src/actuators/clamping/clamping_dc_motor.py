@@ -23,8 +23,8 @@ def _clamp_dc_motor_kernel(
 ):
     """DC motor four-quadrant effort-speed saturation: read src, write to dst.
 
-    τ_max(v) = min(τ_sat*(1 - v/v_max),  max_motor_effort)
-    τ_min(v) = max(τ_sat*(-1 - v/v_max), -max_motor_effort)
+    effort_max(vel) = min(saturation_effort * (1 - vel / velocity_limit),  max_motor_effort)
+    effort_min(vel) = max(saturation_effort * (-1 - vel / velocity_limit), -max_motor_effort)
     """
     i = wp.tid()
     state_idx = state_indices[i]
@@ -33,22 +33,23 @@ def _clamp_dc_motor_kernel(
     vel_lim = velocity_limit[i]
     max_e = max_motor_effort[i]
 
-    max_torque = wp.min(sat * (1.0 - vel / vel_lim), max_e)
-    min_torque = wp.max(sat * (-1.0 - vel / vel_lim), -max_e)
-    dst[i] = wp.clamp(src[i], min_torque, max_torque)
+    effort_max = wp.min(sat * (1.0 - vel / vel_lim), max_e)
+    effort_min = wp.max(sat * (-1.0 - vel / vel_lim), -max_e)
+    dst[i] = wp.clamp(src[i], effort_min, effort_max)
 
 
 class ClampingDCMotor(Clamping):
-    """DC motor four-quadrant effort-speed saturation.
+    r"""DC motor four-quadrant effort-speed saturation.
 
     Clips controller output using the linear effort-speed characteristic::
 
-        τ_max(v) = min(τ_sat*(1 - v/v_max),  max_motor_effort)
-        τ_min(v) = max(τ_sat*(-1 - v/v_max), -max_motor_effort)
+        effort_max(vel) = min(saturation_effort * (1 - vel / velocity_limit),  max_motor_effort)
+        effort_min(vel) = max(saturation_effort * (-1 - vel / velocity_limit), -max_motor_effort)
 
-    At zero velocity the motor can produce up to ±τ_sat (capped by
-    ``max_motor_effort``). As velocity approaches ``v_max``, available
-    effort in the direction of motion drops to zero.
+    At zero velocity the motor can produce up to ±\ ``saturation_effort``
+    (capped by ``max_motor_effort``). As velocity approaches
+    ``velocity_limit``, available effort in the direction of motion drops
+    to zero.
     """
 
     @classmethod

@@ -70,8 +70,7 @@ class ClampingPositionBased(Clamping):
     - Inputs strictly between adjacent entries are linearly interpolated.
     - Inputs at or below ``lookup_positions[0]`` clamp to ``lookup_efforts[0]``.
     - Inputs at or above ``lookup_positions[-1]`` clamp to ``lookup_efforts[-1]``.
-    - There is no extrapolation beyond the table range and no wraparound.
-    - An empty or single-entry table produces a zero effort limit.
+    - For rotational actuators, positions do not wrap periodically.
 
     The lookup table is a shared parameter: all DOFs within one
     :class:`~newton.actuators.Actuator` group share the same table.
@@ -113,6 +112,8 @@ class ClampingPositionBased(Clamping):
             raise ValueError("Both 'lookup_positions' and 'lookup_efforts' are required")
         positions = tuple(args["lookup_positions"])
         efforts = tuple(args["lookup_efforts"])
+        if len(positions) == 0:
+            raise ValueError("lookup_positions/lookup_efforts must not be empty")
         if len(positions) != len(efforts):
             raise ValueError(
                 f"lookup_positions length ({len(positions)}) must match lookup_efforts length ({len(efforts)})"

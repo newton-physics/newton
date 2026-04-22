@@ -33,7 +33,7 @@ def _pid_effort_kernel(
     efforts: wp.array[float],
     next_integral: wp.array[float],
 ):
-    """PID effort: e = const_effort + feedforward + kp*err + ki*integral + kd*derr."""
+    """PID effort: e = const_effort + feedforward + kp*(target_pos - current_pos) + ki*integral(target_pos - current_pos) + kd*(target_vel - current_vel)."""
     i = wp.tid()
     pos_idx = pos_indices[i]
     vel_idx = vel_indices[i]
@@ -64,8 +64,8 @@ class ControllerPID(Controller):
 
     Effort law::
 
-        effort = constEffort + feedforward + kp*(target_pos - q)
-               + ki*integral(target_pos - q) + kd*(target_vel - v)
+        effort = const_effort + feedforward + kp * (target_pos - current_pos)
+               + ki * integral(target_pos - current_pos) + kd * (target_vel - current_vel)
 
     Maintains an integral term with anti-windup clamping.
     """
@@ -75,7 +75,7 @@ class ControllerPID(Controller):
         """Integral state for PID controller."""
 
         integral: wp.array[float] | None = None
-        """Accumulated integral of position error, shape ``(N,)``."""
+        """Accumulated integral of position error [m·s or rad·s], shape ``(N,)``."""
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             if mask is None:

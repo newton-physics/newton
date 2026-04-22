@@ -53,11 +53,18 @@ def load_metadata(path: str) -> dict[str, Any]:
 def load_checkpoint(path: str) -> tuple[Any, dict[str, Any]]:
     """Load a neural-network checkpoint as ``(model, metadata)``.
 
-    Accepts a TorchScript archive (with optional ``metadata.json`` in
-    ``_extra_files``) or a dict checkpoint ``{"model": ..., "metadata": ...}``.
+    Two PyTorch file formats are accepted:
+
+    1. **TorchScript archive** — saved via :func:`torch.jit.save`.
+       Metadata is read from an internal ``metadata.json`` entry
+       (provided via ``_extra_files`` when saving).
+
+    2. **Dict checkpoint** — a Python dict saved via :func:`torch.save`
+       with a ``"model"`` key (the network) and an optional
+       ``"metadata"`` key (a dict of configuration attributes).
 
     Args:
-        path: File path to the checkpoint.
+        path: File path to the checkpoint (``.pt``).
     """
     network, metadata = _load(path, model=True)
     network.eval()

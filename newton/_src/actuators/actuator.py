@@ -23,7 +23,7 @@ def _scatter_add_kernel(
     output: wp.array[float],
     computed_output: wp.array[float],
 ):
-    """Scatter-add forces into output; optionally scatter computed forces too."""
+    """Scatter-add effort into output; optionally scatter computed effort too."""
     i = wp.tid()
     idx = indices[i]
     output[idx] = output[idx] + forces[i]
@@ -35,8 +35,8 @@ class Actuator:
     """Composed actuator: delay → controller → clamping.
 
     An actuator reads from simulation state/control arrays, optionally
-    delays the control targets, computes forces via a controller, applies
-    clamping (force limits, saturation, etc.), and writes the result to
+    delays the control targets, computes effort via a controller, applies
+    clamping (effort limits, saturation, etc.), and writes the result to
     the output array.
 
     Usage::
@@ -99,24 +99,24 @@ class Actuator:
         Args:
             indices: DOF indices into ``joint_qd``-shaped arrays (velocities,
                 velocity targets, feedforward). Shape ``(N,)``.
-            controller: Controller that computes raw forces.
+            controller: Controller that computes raw effort.
             delay: Optional Delay instance for input delay.
-            clamping: List of Clamping objects (post-controller force bounds).
+            clamping: List of Clamping objects (post-controller effort bounds).
             pos_indices: DOF indices into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *indices*. Differs from
                 *indices* for floating-base or ball-joint articulations
                 where ``joint_q`` and ``joint_qd`` have different layouts.
             frc_indices: DOF indices into ``joint_f``-shaped arrays (output
-                forces). Defaults to *indices*. Differs from *indices*
+                effort). Defaults to *indices*. Differs from *indices*
                 for coupled transmissions or tendon-driven joints.
             state_pos_attr: Attribute on sim_state for positions.
             state_vel_attr: Attribute on sim_state for velocities.
             control_target_pos_attr: Attribute on sim_control for target positions.
             control_target_vel_attr: Attribute on sim_control for target velocities.
             control_feedforward_attr: Attribute on sim_control for control input. None to skip.
-            control_output_attr: Attribute on sim_control for clamped output forces.
+            control_output_attr: Attribute on sim_control for clamped output effort.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
-                forces. None to skip writing computed forces.
+                effort. None to skip writing computed effort.
             requires_grad: Allocate intermediate arrays with gradient support
                 for differentiable simulation.
         """
@@ -186,10 +186,10 @@ class Actuator:
         1. **Delay read** — read per-DOF delayed targets from
            ``current_state`` (falls back to current targets when
            the buffer is empty).
-        2. **Controller** — compute raw forces into ``_computed_forces``.
-        3. **Clamping** — clamp forces from computed → ``_applied_forces``.
+        2. **Controller** — compute raw effort into ``_computed_forces``.
+        3. **Clamping** — clamp effort from computed → ``_applied_forces``.
         4. **Scatter-add** — *accumulate* applied (and optionally computed)
-           forces into the output array.  The caller must zero the output
+           effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
         5. **State updates** — controller state update, then delay
            buffer write (push current targets into ``next_state``).
@@ -234,7 +234,7 @@ class Actuator:
             target_pos_indices = self._sequential_indices
             target_vel_indices = self._sequential_indices
 
-        # --- 2. Controller: compute raw forces ---
+        # --- 2. Controller: compute raw effort ---
         ctrl_state = current_act_state.controller_state if current_act_state else None
         self.controller.compute(
             positions,

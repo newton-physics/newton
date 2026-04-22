@@ -20,12 +20,13 @@ if typing.TYPE_CHECKING:
 class ControllerNetLSTM(Controller):
     """LSTM-based neural network controller.
 
-    Uses a pre-trained LSTM network to compute joint torques from position
+    Uses a pre-trained LSTM network to compute joint effort from position
     error and velocity error. The network maintains hidden and cell state
     across timesteps to capture temporal patterns.
 
-    The network must be callable as:
-        torques, (hidden_new, cell_new) = network(input, (hidden, cell))
+    The network must be callable as::
+
+        effort, (hidden_new, cell_new) = network(input, (hidden, cell))
 
     where input has shape (batch, 1, 2) with features
     [pos_error, vel_error], and hidden/cell have shape
@@ -34,7 +35,7 @@ class ControllerNetLSTM(Controller):
     The network is expected to have a ``lstm`` attribute (``torch.nn.LSTM``) so
     that ``num_layers`` and ``hidden_size`` can be inferred automatically.
 
-    Scale factors (``pos_scale``, ``vel_scale``, ``torque_scale``) are
+    Scale factors (``pos_scale``, ``vel_scale``, ``effort_scale``) are
     read from checkpoint metadata, falling back to ``1.0`` when absent.
     See :func:`~newton._src.actuators.utils.load_checkpoint` for
     supported checkpoint formats.
@@ -79,7 +80,7 @@ class ControllerNetLSTM(Controller):
 
         - ``pos_scale`` (float): position-error scaling (default ``1.0``).
         - ``vel_scale`` (float): velocity-error scaling (default ``1.0``).
-        - ``torque_scale`` (float): output torque scaling (default ``1.0``).
+        - ``effort_scale`` (float): output effort scaling (default ``1.0``).
 
         Args:
             model_path: Path to the checkpoint (``.pt``).
@@ -93,7 +94,7 @@ class ControllerNetLSTM(Controller):
 
         self.pos_scale = metadata.get("pos_scale", 1.0)
         self.vel_scale = metadata.get("vel_scale", 1.0)
-        self.torque_scale = metadata.get("torque_scale", 1.0)
+        self.effort_scale = metadata.get("effort_scale", metadata.get("torque_scale", 1.0))
 
         if not hasattr(self.network, "lstm"):
             raise ValueError("network must expose a 'lstm' attribute (torch.nn.LSTM)")
@@ -180,14 +181,14 @@ class ControllerNetLSTM(Controller):
         net_input = torch.stack([pos_error * self.pos_scale, vel_error * self.vel_scale], dim=1).unsqueeze(1)
 
         with torch.inference_mode():
-            torques, (self._hidden, self._cell) = self.network(
+            effort, (self._hidden, self._cell) = self.network(
                 net_input,
                 (state.hidden, state.cell),
             )
 
-        torques = torques.reshape(len(forces)) * self.torque_scale
-        torques_wp = wp.from_torch(torques.contiguous(), dtype=wp.float32)
-        wp.copy(forces, torques_wp)
+        effort = effort.reshape(len(forces)) * self.effort_scale
+        effort_wp = wp.from_torch(effort.contiguous(), dtype=wp.float32)
+        wp.copy(forces, effort_wp)
 
     def update_state(
         self,

@@ -20,16 +20,16 @@ if typing.TYPE_CHECKING:
 class ControllerNetMLP(Controller):
     """MLP-based neural network controller.
 
-    Uses a pre-trained MLP to compute joint torques from position error
+    Uses a pre-trained MLP to compute joint effort from position error
     and velocity error history.
 
     The network receives concatenated, scaled position-error and
     velocity-error history as input.  The output is multiplied by
-    ``torque_scale`` to convert from network units to physical torque.
-    All three scale factors default to ``1.0`` (no scaling).
+    ``effort_scale`` to convert from network units to physical effort
+    [N or N·m].  All three scale factors default to ``1.0`` (no scaling).
 
     Configuration parameters (``input_order``, ``input_idx``,
-    ``pos_scale``, ``vel_scale``, ``torque_scale``) are read from the
+    ``pos_scale``, ``vel_scale``, ``effort_scale``) are read from the
     checkpoint metadata, falling back to defaults when absent.
     See :func:`~newton._src.actuators.utils.load_checkpoint` for
     supported checkpoint formats.
@@ -76,7 +76,7 @@ class ControllerNetMLP(Controller):
         - ``input_idx`` (list[int]): history timestep indices (default ``[0]``).
         - ``pos_scale`` (float): position-error scaling (default ``1.0``).
         - ``vel_scale`` (float): velocity-error scaling (default ``1.0``).
-        - ``torque_scale`` (float): output torque scaling (default ``1.0``).
+        - ``effort_scale`` (float): output effort scaling (default ``1.0``).
 
         Args:
             model_path: Path to the checkpoint (``.pt``).
@@ -99,7 +99,7 @@ class ControllerNetMLP(Controller):
 
         self.pos_scale = metadata.get("pos_scale", 1.0)
         self.vel_scale = metadata.get("vel_scale", 1.0)
-        self.torque_scale = metadata.get("torque_scale", 1.0)
+        self.effort_scale = metadata.get("effort_scale", metadata.get("torque_scale", 1.0))
 
         self._torch_input_indices: torch.Tensor | None = None
         self._torch_vel_indices: torch.Tensor | None = None
@@ -181,11 +181,11 @@ class ControllerNetMLP(Controller):
             net_input = torch.cat([vel_input * self.vel_scale, pos_input * self.pos_scale], dim=1)
 
         with torch.inference_mode():
-            torques = self.network(net_input)
+            effort = self.network(net_input)
 
-        torques = torques.reshape(len(forces)) * self.torque_scale
-        torques_wp = wp.from_torch(torques.contiguous(), dtype=wp.float32)
-        wp.copy(forces, torques_wp)
+        effort = effort.reshape(len(forces)) * self.effort_scale
+        effort_wp = wp.from_torch(effort.contiguous(), dtype=wp.float32)
+        wp.copy(forces, effort_wp)
 
     def update_state(
         self,

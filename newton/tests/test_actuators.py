@@ -261,22 +261,22 @@ class TestControllerNetMLP(unittest.TestCase):
             net[0].weight.fill_(0.0)
             net[0].bias.fill_(5.0)
 
-        path = self._save_dict(net, metadata={"torque_scale": 4.0})
+        path = self._save_dict(net, metadata={"effort_scale": 4.0})
         ctrl = ControllerNetMLP(model_path=path)
-        self.assertAlmostEqual(ctrl.torque_scale, 4.0)
+        self.assertAlmostEqual(ctrl.effort_scale, 4.0)
 
     def test_metadata_scales(self):
-        """Metadata torque_scale is applied to the network output."""
+        """Metadata effort_scale is applied to the network output."""
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
         with self.torch.no_grad():
             net[0].weight.fill_(0.0)
             net[0].bias.fill_(10.0)
 
-        path = self._save_torchscript(net, metadata={"torque_scale": 3.0})
+        path = self._save_torchscript(net, metadata={"effort_scale": 3.0})
 
         n = 1
         ctrl = ControllerNetMLP(model_path=path)
-        self.assertAlmostEqual(ctrl.torque_scale, 3.0)
+        self.assertAlmostEqual(ctrl.effort_scale, 3.0)
         ctrl.finalize(self.device, n)
         state_a = ctrl.state(n, self.device)
 
@@ -297,7 +297,7 @@ class TestControllerNetMLP(unittest.TestCase):
             0.01,
             self.device,
         )
-        self.assertAlmostEqual(forces.numpy()[0], 30.0, places=3, msg="bias=10 * torque_scale=3 -> 30")
+        self.assertAlmostEqual(forces.numpy()[0], 30.0, places=3, msg="bias=10 * effort_scale=3 -> 30")
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
@@ -376,21 +376,21 @@ class TestControllerNetLSTM(unittest.TestCase):
     def test_dict_checkpoint(self):
         """Load LSTM from a dict checkpoint with metadata."""
         net = self._make_lstm(hidden=8, layers=1)
-        path = self._save_dict(net, metadata={"torque_scale": 5.0})
+        path = self._save_dict(net, metadata={"effort_scale": 5.0})
         ctrl = ControllerNetLSTM(model_path=path)
-        self.assertAlmostEqual(ctrl.torque_scale, 5.0)
+        self.assertAlmostEqual(ctrl.effort_scale, 5.0)
         self._run_lstm_compute(ctrl)
 
     def test_metadata_scales(self):
         """Scale factors from metadata are applied during compute."""
         net = self._make_lstm(hidden=8, layers=1)
-        metadata = {"pos_scale": 2.0, "vel_scale": 0.5, "torque_scale": 10.0}
+        metadata = {"pos_scale": 2.0, "vel_scale": 0.5, "effort_scale": 10.0}
         path = self._save_torchscript(net, metadata=metadata)
 
         ctrl = ControllerNetLSTM(model_path=path)
         self.assertAlmostEqual(ctrl.pos_scale, 2.0)
         self.assertAlmostEqual(ctrl.vel_scale, 0.5)
-        self.assertAlmostEqual(ctrl.torque_scale, 10.0)
+        self.assertAlmostEqual(ctrl.effort_scale, 10.0)
 
         self._run_lstm_compute(ctrl)
 

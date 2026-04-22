@@ -7,10 +7,10 @@ Actuators
 =========
 
 Actuators provide composable implementations that read physics simulation
-state, compute forces, and write the forces back to control arrays for
+state, compute effort, and write the effort back to control arrays for
 application to the simulation.  The simulator does not need to be part of
 Newton: actuators are designed to be reusable anywhere the caller can provide
-state arrays and consume forces.
+state arrays and consume effort.
 
 Each :class:`Actuator` instance is **vectorized**: a single actuator object
 operates on a batch of DOF indices in global state and control arrays, allowing
@@ -30,8 +30,8 @@ An actuator is composed from three building blocks, applied in this order:
 
    Actuator
    ├── Delay       (optional: delays control targets by N timesteps)
-   ├── Controller  (control law that computes raw forces)
-   └── Clamping[]  (clamps raw forces based on motor-limit modeling)
+   ├── Controller  (control law that computes raw effort)
+   └── Clamping[]  (clamps raw effort based on motor-limit modeling)
        ├── ClampingMaxEffort        (±max_effort box clamp)
        ├── ClampingDCMotor         (velocity-dependent saturation)
        └── ClampingPositionBased   (position-dependent lookup table)
@@ -44,17 +44,17 @@ An actuator is composed from three building blocks, applied in this order:
    history so the most recent data is returned.
 
 **Controller**
-   Computes raw forces or torques from the current simulator state and control
-   targets.  This is the actuator's control law — for example PD, PID, or
-   neural-network-based control.  See the individual controller class
+   Computes raw actuator effort [N or N·m] from the current simulator state
+   and control targets.  This is the actuator's control law — for example PD,
+   PID, or neural-network-based control.  See the individual controller class
    documentation for the control-law equations.
 
 **Clamping**
-   Clamps raw forces based on motor-limit modeling.  This applies
-   post-controller output limits to the computed forces or torques to model
-   motor limits such as saturation, back-EMF losses, performance envelopes, or
-   angle-dependent torque limits.  Multiple clamping stages can be combined on
-   a single actuator.
+   Clamps raw effort based on motor-limit modeling.  This applies
+   post-controller output limits to the computed effort to model motor limits
+   such as saturation, back-EMF losses, performance envelopes, or
+   position-dependent effort limits.  Multiple clamping stages can be combined
+   on a single actuator.
 
 The per-step pipeline is:
 
@@ -234,7 +234,7 @@ For example, a custom controller needs to implement
                    feedforward, pos_indices, vel_indices,
                    target_pos_indices, target_vel_indices,
                    forces, state, dt, device=None):
-           # Launch a Warp kernel that writes into `forces`
+           # Launch a Warp kernel that writes effort into `forces`
            ...
 
 ``resolve_arguments`` maps user-provided keyword arguments (from
@@ -242,7 +242,7 @@ For example, a custom controller needs to implement
 parameters, filling in defaults where needed.
 
 Similarly, a custom clamping stage subclasses :class:`Clamping` and implements
-:meth:`~Clamping.modify_forces`.
+:meth:`~Clamping.modify_forces` (which reads effort from a source buffer and writes bounded effort to a destination buffer).
 
 See Also
 --------
