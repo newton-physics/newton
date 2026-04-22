@@ -45,7 +45,7 @@ def _tiled_sum_kernel(
     data: wp.array2d[float],
     partial_sums: wp.array2d[float],
 ):
-    block_id = wp.tid()
+    block_id, _ = wp.tid()
 
     tile = wp.tile_load(data[0], shape=_TILED_SUM_BLOCK_DIM, offset=block_id * _TILED_SUM_BLOCK_DIM)
     wp.tile_store(partial_sums[0], wp.tile_sum(tile), offset=block_id)
