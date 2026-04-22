@@ -275,8 +275,7 @@ def add_cloth_mesh(
     if validate_mesh:
         from ...utils.mesh import validate_triangle_mesh  # noqa: PLC0415
 
-        radius_value = particle_radius if particle_radius is not None else builder.default_particle_radius
-        validate_triangle_mesh(vertices_np, tri_indices_np, radius_value, stacklevel=3)
+        validate_triangle_mesh(vertices_np, tri_indices_np, stacklevel=3)
 
     panel_inv_D_all, panel_areas_all = _compute_panel_triangles(panel_verts_np, panel_indices_np)
     valid_inds = (panel_areas_all > 0.0).nonzero()[0]
