@@ -7815,6 +7815,7 @@ class ModelBuilder:
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
         custom_attributes_springs: dict[str, Any] | None = None,
+        validate_mesh: bool = False,
     ) -> None:
         """Helper to create a cloth model from a regular triangle mesh
 
@@ -7833,6 +7834,10 @@ class ModelBuilder:
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
             custom_attributes_springs: Dictionary of custom attribute names to values for the springs.
+            validate_mesh: If True, run quality checks on the input mesh and
+                emit warnings for degenerate or sliver triangles, short edges,
+                and non-manifold topology. See
+                :func:`newton.utils.validate_triangle_mesh`.
 
         Note:
             The mesh should be two-manifold.
@@ -7847,6 +7852,13 @@ class ModelBuilder:
         spring_ke = spring_ke if spring_ke is not None else self.default_spring_ke
         spring_kd = spring_kd if spring_kd is not None else self.default_spring_kd
         particle_radius = particle_radius if particle_radius is not None else self.default_particle_radius
+
+        if validate_mesh:
+            from ..utils.mesh import validate_triangle_mesh  # noqa: PLC0415
+
+            verts_np = np.array(vertices, dtype=float) * scale
+            inds_np = np.array(indices, dtype=np.intp).reshape(-1, 3)
+            validate_triangle_mesh(verts_np, inds_np, particle_radius, stacklevel=3)
 
         num_verts = int(len(vertices))
         num_tris = int(len(indices) / 3)
@@ -8211,6 +8223,7 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        validate_mesh: bool = False,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh.
 
@@ -8249,6 +8262,8 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
+            validate_mesh: If True, check for inverted or degenerate tetrahedra
+                and emit warnings. See :func:`newton.utils.validate_tet_mesh`.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -8282,6 +8297,14 @@ class ModelBuilder:
 
         if vertices is None or indices is None:
             raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
+
+        if validate_mesh:
+            from ..utils.mesh import validate_tet_mesh  # noqa: PLC0415
+
+            verts_np = np.array(vertices, dtype=float) * scale
+            inds_np = np.array(indices, dtype=np.intp).reshape(-1, 4)
+            validate_tet_mesh(verts_np, inds_np, stacklevel=3)
+
         if density is None:
             density = self.default_tet_density
         if k_mu is None:
