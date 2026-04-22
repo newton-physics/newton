@@ -31,7 +31,6 @@ class TestToleranceClamping(unittest.TestCase):
 
         # Build model with 2 worlds to test per-world clamping
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
 
         scene_builder = newton.ModelBuilder()
@@ -84,7 +83,6 @@ class TestToleranceClamping(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 

@@ -79,6 +79,24 @@ class GeoType(enum.IntEnum):
     GAUSSIAN = 11
     """Gaussian splat."""
 
+    @property
+    def is_primitive(self) -> bool:
+        """Return whether this is a primitive (analytically defined) shape type."""
+        return self in {
+            GeoType.SPHERE,
+            GeoType.CYLINDER,
+            GeoType.CONE,
+            GeoType.CAPSULE,
+            GeoType.BOX,
+            GeoType.ELLIPSOID,
+            GeoType.PLANE,
+        }
+
+    @property
+    def is_explicit(self) -> bool:
+        """Return whether this is an explicit (data-driven) shape type."""
+        return self in {GeoType.MESH, GeoType.CONVEX_MESH, GeoType.HFIELD}
+
 
 class Mesh:
     """
@@ -87,6 +105,11 @@ class Mesh:
     This class encapsulates a triangle mesh, including its geometry, physical properties,
     and utility methods for simulation. Meshes are typically used for collision detection,
     visualization, and inertia computation in physics simulation.
+
+    Triangle indices must use counter-clockwise (CCW) winding when viewed from
+    the outside of the surface. The collision pipeline derives face normals from
+    the winding order and culls back-face contacts, so incorrect winding may
+    cause convex shapes to pass through the mesh.
 
     Attributes:
         mass [kg]: Mesh mass in local coordinates, computed with density 1.0 when
@@ -169,6 +192,8 @@ class Mesh:
         self.maxhullvert = maxhullvert
         self._cached_hash = None
         self._texture_hash = None
+        self._edges = None
+        self._is_watertight: bool | None = None
         self.sdf = sdf
 
         if compute_inertia:
@@ -776,6 +801,8 @@ class Mesh:
     def vertices(self, value):
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
         self._cached_hash = None
+        self._edges = None
+        self._is_watertight = None
 
     @property
     def indices(self):
@@ -785,6 +812,87 @@ class Mesh:
     def indices(self, value):
         self._indices = np.array(value, dtype=np.int32).flatten()
         self._cached_hash = None
+        self._edges = None
+        self._is_watertight = None
+
+    @property
+    def edges(self) -> np.ndarray:
+        """Unique edge vertex pairs, shape (N, 2), with geometric deduplication.
+
+        Computed lazily on first access and cached. Invalidated when vertices or
+        indices change.
+        """
+        if self._edges is None:
+            if self._indices.size == 0 or self._vertices.size == 0:
+                self._edges = np.empty((0, 2), dtype=np.int32)
+                return self._edges
+            tris = self._indices.reshape(-1, 3)
+            n = len(tris)
+            # Canonical vertex ids via quantized coordinates (overflow-safe)
+            q = np.round(self._vertices * 1e7).astype(np.int64)
+            q_contig = np.ascontiguousarray(q)
+            void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
+            _, canonical = np.unique(void_verts, return_inverse=True)
+            canonical = canonical.ravel()
+            # Build edges with (min, max) canonical ordering, keep original indices
+            c = canonical[tris]
+            canon_edges = np.empty((n * 3, 2), dtype=np.int64)
+            orig_edges = np.empty((n * 3, 2), dtype=np.int32)
+            for k, (a, b) in enumerate(((0, 1), (1, 2), (0, 2))):
+                ca, cb = c[:, a], c[:, b]
+                canon_edges[k::3, 0] = np.minimum(ca, cb)
+                canon_edges[k::3, 1] = np.maximum(ca, cb)
+                orig_edges[k::3, 0] = tris[:, a]
+                orig_edges[k::3, 1] = tris[:, b]
+            # Deduplicate via void view (fast 1-D unique)
+            canon_edges = np.ascontiguousarray(canon_edges)
+            void_edges = canon_edges.view(np.dtype((np.void, canon_edges.dtype.itemsize * 2)))
+            _, first_idx = np.unique(void_edges, return_index=True)
+            first_idx.sort()
+            self._edges = orig_edges[first_idx]
+        return self._edges
+
+    @property
+    def is_watertight(self) -> bool:
+        """``True`` if every geometric edge is shared by exactly two triangles.
+
+        A mesh satisfying this condition is closed (has no boundary edges) and
+        is suitable for the fast unsigned-distance SDF construction path.
+        Computed lazily on first access and cached.  Invalidated when
+        :attr:`vertices` or :attr:`indices` change.
+
+        .. note::
+
+           Vertex coincidence is tested on quantized float32 coordinates
+           rounded to the nearest 1e-7 m (100 nm fixed tolerance). Vertices
+           that differ by less than this bucket width are treated as the
+           same geometric vertex; sub-100 nm numerical noise is therefore
+           tolerated, but vertices split by a larger gap are reported as
+           distinct and can cause a topologically closed mesh to be flagged
+           non-watertight. This is an approximate check — false negatives
+           are safe (they fall back to the slower winding-number SDF path),
+           but callers relying on a strict guarantee should weld their
+           mesh vertices beforehand at the desired tolerance.
+        """
+        if self._is_watertight is None:
+            if self._indices.size == 0 or self._vertices.size == 0:
+                self._is_watertight = False
+                return self._is_watertight
+            tris = self._indices.reshape(-1, 3)
+            q = np.round(self._vertices * 1e7).astype(np.int64)
+            q_contig = np.ascontiguousarray(q)
+            void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
+            _, canonical = np.unique(void_verts, return_inverse=True)
+            c = canonical.ravel()[tris]
+            pairs = np.empty((len(tris) * 3, 2), dtype=np.int64)
+            for k, (a, b) in enumerate(((0, 1), (1, 2), (0, 2))):
+                pairs[k::3, 0] = np.minimum(c[:, a], c[:, b])
+                pairs[k::3, 1] = np.maximum(c[:, a], c[:, b])
+            pairs_contig = np.ascontiguousarray(pairs)
+            void_edges = pairs_contig.view(np.dtype((np.void, pairs_contig.dtype.itemsize * 2)))
+            _, counts = np.unique(void_edges, return_counts=True)
+            self._is_watertight = bool(np.all(counts == 2))
+        return self._is_watertight
 
     @property
     def normals(self):
@@ -1626,6 +1734,22 @@ class Gaussian:
             print(gaussian.count, gaussian.sh_degree)
     """
 
+    class SortingMode(enum.IntEnum):
+        """Sorting strategy for ordering Gaussian splat hits along a ray.
+
+        Controls how per-ray Gaussian intersections are depth-sorted before
+        front-to-back alpha compositing.
+        """
+
+        RAY_HIT_DISTANCE = 0
+        """Sort by closest-approach distance in the Gaussian's canonical space."""
+
+        CAMERA_DISTANCE = 1
+        """Sort by projection of the Gaussian center onto the ray direction."""
+
+        Z_DEPTH = 2
+        """Sort by camera-forward depth of the Gaussian center."""
+
     @wp.struct
     class Data:
         num_points: wp.int32
@@ -1635,6 +1759,7 @@ class Gaussian:
         sh_coeffs: wp.array2d[wp.float32]
         bvh_id: wp.uint64
         min_response: wp.float32
+        sorting_mode: wp.int32
 
     def __init__(
         self,
@@ -1645,6 +1770,7 @@ class Gaussian:
         sh_coeffs: np.ndarray | None = None,
         sh_degree: int | None = None,
         min_response: float = 0.1,
+        sorting_mode: SortingMode = SortingMode.RAY_HIT_DISTANCE,
     ):
         """Construct a Gaussian splat asset from arrays.
 
@@ -1661,6 +1787,9 @@ class Gaussian:
                 (``C = 3`` -> degree 0, ``C = 12`` -> degree 1, etc.).
             sh_degree: Spherical harmonic degree.
             min_response: Minimum response required for alpha testing.
+            sorting_mode: Sorting strategy for depth-ordering Gaussian
+                intersections along each ray before alpha compositing
+                (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -1694,6 +1823,8 @@ class Gaussian:
         if not np.isfinite(min_response) or not (0.0 < min_response < 1.0):
             raise ValueError("min_response must be finite and in (0, 1)")
         self._min_response = float(min_response)
+
+        self._sorting_mode = sorting_mode
 
         self._cached_hash = None
         self._positions.setflags(write=False)
@@ -1755,6 +1886,11 @@ class Gaussian:
         """Min response, float."""
         return self._min_response
 
+    @property
+    def sorting_mode(self) -> SortingMode:
+        """Sorting mode, Gaussian.SortingMode."""
+        return self._sorting_mode
+
     def _find_sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
         c = self._sh_coeffs.shape[1]
@@ -1788,6 +1924,7 @@ class Gaussian:
             self.warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
             self.warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
             self.warp_data.min_response = self.min_response
+            self.warp_data.sorting_mode = self.sorting_mode
             self.warp_data.num_points = self.warp_data.transforms.shape[0]
 
             lowers = wp.zeros(self.count, dtype=wp.vec3f)
@@ -2009,6 +2146,7 @@ class Gaussian:
                     self._opacities.data.tobytes(),
                     self._sh_coeffs.data.tobytes(),
                     float(self._min_response),
+                    int(self._sorting_mode),
                 )
             )
         return self._cached_hash
@@ -2024,4 +2162,5 @@ class Gaussian:
             and np.array_equal(self._opacities, other._opacities)
             and np.array_equal(self._sh_coeffs, other._sh_coeffs)
             and self._min_response == other._min_response
+            and self._sorting_mode == other._sorting_mode
         )

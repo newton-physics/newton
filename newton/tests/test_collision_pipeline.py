@@ -10,7 +10,7 @@ import warp.examples
 
 import newton
 from newton import GeoType
-from newton._src.sim.collide import _estimate_rigid_contact_max
+from newton._src.sim.collide import _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
 from newton.examples import test_body_state
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -238,7 +238,9 @@ collision_pipeline_contact_tests = [
         TestLevel.VELOCITY_YZ,
         TestLevel.VELOCITY_LINEAR,
     ),
-    (GeoType.MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    # Mesh-vs-convex-hull likewise accumulates small lateral drift from
+    # triangulated mesh faces (same root cause as box-vs-mesh above).
+    (GeoType.MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR, 0.02),
     (GeoType.CONVEX_MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
 ]
 
@@ -385,7 +387,7 @@ def test_mesh_mesh_sdf_vs_sdf(_test, device, broad_phase: str):
     """Test mesh-mesh collision where both meshes have SDFs."""
     # SDF-SDF hydroelastic contacts can have some variability in contact normal direction
     test_mesh_mesh_sdf_modes(
-        _test, device, sdf_max_resolution_a=8, sdf_max_resolution_b=8, broad_phase=broad_phase, tolerance=0.1
+        _test, device, sdf_max_resolution_a=64, sdf_max_resolution_b=64, broad_phase=broad_phase, tolerance=0.1
     )
 
 
@@ -395,7 +397,7 @@ def test_mesh_mesh_sdf_vs_bvh(_test, device, broad_phase: str):
     test_mesh_mesh_sdf_modes(
         _test,
         device,
-        sdf_max_resolution_a=8,
+        sdf_max_resolution_a=64,
         sdf_max_resolution_b=None,
         broad_phase=broad_phase,
         tolerance=0.2,
@@ -409,7 +411,7 @@ def test_mesh_mesh_bvh_vs_sdf(_test, device, broad_phase: str):
         _test,
         device,
         sdf_max_resolution_a=None,
-        sdf_max_resolution_b=8,
+        sdf_max_resolution_b=64,
         broad_phase=broad_phase,
         tolerance=0.5,
     )
@@ -715,6 +717,71 @@ for bp_name in ("explicit", "nxn", "sap"):
     )
 
 
+def test_box_box_quaternion_perturbation(test, device, broad_phase: str):
+    """Verify box-box contacts are correct under tiny quaternion perturbation.
+
+    Two identical cubes are placed face-to-face with a non-trivial base
+    rotation (30 deg around X) and a tiny quaternion perturbation (~1e-14)
+    in the second box only. Without the support-map deadband fix this
+    produces 1 invalid contact instead of 4 face-corner contacts, with an
+    out-of-bounds body-frame point and a wrong world-frame normal.
+
+    Regression test for issue #2024 / #2430.
+    """
+    with wp.ScopedDevice(device):
+        half = 0.495
+        q_clean = wp.quat(0.2588233343021173, 0.0, 0.0, 0.9659246769912934)
+        q_noisy = wp.quat(0.2588233343021173, -2.27e-14, 9.25e-15, 0.9659246769912934)
+
+        y, z = 6.680443286895752, 4.4285125732421875
+
+        builder = newton.ModelBuilder()
+        b0 = builder.add_body(xform=wp.transform(p=wp.vec3(half, y, z), q=q_clean))
+        builder.add_shape_box(body=b0, hx=half, hy=half, hz=half)
+
+        b1 = builder.add_body(xform=wp.transform(p=wp.vec3(-half, y, z), q=q_noisy))
+        builder.add_shape_box(body=b1, hx=half, hy=half, hz=half)
+
+        model = builder.finalize(device=device)
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        cc = int(contacts.rigid_contact_count.numpy()[0])
+        points0 = contacts.rigid_contact_point0.numpy()[:cc]
+        normals = contacts.rigid_contact_normal.numpy()[:cc]
+
+        test.assertEqual(cc, 4, f"Expected 4 face-corner contacts, got {cc}")
+
+        for i in range(cc):
+            pt = points0[i]
+            n = normals[i]
+            for j in range(3):
+                test.assertLessEqual(
+                    abs(pt[j]),
+                    half * 1.01,
+                    f"Contact {i} body-frame point[{j}] = {pt[j]:.4f} outside half-extent {half}",
+                )
+            test.assertAlmostEqual(
+                abs(n[0]),
+                1.0,
+                places=2,
+                msg=f"Contact {i} normal = [{n[0]:.4f}, {n[1]:.4f}, {n[2]:.4f}], expected [+-1, 0, 0]",
+            )
+
+
+for bp_name in ("explicit", "nxn", "sap"):
+    add_function_test(
+        TestRigidContactNormal,
+        f"test_box_box_quaternion_perturbation_{bp_name}",
+        test_box_box_quaternion_perturbation,
+        devices=devices,
+        broad_phase=bp_name,
+    )
+
+
 # ============================================================================
 # Particle-Shape (Soft) Contact Tests
 # ============================================================================
@@ -795,6 +862,120 @@ class TestContactEstimator(unittest.TestCase):
 
         estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1500)
+
+
+class TestShapePairsMaxScaling(unittest.TestCase):
+    """Verify that shape_pairs_max scales linearly with world count, not quadratically."""
+
+    @staticmethod
+    def _make_model(num_worlds, shapes_per_world, num_global=0, shape_flags_value=None):
+        """Build a minimal Model with the given world/shape layout."""
+        from newton._src.geometry.flags import ShapeFlags  # noqa: PLC0415
+
+        total = num_worlds * shapes_per_world + num_global
+        world_ids = np.repeat(np.arange(num_worlds, dtype=np.int32), shapes_per_world)
+        if num_global > 0:
+            world_ids = np.concatenate([world_ids, np.full(num_global, -1, dtype=np.int32)])
+
+        model = newton.Model()
+        model.shape_count = total
+        model.shape_world = wp.array(world_ids, dtype=wp.int32)
+
+        if shape_flags_value is not None:
+            flags = np.full(total, shape_flags_value, dtype=np.int32)
+        else:
+            flags = np.full(total, int(ShapeFlags.COLLIDE_SHAPES), dtype=np.int32)
+        model.shape_flags = wp.array(flags, dtype=wp.int32)
+        return model
+
+    def test_single_world_matches_global_formula(self):
+        """Single world should give the same result as the naive N*(N-1)/2."""
+        model = self._make_model(num_worlds=1, shapes_per_world=20)
+        result = _compute_per_world_shape_pairs_max(model)
+        self.assertEqual(result, 20 * 19 // 2)
+
+    def test_multi_world_scales_linearly(self):
+        """Doubling worlds should roughly double shape_pairs_max, not quadruple it."""
+        model_w1 = self._make_model(num_worlds=1, shapes_per_world=20)
+        model_w2 = self._make_model(num_worlds=2, shapes_per_world=20)
+        model_w4 = self._make_model(num_worlds=4, shapes_per_world=20)
+
+        pairs_w1 = _compute_per_world_shape_pairs_max(model_w1)
+        pairs_w2 = _compute_per_world_shape_pairs_max(model_w2)
+        pairs_w4 = _compute_per_world_shape_pairs_max(model_w4)
+
+        self.assertEqual(pairs_w1, 190)
+        self.assertEqual(pairs_w2, 2 * 190)
+        self.assertEqual(pairs_w4, 4 * 190)
+
+    def test_many_worlds_no_quadratic_blowup(self):
+        """At 256 worlds the per-world sum must be far below the global N^2 formula."""
+        num_worlds = 256
+        spw = 10
+        model = self._make_model(num_worlds=num_worlds, shapes_per_world=spw)
+        result = _compute_per_world_shape_pairs_max(model)
+
+        per_world_expected = num_worlds * (spw * (spw - 1) // 2)
+        global_n = num_worlds * spw
+        global_quadratic = global_n * (global_n - 1) // 2
+
+        self.assertEqual(result, per_world_expected)
+        self.assertLess(result, global_quadratic / 100, "shape_pairs_max must not scale quadratically with world count")
+
+    def test_global_shapes_included_per_world(self):
+        """Global shapes (world=-1) are added to each world's segment."""
+        model = self._make_model(num_worlds=2, shapes_per_world=3, num_global=1)
+        result = _compute_per_world_shape_pairs_max(model)
+        # Each world: 3 local + 1 global = 4 shapes -> 6 pairs
+        # Dedicated -1 segment: 1 shape -> 0 pairs
+        self.assertEqual(result, 2 * 6)
+
+    def test_global_shapes_dedicated_segment(self):
+        """Multiple global shapes get their own dedicated segment."""
+        model = self._make_model(num_worlds=2, shapes_per_world=3, num_global=2)
+        result = _compute_per_world_shape_pairs_max(model)
+        # Each world: 3 + 2 = 5 -> 10 pairs. Dedicated: 2 -> 1 pair.
+        self.assertEqual(result, 2 * 10 + 1)
+
+    def test_no_shapes(self):
+        model = newton.Model()
+        model.shape_count = 0
+        model.shape_world = None
+        self.assertEqual(_compute_per_world_shape_pairs_max(model), 0)
+
+    def test_pipeline_buffer_size_scales_linearly(self):
+        """End-to-end: CollisionPipeline buffers must not explode with many worlds."""
+        num_worlds = 64
+        spw = 5
+
+        robot_builder = newton.ModelBuilder()
+        for _ in range(spw):
+            b = robot_builder.add_body()
+            robot_builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
+
+        builder = newton.ModelBuilder()
+        for _ in range(num_worlds):
+            builder.add_world(robot_builder)
+
+        model = builder.finalize()
+
+        for bp_mode in ("nxn", "sap"):
+            pipeline = newton.CollisionPipeline(model, broad_phase=bp_mode)
+
+            global_n = model.shape_count
+            global_quadratic = global_n * (global_n - 1) // 2
+            per_world_linear = num_worlds * (spw * (spw - 1) // 2)
+
+            self.assertEqual(
+                pipeline.shape_pairs_max,
+                per_world_linear,
+                f"broad_phase={bp_mode}: shape_pairs_max should scale linearly",
+            )
+            self.assertLess(
+                pipeline.shape_pairs_max,
+                global_quadratic / 10,
+                f"broad_phase={bp_mode}: shape_pairs_max must not be quadratic",
+            )
 
 
 def test_particle_shape_contacts(test, device, shape_type: GeoType):
@@ -913,6 +1094,260 @@ for shape_type in particle_shape_tests:
         devices=devices,
         shape_type=shape_type,
     )
+
+
+# ============================================================================
+# Full-scene deterministic contact pipeline test
+# ============================================================================
+
+
+class TestDeterministicPipeline(unittest.TestCase):
+    """Test that deterministic=True yields bit-identical contacts across collide calls."""
+
+    pass
+
+
+def _build_deterministic_scene(device):
+    """Build the mixed-shape scene from example_basic_shapes6_determinism."""
+    from newton._src.geometry import create_mesh_terrain  # noqa: PLC0415
+
+    builder = newton.ModelBuilder()
+
+    # Procedural mesh terrain ground
+    terrain_vertices, terrain_indices = create_mesh_terrain(
+        grid_size=(6, 6),
+        block_size=(5.0, 5.0),
+        terrain_types=["pyramid_stairs"],
+        terrain_params={
+            "pyramid_stairs": {"step_width": 0.4, "step_height": 0.05, "platform_width": 0.8},
+        },
+        seed=42,
+    )
+    terrain_mesh = newton.Mesh(terrain_vertices, terrain_indices)
+    terrain_mesh.build_sdf(max_resolution=512)
+    builder.add_shape_mesh(body=-1, mesh=terrain_mesh, xform=wp.transform(p=wp.vec3(-15.0, -15.0, -0.5)))
+
+    # Icosahedron mesh
+    phi = (1.0 + np.sqrt(5.0)) / 2.0
+    ico_radius = 0.35
+    ico_base_vertices = np.array(
+        [
+            [-1, phi, 0],
+            [1, phi, 0],
+            [-1, -phi, 0],
+            [1, -phi, 0],
+            [0, -1, phi],
+            [0, 1, phi],
+            [0, -1, -phi],
+            [0, 1, -phi],
+            [phi, 0, -1],
+            [phi, 0, 1],
+            [-phi, 0, -1],
+            [-phi, 0, 1],
+        ],
+        dtype=np.float32,
+    )
+    for i in range(len(ico_base_vertices)):
+        ico_base_vertices[i] = ico_base_vertices[i] / np.linalg.norm(ico_base_vertices[i]) * ico_radius
+    ico_face_indices = [
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
+    ]
+    ico_vertices, ico_normals, ico_indices = [], [], []
+    for face_idx, face in enumerate(ico_face_indices):
+        v0, v1, v2 = ico_base_vertices[face[0]], ico_base_vertices[face[1]], ico_base_vertices[face[2]]
+        normal = np.cross(v1 - v0, v2 - v0)
+        normal = normal / np.linalg.norm(normal)
+        ico_vertices.extend([v0, v1, v2])
+        ico_normals.extend([normal, normal, normal])
+        base = face_idx * 3
+        ico_indices.extend([base, base + 1, base + 2])
+    ico_mesh = newton.Mesh(
+        np.array(ico_vertices, dtype=np.float32),
+        np.array(ico_indices, dtype=np.int32),
+        normals=np.array(ico_normals, dtype=np.float32),
+    )
+
+    # Cube mesh with SDF
+    hs = 0.3
+    cube_verts = np.array(
+        [
+            [-hs, -hs, -hs],
+            [hs, -hs, -hs],
+            [hs, hs, -hs],
+            [-hs, hs, -hs],
+            [-hs, -hs, hs],
+            [hs, -hs, hs],
+            [hs, hs, hs],
+            [-hs, hs, hs],
+        ],
+        dtype=np.float32,
+    )
+    cube_tris = np.array(
+        [0, 3, 2, 0, 2, 1, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5],
+        dtype=np.int32,
+    )
+    cube_mesh = newton.Mesh(cube_verts, cube_tris)
+    cube_mesh.build_sdf(max_resolution=64)
+
+    # 4x4x4 grid of mixed shapes
+    shape_types = ["sphere", "box", "capsule", "mesh_cube", "cylinder", "cone", "icosahedron"]
+    grid_offset = wp.vec3(-5.0, -5.0, 0.5)
+    rng = np.random.default_rng(42)
+    shape_index = 0
+    for ix in range(4):
+        for iy in range(4):
+            for iz in range(4):
+                pos = wp.vec3(
+                    float(grid_offset[0]) + ix * 1.5 + (rng.random() - 0.5) * 0.4,
+                    float(grid_offset[1]) + iy * 1.5 + (rng.random() - 0.5) * 0.4,
+                    float(grid_offset[2]) + iz * 1.5 + (rng.random() - 0.5) * 0.4,
+                )
+                shape_type = shape_types[shape_index % len(shape_types)]
+                shape_index += 1
+                body = builder.add_body(xform=wp.transform(p=pos, q=wp.quat_identity()))
+                if shape_type == "sphere":
+                    builder.add_shape_sphere(body, radius=0.3)
+                elif shape_type == "box":
+                    builder.add_shape_box(body, hx=0.3, hy=0.3, hz=0.3)
+                elif shape_type == "capsule":
+                    builder.add_shape_capsule(body, radius=0.2, half_height=0.4)
+                elif shape_type == "cylinder":
+                    builder.add_shape_cylinder(body, radius=0.25, half_height=0.35)
+                elif shape_type == "cone":
+                    builder.add_shape_cone(body, radius=0.3, half_height=0.4)
+                elif shape_type == "mesh_cube":
+                    builder.add_shape_mesh(body, mesh=cube_mesh)
+                elif shape_type == "icosahedron":
+                    builder.add_shape_convex_hull(body, mesh=ico_mesh)
+                joint = builder.add_joint_free(body)
+                builder.add_articulation([joint])
+
+    model = builder.finalize(device=device)
+    return model
+
+
+def test_deterministic_pipeline_500_steps(test, device):
+    """Run 500 steps of the mixed-shape scene and assert bit-identical contacts on every collide."""
+    with wp.ScopedDevice(device):
+        model = _build_deterministic_scene(device)
+
+        pipeline_a = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            deterministic=True,
+            reduce_contacts=True,
+            rigid_contact_max=50000,
+        )
+        pipeline_b = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            deterministic=True,
+            reduce_contacts=True,
+            rigid_contact_max=50000,
+        )
+        contacts_a = pipeline_a.contacts()
+        contacts_b = pipeline_b.contacts()
+
+        solver = newton.solvers.SolverXPBD(model, iterations=2, rigid_contact_relaxation=0.8)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        fps = 100
+        sim_substeps = 10
+        sim_dt = 1.0 / fps / sim_substeps
+
+        checked_arrays = [
+            "rigid_contact_shape0",
+            "rigid_contact_shape1",
+            "rigid_contact_point0",
+            "rigid_contact_point1",
+            "rigid_contact_normal",
+            "rigid_contact_offset0",
+            "rigid_contact_offset1",
+            "rigid_contact_margin0",
+            "rigid_contact_margin1",
+        ]
+
+        total_checks = 0
+        for _frame in range(500):
+            for _sub in range(sim_substeps):
+                state_0.clear_forces()
+                pipeline_a.collide(state_0, contacts_a)
+                pipeline_b.collide(state_0, contacts_b)
+
+                count_a = int(contacts_a.rigid_contact_count.numpy()[0])
+                count_b = int(contacts_b.rigid_contact_count.numpy()[0])
+                test.assertEqual(
+                    count_a,
+                    count_b,
+                    f"Contact count mismatch at frame {_frame} substep {_sub}: {count_a} vs {count_b}",
+                )
+                if count_a > 0:
+                    # Also compare sort keys to distinguish ordering vs value issues
+                    keys_a = pipeline_a._sort_key_array.numpy()[:count_a]
+                    keys_b = pipeline_b._sort_key_array.numpy()[:count_a]
+                    keys_match = np.array_equal(keys_a, keys_b)
+
+                    for name in checked_arrays:
+                        a = getattr(contacts_a, name).numpy()[:count_a]
+                        b = getattr(contacts_b, name).numpy()[:count_a]
+                        if not np.array_equal(a, b):
+                            diff_mask = a != b
+                            diff_indices = np.argwhere(diff_mask)
+                            msg = (
+                                f"Determinism failure in {name} at frame {_frame} substep {_sub} "
+                                f"({int(np.count_nonzero(diff_mask))} elements differ, {count_a} contacts)\n"
+                                f"  sort_keys_match={keys_match}\n"
+                            )
+                            for raw_idx in diff_indices[:5]:
+                                tidx = tuple(raw_idx)
+                                msg += f"  [{tidx}]: a={a[tidx]!r}  b={b[tidx]!r}  diff={float(a[tidx]) - float(b[tidx]):.18e}\n"
+                            if not keys_match:
+                                key_diff = np.argwhere(keys_a != keys_b)
+                                msg += f"  sort_key diffs at indices: {key_diff[:10].flatten().tolist()}\n"
+                                for ki in key_diff[:5].flatten():
+                                    msg += f"    key[{ki}]: a=0x{keys_a[ki]:016x}  b=0x{keys_b[ki]:016x}\n"
+                            # Show shape pairs for differing contacts
+                            s0_a = contacts_a.rigid_contact_shape0.numpy()[:count_a]
+                            s1_a = contacts_a.rigid_contact_shape1.numpy()[:count_a]
+                            for idx in diff_indices[:5]:
+                                ci = idx[0] if len(idx) > 1 else int(idx)
+                                msg += f"  contact[{ci}]: shapes=({s0_a[ci]}, {s1_a[ci]}), key_a=0x{keys_a[ci]:016x}\n"
+                            test.assertTrue(False, msg)
+                total_checks += 1
+
+                solver.step(state_0, state_1, control, contacts_a, sim_dt)
+                state_0, state_1 = state_1, state_0
+
+
+add_function_test(
+    TestDeterministicPipeline,
+    "test_deterministic_pipeline_500_steps",
+    test_deterministic_pipeline_500_steps,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
 
 
 if __name__ == "__main__":

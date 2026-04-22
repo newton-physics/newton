@@ -74,6 +74,48 @@ class Collider:
 
 
 @wp.func
+def _sq_dist_point_seg_at_origin(q: wp.vec3, seg: wp.vec3, seg_len_sq: float):
+    """Squared distance from ``q`` to the segment ``[0, seg]``."""
+    s = wp.clamp(wp.dot(q, seg) / seg_len_sq, 0.0, 1.0)
+    return wp.length_sq(q - s * seg)
+
+
+@wp.func
+def _sq_dist_point_tri_at_origin(q: wp.vec3, e1: wp.vec3, e2: wp.vec3):
+    """Squared distance from ``q`` to the triangle with vertices ``(0, e1, e2)``.
+
+    ``wp.vec3``-specialized inline of warp's ``project_on_tri_at_origin``
+    (from ``warp._src.fem.geometry.closest_point``). The original returns
+    the barycentric coordinates as well; those are unused here so the
+    inlined version returns just the squared distance.
+    """
+    e1e1 = wp.dot(e1, e1)
+    e1e2 = wp.dot(e1, e2)
+    e2e2 = wp.dot(e2, e2)
+
+    det = e1e1 * e2e2 - e1e2 * e1e2
+
+    # Interior projection when the triangle is non-degenerate and the
+    # projected point lies inside the triangle.
+    if det > e1e1 * e2e2 * 1.0e-6:
+        e1p = wp.dot(e1, q)
+        e2p = wp.dot(e2, q)
+
+        s = (e2e2 * e1p - e1e2 * e2p) / det
+        t = (e1e1 * e2p - e1e2 * e1p) / det
+
+        if s >= 0.0 and t >= 0.0 and s + t <= 1.0:
+            return wp.length_sq(q - s * e1 - t * e2)
+
+    # Otherwise (exterior projection or degenerate triangle) take the
+    # minimum squared distance across the three edges.
+    d1 = _sq_dist_point_seg_at_origin(q, e1, e1e1)
+    d2 = _sq_dist_point_seg_at_origin(q, e2, e2e2)
+    d12 = _sq_dist_point_seg_at_origin(q - e1, e2 - e1, wp.length_sq(e2 - e1))
+    return wp.min(wp.min(d1, d2), d12)
+
+
+@wp.func
 def get_average_face_normal(
     mesh_id: wp.uint64,
     point: wp.vec3,
@@ -103,7 +145,7 @@ def get_average_face_normal(
         V1 = points[vidx[face_index * 3 + 1]]
         V2 = points[vidx[face_index * 3 + 2]]
 
-        sq_dist, _coords = fem.geometry.closest_point.project_on_tri_at_origin(point - V0, V1 - V0, V2 - V0)
+        sq_dist = _sq_dist_point_tri_at_origin(point - V0, V1 - V0, V2 - V0)
         if sq_dist < eps_sq:
             face_normal += wp.mesh_eval_face_normal(mesh_id, face_index)
 
