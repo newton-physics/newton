@@ -25,6 +25,8 @@ newton.geometry
    :toctree: _generated
    :signatures: long
 
+   build_particle_bvh
+   build_shape_bvh
    collide_box_box
    collide_capsule_box
    collide_capsule_capsule
@@ -40,6 +42,8 @@ newton.geometry
    compute_inertia_shape
    compute_offset_mesh
    create_empty_sdf_data
+   refit_particle_bvh
+   refit_shape_bvh
    sdf_box
    sdf_capsule
    sdf_cone

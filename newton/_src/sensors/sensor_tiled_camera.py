@@ -162,18 +162,23 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 self.utils.assign_random_colors_per_shape()
 
     def sync_transforms(self, state: State):
-        """Synchronize shape transforms from the simulation state.
+        """Synchronize triangle-mesh points from the simulation state.
 
         :meth:`update` calls this automatically when *state* is not None.
 
+        Shape and particle BVHs on :attr:`model` must be refit separately
+        via :func:`~newton.geometry.refit_shape_bvh` and
+        :func:`~newton.geometry.refit_particle_bvh` prior to calling
+        :meth:`update`.
+
         Args:
-            state: The current simulation state containing body transforms.
+            state: The current simulation state containing particle positions.
         """
         self.__render_context.update(self.model, state)
 
     def update(
         self,
-        state: State | None,
+        state: State,
         camera_transforms: wp.array2d[wp.transformf],
         camera_rays: wp.array4d[wp.vec3f],
         *,
@@ -182,7 +187,6 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
-        refit_bvh: bool = True,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
     ):
         """Render output images for all worlds and cameras.
@@ -191,8 +195,12 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         ``[world_id, camera_id, y, x]`` corresponds to the ray in ``camera_rays[camera_id, y, x]``. Each output
         channel is optional -- pass None to skip that channel's rendering entirely.
 
+        Shape and particle BVHs on :attr:`model` must be refit for *state* via
+        :func:`~newton.geometry.refit_shape_bvh` and
+        :func:`~newton.geometry.refit_particle_bvh` before calling this method.
+
         Args:
-            state: Simulation state with body transforms. If not None, calls :meth:`sync_transforms` first.
+            state: Simulation state with body and particle transforms.
             camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
                 ``(camera_count, height, width, 2)``.
@@ -201,14 +209,14 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
             albedo_image: Output for unshaded surface color. None to skip.
-            refit_bvh: Refit the BVH before rendering.
             clear_data: Values to clear output buffers with.
                 See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
         """
-        if state is not None:
-            self.sync_transforms(state)
+        self.sync_transforms(state)
 
         self.__render_context.render(
+            self.model,
+            state,
             camera_transforms,
             camera_rays,
             color_image,
@@ -216,7 +224,6 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             shape_index_image,
             normal_image,
             albedo_image,
-            refit_bvh=refit_bvh,
             clear_data=clear_data,
         )
 

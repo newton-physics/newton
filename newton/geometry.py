@@ -15,8 +15,12 @@ from ._src.geometry import (
     collide_plane_sphere,
     collide_sphere_box,
     collide_sphere_capsule,
+    build_particle_bvh,
+    build_shape_bvh,
     collide_sphere_cylinder,
     collide_sphere_sphere,
+    refit_particle_bvh,
+    refit_shape_bvh,
 )
 from ._src.geometry.inertia import compute_inertia_shape, transform_inertia
 from ._src.geometry.kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_mesh, sdf_plane, sdf_sphere
@@ -42,9 +46,13 @@ __all__ = [
     "collide_sphere_capsule",
     "collide_sphere_cylinder",
     "collide_sphere_sphere",
+    "build_particle_bvh",
+    "build_shape_bvh",
     "compute_inertia_shape",
     "compute_offset_mesh",
     "create_empty_sdf_data",
+    "refit_particle_bvh",
+    "refit_shape_bvh",
     "sdf_box",
     "sdf_capsule",
     "sdf_cone",

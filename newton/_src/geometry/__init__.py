@@ -4,6 +4,12 @@
 from .broad_phase_common import test_group_pair, test_world_and_group_pair
 from .broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from .broad_phase_sap import BroadPhaseSAP
+from .bvh import (
+    build_particle_bvh,
+    build_shape_bvh,
+    refit_particle_bvh,
+    refit_shape_bvh,
+)
 from .collision_primitive import (
     collide_box_box,
     collide_capsule_box,
@@ -43,6 +49,8 @@ __all__ = [
     "ParticleFlags",
     "ShapeFlags",
     "TetMesh",
+    "build_particle_bvh",
+    "build_shape_bvh",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
@@ -60,6 +68,8 @@ __all__ = [
     "compute_shape_radius",
     "create_mesh_heightfield",
     "create_mesh_terrain",
+    "refit_particle_bvh",
+    "refit_shape_bvh",
     "test_group_pair",
     "test_world_and_group_pair",
     "transform_inertia",
