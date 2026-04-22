@@ -173,7 +173,7 @@ class SolverVBD(SolverBase):
         particle_collision_detection_interval: int = 0,
         particle_edge_parallel_epsilon: float = 1e-5,
         particle_enable_tile_solve: bool = True,
-        particle_tri_material_model: str = "neohookean",
+        particle_tri_material_model: str = "stvk",
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -224,8 +224,8 @@ class SolverVBD(SolverBase):
             particle_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
             particle_enable_tile_solve: Whether to accelerate the particle solver using tile API.
             particle_tri_material_model: Material model for triangle elasticity.
-                ``"neohookean"`` (default) uses the stable Neo-Hookean energy with absolute damping;
-                ``"stvk"`` uses the St. Venant-Kirchhoff model with Rayleigh damping.
+                ``"stvk"`` (default) uses the St. Venant-Kirchhoff model with Rayleigh damping;
+                ``"neohookean"`` uses the stable Neo-Hookean energy with absolute damping.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
