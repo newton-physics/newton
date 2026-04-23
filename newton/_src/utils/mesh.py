@@ -1404,6 +1404,9 @@ def validate_triangle_mesh(
     vertices: np.ndarray,
     indices: np.ndarray,
     *,
+    min_area: float = 1e-6,
+    max_aspect_ratio: float = 10.0,
+    min_angle_deg: float = 5.0,
     stacklevel: int = 2,
 ) -> None:
     """Check a triangle mesh for quality issues and emit warnings.
@@ -1415,6 +1418,10 @@ def validate_triangle_mesh(
     Args:
         vertices: Vertex positions [m], shape ``(N, 3)``.
         indices: Triangle vertex indices, shape ``(F, 3)``.
+        min_area: Minimum triangle area [m²]. Default ``1e-6`` (1 mm²).
+        max_aspect_ratio: Maximum longest-edge / shortest-altitude ratio.
+            Default ``10.0``.
+        min_angle_deg: Minimum interior angle [deg]. Default ``5.0``.
         stacklevel: Passed to :func:`warnings.warn` so the warning points at
             the caller's frame.
     """
@@ -1453,22 +1460,25 @@ def validate_triangle_mesh(
         cos = np.einsum("ij,ij->i", a, b) / (an * bn)
         return np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
 
-    min_angle = np.minimum(_ang(e01, -e20), np.minimum(_ang(-e01, e12), _ang(-e12, e20)))
+    min_angle_arr = np.minimum(_ang(e01, -e20), np.minimum(_ang(-e01, e12), _ang(-e12, e20)))
 
     issues: list[str] = []
 
-    n_degen = int(np.sum(area < 1e-6))
+    n_degen = int(np.sum(area < min_area))
     if n_degen > 0:
-        issues.append(f"{n_degen} triangle(s) with area < 1 mm\u00b2 (1e-6 m\u00b2)")
+        issues.append(f"{n_degen} triangle(s) with area < {min_area} m\u00b2")
 
-    n_sliver = int(np.sum(aspect > 10.0))
+    n_sliver = int(np.sum(aspect > max_aspect_ratio))
     if n_sliver > 0:
-        issues.append(f"{n_sliver} sliver triangle(s) with aspect ratio > 10 (worst: {float(aspect.max()):.1f})")
+        issues.append(
+            f"{n_sliver} sliver triangle(s) with aspect ratio > {max_aspect_ratio} (worst: {float(aspect.max()):.1f})"
+        )
 
-    n_small_angle = int(np.sum(min_angle < 5.0))
+    n_small_angle = int(np.sum(min_angle_arr < min_angle_deg))
     if n_small_angle > 0:
         issues.append(
-            f"{n_small_angle} triangle(s) with minimum angle < 5\u00b0 (smallest: {float(min_angle.min()):.1f}\u00b0)"
+            f"{n_small_angle} triangle(s) with minimum angle < {min_angle_deg}\u00b0"
+            f" (smallest: {float(min_angle_arr.min()):.1f}\u00b0)"
         )
 
     edges_all = np.concatenate([indices[:, [0, 1]], indices[:, [1, 2]], indices[:, [2, 0]]])
@@ -1493,6 +1503,8 @@ def validate_tet_mesh(
     vertices: np.ndarray,
     indices: np.ndarray,
     *,
+    min_volume: float = 1e-9,
+    min_eta: float = 0.01,
     stacklevel: int = 2,
 ) -> None:
     """Check a tetrahedral mesh for quality issues and emit warnings.
@@ -1514,6 +1526,9 @@ def validate_tet_mesh(
     Args:
         vertices: Vertex positions [m], shape ``(N, 3)``.
         indices: Tetrahedron vertex indices, shape ``(T, 4)``.
+        min_volume: Minimum absolute tet volume [m³]. Default ``1e-9``
+            (1 mm³).
+        min_eta: Minimum shape quality eta. Default ``0.01``.
         stacklevel: Passed to :func:`warnings.warn`.
     """
     vertices = np.asarray(vertices, dtype=float)
@@ -1536,17 +1551,14 @@ def validate_tet_mesh(
 
     issues: list[str] = []
 
-    # 1. Inverted tets
     n_inverted = int(np.sum(vol < 0))
     if n_inverted > 0:
         issues.append(f"{n_inverted}/{n_tets} inverted tetrahedron/a (negative volume)")
 
-    # 2. Small tets
-    n_degen = int(np.sum(np.abs(vol) < 1e-9))
+    n_degen = int(np.sum(np.abs(vol) < min_volume))
     if n_degen > 0:
-        issues.append(f"{n_degen}/{n_tets} tetrahedron/a with volume < 1 mm\u00b3 (1e-9 m\u00b3)")
+        issues.append(f"{n_degen}/{n_tets} tetrahedron/a with volume < {min_volume} m\u00b3")
 
-    # 3. Shape quality (eta metric)
     e01 = v1 - v0
     e02 = v2 - v0
     e03 = v3 - v0
@@ -1564,13 +1576,12 @@ def validate_tet_mesh(
     eps = 1e-30
     abs_vol = np.abs(vol)
     eta = 12.0 * np.cbrt(3.0 * abs_vol) ** 2 / np.maximum(l_sq_sum, eps)
-    n_sliver = int(np.sum(eta < 0.01))
+    n_sliver = int(np.sum(eta < min_eta))
     if n_sliver > 0:
         issues.append(
-            f"{n_sliver}/{n_tets} sliver tetrahedron/a (shape quality eta < 0.01; worst: {float(eta.min()):.4f})"
+            f"{n_sliver}/{n_tets} sliver tetrahedron/a (shape quality eta < {min_eta}; worst: {float(eta.min()):.4f})"
         )
 
-    # 4. Non-manifold faces (shared by > 2 tets)
     face_combos = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]
     all_faces = np.concatenate([np.sort(indices[:, combo], axis=1) for combo in face_combos])
     _, counts = np.unique(all_faces, axis=0, return_counts=True)
