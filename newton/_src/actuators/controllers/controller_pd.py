@@ -87,6 +87,12 @@ class ControllerPD(Controller):
         self.kd = kd
         self.const_effort = const_effort
 
+    def is_stateful(self) -> bool:
+        return False
+
+    def is_graphable(self) -> bool:
+        return True
+
     def compute(
         self,
         positions: wp.array[float],

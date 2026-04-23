@@ -143,6 +143,9 @@ class ControllerPID(Controller):
     def is_stateful(self) -> bool:
         return True
 
+    def is_graphable(self) -> bool:
+        return True
+
     def state(self, num_actuators: int, device: wp.Device) -> ControllerPID.State:
         return ControllerPID.State(
             integral=wp.zeros(num_actuators, dtype=wp.float32, device=device),

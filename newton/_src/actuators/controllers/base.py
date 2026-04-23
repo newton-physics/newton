@@ -112,11 +112,11 @@ class Controller:
 
     def is_stateful(self) -> bool:
         """Return True if this controller maintains internal state."""
-        return False
+        raise NotImplementedError(f"{type(self).__name__} must implement is_stateful")
 
     def is_graphable(self) -> bool:
         """Return True if compute() can be captured in a CUDA graph."""
-        return True
+        raise NotImplementedError(f"{type(self).__name__} must implement is_graphable")
 
     def state(self, num_actuators: int, device: wp.Device) -> Controller.State | None:
         """Create and return a new state object, or None if stateless."""

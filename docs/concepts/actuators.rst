@@ -221,7 +221,8 @@ When the built-in components are not sufficient, implement new ones by
 subclassing :class:`Controller` or :class:`Clamping`.
 
 For example, a custom controller needs to implement
-:meth:`~Controller.compute` and :meth:`~Controller.resolve_arguments`:
+:meth:`~Controller.compute`, :meth:`~Controller.resolve_arguments`,
+:meth:`~Controller.is_stateful`, and :meth:`~Controller.is_graphable`:
 
 .. code-block:: python
    :caption: Skeleton — the ``compute`` body is omitted; see existing
@@ -237,6 +238,12 @@ For example, a custom controller needs to implement
 
        def __init__(self, gain: wp.array):
            self.gain = gain
+
+       def is_stateful(self):
+           return False
+
+       def is_graphable(self):
+           return True
 
        def compute(self, positions, velocities, target_pos, target_vel,
                    feedforward, pos_indices, vel_indices,
