@@ -124,8 +124,7 @@
 - Use `Literal` types for `SolverImplicitMPM.Config` string fields with fixed option sets (`solver`, `warmstart_mode`, `collider_velocity_mode`, `grid_type`, `transfer_scheme`, `integration_scheme`)
 - Migrate `wp.array(dtype=X)` type annotations to `wp.array[X]` bracket syntax (Warp 1.12+).
 - Align articulated `State.body_qd` / FK / IK / Jacobian / mass-matrix linear velocity with COM-referenced motion. If you were comparing `body_qd[:3]` against finite-differenced body-origin motion, recover origin velocity via `v_origin = v_com - omega x r_com_world`. Descendant `FREE` / `DISTANCE` `joint_qd` remains parent-frame and `joint_f` remains a world-frame COM wrench.
-- Pin `mujoco` and `mujoco-warp` dependencies to `~=3.6.0`
-- Store `Model.shape_color` in linear RGB instead of display/sRGB, honor USD-authored color-space metadata for imported material/display colors and textures, and let `SensorTiledCamera` keep packed color/albedo outputs in linear bytes when `RenderConfig.encode_output_srgb=False`. If you write colors directly into `Model.shape_color`, convert any display/sRGB values to linear first with `newton.utils.srgb_to_linear_rgb()`.
+- Store `Model.shape_color` in display RGB instead of linear RGB. If you write linear-light values directly into `Model.shape_color`, convert them first with `newton.utils.linear_to_srgb_rgb()`.
 
 ### Deprecated
 

@@ -578,8 +578,8 @@ def parse_usd(
                     hy=side_lengths[1] / 2,
                     hz=side_lengths[2] / 2,
                     cfg=visual_shape_cfg_for_prim,
-                    as_site=is_site,
                     color=shape_color,
+                    as_site=is_site,
                     label=path_name,
                 )
             elif type_name == "sphere":
@@ -591,8 +591,8 @@ def parse_usd(
                     xform,
                     radius,
                     cfg=visual_shape_cfg_for_prim,
-                    as_site=is_site,
                     color=shape_color,
+                    as_site=is_site,
                     label=path_name,
                 )
             elif type_name == "plane":
@@ -623,8 +623,8 @@ def parse_usd(
                     radius,
                     half_height,
                     cfg=visual_shape_cfg_for_prim,
-                    as_site=is_site,
                     color=shape_color,
+                    as_site=is_site,
                     label=path_name,
                 )
             elif type_name == "cylinder":
@@ -639,8 +639,8 @@ def parse_usd(
                     radius,
                     half_height,
                     cfg=visual_shape_cfg_for_prim,
-                    as_site=is_site,
                     color=shape_color,
+                    as_site=is_site,
                     label=path_name,
                 )
             elif type_name == "cone":
@@ -655,8 +655,8 @@ def parse_usd(
                     radius,
                     half_height,
                     cfg=visual_shape_cfg_for_prim,
-                    as_site=is_site,
                     color=shape_color,
+                    as_site=is_site,
                     label=path_name,
                 )
             elif type_name == "mesh":
