@@ -21,10 +21,6 @@ class Clamping:
     ``__init__`` receives pre-built arrays and validates shapes only —
     reading back array contents would force a synchronous device-to-host
     copy on every construction.
-
-    Attributes:
-        SHARED_PARAMS: Parameter names that are instance-level (shared across
-            all DOFs). Different values require separate actuator instances.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = set()

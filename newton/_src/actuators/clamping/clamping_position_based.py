@@ -74,10 +74,6 @@ class ClampingPositionBased(Clamping):
 
     The lookup table is a shared parameter: all DOFs within one
     :class:`~newton.actuators.Actuator` group share the same table.
-
-    Attributes:
-        SHARED_PARAMS: Parameter names that are instance-level (shared across
-            all DOFs). Different values require separate actuator instances.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"lookup_table_path", "lookup_positions", "lookup_efforts"}

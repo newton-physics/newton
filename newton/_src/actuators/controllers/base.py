@@ -31,10 +31,6 @@ class Controller:
     arrays.  ``__init__`` receives pre-built arrays and validates shapes
     only — reading back array contents for value checks would force a
     synchronous device-to-host copy on every construction.
-
-    Attributes:
-        SHARED_PARAMS: Parameter names that are instance-level (shared across
-            all DOFs). Different values require separate actuator instances.
     """
 
     @dataclass
