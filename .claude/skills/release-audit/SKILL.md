@@ -48,6 +48,12 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
    ```
    where `<prev-major>.<prev-minor>` is `target - 0.1` (e.g., for target `1.2`, previous minor is `1.1`). Take the first result as the base candidate. Ignore pre-1.0 `beta-*` tags when a stable `vX.Y.Z` line exists.
 
+   **Major-boundary fallback.** When `target.minor == 0` (e.g., `2.0.0`), the `target - 0.1` computation yields a minor line that never existed (`1.9`), and the tag list comes back empty. In that case, enumerate the highest minor line of the previous major instead:
+   ```
+   git tag --list 'v<target-major - 1>.*' --sort=-v:refname
+   ```
+   Take the first result (the last-patch of the last-minor of the previous major) as the base candidate. If both the primary and fallback searches return empty (which should only happen on a never-released line), surface that to the user in step 6 rather than silently proceeding.
+
    For **retrospective mode** with target `X.Y.Z`: the base is the last `vX.Y-prev.*` tag strictly before `vX.Y.Z`. Also check whether `X.Y.Z` is itself a patch release (`.Z > 0`): if so, the "base" could be either the previous patch on the same minor (`vX.Y.<Z-1>`) OR the previous minor's latest. Present both in step 6 and let the user pick — a patch retrospective usually wants patch-on-patch; a minor-release retrospective wants previous-minor's last patch.
 
 3. **Probe for the head**:
@@ -504,6 +510,8 @@ Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, in
 8. **New API tables are grouped by Kind.** Render one table per Kind ("Functions", "Classes", "Methods on existing classes", "Enums / flags", "Examples"). Newton's "Examples" kind specifically covers additions under `newton/examples/**` that ship a user-runnable `python -m newton.examples <name>` entry.
 
 9. **Changes-to-Existing-API table columns**: `API | Kind | Breaking | Description | GH | Commits | Bake`. The API cell uses the same short-form call-shape convention as rule 7 (parameter names + defaults, no annotations). Description is a short phrase. Kind values include: `signature change`, `new parameter`, `capability extension`, `rename` (Newton-specific), `parameter reorder` (Newton-specific), `removed`, `deprecated`, `semantic change`. For any entry tagged experimental in Phase 4g, the Breaking cell reads `Experimental`. For any Removed entry, the Description also includes the deprecation-window fact from Phase 4d (e.g., "Deprecated in 1.0.0; removed here.").
+
+   **Bake-cell format (tables only).** Render the Bake column as `🟢 47d`, `🟡 12d`, `🟠 4d` — emoji, space, number-and-`d` joined with no intervening space. The joined `Nd` keeps the bucket/duration pair on one line when a narrow Markdown table wraps. For per-symbol detail blocks and prose, continue to spell out `🟢 47 days in main`; the compact form is for table cells only.
 
 10. **Audit appendix rendering is conditional.** If only one of the audit sections (CHANGELOG-orphan entries / language-review flags / Phase 4f semantic-review candidates) has any content, do not render an "Audit Appendix" umbrella heading. Just render the non-empty sections with their own top-level headings (e.g., `## CHANGELOG Review Notes`, `## Semantic-Change Review Candidates`). Only use an umbrella when two or more subsections are non-empty.
 

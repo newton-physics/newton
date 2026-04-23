@@ -15,8 +15,10 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
+from types import MappingProxyType
 
 # ASCII Unit Separator (U+001F). Not valid inside a git commit subject or
 # author name, so safe to use as a field delimiter in log output.
@@ -113,8 +115,9 @@ def days_between(earlier_iso: str, later_iso: str) -> int:
 # Sentinel used to mark a subject whose committer SHA could not be
 # unambiguously resolved (i.e., it appears more than once on main_ref).
 # Stored alongside real entries so that find_main_equivalent can distinguish
-# "not present" from "present but ambiguous".
-_AMBIGUOUS: dict = {"sha": None, "committer_date": None, "_ambiguous": True}
+# "not present" from "present but ambiguous". Wrapped in MappingProxyType so
+# the shared instance cannot be mutated through any one index slot.
+_AMBIGUOUS = MappingProxyType({"sha": None, "committer_date": None, "_ambiguous": True})
 
 
 def build_main_subject_index(repo: Path, base: str, main_ref: str) -> dict:
@@ -133,7 +136,9 @@ def build_main_subject_index(repo: Path, base: str, main_ref: str) -> dict:
         f"--format={_LOG_FMT}",
         f"{base}..{main_ref}",
     )
-    index: dict[str, dict] = {}
+    # Values are either a plain dict for a unique subject, or the shared
+    # MappingProxyType sentinel ``_AMBIGUOUS`` for a duplicated one.
+    index: dict[str, Mapping] = {}
     for line in stdout.splitlines():
         if not line:
             continue
