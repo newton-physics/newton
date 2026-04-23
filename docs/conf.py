@@ -225,7 +225,7 @@ autodoc_default_options = {
     "member-order": "groupwise",
     "special-members": "__init__",
     "undoc-members": False,
-    "exclude-members": "__weakref__",
+    "exclude-members": "__weakref__, State",
     "imported-members": True,
     "autosummary": True,
 }

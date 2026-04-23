@@ -272,11 +272,12 @@ class Actuator:
 
         # --- 4. Scatter-add to output ---
         applied_output = getattr(sim_control, self.control_output_attr)
-        computed_output = (
-            getattr(sim_control, self.control_computed_output_attr)
-            if self.control_computed_output_attr is not None
-            else None
-        )
+        computed_output = None
+        if (
+            self.control_computed_output_attr is not None
+            and self.control_computed_output_attr != self.control_output_attr
+        ):
+            computed_output = getattr(sim_control, self.control_computed_output_attr)
         wp.launch(
             kernel=_scatter_add_kernel,
             dim=self.num_actuators,

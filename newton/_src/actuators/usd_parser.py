@@ -3,124 +3,25 @@
 
 from __future__ import annotations
 
+import enum
+import re
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .controllers import Controller, ControllerNetLSTM, ControllerNetMLP, ControllerPD, ControllerPID
+from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, ControllerPD, ControllerPID
 from .delay import Delay
 from .utils import load_metadata
 
 
-@dataclass
-class SchemaEntry:
-    """Maps an API schema to a component class and its USD-to-kwarg param names."""
+class ComponentKind(enum.Enum):
+    """Classification of actuator component schemas."""
 
-    component_class: type
-    param_map: dict[str, str]
-    is_controller: bool = False
-    validate: Callable[[dict[str, Any]], None] | None = None
-
-
-def _validate_neural_control(kwargs: dict[str, Any]) -> None:
-    model_path = kwargs.get("model_path")
-    if not model_path:
-        raise ValueError("NewtonNeuralControlAPI requires a non-empty newton:modelPath attribute")
-
-
-_NEURAL_CONTROLLER_TYPES: dict[str, type[Controller]] = {
-    "mlp": ControllerNetMLP,
-    "lstm": ControllerNetLSTM,
-}
-
-
-def _resolve_neural_controller(kwargs: dict[str, Any]) -> tuple[type[Controller], dict[str, Any]]:
-    """Read checkpoint metadata and dispatch to MLP or LSTM runtime.
-
-    The checkpoint must contain ``"model_type"`` in its metadata
-    (``"mlp"`` or ``"lstm"``).
-
-    Raises:
-        ValueError: If ``model_type`` is missing or not recognised.
-    """
-    model_path = kwargs["model_path"]
-    metadata = load_metadata(model_path)
-
-    model_type = metadata.get("model_type")
-    if model_type is None:
-        raise ValueError(
-            f"Checkpoint at '{model_path}' is missing 'model_type' in metadata; "
-            f"expected one of {sorted(_NEURAL_CONTROLLER_TYPES)}"
-        )
-    cls = _NEURAL_CONTROLLER_TYPES.get(model_type)
-    if cls is None:
-        raise ValueError(
-            f"Unsupported model_type '{model_type}' in checkpoint metadata "
-            f"at '{model_path}'; expected one of {sorted(_NEURAL_CONTROLLER_TYPES)}"
-        )
-    return cls, {"model_path": model_path}
-
-
-# ---------------------------------------------------------------------------
-# Schema registry
-#
-# Maps USD API schema tokens to runtime component classes.
-# Kept as a "fake" registry until the newton-usd-schemas PR merges and
-# proper USD schema type checks become available.
-# ---------------------------------------------------------------------------
-
-SCHEMA_REGISTRY: dict[str, SchemaEntry] = {
-    # ── Controllers ────────────────────────────────────────────────────
-    "NewtonPDControlAPI": SchemaEntry(
-        component_class=ControllerPD,
-        param_map={"constEffort": "const_effort", "kp": "kp", "kd": "kd"},
-        is_controller=True,
-    ),
-    "NewtonPIDControlAPI": SchemaEntry(
-        component_class=ControllerPID,
-        param_map={
-            "constEffort": "const_effort",
-            "kp": "kp",
-            "ki": "ki",
-            "kd": "kd",
-            "integralMax": "integral_max",
-        },
-        is_controller=True,
-    ),
-    "NewtonNeuralControlAPI": SchemaEntry(
-        component_class=ControllerNetMLP,
-        param_map={"modelPath": "model_path"},
-        is_controller=True,
-        validate=_validate_neural_control,
-    ),
-    # ── Clamping ───────────────────────────────────────────────────────
-    "NewtonMaxEffortClampingAPI": SchemaEntry(
-        component_class=ClampingMaxEffort,
-        param_map={"maxEffort": "max_effort"},
-    ),
-    "NewtonDCMotorClampingAPI": SchemaEntry(
-        component_class=ClampingDCMotor,
-        param_map={
-            "saturationEffort": "saturation_effort",
-            "velocityLimit": "velocity_limit",
-            "maxMotorEffort": "max_motor_effort",
-        },
-    ),
-    "NewtonPositionBasedClampingAPI": SchemaEntry(
-        component_class=ClampingPositionBased,
-        param_map={
-            "lookupPositions": "lookup_positions",
-            "lookupEfforts": "lookup_efforts",
-        },
-    ),
-    # ── Delay ──────────────────────────────────────────────────────────
-    "NewtonActuatorDelayAPI": SchemaEntry(
-        component_class=Delay,
-        param_map={"delaySteps": "delay_steps"},
-    ),
-}
+    CONTROLLER = "controller"
+    CLAMPING = "clamping"
+    DELAY = "delay"
 
 
 @dataclass
@@ -139,15 +40,98 @@ class ActuatorParsed:
     """Joint target path (USD prim path of the driven joint)."""
 
 
-def get_attribute(prim, name: str, default: Any = None) -> Any:
-    """Get attribute value from a USD prim, returning default if not found."""
-    attr = prim.GetAttribute(name)
-    if not attr or not attr.HasAuthoredValue():
-        return default
-    return attr.Get()
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])([A-Z])")
 
 
-def get_relationship_targets(prim, name: str) -> list[str]:
+def _camel_to_snake(name: str) -> str:
+    """Convert a camelCase name to snake_case."""
+    return _CAMEL_RE.sub(r"_\1", name).lower()
+
+
+def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
+    """Read all authored ``newton:`` attributes for *schema_name* from *prim*.
+
+    Uses :meth:`pxr.Usd.Prim.GetPropertiesInNamespace` scoped to the
+    schema's property list so that only attributes belonging to
+    *schema_name* are returned (not attributes from other applied schemas
+    that share the ``newton:`` namespace).
+
+    Returns:
+        Mapping of snake_case kwarg names to their authored values.
+        Attributes without an authored value are omitted.
+    """
+    from pxr import Usd
+
+    defn = Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema_name)
+    if defn is None:
+        raise RuntimeError(
+            f"Schema {schema_name!r} not found in Usd.SchemaRegistry; "
+            f"is newton-usd-schemas >= 0.2.0rc1 installed?"
+        )
+    schema_props = set(defn.GetPropertyNames())
+
+    kwargs: dict[str, Any] = {}
+    for prop in prim.GetAuthoredPropertiesInNamespace("newton"):
+        if prop.GetName() not in schema_props:
+            continue
+        if not prop.IsValid() or not prop.HasAuthoredValue():
+            continue
+        camel = prop.GetName().removeprefix("newton:")
+        kwargs[_camel_to_snake(camel)] = prop.Get()
+    return kwargs
+
+
+@dataclass
+class _SchemaEntry:
+    """Maps a USD API schema to a runtime component class."""
+
+    component_class: type | Callable[[dict[str, Any]], type]
+    """Concrete class, or a callable that receives the parsed kwargs and
+    returns the concrete class (e.g. for neural controllers that pick
+    MLP vs LSTM at parse time).  The callable may also validate kwargs
+    and raise :class:`ValueError`.
+    """
+    kind: ComponentKind
+
+
+_NEURAL_CONTROLLER_TYPES: dict[str, type[Controller]] = {
+    "mlp": ControllerNeuralMLP,
+    "lstm": ControllerNeuralLSTM,
+}
+
+
+def _resolve_neural_control(kwargs: dict[str, Any]) -> type[Controller]:
+    """Validate neural-control kwargs and return the concrete controller class.
+
+    Inspects the checkpoint's ``model_type`` metadata to choose between
+    :class:`ControllerNeuralMLP` and :class:`ControllerNeuralLSTM`.
+
+    Raises:
+        ValueError: If ``model_path`` is empty or the checkpoint's
+            ``model_type`` metadata is missing / not recognised.
+    """
+    model_path = kwargs.get("model_path")
+    if not model_path:
+        raise ValueError("NewtonNeuralControlAPI requires a non-empty newton:modelPath attribute")
+
+    metadata = load_metadata(model_path)
+
+    model_type = metadata.get("model_type")
+    if model_type is None:
+        raise ValueError(
+            f"Checkpoint at '{model_path}' is missing 'model_type' in metadata; "
+            f"expected one of {sorted(_NEURAL_CONTROLLER_TYPES)}"
+        )
+    resolved_cls = _NEURAL_CONTROLLER_TYPES.get(model_type)
+    if resolved_cls is None:
+        raise ValueError(
+            f"Unsupported model_type '{model_type}' in checkpoint metadata "
+            f"at '{model_path}'; expected one of {sorted(_NEURAL_CONTROLLER_TYPES)}"
+        )
+    return resolved_cls
+
+
+def _get_relationship_targets(prim, name: str) -> list[str]:
     """Get relationship target paths from a USD prim."""
     rel = prim.GetRelationship(name)
     if not rel:
@@ -155,21 +139,69 @@ def get_relationship_targets(prim, name: str) -> list[str]:
     return [str(t) for t in rel.GetTargets()]
 
 
-def get_schemas_from_prim(prim) -> list[str]:
-    """Get applied schemas that match the registry.
+_SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
+    # ── Controllers ────────────────────────────────────────────────────
+    "NewtonPDControlAPI": _SchemaEntry(
+        component_class=ControllerPD,
+        kind=ComponentKind.CONTROLLER,
+    ),
+    "NewtonPIDControlAPI": _SchemaEntry(
+        component_class=ControllerPID,
+        kind=ComponentKind.CONTROLLER,
+    ),
+    "NewtonNeuralControlAPI": _SchemaEntry(
+        component_class=_resolve_neural_control,
+        kind=ComponentKind.CONTROLLER,
+    ),
+    # ── Clamping ───────────────────────────────────────────────────────
+    "NewtonMaxEffortClampingAPI": _SchemaEntry(
+        component_class=ClampingMaxEffort,
+        kind=ComponentKind.CLAMPING,
+    ),
+    "NewtonDCMotorClampingAPI": _SchemaEntry(
+        component_class=ClampingDCMotor,
+        kind=ComponentKind.CLAMPING,
+    ),
+    "NewtonPositionBasedClampingAPI": _SchemaEntry(
+        component_class=ClampingPositionBased,
+        kind=ComponentKind.CLAMPING,
+    ),
+    # ── Delay ──────────────────────────────────────────────────────────
+    "NewtonActuatorDelayAPI": _SchemaEntry(
+        component_class=Delay,
+        kind=ComponentKind.DELAY,
+    ),
+}
 
-    Uses prim metadata to find applied schema tokens, since our custom
-    schemas (e.g. ``NewtonPDControlAPI``) are not registered USD schema types
-    and therefore are not returned by ``GetAppliedSchemas()``.
+
+def register_actuator_component(
+    schema_name: str,
+    component_class: type | Callable[[dict[str, Any]], type],
+    kind: ComponentKind,
+) -> None:
+    """Register a USD API schema for actuator parsing.
+
+    Args:
+        schema_name: USD API schema token (e.g. ``"MyCustomControlAPI"``).
+            Must be registered with :class:`pxr.Usd.SchemaRegistry`.
+        component_class: Concrete class, or a callable that receives
+            the parsed kwargs dict and returns the concrete class.
+            A callable may also validate kwargs and raise
+            :class:`ValueError`.
+        kind: Whether this schema is a controller, clamping, delay, etc.
+
+    If *schema_name* is already registered, a warning is emitted and the
+    existing entry is overwritten.
     """
-    meta = prim.GetMetadata("apiSchemas")
-    if meta is None:
-        return []
-    try:
-        tokens = list(meta.GetAddedOrExplicitItems())
-    except AttributeError:
-        tokens = list(meta)
-    return [s for s in tokens if s in SCHEMA_REGISTRY]
+    if schema_name in _SCHEMA_REGISTRY:
+        warnings.warn(
+            f"Actuator schema {schema_name!r} is already registered; overwriting",
+            stacklevel=2,
+        )
+    _SCHEMA_REGISTRY[schema_name] = _SchemaEntry(
+        component_class=component_class,
+        kind=kind,
+    )
 
 
 def parse_actuator_prim(prim) -> ActuatorParsed | None:
@@ -189,7 +221,7 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
     if prim.GetTypeName() != "NewtonActuator":
         return None
 
-    target_paths = get_relationship_targets(prim, "newton:targets")
+    target_paths = _get_relationship_targets(prim, "newton:targets")
     if not target_paths:
         raise ValueError(
             f"Actuator prim '{prim.GetPath()}' has no authored 'newton:targets' relationship; "
@@ -203,45 +235,42 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
         )
         target_paths = target_paths[:1]
 
-    schemas = get_schemas_from_prim(prim)
     controller_class = None
     controller_kwargs: dict[str, Any] = {}
     component_specs: list[tuple[type, dict[str, Any]]] = []
+    detected: list[str] = []
 
-    for schema_name in schemas:
-        entry = SCHEMA_REGISTRY.get(schema_name)
+    for schema_name in prim.GetAppliedSchemas():
+        entry = _SCHEMA_REGISTRY.get(schema_name)
         if entry is None:
             continue
+        detected.append(schema_name)
 
-        kwargs: dict[str, Any] = {}
-        for usd_name, kwarg_name in entry.param_map.items():
-            value = get_attribute(prim, f"newton:{usd_name}")
-            if value is not None:
-                kwargs[kwarg_name] = value
+        kwargs = _read_schema_attrs(prim, schema_name)
 
-        if entry.validate is not None:
+        if isinstance(entry.component_class, type):
+            cls = entry.component_class
+        else:
             try:
-                entry.validate(kwargs)
+                cls = entry.component_class(kwargs)
             except ValueError as exc:
                 raise ValueError(f"Actuator prim '{prim.GetPath()}': {exc}") from None
 
-        if entry.is_controller:
+        if entry.kind is ComponentKind.CONTROLLER:
             if controller_class is not None:
                 raise ValueError(
                     f"Actuator prim '{prim.GetPath()}' has multiple controllers: "
-                    f"{controller_class.__name__} and {entry.component_class.__name__}"
+                    f"{controller_class.__name__} and {cls.__name__}"
                 )
-            if schema_name == "NewtonNeuralControlAPI":
-                controller_class, controller_kwargs = _resolve_neural_controller(kwargs)
-            else:
-                controller_class = entry.component_class
-                controller_kwargs = kwargs
+            controller_class = cls
+            controller_kwargs = kwargs
         else:
-            component_specs.append((entry.component_class, kwargs))
+            component_specs.append((cls, kwargs))
 
     if controller_class is None:
         raise ValueError(
-            f"Actuator prim '{prim.GetPath()}' has no controller schema (matched schemas from metadata: {schemas})"
+            f"Actuator prim '{prim.GetPath()}' has no controller schema "
+            f"(detected schemas: {detected})"
         )
 
     return ActuatorParsed(

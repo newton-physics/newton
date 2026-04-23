@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """GPU-accelerated actuator models for physics simulations.
@@ -17,13 +17,15 @@ from ._src.actuators import (
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
+    ComponentKind,
     Controller,
-    ControllerNetLSTM,
-    ControllerNetMLP,
+    ControllerNeuralLSTM,
+    ControllerNeuralMLP,
     ControllerPD,
     ControllerPID,
     Delay,
     parse_actuator_prim,
+    register_actuator_component,
 )
 
 __all__ = [
@@ -33,11 +35,13 @@ __all__ = [
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
+    "ComponentKind",
     "Controller",
-    "ControllerNetLSTM",
-    "ControllerNetMLP",
+    "ControllerNeuralLSTM",
+    "ControllerNeuralMLP",
     "ControllerPD",
     "ControllerPID",
     "Delay",
     "parse_actuator_prim",
+    "register_actuator_component",
 ]

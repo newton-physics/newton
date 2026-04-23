@@ -17,63 +17,69 @@ if typing.TYPE_CHECKING:
     import torch
 
 
-class ControllerNetMLP(Controller):
-    """MLP-based neural network controller.
+class ControllerNeuralLSTM(Controller):
+    """LSTM-based neural network controller.
 
-    Uses a pre-trained MLP to compute joint effort from position error
-    and velocity error history.
+    Uses a pre-trained LSTM network to compute joint effort from position
+    error and velocity error. The network maintains hidden and cell state
+    across timesteps to capture temporal patterns.
 
-    The network receives concatenated, scaled position-error and
-    velocity-error history as input.  The output is multiplied by
-    ``effort_scale`` to convert from network units to physical effort
-    [N or N·m].  All three scale factors default to ``1.0`` (no scaling).
+    The network must be callable as::
 
-    Configuration parameters (``input_order``, ``input_idx``,
-    ``pos_scale``, ``vel_scale``, ``effort_scale``) are read from the
-    checkpoint metadata, falling back to defaults when absent.
-    See :func:`~newton._src.actuators.utils.load_checkpoint` for
-    supported checkpoint formats.
+        effort, (hidden_new, cell_new) = network(input, (hidden, cell))
+
+    where input has shape (batch, 1, 2) with features
+    [pos_error, vel_error], and hidden/cell have shape
+    (num_layers, batch, hidden_size).
+
+    The network is expected to have a ``lstm`` attribute (``torch.nn.LSTM``) so
+    that ``num_layers`` and ``hidden_size`` can be inferred automatically.
+
+    Scale factors (``pos_scale``, ``vel_scale``, ``effort_scale``) are
+    read from checkpoint metadata, falling back to ``1.0`` when absent.
+    Supported checkpoint formats: TorchScript (``.pt`` saved with
+    ``torch.jit.save``) and state-dict bundles (``{"model": state_dict,
+    "metadata": {...}}`` saved with ``torch.save``).
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
 
     @dataclass
     class State(Controller.State):
-        """History buffers for MLP controller."""
+        """LSTM hidden and cell state."""
 
-        pos_error_history: torch.Tensor | None = None
-        """Position error history, shape (history_length, N)."""
-        vel_error_history: torch.Tensor | None = None
-        """Velocity error history, shape (history_length, N)."""
+        hidden: torch.Tensor | None = None
+        """LSTM hidden state, shape (num_layers, N, hidden_size)."""
+        cell: torch.Tensor | None = None
+        """LSTM cell state, shape (num_layers, N, hidden_size)."""
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             if mask is None:
-                self.pos_error_history.zero_()
-                self.vel_error_history.zero_()
+                self.hidden = self.hidden.new_zeros(self.hidden.shape)
+                self.cell = self.cell.new_zeros(self.cell.shape)
             else:
                 t = wp.to_torch(mask).bool()
-                self.pos_error_history[:, t] = 0.0
-                self.vel_error_history[:, t] = 0.0
+                self.hidden[:, t, :] = 0.0
+                self.cell[:, t, :] = 0.0
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         if "model_path" not in args:
-            raise ValueError("ControllerNetMLP requires 'model_path' argument")
+            raise ValueError("ControllerNeuralLSTM requires 'model_path' argument")
         model_path = args["model_path"]
         if not model_path:
-            raise ValueError("ControllerNetMLP requires a non-empty 'model_path'")
+            raise ValueError("ControllerNeuralLSTM requires a non-empty 'model_path'")
         return {"model_path": model_path}
 
     def __init__(self, model_path: str):
-        """Initialize MLP controller from a checkpoint file.
+        """Initialize LSTM controller from a checkpoint file.
 
-        See :func:`~newton._src.actuators.utils.load_checkpoint` for
-        supported checkpoint formats.
+        Supported checkpoint formats: TorchScript (``.pt`` saved with
+        ``torch.jit.save``) and state-dict bundles (``{"model": state_dict,
+        "metadata": {...}}`` saved with ``torch.save``).
 
         Configuration is read from checkpoint metadata:
 
-        - ``input_order`` (str): ``"pos_vel"`` or ``"vel_pos"`` (default ``"pos_vel"``).
-        - ``input_idx`` (list[int]): history timestep indices (default ``[0]``).
         - ``pos_scale`` (float): position-error scaling (default ``1.0``).
         - ``vel_scale`` (float): velocity-error scaling (default ``1.0``).
         - ``effort_scale`` (float): output effort scaling (default ``1.0``).
@@ -88,24 +94,32 @@ class ControllerNetMLP(Controller):
 
         self.network, metadata = load_checkpoint(model_path)
 
-        self.input_order = metadata.get("input_order", "pos_vel")
-        if self.input_order not in ("pos_vel", "vel_pos"):
-            raise ValueError(f"input_order must be 'pos_vel' or 'vel_pos'; got '{self.input_order}'")
-
-        self.input_idx = metadata.get("input_idx", [0])
-        if any(i < 0 for i in self.input_idx):
-            raise ValueError(f"input_idx must contain non-negative integers; got {self.input_idx}")
-        self.history_length = max(self.input_idx) + 1
-
         self.pos_scale = metadata.get("pos_scale", 1.0)
         self.vel_scale = metadata.get("vel_scale", 1.0)
         self.effort_scale = metadata.get("effort_scale", metadata.get("torque_scale", 1.0))
 
+        if not hasattr(self.network, "lstm"):
+            raise ValueError("network must expose a 'lstm' attribute (torch.nn.LSTM)")
+        lstm = self.network.lstm
+        if not hasattr(lstm, "num_layers"):
+            raise ValueError("network.lstm must be a torch.nn.LSTM (missing num_layers)")
+        if not lstm.batch_first:
+            raise ValueError("network.lstm.batch_first must be True")
+        if lstm.input_size != 2:
+            raise ValueError(f"network.lstm.input_size must be 2 (pos_error, vel_error); got {lstm.input_size}")
+        if lstm.bidirectional:
+            raise ValueError("network.lstm must not be bidirectional")
+        if getattr(lstm, "proj_size", 0) != 0:
+            raise ValueError(f"network.lstm.proj_size must be 0; got {lstm.proj_size}")
+
+        self._num_layers = lstm.num_layers
+        self._hidden_size = lstm.hidden_size
+
         self._torch_input_indices: torch.Tensor | None = None
         self._torch_vel_indices: torch.Tensor | None = None
         self._torch_sequential_indices: torch.Tensor | None = None
-        self._current_pos_error: torch.Tensor | None = None
-        self._current_vel_error: torch.Tensor | None = None
+        self._hidden: torch.Tensor | None = None
+        self._cell: torch.Tensor | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         import torch
@@ -120,12 +134,12 @@ class ControllerNetMLP(Controller):
     def is_graphable(self) -> bool:
         return False
 
-    def state(self, num_actuators: int, device: wp.Device) -> ControllerNetMLP.State:
+    def state(self, num_actuators: int, device: wp.Device) -> ControllerNeuralLSTM.State:
         import torch
 
-        return ControllerNetMLP.State(
-            pos_error_history=torch.zeros(self.history_length, num_actuators, device=self._torch_device),
-            vel_error_history=torch.zeros(self.history_length, num_actuators, device=self._torch_device),
+        return ControllerNeuralLSTM.State(
+            hidden=torch.zeros(self._num_layers, num_actuators, self._hidden_size, device=self._torch_device),
+            cell=torch.zeros(self._num_layers, num_actuators, self._hidden_size, device=self._torch_device),
         )
 
     def compute(
@@ -140,7 +154,7 @@ class ControllerNetMLP(Controller):
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
         forces: wp.array[float],
-        state: ControllerNetMLP.State,
+        state: ControllerNeuralLSTM.State,
         dt: float,
         device: wp.Device | None = None,
     ) -> None:
@@ -165,23 +179,14 @@ class ControllerNetMLP(Controller):
         pos_error = target_p[torch_target_pos_idx] - current_pos[self._torch_input_indices]
         vel_error = target_v[torch_target_vel_idx] - current_vel[self._torch_vel_indices]
 
-        self._current_pos_error = pos_error
-        self._current_vel_error = vel_error
-
-        pos_input = torch.stack(
-            [pos_error if i == 0 else state.pos_error_history[i - 1] for i in self.input_idx], dim=1
-        )
-        vel_input = torch.stack(
-            [vel_error if i == 0 else state.vel_error_history[i - 1] for i in self.input_idx], dim=1
-        )
-
-        if self.input_order == "pos_vel":
-            net_input = torch.cat([pos_input * self.pos_scale, vel_input * self.vel_scale], dim=1)
-        else:
-            net_input = torch.cat([vel_input * self.vel_scale, pos_input * self.pos_scale], dim=1)
+        # (N, 1, 2): seq_len=1, features=[pos_error * scale, vel_error * scale]
+        net_input = torch.stack([pos_error * self.pos_scale, vel_error * self.vel_scale], dim=1).unsqueeze(1)
 
         with torch.inference_mode():
-            effort = self.network(net_input)
+            effort, (self._hidden, self._cell) = self.network(
+                net_input,
+                (state.hidden, state.cell),
+            )
 
         effort = effort.reshape(len(forces)) * self.effort_scale
         effort_wp = wp.from_torch(effort.contiguous(), dtype=wp.float32)
@@ -189,12 +194,10 @@ class ControllerNetMLP(Controller):
 
     def update_state(
         self,
-        current_state: ControllerNetMLP.State,
-        next_state: ControllerNetMLP.State,
+        current_state: ControllerNeuralLSTM.State,
+        next_state: ControllerNeuralLSTM.State,
     ) -> None:
         if next_state is None:
             return
-        next_state.pos_error_history = current_state.pos_error_history.roll(1, 0)
-        next_state.vel_error_history = current_state.vel_error_history.roll(1, 0)
-        next_state.pos_error_history[0] = self._current_pos_error
-        next_state.vel_error_history[0] = self._current_vel_error
+        next_state.hidden = self._hidden
+        next_state.cell = self._cell

@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+.. SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
 newton.actuators
@@ -28,8 +28,8 @@ construction.
    ClampingMaxEffort
    ClampingPositionBased
    Controller
-   ControllerNetLSTM
-   ControllerNetMLP
+   ControllerNeuralLSTM
+   ControllerNeuralMLP
    ControllerPD
    ControllerPID
    Delay

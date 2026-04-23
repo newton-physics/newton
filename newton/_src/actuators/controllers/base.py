@@ -22,7 +22,7 @@ class Controller:
     Control laws compute actuator output effort from authored controller
     parameters, commanded inputs (targets, feedforward), and simulation
     state. The output may still be constrained by one or more
-    :class:`~newton._src.actuators.clamping.base.Clamping` objects.
+    :class:`~newton.actuators.Clamping` objects.
 
     Subclasses must override ``compute`` and ``resolve_arguments``.
 

@@ -3082,7 +3082,7 @@ requires-dist = [
     { name = "newton", extras = ["importers"], marker = "extra == 'examples'" },
     { name = "newton", extras = ["sim"], marker = "extra == 'examples'" },
     { name = "newton-actuators", marker = "extra == 'sim'", specifier = ">=0.1.0" },
-    { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.1.0" },
+    { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.2.0rc1" },
     { name = "open3d", marker = "(python_full_version < '3.13' and platform_machine != 'aarch64' and extra == 'importers') or (python_full_version < '3.13' and sys_platform != 'linux' and extra == 'importers')", specifier = ">=0.18.0" },
     { name = "open3d", marker = "(python_full_version < '3.13' and platform_machine != 'aarch64' and extra == 'remesh') or (python_full_version < '3.13' and sys_platform != 'linux' and extra == 'remesh')", specifier = ">=0.18.0" },
     { name = "pillow", marker = "extra == 'examples'", specifier = ">=9.0.0" },
@@ -3128,11 +3128,11 @@ wheels = [
 
 [[package]]
 name = "newton-usd-schemas"
-version = "0.1.0"
+version = "0.2.0rc1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/73/5e/95a2c4872ca9bc0e6e31344ab7df5f6dceedacc5ea39d5832d352c98cdf4/newton_usd_schemas-0.1.0.tar.gz", hash = "sha256:07420c425abd6282e1e9ac0dce4ef2d87bc6e08639f0b00db694de63684ef341", size = 61275, upload-time = "2026-03-09T19:08:06.437Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2a/9c/3802a082abb48b389e4b58c274257f5a723217585a3ea5552778674e1683/newton_usd_schemas-0.2.0rc1.tar.gz", hash = "sha256:1f8f6a8034f7e9a83ad25ddbd3314392e7db8f6f0f0e51a4af35771454bbfbbe", size = 69315, upload-time = "2026-04-22T21:29:35.564Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/d1/3c16c963f8026e6e813c442db724abc1293fc67442f9620caa0d295a5d7a/newton_usd_schemas-0.1.0-py3-none-any.whl", hash = "sha256:da83ba6a571cf7a3acec449d83477c8273bf37260314aa135a74f85b64256583", size = 12599, upload-time = "2026-03-09T19:08:04.633Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/ec/0fa46947d6582431c2e1d9f1203e954181bc4f499862e1c7330d26b6e4d4/newton_usd_schemas-0.2.0rc1-py3-none-any.whl", hash = "sha256:4a94d955d6988b93010f5a722414bbe8ec6488d3c2dc10630e94142648c5fba9", size = 15583, upload-time = "2026-04-22T21:29:33.988Z" },
 ]
 
 [[package]]

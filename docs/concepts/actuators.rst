@@ -129,7 +129,7 @@ Stateful Actuators
 ------------------
 
 Controllers that maintain internal state (e.g. :class:`ControllerPID` with an
-integral accumulator, or :class:`ControllerNetLSTM` with hidden/cell state) and
+integral accumulator, or :class:`ControllerNeuralLSTM` with hidden/cell state) and
 actuators with a :class:`Delay` require explicit double-buffered state
 management.  Create two state objects with :meth:`Actuator.state` and swap them
 after each step:
@@ -166,8 +166,8 @@ Differentiability and Graph Capture
 
 Whether an actuator supports differentiability and CUDA graph capture depends on
 its controller.  :class:`ControllerPD` and :class:`ControllerPID` are fully
-graphable.  Neural-network controllers (:class:`ControllerNetMLP`,
-:class:`ControllerNetLSTM`) require PyTorch and are not graphable due to
+graphable.  Neural-network controllers (:class:`ControllerNeuralMLP`,
+:class:`ControllerNeuralLSTM`) require PyTorch and are not graphable due to
 framework interop overhead.
 
 :meth:`Actuator.is_graphable` returns ``True`` when all components can be
@@ -187,9 +187,9 @@ Controllers
 * :class:`ControllerPD` — proportional-derivative control law (stateless).
 * :class:`ControllerPID` — proportional-integral-derivative control law
   (stateful: integral accumulator with anti-windup clamp).
-* :class:`ControllerNetMLP` — MLP neural-network controller (requires
+* :class:`ControllerNeuralMLP` — MLP neural-network controller (requires
   PyTorch, stateful: position/velocity history buffers).
-* :class:`ControllerNetLSTM` — LSTM neural-network controller (requires
+* :class:`ControllerNeuralLSTM` — LSTM neural-network controller (requires
   PyTorch, stateful: hidden/cell state).
 
 See the API documentation for each controller's control-law equations.

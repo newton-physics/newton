@@ -1817,7 +1817,12 @@ class ModelBuilder:
             **kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
         """
         legacy_cls = kwargs.pop("actuator_class", None)
-        if legacy_cls is None and _LegacyActuator is not None and issubclass(controller_class, _LegacyActuator):
+        if (
+            legacy_cls is None
+            and _LegacyActuator is not None
+            and isinstance(controller_class, type)
+            and issubclass(controller_class, _LegacyActuator)
+        ):
             legacy_cls = controller_class
 
         if legacy_cls is not None:
@@ -1906,6 +1911,7 @@ class ModelBuilder:
         args_list: list[dict[str, Any]],
         device: Devicelike | None = None,
         requires_grad: bool = False,
+        default_dtype: type = wp.float32,
     ) -> dict[str, wp.array]:
         """Convert list of per-index arg dicts into dict of warp arrays.
 
@@ -1913,6 +1919,11 @@ class ModelBuilder:
             args_list: List of dicts, one per index. Each dict has same keys.
             device: Device for warp arrays.
             requires_grad: Whether the arrays require gradients.
+            default_dtype: Warp dtype used for columns where all values are
+                numeric.  Defaults to ``wp.float32`` so that Python ``int``
+                gains (e.g. ``kp=100``) produce float arrays as controllers
+                expect.  Pass ``wp.int32`` when integer semantics are needed
+                (e.g. delay steps).
 
         Returns:
             Mapping from parameter names to warp arrays.
@@ -1924,16 +1935,17 @@ class ModelBuilder:
         for key in args_list[0].keys():
             values = [args[key] for args in args_list]
             for v in values:
-                if not isinstance(v, (int, float)):
+                if not isinstance(v, int | float):
                     raise TypeError(
                         f"add_actuator expects scalar per-DOF params, but "
                         f"parameter '{key}' got {type(v).__name__}; pass one "
                         f"scalar per add_actuator call"
                     )
-            if all(isinstance(v, int) for v in values):
+            if default_dtype == wp.int32 and all(isinstance(v, int) for v in values):
                 result[key] = wp.array(values, dtype=wp.int32, device=device)
             else:
-                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
+                rg = requires_grad and default_dtype != wp.int32
+                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=rg)
 
         return result
 
@@ -10522,7 +10534,9 @@ class ModelBuilder:
 
                 delay_obj = None
                 if entry.delay_args:
-                    delay_arrays = self._stack_args_to_arrays(entry.delay_args, device=device)
+                    delay_arrays = self._stack_args_to_arrays(
+                        entry.delay_args, device=device, default_dtype=wp.int32
+                    )
                     max_delay = max(d["delay_steps"] for d in entry.delay_args)
                     delay_obj = Delay(**delay_arrays, max_delay=max_delay)
 

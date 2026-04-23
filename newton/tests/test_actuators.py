@@ -21,8 +21,8 @@ from newton.actuators import (
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
-    ControllerNetLSTM,
-    ControllerNetMLP,
+    ControllerNeuralLSTM,
+    ControllerNeuralMLP,
     ControllerPD,
     ControllerPID,
     Delay,
@@ -184,8 +184,8 @@ class TestControllerPID(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestControllerNetMLP(unittest.TestCase):
-    """ControllerNetMLP — load via model_path, call compute() directly."""
+class TestControllerNeuralMLP(unittest.TestCase):
+    """ControllerNeuralMLP — load via model_path, call compute() directly."""
 
     def setUp(self):
         self.torch = _torch
@@ -214,7 +214,7 @@ class TestControllerNetMLP(unittest.TestCase):
 
         path = self._save_torchscript(net)
         n = 1
-        ctrl = ControllerNetMLP(model_path=path)
+        ctrl = ControllerNeuralMLP(model_path=path)
         ctrl.finalize(self.device, n)
         state_a = ctrl.state(n, self.device)
         state_b = ctrl.state(n, self.device)
@@ -259,7 +259,7 @@ class TestControllerNetMLP(unittest.TestCase):
             net[0].bias.fill_(5.0)
 
         path = self._save_dict(net, metadata={"effort_scale": 4.0})
-        ctrl = ControllerNetMLP(model_path=path)
+        ctrl = ControllerNeuralMLP(model_path=path)
         self.assertAlmostEqual(ctrl.effort_scale, 4.0)
 
     def test_metadata_scales(self):
@@ -272,7 +272,7 @@ class TestControllerNetMLP(unittest.TestCase):
         path = self._save_torchscript(net, metadata={"effort_scale": 3.0})
 
         n = 1
-        ctrl = ControllerNetMLP(model_path=path)
+        ctrl = ControllerNeuralMLP(model_path=path)
         self.assertAlmostEqual(ctrl.effort_scale, 3.0)
         ctrl.finalize(self.device, n)
         state_a = ctrl.state(n, self.device)
@@ -298,8 +298,8 @@ class TestControllerNetMLP(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestControllerNetLSTM(unittest.TestCase):
-    """ControllerNetLSTM — load via model_path, call compute() directly."""
+class TestControllerNeuralLSTM(unittest.TestCase):
+    """ControllerNeuralLSTM — load via model_path, call compute() directly."""
 
     def setUp(self):
         self.torch = _torch
@@ -363,14 +363,14 @@ class TestControllerNetLSTM(unittest.TestCase):
         """LSTM produces non-zero output; hidden state evolves after update_state."""
         net = self._make_lstm(hidden=8, layers=1)
         path = self._save_torchscript(net)
-        ctrl = ControllerNetLSTM(model_path=path)
+        ctrl = ControllerNeuralLSTM(model_path=path)
         self._run_lstm_compute(ctrl)
 
     def test_dict_checkpoint(self):
         """Load LSTM from a dict checkpoint with metadata."""
         net = self._make_lstm(hidden=8, layers=1)
         path = self._save_dict(net, metadata={"effort_scale": 5.0})
-        ctrl = ControllerNetLSTM(model_path=path)
+        ctrl = ControllerNeuralLSTM(model_path=path)
         self.assertAlmostEqual(ctrl.effort_scale, 5.0)
         self._run_lstm_compute(ctrl)
 
@@ -380,7 +380,7 @@ class TestControllerNetLSTM(unittest.TestCase):
         metadata = {"pos_scale": 2.0, "vel_scale": 0.5, "effort_scale": 10.0}
         path = self._save_torchscript(net, metadata=metadata)
 
-        ctrl = ControllerNetLSTM(model_path=path)
+        ctrl = ControllerNeuralLSTM(model_path=path)
         self.assertAlmostEqual(ctrl.pos_scale, 2.0)
         self.assertAlmostEqual(ctrl.vel_scale, 0.5)
         self.assertAlmostEqual(ctrl.effort_scale, 10.0)
