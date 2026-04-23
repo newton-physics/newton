@@ -2221,6 +2221,7 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     num_steps = 20
     dynamics_tolerance = 1e-4  # GPU non-determinism: qvel diff up to 1.2e-5 across runs
     fk_enabled = True
+    backfill_model = True
 
 
 class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
