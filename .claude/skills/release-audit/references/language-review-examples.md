@@ -16,14 +16,14 @@ Flag entries that reference:
 Good examples (user-facing):
 
 > Add `newton.geometry.compute_offset_mesh()` for extracting offset surface meshes from any collision shape, and a viewer toggle to visualize gap + margin wireframes in the GL viewer.
-
+>
 > Use pre-computed local AABB for `CONVEX_MESH` shapes in `compute_shape_aabbs`, avoiding a per-frame support-function AABB computation.
 
 Flag these:
 
 > Inline a `wp.vec3`-specialized point-to-triangle squared-distance helper in the implicit-MPM rasterized collider, removing the dependency on Warp's internal `warp.fem.geometry.closest_point`.
 > *Reason:* references `warp.fem.geometry.closest_point`, which is Warp-internal. User-facing rewrite: "Inline point-to-triangle distance in the implicit-MPM collider so it no longer depends on Warp's `warp.fem` module."
-
+>
 > Refactor `newton._src.solvers.xpbd._update_constraints` to unify storage path.
 > *Reason:* references internal module + private method. Implementation detail with no user-observable effect. Candidate for deletion from CHANGELOG, not rewording.
 
@@ -38,7 +38,7 @@ Flag:
 
 > Fix bug.
 > *Reason:* insufficient — user can't tell what was fixed.
-
+>
 > Improve solver performance.
 > *Reason:* no specifics; which solver, how much, under what conditions?
 
@@ -80,13 +80,13 @@ Rationale: AGENTS.md forbids examples and docs from importing `newton._src`. A u
 
 AGENTS.md: "For `Deprecated`, `Changed`, and `Removed` entries, include migration guidance: 'Deprecate `Model.geo_meshes` in favor of `Model.shapes`'."
 
-Flag `### Deprecated`, `### Removed`, and `### Changed` entries that name a rename / removal / reorder but do NOT include at least one of these phrases (case-insensitive): `use`, `in favor of`, `renamed to`, `replaced by`, `switch to`, `migrate to`, `prefer`.
+Flag `### Deprecated`, `### Removed`, and `### Changed` entries that name a rename / removal / reorder but do NOT express migration direction. Direction can be expressed with one of these phrases (case-insensitive): `use`, `in favor of`, `renamed to`, `replaced by`, `switch to`, `migrate to`, `prefer`. Direction can also be expressed structurally — an imperative `Rename X to Y`, an arrow `X → Y`, or a parameter-rename table — which counts as migration guidance even when none of the listed phrases appear verbatim (see the `ModelBuilder.add_shape_ellipsoid` example below).
 
 Flag:
 
 > Remove `SolverXPBD.legacy_substep()`.
 > *Reason:* no migration guidance. User does not know which method replaces it.
-
+>
 > Deprecate `Model.geo_meshes`.
 > *Reason:* no replacement named. Should read "Deprecate `Model.geo_meshes` in favor of `Model.shapes`."
 
@@ -94,7 +94,7 @@ Don't flag:
 
 > Deprecate `SensorContact.net_force` in favor of `SensorContact.total_force` and `SensorContact.force_matrix`
 > *Reason:* migration guidance present ("in favor of ...").
-
+>
 > Rename `ModelBuilder.add_shape_ellipsoid()` parameters `a`, `b`, `c` to `rx`, `ry`, `rz`. Old names are still accepted as keyword arguments but emit a `DeprecationWarning`
 > *Reason:* rename is explicit and the old-name behavior is documented.
 

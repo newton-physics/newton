@@ -170,8 +170,13 @@ def find_main_equivalent(index: dict, subject: str) -> dict | None:
 
 
 def _resolve_sha(repo: Path, ref: str) -> str:
-    """Resolve a git ref to its full SHA."""
-    return _git(repo, "rev-parse", ref).strip()
+    """Resolve a git ref to its full commit SHA.
+
+    Uses ``<ref>^{commit}`` to peel annotated tags (which resolve to the
+    tag object's SHA) down to the commit they point at. A no-op for
+    lightweight tags, branches, and raw commit SHAs.
+    """
+    return _git(repo, "rev-parse", f"{ref}^{{commit}}").strip()
 
 
 def build_commit_entry(

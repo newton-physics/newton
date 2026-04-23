@@ -1,9 +1,9 @@
 ---
 name: release-audit
-description: Generate an audit report for a Newton release covering new API, changed API, migration-required changes, behavioral changes, fixes, deprecation-policy gaps, and CHANGELOG gaps vs. the previous release. Three modes, auto-detected from the optional version argument and repo state. (1) **Pre-release**: spot-check of unreleased work on main. (2) **Release-candidate**: readiness review after the release branch is cut. (3) **Retrospective**: audit of an already-shipped release (e.g., `v1.1.0`) against its predecessor, with a Calibration Notes section that checks Claude's flags against what subsequent patch/minor releases actually did. Use for pre-release spot-checks, RC cuts, or skill calibration against shipped history.
+description: "Generate an audit report for a Newton release covering new API, changed API, migration-required changes, behavioral changes, fixes, deprecation-policy gaps, and CHANGELOG gaps vs. the previous release. Three modes, auto-detected from the optional version argument and repo state. (1) Pre-release: spot-check of unreleased work on main. (2) Release-candidate: readiness review after the release branch is cut. (3) Retrospective: audit of an already-shipped release (e.g., `v1.1.0`) against its predecessor, with a Calibration Notes section that checks Claude's flags against what subsequent patch/minor releases actually did. Use for pre-release spot-checks, RC cuts, or skill calibration against shipped history."
 disable-model-invocation: true
 argument-hint: "[target-version]"
-allowed-tools: Bash(git log *) Bash(git show *) Bash(git tag *) Bash(git rev-parse *) Bash(git cherry *) Bash(git diff *) Bash(git diff-tree *) Bash(git worktree *) Bash(git stash *) Bash(git checkout *) Bash(python3 *list_commits.py*) Bash(python3 /tmp/*) Bash(rm /tmp/newton-*) Bash(uv run python3 *) Bash(uv run -m *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist edit *) Bash(gh issue view *) Read Write Grep Glob
+allowed-tools: Bash(git log *) Bash(git show *) Bash(git tag *) Bash(git rev-parse *) Bash(git cherry *) Bash(git diff *) Bash(git diff-tree *) Bash(git worktree *) Bash(git stash *) Bash(git checkout *) Bash(python3 *list_commits.py*) Bash(python3 /tmp/*) Bash(rm /tmp/newton-*) Bash(uv run python3 *) Bash(uv run -m *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
 ---
 
 # Release Audit
@@ -43,13 +43,13 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
    - Otherwise → pre-release mode (default), but record the raw version string so the header can show it as-is.
 
 2. **Enumerate previous-minor tags** (applies to all modes):
-   ```
+   ```bash
    git tag --list 'v<prev-major>.<prev-minor>.*' --sort=-v:refname
    ```
    where `<prev-major>.<prev-minor>` is `target - 0.1` (e.g., for target `1.2`, previous minor is `1.1`). Take the first result as the base candidate. Ignore pre-1.0 `beta-*` tags when a stable `vX.Y.Z` line exists.
 
    **Major-boundary fallback.** When `target.minor == 0` (e.g., `2.0.0`), the `target - 0.1` computation yields a minor line that never existed (`1.9`), and the tag list comes back empty. In that case, enumerate the highest minor line of the previous major instead:
-   ```
+   ```bash
    git tag --list 'v<target-major - 1>.*' --sort=-v:refname
    ```
    Take the first result (the last-patch of the last-minor of the previous major) as the base candidate. If both the primary and fallback searches return empty (which should only happen on a never-released line), surface that to the user in step 6 rather than silently proceeding.
@@ -59,7 +59,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 3. **Probe for the head**:
    - **Retrospective mode**: head is the `vX.Y.Z` tag directly. Resolve with `git rev-parse --verify v<target>`.
    - **Pre-release / RC**:
-     ```
+     ```bash
      git rev-parse --verify upstream/release-<target>
      ```
      If this succeeds, head = `upstream/release-<target>` and this is also a strong signal for **RC mode** (the branch-cut has happened). Otherwise try `origin/release-<target>`; otherwise head = `upstream/main` (falling back to `origin/main`, then `main`) which is **pre-release mode**. Record whichever fallback was used for the report header.
@@ -73,13 +73,13 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 5. **Probe `gh` availability and look up any existing matching gist.**
 
    First run:
-   ```
+   ```bash
    gh --version && gh auth status
    ```
    If either fails → `gh` unavailable; destination will be a local markdown file only; skip the rest of this step.
 
    Both succeeded → compute the stable gist title for this report:
-   ```
+   ```text
    Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
    ```
    (e.g., `Newton 1.2.0rc1 Release Candidate Report`, `Newton 1.2.0.dev0 Pre-Release Report`, `Newton 1.1.0 Retrospective Report`). No date. The gist filename and description are stable so later runs can find the same gist and revise it; gist git history preserves prior versions automatically.
@@ -124,7 +124,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 ## Phase 2 — Gather ground truth
 
 1. Run the commit-list tool:
-   ```
+   ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
      --base <base-ref> \
      --head <head-ref> \
@@ -150,7 +150,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 1. **Build the commit ↔ CHANGELOG join** on GH-ref overlap:
    - For each CHANGELOG entry with at least one GH ref, find commits (from `commit_list_json`) whose `gh_refs` intersect.
    - For each CHANGELOG entry with ZERO matching commits on GH ref, attempt a secondary lookup — find the commit(s) on HEAD that introduced or modified this exact entry text in `CHANGELOG.md`:
-     ```
+     ```bash
      git log --reverse -S'<distinctive substring from the entry>' --format='%H|%s|%cs' -- CHANGELOG.md
      ```
      The first commit whose subject isn't a CHANGELOG-only edit (e.g., not "Clean up changelog", not a version bump) usually IS the code change associated with the entry. Record that as the backing commit.
@@ -229,7 +229,7 @@ For each CHANGELOG entry in Changed / Removed / Deprecated (plus any "capability
 
 The deprecation window belongs in BOTH the Breaking Changes entry for the removal AND the Changes-to-Existing-API row (in the Description cell or as an appended sentence in the detail block). A reader should never have to ask "was this deprecated first, and for how long?"
 
-**Missing-deprecation flag.** If a Removed entry has no prior Deprecated entry AND the current CHANGELOG's own `### Deprecated` section does not also include the same symbol (some Newton releases deprecate-and-remove simultaneously, which is a policy violation), surface this prominently in the Breaking Changes section as `🚨 Policy: removed without prior deprecation` rather than a quiet "verify please" line. The release manager needs this to block the release or add migration tooling.
+**Missing-deprecation flag.** If a Removed entry has no prior Deprecated entry in a previously-released section of CHANGELOG.md, surface this prominently in the Breaking Changes section as `🚨 Policy: removed without prior deprecation` rather than a quiet "verify please" line. This fires whether or not the current release's own `### Deprecated` section ALSO names the symbol — Newton's policy is *prior* deprecation, and a deprecate-and-remove in the same release is itself a violation. The release manager needs this to block the release or add migration tooling.
 
 **Exception: `1.0.0` pre-stable cleanup.** Removed entries in the `1.0.0` release (and `1.0.0rcN`) are exempt from the deprecation-first policy — PRs labeled `1.0-release` are the pre-stable API cleanup and were not required to go through a prior deprecation window. When the target version is `1.0.0` or `1.0.0rcN`, do not emit the `🚨 Policy` flag or the "No prior **Deprecated** entry found" line for its Removed entries. Still render the deprecation-window line if a matching Deprecated entry happens to exist; otherwise note `1.0 pre-stable cleanup; no prior deprecation required.`
 
@@ -238,7 +238,7 @@ The deprecation window belongs in BOTH the Breaking Changes entry for the remova
 Independently of CHANGELOG content, compute the public API surface at base vs. HEAD by walking every symbol re-exported from the public modules in 4a:
 
 - Base: `git show <base-ref>:<module.py>` for each public module and for every real-source module it re-exports from → parse with `ast`. Resolve each re-export's real signature at base.
-- HEAD: same, but on the working tree.
+- Target: same as Base, but at the target ref — the working tree in pre-release / RC mode, or `git show v<target>:<module.py>` in retrospective mode. Do NOT read the working tree in retrospective mode; later commits on `main` would otherwise be falsely attributed to `vX.Y.Z`.
 - For each symbol whose signature shape changed AND whose matching CHANGELOG entry (if any) doesn't indicate a rename / parameter shift / removal → add to Breaking Changes section as "unlabeled signature change — please verify".
 
 **Exception: Removed symbols are breaking by definition.** A symbol that appears in CHANGELOG's `Removed` section does NOT need prose hedging to be valid. Do NOT flag Removed entries as "unlabeled breaking" — the section name itself communicates the breakage. Removed entries surface in the Breaking Changes callout and in the Changes-to-Existing-API section (as "removed" kind), but the report must not whinge about missing Breaking labels on them.
@@ -301,7 +301,7 @@ Record flagged entries. Keep the FULL entry text in the audit table — do not t
 ### 5b — Bake aggregation
 
 From `commit_list_json`:
-- Bucket each commit's `days_in_main` into **🟢 (>14 days)**, **🟡 (7–14 days)**, **🟠 (<7 days)**.
+- Bucket each commit's `days_in_main` into **🟢 (>14 days)**, **🟡 (7–14 days)**, **🟠 (<7 days)**. Commits whose `days_in_main` is `null` (no main equivalent) skip bucketing — do NOT coerce `null` to `0` or compare it to a numeric threshold; those commits are accounted for in the next bullet instead.
 - Count anomalies: commits with `main_equivalent_sha == null`. If non-zero, prepare the ⚠️ banner for the report header.
 
 ## Phase 6 — Calibration Notes (retrospective mode only)
@@ -314,7 +314,7 @@ In retrospective mode, Claude's Phase 3–5 output is a set of flags and classif
 
 Identify releases that shipped strictly after `X.Y.Z`:
 
-```
+```bash
 git tag --list 'v*' --sort=v:refname
 ```
 
@@ -324,7 +324,17 @@ Take the sorted list, drop everything up to and including `vX.Y.Z`, keep the res
 
 For each post-target tag, read its CHANGELOG section (the `## [<version>]` block in `CHANGELOG.md` at HEAD, or via `git show <tag>:CHANGELOG.md` if the section has since been edited). Parse the six subsections (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Documentation`) the same way Phase 2 does.
 
-Also collect the commits in each post-target range (`<prior-tag>..<tag>`) — a single `python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py` invocation per range works. These commits become the evidence pool for validating Claude's Phase 4f semantic-change candidates.
+Also collect the commits in each post-target range (`<prior-tag>..<tag>`) — one full `list_commits.py` invocation per range, with the same required args as Phase 2. `--main-ref` reuses the main ref resolved in Phase 1 (don't rely on the script's `upstream/main` default; Phase 1 may have fallen back to a different remote):
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
+  --base <prior-tag> \
+  --head <tag> \
+  --report-date "$(date +%F)" \
+  --main-ref <resolved-main-ref>
+```
+
+These commits become the evidence pool for validating Claude's Phase 4f semantic-change candidates.
 
 ### 6b — Cross-reference Claude's flags against post-target history
 
@@ -526,7 +536,7 @@ The destination was decided in Phase 1: one of `local`, `new-gist`, or `revise-g
 - Gist file (inside the gist): `newton-<version-string>-<prerelease|rc|retrospective>-report.md` — no date. Stable name so later runs can revise the same gist in place.
 
 **Stable gist description** (used when creating a new gist; also the matching key for Phase 1):
-```
+```text
 Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
 ```
 
@@ -539,7 +549,7 @@ Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
 **If destination is `new-gist`:**
 1. Write to `/tmp/<gist-filename>` (stable name, no date) using the Write tool.
 2. Create the gist:
-   ```
+   ```bash
    gh gist create --desc "<stable-desc>" /tmp/<gist-filename>
    ```
    Capture the gist URL from stdout.
@@ -551,7 +561,7 @@ Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
 **If destination is `revise-gist:<id>`:**
 1. Write to `/tmp/<gist-filename>` (same stable name the existing gist already uses) using the Write tool.
 2. Revise the gist:
-   ```
+   ```bash
    gh gist edit <id> /tmp/<gist-filename>
    ```
    `gh` matches the basename to the existing file in the gist and replaces its contents; the prior version is preserved in the gist's git history. Do NOT pass `--desc` — keeping the description stable is what lets the next run match this gist again.
