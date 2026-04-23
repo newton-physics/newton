@@ -106,7 +106,7 @@ Flag `### Added` entries whose newly-named public symbol puts the discriminator 
 
 - `PDActuator`, `VelocityActuator` → should be `ActuatorPD`, `ActuatorVelocity`
 - `SphereShape`, `CapsuleShape` → should be `ShapeSphere`, `ShapeCapsule`
-- `add_sphere_shape()`, `add_mesh_collider()` → should be `add_shape_sphere()`, `add_collider_mesh()`
+- `add_sphere_shape()`, `add_mesh_shape()` → should be `add_shape_sphere()`, `add_shape_mesh()`
 
 Before flagging, cross-check against existing sibling symbols in the same module. If the rest of the module uses `Foo<Kind>` rather than `<Kind>Foo`, the new symbol should match the established pattern whichever direction it goes. Prefer-consistency beats prefer-the-rule-in-AGENTS.md when the module has an entrenched local convention.
 

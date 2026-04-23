@@ -122,7 +122,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
    python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
      --base <base-ref> \
      --head <head-ref> \
-     --report-date <today-YYYY-MM-DD> \
+     --report-date "$(date +%F)" \
      --main-ref <resolved-main-ref>
    ```
    from the repo root (`$(git rev-parse --show-toplevel)`). Capture stdout as the `commit_list_json`.
@@ -224,6 +224,8 @@ For each CHANGELOG entry in Changed / Removed / Deprecated (plus any "capability
 The deprecation window belongs in BOTH the Breaking Changes entry for the removal AND the Changes-to-Existing-API row (in the Description cell or as an appended sentence in the detail block). A reader should never have to ask "was this deprecated first, and for how long?"
 
 **Missing-deprecation flag.** If a Removed entry has no prior Deprecated entry AND the current CHANGELOG's own `### Deprecated` section does not also include the same symbol (some Newton releases deprecate-and-remove simultaneously, which is a policy violation), surface this prominently in the Breaking Changes section as `🚨 Policy: removed without prior deprecation` rather than a quiet "verify please" line. The release manager needs this to block the release or add migration tooling.
+
+**Exception: `1.0.0` pre-stable cleanup.** Removed entries in the `1.0.0` release (and `1.0.0rcN`) are exempt from the deprecation-first policy — PRs labeled `1.0-release` are the pre-stable API cleanup and were not required to go through a prior deprecation window. When the target version is `1.0.0` or `1.0.0rcN`, do not emit the `🚨 Policy` flag or the "No prior **Deprecated** entry found" line for its Removed entries. Still render the deprecation-window line if a matching Deprecated entry happens to exist; otherwise note `1.0 pre-stable cleanup; no prior deprecation required.`
 
 ### 4e — Signature-AST diff for unlabeled migration-required changes
 

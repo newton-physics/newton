@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
 """Emit a JSON commit list for Newton release-candidate reporting.
 
 Deterministic, stdlib-only. Enumerates commits in <base>..<head>, extracts
@@ -19,7 +21,7 @@ from pathlib import Path
 # ASCII Unit Separator (U+001F). Not valid inside a git commit subject or
 # author name, so safe to use as a field delimiter in log output.
 _LOG_DELIM = "\x1f"
-_LOG_FMT = _LOG_DELIM.join(["%h", "%s", "%an", "%cs"])
+_LOG_FMT = _LOG_DELIM.join(["%H", "%s", "%an", "%cs"])
 
 
 def _git(repo: Path, *args: str) -> str:
