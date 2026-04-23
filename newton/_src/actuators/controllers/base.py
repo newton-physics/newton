@@ -108,7 +108,7 @@ class Controller:
             dt: Timestep [s].
             device: Warp device for kernel launches.
         """
-        raise NotImplementedError
+        raise NotImplementedError(f"{type(self).__name__} must implement compute")
 
     def is_stateful(self) -> bool:
         """Return True if this controller maintains internal state."""
