@@ -103,6 +103,7 @@ class ViewerUSD(ViewerBase):
         self.output_path = os.path.abspath(output_path)
         self.fps = fps
         self.up_axis = up_axis
+        self.scaling = scaling
         self.num_frames = num_frames
 
         # Create USD stage. If this output path is already registered in the
@@ -147,6 +148,33 @@ class ViewerUSD(ViewerBase):
         self._frame_count = 0
 
         self.set_model(None)
+
+    def clear_model(self):
+        if hasattr(self, "stage") and self.stage is not None:
+            self.stage.GetRootLayer().Clear()
+            self.stage.SetTimeCodesPerSecond(self.fps)
+            self.stage.SetFramesPerSecond(self.fps)
+            self.stage.SetStartTimeCode(0)
+            axis_token = {
+                "X": UsdGeom.Tokens.x,
+                "Y": UsdGeom.Tokens.y,
+                "Z": UsdGeom.Tokens.z,
+            }.get(self.up_axis.strip().upper())
+            UsdGeom.SetStageUpAxis(self.stage, axis_token)
+            UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)
+            self.root = UsdGeom.Xform.Define(self.stage, "/root")
+            self.root.ClearXformOpOrder()
+            s = self.root.AddScaleOp()
+            s.Set(Gf.Vec3d(float(self.scaling), float(self.scaling), float(self.scaling)), 0.0)
+            self.stage.SetDefaultPrim(self.root.GetPrim())
+            self._meshes = {}
+            self._instancers = {}
+            self._points = {}
+            self._texture_materials = {}
+            self._frame_index = 0
+            self._frame_count = 0
+
+        super().clear_model()
 
     @override
     def begin_frame(self, time: float):

@@ -146,96 +146,53 @@ class ViewerRTX(ViewerUSD):
                 f"Unknown RTX environment {self._environment!r}. Choose from: {', '.join(self.ENVIRONMENTS)}"
             )
 
-        self._tmp_usd_file = tempfile.NamedTemporaryFile(suffix=".usd", delete=False)
-        self._tmp_usd_file.close()
-        self._tmp_usd_path = self._tmp_usd_file.name
-
         # Pre-initialize fields that clear_model() (called from super().__init__) touches
         self._ui_callbacks: dict[str, list] = {"side": [], "stats": [], "free": [], "panel": [], "rendering": []}
         self._ui_callbacks["rendering"].append(self._ui_populate_rendering_panel)
         self._paused = paused
+
+        # OVRTX
         self._rtx = None
-        self._pending_line_batches: dict[str, tuple[Any, Any, Any, float, bool]] = {}
-        self._line_batch_paths: dict[str, str] = {}
-        self._line_batch_proto_paths: dict[str, str] = {}
-        self._line_batch_widths: dict[str, float] = {}
-        self._line_batch_handles: dict[str, Any] = {}
-        self._pending_point_batches: dict[str, tuple[Any, Any, Any, bool]] = {}
-        self._point_batch_paths: dict[str, str] = {}
-        self._point_batch_colors: dict[str, np.ndarray] = {}
-        self._point_batch_synced_counts: dict[str, int] = {}
+        self._render_result = None
+        self._render_products = None
+        self._transform_binding = None
+        self._async = async_rendering
 
-        super().__init__(
-            output_path=self._tmp_usd_path,
-            fps=fps,
-            up_axis=up_axis,
-            num_frames=num_frames,
-            scaling=scaling,
-        )
-
-        self._width = width
-        self._height = height
+        # The renderer output size is fixed even if window is resized
+        self._render_width = width
+        self._render_height = height
+        self._window_width = width
+        self._window_height = height
         self._headless = headless
+        self._up_axis = up_axis
 
-        self._phase = self._PHASE_BUILD
-
-        # Pyglet window state
+        # Window creation is deferred until _init_ovrtx() to avoid pyglet/Warp
+        # kernel compilation deadlock on Windows.
         self._window = None
         self._pyglet = None
         self._pyglet_gl = None
         self._pyglet_app = None
+        self._vsync = vsync
         self._should_close = False
-        self._camera_dirty = True
-
-        # Instance prim paths collected during build phase, keyed by instancer name.
-        # Iteration order (insertion order) defines the layout inside the binding.
-        self._instance_prim_paths: dict[str, list[str]] = {}
-        self._all_instance_paths: list[str] = []
-        self._transform_binding = None
-
-        # Flat concatenated shape arrays built once at the end of the build phase.
-        # Ordered to match the mat44d buffer layout so all shapes can be updated in
-        # a single kernel launch.  None until _build_flat_shape_arrays() runs.
-        self._flat_shape_xforms: wp.array | None = None
-        self._flat_shape_parents: wp.array | None = None
-        self._flat_shape_worlds: wp.array | None = None
-        self._flat_shape_scales: wp.array | None = None
-        self._flat_total_shapes: int = 0
-        self._flat_mat44_offset: int = 0  # offset of the flat section in the mat44d buffer
-
-        # Mesh prim paths for deforming-mesh point updates
-        self._mesh_prim_paths: dict[str, str] = {}
-
-        # Per-frame pending data (cleared each begin_frame)
-        self._pending_xforms: dict[str, tuple[Any, Any]] = {}
-        self._pending_mesh_points: dict[str, np.ndarray] = {}
-        self._pending_mesh_normals: dict[str, np.ndarray] = {}
-
-        # Build-time line instancers plus runtime-authored capsule layers
-
-        # Camera (shared Camera class with ViewerGL)
-        self.camera = Camera(width=self._width, height=self._height, up_axis=up_axis)
-        self._camera_prim_path = "/World/Camera"
-        self._render_product_path = "/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0"
 
         # Input / timing state
         self._keys_down: set[int] = set()
         self._last_perf_time: float | None = None
         self.gui = None
 
-        # async rendering
-        self._render_result = None
+        # Generate a temporary USD path to share with OVRTX renderer
+        fd, output_path = tempfile.mkstemp(suffix=".usd")
+        os.close(fd)
 
-        # last frame's render products (used for screenshots)
-        self._render_products = None
-
-        # Window is deferred until _init_ovrtx to avoid pyglet/Warp
-        # kernel compilation deadlock on Windows.
-
-        # initial value for vsync (applied once window is created)
-        self._vsync_init = vsync
-
-        self._async = async_rendering
+        # Initializing the base class calls clear_model(), which
+        # is used to initialize/reset model-specific state.
+        super().__init__(
+            output_path=output_path,
+            fps=fps,
+            up_axis=up_axis,
+            num_frames=num_frames,
+            scaling=scaling,
+        )
 
     # ------------------------------------------------------------------ window
 
@@ -249,12 +206,12 @@ class ViewerRTX(ViewerUSD):
         from pyglet import gl
 
         self._window = pyglet.window.Window(
-            width=self._width,
-            height=self._height,
+            width=self._window_width,
+            height=self._window_height,
             caption="Newton RTX Viewer",
             resizable=True,
             visible=not self._headless,
-            vsync=self._vsync_init,
+            vsync=self._vsync,
         )
 
         # cache the imported pyglet modules to avoid reimporting later
@@ -378,8 +335,8 @@ void main() {
 
         @self._window.event
         def on_resize(width, height):
-            self._width = width
-            self._height = height
+            self._window_width = width
+            self._window_height = height
 
         @self._window.event
         def on_close():
@@ -401,10 +358,7 @@ void main() {
         Returns:
             bool: True if vsync is enabled, False otherwise.
         """
-        if self._window is not None:
-            return self._window.vsync
-        else:
-            return self._vsync_init
+        return self._vsync
 
     @vsync.setter
     def vsync(self, enabled: bool):
@@ -416,8 +370,7 @@ void main() {
         """
         if self._window is not None:
             self._window.set_vsync(enabled)
-        else:
-            self._vsync_init = enabled
+        self._vsync = enabled
 
     # ------------------------------------------------------------------ camera
 
@@ -686,7 +639,11 @@ void main() {
         self._add_camera_lights_and_render_product()
         self._apply_ground_material()
 
-        self.stage.GetRootLayer().Save()
+        # HACK? Export to a unique temp path so OVRTX never uses a cached version
+        # of a previous example's file.
+        fd, ovrtx_usd_path = tempfile.mkstemp(suffix=".usd")
+        os.close(fd)
+        self.stage.GetRootLayer().Export(ovrtx_usd_path)
 
         try:
             import ovrtx
@@ -694,7 +651,7 @@ void main() {
             config = ovrtx.RendererConfig()
             config.log_level = "error"
             self._rtx = ovrtx.Renderer(config=config)
-            self._rtx.add_usd(self._tmp_usd_path)
+            self._rtx.add_usd(ovrtx_usd_path)
 
             # Flat prim-path list for a single transform binding
             self._all_instance_paths = []
@@ -712,13 +669,19 @@ void main() {
                 )
         except Exception as e:
             raise RuntimeError(f"Failed to create OVRTX renderer: {e}") from e
+        finally:
+            try:
+                os.unlink(ovrtx_usd_path)
+            except OSError:
+                pass
 
         # Create the presentation window now that all Warp kernels have been
         # compiled.  Doing this earlier causes a deadlock on Windows because
         # the Win32 message pump and Warp's JIT compilation fight for the
         # main thread.  Skip entirely in headless mode — a hidden window still
         # requires a display server and an OpenGL context.
-        if not self._headless:
+        # On example switch the window already exists — reuse it.
+        if not self._headless and self._window is None:
             try:
                 self._init_window()
             except Exception as e:
@@ -1781,20 +1744,59 @@ void main() {
         self._ui_callbacks["free"] = []
         self.picking = None
         self.wind = None
+
+        # Drain async pipeline before releasing the renderer
+        if self._render_result is not None:
+            self._render_result.wait()
+            self._render_result = None
+        self._render_products = None
+
+        # Release OVRTX resources
+        if self._transform_binding is not None:
+            self._transform_binding.unbind()
+            self._transform_binding = None
+
+        # Release OVRTX renderer
         if self._rtx is not None:
-            for handle in self._line_batch_handles.values():
-                self._rtx.remove_usd(handle)
+            self._rtx = None
+
+        # Return to build phase so the next example creates fresh USD prims
+        self._phase = self._PHASE_BUILD
+
+        # Reset build-phase state
+        self._instance_prim_paths = {}
+        self._all_instance_paths = []
+        self._mesh_prim_paths = {}
         self._line_batch_paths = {}
         self._line_batch_proto_paths = {}
         self._line_batch_widths = {}
         self._line_batch_handles = {}
-        self._pending_line_batches = {}
-        self._pending_point_batches = {}
         self._point_batch_paths = {}
         self._point_batch_colors = {}
         self._point_batch_synced_counts = {}
+
+        self._pending_xforms = {}
+        self._pending_mesh_points = {}
+        self._pending_mesh_normals = {}
+        self._pending_line_batches = {}
+        self._pending_point_batches = {}
+
+        self._flat_shape_xforms = None
+        self._flat_shape_parents = None
+        self._flat_shape_worlds = None
+        self._flat_shape_scales = None
+        self._flat_total_shapes = 0
+        self._flat_mat44_offset = 0
+
         self._last_state = None
         self._last_control = None
+
+        # reset camera
+        self.camera = Camera(width=self._render_width, height=self._render_height, up_axis=self._up_axis)
+        self._camera_prim_path = "/World/Camera"
+        self._render_product_path = "/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0"
+        self._camera_dirty = True
+
         super().clear_model()
 
     def _ui_populate_rendering_panel(self, imgui):
@@ -1824,8 +1826,7 @@ void main() {
             self._render_result = None
 
         # release render products
-        if self._render_products is not None:
-            self._render_products = None
+        self._render_products = None
 
         # release transform binding
         if self._transform_binding is not None:
@@ -1848,9 +1849,8 @@ void main() {
             self._window.close()
             self._window = None
 
-        if self._tmp_usd_path and os.path.exists(self._tmp_usd_path):
+        if hasattr(self, "output_path") and self.output_path and os.path.exists(self.output_path):
             try:
-                os.unlink(self._tmp_usd_path)
+                os.unlink(self.output_path)
             except OSError:
                 pass
-            self._tmp_usd_path = ""
