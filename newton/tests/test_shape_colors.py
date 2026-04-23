@@ -67,12 +67,7 @@ class TestShapeColors(unittest.TestCase):
 
         model = builder.finalize(device=self.device)
 
-        np.testing.assert_allclose(
-            model.shape_color.numpy()[shape],
-            (0.2, 0.4, 0.6),
-            atol=1e-6,
-            rtol=1e-6,
-        )
+        np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.2, 0.4, 0.6], atol=1e-6, rtol=1e-6)
 
     def test_explicit_shape_color_overrides_mesh_color(self):
         """Verify explicit shape colors override colors embedded in meshes."""
@@ -87,12 +82,7 @@ class TestShapeColors(unittest.TestCase):
 
         model = builder.finalize(device=self.device)
 
-        np.testing.assert_allclose(
-            model.shape_color.numpy()[shape],
-            (0.9, 0.1, 0.3),
-            atol=1e-6,
-            rtol=1e-6,
-        )
+        np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.9, 0.1, 0.3], atol=1e-6, rtol=1e-6)
 
     def test_ground_plane_keeps_checkerboard_material_with_resolved_shape_colors(self):
         """Verify the ground plane keeps its checkerboard material after color resolution."""
@@ -126,12 +116,7 @@ class TestShapeColors(unittest.TestCase):
         viewer = _ShapeColorProbe()
         viewer.set_model(model)
         viewer.log_state(state)
-        np.testing.assert_allclose(
-            viewer.last_colors[0],
-            (0.1, 0.2, 0.3),
-            atol=1e-6,
-            rtol=1e-6,
-        )
+        np.testing.assert_allclose(viewer.last_colors[0], [0.1, 0.2, 0.3], atol=1e-6, rtol=1e-6)
 
         viewer.last_colors = None
         model.shape_color[shape : shape + 1].fill_(wp.vec3(0.8, 0.2, 0.1))
@@ -226,22 +211,12 @@ class TestShapeColors(unittest.TestCase):
             viewer.update_shape_colors({shape: (0.7, 0.2, 0.9)})
 
         self.assertTrue(any(item.category is DeprecationWarning for item in caught))
-        np.testing.assert_allclose(
-            model.shape_color.numpy()[shape],
-            (0.7, 0.2, 0.9),
-            atol=1e-6,
-            rtol=1e-6,
-        )
+        np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.7, 0.2, 0.9], atol=1e-6, rtol=1e-6)
 
         viewer.last_colors = None
         viewer.log_state(state)
         self.assertIsNotNone(viewer.last_colors)
-        np.testing.assert_allclose(
-            viewer.last_colors[0],
-            (0.7, 0.2, 0.9),
-            atol=1e-6,
-            rtol=1e-6,
-        )
+        np.testing.assert_allclose(viewer.last_colors[0], [0.7, 0.2, 0.9], atol=1e-6, rtol=1e-6)
 
 
 if __name__ == "__main__":

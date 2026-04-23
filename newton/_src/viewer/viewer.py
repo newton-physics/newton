@@ -1585,7 +1585,7 @@ class ViewerBase(ABC):
             # is populated with resolved default colors.
             if geo_type == newton.GeoType.PLANE:
                 if shape_display_color is None:
-                    color = wp.vec3(*newton.ModelBuilder._DEFAULT_GROUND_PLANE_COLOR)
+                    color = wp.vec3(0.125, 0.125, 0.15)
                 material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
             # add render instance
@@ -1746,9 +1746,8 @@ class ViewerBase(ABC):
     def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
         """
         Set colors for a set of shapes at runtime.
-
         Args:
-            shape_colors: Mapping from shape index to RGB color.
+            shape_colors: mapping from shape index -> color
         """
         warnings.warn(
             "Viewer.update_shape_colors() is deprecated. Write to model.shape_color instead.",
