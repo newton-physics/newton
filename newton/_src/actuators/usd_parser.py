@@ -213,6 +213,8 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
     Raises:
         ValueError: If the prim is a ``NewtonActuator`` but:
             - has no authored ``newton:targets`` relationship,
+            - the target prim does not exist or is not a
+              ``PhysicsRevoluteJoint`` / ``PhysicsPrismaticJoint``,
             - has multiple controller schemas applied,
             - has no controller schema, or
             - has a ``NewtonNeuralControlAPI`` with an unsupported model.
@@ -233,6 +235,21 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
             stacklevel=2,
         )
         target_paths = target_paths[:1]
+
+    _SUPPORTED_JOINT_TYPES = {"PhysicsRevoluteJoint", "PhysicsPrismaticJoint"}
+    stage = prim.GetStage()
+    target_prim = stage.GetPrimAtPath(target_paths[0]) if stage else None
+    if target_prim is None or not target_prim.IsValid():
+        raise ValueError(
+            f"Actuator prim '{prim.GetPath()}' targets '{target_paths[0]}' which does not exist on the stage"
+        )
+    target_type = target_prim.GetTypeName()
+    if target_type not in _SUPPORTED_JOINT_TYPES:
+        raise ValueError(
+            f"Actuator prim '{prim.GetPath()}' targets '{target_paths[0]}' "
+            f"of type '{target_type}'; only {sorted(_SUPPORTED_JOINT_TYPES)} "
+            f"are supported"
+        )
 
     controller_class = None
     controller_kwargs: dict[str, Any] = {}
