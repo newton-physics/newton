@@ -160,6 +160,49 @@ Set the PyOpenGL platform before running:
 
 This is a known issue when running OpenGL applications on Wayland display servers.
 
+RTX Viewer
+~~~~~~~~~~
+
+:class:`~newton.viewer.ViewerRTX` provides real-time path-traced rendering using the NVIDIA OVRTX renderer.
+It builds a USD scene on the first frame and updates rigid-body transforms each frame via the OVRTX attribute API,
+presenting the result in a pyglet/OpenGL window.
+
+.. note::
+    The RTX viewer is experimental and may not have the same functionality as the OpenGL viewer.
+
+**Installation**: Requires the ``rtx`` dependency group:
+
+.. code-block:: bash
+
+    uv sync --extra rtx
+
+This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in addition to ``pyglet`` for the window.
+
+Constructor parameters:
+
+- ``width``: Window width in pixels (default: ``1280``)
+- ``height``: Window height in pixels (default: ``720``)
+- ``fps``: Target frame rate (default: ``60``)
+- ``up_axis``: Scene up axis, ``"Y"`` or ``"Z"`` (default: ``"Z"``)
+- ``num_frames``: Maximum number of frames to render, or ``None`` for unlimited (default: ``None``)
+- ``scaling``: Uniform scaling applied to the scene root (default: ``1.0``)
+- ``headless``: Run without a visible window (default: ``False``)
+- ``paused``: Start with simulation paused (default: ``False``)
+- ``environment``: Lighting environment preset — ``"default"``, ``"studio"``, or ``"none"`` (default: ``"default"``)
+- ``vsync``: Enable vertical sync (default: ``False``)
+- ``async_rendering``: Render asynchronously for higher throughput (default: ``True``)
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerRTX(environment="studio")
+
+    viewer.set_model(model)
+
+    # at every frame:
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
 Recording and Offline Viewers
 -----------------------------
 
@@ -581,6 +624,10 @@ Choosing the Right Viewer
       - Interactive development and debugging
       - Real-time display
       - pyglet, imgui_bundle
+    * - :class:`~newton.viewer.ViewerRTX`
+      - Path-traced real-time visualization on NVIDIA GPUs
+      - Real-time display
+      - ovrtx, usd-core, pyglet (``uv sync --extra rtx``)
     * - :class:`~newton.viewer.ViewerFile`
       - Recording for replay/sharing
       - .json or .bin files
