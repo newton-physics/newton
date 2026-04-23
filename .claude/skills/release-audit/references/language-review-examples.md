@@ -55,7 +55,7 @@ Flag when the CHANGELOG entry's topic doesn't match the commits that cite that G
 For entry "Add support for Gaussian splats (GH-NNNN)", fetch commits tagged `GH-NNNN` and look at their subjects and file paths. If every commit only touches `.github/**` or `docs/**`, the GH ref is likely wrong — the entry describes a model-builder API change, but nothing in those commits modifies the builder or geometry. Flag.
 
 Don't flag if:
-- Commits touch `newton/_src/geometry/**` or `newton/_src/sim/model_builder.py` for a geometry-addition entry → topic matches.
+- Commits touch `newton/_src/geometry/**` or `newton/_src/sim/builder.py` for a geometry-addition entry → topic matches.
 - Commits touch `docs/**` and the entry is in the Documentation section → topic matches.
 - Commits touch `newton/_src/solvers/**` for a solver-capability entry → topic matches.
 

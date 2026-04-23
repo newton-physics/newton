@@ -80,14 +80,19 @@ def get_commits_in_range(repo: Path, base: str, head: str) -> list[dict]:
 
 # Word boundary before GH prevents matching "Regraph-42" etc.
 _GH_REF_RE = re.compile(r"\bGH-(\d+)")
+# Bare PR refs as written in commit trailers like "Closes #1287". The
+# lookbehind rejects `identifier#N` / URL fragments, leaving genuine
+# standalone PR references. Matches the appendix regex in SKILL.md.
+_PR_REF_RE = re.compile(r"(?<![\w/])#(\d+)\b")
 
 
 def extract_gh_refs(subject: str, body: str) -> list[int]:
-    """Return sorted, deduplicated GH issue numbers referenced in subject+body."""
+    """Return sorted, deduplicated GH / bare-PR issue numbers from subject+body."""
     nums = set()
     for text in (subject, body):
-        for match in _GH_REF_RE.finditer(text):
-            nums.add(int(match.group(1)))
+        for pattern in (_GH_REF_RE, _PR_REF_RE):
+            for match in pattern.finditer(text):
+                nums.add(int(match.group(1)))
     return sorted(nums)
 
 
