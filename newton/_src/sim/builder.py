@@ -8262,8 +8262,9 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
-            validate_mesh: If True, check for inverted or degenerate tetrahedra
-                and emit warnings. See :func:`newton.utils.validate_tet_mesh`.
+            validate_mesh: If True, check for inverted or small-volume
+                tetrahedra, sliver tetrahedra, and non-manifold faces, and
+                emit warnings. See :func:`newton.utils.validate_tet_mesh`.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
