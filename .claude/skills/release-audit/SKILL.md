@@ -1,6 +1,6 @@
 ---
 name: release-audit
-description: "Generate an audit report for a Newton release covering new API, changed API, migration-required changes, behavioral changes, fixes, deprecation-policy gaps, and CHANGELOG gaps vs. the previous release. Three modes, auto-detected from the optional version argument and repo state. (1) Pre-release: spot-check of unreleased work on main. (2) Release-candidate: readiness review after the release branch is cut. (3) Retrospective: audit of an already-shipped release (e.g., `v1.1.0`) against its predecessor, with a Calibration Notes section that checks Claude's flags against what subsequent patch/minor releases actually did. Use for pre-release spot-checks, RC cuts, or skill calibration against shipped history."
+description: "Use when auditing a Newton release for keep/defer decisions before a cut, reviewing an RC for readiness, or calibrating the skill against an already-shipped release."
 disable-model-invocation: true
 argument-hint: "[target-version]"
 allowed-tools: Bash(git log *) Bash(git show *) Bash(git tag *) Bash(git rev-parse *) Bash(git cherry *) Bash(git diff *) Bash(git diff-tree *) Bash(git worktree *) Bash(git stash *) Bash(git checkout *) Bash(python3 *list_commits.py*) Bash(python3 /tmp/*) Bash(rm /tmp/newton-*) Bash(uv run python3 *) Bash(uv run -m *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
@@ -26,6 +26,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 
 **Reference documents to load on demand** (via `Read`):
 - `references/report-template.md` — fill this in during Phase 7b (the `{{HEADLINE_SUMMARY}}` placeholder is drafted in Phase 7a).
+- `references/render-rules.md` — rendering conventions and output style hard constraints for Phase 7b.
 - `references/classification-rules.md` — path/symbol rules used in Phases 3-5.
 - `references/language-review-examples.md` — Phase 5 language-review calibration.
 
@@ -164,20 +165,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 
 For each CHANGELOG `Added` entry, extract the named symbol(s) — text in backticks matching `newton.*`, bare `ClassName`, bare `snake_case_name()`, or `ClassName.method()` patterns.
 
-For EACH named symbol, check if it existed at base. Newton exposes user-facing symbols through **multiple** public re-export modules, not a single `__init__.py`:
-
-- `newton/__init__.py` — top-level (`newton.Model`, `newton.State`, etc.)
-- `newton/geometry.py` — geometry primitives
-- `newton/solvers.py` — solver classes
-- `newton/ik.py` — inverse kinematics
-- `newton/math.py` — math helpers
-- `newton/selection.py` — selection utilities
-- `newton/sensors.py` — sensor classes
-- `newton/usd.py` — USD IO
-- `newton/utils.py` — general utilities
-- `newton/viewer.py` — viewer classes
-
-The authoritative list is `MODULES` in `docs/generate_api.py`. Load it at HEAD for pre-release / RC mode, or at `v<target>` (via `git show v<target>:docs/generate_api.py`) for retrospective mode — the module list may have grown or shrunk between releases.
+For EACH named symbol, check if it existed at base. Newton exposes user-facing symbols through multiple public re-export modules (not a single `__init__.py`). See `references/classification-rules.md` → "Public API surface" for the authoritative list. The source of truth is `MODULES` in `docs/generate_api.py`, which may have grown or shrunk between releases — load it at HEAD for pre-release / RC mode, or at `v<target>` (via `git show v<target>:docs/generate_api.py`) for retrospective mode.
 
 To check presence at base, run `git show <base>:<path>` for each relevant public module and grep its imported names. For method additions on an existing class (e.g., `SolverXPBD.update_contacts()`), inspect the class body at base in its real source (resolved via `_src/`). For retrospective mode, "HEAD" in the symbol-resolution text below means the `v<target>` tag, not the working tree. Use `git show v<target>:<path>` everywhere the pre-release / RC flow uses the working tree.
 
@@ -428,104 +416,15 @@ Open the summary with a 2-3 sentence intro paragraph that names the shape of the
 
 Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including the `{{HEADLINE_SUMMARY}}` produced in 7a. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
 
-**Key rendering rules:**
-- Full commit URLs: `https://github.com/newton-physics/newton/commit/<full-sha>`.
-- Full issue URLs: `https://github.com/newton-physics/newton/issues/<num>`.
-- Preserve `diff` fence blocks for signature diffs.
-- Anomaly banner appears ONLY if any commit has `main_equivalent_sha: null`.
-- **Table of contents** sits immediately after the Release Highlights section (so the front matter reads: counts → bake → highlights → TOC → body). Link every top-level `##` section and every per-symbol / per-topic `###` heading under them.
-- **Behavioral & Support Changes** section: group by topic with short descriptive titles (e.g., "Deterministic contact ordering", "Dependency pins", "Build requirements"). Claude synthesizes the titles from the entry content.
+**Rendering conventions live in `references/render-rules.md`.** Read that file when starting 7b. It covers:
 
-**Output style rules — these are hard constraints on the generated report:**
-
-1. **No em dashes (`—`) anywhere in the report output.** Use colons, parentheses, or rewrite the sentence. This includes headings, bullet points, table cells, prose. Check every line before writing.
-
-2. **No internal skill terminology in the output.** The reader does not know what "Phase 4f", "Phase 5a", "tier-1 heuristic", or similar skill-internal names refer to. If a section needs explanation of how flags were produced, write it in plain user terms (e.g., "Flagged because commits tagged with this GH ref don't touch any solver code" instead of "Tier-1 topic mismatch from Phase 5a").
-
-3. **No mention of previously-shipped patch-release fixes.** The commit-list tool already scopes to `<base>..<head>`, so patch-release content is excluded automatically; do not manufacture a comparison to it.
-
-4. **No "end of report" or similar terminal markers.** The last section is the last section. No "— end —", no "Thanks for reading", no concluding paragraph, no closing quote.
-
-5. **Every GH ref is a markdown hyperlink** to `https://github.com/newton-physics/newton/issues/NNNN`. Plain-text `GH-NNNN` tokens, paren-grouped lists like `(GH-1287, GH-1298, ...)`, and shorthand like `(multiple GHs)` / `(see CHANGELOG)` are NOT acceptable, even when many refs bunch into one bullet or cell.
-
-6. **Signature and docstring render as a single fenced code block**, shaped like Python source so users see them in one glance. The exact shape depends on the kind of symbol.
-
-   **Functions and methods:**
-
-   ```python
-   newton.geometry.compute_offset_mesh(shape: ShapeFlags, offset: float) -> Mesh
-   """Extract the offset surface mesh of a collision shape.
-
-   Longer description if present in the real docstring.
-   """
-   ```
-
-   **Classes with only a constructor** (simple data holders or context managers):
-
-   ```python
-   class TetMesh:
-       """Tetrahedral mesh geometry for soft-body simulation.
-
-       Longer description if present.
-       """
-
-       def __init__(self, vertices: wp.array[wp.vec3], tets: wp.array[wp.vec4i])
-   ```
-
-   **Classes with additional public methods**: list EVERY public (non-dunder, non-leading-underscore) method with its signature, plus the class docstring and each method's docstring if present. Do not just show `__init__`.
-
-   ```python
-   class SolverXPBD:
-       """Position-based-dynamics solver with XPBD constraints.
-
-       Short description of the solver's scope and typical use.
-       """
-
-       def __init__(self, model: Model, iterations: int = 10)
-
-       def step(self, state_in: State, state_out: State, control: Control, dt: float) -> None
-       """Advance the simulation by dt seconds."""
-
-       def update_contacts(self, contacts: Contacts) -> None
-       """Populate contacts.force with per-contact spatial forces from XPBD impulses."""
-   ```
-
-   **Enum / IntEnum / IntFlag classes:** list every member with its integer value and its attribute docstring or comment, plus the class docstring. Do not show a constructor for enums.
-
-   ```python
-   class ShapeFlags(IntFlag):
-       """Flags controlling collision and visibility of a shape."""
-
-       VISIBLE = 1 << 0
-       """Shape is rendered by viewers."""
-
-       COLLIDE_SHAPES = 1 << 1
-       """Shape participates in shape-shape collision."""
-   ```
-
-   Extract member docstrings from the source using `ast` attribute-docstring form (`"""..."""` immediately following the assignment). If the member uses a `#:` comment or a trailing `#` comment, preserve that instead. If there is no per-member doc, show the member without one.
-
-   Do NOT separate "Signature" and "Docstring" into two headed subsections. Do NOT blockquote the docstring line by line; it lives inside the code block as Python source.
-
-7. **API summary tables** include a Description column AND a short-form signature in the Symbol cell. The Symbol cell shows the call shape WITHOUT type annotations so readers can skim the args at a glance. Defaults ARE included. The column order for New API tables is: `Symbol | Description | GH | Bake`. Examples of Symbol cells:
-
-   - Function: `newton.geometry.compute_offset_mesh(shape, offset)`
-   - Method: `SolverXPBD.update_contacts(contacts)`
-   - Class with constructor: `newton.TetMesh(vertices, tets)`
-   - Enum / flag (no call form): `newton.ShapeFlags`
-   - Decorator: `@newton.experimental`
-
-   Description is a short (≤ 10 word) phrase summarizing what the symbol does, pulled from the first sentence of its docstring or the CHANGELOG entry.
-
-8. **New API tables are grouped by Kind.** Render one table per Kind ("Functions", "Classes", "Methods on existing classes", "Enums / flags", "Examples"). Newton's "Examples" kind specifically covers additions under `newton/examples/**` that ship a user-runnable `python -m newton.examples <name>` entry.
-
-9. **Changes-to-Existing-API table columns**: `API | Kind | Breaking | Description | GH | Commits | Bake`. The API cell uses the same short-form call-shape convention as rule 7 (parameter names + defaults, no annotations). Description is a short phrase. Kind values include: `signature change`, `new parameter`, `capability extension`, `rename` (Newton-specific), `parameter reorder` (Newton-specific), `removed`, `deprecated`, `semantic change`. For any entry tagged experimental in Phase 4g, the Breaking cell reads `Experimental`. For any Removed entry, the Description also includes the deprecation-window fact from Phase 4d (e.g., "Deprecated in 1.0.0; removed here.").
-
-   **Bake-cell format (tables only).** Render the Bake column as `🟢 47d`, `🟡 12d`, `🟠 4d` — emoji, space, number-and-`d` joined with no intervening space. The joined `<N>d` form keeps the bucket/duration pair on one line when a narrow Markdown table wraps. For per-symbol detail blocks and prose, continue to spell out `🟢 47 days in main`; the compact form is for table cells only.
-
-10. **Audit appendix rendering is conditional.** If only one of the audit sections (CHANGELOG-orphan entries / language-review flags / Phase 4f semantic-review candidates) has any content, do not render an "Audit Appendix" umbrella heading. Just render the non-empty sections with their own top-level headings (e.g., `## CHANGELOG Review Notes`, `## Semantic-Change Review Candidates`). Only use an umbrella when two or more subsections are non-empty.
-
-11. **No Phase names anywhere.** If the report needs to explain a flag, write it in user-facing terms. Never write "Phase 4e", "Phase 5", etc.
+- URL shapes for commits and issues, `diff`-fence preservation, and the anomaly-banner condition.
+- Table of contents placement and Behavioral & Support Changes grouping.
+- Signature + docstring fenced-code forms for functions, methods, constructor-only classes, classes with multiple methods, and enums / flags.
+- New API table columns (Symbol / Description / GH / Bake) with the short-form call-shape Symbol cell, and the Kind groupings.
+- Changes-to-Existing-API table columns and Kind values, plus the compact `🟢 47d` Bake-cell format for tables vs. the spelled-out form for prose.
+- Audit-appendix conditional rendering.
+- Output style hard constraints — no em dashes, no skill-internal terminology or Phase names, no end-of-report markers, every GH ref rendered as a full markdown hyperlink, and no manufactured comparison to previously-shipped patch-release fixes.
 
 ### 7c — Write output to chosen destination
 
