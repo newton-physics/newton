@@ -34,6 +34,7 @@ from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
+from .color import linear_to_srgb_rgb
 from .import_utils import should_show_collider
 
 AttributeFrequency = Model.AttributeFrequency
@@ -382,6 +383,13 @@ def parse_usd(
             material_props_cache[prim_path] = usd.resolve_material_properties_for_prim(prim)
         return material_props_cache[prim_path]
 
+    def _get_material_display_color(prim: Usd.Prim) -> tuple[float, float, float] | None:
+        """Resolve a prim's material color into display/sRGB space for model storage."""
+        color = _get_material_props_cached(prim).get("color")
+        if color is None:
+            return None
+        return linear_to_srgb_rgb(color)
+
     def _get_mesh_cached(prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
         """Load and cache mesh data to avoid repeated expensive USD mesh extraction."""
         prim_path = str(prim.GetPath())
@@ -437,7 +445,7 @@ def parse_usd(
             )
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
-            mesh.color = material_props["color"]
+            mesh.color = _get_material_display_color(prim)
         if material_props.get("roughness") is not None:
             mesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
@@ -525,7 +533,7 @@ def parse_usd(
             return
 
         if path_name not in path_shape_map:
-            shape_color = _get_material_props_cached(prim).get("color")
+            shape_color = _get_material_display_color(prim)
             if type_name == "cube":
                 size = usd.get_float(prim, "size", 2.0)
                 side_lengths = scale * size
@@ -2181,7 +2189,7 @@ def parse_usd(
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
                     ),
-                    "color": _get_material_props_cached(prim).get("color"),
+                    "color": _get_material_display_color(prim),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
                 }

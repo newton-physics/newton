@@ -113,13 +113,16 @@ class TestShapeColors(unittest.TestCase):
     def test_ground_plane_keeps_checkerboard_material_with_resolved_shape_colors(self):
         """Verify the ground plane keeps its checkerboard material after color resolution."""
         builder = newton.ModelBuilder()
-        builder.add_ground_plane()
+        shape = builder.add_ground_plane()
         model = builder.finalize(device=self.device)
+        expected = np.array((0.125, 0.125, 0.15), dtype=np.float32)
 
         viewer = ViewerNull()
         viewer.set_model(model)
 
         batch = next(iter(viewer._shape_instances.values()))
+        np.testing.assert_allclose(model.shape_color.numpy()[shape], expected, atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(batch.colors.numpy()[0], expected, atol=1e-6, rtol=1e-6)
         np.testing.assert_allclose(batch.materials.numpy()[0], [0.5, 0.0, 1.0, 0.0], atol=1e-6, rtol=1e-6)
 
     def test_viewer_syncs_runtime_shape_colors_from_model(self):

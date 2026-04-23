@@ -844,7 +844,7 @@ class Mesh:
 
     @property
     def color(self) -> Vec3 | None:
-        """Optional linear RGB color with values in [0, 1]."""
+        """Optional color with values in [0, 1]."""
         return self._color
 
     @color.setter

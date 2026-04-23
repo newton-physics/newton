@@ -32,7 +32,10 @@ class Example:
         self.col_capsule = wp.array([wp.vec3(0.9, 0.9, 0.1)], dtype=wp.vec3)
         self.col_cylinder = wp.array([wp.vec3(0.8, 0.5, 0.2)], dtype=wp.vec3)
         self.col_bunny = wp.array([wp.vec3(0.5, 0.2, 0.8)], dtype=wp.vec3)
-        self.col_plane = wp.array([wp.vec3(0.125, 0.125, 0.15)], dtype=wp.vec3)
+        self.col_plane = wp.array(
+            [wp.vec3(0.125, 0.125, 0.15)],
+            dtype=wp.vec3,
+        )
 
         # material = (roughness, metallic, checker, texture_enable)
         self.mat_default = wp.array([wp.vec4(0.0, 0.7, 0.0, 0.0)], dtype=wp.vec4)

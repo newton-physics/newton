@@ -18,7 +18,6 @@ import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
 from ..core.types import MAXVAL, Axis
-from ..utils.color import srgb_to_linear_rgb
 from .kernels import (
     build_active_particle_mask,
     compact,
@@ -1552,7 +1551,7 @@ class ViewerBase(ABC):
             # is populated with resolved default colors.
             if geo_type == newton.GeoType.PLANE:
                 if shape_display_color is None:
-                    color = wp.vec3(0.125, 0.125, 0.15)
+                    color = wp.vec3(*newton.ModelBuilder._DEFAULT_GROUND_PLANE_COLOR)
                 material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
             # add render instance
@@ -1715,7 +1714,7 @@ class ViewerBase(ABC):
         Set colors for a set of shapes at runtime.
 
         Args:
-            shape_colors: Mapping from shape index to linear RGB color.
+            shape_colors: Mapping from shape index to RGB color.
         """
         warnings.warn(
             "Viewer.update_shape_colors() is deprecated. Write to model.shape_color instead.",
@@ -2141,7 +2140,7 @@ class ViewerBase(ABC):
     @staticmethod
     def _shape_color_map(i: int) -> list[float]:
         color = newton.ModelBuilder._SHAPE_COLOR_PALETTE[i % len(newton.ModelBuilder._SHAPE_COLOR_PALETTE)]
-        return list(srgb_to_linear_rgb([c / 255.0 for c in color]))
+        return [c / 255.0 for c in color]
 
     @staticmethod
     def _collision_color_map(i: int) -> list[float]:
@@ -2160,7 +2159,7 @@ class ViewerBase(ABC):
         ]
 
         num_colors = len(colors)
-        return list(srgb_to_linear_rgb([c / 255.0 for c in colors[i % num_colors]]))
+        return [c / 255.0 for c in colors[i % num_colors]]
 
 
 def is_jupyter_notebook():

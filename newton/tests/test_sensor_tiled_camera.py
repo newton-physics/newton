@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.utils.color import linear_to_srgb_rgb
+from newton._src.utils.color import srgb_to_linear_rgb
 from newton.sensors import SensorTiledCamera
 
 
@@ -185,7 +185,7 @@ class TestSensorTiledCamera(unittest.TestCase):
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
 
-    def test_albedo_output_can_remain_linear(self):
+    def test_albedo_output_linearizes_srgb_shape_colors_only_once(self):
         color = (0.25, 0.5, 0.75)
         model = self._build_single_sphere_scene(color)
 
@@ -206,9 +206,9 @@ class TestSensorTiledCamera(unittest.TestCase):
 
             packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
             expected_rgb = (
-                np.clip(np.asarray(linear_to_srgb_rgb(color)) * 255.0, 0.0, 255.0).astype(np.uint8)
+                np.clip(np.asarray(color) * 255.0, 0.0, 255.0).astype(np.uint8)
                 if encode_output_srgb
-                else np.clip(np.asarray(color) * 255.0, 0.0, 255.0).astype(np.uint8)
+                else np.clip(np.asarray(srgb_to_linear_rgb(color)) * 255.0, 0.0, 255.0).astype(np.uint8)
             )
 
             np.testing.assert_array_equal(packed[:3], expected_rgb)

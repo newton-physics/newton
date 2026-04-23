@@ -309,7 +309,7 @@ void main()
     float texture_mode = Material.w;
     float checker_scale = 1.0;
 
-    vec3 albedo = ObjectColor;
+    vec3 albedo = srgb_to_linear(ObjectColor);
     if (texture_mode > 0.5)
     {
         vec3 tex_color = texture(albedo_map, TexCoord).rgb;

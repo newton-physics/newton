@@ -52,10 +52,10 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
     Shapes without the ``VISIBLE`` flag are excluded.
 
-    Shape colors and texture lighting are evaluated in linear RGB internally.
-    Mesh textures authored as sRGB are converted to linear before shading, and
-    the packed ``color``/``albedo`` outputs are optionally encoded back to
-    display/sRGB at the end.
+    Shape colors are stored on the model as sRGB/display RGB, then converted to
+    linear RGB internally for shading. Mesh textures authored as sRGB are
+    converted to linear before shading, and the packed ``color``/``albedo``
+    outputs are optionally encoded back to display/sRGB at the end.
 
     Example:
         ::

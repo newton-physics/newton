@@ -13,7 +13,7 @@ import warp as wp
 import newton
 
 from ..core.types import override
-from ..utils.color import linear_rgb_to_srgb_uint8
+from ..utils.color import srgb_rgb_to_uint8
 from ..utils.mesh import compute_vertex_normals
 from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
@@ -356,7 +356,7 @@ class ViewerRerun(ViewerBase):
                 colors_np = self._to_numpy(colors).astype(np.float32)
                 # Take the first instance's color and apply to all vertices
                 first_color = colors_np[0]
-                color_rgb = linear_rgb_to_srgb_uint8(first_color)
+                color_rgb = srgb_rgb_to_uint8(first_color)
                 num_vertices = len(mesh_data["points"])
                 vertex_colors = np.tile(color_rgb, (num_vertices, 1))
 

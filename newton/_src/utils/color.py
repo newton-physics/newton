@@ -46,6 +46,13 @@ def linear_rgb_to_srgb_uint8(color: Sequence[float] | np.ndarray) -> np.ndarray:
     return np.clip(np.round(srgb * 255.0), 0.0, 255.0).astype(np.uint8)
 
 
+def srgb_rgb_to_uint8(color: Sequence[float] | np.ndarray) -> np.ndarray:
+    """Convert sRGB/display RGB floats to uint8 bytes without re-encoding."""
+
+    rgb = np.clip(_to_rgb_array(color), 0.0, 1.0)
+    return np.clip(np.round(rgb * 255.0), 0.0, 255.0).astype(np.uint8)
+
+
 def linear_image_to_srgb_uint8(image: np.ndarray) -> np.ndarray:
     """Convert a linear RGB/RGBA array to uint8 sRGB."""
 
@@ -57,6 +64,16 @@ def linear_image_to_srgb_uint8(image: np.ndarray) -> np.ndarray:
     rgb = np.clip(out[..., :3], 0.0, None)
     out[..., :3] = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
     return np.clip(np.round(out * 255.0), 0.0, 255.0).astype(np.uint8)
+
+
+def srgb_image_to_uint8(image: np.ndarray) -> np.ndarray:
+    """Convert sRGB/display RGB/RGBA floats to uint8 bytes without re-encoding."""
+
+    img = np.asarray(image, dtype=np.float32)
+    if img.ndim < 2 or img.shape[-1] not in (3, 4):
+        raise ValueError("Expected an array with RGB or RGBA channels on the last axis.")
+
+    return np.clip(np.round(np.clip(img, 0.0, 1.0) * 255.0), 0.0, 255.0).astype(np.uint8)
 
 
 def normalize_texture_color_space(color_space: str | None) -> str:

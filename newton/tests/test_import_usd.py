@@ -17,7 +17,7 @@ import newton.usd as usd
 from newton import BodyFlags, JointType
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
-from newton._src.utils.color import srgb_to_linear_rgb
+from newton._src.utils.color import linear_to_srgb_rgb, srgb_to_linear_rgb
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
@@ -6531,10 +6531,15 @@ def Xform "BodyWithoutVisuals" (
         result = builder.add_usd(stage)
         shape = result["path_shape_map"]["/Body/Cube"]
 
-        np.testing.assert_allclose(builder.shape_color[shape], [0.4, 0.6, 0.1], atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(
+            builder.shape_color[shape],
+            linear_to_srgb_rgb((0.4, 0.6, 0.1)),
+            atol=1e-6,
+            rtol=1e-6,
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_preview_surface_srgb_base_color_converts_to_linear(self):
+    def test_preview_surface_srgb_base_color_preserves_display_color(self):
         from pxr import Gf
 
         stage = self._create_stage_with_pbr_collision_mesh(
@@ -6550,13 +6555,13 @@ def Xform "BodyWithoutVisuals" (
 
         np.testing.assert_allclose(
             builder.shape_color[shape],
-            srgb_to_linear_rgb((0.5, 0.25, 0.1)),
+            (0.5, 0.25, 0.1),
             atol=1e-6,
             rtol=1e-6,
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_display_color_srgb_metadata_converts_to_linear(self):
+    def test_display_color_srgb_metadata_preserves_display_color(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -6579,13 +6584,13 @@ def Xform "BodyWithoutVisuals" (
 
         np.testing.assert_allclose(
             builder.shape_color[shape],
-            srgb_to_linear_rgb((0.5, 0.25, 0.1)),
+            (0.5, 0.25, 0.1),
             atol=1e-6,
             rtol=1e-6,
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_material_input_srgb_base_color_converts_to_linear(self):
+    def test_material_input_srgb_base_color_preserves_display_color(self):
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
@@ -6611,13 +6616,13 @@ def Xform "BodyWithoutVisuals" (
 
         np.testing.assert_allclose(
             builder.shape_color[shape],
-            srgb_to_linear_rgb((0.5, 0.25, 0.1)),
+            (0.5, 0.25, 0.1),
             atol=1e-6,
             rtol=1e-6,
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_omnipbr_diffuse_tint_srgb_inputs_convert_before_multiply(self):
+    def test_omnipbr_diffuse_tint_srgb_inputs_store_display_color_after_multiply(self):
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
@@ -6647,7 +6652,10 @@ def Xform "BodyWithoutVisuals" (
         result = builder.add_usd(stage)
         shape = result["path_shape_map"]["/Body/Cube"]
 
-        expected = np.asarray(srgb_to_linear_rgb((0.8, 0.6, 0.4))) * np.asarray(srgb_to_linear_rgb((0.5, 1.0, 0.25)))
+        expected_linear = np.asarray(srgb_to_linear_rgb((0.8, 0.6, 0.4))) * np.asarray(
+            srgb_to_linear_rgb((0.5, 1.0, 0.25))
+        )
+        expected = linear_to_srgb_rgb(expected_linear)
         np.testing.assert_allclose(builder.shape_color[shape], expected, atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -6665,7 +6673,12 @@ def Xform "BodyWithoutVisuals" (
 
         mesh = builder.shape_source[collision_shape]
         self.assertIsNotNone(mesh)
-        np.testing.assert_allclose(np.array(mesh.color), np.array([0.2, 0.4, 0.6]), atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(
+            np.array(mesh.color),
+            np.array(linear_to_srgb_rgb((0.2, 0.4, 0.6))),
+            atol=1e-6,
+            rtol=1e-6,
+        )
         self.assertAlmostEqual(mesh.roughness, 0.35, places=6)
         self.assertAlmostEqual(mesh.metallic, 0.75, places=6)
 

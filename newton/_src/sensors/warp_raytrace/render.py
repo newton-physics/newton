@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian, GeoType
-from ...utils.color import linear_to_srgb_wp
+from ...utils.color import linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
 from .types import MeshData, RenderOrder, TextureData
 
@@ -173,7 +173,7 @@ def create_kernel(
 
             albedo_color = wp.vec3f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-                albedo_color = shape_colors[closest_hit.shape_index]
+                albedo_color = srgb_to_linear_wp(shape_colors[closest_hit.shape_index])
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]
