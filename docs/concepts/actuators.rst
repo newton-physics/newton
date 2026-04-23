@@ -38,7 +38,7 @@ An actuator is composed from three building blocks, applied in this order:
    ├── Delay       (optional: delays command inputs by N actuator timesteps)
    ├── Controller  (control law that computes raw effort)
    └── Clamping[]  (clamps raw effort based on motor-limit modeling)
-       ├── ClampingMaxEffort        (±max_effort box clamp)
+       ├── ClampingMaxEffort        (±max_effort clamp)
        ├── ClampingDCMotor         (velocity-dependent saturation)
        └── ClampingPositionBased   (position-dependent lookup table)
 
@@ -203,7 +203,7 @@ See the API documentation for each controller's control-law equations.
 Clamping
 ^^^^^^^^
 
-* :class:`ClampingMaxEffort` — symmetric box clamp to ±max_effort per actuator.
+* :class:`ClampingMaxEffort` — symmetric clamp to ±max_effort per actuator.
 * :class:`ClampingDCMotor` — velocity-dependent effort saturation using the DC
   motor effort-speed characteristic.
 * :class:`ClampingPositionBased` — position-dependent effort limits via
