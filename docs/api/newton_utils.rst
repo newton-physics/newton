@@ -33,12 +33,10 @@ newton.utils
    create_straight_cable_points_and_quaternions
    download_asset
    event_scope
-   linear_to_srgb_rgb
    load_texture
    normalize_texture
    plot_graph
    remesh_mesh
    run_benchmark
    solidify_mesh
-   srgb_to_linear_rgb
    string_to_warp
