@@ -242,29 +242,215 @@ def make_contact_key(shape_a: int, shape_b: int, bin_id: int) -> wp.uint64:
     return key
 
 
-@wp.func
-def make_contact_value(score: float, contact_id: int) -> wp.uint64:
-    """Pack score and contact_id into hashtable value for atomic max.
+# ---------------------------------------------------------------------------
+# Contact value packing
+# ---------------------------------------------------------------------------
+# Two packing modes exist — **fast** (default) and **deterministic**.
+# Each variant is a standalone ``@wp.func``.  The dispatching wrappers
+# ``make_contact_value`` and ``unpack_contact_id`` select the variant
+# at runtime based on a ``deterministic`` flag passed from
+# ``GlobalContactReducerData.deterministic``, making the packing mode
+# a per-reducer property instead of process-global state.
+#
+# **Fast** — ``(float_flip(score) << 32) | contact_id``.
+#   Full 32-bit score precision, no fingerprint. Contact_id in low 32 bits.
+#
+# **Deterministic** — ``(float_flip(score)>>10 << 42) | (fp << 20) | (id & 0xFFFFF)``.
+#   22-bit score, 22-bit fingerprint tiebreaker, 20-bit contact_id.
+# ---------------------------------------------------------------------------
 
-    High 32 bits: float_flip(score) - makes floats comparable as unsigned ints
-    Low 32 bits: contact_id - identifies which contact in the buffer
+# 22-bit fingerprint is wide enough to distinguish any two contacts that share
+# the same truncated score within a single reduction slot.  The remaining 20
+# bits for contact_id support up to 1,048,575 buffered contacts.
+FINGERPRINT_BITS = wp.constant(wp.uint64(22))
+CONTACT_ID_BITS = wp.constant(wp.uint64(20))
+CONTACT_ID_MASK = wp.constant(wp.uint64((1 << 20) - 1))
+FINGERPRINT_MASK = wp.constant(wp.uint64((1 << 22) - 1))
+# Plain Python int (not wp.constant) because it is used inside wp.static()
+# which requires a Python-level value for compile-time evaluation.
+SCORE_SHIFT = 10
+
+
+# -- Fast (non-deterministic) variants -------------------------------------
+
+
+@wp.func
+def _make_contact_value_fast(score: float, fingerprint: int, contact_id: int) -> wp.uint64:
+    """Pack score and contact_id into a uint64 for ``atomic_max`` (fast path).
+
+    ::
+
+        63                  32 31                 0
+        ┌─────────────────────┬────────────────────┐
+        │  float_flip(score)  │    contact_id      │
+        │     (32 bits)       │    (32 bits)        │
+        └─────────────────────┴────────────────────┘
+
+    Full 32-bit IEEE-754 precision for the score.  The fingerprint argument
+    is accepted for signature compatibility but ignored — ties are broken
+    by contact_id (non-deterministic, but correct).
 
     Args:
-        score: Spatial projection score (higher is better)
-        contact_id: Index into the contact buffer
-
-    Returns:
-        64-bit value for hashtable (atomic max will select highest score)
+        score: Spatial projection score or negated depth [m]. Higher is better.
+        fingerprint: Ignored in this variant (kept for signature compatibility).
+        contact_id: Index into the contact buffer (from ``atomic_add``).
     """
     return (wp.uint64(float_flip(score)) << wp.uint64(32)) | wp.uint64(contact_id)
+
+
+@wp.func
+def _make_preprune_probe_fast(score: float, fingerprint: int) -> wp.uint64:
+    """Pre-prune ceiling probe (fast path).
+
+    Packs the full-precision score with ``0xFFFFFFFF`` in the contact_id
+    field, creating the maximum possible value for this score.  The
+    comparison ``stored < probe`` is true whenever the stored value can
+    be beaten, regardless of what contact_id the new contact receives.
+    """
+    return (wp.uint64(float_flip(score)) << wp.uint64(32)) | wp.uint64(0xFFFFFFFF)
 
 
 @wp.func_native("""
 return static_cast<int32_t>(packed & 0xFFFFFFFFull);
 """)
-def unpack_contact_id(packed: wp.uint64) -> int:
-    """Extract contact_id from packed value."""
+def _unpack_contact_id_fast(packed: wp.uint64) -> int:
+    """Extract contact_id (low 32 bits) — fast variant."""
     ...
+
+
+# -- Deterministic variants ------------------------------------------------
+
+
+@wp.func
+def _make_contact_value_det(score: float, fingerprint: int, contact_id: int) -> wp.uint64:
+    """Pack score, fingerprint, and contact_id into a uint64 for ``atomic_max``.
+
+    This packing enables **deterministic contact reduction**: multiple GPU
+    threads propose contacts for the same reduction slot via ``atomic_max``.
+    By encoding a deterministic fingerprint (derived from geometry) above
+    the non-deterministic contact_id, the ``atomic_max`` winner is always
+    the same regardless of thread scheduling.
+
+    ::
+
+        63        42 41        20 19          0
+        ┌──────────┬────────────┬──────────────┐
+        │  score   │ fingerprint│  contact_id  │
+        │ (22 bit) │  (22 bit)  │   (20 bit)   │
+        └──────────┴────────────┴──────────────┘
+
+    **Score (bits 63-42, 22 bits)** — ``float_flip(score) >> 10``.
+    ``float_flip`` reinterprets the IEEE-754 float as an order-preserving
+    uint32 (see http://stereopsis.com/radix.html).  The right-shift by
+    ``SCORE_SHIFT`` (10) discards the 10 least-significant bits of the
+    mantissa, keeping 1 sign-equivalent + 8 exponent + 13 mantissa = 22
+    bits.  This gives ~2^-13 ≈ 1.2e-4 relative precision — sufficient to
+    distinguish contacts whose spatial projection scores or negated depths
+    differ by more than ~0.1 mm at 1 m scale.
+
+    **Fingerprint (bits 41-20, 22 bits)** — deterministic tiebreaker
+    derived from geometry (edge index | mode/source tag bits).  When two
+    contacts have the same truncated score, the fingerprint breaks the tie
+    so that ``atomic_max`` always picks the same winner regardless of
+    thread scheduling.  Effective limits depend on upstream bit consumption:
+
+    - Mesh-triangle contacts: ``(tri_idx << 1) | 1`` — 21 effective bits
+      for ``tri_idx`` (~2M triangles).
+    - SDF contacts: ``(edge_idx << 2) | (mode << 1)`` — 20 effective bits
+      for ``edge_idx`` (~1M edges).
+
+    Meshes exceeding these limits will overflow the fingerprint field,
+    causing non-deterministic tiebreaking for those contacts.
+
+    **Contact ID (bits 19-0, 20 bits)** — buffer slot assigned by
+    ``atomic_add``.  20 bits supports up to 1,048,575 buffered contacts.
+    Non-deterministic, but only matters when both score and fingerprint
+    are identical, which requires two geometrically identical contacts —
+    an impossible case.
+
+    The cascade ``score > fingerprint > contact_id`` means ``atomic_max``
+    on this uint64 selects the contact with the best score, breaking ties
+    deterministically via fingerprint.
+
+    Args:
+        score: Spatial projection score or negated depth [m]. Higher is better.
+        fingerprint: Deterministic contact identifier (e.g. ``(edge_idx << 2) | (mode << 1)``).
+        contact_id: Index into the contact buffer (from ``atomic_add``).
+    """
+    return (
+        (wp.uint64(float_flip(score) >> wp.uint32(wp.static(SCORE_SHIFT))) << wp.uint64(42))
+        | ((wp.uint64(fingerprint) & FINGERPRINT_MASK) << CONTACT_ID_BITS)
+        | (wp.uint64(contact_id) & CONTACT_ID_MASK)
+    )
+
+
+@wp.func
+def _make_preprune_probe_det(score: float, fingerprint: int) -> wp.uint64:
+    """Deterministic pre-prune probe for ``export_and_reduce_contact_centered``.
+
+    Packs the score and fingerprint with ``CONTACT_ID_MASK`` (all 1s) in the
+    contact_id field, creating the *ceiling* value for this (score, fingerprint)
+    pair.  The pre-prune comparison ``stored < probe`` is then true whenever
+    the stored value can be beaten by a contact with this score and fingerprint,
+    regardless of what ``contact_id`` it receives from ``atomic_add``.
+
+    This makes the pre-prune decision depend only on deterministic quantities
+    (score and fingerprint), never on the non-deterministic contact_id.
+    """
+    return (
+        (wp.uint64(float_flip(score) >> wp.uint32(wp.static(SCORE_SHIFT))) << wp.uint64(42))
+        | ((wp.uint64(fingerprint) & FINGERPRINT_MASK) << CONTACT_ID_BITS)
+        | CONTACT_ID_MASK
+    )
+
+
+@wp.func_native("""
+return static_cast<int32_t>(packed & 0xFFFFFull);
+""")
+def _unpack_contact_id_det(packed: wp.uint64) -> int:
+    """Extract contact_id (low 20 bits) — deterministic variant."""
+    ...
+
+
+# -- Per-reducer dispatching functions -------------------------------------
+# These functions dispatch between fast and deterministic variants based on
+# a ``deterministic`` flag, making the packing mode a per-reducer property
+# instead of process-global state.
+
+
+@wp.func
+def make_contact_value(score: float, fingerprint: int, contact_id: int, deterministic: int) -> wp.uint64:
+    """Pack score, fingerprint, and contact_id into a uint64 for ``atomic_max``.
+
+    Dispatches between fast and deterministic packing based on the
+    ``deterministic`` flag.  See :func:`_make_contact_value_fast` and
+    :func:`_make_contact_value_det` for the two packing layouts.
+
+    Args:
+        score: Spatial projection score or negated depth [m]. Higher is better.
+        fingerprint: Deterministic contact identifier (ignored in fast mode).
+        contact_id: Index into the contact buffer (from ``atomic_add``).
+        deterministic: Non-zero to use deterministic packing.
+    """
+    if deterministic != 0:
+        return _make_contact_value_det(score, fingerprint, contact_id)
+    return _make_contact_value_fast(score, fingerprint, contact_id)
+
+
+@wp.func
+def unpack_contact_id(packed: wp.uint64, deterministic: int) -> int:
+    """Extract contact_id from a packed value.
+
+    Dispatches between fast (low 32 bits) and deterministic (low 20 bits)
+    unpacking based on the ``deterministic`` flag.
+
+    Args:
+        packed: Packed uint64 value from ``make_contact_value``.
+        deterministic: Non-zero to use deterministic unpacking.
+    """
+    if deterministic != 0:
+        return _unpack_contact_id_det(packed)
+    return _unpack_contact_id_fast(packed)
 
 
 @wp.func
@@ -337,6 +523,11 @@ class GlobalContactReducerData:
     contact_count: wp.array[wp.int32]
     capacity: int
 
+    # Deterministic fingerprint per contact (triangle/edge/vertex index).
+    # Used as a deterministic tiebreaker in make_contact_value so that
+    # atomic_max picks the same winner regardless of thread scheduling.
+    contact_fingerprints: wp.array[wp.int32]
+
     # Optional hydroelastic data
     # contact_area: area of contact surface element (per contact)
     contact_area: wp.array[wp.float32]
@@ -376,6 +567,12 @@ class GlobalContactReducerData:
     ht_capacity: int
     ht_values_per_key: int
 
+    # When non-zero, replace the speculative pre-prune probe with a
+    # deterministic variant (make_preprune_probe) so that the prune
+    # decision depends only on score and fingerprint, never on the
+    # non-deterministic contact_id.
+    deterministic: int
+
 
 @wp.kernel(enable_backward=False)
 def _clear_active_kernel(
@@ -393,21 +590,34 @@ def _clear_active_kernel(
     agg_moment_unreduced: wp.array[wp.float32],
     agg_moment_reduced: wp.array[wp.float32],
     agg_moment2_reduced: wp.array[wp.float32],
+    # Counter arrays to zero (merged from _zero_count_and_contacts_kernel)
+    contact_count: wp.array[wp.int32],
+    ht_insert_failures: wp.array[wp.int32],
     ht_capacity: int,
     values_per_key: int,
     num_threads: int,
 ):
-    """Kernel to clear active hashtable entries (keys, values, and hydroelastic aggregates).
+    """Clear active hashtable entries, values, hydroelastic aggregates, and counters.
 
     Uses grid-stride loop for efficient thread utilization.
     Each thread handles one value slot, with key and aggregate clearing done once per entry.
+    Thread 0 also zeros contact_count and ht_insert_failures (no other thread in this
+    kernel reads them, so there is no race). The active-slots count stored at
+    ``ht_active_slots[ht_capacity]`` must NOT be reset here: every thread reads it
+    at the top of the kernel and we have no cross-block barrier, so a follow-up
+    kernel launch (``_zero_active_count_kernel``) is used to zero it safely.
 
     Memory layout for values is slot-major (SoA):
     [slot0_entry0, slot0_entry1, ..., slot0_entryN, slot1_entry0, ...]
     """
     tid = wp.tid()
 
-    # Read count from GPU - stored at active_slots[capacity]
+    if tid == 0:
+        contact_count[0] = 0
+        ht_insert_failures[0] = 0
+
+    # Read count from GPU - stored at active_slots[capacity].
+    # All threads read this before it is modified by the follow-up zeroing kernel.
     count = ht_active_slots[ht_capacity]
 
     # Total work items: count entries * values_per_key slots per entry
@@ -444,16 +654,18 @@ def _clear_active_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _zero_count_and_contacts_kernel(
+def _zero_active_count_kernel(
     ht_active_slots: wp.array[wp.int32],
-    contact_count: wp.array[wp.int32],
-    ht_insert_failures: wp.array[wp.int32],
     ht_capacity: int,
 ):
-    """Zero the active slots count and contact count."""
+    """Zero the active-slots count after ``_clear_active_kernel`` has finished.
+
+    Launched as a separate kernel to obtain a grid-wide ordering guarantee:
+    every thread of ``_clear_active_kernel`` has retired before this kernel
+    starts, so we cannot race with any in-flight reads of
+    ``ht_active_slots[ht_capacity]``.
+    """
     ht_active_slots[ht_capacity] = 0
-    contact_count[0] = 0
-    ht_insert_failures[0] = 0
 
 
 class GlobalContactReducer:
@@ -510,6 +722,7 @@ class GlobalContactReducer:
         device: str | None = None,
         store_hydroelastic_data: bool = False,
         store_moment_data: bool = False,
+        deterministic: bool = False,
     ):
         """Initialize the global contact reducer.
 
@@ -519,10 +732,22 @@ class GlobalContactReducer:
             store_hydroelastic_data: If True, allocate arrays for contact_area and entry_k_eff
             store_moment_data: If True, allocate moment accumulator arrays for friction
                 moment matching. Only needed when ``moment_matching=True``.
+            deterministic: If True, use deterministic fingerprint-based tiebreaking
+                in contact reduction and replace the pre-prune probe with a
+                deterministic variant.
         """
+        max_det_contacts = 1 << int(CONTACT_ID_BITS)
+        if deterministic and capacity > max_det_contacts:
+            raise ValueError(
+                f"Deterministic contact packing supports at most {max_det_contacts} "
+                f"buffered contacts ({int(CONTACT_ID_BITS)}-bit contact_id), "
+                f"but capacity={capacity}. Reduce max_triangle_pairs or disable "
+                f"deterministic mode."
+            )
         self.capacity = capacity
         self.device = device
         self.store_hydroelastic_data = store_hydroelastic_data
+        self.deterministic = deterministic
 
         self.values_per_key = NUM_SPATIAL_DIRECTIONS + 1
 
@@ -530,6 +755,7 @@ class GlobalContactReducer:
         self.position_depth = wp.zeros(capacity, dtype=wp.vec4, device=device)
         self.normal = wp.zeros(capacity, dtype=wp.vec2, device=device)  # Octahedral-encoded normals
         self.shape_pairs = wp.zeros(capacity, dtype=wp.vec2i, device=device)
+        self.contact_fingerprints = wp.zeros(capacity, dtype=wp.int32, device=device)
 
         # Optional hydroelastic data arrays
         if store_hydroelastic_data:
@@ -602,13 +828,23 @@ class GlobalContactReducer:
     def clear_active(self):
         """Clear only the active entries (efficient for sparse usage).
 
-        Uses a combined kernel that clears both hashtable keys, values, and aggregate force,
-        followed by a small kernel to zero the counters.
+        Uses two kernel launches (mirroring ``HashTable.clear_active``):
+
+        1. ``_clear_active_kernel`` clears hashtable keys, values, hydroelastic
+           aggregates, and per-step counters (``contact_count``,
+           ``ht_insert_failures``).
+        2. ``_zero_active_count_kernel`` zeroes ``ht_active_slots[ht_capacity]``.
+
+        The second kernel is needed because every thread of the first kernel
+        reads ``ht_active_slots[ht_capacity]`` to size its grid-stride loop,
+        and CUDA provides no intra-launch grid-wide barrier. Zeroing that slot
+        from inside the first kernel would race with threads in
+        later-scheduled blocks (or even later-issued warps/lanes under
+        independent thread scheduling), causing some entries to be skipped.
         """
         # Use fixed thread count for efficient GPU utilization
         num_threads = min(1024, self.hashtable.capacity)
 
-        # Single kernel clears keys, values, and hydroelastic aggregates for active entries
         wp.launch(
             _clear_active_kernel,
             dim=num_threads,
@@ -625,23 +861,21 @@ class GlobalContactReducer:
                 self.agg_moment_unreduced,
                 self.agg_moment_reduced,
                 self.agg_moment2_reduced,
+                self.contact_count,
+                self.ht_insert_failures,
                 self.hashtable.capacity,
                 self.values_per_key,
                 num_threads,
             ],
             device=self.device,
         )
-
-        # Zero the counts in a separate kernel
+        # Zero the active-slots count in a separate kernel so the write is
+        # ordered (by the CUDA kernel-launch boundary) after every read in
+        # `_clear_active_kernel`.
         wp.launch(
-            _zero_count_and_contacts_kernel,
+            _zero_active_count_kernel,
             dim=1,
-            inputs=[
-                self.hashtable.active_slots,
-                self.contact_count,
-                self.ht_insert_failures,
-                self.hashtable.capacity,
-            ],
+            inputs=[self.hashtable.active_slots, self.hashtable.capacity],
             device=self.device,
         )
 
@@ -657,6 +891,7 @@ class GlobalContactReducer:
         data.shape_pairs = self.shape_pairs
         data.contact_count = self.contact_count
         data.capacity = self.capacity
+        data.contact_fingerprints = self.contact_fingerprints
         data.contact_area = self.contact_area
         data.contact_nbin_entry = self.contact_nbin_entry
         data.entry_k_eff = self.entry_k_eff
@@ -671,6 +906,7 @@ class GlobalContactReducer:
         data.ht_insert_failures = self.ht_insert_failures
         data.ht_capacity = self.hashtable.capacity
         data.ht_values_per_key = self.values_per_key
+        data.deterministic = 1 if self.deterministic else 0
         return data
 
 
@@ -681,6 +917,7 @@ def export_contact_to_buffer(
     position: wp.vec3,
     normal: wp.vec3,
     depth: float,
+    fingerprint: int,
     reducer_data: GlobalContactReducerData,
 ) -> int:
     """Store a contact in the buffer without reduction.
@@ -691,6 +928,7 @@ def export_contact_to_buffer(
         position: Contact position in world space
         normal: Contact normal
         depth: Penetration depth (negative = penetrating)
+        fingerprint: Deterministic contact identifier (e.g. triangle/edge/vertex index)
         reducer_data: GlobalContactReducerData with all arrays
 
     Returns:
@@ -706,6 +944,7 @@ def export_contact_to_buffer(
     reducer_data.position_depth[contact_id] = wp.vec4(position[0], position[1], position[2], depth)
     reducer_data.normal[contact_id] = encode_oct(normal)
     reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
+    reducer_data.contact_fingerprints[contact_id] = fingerprint
 
     return contact_id
 
@@ -746,6 +985,7 @@ def reduce_contact_in_hashtable(
     pd = reducer_data.position_depth[contact_id]
     normal = decode_oct(reducer_data.normal[contact_id])
     pair = reducer_data.shape_pairs[contact_id]
+    fingerprint = reducer_data.contact_fingerprints[contact_id]
 
     position = wp.vec3(pd[0], pd[1], pd[2])
     depth = pd[3]
@@ -775,11 +1015,11 @@ def reduce_contact_in_hashtable(
             if use_beta:
                 dir_2d = get_spatial_direction_2d(dir_i)
                 score = wp.dot(pos_2d, dir_2d)
-                value = make_contact_value(score, contact_id)
+                value = make_contact_value(score, fingerprint, contact_id, reducer_data.deterministic)
                 slot_id = dir_i
                 reduction_update_slot(entry_idx, slot_id, value, reducer_data.ht_values, ht_capacity)
 
-        max_depth_value = make_contact_value(-depth, contact_id)
+        max_depth_value = make_contact_value(-depth, fingerprint, contact_id, reducer_data.deterministic)
         reduction_update_slot(
             entry_idx, wp.static(NUM_SPATIAL_DIRECTIONS), max_depth_value, reducer_data.ht_values, ht_capacity
         )
@@ -809,7 +1049,7 @@ def reduce_contact_in_hashtable(
     voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
     if voxel_entry_idx >= 0:
         # Use -depth so atomic_max selects most penetrating (most negative depth)
-        voxel_value = make_contact_value(-depth, contact_id)
+        voxel_value = make_contact_value(-depth, fingerprint, contact_id, reducer_data.deterministic)
         reduction_update_slot(voxel_entry_idx, voxel_local_slot, voxel_value, reducer_data.ht_values, ht_capacity)
     else:
         wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
@@ -822,6 +1062,7 @@ def export_and_reduce_contact(
     position: wp.vec3,
     normal: wp.vec3,
     depth: float,
+    fingerprint: int,
     reducer_data: GlobalContactReducerData,
     beta: float,
     shape_transform: wp.array[wp.transform],
@@ -830,7 +1071,7 @@ def export_and_reduce_contact(
     shape_voxel_resolution: wp.array[wp.vec3i],
 ) -> int:
     """Export contact to buffer and register in hashtable for reduction."""
-    contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, depth, reducer_data)
+    contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, depth, fingerprint, reducer_data)
 
     if contact_id >= 0:
         reduce_contact_in_hashtable(
@@ -853,6 +1094,7 @@ def export_and_reduce_contact_centered(
     position: wp.vec3,
     normal: wp.vec3,
     depth: float,
+    fingerprint: int,
     centered_position: wp.vec3,
     X_ws_voxel_shape: wp.transform,
     aabb_lower_voxel: wp.vec3,
@@ -879,6 +1121,7 @@ def export_and_reduce_contact_centered(
         position: World-space contact position (stored in buffer)
         normal: Contact normal (a-to-b)
         depth: Penetration depth
+        fingerprint: Deterministic contact identifier (e.g. edge index)
         centered_position: Midpoint-centered position for spatial projection
         X_ws_voxel_shape: World-to-local transform for voxel computation
         aabb_lower_voxel: Local AABB lower for voxel grid
@@ -897,11 +1140,16 @@ def export_and_reduce_contact_centered(
     entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
 
     # === Pre-prune normal bin: non-atomic reads ===
+    # In deterministic mode we use _make_preprune_probe_det (score + fingerprint +
+    # max contact_id) so the prune decision never depends on the non-deterministic
+    # contact_id.  In non-deterministic mode we use the cheaper floor probe.
     might_win = False
 
     if entry_idx >= 0:
-        # Check max-depth slot first (cheapest — no direction computation)
-        max_depth_probe = make_contact_value(-depth, 0)
+        if reducer_data.deterministic != 0:
+            max_depth_probe = _make_preprune_probe_det(-depth, fingerprint)
+        else:
+            max_depth_probe = _make_contact_value_fast(-depth, 0, 0)
         if reducer_data.ht_values[wp.static(NUM_SPATIAL_DIRECTIONS) * ht_capacity + entry_idx] < max_depth_probe:
             might_win = True
 
@@ -910,7 +1158,10 @@ def export_and_reduce_contact_centered(
                 if not might_win:
                     dir_2d = get_spatial_direction_2d(dir_i)
                     score = wp.dot(pos_2d, dir_2d)
-                    probe = make_contact_value(score, 0)
+                    if reducer_data.deterministic != 0:
+                        probe = _make_preprune_probe_det(score, fingerprint)
+                    else:
+                        probe = _make_contact_value_fast(score, 0, 0)
                     if reducer_data.ht_values[dir_i * ht_capacity + entry_idx] < probe:
                         might_win = True
 
@@ -929,7 +1180,10 @@ def export_and_reduce_contact_centered(
     if not might_win:
         voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
         if voxel_entry_idx >= 0:
-            voxel_probe = make_contact_value(-depth, 0)
+            if reducer_data.deterministic != 0:
+                voxel_probe = _make_preprune_probe_det(-depth, fingerprint)
+            else:
+                voxel_probe = _make_contact_value_fast(-depth, 0, 0)
             if reducer_data.ht_values[voxel_local_slot * ht_capacity + voxel_entry_idx] < voxel_probe:
                 might_win = True
 
@@ -937,20 +1191,20 @@ def export_and_reduce_contact_centered(
         return -1
 
     # === Allocate buffer slot (only for contacts that might win) ===
-    contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, depth, reducer_data)
+    contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, depth, fingerprint, reducer_data)
     if contact_id < 0:
         return -1
 
-    # === Register in hashtable with real contact_id ===
+    # === Register in hashtable with fingerprint for deterministic tiebreaking ===
     if entry_idx >= 0:
         for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
             if use_beta:
                 dir_2d = get_spatial_direction_2d(dir_i)
                 score = wp.dot(pos_2d, dir_2d)
-                value = make_contact_value(score, contact_id)
+                value = make_contact_value(score, fingerprint, contact_id, reducer_data.deterministic)
                 reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
 
-        max_depth_value = make_contact_value(-depth, contact_id)
+        max_depth_value = make_contact_value(-depth, fingerprint, contact_id, reducer_data.deterministic)
         reduction_update_slot(
             entry_idx, wp.static(NUM_SPATIAL_DIRECTIONS), max_depth_value, reducer_data.ht_values, ht_capacity
         )
@@ -961,7 +1215,7 @@ def export_and_reduce_contact_centered(
     if voxel_entry_idx < 0:
         voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
     if voxel_entry_idx >= 0:
-        voxel_value = make_contact_value(-depth, contact_id)
+        voxel_value = make_contact_value(-depth, fingerprint, contact_id, reducer_data.deterministic)
         reduction_update_slot(voxel_entry_idx, voxel_local_slot, voxel_value, reducer_data.ht_values, ht_capacity)
     else:
         wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
@@ -1075,6 +1329,7 @@ def write_contact_to_reducer(
         position=position,
         normal=normal,
         depth=depth,
+        fingerprint=contact_data.sort_sub_key,
         reducer_data=reducer_data,
     )
 
@@ -1101,7 +1356,9 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
     # Define vector type for tracking exported contact IDs
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
-    @wp.kernel(enable_backward=False, module="unique")
+    _module = f"export_reduced_contacts_{writer_func.__name__}"
+
+    @wp.kernel(enable_backward=False, module=_module)
     def export_reduced_contacts_kernel(
         # Hashtable arrays
         ht_keys: wp.array[wp.uint64],
@@ -1111,6 +1368,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
         position_depth: wp.array[wp.vec4],
         normal: wp.array[wp.vec2],  # Octahedral-encoded
         shape_pairs: wp.array[wp.vec2i],
+        contact_fingerprints: wp.array[wp.int32],
         # Global dedup flags: one int per buffer contact, for cross-entry deduplication
         exported_flags: wp.array[wp.int32],
         # Shape data for extracting margin and effective radius
@@ -1122,6 +1380,8 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
         writer_data: Any,
         # Grid stride parameters
         total_num_threads: int,
+        # Packing mode (non-zero = deterministic 20-bit contact IDs)
+        deterministic: int,
     ):
         """Export reduced contacts to the writer.
 
@@ -1157,8 +1417,8 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                 if value == wp.uint64(0):
                     continue
 
-                # Extract contact ID from low 32 bits
-                contact_id = unpack_contact_id(value)
+                # Extract contact ID
+                contact_id = unpack_contact_id(value, deterministic)
 
                 # Skip if already exported within this entry
                 if is_contact_already_exported(contact_id, exported_ids, num_exported):
@@ -1207,6 +1467,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                 contact_data.shape_a = shape_a
                 contact_data.shape_b = shape_b
                 contact_data.gap_sum = gap_sum
+                contact_data.sort_sub_key = contact_fingerprints[contact_id]
 
                 # Call the writer function
                 writer_func(contact_data, writer_data, -1)
@@ -1315,4 +1576,5 @@ def mesh_triangle_contacts_to_reducer_kernel(
             margin_offset_a,
             margin_offset_b,
             reducer_data,
+            (tri_idx << 1) | 1,
         )

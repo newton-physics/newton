@@ -629,7 +629,7 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
     def test_00_nxn_sphere_on_plane_generates_contacts(self):
         """Sphere resting on a plane via NXN broadphase must produce contacts.
 
-        Validates that shape_collision_radius is populated correctly for
+        Validates that collision_radius is populated correctly for
         infinite planes (which need a large bounding-sphere radius for
         AABB-based broadphase modes to detect them).
         """

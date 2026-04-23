@@ -330,8 +330,6 @@ class _NarrowPhaseSetupMixin:
             contact_tangent=contact_tangent,
         )
 
-        wp.synchronize()
-
         count = contact_count.numpy()[0]
         return (
             count,

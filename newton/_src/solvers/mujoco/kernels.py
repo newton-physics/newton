@@ -27,9 +27,15 @@ vec11 = wp.types.vector(length=11, dtype=wp.float32)
 
 # Constants
 MJ_MINVAL = 2.220446049250313e-16
+MJ_MINMU = 1e-5
 
 
 # Utility functions
+@wp.func
+def safe_div(x: float, y: float) -> float:
+    return x / wp.where(y != 0.0, y, MJ_MINVAL)
+
+
 @wp.func
 def orthogonals(a: wp.vec3):
     y = wp.vec3(0.0, 1.0, 0.0)
@@ -122,7 +128,7 @@ def contact_params(
     geoms: wp.vec2i,
     worldid: int,
 ):
-    # See function contact_params in mujoco_warp, file collision_primitive.py
+    # See function contact_params in mujoco_warp, file collision_core.py
 
     g1 = geoms[0]
     g2 = geoms[1]
@@ -130,31 +136,38 @@ def contact_params(
     p1 = geom_priority[g1]
     p2 = geom_priority[g2]
 
-    solmix1 = geom_solmix[worldid, g1]
-    solmix2 = geom_solmix[worldid, g2]
+    condim1 = geom_condim[g1]
+    condim2 = geom_condim[g2]
 
-    mix = solmix1 / (solmix1 + solmix2)
-    mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
-    mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
-    mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
-    mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
+    if p1 > p2:
+        mix = 1.0
+        condim = condim1
+        resolved_friction = geom_friction[worldid, g1]
+    elif p2 > p1:
+        mix = 0.0
+        condim = condim2
+        resolved_friction = geom_friction[worldid, g2]
+    else:
+        solmix1 = geom_solmix[worldid, g1]
+        solmix2 = geom_solmix[worldid, g2]
+        mix = safe_div(solmix1, solmix1 + solmix2)
+        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
+        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
+        mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
+        condim = wp.max(condim1, condim2)
+        resolved_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
+
+    friction = vec5(
+        wp.max(MJ_MINMU, resolved_friction[0]),
+        wp.max(MJ_MINMU, resolved_friction[0]),
+        wp.max(MJ_MINMU, resolved_friction[1]),
+        wp.max(MJ_MINMU, resolved_friction[2]),
+        wp.max(MJ_MINMU, resolved_friction[2]),
+    )
 
     # Sum margins for consistency with thickness summing
     margin = geom_margin[worldid, g1] + geom_margin[worldid, g2]
     gap = geom_gap[worldid, g1] + geom_gap[worldid, g2]
-
-    condim1 = geom_condim[g1]
-    condim2 = geom_condim[g2]
-    condim = wp.where(p1 == p2, wp.max(condim1, condim2), wp.where(p1 > p2, condim1, condim2))
-
-    max_geom_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
-    friction = vec5(
-        max_geom_friction[0],
-        max_geom_friction[0],
-        max_geom_friction[1],
-        max_geom_friction[2],
-        max_geom_friction[2],
-    )
 
     if geom_solref[worldid, g1].x > 0.0 and geom_solref[worldid, g2].x > 0.0:
         solref = mix * geom_solref[worldid, g1] + (1.0 - mix) * geom_solref[worldid, g2]
@@ -631,17 +644,19 @@ def convert_warp_coords_to_mj_kernel(
 ):
     worldid, jntid = wp.tid()
 
+    joint_id = joints_per_world * worldid + jntid
+
     # Skip loop joints — they have no MuJoCo qpos/qvel entries
     q_i = mj_q_start[jntid]
     if q_i < 0:
         return
 
     qd_i = mj_qd_start[jntid]
-    type = joint_type[jntid]
-    wq_i = joint_q_start[joints_per_world * worldid + jntid]
-    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    jtype = joint_type[joint_id]
+    wq_i = joint_q_start[joint_id]
+    wqd_i = joint_qd_start[joint_id]
 
-    if type == JointType.FREE:
+    if jtype == JointType.FREE:
         # convert position components
         for i in range(3):
             qpos[worldid, q_i + i] = joint_q[wq_i + i]
@@ -670,7 +685,7 @@ def convert_warp_coords_to_mj_kernel(
         w_world = wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5])
 
         # Get CoM offset in world frame
-        child = joint_child[jntid]
+        child = joint_child[joint_id]
         com_local = body_com[child]
         com_world = wp.quat_rotate(rot, com_local)
 
@@ -689,7 +704,7 @@ def convert_warp_coords_to_mj_kernel(
         qvel[worldid, qd_i + 4] = w_body[1]
         qvel[worldid, qd_i + 5] = w_body[2]
 
-    elif type == JointType.BALL:
+    elif jtype == JointType.BALL:
         # change quaternion order from xyzw to wxyz
         ball_q = wp.quat(joint_q[wq_i], joint_q[wq_i + 1], joint_q[wq_i + 2], joint_q[wq_i + 3])
         ball_q_wxyz = quat_xyzw_to_wxyz(ball_q)
@@ -701,7 +716,7 @@ def convert_warp_coords_to_mj_kernel(
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
     else:
-        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
         for i in range(axis_count):
             ref = float(0.0)
             if dof_ref:
@@ -980,6 +995,184 @@ def update_connect_constraint_anchors_kernel(
     anchor = eq_constraint_anchor[newton_eq]
     q = connect_anchor2_q[newton_eq]
     t = connect_anchor2_t[newton_eq]
+    anchor2 = wp.quat_rotate(q, anchor) + t
+
+    data = eq_data_out[world, mjc_eq]
+    data[0] = anchor[0]
+    data[1] = anchor[1]
+    data[2] = anchor[2]
+    data[3] = anchor2[0]
+    data[4] = anchor2[1]
+    data[5] = anchor2[2]
+    eq_data_out[world, mjc_eq] = data
+
+
+@wp.kernel
+def update_jnt_connect_constraint_rel_body_poses_at_qref_kernel(
+    mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
+    joint_parent: wp.array[wp.int32],
+    joint_child: wp.array[wp.int32],
+    ref_body_q: wp.array[wp.transform],
+    # outputs
+    q_rel_out: wp.array2d[wp.quat],
+    t_rel_out: wp.array2d[wp.vec3],
+):
+    """Compute relative body transforms for joint-synthesized CONNECT constraints.
+
+    For each MuJoCo equality constraint that maps to a Newton joint (via
+    ``mjc_eq_to_newton_jnt``), computes ``q_rel`` and ``t_rel`` from the
+    reference body poses of the joint's parent and child bodies such that::
+
+        anchor2 = quat_rotate(q_rel, anchor1) + t_rel
+
+    where ``q_rel = inv(q_child) * q_parent`` and
+    ``t_rel = quat_rotate(inv(q_child), pos_parent - pos_child)``.
+
+    Unmapped entries (``newton_jnt < 0``) are skipped.
+
+    Args:
+        mjc_eq_to_newton_jnt: Mapping from MuJoCo ``[world, eq]`` to Newton
+            joint index, shape ``[world_count, neq]``.
+            Negative values indicate unmapped entries.
+        joint_parent: Parent body index per joint,
+            shape ``[joint_count]``, dtype ``wp.int32``.
+        joint_child: Child body index per joint,
+            shape ``[joint_count]``, dtype ``wp.int32``.
+        ref_body_q: Body transforms at the reference pose [m],
+            shape ``[body_count]``, dtype ``wp.transform``.
+        q_rel_out: *(output)* Relative rotation per ``[world, eq]``,
+            shape ``[world_count, neq]``, dtype ``wp.quat``.
+        t_rel_out: *(output)* Relative translation [m] per ``[world, eq]``,
+            shape ``[world_count, neq]``, dtype ``wp.vec3``.
+    """
+    world, mjc_eq = wp.tid()
+    newton_jnt = mjc_eq_to_newton_jnt[world, mjc_eq]
+    if newton_jnt < 0:
+        return
+
+    body1 = joint_parent[newton_jnt]
+    body2 = joint_child[newton_jnt]
+
+    # Extract world-space pose for body1 (parent)
+    if body1 == -1:
+        pos1 = wp.vec3(0.0, 0.0, 0.0)
+        q1 = wp.quat_identity()
+    else:
+        tf1 = ref_body_q[body1]
+        pos1 = wp.transform_get_translation(tf1)
+        q1 = wp.transform_get_rotation(tf1)
+
+    # Extract world-space pose for body2 (child)
+    if body2 == -1:
+        pos2 = wp.vec3(0.0, 0.0, 0.0)
+        q2 = wp.quat_identity()
+    else:
+        tf2 = ref_body_q[body2]
+        pos2 = wp.transform_get_translation(tf2)
+        q2 = wp.transform_get_rotation(tf2)
+
+    # q_rel = inv(q_child) * q_parent
+    # t_rel = quat_rotate(inv(q_child), pos_parent - pos_child)
+    q2_inv = wp.quat_inverse(q2)
+    q_rel_out[world, mjc_eq] = q2_inv * q1
+    t_rel_out[world, mjc_eq] = wp.quat_rotate(q2_inv, pos1 - pos2)
+
+
+@wp.kernel
+def recompute_jnt_eq_anchor1_kernel(
+    mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
+    has_axis_offset: wp.array2d[wp.int32],
+    axis_offset_distance: float,
+    joint_X_p: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_qd_start: wp.array[wp.int32],
+    # outputs
+    jnt_eq_anchor1: wp.array2d[wp.vec3],
+):
+    """Recompute body1-local anchor positions for joint-synthesized CONNECT constraints.
+
+    For each mapped ``[world, eq]`` entry, reads the translation from the
+    joint's parent transform (``joint_X_p``).  When ``has_axis_offset`` is
+    set, adds ``axis_offset_distance`` along the hinge axis rotated into
+    the parent body frame.
+
+    Args:
+        mjc_eq_to_newton_jnt: Mapping from MuJoCo ``[world, eq]`` to Newton
+            joint index, shape ``[world_count, neq]``.
+            Negative values indicate unmapped entries.
+        has_axis_offset: ``1`` for the second hinge CONNECT that is offset
+            along the joint axis, ``0`` otherwise,
+            shape ``[world_count, neq]``.
+        axis_offset_distance: Distance [m] along the hinge axis for the
+            second CONNECT constraint point.
+        joint_X_p: Parent-body-local joint transform [m],
+            shape ``[joint_count]``, dtype ``wp.transform``.
+        joint_axis: Joint axis in joint-local frame,
+            shape ``[joint_dof_count]``, dtype ``wp.vec3``.
+        joint_qd_start: Start index into ``joint_axis`` for each joint,
+            shape ``[joint_count]``, dtype ``wp.int32``.
+        jnt_eq_anchor1: *(output)* Body1-local anchor [m] per
+            ``[world, eq]``, shape ``[world_count, neq]``,
+            dtype ``wp.vec3``.
+    """
+    world, mjc_eq = wp.tid()
+    newton_jnt = mjc_eq_to_newton_jnt[world, mjc_eq]
+    if newton_jnt < 0:
+        return
+
+    xform = joint_X_p[newton_jnt]
+    anchor = wp.transform_get_translation(xform)
+
+    if has_axis_offset[world, mjc_eq] != 0:
+        qd_start = joint_qd_start[newton_jnt]
+        axis_local = joint_axis[qd_start]
+        axis_parent = wp.quat_rotate(wp.transform_get_rotation(xform), axis_local)
+        anchor = anchor + axis_offset_distance * axis_parent
+
+    jnt_eq_anchor1[world, mjc_eq] = anchor
+
+
+@wp.kernel
+def update_jnt_connect_constraint_anchors_kernel(
+    mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
+    jnt_eq_anchor1: wp.array2d[wp.vec3],
+    jnt_eq_q_rel: wp.array2d[wp.quat],
+    jnt_eq_t_rel: wp.array2d[wp.vec3],
+    # output
+    eq_data_out: wp.array2d[vec11],
+):
+    """Write joint-synthesized CONNECT constraint anchors into MuJoCo ``eq_data``.
+
+    For each MuJoCo equality constraint that maps to a Newton joint,
+    copies ``anchor1`` [m] into ``eq_data[0:3]`` and computes::
+
+        anchor2 = quat_rotate(q_rel, anchor1) + t_rel
+
+    into ``eq_data[3:6]``. Unmapped entries (``newton_jnt < 0``) are skipped.
+
+    Args:
+        mjc_eq_to_newton_jnt: Mapping from MuJoCo ``[world, eq]`` to Newton
+            joint index, shape ``[world_count, neq]``.
+            Negative values indicate unmapped entries.
+        jnt_eq_anchor1: Pre-computed anchor on body1 [m] per ``[world, eq]``,
+            shape ``[world_count, neq]``, dtype ``wp.vec3``.
+        jnt_eq_q_rel: Relative rotation per ``[world, eq]``,
+            shape ``[world_count, neq]``, dtype ``wp.quat``.
+        jnt_eq_t_rel: Relative translation [m] per ``[world, eq]``,
+            shape ``[world_count, neq]``, dtype ``wp.vec3``.
+        eq_data_out: *(output)* MuJoCo equality constraint data,
+            shape ``[world_count, neq]``, dtype ``vec11``.
+            Slots ``[0:3]`` receive ``anchor1`` and ``[3:6]`` receive
+            ``anchor2``.
+    """
+    world, mjc_eq = wp.tid()
+    newton_jnt = mjc_eq_to_newton_jnt[world, mjc_eq]
+    if newton_jnt < 0:
+        return
+
+    anchor = jnt_eq_anchor1[world, mjc_eq]
+    q = jnt_eq_q_rel[world, mjc_eq]
+    t = jnt_eq_t_rel[world, mjc_eq]
     anchor2 = wp.quat_rotate(q, anchor) + t
 
     data = eq_data_out[world, mjc_eq]
@@ -2051,7 +2244,7 @@ def update_geom_properties_kernel(
     mjc_geom_to_newton_shape: wp.array2d[wp.int32],
     geom_type: wp.array[int],
     GEOM_TYPE_MESH: int,
-    geom_dataid: wp.array[int],
+    geom_dataid: wp.array2d[int],
     mesh_pos: wp.array[wp.vec3],
     mesh_quat: wp.array[wp.quat],
     shape_mu_torsional: wp.array[float],
@@ -2059,6 +2252,7 @@ def update_geom_properties_kernel(
     shape_geom_solimp: wp.array[vec5],
     shape_geom_solmix: wp.array[float],
     shape_margin: wp.array[float],
+    zero_margin: int,
     # outputs
     geom_friction: wp.array2d[wp.vec3f],
     geom_solref: wp.array2d[wp.vec2f],
@@ -2079,10 +2273,12 @@ def update_geom_properties_kernel(
     this internally based on the geometry, and Newton's shape_collision_radius
     is not compatible with MuJoCo's bounding sphere calculation.
 
-    Note: geom_margin is always updated from shape_margin (unconditionally,
-    unlike the optional solimp/solmix fields).  geom_gap is always set to 0
-    because Newton does not use MuJoCo's gap concept (inactive contacts have
-    no benefit when the collision pipeline runs every step).
+    Note: geom_gap is always set to 0 because Newton does not use MuJoCo's
+    gap concept.  geom_margin is zeroed when MuJoCo handles collisions
+    because mujoco_warp's NATIVECCD broadphase rejects non-zero margins at
+    put_model() time (#2106).  When Newton provides contacts, margins are
+    restored from shape_margin so that ``convert_newton_contacts_to_mjwarp_kernel``
+    can compute correct ``includemargin`` thresholds via ``contact_params``.
     """
     world, geom_idx = wp.tid()
 
@@ -2109,9 +2305,11 @@ def update_geom_properties_kernel(
     if shape_geom_solmix:
         geom_solmix[world, geom_idx] = shape_geom_solmix[shape_idx]
 
-    # update geom_margin from shape_margin, geom_gap always 0
     geom_gap[world, geom_idx] = 0.0
-    geom_margin[world, geom_idx] = shape_margin[shape_idx]
+    if zero_margin:
+        geom_margin[world, geom_idx] = 0.0
+    else:
+        geom_margin[world, geom_idx] = shape_margin[shape_idx]
 
     # update size
     geom_size[world, geom_idx] = shape_size[shape_idx]
@@ -2123,7 +2321,7 @@ def update_geom_properties_kernel(
 
     # check if this is a mesh geom and apply mesh transformation
     if geom_type[geom_idx] == GEOM_TYPE_MESH:
-        mesh_id = geom_dataid[geom_idx]
+        mesh_id = geom_dataid[world, geom_idx]
         mesh_p = mesh_pos[mesh_id]
         mesh_q = mesh_quat[mesh_id]
         mesh_tf = wp.transform(mesh_p, quat_wxyz_to_xyzw(mesh_q))
@@ -2445,17 +2643,19 @@ def convert_qfrc_actuator_from_mj_kernel(
     """
     worldid, jntid = wp.tid()
 
+    joint_id = joints_per_world * worldid + jntid
+
     # Skip loop joints — they have no MuJoCo DOF entries
     q_i = mj_q_start[jntid]
     if q_i < 0:
         return
 
     qd_i = mj_qd_start[jntid]
-    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    wqd_i = joint_qd_start[joint_id]
 
-    type = joint_type[jntid]
+    jtype = joint_type[joint_id]
 
-    if type == JointType.FREE:
+    if jtype == JointType.FREE:
         # MuJoCo qfrc_actuator for free joint:
         #   [f_x, f_y, f_z] = linear force at body origin (world frame)
         #   [τ_x, τ_y, τ_z] = torque in body frame
@@ -2483,7 +2683,7 @@ def convert_qfrc_actuator_from_mj_kernel(
         )
 
         # CoM offset in world frame
-        child = joint_child[jntid]
+        child = joint_child[joint_id]
         com_world = wp.quat_rotate(rot, body_com[child])
 
         # Rotate torque body -> world and shift reference origin -> CoM
@@ -2495,11 +2695,11 @@ def convert_qfrc_actuator_from_mj_kernel(
         qfrc_actuator[wqd_i + 3] = tau_world[0]
         qfrc_actuator[wqd_i + 4] = tau_world[1]
         qfrc_actuator[wqd_i + 5] = tau_world[2]
-    elif type == JointType.BALL:
+    elif jtype == JointType.BALL:
         for i in range(3):
             qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
     else:
-        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
         for i in range(axis_count):
             qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
 
