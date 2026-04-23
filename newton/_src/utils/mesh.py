@@ -1426,12 +1426,24 @@ def validate_triangle_mesh(
             the caller's frame.
     """
     vertices = np.asarray(vertices, dtype=float)
-    indices = np.asarray(indices, dtype=np.intp).reshape(-1, 3)
+    raw = np.asarray(indices, dtype=np.intp)
+    if raw.size > 0 and raw.ndim == 1 and raw.size % 3 != 0:
+        warnings.warn("Triangle index array length is not a multiple of 3.", stacklevel=stacklevel)
+        return
+    try:
+        indices = raw.reshape(-1, 3)
+    except ValueError:
+        warnings.warn("Triangle index array must be flat or have shape (N, 3).", stacklevel=stacklevel)
+        return
     n_verts = len(vertices)
     n_faces = len(indices)
 
     if n_faces == 0:
         warnings.warn("Cloth mesh has no triangles.", stacklevel=stacklevel)
+        return
+
+    if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
+        warnings.warn(f"Triangle indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
         return
 
     v0 = vertices[indices[:, 0]]
@@ -1532,11 +1544,24 @@ def validate_tet_mesh(
         stacklevel: Passed to :func:`warnings.warn`.
     """
     vertices = np.asarray(vertices, dtype=float)
-    indices = np.asarray(indices, dtype=np.intp).reshape(-1, 4)
+    raw = np.asarray(indices, dtype=np.intp)
+    if raw.size > 0 and raw.ndim == 1 and raw.size % 4 != 0:
+        warnings.warn("Tet index array length is not a multiple of 4.", stacklevel=stacklevel)
+        return
+    try:
+        indices = raw.reshape(-1, 4)
+    except ValueError:
+        warnings.warn("Tet index array must be flat or have shape (N, 4).", stacklevel=stacklevel)
+        return
     n_tets = len(indices)
 
     if n_tets == 0:
         warnings.warn("Soft mesh has no tetrahedra.", stacklevel=stacklevel)
+        return
+
+    n_verts = len(vertices)
+    if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
+        warnings.warn(f"Tet indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
         return
 
     v0 = vertices[indices[:, 0]]
@@ -1553,11 +1578,11 @@ def validate_tet_mesh(
 
     n_inverted = int(np.sum(vol < 0))
     if n_inverted > 0:
-        issues.append(f"{n_inverted}/{n_tets} inverted tetrahedron/a (negative volume)")
+        issues.append(f"{n_inverted}/{n_tets} inverted tetrahedron(s) (negative volume)")
 
     n_degen = int(np.sum(np.abs(vol) < min_volume))
     if n_degen > 0:
-        issues.append(f"{n_degen}/{n_tets} tetrahedron/a with volume < {min_volume} m\u00b3")
+        issues.append(f"{n_degen}/{n_tets} tetrahedron(s) with volume < {min_volume} m\u00b3")
 
     e01 = v1 - v0
     e02 = v2 - v0
@@ -1579,7 +1604,7 @@ def validate_tet_mesh(
     n_sliver = int(np.sum(eta < min_eta))
     if n_sliver > 0:
         issues.append(
-            f"{n_sliver}/{n_tets} sliver tetrahedron/a (shape quality eta < {min_eta}; worst: {float(eta.min()):.4f})"
+            f"{n_sliver}/{n_tets} sliver tetrahedron(s) (shape quality eta < {min_eta}; worst: {float(eta.min()):.4f})"
         )
 
     face_combos = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]

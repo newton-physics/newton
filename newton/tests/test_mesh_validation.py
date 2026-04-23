@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for mesh quality validation utilities."""
@@ -7,8 +7,12 @@ import unittest
 import warnings
 
 import numpy as np
+import warp as wp
 
+import newton
 from newton._src.utils.mesh import validate_tet_mesh, validate_triangle_mesh
+from newton.utils import validate_tet_mesh as public_validate_tet_mesh
+from newton.utils import validate_triangle_mesh as public_validate_triangle_mesh
 
 
 def _equilateral_triangle(scale: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
@@ -163,7 +167,9 @@ class TestValidateTriangleMesh(unittest.TestCase):
                 [0.5, 1e-3, 0.0],
             ]
         )
-        verts = np.vstack([good_verts, tiny_verts + [2, 0, 0], sliver_verts + [4, 0, 0]])
+        offset1 = np.array([2, 0, 0])
+        offset2 = np.array([4, 0, 0])
+        verts = np.vstack([good_verts, tiny_verts + offset1, sliver_verts + offset2])
         inds = np.array([[0, 1, 2], [3, 4, 5], [6, 7, 8]])
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -321,13 +327,132 @@ class TestValidateTetMesh(unittest.TestCase):
         self.assertNotIn("remeshing", str(w[0].message))
 
 
+class TestIndexValidation(unittest.TestCase):
+    def test_triangle_bad_index_count(self):
+        verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+        inds = np.array([0, 1], dtype=int)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_triangle_mesh(verts, inds)
+        self.assertEqual(len(w), 1)
+        self.assertIn("multiple of 3", str(w[0].message))
+
+    def test_triangle_out_of_range(self):
+        verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+        inds = np.array([[0, 1, 5]])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_triangle_mesh(verts, inds)
+        self.assertEqual(len(w), 1)
+        self.assertIn("out of range", str(w[0].message))
+
+    def test_triangle_negative_index(self):
+        verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+        inds = np.array([[0, 1, -1]])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_triangle_mesh(verts, inds)
+        self.assertEqual(len(w), 1)
+        self.assertIn("out of range", str(w[0].message))
+
+    def test_tet_bad_index_count(self):
+        verts, _ = _regular_tet(scale=0.1)
+        inds = np.array([0, 1, 2], dtype=int)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_tet_mesh(verts, inds)
+        self.assertEqual(len(w), 1)
+        self.assertIn("multiple of 4", str(w[0].message))
+
+    def test_tet_out_of_range(self):
+        verts, _ = _regular_tet(scale=0.1)
+        inds = np.array([[0, 1, 2, 99]])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_tet_mesh(verts, inds)
+        self.assertEqual(len(w), 1)
+        self.assertIn("out of range", str(w[0].message))
+
+
 class TestPublicExport(unittest.TestCase):
     def test_importable_from_newton_utils(self):
-        from newton.utils import validate_tet_mesh as vtm
-        from newton.utils import validate_triangle_mesh as vttm
+        self.assertIs(public_validate_triangle_mesh, validate_triangle_mesh)
+        self.assertIs(public_validate_tet_mesh, validate_tet_mesh)
 
-        self.assertTrue(callable(vtm))
-        self.assertTrue(callable(vttm))
+
+class TestBuilderIntegration(unittest.TestCase):
+    def test_add_cloth_mesh_default_no_warning(self):
+        builder = newton.ModelBuilder()
+        verts, inds = _equilateral_triangle(scale=0.1)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.add_cloth_mesh(
+                pos=wp.vec3(0, 0, 0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=wp.vec3(0, 0, 0),
+                vertices=verts.tolist(),
+                indices=inds.flatten().tolist(),
+                density=100.0,
+            )
+        quality_warnings = [wi for wi in w if "Mesh quality" in str(wi.message)]
+        self.assertEqual(len(quality_warnings), 0)
+
+    def test_add_cloth_mesh_validate_bad_mesh(self):
+        builder = newton.ModelBuilder()
+        verts = [[0, 0, 0], [1e-4, 0, 0], [0.5e-4, 1e-4, 0]]
+        inds = [0, 1, 2]
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.add_cloth_mesh(
+                pos=wp.vec3(0, 0, 0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=wp.vec3(0, 0, 0),
+                vertices=verts,
+                indices=inds,
+                density=100.0,
+                validate_mesh=True,
+            )
+        quality_warnings = [wi for wi in w if "Mesh quality" in str(wi.message)]
+        self.assertEqual(len(quality_warnings), 1)
+
+    def test_add_cloth_mesh_validate_good_mesh(self):
+        builder = newton.ModelBuilder()
+        verts, inds = _equilateral_triangle(scale=0.1)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.add_cloth_mesh(
+                pos=wp.vec3(0, 0, 0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=wp.vec3(0, 0, 0),
+                vertices=verts.tolist(),
+                indices=inds.flatten().tolist(),
+                density=100.0,
+                validate_mesh=True,
+            )
+        quality_warnings = [wi for wi in w if "Mesh quality" in str(wi.message)]
+        self.assertEqual(len(quality_warnings), 0)
+
+    def test_add_soft_mesh_validate_bad_mesh(self):
+        builder = newton.ModelBuilder()
+        verts, inds = _regular_tet(scale=0.1)
+        inds[0, 2], inds[0, 3] = inds[0, 3], inds[0, 2]
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.add_soft_mesh(
+                pos=wp.vec3(0, 0, 0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=wp.vec3(0, 0, 0),
+                vertices=verts.tolist(),
+                indices=inds.flatten().tolist(),
+                density=1000.0,
+                validate_mesh=True,
+            )
+        quality_warnings = [wi for wi in w if "Tet mesh quality" in str(wi.message)]
+        self.assertEqual(len(quality_warnings), 1)
 
 
 if __name__ == "__main__":
