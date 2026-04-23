@@ -210,7 +210,7 @@ class ModelBuilder:
         output_indices: list[list[int]]  # Per-actuator output indices
         args: list[dict[str, Any]]  # Per-actuator array params (scalar params in dict key)
 
-    @dataclass
+    @dataclass(slots=True)
     class ShapeConfig:
         """
         Represents the properties of a collision shape used in simulation.
