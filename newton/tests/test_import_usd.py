@@ -24,12 +24,6 @@ from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test
 devices = get_test_devices()
 
 
-def _reference_srgb_to_linear_rgb(color):
-    rgb = np.clip(np.asarray(color, dtype=np.float32).reshape(-1)[:3], 0.0, None)
-    linear = np.where(rgb <= 0.04045, rgb / 12.92, np.power((rgb + 0.055) / 1.055, 2.4))
-    return (float(linear[0]), float(linear[1]), float(linear[2]))
-
-
 def _reference_linear_to_srgb_rgb(color):
     rgb = np.clip(np.asarray(color, dtype=np.float32).reshape(-1)[:3], 0.0, None)
     srgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
@@ -6516,40 +6510,6 @@ def Xform "BodyWithoutVisuals" (
         return stage
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_omnipbr_diffuse_tint_multiplies_authored_base_color(self):
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        body = UsdGeom.Xform.Define(stage, "/Body")
-        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-
-        cube = UsdGeom.Cube.Define(stage, "/Body/Cube")
-        cube_prim = cube.GetPrim()
-        UsdPhysics.CollisionAPI.Apply(cube_prim)
-
-        material = UsdShade.Material.Define(stage, "/Materials/PBR")
-        shader = UsdShade.Shader.Define(stage, "/Materials/PBR/Shader")
-        shader.CreateIdAttr("OmniPBR")
-        shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set((0.8, 0.6, 0.4))
-        shader.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f).Set((0.5, 1.0, 0.25))
-        material.CreateSurfaceOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
-        UsdShade.MaterialBindingAPI.Apply(cube_prim).Bind(material)
-
-        builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
-        shape = result["path_shape_map"]["/Body/Cube"]
-
-        np.testing.assert_allclose(
-            builder.shape_color[shape],
-            _reference_linear_to_srgb_rgb((0.4, 0.6, 0.1)),
-            atol=1e-6,
-            rtol=1e-6,
-        )
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_preview_surface_srgb_base_color_preserves_display_color(self):
         from pxr import Gf
 
@@ -6651,81 +6611,6 @@ def Xform "BodyWithoutVisuals" (
         material_color = material.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f)
         material_color.Set((0.5, 0.25, 0.1))
         material_color.GetAttr().SetColorSpace(Gf.ColorSpaceNames.SRGBRec709)
-        UsdShade.MaterialBindingAPI.Apply(cube_prim).Bind(material)
-
-        builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
-        shape = result["path_shape_map"]["/Body/Cube"]
-
-        np.testing.assert_allclose(
-            builder.shape_color[shape],
-            (0.5, 0.25, 0.1),
-            atol=1e-6,
-            rtol=1e-6,
-        )
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_omnipbr_diffuse_tint_srgb_inputs_store_display_color_after_multiply(self):
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        body = UsdGeom.Xform.Define(stage, "/Body")
-        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-
-        cube = UsdGeom.Cube.Define(stage, "/Body/Cube")
-        cube_prim = cube.GetPrim()
-        UsdPhysics.CollisionAPI.Apply(cube_prim)
-
-        material = UsdShade.Material.Define(stage, "/Materials/PBR")
-        shader = UsdShade.Shader.Define(stage, "/Materials/PBR/Shader")
-        shader.CreateIdAttr("OmniPBR")
-        base_input = shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f)
-        base_input.Set((0.8, 0.6, 0.4))
-        base_input.GetAttr().SetColorSpace(Gf.ColorSpaceNames.SRGBRec709)
-        tint_input = shader.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f)
-        tint_input.Set((0.5, 1.0, 0.25))
-        tint_input.GetAttr().SetColorSpace(Gf.ColorSpaceNames.SRGBRec709)
-        material.CreateSurfaceOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
-        UsdShade.MaterialBindingAPI.Apply(cube_prim).Bind(material)
-
-        builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
-        shape = result["path_shape_map"]["/Body/Cube"]
-
-        expected_linear = np.asarray(_reference_srgb_to_linear_rgb((0.8, 0.6, 0.4))) * np.asarray(
-            _reference_srgb_to_linear_rgb((0.5, 1.0, 0.25))
-        )
-        expected = _reference_linear_to_srgb_rgb(expected_linear)
-        np.testing.assert_allclose(builder.shape_color[shape], expected, atol=1e-6, rtol=1e-6)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_omnipbr_tint_only_uses_display_color_fallback(self):
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        body = UsdGeom.Xform.Define(stage, "/Body")
-        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-
-        cube = UsdGeom.Cube.Define(stage, "/Body/Cube")
-        cube_prim = cube.GetPrim()
-        UsdPhysics.CollisionAPI.Apply(cube_prim)
-        display_color = cube.CreateDisplayColorPrimvar()
-        display_color.Set([Gf.Vec3f(0.5, 0.25, 0.1)])
-        display_color.GetAttr().SetColorSpace(Gf.ColorSpaceNames.SRGBRec709)
-
-        material = UsdShade.Material.Define(stage, "/Materials/PBR")
-        shader = UsdShade.Shader.Define(stage, "/Materials/PBR/Shader")
-        shader.CreateIdAttr("OmniPBR")
-        tint_input = shader.CreateInput("diffuse_tint", Sdf.ValueTypeNames.Color3f)
-        tint_input.Set((0.5, 1.0, 0.25))
-        tint_input.GetAttr().SetColorSpace(Gf.ColorSpaceNames.SRGBRec709)
-        material.CreateSurfaceOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
         UsdShade.MaterialBindingAPI.Apply(cube_prim).Bind(material)
 
         builder = newton.ModelBuilder()

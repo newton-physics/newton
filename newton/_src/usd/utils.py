@@ -1606,65 +1606,6 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
-def _multiply_colors(
-    color: tuple[float, float, float] | None,
-    tint: tuple[float, float, float] | None,
-) -> tuple[float, float, float] | None:
-    """Multiply two RGB colors componentwise."""
-    if tint is None:
-        return color
-    if color is None:
-        # OmniPBR assumes an 18% middle-grey base when only a diffuse tint is authored.
-        return tuple(float(t * 0.18) for t in tint)
-    return tuple(float(c * t) for c, t in zip(color, tint, strict=True))
-
-
-def _get_material_input_value(material: UsdShade.Material | None, names: Sequence[str]) -> Any | None:
-    """Return the first authored material input value matching any name in order."""
-    if material is None:
-        return None
-    for name in names:
-        inp = material.GetInput(name)
-        if not inp:
-            continue
-        value = inp.Get()
-        if value is not None:
-            return value
-    return None
-
-
-def _get_material_input_value_with_attr(
-    material: UsdShade.Material | None,
-    names: Sequence[str],
-) -> tuple[Any | None, Usd.Attribute | None]:
-    """Return the first authored material input value and its source attribute."""
-
-    if material is None:
-        return None, None
-    for name in names:
-        inp = material.GetInput(name)
-        if not inp:
-            continue
-        value = inp.Get()
-        if value is not None:
-            return value, inp.GetAttr()
-    return None, None
-
-
-def _resolve_diffuse_tint(
-    shader: UsdShade.Shader | None,
-    material: UsdShade.Material | None,
-) -> tuple[float, float, float] | None:
-    """Resolve an authored OmniPBR-style diffuse tint color."""
-    tint_attr = None
-    tint_value = None
-    if shader is not None:
-        tint_value, tint_attr = _get_input_value_with_attr(shader, ("diffuse_tint",))
-    if tint_value is None:
-        tint_value, tint_attr = _get_material_input_value_with_attr(material, ("diffuse_tint",))
-    return _coerce_color(tint_value, tint_attr)
-
-
 def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract material properties from a UsdPreviewSurface shader.
 
@@ -1753,7 +1694,6 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
 def _extract_shader_properties(
     shader: UsdShade.Shader | None,
     prim: Usd.Prim,
-    material: UsdShade.Material | None = None,
 ) -> dict[str, Any]:
     """Extract common material properties from a shader node.
 
@@ -1763,8 +1703,6 @@ def _extract_shader_properties(
     Args:
         shader: The shader node to inspect.
         prim: The prim providing stage context for asset resolution.
-        material: The bound material, used for fallback material inputs such as
-            OmniPBR diffuse tint.
 
     Returns:
         Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
@@ -1815,10 +1753,6 @@ def _extract_shader_properties(
                     properties["texture"] = _resolve_asset_path(asset, prim, inp.GetAttr())
                     properties["texture_color_space"] = _resolve_texture_color_space(None, inp.GetAttr())
                     break
-
-    tint = _resolve_diffuse_tint(shader, material)
-    properties["_color_is_tint_only"] = properties["color"] is None and tint is not None
-    properties["color"] = _multiply_colors(properties["color"], tint)
 
     return properties
 
@@ -1944,8 +1878,8 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
         return None
 
     # Always call _extract_shader_properties even if shader_id is None because
-    # it has fallback logic for common shader input names and material tints.
-    properties = _extract_shader_properties(source_shader, target_prim, material)
+    # it has fallback logic for common shader input names.
+    properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
     for key in ("texture", "color", "metallic", "roughness"):
         if properties.get(key) is None and material_props.get(key) is not None:
@@ -1956,7 +1890,7 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
         and properties.get("texture_color_space") == TEXTURE_COLOR_SPACE_AUTO
     ):
         properties["texture_color_space"] = material_props["texture_color_space"]
-    if properties["texture"] is None and (properties["color"] is None or properties.get("_color_is_tint_only", False)):
+    if properties["texture"] is None and properties["color"] is None:
         display_color = UsdGeom.PrimvarsAPI(target_prim).GetPrimvar("displayColor")
         if display_color:
             properties["color"] = _coerce_color(display_color.Get(), display_color.GetAttr())
