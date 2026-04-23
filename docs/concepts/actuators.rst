@@ -35,7 +35,7 @@ An actuator is composed from three building blocks, applied in this order:
 .. code-block:: text
 
    Actuator
-   ├── Delay       (optional: delays control targets by N timesteps)
+   ├── Delay       (optional: delays command inputs by N actuator timesteps)
    ├── Controller  (control law that computes raw effort)
    └── Clamping[]  (clamps raw effort based on motor-limit modeling)
        ├── ClampingMaxEffort        (±max_effort box clamp)
@@ -43,11 +43,12 @@ An actuator is composed from three building blocks, applied in this order:
        └── ClampingPositionBased   (position-dependent lookup table)
 
 **Delay**
-   Optionally delays the control targets (e.g. position or velocity) by *N*
-   timesteps before they reach the controller, allowing the actuator to model
+   Optionally delays command inputs (control targets and feedforward terms)
+   by *N* actuator timesteps before they reach the controller, modeling
    communication or processing latency.  The delay always produces output;
-   when the buffer is still filling, the lag is clamped to the available
-   history so the most recent data is returned.
+   when the buffer is empty or a DOF has ``delay_steps == 0``, the current
+   command inputs are used directly.  When underfilled, the lag is clamped
+   to the available history so the oldest available entry is returned.
 
 **Controller**
    Computes raw actuator effort [N or N·m] from the current simulator state

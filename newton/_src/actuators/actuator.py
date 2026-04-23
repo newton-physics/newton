@@ -34,7 +34,7 @@ class Actuator:
     """Composed actuator: delay → controller → clamping.
 
     An actuator reads from simulation state/control arrays, optionally
-    delays the control targets, computes effort via a controller, applies
+    delays command inputs, computes effort via a controller, applies
     clamping (effort limits, saturation, etc.), and **accumulates** the
     result into the output array (scatter-add).  The caller must zero the
     output array before stepping actuators.
@@ -84,7 +84,7 @@ class Actuator:
         delay: Delay | None = None,
         clamping: list[Clamping] | None = None,
         pos_indices: wp.array[wp.uint32] | None = None,
-        frc_indices: wp.array[wp.uint32] | None = None,
+        effort_indices: wp.array[wp.uint32] | None = None,
         state_pos_attr: str = "joint_q",
         state_vel_attr: str = "joint_qd",
         control_target_pos_attr: str = "joint_target_pos",
@@ -106,7 +106,7 @@ class Actuator:
                 position targets). Defaults to *indices*. Differs from
                 *indices* when position and velocity arrays have different
                 layouts (e.g. floating-base or ball-joint articulations).
-            frc_indices: DOF indices into effort output arrays. Defaults to
+            effort_indices: DOF indices into effort output arrays. Defaults to
                 *indices*. Differs from *indices* for coupled transmissions
                 or tendon-driven joints.
             state_pos_attr: Attribute on sim_state for positions.
@@ -122,7 +122,13 @@ class Actuator:
         """
         self.indices = indices
         self.pos_indices = pos_indices if pos_indices is not None else indices
-        self.frc_indices = frc_indices if frc_indices is not None else indices
+        self.effort_indices = effort_indices if effort_indices is not None else indices
+        if self.pos_indices.shape != indices.shape:
+            raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")
+        if self.effort_indices.shape != indices.shape:
+            raise ValueError(
+                f"effort_indices shape {self.effort_indices.shape} must match indices shape {indices.shape}"
+            )
         self.controller = controller
         self.delay = delay
         self.clamping = clamping or []
@@ -281,7 +287,7 @@ class Actuator:
         wp.launch(
             kernel=_scatter_add_kernel,
             dim=self.num_actuators,
-            inputs=[output_forces, self._computed_forces, self.frc_indices],
+            inputs=[output_forces, self._computed_forces, self.effort_indices],
             outputs=[applied_output, computed_output],
             device=self.device,
         )

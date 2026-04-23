@@ -106,18 +106,18 @@ def _delay_masked_reset_kernel(
 
 
 class Delay:
-    """Per-DOF input delay for actuator targets.
+    """Per-DOF command input delay for actuators.
 
-    Delays targets using a circular buffer of depth
-    ``max_delay``.  Each DOF has its own lag stored in
-    :attr:`delay_steps` (shape ``(N,)``).  The buffer is sized for the
-    maximum lag across all DOFs so that DOFs with different delay steps
-    can share the same actuator group.
+    Delays command inputs (control targets and feedforward terms) using a
+    circular buffer of depth ``max_delay``.  Each DOF has its own lag
+    stored in :attr:`delay_steps` (shape ``(N,)``).  The buffer is sized
+    for the maximum lag across all DOFs so that DOFs with different delay
+    steps can share the same actuator group.
 
     The delay always produces output.  When the buffer is empty
     (e.g. right after reset) or a DOF has ``delay_steps == 0``, the
-    current targets are returned directly.  When underfilled, the
-    lag is clamped to the available history so the oldest entry is
+    current command inputs are used directly.  When underfilled, the lag
+    is clamped to the available history so the oldest available entry is
     returned.
     """
 
@@ -180,7 +180,7 @@ class Delay:
         """Initialize delay.
 
         Args:
-            delay_steps: Per-DOF delay values [timesteps], shape ``(N,)``.
+            delay_steps: Per-DOF delay values [actuator timesteps], shape ``(N,)``.
             max_delay: Maximum delay across all DOFs.  Determines the
                 circular-buffer depth.
 
@@ -192,9 +192,10 @@ class Delay:
         self.buf_depth = max_delay
         """Circular-buffer depth (equals ``max_delay``)."""
         self.delay_steps = delay_steps
-        """Per-DOF delay values [timesteps], shape (N,)."""
+        """Per-DOF delay values [actuator timesteps], shape (N,)."""
         self._num_actuators: int = 0
         self._device: wp.Device | None = None
+        self._requires_grad: bool = False
         self._out_pos: wp.array[float] | None = None
         self._out_vel: wp.array[float] | None = None
         self._out_act: wp.array[float] | None = None
