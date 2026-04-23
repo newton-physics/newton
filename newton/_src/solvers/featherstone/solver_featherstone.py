@@ -756,6 +756,7 @@ class SolverFeatherstone(SolverBase):
                         model.body_flags,
                         state_in.joint_q,
                         state_in.joint_qd,
+                        state_in.body_q,
                         state_aug.joint_qdd,
                         dt,
                     ],
