@@ -112,13 +112,9 @@ __all__ += [
 from ._src.utils.color import (  # noqa: E402
     color_linear_to_srgb,
     color_srgb_to_linear,
-    linear_to_srgb_rgb,
-    srgb_to_linear_rgb,
 )
 
 __all__ += [
     "color_linear_to_srgb",
     "color_srgb_to_linear",
-    "linear_to_srgb_rgb",
-    "srgb_to_linear_rgb",
 ]

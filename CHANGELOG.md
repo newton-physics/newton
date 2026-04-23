@@ -137,7 +137,6 @@
 - Deprecate `SensorContact.shape` (use `total_force.shape` and `force_matrix.shape` instead) 
 - Deprecate `SensorTiledCamera.render_context`; prefer `SensorTiledCamera.utils` and `SensorTiledCamera.render_config`.
 - Deprecate `SensorTiledCamera.RenderContext`; use `SensorTiledCamera.RenderConfig` for config types and `SensorTiledCamera.render_config` / `SensorTiledCamera.utils` for runtime access.
-- Deprecate `newton.utils.srgb_to_linear_rgb()` and `linear_to_srgb_rgb()` in favor of `color_srgb_to_linear()` and `color_linear_to_srgb()`
 - Deprecate `SensorTiledCamera.Config`; prefer `SensorTiledCamera.RenderConfig` and `SensorTiledCamera.utils`.
 - Deprecate `max_worlds` parameter of `ViewerBase.set_model()` in favor of `ViewerBase.set_visible_worlds()`
 - Deprecate `Viewer.update_shape_colors()` in favor of writing directly to `Model.shape_color`

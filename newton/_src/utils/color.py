@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Sequence
 
 import numpy as np
@@ -38,30 +37,6 @@ def color_linear_to_srgb(color: Sequence[float] | np.ndarray) -> tuple[float, fl
     rgb = np.clip(_to_rgb_array(color), 0.0, None)
     srgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
     return (float(srgb[0]), float(srgb[1]), float(srgb[2]))
-
-
-def srgb_to_linear_rgb(color: Sequence[float] | np.ndarray) -> tuple[float, float, float]:
-    """.. deprecated:: 1.1 Use ``color_srgb_to_linear()`` instead."""
-
-    warnings.warn(
-        "`newton.utils.srgb_to_linear_rgb()` is deprecated and will be removed in a future release. "
-        "Use `newton.utils.color_srgb_to_linear()` instead.",
-        category=DeprecationWarning,
-        stacklevel=2,
-    )
-    return color_srgb_to_linear(color)
-
-
-def linear_to_srgb_rgb(color: Sequence[float] | np.ndarray) -> tuple[float, float, float]:
-    """.. deprecated:: 1.1 Use ``color_linear_to_srgb()`` instead."""
-
-    warnings.warn(
-        "`newton.utils.linear_to_srgb_rgb()` is deprecated and will be removed in a future release. "
-        "Use `newton.utils.color_linear_to_srgb()` instead.",
-        category=DeprecationWarning,
-        stacklevel=2,
-    )
-    return color_linear_to_srgb(color)
 
 
 def linear_rgb_to_srgb_uint8(color: Sequence[float] | np.ndarray) -> np.ndarray:
