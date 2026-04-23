@@ -196,15 +196,13 @@ extlinks = {
 }
 
 doctest_global_setup = """
+import warnings
 from typing import Any
 import numpy as np
 import warp as wp
 import newton
 
-# Suppress warnings by setting warp_showwarning to an empty function
-def empty_warning(*args, **kwargs):
-    pass
-wp.utils.warp_showwarning = empty_warning
+warnings.filterwarnings("ignore")
 
 wp.config.quiet = True
 wp.init()

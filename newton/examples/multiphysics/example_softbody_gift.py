@@ -205,7 +205,7 @@ class Example:
         self.model = builder.finalize()
 
         # Contact parameters
-        self.model.soft_contact_ke = 1.0e5
+        self.model.soft_contact_ke = 5.0e4
         self.model.soft_contact_kd = 1e-5
         self.model.soft_contact_mu = 1.0
 
