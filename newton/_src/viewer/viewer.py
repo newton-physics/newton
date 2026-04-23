@@ -65,6 +65,15 @@ class ViewerBase(ABC):
         """
         return False
 
+    def pop_step_request(self) -> bool:
+        """Consume a pending single-step request.
+
+        Returns:
+            bool: True if a step was requested since the last call, then resets to False.
+                Always returns False in the base implementation.
+        """
+        return False
+
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.
 
