@@ -237,6 +237,7 @@ class ViewerGL(ViewerBase):
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
         self._paused = False
+        self._step_requested = False
 
         # Selection panel state
         self._selection_ui_state = {
@@ -1641,6 +1642,18 @@ class ViewerGL(ViewerBase):
         return self._paused
 
     @override
+    def pop_step_request(self) -> bool:
+        """
+        Consume a pending single-step request.
+
+        Returns:
+            bool: True if a step was requested since the last call, then resets to False.
+        """
+        requested = self._step_requested
+        self._step_requested = False
+        return requested
+
+    @override
     def close(self):
         """
         Close the viewer and clean up resources.
@@ -1926,6 +1939,8 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.SPACE:
             # Toggle pause with space key
             self._paused = not self._paused
+        elif symbol == pyglet.window.key.PERIOD and self._paused:
+            self._step_requested = True
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
@@ -2263,6 +2278,9 @@ class ViewerGL(ViewerBase):
 
                     # Pause simulation checkbox
                     changed, self._paused = imgui.checkbox("Pause", self._paused)
+                    imgui.same_line()
+                    if imgui.button("Step") and self._paused:
+                        self._step_requested = True
 
                 # Visualization Controls section
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
@@ -2413,6 +2431,7 @@ class ViewerGL(ViewerBase):
                 imgui.text("Scroll - Dolly")
                 imgui.text("Ctrl + Scroll - FOV zoom")
                 imgui.text("Space - Pause/Resume")
+                imgui.text(". - Step one frame (when paused)")
                 imgui.text("H - Toggle UI")
                 imgui.text("F - Frame camera around model")
 
