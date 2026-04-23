@@ -349,6 +349,10 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
     # re-diagonalization. Backfilled instead.
     "actuator_acc0",
+    # Position actuators with `dampratio` encode -kd = -2*dampratio*sqrt(kp*M_eff) in
+    # biasprm[2]; M_eff is joint-space inertia which differs when inertia representation
+    # differs. Backfilled instead.
+    "actuator_biasprm",
     "actuator_lengthrange",  # Derived from joint ranges, computed by set_length_range
     "stat",  # meaninertia derived from invweight0
     # Meshes: Newton / trimesh may create a different number of meshes (nmesh differs),
@@ -1105,6 +1109,8 @@ def _expand_batched_fields(target_obj: Any, reference_obj: Any, field_names: lis
 # - body_mass, body_subtreemass: Newton computes EXACT mesh volume, native uses LEGACY
 # - body_invweight0, dof_invweight0, actuator_acc0: derived from inertia/mass
 # - body_pos, body_quat: Newton recomputes from joint transforms (~3e-8 float diff)
+# - actuator_biasprm: derived from joint-space inertia for position actuators with
+#   `dampratio` (kd = 2*dampratio*sqrt(kp*M_eff)); tiny diffs propagate from inertia.
 MODEL_BACKFILL_FIELDS: list[str] = [
     "body_inertia",
     "body_ipos",
@@ -1116,6 +1122,7 @@ MODEL_BACKFILL_FIELDS: list[str] = [
     "body_quat",
     "body_subtreemass",
     "actuator_acc0",
+    "actuator_biasprm",
 ]
 
 
@@ -2214,8 +2221,6 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     num_steps = 20
     dynamics_tolerance = 1e-4  # GPU non-determinism: qvel diff up to 1.2e-5 across runs
     fk_enabled = True
-    # TODO(#2495): actuator_biasprm has tiny fp diffs (1.7e-5), likely precision issue
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"actuator_biasprm"}
 
 
 class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
