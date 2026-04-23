@@ -3216,24 +3216,16 @@ def parse_usd(
     from ..actuators.usd_parser import parse_actuator_prim  # noqa: PLC0415
 
     actuator_count = 0
-    path_to_dof = {}
-    path_to_coord = {}
-    for path, idx in path_joint_map.items():
-        if idx >= len(builder.joint_qd_start):
-            continue
-        dof_start = builder.joint_qd_start[idx]
-        next_start = (
-            builder.joint_qd_start[idx + 1] if idx + 1 < len(builder.joint_qd_start) else builder.joint_dof_count
-        )
-        num_dofs = next_start - dof_start
-        if num_dofs != 1:
-            raise ValueError(
-                f"Actuator target joint '{path}' has {num_dofs} DOF(s); "
-                f"only 1-DOF joints (Revolute/Prismatic) are supported"
-            )
-        path_to_dof[path] = dof_start + merged_dof_offset.get(path, 0)
-        if idx < len(builder.joint_q_start):
-            path_to_coord[path] = builder.joint_q_start[idx] + merged_dof_offset.get(path, 0)
+    path_to_dof = {
+        path: builder.joint_qd_start[idx] + merged_dof_offset.get(path, 0)
+        for path, idx in path_joint_map.items()
+        if idx < len(builder.joint_qd_start)
+    }
+    path_to_coord = {
+        path: builder.joint_q_start[idx] + merged_dof_offset.get(path, 0)
+        for path, idx in path_joint_map.items()
+        if idx < len(builder.joint_q_start)
+    }
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
         parsed = parse_actuator_prim(prim)
         if parsed is None:
@@ -3242,6 +3234,18 @@ def parse_usd(
         if target_path not in path_to_dof:
             raise ValueError(
                 f"Actuator prim {prim.GetPath()} targets '{target_path}' which does not resolve to a known joint DOF"
+            )
+        joint_idx = path_joint_map[target_path]
+        dof_start = builder.joint_qd_start[joint_idx]
+        next_start = (
+            builder.joint_qd_start[joint_idx + 1]
+            if joint_idx + 1 < len(builder.joint_qd_start)
+            else builder.joint_dof_count
+        )
+        if next_start - dof_start != 1:
+            raise ValueError(
+                f"Actuator prim {prim.GetPath()} targets '{target_path}' which has "
+                f"{next_start - dof_start} DOF(s); only 1-DOF joints (Revolute/Prismatic) are supported"
             )
         dof_index = path_to_dof[target_path]
         coord_index = path_to_coord.get(target_path)
