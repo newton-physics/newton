@@ -5,6 +5,7 @@
 
 import warp as wp
 
+from ..utils.heightfield import HeightfieldData, ray_intersect_heightfield_local
 from .types import (
     GeoType,
 )
@@ -691,6 +692,39 @@ def ray_intersect_mesh_no_transform(
 
 
 @wp.func
+def ray_intersect_heightfield(
+    geom_to_world: wp.transform,
+    hfd: HeightfieldData,
+    elevation_data: wp.array[wp.float32],
+    ray_origin: wp.vec3,
+    ray_direction: wp.vec3,
+) -> tuple[float, wp.vec3]:
+    """Ray-heightfield intersection in world space.
+
+    Thin wrapper that maps the ray into the heightfield's local frame, delegates
+    to :func:`~newton._src.utils.heightfield.ray_intersect_heightfield_local`,
+    and rotates the local surface normal back to world space.
+
+    Args:
+        geom_to_world: World transform of the heightfield.
+        hfd: Per-shape heightfield metadata (extents, grid size, z-range, data offset).
+        elevation_data: Concatenated normalized [0, 1] elevation array.
+        ray_origin: Ray origin in world space.
+        ray_direction: Ray direction in world space.
+
+    Returns:
+        The distance along the ray and the world-space surface normal at the
+        intersection, or ``-1.0`` and a zero vector on miss.
+    """
+    ro, rd = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    t_hit, normal_local = ray_intersect_heightfield_local(hfd, elevation_data, ro, rd)
+    if t_hit < 0.0:
+        return -1.0, wp.vec3(0.0)
+    normal_world = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+    return t_hit, normal_world
+
+
+@wp.func
 def ray_intersect_geom(
     geom_to_world: wp.transform,
     size: wp.vec3,
@@ -698,6 +732,8 @@ def ray_intersect_geom(
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,
     mesh_id: wp.uint64,
+    hfd: HeightfieldData,
+    heightfield_elevations: wp.array[wp.float32],
 ) -> tuple[float, wp.vec3]:
     """Dispatches to the appropriate ray-shape intersection routine.
 
@@ -708,6 +744,8 @@ def ray_intersect_geom(
         ray_origin: The origin of the ray.
         ray_direction: The direction of the ray.
         mesh_id: The Warp mesh ID for mesh geometries.
+        hfd: Heightfield metadata for ``GeoType.HFIELD`` shapes (ignored for other types).
+        heightfield_elevations: Concatenated normalized elevation array indexed via ``hfd.data_offset``.
 
     Returns:
         The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
@@ -741,6 +779,9 @@ def ray_intersect_geom(
             geom_to_world, ray_origin, ray_direction, size, mesh_id, False, _DEFAULT_MESH_MAX_T
         )
 
+    elif geomtype == GeoType.HFIELD:
+        t_hit, normal = ray_intersect_heightfield(geom_to_world, hfd, heightfield_elevations, ray_origin, ray_direction)
+
     return t_hit, normal
 
 
@@ -753,6 +794,10 @@ def raycast_kernel(
     geom_type: wp.array[int],
     geom_size: wp.array[wp.vec3],
     shape_source_ptr: wp.array[wp.uint64],
+    # Heightfield data (pass empty arrays when none are present)
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
     # Ray
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,
@@ -822,7 +867,24 @@ def raycast_kernel(
     else:
         mesh_id = wp.uint64(0)
 
-    t, _normal = ray_intersect_geom(geom_to_world, geom_size[shape_idx], geomtype, ray_origin, ray_direction, mesh_id)
+    # Resolve per-shape heightfield metadata (zero-initialised dummy for non-HFIELD shapes).
+    hfd = HeightfieldData()
+    if geomtype == GeoType.HFIELD:
+        if shape_heightfield_index:
+            hf_idx = shape_heightfield_index[shape_idx]
+            if hf_idx >= 0:
+                hfd = heightfield_data[hf_idx]
+
+    t, _normal = ray_intersect_geom(
+        geom_to_world,
+        geom_size[shape_idx],
+        geomtype,
+        ray_origin,
+        ray_direction,
+        mesh_id,
+        hfd,
+        heightfield_elevations,
+    )
 
     if t >= 0.0 and t < min_dist[0]:
         _spinlock_acquire(lock)
@@ -896,6 +958,9 @@ def sensor_raycast_kernel(
     geom_type: wp.array[int],
     geom_size: wp.array[wp.vec3],
     shape_source_ptr: wp.array[wp.uint64],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
     # Camera parameters
     camera_position: wp.vec3,
     camera_direction: wp.vec3,
@@ -966,7 +1031,24 @@ def sensor_raycast_kernel(
     else:
         mesh_id = wp.uint64(0)
 
-    t, _normal = ray_intersect_geom(geom_to_world, geom_size[shape_idx], geomtype, ray_origin, ray_direction, mesh_id)
+    # Resolve per-shape heightfield metadata (zero-initialised dummy for non-HFIELD shapes).
+    hfd = HeightfieldData()
+    if geomtype == GeoType.HFIELD:
+        if shape_heightfield_index:
+            hf_idx = shape_heightfield_index[shape_idx]
+            if hf_idx >= 0:
+                hfd = heightfield_data[hf_idx]
+
+    t, _normal = ray_intersect_geom(
+        geom_to_world,
+        geom_size[shape_idx],
+        geomtype,
+        ray_origin,
+        ray_direction,
+        mesh_id,
+        hfd,
+        heightfield_elevations,
+    )
 
     if t >= 0.0:
         wp.atomic_min(hit_distances, pixel_y, pixel_x, t)

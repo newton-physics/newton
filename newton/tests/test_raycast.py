@@ -9,6 +9,7 @@ import warp as wp
 import newton
 from newton import GeoType
 from newton._src.geometry.raycast import ray_intersect_geom, ray_intersect_mesh
+from newton._src.utils.heightfield import HeightfieldData
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -25,9 +26,20 @@ def kernel_test_geom(
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,
     mesh_id: wp.uint64,
+    hfd_arr: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
 ):
     tid = wp.tid()
-    t, _n = ray_intersect_geom(geom_to_world, size, geomtype, ray_origin, ray_direction, mesh_id)
+    t, _n = ray_intersect_geom(
+        geom_to_world,
+        size,
+        geomtype,
+        ray_origin,
+        ray_direction,
+        mesh_id,
+        hfd_arr[0] if hfd_arr else HeightfieldData(),
+        heightfield_elevations,
+    )
     out_t[tid] = t
 
 
@@ -62,7 +74,7 @@ def test_ray_intersect_sphere(test: TestRaycast, device: str):
             wp.launch(
                 kernel_test_geom,
                 dim=1,
-                inputs=[out_t, geom_to_world, size, GeoType.SPHERE, origin, direction, 0],
+                inputs=[out_t, geom_to_world, size, GeoType.SPHERE, origin, direction, 0, None, None],
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
@@ -87,7 +99,10 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
     for name, xform, origin, expected in cases:
         with test.subTest(name):
             wp.launch(
-                kernel_test_geom, dim=1, inputs=[out_t, xform, size, GeoType.BOX, origin, direction, 0], device=device
+                kernel_test_geom,
+                dim=1,
+                inputs=[out_t, xform, size, GeoType.BOX, origin, direction, 0, None, None],
+                device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
 
@@ -109,7 +124,7 @@ def test_ray_intersect_capsule(test: TestRaycast, device: str):
             wp.launch(
                 kernel_test_geom,
                 dim=1,
-                inputs=[out_t, geom_to_world, size, GeoType.CAPSULE, origin, direction, 0],
+                inputs=[out_t, geom_to_world, size, GeoType.CAPSULE, origin, direction, 0, None, None],
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
@@ -132,7 +147,7 @@ def test_ray_intersect_cylinder(test: TestRaycast, device: str):
             wp.launch(
                 kernel_test_geom,
                 dim=1,
-                inputs=[out_t, geom_to_world, size, GeoType.CYLINDER, origin, direction, 0],
+                inputs=[out_t, geom_to_world, size, GeoType.CYLINDER, origin, direction, 0, None, None],
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
@@ -156,7 +171,7 @@ def test_ray_intersect_cone(test: TestRaycast, device: str):
             wp.launch(
                 kernel_test_geom,
                 dim=1,
-                inputs=[out_t, geom_to_world, size, GeoType.CONE, origin, direction, 0],
+                inputs=[out_t, geom_to_world, size, GeoType.CONE, origin, direction, 0, None, None],
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=delta)
@@ -179,7 +194,7 @@ def test_ray_intersect_ellipsoid(test: TestRaycast, device: str):
             wp.launch(
                 kernel_test_geom,
                 dim=1,
-                inputs=[out_t, geom_to_world, size, GeoType.ELLIPSOID, origin, direction, 0],
+                inputs=[out_t, geom_to_world, size, GeoType.ELLIPSOID, origin, direction, 0, None, None],
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
@@ -221,7 +236,10 @@ def test_ray_intersect_plane(test: TestRaycast, device: str):
     for name, xform, size, origin, direction, expected in cases:
         with test.subTest(name):
             wp.launch(
-                kernel_test_geom, dim=1, inputs=[out_t, xform, size, GeoType.PLANE, origin, direction, 0], device=device
+                kernel_test_geom,
+                dim=1,
+                inputs=[out_t, xform, size, GeoType.PLANE, origin, direction, 0, None, None],
+                device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
 
@@ -292,7 +310,7 @@ def test_mesh_ray_intersect(test: TestRaycast, device: str):
             wp.launch(
                 kernel_test_geom,
                 dim=1,
-                inputs=[out_t, xform, size, GeoType.MESH, origin, direction, mesh_id],
+                inputs=[out_t, xform, size, GeoType.MESH, origin, direction, mesh_id, None, None],
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-3)
@@ -320,10 +338,121 @@ def test_convex_hull_ray_intersect_via_geom(test: TestRaycast, device: str):
             wp.launch(
                 kernel_test_geom,
                 dim=1,
-                inputs=[out_t, xform, size, GeoType.CONVEX_MESH, origin, direction, mesh_id],
+                inputs=[out_t, xform, size, GeoType.CONVEX_MESH, origin, direction, mesh_id, None, None],
                 device=device,
             )
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-3)
+
+
+def _hfield_arrays(device: str, data: np.ndarray, hx: float, hy: float, min_z: float, max_z: float):
+    """Build the (hfd_arr, elevations) pair that the test kernel expects for a single heightfield.
+
+    ``data`` is the raw elevation grid; it is normalized to [0, 1] the same way the
+    ``Heightfield`` class does so that kernels see exactly the same layout.
+    """
+    nrow, ncol = data.shape
+    d_min, d_max = float(data.min()), float(data.max())
+    if d_max > d_min:
+        normalized = (data - d_min) / (d_max - d_min)
+    else:
+        normalized = np.zeros_like(data)
+
+    hfd = HeightfieldData()
+    hfd.data_offset = 0
+    hfd.nrow = nrow
+    hfd.ncol = ncol
+    hfd.hx = hx
+    hfd.hy = hy
+    hfd.min_z = min_z
+    hfd.max_z = max_z
+
+    hfd_arr = wp.array([hfd], dtype=HeightfieldData, device=device)
+    elevations = wp.array(normalized.flatten().astype(np.float32), dtype=wp.float32, device=device)
+    return hfd_arr, elevations
+
+
+def test_ray_intersect_heightfield_via_geom(test: TestRaycast, device: str):
+    """Heightfield raycasts through ray_intersect_geom. Regression for issue #2412."""
+    out_t = wp.zeros(1, dtype=float, device=device)
+    size = wp.vec3(1.0, 1.0, 1.0)  # scale unused for heightfields
+    identity = wp.transform_identity()
+
+    # 1) Flat heightfield at z=1 on a 3x3 grid over [-2, 2]^2.
+    flat = np.full((3, 3), 1.0, dtype=np.float32)
+    hfd_flat, elev_flat = _hfield_arrays(device, flat, hx=2.0, hy=2.0, min_z=1.0, max_z=1.0)
+
+    # 2) Tilted 2x2 cell: corner (1,1) raised to z=1, the rest at z=0 over [-1, 1]^2.
+    tilt = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    hfd_tilt, elev_tilt = _hfield_arrays(device, tilt, hx=1.0, hy=1.0, min_z=0.0, max_z=1.0)
+
+    # Translated flat heightfield (shifted +2 in z) to exercise geom_to_world.
+    xform_shift_z = wp.transform(wp.vec3(0.0, 0.0, 2.0), wp.quat_identity())
+
+    # (name, xform, hfd_arr, elevations, origin, direction, expected_t, delta)
+    cases = [
+        (
+            "flat_hit_from_above",
+            identity,
+            hfd_flat,
+            elev_flat,
+            wp.vec3(0.0, 0.0, 5.0),
+            wp.vec3(0.0, 0.0, -1.0),
+            4.0,
+            1e-4,
+        ),
+        (
+            "tilt_hit_sloped_face",
+            identity,
+            hfd_tilt,
+            elev_tilt,
+            wp.vec3(0.5, -0.5, 2.0),
+            wp.vec3(0.0, 0.0, -1.0),
+            # analytic: triangle (p00=(-1,-1,0), p10=(1,-1,0), p11=(1,1,1)) contains
+            # XY=(0.5,-0.5); plane z at that XY is 0.25, so t = 2.0 - 0.25.
+            1.75,
+            1e-4,
+        ),
+        (
+            "miss_outside_extent",
+            identity,
+            hfd_flat,
+            elev_flat,
+            wp.vec3(5.0, 5.0, 5.0),
+            wp.vec3(0.0, 0.0, -1.0),
+            -1.0,
+            1e-5,
+        ),
+        (
+            "miss_parallel_above",
+            identity,
+            hfd_flat,
+            elev_flat,
+            wp.vec3(0.0, 0.0, 5.0),
+            wp.vec3(1.0, 0.0, 0.0),
+            -1.0,
+            1e-5,
+        ),
+        (
+            "translated_flat_hit",
+            xform_shift_z,
+            hfd_flat,
+            elev_flat,
+            wp.vec3(0.0, 0.0, 6.0),
+            wp.vec3(0.0, 0.0, -1.0),
+            3.0,  # surface now at z=3
+            1e-4,
+        ),
+    ]
+
+    for name, xform, hfd_arr, elevations, origin, direction, expected, delta in cases:
+        with test.subTest(name):
+            wp.launch(
+                kernel_test_geom,
+                dim=1,
+                inputs=[out_t, xform, size, GeoType.HFIELD, origin, direction, 0, hfd_arr, elevations],
+                device=device,
+            )
+            test.assertAlmostEqual(out_t.numpy()[0], expected, delta=delta)
 
 
 devices = get_test_devices()
@@ -338,6 +467,12 @@ add_function_test(TestRaycast, "test_ray_intersect_mesh", test_ray_intersect_mes
 add_function_test(TestRaycast, "test_mesh_ray_intersect", test_mesh_ray_intersect, devices=devices)
 add_function_test(
     TestRaycast, "test_convex_hull_ray_intersect_via_geom", test_convex_hull_ray_intersect_via_geom, devices=devices
+)
+add_function_test(
+    TestRaycast,
+    "test_ray_intersect_heightfield_via_geom",
+    test_ray_intersect_heightfield_via_geom,
+    devices=devices,
 )
 
 
