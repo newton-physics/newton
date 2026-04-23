@@ -26,6 +26,12 @@ class Controller:
 
     Subclasses must override ``compute`` and ``resolve_arguments``.
 
+    **Validation contract:**  :meth:`resolve_arguments` validates scalar
+    parameter values (e.g. ``kp >= 0``) before they are batched into Warp
+    arrays by the builder.  ``__init__`` receives pre-built arrays and
+    validates shapes only — reading back array contents for value checks
+    would force a synchronous device-to-host copy on every construction.
+
     Class Attributes:
         SHARED_PARAMS: Parameter names that are instance-level (shared across
             all DOFs). Different values require separate actuator instances.

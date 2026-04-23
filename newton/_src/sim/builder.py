@@ -1850,6 +1850,13 @@ class ModelBuilder:
 
         # --- Resolve controller kwargs and separate shared from per-DOF ---
         resolved_ctrl = controller_class.resolve_arguments(kwargs)
+        unrecognized = set(kwargs) - set(resolved_ctrl)
+        if unrecognized:
+            warnings.warn(
+                f"add_actuator: {controller_class.__name__} ignoring "
+                f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
+                stacklevel=2,
+            )
         ctrl_shared_names = getattr(controller_class, "SHARED_PARAMS", set())
         ctrl_shared = {k: resolved_ctrl[k] for k in ctrl_shared_names if k in resolved_ctrl}
         ctrl_array_params = {k: v for k, v in resolved_ctrl.items() if k not in ctrl_shared_names}
@@ -2354,7 +2361,7 @@ class ModelBuilder:
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
         """
-        from ..utils.import_urdf import parse_urdf
+        from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
         return parse_urdf(
             self,
@@ -2572,7 +2579,7 @@ class ModelBuilder:
                 * - ``"actuator_count"``
                   - Number of external actuators parsed from the USD stage
         """
-        from ..utils.import_usd import parse_usd
+        from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
         return parse_usd(
             self,
@@ -2746,8 +2753,8 @@ class ModelBuilder:
                 from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
         """
-        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo
-        from ..utils.import_mjcf import parse_mjcf
+        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+        from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
 
         SolverMuJoCo.register_custom_attributes(self)
         return parse_mjcf(
@@ -8251,7 +8258,7 @@ class ModelBuilder:
             elastic forces. Set the stiffness parameters above to non-zero values if you
             want the surface to behave like a thin skin.
         """
-        from ..geometry.types import TetMesh
+        from ..geometry.types import TetMesh  # noqa: PLC0415
 
         # Resolve parameters: explicit args > mesh attributes > error
         if mesh is not None:
@@ -8800,7 +8807,7 @@ class ModelBuilder:
             *attributes: Variable number of attribute names (strings).
         """
         # Local import to avoid adding more module-level dependencies in this large file.
-        from .contacts import Contacts
+        from .contacts import Contacts  # noqa: PLC0415
 
         Contacts.validate_extended_attributes(attributes)
         self._requested_contact_attributes.update(attributes)
@@ -8815,7 +8822,7 @@ class ModelBuilder:
             *attributes: Variable number of attribute names (strings).
         """
         # Local import to avoid adding more module-level dependencies in this large file.
-        from .state import State
+        from .state import State  # noqa: PLC0415
 
         State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
@@ -9341,7 +9348,7 @@ class ModelBuilder:
         Returns:
             Whether joints are correctly ordered.
         """
-        from ..utils import topological_sort
+        from ..utils import topological_sort  # noqa: PLC0415
 
         if self.joint_count == 0:
             return True
@@ -9780,7 +9787,7 @@ class ModelBuilder:
             local_aabb_lower = []
             local_aabb_upper = []
             voxel_resolution = []
-            from ..geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS
+            from ..geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS  # noqa: PLC0415
 
             voxel_budget = NUM_VOXEL_DEPTH_SLOTS
 
@@ -9921,11 +9928,11 @@ class ModelBuilder:
 
             # ---------------------
             # Compute and compact texture SDF resources (shared table + per-shape index indirection)
-            from ..geometry.types import Mesh as NewtonMesh
+            from ..geometry.types import Mesh as NewtonMesh  # noqa: PLC0415
 
             def _create_primitive_mesh(stype: int, scale: Sequence[float] | None) -> NewtonMesh | None:
                 """Create a watertight mesh from a primitive shape for texture SDF construction."""
-                from ..core.types import Axis
+                from ..core.types import Axis  # noqa: PLC0415
 
                 sx, sy, sz = scale if scale is not None else (1.0, 1.0, 1.0)
                 common_kw = {"compute_normals": False, "compute_uvs": False, "compute_inertia": False}
@@ -9965,7 +9972,7 @@ class ModelBuilder:
 
             sdf_block_coords = []
             sdf_index2blocks = []
-            from ..geometry.sdf_texture import (
+            from ..geometry.sdf_texture import (  # noqa: PLC0415
                 QuantizationMode,
                 TextureSDFData,
                 create_empty_texture_sdf_data,
@@ -10121,7 +10128,7 @@ class ModelBuilder:
                     "contacts between heightfield pairs will be skipped.",
                     stacklevel=2,
                 )
-            from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data
+            from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
 
             compact_heightfield_data = []
             elevation_chunks = []
@@ -10515,8 +10522,8 @@ class ModelBuilder:
             )
 
             # Create actuators from accumulated entries
-            from ..actuators.actuator import Actuator
-            from ..actuators.delay import Delay
+            from ..actuators.actuator import Actuator  # noqa: PLC0415
+            from ..actuators.delay import Delay  # noqa: PLC0415
 
             m.actuators = []
             for entry in self.actuator_entries.values():
@@ -10534,9 +10541,7 @@ class ModelBuilder:
 
                 delay_obj = None
                 if entry.delay_args:
-                    delay_arrays = self._stack_args_to_arrays(
-                        entry.delay_args, device=device, default_dtype=wp.int32
-                    )
+                    delay_arrays = self._stack_args_to_arrays(entry.delay_args, device=device, default_dtype=wp.int32)
                     max_delay = max(d["delay_steps"] for d in entry.delay_args)
                     delay_obj = Delay(**delay_arrays, max_delay=max_delay)
 

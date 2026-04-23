@@ -65,8 +65,7 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
     defn = Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema_name)
     if defn is None:
         raise RuntimeError(
-            f"Schema {schema_name!r} not found in Usd.SchemaRegistry; "
-            f"is newton-usd-schemas >= 0.2.0rc1 installed?"
+            f"Schema {schema_name!r} not found in Usd.SchemaRegistry; is newton-usd-schemas >= 0.2.0rc1 installed?"
         )
     schema_props = set(defn.GetPropertyNames())
 
@@ -268,10 +267,7 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
             component_specs.append((cls, kwargs))
 
     if controller_class is None:
-        raise ValueError(
-            f"Actuator prim '{prim.GetPath()}' has no controller schema "
-            f"(detected schemas: {detected})"
-        )
+        raise ValueError(f"Actuator prim '{prim.GetPath()}' has no controller schema (detected schemas: {detected})")
 
     return ActuatorParsed(
         controller_class=controller_class,

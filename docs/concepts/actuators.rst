@@ -6,6 +6,11 @@
 Actuators
 =========
 
+.. warning::
+
+   The actuator API is **experimental** and may change in future releases.
+   Feedback is welcome — please file issues or discussion threads.
+
 Actuators provide composable implementations that read physics simulation
 state, compute effort, and **accumulate** (scatter-add) the effort into
 control arrays for application to the simulation.  The caller must zero the

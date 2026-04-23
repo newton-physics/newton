@@ -16,6 +16,12 @@ class Clamping:
     saturation, position-dependent curves, etc.  They read from a
     source effort buffer and write bounded values to a destination buffer.
 
+    **Validation contract:**  :meth:`resolve_arguments` validates scalar
+    parameter values before they are batched into Warp arrays by the
+    builder.  ``__init__`` receives pre-built arrays and validates shapes
+    only — reading back array contents would force a synchronous
+    device-to-host copy on every construction.
+
     Class Attributes:
         SHARED_PARAMS: Parameter names that are instance-level (shared across
             all DOFs). Different values require separate actuator instances.
