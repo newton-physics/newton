@@ -9,8 +9,7 @@ from typing import Any, ClassVar
 
 import warp as wp
 
-from newton._src.actuators.utils import load_checkpoint
-
+from ..utils import load_checkpoint
 from .base import Controller
 
 if typing.TYPE_CHECKING:

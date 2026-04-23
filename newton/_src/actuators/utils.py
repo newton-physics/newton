@@ -41,6 +41,9 @@ def load_metadata(path: str) -> dict[str, Any]:
 
     Args:
         path: File path to the checkpoint.
+
+    Returns:
+        Metadata mapping (empty dict when no metadata is stored).
     """
     _, metadata = _load(path)
     return metadata
@@ -61,6 +64,10 @@ def load_checkpoint(path: str) -> tuple[Any, dict[str, Any]]:
 
     Args:
         path: File path to the checkpoint.
+
+    Returns:
+        ``(network, metadata)`` where *network* is the loaded model
+        (in eval mode) and *metadata* is a configuration dict.
     """
     network, metadata = _load(path)
     network.eval()
