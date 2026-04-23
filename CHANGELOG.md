@@ -15,6 +15,7 @@
 - Add `ViewerBase.log_arrows()` for arrow rendering (wide line + arrowhead) in the GL viewer with a dedicated geometry shader
 - Add `enable_multiccd` parameter to `SolverMuJoCo` for multi-CCD contact generation (up to 4 contact points per geom pair)
 - Add `ViewerViser.log_scalar()` for live scalar time-series plots via uPlot
+- Add `newton.utils.color_srgb_to_linear()` and `color_linear_to_srgb()` as the canonical display/linear RGB conversion helpers
 - Honor `UsdGeomImageable` visibility (including inherited `invisible`) on USD prims imported via `ModelBuilder.add_usd()`; visual shapes, gaussian splats, and collider shapes are imported with `ShapeFlags.VISIBLE` cleared when the prim is effectively invisible, while collision behavior is preserved
 
 ### Changed
@@ -124,7 +125,7 @@
 - Use `Literal` types for `SolverImplicitMPM.Config` string fields with fixed option sets (`solver`, `warmstart_mode`, `collider_velocity_mode`, `grid_type`, `transfer_scheme`, `integration_scheme`)
 - Migrate `wp.array(dtype=X)` type annotations to `wp.array[X]` bracket syntax (Warp 1.12+).
 - Align articulated `State.body_qd` / FK / IK / Jacobian / mass-matrix linear velocity with COM-referenced motion. If you were comparing `body_qd[:3]` against finite-differenced body-origin motion, recover origin velocity via `v_origin = v_com - omega x r_com_world`. Descendant `FREE` / `DISTANCE` `joint_qd` remains parent-frame and `joint_f` remains a world-frame COM wrench.
-- Store `Model.shape_color` in display RGB instead of linear RGB. If you write linear-light values directly into `Model.shape_color`, convert them first with `newton.utils.linear_to_srgb_rgb()`.
+- Store `Model.shape_color` in display RGB instead of linear RGB. If you write linear-light values directly into `Model.shape_color`, convert them first with `newton.utils.color_linear_to_srgb()`.
 
 ### Deprecated
 
@@ -136,6 +137,7 @@
 - Deprecate `SensorContact.shape` (use `total_force.shape` and `force_matrix.shape` instead) 
 - Deprecate `SensorTiledCamera.render_context`; prefer `SensorTiledCamera.utils` and `SensorTiledCamera.render_config`.
 - Deprecate `SensorTiledCamera.RenderContext`; use `SensorTiledCamera.RenderConfig` for config types and `SensorTiledCamera.render_config` / `SensorTiledCamera.utils` for runtime access.
+- Deprecate `newton.utils.srgb_to_linear_rgb()` and `linear_to_srgb_rgb()` in favor of `color_srgb_to_linear()` and `color_linear_to_srgb()`
 - Deprecate `SensorTiledCamera.Config`; prefer `SensorTiledCamera.RenderConfig` and `SensorTiledCamera.utils`.
 - Deprecate `max_worlds` parameter of `ViewerBase.set_model()` in favor of `ViewerBase.set_visible_worlds()`
 - Deprecate `Viewer.update_shape_colors()` in favor of writing directly to `Model.shape_color`

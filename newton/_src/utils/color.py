@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 
 import numpy as np
@@ -23,7 +24,7 @@ def _to_rgb_array(color: Sequence[float] | np.ndarray) -> np.ndarray:
     return rgb[:3]
 
 
-def srgb_to_linear_rgb(color: Sequence[float] | np.ndarray) -> tuple[float, float, float]:
+def color_srgb_to_linear(color: Sequence[float] | np.ndarray) -> tuple[float, float, float]:
     """Convert an sRGB/display RGB triple to linear Rec.709."""
 
     rgb = np.clip(_to_rgb_array(color), 0.0, None)
@@ -31,7 +32,7 @@ def srgb_to_linear_rgb(color: Sequence[float] | np.ndarray) -> tuple[float, floa
     return (float(linear[0]), float(linear[1]), float(linear[2]))
 
 
-def linear_to_srgb_rgb(color: Sequence[float] | np.ndarray) -> tuple[float, float, float]:
+def color_linear_to_srgb(color: Sequence[float] | np.ndarray) -> tuple[float, float, float]:
     """Convert a linear RGB triple to sRGB/display encoding."""
 
     rgb = np.clip(_to_rgb_array(color), 0.0, None)
@@ -39,10 +40,34 @@ def linear_to_srgb_rgb(color: Sequence[float] | np.ndarray) -> tuple[float, floa
     return (float(srgb[0]), float(srgb[1]), float(srgb[2]))
 
 
+def srgb_to_linear_rgb(color: Sequence[float] | np.ndarray) -> tuple[float, float, float]:
+    """.. deprecated:: 1.1 Use ``color_srgb_to_linear()`` instead."""
+
+    warnings.warn(
+        "`newton.utils.srgb_to_linear_rgb()` is deprecated and will be removed in a future release. "
+        "Use `newton.utils.color_srgb_to_linear()` instead.",
+        category=DeprecationWarning,
+        stacklevel=2,
+    )
+    return color_srgb_to_linear(color)
+
+
+def linear_to_srgb_rgb(color: Sequence[float] | np.ndarray) -> tuple[float, float, float]:
+    """.. deprecated:: 1.1 Use ``color_linear_to_srgb()`` instead."""
+
+    warnings.warn(
+        "`newton.utils.linear_to_srgb_rgb()` is deprecated and will be removed in a future release. "
+        "Use `newton.utils.color_linear_to_srgb()` instead.",
+        category=DeprecationWarning,
+        stacklevel=2,
+    )
+    return color_linear_to_srgb(color)
+
+
 def linear_rgb_to_srgb_uint8(color: Sequence[float] | np.ndarray) -> np.ndarray:
     """Convert linear RGB floats to uint8 sRGB bytes."""
 
-    srgb = np.asarray(linear_to_srgb_rgb(color), dtype=np.float32)
+    srgb = np.asarray(color_linear_to_srgb(color), dtype=np.float32)
     return np.clip(np.round(srgb * 255.0), 0.0, 255.0).astype(np.uint8)
 
 

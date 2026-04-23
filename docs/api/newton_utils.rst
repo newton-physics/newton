@@ -24,6 +24,8 @@ newton.utils
 
    bourke_color_map
    color_graph
+   color_linear_to_srgb
+   color_srgb_to_linear
    compute_world_offsets
    create_cable_stiffness_from_elastic_moduli
    create_parallel_transport_cable_quaternions
@@ -31,10 +33,12 @@ newton.utils
    create_straight_cable_points_and_quaternions
    download_asset
    event_scope
+   linear_to_srgb_rgb
    load_texture
    normalize_texture
    plot_graph
    remesh_mesh
    run_benchmark
    solidify_mesh
+   srgb_to_linear_rgb
    string_to_warp

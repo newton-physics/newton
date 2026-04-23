@@ -37,7 +37,7 @@ from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
-from .color import linear_to_srgb_rgb
+from .color import color_linear_to_srgb
 from .import_utils import should_show_collider
 
 AttributeFrequency = Model.AttributeFrequency
@@ -395,7 +395,7 @@ def parse_usd(
         color = _get_material_props_cached(prim).get("color")
         if color is None:
             return None
-        return linear_to_srgb_rgb(color)
+        return color_linear_to_srgb(color)
 
     def _get_mesh_cached(prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
         """Load and cache mesh data to avoid repeated expensive USD mesh extraction."""

@@ -426,8 +426,8 @@ and encode the final image for display. In other words, do not pre-linearize
 shape or mesh colors before assigning them to Newton.
 
 When you need linear-light math explicitly, convert at the boundary with
-:func:`newton.utils.srgb_to_linear_rgb` and
-:func:`newton.utils.linear_to_srgb_rgb`.
+:func:`newton.utils.color_srgb_to_linear` and
+:func:`newton.utils.color_linear_to_srgb`.
 
 .. code-block:: python
 
@@ -438,7 +438,7 @@ When you need linear-light math explicitly, convert at the boundary with
    builder = newton.ModelBuilder()
    builder.add_ground_plane(color=display_color)
 
-   linear_color = newton.utils.srgb_to_linear_rgb(display_color)
+   linear_color = newton.utils.color_srgb_to_linear(display_color)
 
 Albedo or base-color textures follow the same rule: authored color textures are
 treated as display colors, while data textures should be marked as ``raw`` so

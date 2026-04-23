@@ -12,7 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..geometry.types import Mesh
-from .color import linear_to_srgb_rgb
+from .color import color_linear_to_srgb
 
 
 @wp.kernel
@@ -446,7 +446,7 @@ def _extract_trimesh_material_params(
         if candidate is not None:
             base_color = _normalize_color(candidate)
             if base_color is not None and authored_linear:
-                base_color = linear_to_srgb_rgb(base_color)
+                base_color = color_linear_to_srgb(base_color)
             break
 
     for attr_name in ("metallicFactor", "metallic"):
@@ -543,7 +543,7 @@ def load_meshes_from_file(
                                     # space, but the Newton model now stores sRGB/display
                                     # colors.
                                     diffuse = np.clip(values[:3], 0.0, 1.0)
-                                    diffuse_color = linear_to_srgb_rgb(diffuse)
+                                    diffuse_color = color_linear_to_srgb(diffuse)
                                     break
                         continue
                     if tag == "specular":
@@ -717,7 +717,7 @@ def load_meshes_from_file(
                 if mat_color is None and hasattr(tri_mesh.visual, "main_color"):
                     mat_color = _normalize_color(tri_mesh.visual.main_color)
                     if mat_color is not None and authored_linear_material_colors:
-                        mat_color = linear_to_srgb_rgb(mat_color)
+                        mat_color = color_linear_to_srgb(mat_color)
                 add_mesh_from_faces(
                     mat_faces,
                     mat_color=mat_color,
@@ -803,7 +803,7 @@ def load_meshes_from_file(
         if color is None and hasattr(tri_mesh, "visual") and hasattr(tri_mesh.visual, "main_color"):
             color = _normalize_color(tri_mesh.visual.main_color)
             if color is not None and authored_linear_material_colors:
-                color = linear_to_srgb_rgb(color)
+                color = color_linear_to_srgb(color)
 
         if hasattr(tri_mesh, "visual") and texture is None:
             texture = _extract_trimesh_texture(tri_mesh.visual, base_dir)
