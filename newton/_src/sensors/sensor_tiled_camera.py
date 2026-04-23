@@ -209,12 +209,13 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 ``(camera_count, height, width, 2)``.
             color_image: Output for packed RGBA color. The bytes are sRGB by
                 default, or linear when
-                ``render_config.encode_output_srgb=False``. None to skip.
+                ``self.render_config.encode_output_srgb=False``. None to skip.
             depth_image: Output for ray-hit distance [m]. None to skip.
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
             albedo_image: Output for packed RGBA albedo. Uses the same output
-                encoding convention as ``color_image``. None to skip.
+                encoding convention as ``color_image`` and
+                ``self.render_config.encode_output_srgb``. None to skip.
             refit_bvh: Refit the BVH before rendering.
             clear_data: Values to clear output buffers with.
                 See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.

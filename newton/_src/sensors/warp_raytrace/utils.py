@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 from ...core import MAXVAL
+from ...utils.color import TEXTURE_COLOR_SPACE_SRGB, texture_color_space_to_id
 from .types import RenderLightType, TextureData
 
 if TYPE_CHECKING:
@@ -567,6 +568,7 @@ class Utils:
         )
 
         self.__checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
+        self.__checkerboard_data.color_space = texture_color_space_to_id(TEXTURE_COLOR_SPACE_SRGB)
 
         self.__render_context.config.enable_textures = True
         self.__render_context.texture_data = wp.array(

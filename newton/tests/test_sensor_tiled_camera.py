@@ -9,7 +9,6 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.utils.color import srgb_to_linear_rgb
 from newton.sensors import SensorTiledCamera
 
 
@@ -210,9 +209,9 @@ class TestSensorTiledCamera(unittest.TestCase):
 
             packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
             expected_rgb = (
-                np.clip(np.asarray(color) * 255.0, 0.0, 255.0).astype(np.uint8)
+                np.array([63, 127, 191], dtype=np.uint8)
                 if encode_output_srgb
-                else np.clip(np.asarray(srgb_to_linear_rgb(color)) * 255.0, 0.0, 255.0).astype(np.uint8)
+                else np.array([12, 54, 133], dtype=np.uint8)
             )
 
             np.testing.assert_array_equal(packed[:3], expected_rgb)

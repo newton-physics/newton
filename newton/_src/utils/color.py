@@ -83,9 +83,9 @@ def normalize_texture_color_space(color_space: str | None) -> str:
         return TEXTURE_COLOR_SPACE_AUTO
 
     token = str(color_space).strip().lower()
-    if token in ("", TEXTURE_COLOR_SPACE_AUTO, "unknown", "identity"):
+    if token in ("", TEXTURE_COLOR_SPACE_AUTO, "unknown"):
         return TEXTURE_COLOR_SPACE_AUTO
-    if token in (TEXTURE_COLOR_SPACE_RAW, "data", "lin_rec709_scene") or token.startswith("lin_"):
+    if token in ("identity", TEXTURE_COLOR_SPACE_RAW, "data", "lin_rec709_scene") or token.startswith("lin_"):
         return TEXTURE_COLOR_SPACE_RAW
     if token in (TEXTURE_COLOR_SPACE_SRGB, "srgb_rec709_scene", "g22_rec709_scene") or token.startswith("srgb_"):
         return TEXTURE_COLOR_SPACE_SRGB

@@ -1130,6 +1130,8 @@ def get_mesh(
         metallic=material_props.get("metallic"),
         roughness=material_props.get("roughness"),
     )
+    if mesh_out.texture is not None:
+        mesh_out.texture_color_space = material_props.get("texture_color_space", TEXTURE_COLOR_SPACE_AUTO)
     if return_uv_indices:
         return mesh_out, uv_indices
     return mesh_out
@@ -1612,7 +1614,8 @@ def _multiply_colors(
     if tint is None:
         return color
     if color is None:
-        return tuple(t * 0.18 for t in tint) if tint is not None else None
+        # OmniPBR assumes an 18% middle-grey base when only a diffuse tint is authored.
+        return tuple(float(t * 0.18) for t in tint)
     return tuple(float(c * t) for c, t in zip(color, tint, strict=True))
 
 
@@ -1813,7 +1816,9 @@ def _extract_shader_properties(
                     properties["texture_color_space"] = _resolve_texture_color_space(None, inp.GetAttr())
                     break
 
-    properties["color"] = _multiply_colors(properties["color"], _resolve_diffuse_tint(shader, material))
+    tint = _resolve_diffuse_tint(shader, material)
+    properties["_color_is_tint_only"] = properties["color"] is None and tint is not None
+    properties["color"] = _multiply_colors(properties["color"], tint)
 
     return properties
 
@@ -1934,7 +1939,7 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
 
     if source_shader is None:
         material_props = _extract_material_input_properties(material, target_prim)
-        if any(value is not None for value in material_props.values()):
+        if any(material_props.get(key) is not None for key in ("texture", "color", "metallic", "roughness")):
             return material_props
         return None
 
@@ -1942,10 +1947,16 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     # it has fallback logic for common shader input names and material tints.
     properties = _extract_shader_properties(source_shader, target_prim, material)
     material_props = _extract_material_input_properties(material, target_prim)
-    for key in ("texture", "texture_color_space", "color", "metallic", "roughness"):
+    for key in ("texture", "color", "metallic", "roughness"):
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
-    if properties["color"] is None and properties["texture"] is None:
+    if (
+        properties.get("texture") is not None
+        and material_props.get("texture") is not None
+        and properties.get("texture_color_space") == TEXTURE_COLOR_SPACE_AUTO
+    ):
+        properties["texture_color_space"] = material_props["texture_color_space"]
+    if properties["texture"] is None and (properties["color"] is None or properties.get("_color_is_tint_only", False)):
         display_color = UsdGeom.PrimvarsAPI(target_prim).GetPrimvar("displayColor")
         if display_color:
             properties["color"] = _coerce_color(display_color.Get(), display_color.GetAttr())
