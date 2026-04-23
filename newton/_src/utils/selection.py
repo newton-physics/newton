@@ -1643,7 +1643,7 @@ class ArticulationView:
     # Actuator parameter access
 
     @functools.cache  # noqa: B019 - cache is tied to view lifetime
-    def _get_actuator_dof_mapping(self, actuator: "Actuator") -> wp.array[int]:
+    def _get_actuator_dof_mapping(self, actuator: "Actuator"):
         """
         Build mapping from view DOF positions to actuator parameter indices.
 
@@ -1706,7 +1706,7 @@ class ArticulationView:
 
         return mapping
 
-    def get_actuator_parameter(self, actuator: "Actuator", component: Any, name: str) -> wp.array[Any]:
+    def get_actuator_parameter(self, actuator: "Actuator", component: Any, name: str):
         """Read an actuator-component parameter for every DOF in this view.
 
         The returned array covers all DOFs selected by the view (one column
@@ -1751,8 +1751,8 @@ class ArticulationView:
         actuator: "Actuator",
         component: Any,
         name: str,
-        values: wp.array[Any],
-        mask: wp.array[wp.bool] | None = None,
+        values: wp.array,
+        mask=None,
     ) -> None:
         """Write an actuator-component parameter for every DOF in this view.
 
