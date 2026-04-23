@@ -15,8 +15,8 @@ from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
 from .shaders import (
     FrameShader,
+    ShaderArrow,
     ShaderLine,
-    ShaderLineWireframe,
     ShaderShape,
     ShaderSky,
     ShadowShader,
@@ -972,6 +972,8 @@ class RendererGL:
         self.draw_shadows = True
         self.draw_wireframe = False
         self.wireframe_line_width = 1.5  # pixels
+        self.line_width = 1.5  # pixels, for all log_lines batches
+        self.arrow_scale = 1.0  # uniform scale for arrow line width and head size
 
         self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
@@ -1138,8 +1140,8 @@ class RendererGL:
         self._shape_shader = ShaderShape(gl)
         self._frame_shader = FrameShader(gl)
         self._sky_shader = ShaderSky(gl)
-        self._line_shader = ShaderLine(gl)
-        self._wireframe_shader = ShaderLineWireframe(gl)
+        self._wireframe_shader = ShaderLine(gl)
+        self._arrow_shader = ShaderArrow(gl)
 
         if not headless:
             self._setup_window_callbacks()
@@ -1201,7 +1203,7 @@ class RendererGL:
                 # This is a non-fatal error that can be safely ignored
                 pass
 
-    def render(self, camera, objects, lines=None, wireframe_shapes=None):
+    def render(self, camera, objects, lines=None, wireframe_shapes=None, arrows=None):
         gl = RendererGL.gl
         self._make_current()
 
@@ -1264,6 +1266,9 @@ class RendererGL:
         # Render lines after main scene but before MSAA resolve
         if lines:
             self._render_lines(lines)
+
+        if arrows:
+            self._render_arrows(arrows)
 
         if wireframe_shapes:
             self._render_wireframe_shapes(wireframe_shapes)
@@ -1838,15 +1843,62 @@ class RendererGL:
         check_gl_error()
 
     def _render_lines(self, lines):
-        """Render all line objects using the line shader."""
-        # Set up line shader once for all line objects
-        self._line_shader.update(self._view_matrix, self._projection_matrix)
+        """Render all line objects using the geometry-shader wide-line pipeline."""
+        gl = RendererGL.gl
+        inv_asp = float(self._screen_height) / float(max(self._screen_width, 1))
+        clip_width = max(0.0, self.line_width) * 2.0 / max(self._screen_height, 1)
 
-        with self._line_shader:
+        gl.glEnable(gl.GL_DEPTH_TEST)
+        gl.glDisable(gl.GL_CULL_FACE)
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+
+        identity = np.eye(4, dtype=np.float32)
+        with self._wireframe_shader:
+            self._wireframe_shader.update_frame(
+                self._view_matrix,
+                self._projection_matrix,
+                inv_asp,
+                line_width=clip_width,
+                alpha=1.0,
+            )
+            self._wireframe_shader.set_world(identity)
             for line_obj in lines.values():
                 if hasattr(line_obj, "render"):
                     line_obj.render()
 
+        gl.glDisable(gl.GL_BLEND)
+        check_gl_error()
+
+    def _render_arrows(self, arrows):
+        """Render arrow batches (wide line + arrowhead triangle per segment)."""
+        gl = RendererGL.gl
+        inv_asp = float(self._screen_height) / float(max(self._screen_width, 1))
+        scale = max(0.0, self.arrow_scale)
+        clip_width = (2.0 * scale) * 2.0 / max(self._screen_height, 1)
+        clip_arrow = (8.0 * scale) * 2.0 / max(self._screen_height, 1)
+
+        gl.glEnable(gl.GL_DEPTH_TEST)
+        gl.glDisable(gl.GL_CULL_FACE)
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+
+        identity = np.eye(4, dtype=np.float32)
+        with self._arrow_shader:
+            self._arrow_shader.update_frame(
+                self._view_matrix,
+                self._projection_matrix,
+                inv_asp,
+                line_width=clip_width,
+                arrow_size=clip_arrow,
+                alpha=1.0,
+            )
+            self._arrow_shader.set_world(identity)
+            for arrow_obj in arrows.values():
+                if hasattr(arrow_obj, "render"):
+                    arrow_obj.render()
+
+        gl.glDisable(gl.GL_BLEND)
         check_gl_error()
 
     def _render_wireframe_shapes(self, wireframe_shapes):

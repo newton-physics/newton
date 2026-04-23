@@ -27,13 +27,21 @@ class TestSensorTiledCamera(unittest.TestCase):
             dtype=np.uint8,
         )
 
-    def _build_single_sphere_scene(self, color: tuple[float, float, float]):
+    @classmethod
+    def setUpClass(cls):
+        if not wp.is_cuda_available():
+            return
+        cls._shared_model = cls._build_scene()
+
+    @staticmethod
+    def _build_single_sphere_scene(color: tuple[float, float, float]):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()), label="sphere")
         builder.add_shape_sphere(body, radius=0.75, color=color)
         return builder.finalize(device="cpu")
 
-    def __build_scene(self):
+    @staticmethod
+    def _build_scene():
         from pxr import Usd, UsdGeom
 
         builder = newton.ModelBuilder()
@@ -65,7 +73,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         # MESH (bunny)
         bunny_filename = os.path.join(os.path.dirname(__file__), "..", "examples", "assets", "bunny.usd")
-        self.assertTrue(os.path.exists(bunny_filename), f"File not found: {bunny_filename}")
+        assert os.path.exists(bunny_filename), f"File not found: {bunny_filename}"
         usd_stage = Usd.Stage.Open(bunny_filename)
         usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
 
@@ -86,20 +94,16 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         gold_image = gold_image.reshape(test_image.shape)
 
-        def _absdiff(x, y):
-            if x > y:
-                return x - y
-            return y - x
-
-        absdiff = np.vectorize(_absdiff)
-
-        diff = absdiff(test_image, gold_image)
+        # Promote to a wide type before subtracting: int64 avoids unsigned underflow for
+        # integer images, float64 preserves fractional deltas for float (e.g. depth) images.
+        wide_dtype = np.int64 if np.issubdtype(test_image.dtype, np.integer) else np.float64
+        diff = np.abs(test_image.astype(wide_dtype) - gold_image.astype(wide_dtype))
 
         divider = 1.0
         if np.issubdtype(test_image.dtype, np.integer):
             divider = np.iinfo(test_image.dtype).max
 
-        percentage_diff = np.average(diff) / divider * 100.0
+        percentage_diff = float(np.average(diff)) / divider * 100.0
         self.assertLessEqual(
             percentage_diff,
             allowed_difference,
@@ -108,7 +112,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_golden_image(self):
-        model = self.__build_scene()
+        model = self._shared_model
 
         width = 320
         height = 240
@@ -142,7 +146,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_output_image_parameters(self):
-        model = self.__build_scene()
+        model = self._shared_model
 
         width = 640
         height = 480

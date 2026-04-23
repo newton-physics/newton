@@ -154,7 +154,7 @@ class Example:
             joint_f = self.cartpoles.get_attribute("joint_f", self.control)
             wp.launch(
                 apply_forces_kernel,
-                dim=joint_f.shape,
+                dim=joint_f.shape[0],
                 inputs=[joint_q, joint_f],
             )
 
