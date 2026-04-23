@@ -66,7 +66,7 @@ def _delay_read_kernel(
     out_vel: wp.array[float],
     out_act: wp.array[float],
 ):
-    """Read per-DOF delayed targets, falling back to current targets when buffer is empty or delay is zero."""
+    """Read per-DOF delayed command inputs, falling back to current inputs when buffer is empty or delay is zero."""
     i = wp.tid()
     n = num_pushes[i]
     if n == 0 or delays[i] == 0:
@@ -243,11 +243,11 @@ class Delay:
         vel_indices: wp.array[wp.uint32],
         current_state: Delay.State,
     ) -> tuple[wp.array[float], wp.array[float], wp.array[float]]:
-        """Read per-DOF delayed targets from the circular buffer.
+        """Read per-DOF delayed command inputs from the circular buffer.
 
         Each DOF reads from its own lag offset stored in :attr:`delay_steps`,
         clamped to available history (per-DOF ``num_pushes``).  When the
-        buffer is empty, falls back to the current targets; when
+        buffer is empty, falls back to the current command inputs; when
         underfilled, the lag is clamped to the oldest available entry.
 
         Args:
@@ -294,7 +294,7 @@ class Delay:
         current_state: Delay.State,
         next_state: Delay.State,
     ) -> None:
-        """Write current targets into the buffer and advance the write pointer.
+        """Write current command inputs into the buffer and advance the write pointer.
 
         Args:
             target_pos: Current target positions [m or rad].

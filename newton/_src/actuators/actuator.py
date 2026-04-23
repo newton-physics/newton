@@ -113,7 +113,7 @@ class Actuator:
             state_vel_attr: Attribute on sim_state for velocities.
             control_target_pos_attr: Attribute on sim_control for target positions.
             control_target_vel_attr: Attribute on sim_control for target velocities.
-            control_feedforward_attr: Attribute on sim_control for control input. None to skip.
+            control_feedforward_attr: Attribute on sim_control for feedforward effort. None to skip.
             control_output_attr: Attribute on sim_control for clamped output effort.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
                 effort. None to skip writing computed effort.
