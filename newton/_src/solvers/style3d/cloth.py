@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -280,7 +281,7 @@ def add_cloth_mesh(
     panel_inv_D_all, panel_areas_all = _compute_panel_triangles(panel_verts_np, panel_indices_np)
     valid_inds = (panel_areas_all > 0.0).nonzero()[0]
     if len(valid_inds) < len(panel_areas_all):
-        print("inverted or degenerate triangle elements")
+        warnings.warn("Inverted or degenerate triangle elements detected.", stacklevel=2)
     tri_indices_valid = tri_indices_np[valid_inds]
     panel_indices_valid = panel_indices_np[valid_inds]
 
