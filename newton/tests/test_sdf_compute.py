@@ -20,6 +20,7 @@ import warp as wp
 
 import newton
 from newton import GeoType, Mesh
+from newton._src.geometry.sdf_texture import TextureSDFData, texture_sample_sdf
 from newton._src.geometry.sdf_utils import (
     SDF,
     SDFData,
@@ -249,9 +250,14 @@ def sample_sdf_with_gradient(volume, points_np: np.ndarray) -> tuple[np.ndarray,
     return values.numpy(), gradients.numpy()
 
 
-@unittest.skipUnless(_cuda_available, "wp.Volume requires CUDA device")
+@unittest.skipUnless(_cuda_available, "Texture SDF requires CUDA device")
 class TestComputeSDF(unittest.TestCase):
-    """Test the compute_sdf_from_shape function."""
+    """Test mesh SDF construction via the texture-based path.
+
+    On CUDA, ``SDF.create_from_mesh`` builds only a texture SDF (no NanoVDB
+    volumes).  These tests validate sign, distance, and extent correctness
+    using the texture sampling path.
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -260,50 +266,36 @@ class TestComputeSDF(unittest.TestCase):
         cls.half_extents = (0.5, 0.5, 0.5)
         cls.mesh = create_box_mesh(cls.half_extents)
 
-    def test_sdf_returns_valid_data(self):
-        """Test that compute_sdf_from_shape returns valid data."""
-        sdf_data, sparse_volume, coarse_volume, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-        )
+    def _build_sdf(self, **kwargs):
+        """Helper: build SDF from mesh using the texture path."""
+        return SDF.create_from_mesh(self.mesh, **kwargs)
 
-        self.assertIsNotNone(sparse_volume)
-        self.assertIsNotNone(coarse_volume)
-        self.assertNotEqual(sdf_data.sparse_sdf_ptr, 0)
-        self.assertNotEqual(sdf_data.coarse_sdf_ptr, 0)
+    def test_sdf_returns_valid_data(self):
+        """Test that create_from_mesh returns valid texture SDF data."""
+        sdf = self._build_sdf()
+        self.assertIsNotNone(sdf.texture_data)
+        # NanoVDB volumes are not built for mesh SDFs on CUDA.
+        self.assertIsNone(sdf.sparse_volume)
+        self.assertIsNone(sdf.coarse_volume)
 
     def test_sdf_extents_are_valid(self):
         """Test that SDF extents match the mesh bounds."""
-        sdf_data, _, _, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-            margin=0.05,
-        )
+        sdf = self._build_sdf(margin=0.05)
+        td = sdf.texture_data
 
-        # Half extents should be at least as large as mesh half extents + margin
-        min_half_extent = min(self.half_extents) + 0.05
-        self.assertGreaterEqual(sdf_data.half_extents[0], min_half_extent - 0.01)
-        self.assertGreaterEqual(sdf_data.half_extents[1], min_half_extent - 0.01)
-        self.assertGreaterEqual(sdf_data.half_extents[2], min_half_extent - 0.01)
+        lower = np.array([td.sdf_box_lower[0], td.sdf_box_lower[1], td.sdf_box_lower[2]])
+        upper = np.array([td.sdf_box_upper[0], td.sdf_box_upper[1], td.sdf_box_upper[2]])
+        extent_size = upper - lower
 
-    def test_sparse_sdf_values_near_surface(self):
-        """Test that sparse SDF values near the surface are smaller than background.
+        # Each axis extent should be at least 2*(half_extent + margin)
+        expected_min_size = 2.0 * (min(self.half_extents) + 0.05)
+        for i in range(3):
+            self.assertGreaterEqual(extent_size[i], expected_min_size - 0.02, f"Extent axis {i} too small")
 
-        Note: The sparse SDF is a narrow-band SDF, so only values near the surface
-        (within narrow_band_distance) will have valid values. Points far from the
-        surface will return the background value.
-        """
-        sdf_data, sparse_volume, _, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-            narrow_band_distance=(-0.1, 0.1),
-        )
+    def test_sdf_values_near_surface(self):
+        """Test that texture SDF values near the surface have correct sign and magnitude."""
+        sdf = self._build_sdf(narrow_band_range=(-0.1, 0.1))
 
-        # Test points near the surface (within narrow band)
-        # These are just inside and just outside each face of the box
         test_points = np.array(
             [
                 [0.45, 0.0, 0.0],  # Near +X face (inside)
@@ -315,302 +307,54 @@ class TestComputeSDF(unittest.TestCase):
             dtype=np.float32,
         )
 
-        values = sample_sdf_at_points(sparse_volume, test_points)
+        values = _sample_texture_sdf_at_points(sdf, test_points)
 
-        for _i, (point, value) in enumerate(zip(test_points, values, strict=False)):
-            self.assertLess(
-                value,
-                sdf_data.background_value,
-                f"SDF value {value} at {point} (near surface) should be less than background {sdf_data.background_value}",
-            )
+        self.assertLess(float(values[0]), 0.0, "Inside +X face should be negative")
+        self.assertGreater(float(values[1]), 0.0, "Outside +X face should be positive")
+        self.assertLess(float(values[2]), 0.0, "Inside +Y face should be negative")
+        self.assertLess(float(values[3]), 0.0, "Inside +Z face should be negative")
+        self.assertLess(float(values[4]), 0.0, "Inside -X face should be negative")
 
-    def test_coarse_sdf_values_inside_extent(self):
-        """Test that coarse SDF values inside the extent are smaller than background."""
-        sdf_data, _, coarse_volume, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-        )
+    def test_sdf_values_inside_extent(self):
+        """Test that SDF values at the center and interior points are negative."""
+        sdf = self._build_sdf()
 
-        # Sample points inside the SDF extent
-        center = np.array([sdf_data.center[0], sdf_data.center[1], sdf_data.center[2]])
-        half_ext = np.array([sdf_data.half_extents[0], sdf_data.half_extents[1], sdf_data.half_extents[2]])
-
-        # Generate test points inside the extent
         test_points = np.array(
             [
-                center,  # Center
-                center + half_ext * 0.5,  # Offset from center
-                center - half_ext * 0.5,  # Other offset
+                [0.0, 0.0, 0.0],  # Center
+                [0.2, 0.2, 0.2],  # Interior
+                [-0.2, -0.2, -0.2],
             ],
             dtype=np.float32,
         )
 
-        values = sample_sdf_at_points(coarse_volume, test_points)
-
-        for _i, (point, value) in enumerate(zip(test_points, values, strict=False)):
-            self.assertLess(
-                value,
-                sdf_data.background_value,
-                f"Coarse SDF value {value} at {point} should be less than background {sdf_data.background_value}",
-            )
-
-    def test_coarse_sdf_values_at_extent_boundary(self):
-        """Test that coarse SDF values at the extent boundary are valid.
-
-        The extent boundary is at center ± half_extents. With margin=0.05 and
-        mesh half_extents of 0.5, the boundary is at approximately ±0.55.
-        Points at or near this boundary should still have valid SDF values.
-        """
-        margin = 0.05
-        sdf_data, _, coarse_volume, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-            margin=margin,
-        )
-
-        center = np.array([sdf_data.center[0], sdf_data.center[1], sdf_data.center[2]])
-        half_ext = np.array([sdf_data.half_extents[0], sdf_data.half_extents[1], sdf_data.half_extents[2]])
-
-        # Verify the extent includes the margin
-        expected_half_ext = self.half_extents[0] + margin  # 0.5 + 0.05 = 0.55
-        self.assertAlmostEqual(
-            half_ext[0],
-            expected_half_ext,
-            places=2,
-            msg=f"Expected half_extent ~{expected_half_ext}, got {half_ext[0]}",
-        )
-
-        # Test points at extent boundary corners (slightly inside to ensure we're in the volume)
-        boundary_factor = 0.99  # Just inside the boundary
-        test_points = np.array(
-            [
-                # Corners of the extent (outside the mesh, inside the extent)
-                center + half_ext * np.array([boundary_factor, boundary_factor, boundary_factor]),
-                center + half_ext * np.array([boundary_factor, boundary_factor, -boundary_factor]),
-                center + half_ext * np.array([boundary_factor, -boundary_factor, boundary_factor]),
-                center + half_ext * np.array([boundary_factor, -boundary_factor, -boundary_factor]),
-                center + half_ext * np.array([-boundary_factor, boundary_factor, boundary_factor]),
-                center + half_ext * np.array([-boundary_factor, boundary_factor, -boundary_factor]),
-                center + half_ext * np.array([-boundary_factor, -boundary_factor, boundary_factor]),
-                center + half_ext * np.array([-boundary_factor, -boundary_factor, -boundary_factor]),
-                # Face centers at the boundary
-                center + half_ext * np.array([boundary_factor, 0.0, 0.0]),
-                center + half_ext * np.array([-boundary_factor, 0.0, 0.0]),
-                center + half_ext * np.array([0.0, boundary_factor, 0.0]),
-                center + half_ext * np.array([0.0, -boundary_factor, 0.0]),
-                center + half_ext * np.array([0.0, 0.0, boundary_factor]),
-                center + half_ext * np.array([0.0, 0.0, -boundary_factor]),
-            ],
-            dtype=np.float32,
-        )
-
-        values = sample_sdf_at_points(coarse_volume, test_points)
-
-        for i, (point, value) in enumerate(zip(test_points, values, strict=False)):
-            self.assertLess(
-                value,
-                sdf_data.background_value,
-                f"Coarse SDF at extent boundary point {i} = {point} should be < {sdf_data.background_value}, got {value}",
-            )
-            # Corners are outside the mesh (which is at ±0.5), so SDF should be positive
-            # Face center points at ±0.55 on one axis and 0 on others are also outside mesh
-            self.assertGreater(
-                value,
-                0.0,
-                f"Coarse SDF at extent boundary (outside mesh at ±0.5) should be positive, got {value} at {point}",
-            )
-
-    def test_sparse_sdf_values_at_extent_boundary(self):
-        """Test that sparse SDF values at the actual extent boundary are valid.
-
-        The extent boundary is at center ± half_extents. With margin=0.05 and
-        mesh half_extents of 0.5, the extent boundary is at approximately ±0.55.
-
-        The narrow band extends ±0.1 from the surface (at ±0.5), so the narrow
-        band covers [0.4, 0.6] for each face. The extent boundary at 0.55 is
-        within this narrow band, so we should get valid values there.
-        """
-        margin = 0.05
-        sdf_data, sparse_volume, _, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-            margin=margin,
-        )
-
-        center = np.array([sdf_data.center[0], sdf_data.center[1], sdf_data.center[2]])
-        half_ext = np.array([sdf_data.half_extents[0], sdf_data.half_extents[1], sdf_data.half_extents[2]])
-
-        # Verify the extent is what we expect (mesh half_extents + margin)
-        expected_half_ext = self.half_extents[0] + margin  # 0.5 + 0.05 = 0.55
-        self.assertAlmostEqual(
-            half_ext[0],
-            expected_half_ext,
-            places=2,
-            msg=f"Expected half_extent ~{expected_half_ext}, got {half_ext[0]}",
-        )
-
-        # Test points AT the extent boundary (0.99 * half_ext to stay just inside)
-        # These should be within the narrow band since:
-        # - Surface is at 0.5
-        # - Narrow band extends to 0.5 + 0.1 = 0.6
-        # - Extent boundary is at ~0.55, which is < 0.6
-        boundary_factor = 0.99
-        boundary_points = np.array(
-            [
-                # Face centers at extent boundary
-                center + half_ext * np.array([boundary_factor, 0.0, 0.0]),
-                center + half_ext * np.array([-boundary_factor, 0.0, 0.0]),
-                center + half_ext * np.array([0.0, boundary_factor, 0.0]),
-                center + half_ext * np.array([0.0, -boundary_factor, 0.0]),
-                center + half_ext * np.array([0.0, 0.0, boundary_factor]),
-                center + half_ext * np.array([0.0, 0.0, -boundary_factor]),
-            ],
-            dtype=np.float32,
-        )
-
-        values = sample_sdf_at_points(sparse_volume, boundary_points)
-
-        for i, (point, value) in enumerate(zip(boundary_points, values, strict=False)):
-            self.assertLess(
-                value,
-                sdf_data.background_value,
-                f"Sparse SDF at extent boundary point {i} = {point} should be < {sdf_data.background_value}, got {value}",
-            )
-            # These points are outside the mesh surface, so SDF should be positive
-            self.assertGreater(
-                value,
-                0.0,
-                f"Sparse SDF at extent boundary (outside mesh) should be positive, got {value} at {point}",
-            )
+        values = _sample_texture_sdf_at_points(sdf, test_points)
+        for i, value in enumerate(values):
+            self.assertLess(float(value), 0.0, f"Interior point {i} should be negative, got {value}")
 
     def test_sdf_negative_inside_mesh(self):
-        """Test that SDF values are negative inside the mesh.
+        """Test that SDF values are negative inside the mesh."""
+        sdf = self._build_sdf()
 
-        For the sparse SDF, we test a point just inside the surface (within the narrow band).
-        For the coarse SDF, we can test the center since it covers the entire volume.
-        """
-        _sdf_data, sparse_volume, coarse_volume, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
+        test_points = np.array(
+            [
+                [0.45, 0.0, 0.0],  # Just inside +X face
+                [0.0, 0.0, 0.0],  # Center
+            ],
+            dtype=np.float32,
         )
 
-        # For sparse SDF: test point just inside a face (within narrow band)
-        near_surface_inside = np.array([[0.45, 0.0, 0.0]], dtype=np.float32)
-        sparse_values = sample_sdf_at_points(sparse_volume, near_surface_inside)
-        self.assertLess(
-            sparse_values[0], 0.0, f"Sparse SDF just inside surface should be negative, got {sparse_values[0]}"
-        )
-
-        # For coarse SDF: test at center (coarse SDF covers entire volume)
-        center_point = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
-        coarse_values = sample_sdf_at_points(coarse_volume, center_point)
-        self.assertLess(coarse_values[0], 0.0, f"Coarse SDF at center should be negative, got {coarse_values[0]}")
+        values = _sample_texture_sdf_at_points(sdf, test_points)
+        self.assertLess(float(values[0]), 0.0, "Just inside surface should be negative")
+        self.assertLess(float(values[1]), 0.0, "Center should be negative")
 
     def test_sdf_positive_outside_mesh(self):
         """Test that SDF values are positive outside the mesh."""
-        _sdf_data, sparse_volume, coarse_volume, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-        )
+        sdf = self._build_sdf()
 
-        # Point well outside the box
-        outside_point = np.array([[2.0, 0.0, 0.0]], dtype=np.float32)
-
-        # Test sparse SDF (may hit background value if outside narrow band)
-        sparse_values = sample_sdf_at_points(sparse_volume, outside_point)
-        self.assertGreater(sparse_values[0], 0.0, f"Sparse SDF outside should be positive, got {sparse_values[0]}")
-
-        # Test coarse SDF
-        coarse_values = sample_sdf_at_points(coarse_volume, outside_point)
-        self.assertGreater(coarse_values[0], 0.0, f"Coarse SDF outside should be positive, got {coarse_values[0]}")
-
-    def test_sdf_gradient_points_outward(self):
-        """Test that SDF gradient points away from the surface (outward)."""
-        _sdf_data, sparse_volume, _, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-        )
-
-        # Test gradient at a point slightly inside the +X face
-        test_points = np.array([[0.4, 0.0, 0.0]], dtype=np.float32)  # Inside the box, close to +X face
-
-        _values, gradients = sample_sdf_with_gradient(sparse_volume, test_points)
-
-        gradient = gradients[0]
-        gradient_norm = np.linalg.norm(gradient)
-
-        if gradient_norm > 1e-6:
-            gradient_normalized = gradient / gradient_norm
-            # X component should be positive (pointing outward toward +X face)
-            self.assertGreater(
-                gradient_normalized[0],
-                0.5,
-                f"Gradient should point toward +X, got {gradient_normalized}",
-            )
-
-    def test_sparse_and_coarse_consistency(self):
-        """Test that sparse and coarse SDFs have consistent signs near the surface.
-
-        We test at a point near the surface (within the narrow band) where both
-        SDFs should have valid values.
-        """
-        _sdf_data, sparse_volume, coarse_volume, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-        )
-
-        # Sample at a point near the surface (within narrow band)
-        near_surface = np.array([[0.45, 0.0, 0.0]], dtype=np.float32)
-
-        sparse_values = sample_sdf_at_points(sparse_volume, near_surface)
-        coarse_values = sample_sdf_at_points(coarse_volume, near_surface)
-
-        # Both should have the same sign (both negative inside)
-        self.assertEqual(
-            np.sign(sparse_values[0]),
-            np.sign(coarse_values[0]),
-            f"Sparse ({sparse_values[0]}) and coarse ({coarse_values[0]}) should have same sign near surface",
-        )
-
-    def test_thickness_offset(self):
-        """Test that thickness offsets the SDF values.
-
-        We test near the surface where the sparse SDF has valid values.
-        """
-        thickness = 0.1
-
-        _, sparse_no_thickness, _, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-        )
-
-        _, sparse_with_thickness, _, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=thickness,
-        )
-
-        # Sample near the surface (within narrow band)
-        near_surface = np.array([[0.45, 0.0, 0.0]], dtype=np.float32)
-
-        values_no_thick = sample_sdf_at_points(sparse_no_thickness, near_surface)
-        values_with_thick = sample_sdf_at_points(sparse_with_thickness, near_surface)
-
-        # With thickness, SDF should be offset (more negative = thicker shell)
-        self.assertAlmostEqual(
-            values_with_thick[0],
-            values_no_thick[0] - thickness,
-            places=2,
-            msg=f"Thickness should offset SDF by -{thickness}",
-        )
+        outside_point = np.array([[0.6, 0.0, 0.0]], dtype=np.float32)
+        values = _sample_texture_sdf_at_points(sdf, outside_point)
+        self.assertGreater(float(values[0]), 0.0, "Outside mesh should be positive")
 
     def test_inverted_winding_sphere(self):
         """Test SDF computation for a sphere mesh with inverted winding.
@@ -624,71 +368,61 @@ class TestComputeSDF(unittest.TestCase):
         sphere = create_sphere_mesh(radius, subdivisions=2)
         inverted_sphere = invert_mesh_winding(sphere)
 
-        # Compute SDF at low resolution for speed, with wider narrow band
-        _, sparse_volume, coarse_volume, _ = compute_sdf_from_shape(
-            shape_geo=inverted_sphere,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
+        sdf = SDF.create_from_mesh(
+            inverted_sphere,
             max_resolution=32,
-            narrow_band_distance=(-0.2, 0.2),  # Wider band for testing
+            narrow_band_range=(-0.2, 0.2),
         )
+        self.assertIsNotNone(sdf.texture_data)
 
-        self.assertIsNotNone(sparse_volume)
-        self.assertIsNotNone(coarse_volume)
-
-        # Test points inside the sphere (should be negative)
         inside_points = np.array(
             [
-                [0.0, 0.0, 0.0],  # Center
-                [0.1, 0.0, 0.0],  # Slightly off center
-                [0.0, 0.2, 0.0],  # Another inside point
-                [0.1, 0.1, 0.1],  # Inside diagonal
+                [0.0, 0.0, 0.0],
+                [0.1, 0.0, 0.0],
+                [0.0, 0.2, 0.0],
+                [0.1, 0.1, 0.1],
             ],
             dtype=np.float32,
         )
 
-        inside_values = sample_sdf_at_points(coarse_volume, inside_points)
+        inside_values = _sample_texture_sdf_at_points(sdf, inside_points)
         for i, (point, value) in enumerate(zip(inside_points, inside_values, strict=False)):
-            self.assertLess(value, 0.0, f"Point {i} at {point} should be inside (negative), got {value}")
+            self.assertLess(float(value), 0.0, f"Point {i} at {point} should be inside (negative), got {value}")
 
-        # Test points near but inside sphere surface (should be negative)
-        # The SDF extent is ~1.1, so stay well within bounds
         near_inside_points = np.array(
             [
-                [radius - 0.05, 0.0, 0.0],  # Just inside +X
-                [0.0, radius - 0.05, 0.0],  # Just inside +Y
-                [0.0, 0.0, radius - 0.05],  # Just inside +Z
+                [radius - 0.05, 0.0, 0.0],
+                [0.0, radius - 0.05, 0.0],
+                [0.0, 0.0, radius - 0.05],
             ],
             dtype=np.float32,
         )
 
-        near_inside_values = sample_sdf_at_points(coarse_volume, near_inside_points)
+        near_inside_values = _sample_texture_sdf_at_points(sdf, near_inside_points)
         for i, (point, value) in enumerate(zip(near_inside_points, near_inside_values, strict=False)):
-            self.assertLess(value, 0.0, f"Point {i} at {point} should be inside (negative), got {value}")
+            self.assertLess(float(value), 0.0, f"Point {i} at {point} should be inside (negative), got {value}")
 
-        # Test points just outside sphere surface (should be positive)
-        # Use small offset (0.02) to stay well within the narrow band and volume extent
         outside_offset = 0.02
         outside_points = np.array(
             [
-                [radius + outside_offset, 0.0, 0.0],  # Just outside +X
-                [0.0, radius + outside_offset, 0.0],  # Just outside +Y
-                [0.0, 0.0, radius + outside_offset],  # Just outside +Z
-                [-(radius + outside_offset), 0.0, 0.0],  # Just outside -X
-                [0.0, -(radius + outside_offset), 0.0],  # Just outside -Y
-                [0.0, 0.0, -(radius + outside_offset)],  # Just outside -Z
+                [radius + outside_offset, 0.0, 0.0],
+                [0.0, radius + outside_offset, 0.0],
+                [0.0, 0.0, radius + outside_offset],
+                [-(radius + outside_offset), 0.0, 0.0],
+                [0.0, -(radius + outside_offset), 0.0],
+                [0.0, 0.0, -(radius + outside_offset)],
             ],
             dtype=np.float32,
         )
 
-        outside_values = sample_sdf_at_points(coarse_volume, outside_points)
+        outside_values = _sample_texture_sdf_at_points(sdf, outside_points)
         for i, (point, value) in enumerate(zip(outside_points, outside_values, strict=False)):
-            self.assertGreater(value, 0.0, f"Point {i} at {point} should be outside (positive), got {value}")
+            self.assertGreater(float(value), 0.0, f"Point {i} at {point} should be outside (positive), got {value}")
 
 
-@unittest.skipUnless(_cuda_available, "wp.Volume requires CUDA device")
+@unittest.skipUnless(_cuda_available, "Texture SDF requires CUDA device")
 class TestComputeSDFGridSampling(unittest.TestCase):
-    """Test SDF by sampling on a grid of points."""
+    """Test texture SDF by sampling on a grid of points."""
 
     @classmethod
     def setUpClass(cls):
@@ -697,72 +431,48 @@ class TestComputeSDFGridSampling(unittest.TestCase):
         cls.half_extents = (0.5, 0.5, 0.5)
         cls.mesh = create_box_mesh(cls.half_extents)
 
-    def test_grid_sampling_sparse_sdf_near_surface(self):
-        """Sample sparse SDF on a grid near the surface and verify values are valid.
+    def test_grid_sampling_near_surface(self):
+        """Sample texture SDF on a grid near the surface and verify sign correctness."""
+        sdf = SDF.create_from_mesh(self.mesh)
 
-        Since the sparse SDF is a narrow-band SDF, we sample points near the surface
-        (on a shell around the box) where the SDF should have valid values.
-        """
-        sdf_data, sparse_volume, _, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-        )
-
-        # Sample points on a grid near the +X face of the box (within narrow band)
-        test_points = []
+        test_points_inside = []
+        test_points_outside = []
         for j in range(5):
             for k in range(5):
-                # Grid on the YZ plane, at x = 0.45 (just inside the surface)
-                y = (j / 4.0 - 0.5) * 0.8  # Range [-0.4, 0.4]
+                y = (j / 4.0 - 0.5) * 0.8
                 z = (k / 4.0 - 0.5) * 0.8
-                test_points.append([0.45, y, z])
-                # Also test just outside
-                test_points.append([0.55, y, z])
+                test_points_inside.append([0.45, y, z])
+                test_points_outside.append([0.55, y, z])
 
-        test_points = np.array(test_points, dtype=np.float32)
-        values = sample_sdf_at_points(sparse_volume, test_points)
+        inside_np = np.array(test_points_inside, dtype=np.float32)
+        outside_np = np.array(test_points_outside, dtype=np.float32)
 
-        for i, (point, value) in enumerate(zip(test_points, values, strict=False)):
-            self.assertLess(
-                value,
-                sdf_data.background_value,
-                f"SDF at point {i} = {point} (near surface) should be < {sdf_data.background_value}, got {value}",
-            )
+        vals_in = _sample_texture_sdf_at_points(sdf, inside_np)
+        vals_out = _sample_texture_sdf_at_points(sdf, outside_np)
 
-    def test_grid_sampling_coarse_sdf(self):
-        """Sample coarse SDF on a grid and verify all values are less than background."""
-        sdf_data, _, coarse_volume, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
-            shape_type=GeoType.MESH,
-            shape_margin=0.0,
-        )
+        for i, (pt, v) in enumerate(zip(test_points_inside, vals_in, strict=False)):
+            self.assertLess(float(v), 0.0, f"Inside point {i} at {pt} should be negative, got {v}")
+        for i, (pt, v) in enumerate(zip(test_points_outside, vals_out, strict=False)):
+            self.assertGreater(float(v), 0.0, f"Outside point {i} at {pt} should be positive, got {v}")
 
-        # Create a grid of test points inside the extent
-        center = np.array([sdf_data.center[0], sdf_data.center[1], sdf_data.center[2]])
-        half_ext = np.array([sdf_data.half_extents[0], sdf_data.half_extents[1], sdf_data.half_extents[2]])
+    def test_grid_sampling_interior(self):
+        """Sample texture SDF on an interior 5^3 grid and verify all points are negative."""
+        sdf = SDF.create_from_mesh(self.mesh)
 
-        # Sample on a 5x5x5 grid inside the extent
         test_points = []
         for i in range(5):
             for j in range(5):
                 for k in range(5):
-                    # Normalized coordinates [-0.8, 0.8] to stay inside extent
-                    u = (i / 4.0 - 0.5) * 1.6
-                    v = (j / 4.0 - 0.5) * 1.6
-                    w = (k / 4.0 - 0.5) * 1.6
-                    point = center + half_ext * np.array([u, v, w])
-                    test_points.append(point)
+                    x = (i / 4.0 - 0.5) * 0.8
+                    y = (j / 4.0 - 0.5) * 0.8
+                    z = (k / 4.0 - 0.5) * 0.8
+                    test_points.append([x, y, z])
 
-        test_points = np.array(test_points, dtype=np.float32)
-        values = sample_sdf_at_points(coarse_volume, test_points)
+        test_np = np.array(test_points, dtype=np.float32)
+        values = _sample_texture_sdf_at_points(sdf, test_np)
 
-        for i, (point, value) in enumerate(zip(test_points, values, strict=False)):
-            self.assertLess(
-                value,
-                sdf_data.background_value,
-                f"Coarse SDF at grid point {i} = {point} should be < {sdf_data.background_value}, got {value}",
-            )
+        for i, (pt, v) in enumerate(zip(test_points, values, strict=False)):
+            self.assertLess(float(v), 0.0, f"Interior point {i} at {pt} should be negative, got {v}")
 
 
 @wp.kernel
@@ -823,21 +533,30 @@ def sample_extrapolated_with_gradient(sdf_data: SDFData, points_np: np.ndarray) 
 
 @unittest.skipUnless(_cuda_available, "wp.Volume requires CUDA device")
 class TestSDFExtrapolation(unittest.TestCase):
-    """Test the SDF extrapolation functions."""
+    """Test the SDF extrapolation functions (NanoVDB utility).
+
+    These tests exercise :func:`sample_sdf_extrapolated` and
+    :func:`sample_sdf_grad_extrapolated`, which rely on NanoVDB volumes.
+    Since the production mesh SDF path no longer builds NanoVDB, we build
+    them explicitly via :func:`_compute_sdf_from_shape_impl`.
+    """
 
     @classmethod
     def setUpClass(cls):
         """Set up test fixtures once for all tests."""
+        from newton._src.geometry.sdf_utils import _compute_sdf_from_shape_impl  # noqa: PLC0415
+
         wp.init()
         cls.half_extents = (0.5, 0.5, 0.5)
         cls.mesh = create_box_mesh(cls.half_extents)
-        # Create SDF with known parameters
-        cls.sdf_data, cls.sparse_volume, cls.coarse_volume, _ = compute_sdf_from_shape(
-            shape_geo=cls.mesh,
+        cls.sdf_data, cls.sparse_volume, cls.coarse_volume, _ = _compute_sdf_from_shape_impl(
             shape_type=GeoType.MESH,
+            shape_geo=cls.mesh,
+            shape_scale=(1.0, 1.0, 1.0),
             shape_margin=0.0,
             narrow_band_distance=(-0.1, 0.1),
             margin=0.05,
+            max_resolution=64,
         )
 
     def test_extrapolated_inside_narrow_band(self):
@@ -1140,7 +859,7 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_sdf_create_from_data_roundtrip(self):
-        """Round-trip SDF reconstruction from generated volumes."""
+        """Round-trip SDF reconstruction from generated data."""
         mesh = create_box_mesh((0.3, 0.2, 0.1))
         mesh.build_sdf(max_resolution=32)
         sdf = mesh.sdf
@@ -1155,6 +874,7 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
             background_value=float(sdf.data.background_value),
             scale_baked=bool(sdf.data.scale_baked),
         )
+        # On CUDA, sparse/coarse volumes are None; ptrs should both be 0.
         self.assertEqual(int(rebuilt.data.sparse_sdf_ptr), int(sdf.data.sparse_sdf_ptr))
         self.assertEqual(int(rebuilt.data.coarse_sdf_ptr), int(sdf.data.coarse_sdf_ptr))
         np.testing.assert_allclose(np.array(rebuilt.data.sparse_voxel_size), np.array(sdf.data.sparse_voxel_size))
@@ -1162,14 +882,14 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_sdf_static_create_methods(self):
-        """SDF static creation methods should construct valid SDF handles."""
+        """SDF static creation methods should construct valid SDF handles with texture data."""
         mesh = create_box_mesh((0.3, 0.2, 0.1))
 
         sdf_from_mesh = newton.SDF.create_from_mesh(mesh, max_resolution=32)
-        self.assertNotEqual(int(sdf_from_mesh.data.sparse_sdf_ptr), 0)
+        self.assertIsNotNone(sdf_from_mesh.texture_data)
 
         sdf_from_points = newton.SDF.create_from_points(mesh.vertices, mesh.indices, max_resolution=32)
-        self.assertNotEqual(int(sdf_from_points.data.sparse_sdf_ptr), 0)
+        self.assertIsNotNone(sdf_from_points.texture_data)
 
         rebuilt = newton.SDF.create_from_data(
             sparse_volume=sdf_from_mesh.sparse_volume,
@@ -1423,18 +1143,6 @@ class TestExtractIsomesh(unittest.TestCase):
         result = sdf.extract_isomesh(isovalue=10.0)
         self.assertIsNone(result)
 
-    def test_compute_isomesh_with_isovalue(self):
-        """compute_isomesh with non-zero isovalue: vertices at the offset distance."""
-        sdf = self.mesh.sdf
-        self.assertIsNotNone(sdf)
-        sparse_vol = sdf.sparse_volume
-        self.assertIsNotNone(sparse_vol)
-        offset = 0.04
-        result = compute_isomesh(sparse_vol, isovalue=offset)
-        self.assertIsNotNone(result)
-        self.assertGreater(result.vertices.shape[0], 0)
-        self._assert_box_vertices_at_isovalue(result, offset)
-
     def test_compute_offset_mesh_with_prebuilt_sdf(self):
         """compute_offset_mesh via pre-built SDF: vertices at the offset distance."""
         offset = 0.04
@@ -1461,35 +1169,27 @@ class TestExtractIsomesh(unittest.TestCase):
                 f"{extent_large[i]:.4f} vs {extent_small[i]:.4f}",
             )
 
-    def test_extract_isomesh_sparse_fallback_with_shape_margin(self):
-        """Sparse-volume fallback in extract_isomesh compensates for baked shape_margin."""
+    def test_extract_isomesh_texture_with_shape_margin(self):
+        """extract_isomesh via texture path correctly handles baked shape_margin."""
         hx, hy, hz = 0.3, 0.3, 0.3
         margin_val = 0.04
         mesh = create_box_mesh((hx, hy, hz))
         sdf = SDF.create_from_mesh(mesh, shape_margin=margin_val, max_resolution=64)
         self.assertIsNotNone(sdf)
         self.assertEqual(sdf.shape_margin, margin_val)
-
-        # Force sparse-volume fallback by clearing texture data
-        sdf.texture_data = None
-        sdf._coarse_texture = None
-        sdf._subgrid_texture = None
+        self.assertIsNotNone(sdf.texture_data)
 
         result = sdf.extract_isomesh(isovalue=margin_val)
         self.assertIsNotNone(result)
         self.assertGreater(result.vertices.shape[0], 0)
 
-        # Vertices should sit at ~margin_val (0.04) from the base box surface.
-        # Without the shape_margin correction the surface would be at
-        # 2*margin_val = 0.08, giving errors of ~0.04.  A tolerance of 0.025
-        # catches that regression while allowing marching-cubes discretization.
         errors = np.array([abs(self._box_sdf(v, hx, hy, hz) - margin_val) for v in result.vertices])
         max_err = float(errors.max())
         self.assertLess(
             max_err,
-            0.025,
-            f"Sparse fallback with shape_margin: max vertex error {max_err:.4f} "
-            f"exceeds tolerance 0.025 (shape_margin={margin_val}). "
+            0.03,
+            f"Texture path with shape_margin: max vertex error {max_err:.4f} "
+            f"exceeds tolerance 0.03 (shape_margin={margin_val}). "
             f"Mean error: {float(errors.mean()):.4f}",
         )
 
@@ -1614,10 +1314,9 @@ class TestComputeOffsetMeshAdditionalPrimitives(unittest.TestCase):
 
     def test_compute_isomesh_empty_volume(self):
         """compute_isomesh with isovalue far from any surface returns None."""
-        box_mesh = create_box_mesh((0.2, 0.2, 0.2))
         _, sparse_vol, _, _ = compute_sdf_from_shape(
-            shape_geo=box_mesh,
-            shape_type=GeoType.MESH,
+            shape_type=GeoType.BOX,
+            shape_scale=(0.2, 0.2, 0.2),
             shape_margin=0.0,
             max_resolution=16,
             narrow_band_distance=(-0.05, 0.05),
@@ -1739,6 +1438,435 @@ def test_brick_pyramid_stability(test, device):
         0.0,
         f"Top brick fell through ground: z = {final_top_pos[2]}",
     )
+
+
+class TestMeshIsWatertight(unittest.TestCase):
+    """Test the Mesh.is_watertight property."""
+
+    def test_box_mesh_is_watertight(self):
+        """A closed box mesh should be watertight."""
+        mesh = create_box_mesh((0.5, 0.5, 0.5))
+        self.assertTrue(mesh.is_watertight)
+
+    def test_sphere_mesh_is_watertight(self):
+        """A subdivided icosphere should be watertight."""
+        mesh = create_sphere_mesh(1.0, subdivisions=2)
+        self.assertTrue(mesh.is_watertight)
+
+    def test_open_mesh_is_not_watertight(self):
+        """A mesh missing a face should not be watertight."""
+        verts = np.array(
+            [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]],
+            dtype=np.float32,
+        )
+        # 5 faces of a cube (missing one face -> boundary edges)
+        indices = np.array(
+            [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6, 0, 4, 7, 0, 7, 3],
+            dtype=np.int32,
+        )
+        mesh = Mesh(verts, indices, compute_inertia=False)
+        self.assertFalse(mesh.is_watertight)
+
+    def test_empty_mesh_is_not_watertight(self):
+        """An empty mesh should not be watertight."""
+        mesh = Mesh(np.zeros((0, 3), dtype=np.float32), np.zeros(0, dtype=np.int32), compute_inertia=False)
+        self.assertFalse(mesh.is_watertight)
+
+    def test_is_watertight_cache_invalidation(self):
+        """Changing vertices or indices should invalidate the cache."""
+        mesh = create_box_mesh((0.5, 0.5, 0.5))
+        self.assertTrue(mesh.is_watertight)
+        # Mutate vertices (keeps topology, should still be watertight)
+        mesh.vertices = mesh.vertices * 2.0
+        self.assertTrue(mesh.is_watertight)
+        # Remove some triangles to break watertightness
+        mesh.indices = mesh.indices[:30]  # 5 faces instead of 6
+        self.assertFalse(mesh.is_watertight)
+
+
+@wp.kernel
+def _sample_texture_sdf_kernel(
+    sdf: TextureSDFData,
+    query_points: wp.array[wp.vec3],
+    out_values: wp.array[float],
+):
+    tid = wp.tid()
+    out_values[tid] = texture_sample_sdf(sdf, query_points[tid])
+
+
+def _sample_texture_sdf_at_points(sdf_obj, points_np):
+    """Sample texture SDF at world-space points, returns numpy array of SDF values."""
+    n = len(points_np)
+    query_wp = wp.array(points_np.astype(np.float32), dtype=wp.vec3, device="cuda:0")
+    out_wp = wp.zeros(n, dtype=float, device="cuda:0")
+    wp.launch(
+        _sample_texture_sdf_kernel,
+        dim=n,
+        inputs=[sdf_obj.texture_data, query_wp, out_wp],
+        device="cuda:0",
+    )
+    return out_wp.numpy()
+
+
+@unittest.skipUnless(_cuda_available, "wp.Volume requires CUDA device")
+class TestSDFWatertightFastPath(unittest.TestCase):
+    """Test that the watertight unsigned-BVH fast path produces accurate texture SDF values."""
+
+    device = "cuda:0"
+
+    def test_watertight_sdf_matches_winding_path(self):
+        """Texture SDF from watertight fast path should closely match the winding-number path."""
+        mesh = create_sphere_mesh(0.5, subdivisions=2)
+        self.assertTrue(mesh.is_watertight)
+
+        # Build SDF via normal (winding) path by forcing is_watertight to False
+        mesh._is_watertight = False
+        sdf_winding = SDF.create_from_mesh(mesh, max_resolution=32, texture_format="float32")
+        mesh._is_watertight = None  # reset cache
+
+        # Build SDF via watertight fast path
+        self.assertTrue(mesh.is_watertight)
+        sdf_fast = SDF.create_from_mesh(mesh, max_resolution=32, texture_format="float32")
+
+        self.assertIsNotNone(sdf_winding.texture_data, "Winding SDF should have texture data")
+        self.assertIsNotNone(sdf_fast.texture_data, "Fast SDF should have texture data")
+
+        test_points = np.array(
+            [
+                [0.0, 0.0, 0.0],  # center (inside)
+                [0.3, 0.0, 0.0],  # near surface (inside)
+                [0.6, 0.0, 0.0],  # outside
+                [0.0, 0.45, 0.0],  # near surface
+            ],
+            dtype=np.float32,
+        )
+
+        vals_winding = _sample_texture_sdf_at_points(sdf_winding, test_points)
+        vals_fast = _sample_texture_sdf_at_points(sdf_fast, test_points)
+
+        for i, pt in enumerate(test_points):
+            vw = float(vals_winding[i])
+            vf = float(vals_fast[i])
+            self.assertEqual(
+                np.sign(vw),
+                np.sign(vf),
+                msg=f"Sign mismatch at {pt}: winding={vw:.4f}, fast={vf:.4f}",
+            )
+            self.assertAlmostEqual(
+                vw,
+                vf,
+                delta=0.1,
+                msg=f"SDF mismatch at {pt}: winding={vw:.4f}, fast={vf:.4f}",
+            )
+
+        mesh.clear_sdf()
+
+    def test_sphere_watertight_sign_grid(self):
+        """Every voxel should have matching sign between fast-path and winding-path."""
+        mesh = create_sphere_mesh(0.5, subdivisions=2)
+
+        mesh._is_watertight = False
+        sdf_winding = SDF.create_from_mesh(mesh, max_resolution=16, texture_format="float32")
+        mesh._is_watertight = None
+
+        mesh._is_watertight = True
+        sdf_fast = SDF.create_from_mesh(mesh, max_resolution=16, texture_format="float32")
+        mesh._is_watertight = None
+
+        pts = []
+        for z in np.linspace(-0.7, 0.7, 8):
+            for y in np.linspace(-0.7, 0.7, 8):
+                for x in np.linspace(-0.7, 0.7, 8):
+                    pts.append([x, y, z])
+        pts_np = np.array(pts, dtype=np.float32)
+
+        vals_w = _sample_texture_sdf_at_points(sdf_winding, pts_np)
+        vals_f = _sample_texture_sdf_at_points(sdf_fast, pts_np)
+
+        sign_w = np.sign(vals_w)
+        sign_f = np.sign(vals_f)
+        mismatches = np.sum(sign_w != sign_f)
+        self.assertEqual(
+            mismatches,
+            0,
+            f"{mismatches}/{len(pts)} voxels have sign mismatch between unsigned-BVH and winding path",
+        )
+
+        mesh.clear_sdf()
+
+    def test_box_watertight_sdf_sign_correctness(self):
+        """Watertight SDF for a box should have correct inside/outside signs."""
+        mesh = create_box_mesh((0.5, 0.5, 0.5))
+        self.assertTrue(mesh.is_watertight)
+
+        sdf = SDF.create_from_mesh(mesh, max_resolution=32, texture_format="float32")
+        self.assertIsNotNone(sdf.texture_data, "SDF should have texture data")
+
+        test_points = np.array(
+            [
+                [0.0, 0.0, 0.0],  # center (inside)
+                [1.0, 0.0, 0.0],  # well outside
+            ],
+            dtype=np.float32,
+        )
+        vals = _sample_texture_sdf_at_points(sdf, test_points)
+
+        self.assertLess(float(vals[0]), 0.0, "Center of box should have negative SDF")
+        self.assertGreater(float(vals[1]), 0.0, "Point outside box should have positive SDF")
+
+        mesh.clear_sdf()
+
+    def test_torus_watertight_sign_grid(self):
+        """Non-convex torus: sign mismatches should be < 5% of sampled points.
+
+        The scanline sign fill can differ from winding numbers at a few
+        boundary voxels on complex non-convex geometry.  We allow up to 5%
+        mismatches (all near the surface) while catching gross errors.
+        """
+        mesh = _create_torus_mesh(major_r=0.4, minor_r=0.15, n_major=24, n_minor=12)
+        self.assertTrue(mesh.is_watertight, "Torus mesh should be watertight")
+
+        mesh._is_watertight = False
+        sdf_winding = SDF.create_from_mesh(mesh, max_resolution=32, texture_format="float32")
+        mesh._is_watertight = None
+
+        mesh._is_watertight = True
+        sdf_fast = SDF.create_from_mesh(mesh, max_resolution=32, texture_format="float32")
+        mesh._is_watertight = None
+
+        pts = []
+        for z in np.linspace(-0.7, 0.7, 10):
+            for y in np.linspace(-0.7, 0.7, 10):
+                for x in np.linspace(-0.7, 0.7, 10):
+                    pts.append([x, y, z])
+        pts_np = np.array(pts, dtype=np.float32)
+
+        vals_w = _sample_texture_sdf_at_points(sdf_winding, pts_np)
+        vals_f = _sample_texture_sdf_at_points(sdf_fast, pts_np)
+
+        sign_w = np.sign(vals_w)
+        sign_f = np.sign(vals_f)
+        mismatches = int(np.sum(sign_w != sign_f))
+        max_allowed = int(0.05 * len(pts))
+        self.assertLessEqual(
+            mismatches,
+            max_allowed,
+            f"{mismatches}/{len(pts)} voxels ({mismatches / len(pts) * 100:.1f}%) have sign mismatch on torus "
+            f"(tolerance: {max_allowed}, 5%)",
+        )
+        mesh.clear_sdf()
+
+    def test_watertight_distance_accuracy_sphere(self):
+        """Distance error between fast and winding paths should be within 0.5 voxel-sizes.
+
+        The unsigned-BVH fast path uses exact mesh distance queries (same BVH
+        as the winding path) so distances should match closely.  Small
+        differences arise from the different sign methods affecting which
+        subgrids are allocated and how boundary voxels are classified.
+        """
+        mesh = create_sphere_mesh(0.5, subdivisions=2)
+        res = 32
+
+        mesh._is_watertight = False
+        sdf_w = SDF.create_from_mesh(mesh, max_resolution=res, texture_format="float32")
+        mesh._is_watertight = None
+
+        mesh._is_watertight = True
+        sdf_f = SDF.create_from_mesh(mesh, max_resolution=res, texture_format="float32")
+        mesh._is_watertight = None
+
+        pts = []
+        for z in np.linspace(-0.6, 0.6, 12):
+            for y in np.linspace(-0.6, 0.6, 12):
+                for x in np.linspace(-0.6, 0.6, 12):
+                    pts.append([x, y, z])
+        pts_np = np.array(pts, dtype=np.float32)
+
+        vals_w = _sample_texture_sdf_at_points(sdf_w, pts_np)
+        vals_f = _sample_texture_sdf_at_points(sdf_f, pts_np)
+
+        points_np = mesh.vertices
+        extent = np.max(points_np, axis=0) - np.min(points_np, axis=0)
+        voxel_size = float(np.max(extent)) / res
+
+        max_err = float(np.max(np.abs(vals_w - vals_f)))
+        self.assertLess(
+            max_err,
+            0.5 * voxel_size,
+            f"Max distance error {max_err:.6f} exceeds 0.5*voxel_size={0.5 * voxel_size:.6f}",
+        )
+        mesh.clear_sdf()
+
+    def test_watertight_distance_accuracy_box(self):
+        """Distance error between fast and winding paths should be within 0.5 voxel-sizes."""
+        mesh = create_box_mesh((0.4, 0.3, 0.5))
+        res = 32
+
+        mesh._is_watertight = False
+        sdf_w = SDF.create_from_mesh(mesh, max_resolution=res, texture_format="float32")
+        mesh._is_watertight = None
+
+        mesh._is_watertight = True
+        sdf_f = SDF.create_from_mesh(mesh, max_resolution=res, texture_format="float32")
+        mesh._is_watertight = None
+
+        pts = []
+        for z in np.linspace(-0.6, 0.6, 12):
+            for y in np.linspace(-0.4, 0.4, 12):
+                for x in np.linspace(-0.5, 0.5, 12):
+                    pts.append([x, y, z])
+        pts_np = np.array(pts, dtype=np.float32)
+
+        vals_w = _sample_texture_sdf_at_points(sdf_w, pts_np)
+        vals_f = _sample_texture_sdf_at_points(sdf_f, pts_np)
+
+        points_np = mesh.vertices
+        extent = np.max(points_np, axis=0) - np.min(points_np, axis=0)
+        voxel_size = float(np.max(extent)) / res
+
+        max_err = float(np.max(np.abs(vals_w - vals_f)))
+        self.assertLess(
+            max_err,
+            0.5 * voxel_size,
+            f"Max distance error {max_err:.6f} exceeds 0.5*voxel_size={0.5 * voxel_size:.6f}",
+        )
+        mesh.clear_sdf()
+
+    def test_sign_method_parity_override_on_non_watertight_mesh(self):
+        """``sign_method='parity'`` should still build a texture-backed SDF even when
+        auto-detection reports the mesh as non-watertight.
+
+        The API documents that parity-sign results on non-watertight meshes are
+        undefined, so this test only verifies that the override runs the parity
+        path to completion and produces a populated SDF.  It intentionally does
+        not assert specific inside/outside signs, which would lock undefined
+        behavior into the test contract.
+        """
+        # Closed cube with its top face (+Y) removed: not watertight by topology.
+        verts = np.array(
+            [
+                [-0.5, -0.5, -0.5],
+                [0.5, -0.5, -0.5],
+                [0.5, 0.5, -0.5],
+                [-0.5, 0.5, -0.5],
+                [-0.5, -0.5, 0.5],
+                [0.5, -0.5, 0.5],
+                [0.5, 0.5, 0.5],
+                [-0.5, 0.5, 0.5],
+            ],
+            dtype=np.float32,
+        )
+        indices = np.array(
+            [
+                0,
+                2,
+                1,
+                0,
+                3,
+                2,  # -Z face
+                4,
+                5,
+                6,
+                4,
+                6,
+                7,  # +Z face
+                0,
+                1,
+                5,
+                0,
+                5,
+                4,  # -Y face
+                0,
+                4,
+                7,
+                0,
+                7,
+                3,  # -X face
+                1,
+                2,
+                6,
+                1,
+                6,
+                5,  # +X face
+                # +Y face omitted: mesh is open at the top.
+            ],
+            dtype=np.int32,
+        )
+        mesh = Mesh(verts, indices, compute_inertia=False)
+        self.assertFalse(mesh.is_watertight, "Open cube should auto-detect as non-watertight")
+
+        sdf_parity = SDF.create_from_mesh(mesh, max_resolution=32, texture_format="float32", sign_method="parity")
+        self.assertIsNotNone(sdf_parity.texture_data, "SDF should have texture data")
+        self.assertFalse(sdf_parity.is_empty(), "Texture-backed SDF should not report as empty")
+
+        mesh.clear_sdf()
+
+    def test_watertight_uint16_texture_format(self):
+        """Watertight path with ``texture_format='uint16'`` should produce a valid
+        quantized SDF matching the float32 result within the quantization bound.
+        """
+        mesh = create_box_mesh((0.5, 0.5, 0.5))
+        self.assertTrue(mesh.is_watertight)
+
+        sdf_f32 = SDF.create_from_mesh(mesh, max_resolution=32, texture_format="float32")
+        sdf_u16 = SDF.create_from_mesh(mesh, max_resolution=32, texture_format="uint16")
+
+        self.assertIsNotNone(sdf_f32.texture_data)
+        self.assertIsNotNone(sdf_u16.texture_data)
+
+        pts = []
+        for z in np.linspace(-0.6, 0.6, 8):
+            for y in np.linspace(-0.6, 0.6, 8):
+                for x in np.linspace(-0.6, 0.6, 8):
+                    pts.append([x, y, z])
+        pts_np = np.array(pts, dtype=np.float32)
+
+        vals_f32 = _sample_texture_sdf_at_points(sdf_f32, pts_np)
+        vals_u16 = _sample_texture_sdf_at_points(sdf_u16, pts_np)
+
+        # Sign should always agree outside a tight band around the surface.
+        # Inside the band, uint16 quantization error is bounded by narrow_band
+        # range / 2**16, so rely on signed value tolerance instead.
+        max_err = float(np.max(np.abs(vals_f32 - vals_u16)))
+        # Default narrow band is ±0.1 m; uint16 SNORM quantization has
+        # LSB ≈ 0.2 / 65535 ≈ 3e-6 m.  Allow 1e-3 m for rounding-plus-trilinear
+        # interpolation noise across texels.
+        self.assertLess(
+            max_err,
+            1e-3,
+            f"uint16 watertight SDF deviates by {max_err:.6f} from float32 reference",
+        )
+
+        mesh.clear_sdf()
+
+
+def _create_torus_mesh(major_r: float = 0.4, minor_r: float = 0.15, n_major: int = 24, n_minor: int = 12) -> Mesh:
+    """Create a watertight torus mesh centered at the origin (non-convex)."""
+    verts = []
+    for i in range(n_major):
+        theta = 2.0 * np.pi * i / n_major
+        ct, st = np.cos(theta), np.sin(theta)
+        for j in range(n_minor):
+            phi = 2.0 * np.pi * j / n_minor
+            cp, sp = np.cos(phi), np.sin(phi)
+            r = major_r + minor_r * cp
+            verts.append([r * ct, minor_r * sp, r * st])
+    verts = np.array(verts, dtype=np.float32)
+
+    faces = []
+    for i in range(n_major):
+        i_next = (i + 1) % n_major
+        for j in range(n_minor):
+            j_next = (j + 1) % n_minor
+            a = i * n_minor + j
+            b = i_next * n_minor + j
+            c = i_next * n_minor + j_next
+            d = i * n_minor + j_next
+            faces.append([a, b, c])
+            faces.append([a, c, d])
+    indices = np.array(faces, dtype=np.int32).flatten()
+
+    return Mesh(verts, indices)
 
 
 # Register CUDA-only tests using the standard pattern

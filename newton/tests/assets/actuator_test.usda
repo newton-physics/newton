@@ -92,27 +92,26 @@ def Xform "World"
             uniform token physics:axis = "Y"
         }
 
-        # Actuator for Joint 1 (PD Controller)
-        def Actuator "Joint1Actuator" (
-            prepend apiSchemas = ["PDControllerAPI"]
+        # Actuator for Joint 1 (PD Controller + MaxEffort clamping)
+        def NewtonActuator "Joint1Actuator" (
+            prepend apiSchemas = ["NewtonPDControlAPI", "NewtonMaxEffortClampingAPI"]
         )
         {
-            rel newton:actuator:target = </World/Robot/Joint1>
-            float newton:actuator:kp = 100.0
-            float newton:actuator:kd = 10.0
-            float newton:actuator:maxForce = 50.0
+            rel newton:targets = [</World/Robot/Joint1>]
+            float newton:kp = 100.0
+            float newton:kd = 10.0
+            float newton:maxEffort = 50.0
         }
 
         # Actuator for Joint 2 (PD Controller with Delay)
-        def Actuator "Joint2Actuator" (
-            prepend apiSchemas = ["PDControllerAPI", "DelayAPI"]
+        def NewtonActuator "Joint2Actuator" (
+            prepend apiSchemas = ["NewtonPDControlAPI", "NewtonActuatorDelayAPI"]
         )
         {
-            rel newton:actuator:target = </World/Robot/Joint2>
-            float newton:actuator:kp = 200.0
-            float newton:actuator:kd = 20.0
-            int newton:actuator:delay = 5
+            rel newton:targets = [</World/Robot/Joint2>]
+            float newton:kp = 200.0
+            float newton:kd = 20.0
+            int newton:delaySteps = 5
         }
     }
 }
-

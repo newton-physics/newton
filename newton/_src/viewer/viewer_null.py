@@ -233,13 +233,15 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False, smoothing: int = 1):
         """
         No-op implementation for logging a scalar value.
 
         Args:
             name: Name of the scalar.
             value: The scalar value.
+            clear: Ignored by this backend.
+            smoothing: Ignored by this backend.
         """
         pass
 

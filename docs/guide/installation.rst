@@ -159,6 +159,8 @@ with other packages:
     ``examples`` extra). If you encounter installation errors, we recommend upgrading to a later
     Python version, or follow the :doc:`development` guide to install Newton using ``uv``.
 
+.. _running-examples:
+
 Running Examples
 ^^^^^^^^^^^^^^^^
 
@@ -177,6 +179,17 @@ to check the supported CUDA version (shown in the top-right corner of the output
 
     pip install newton[torch-cu12] --extra-index-url https://download.pytorch.org/whl/cu128
     python -m newton.examples robot_anymal_c_walk
+
+.. note::
+
+    The ``torch-cu12`` extra installs PyTorch built against CUDA 12.8. If your
+    driver only supports CUDA 12.4 or 12.5 (check with ``nvidia-smi``), you
+    need to install PyTorch 2.6.0 manually instead:
+
+    .. code-block:: console
+
+        pip install "newton[examples]"
+        pip install torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cu124
 
 See a list of all available examples:
 
@@ -263,7 +276,7 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``examples``
      - Dependencies for running examples, including visualization (includes ``sim`` + ``importers``)
    * - ``torch-cu12``
-     - PyTorch (CUDA 12) for running RL policy examples (includes ``examples``)
+     - PyTorch (CUDA 12.8+) for running RL policy examples (includes ``examples``); see :ref:`note above <running-examples>` for CUDA 12.4–12.5
    * - ``torch-cu13``
      - PyTorch (CUDA 13) for running RL policy examples (includes ``examples``)
    * - ``notebook``

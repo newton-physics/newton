@@ -57,6 +57,7 @@ class Example:
         verbose = True
 
         world = newton.ModelBuilder()
+        world.default_joint_cfg.armature = 0.1
         world.add_usd(
             newton.examples.get_asset("cartpole.usda"),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
@@ -153,7 +154,7 @@ class Example:
             joint_f = self.cartpoles.get_attribute("joint_f", self.control)
             wp.launch(
                 apply_forces_kernel,
-                dim=joint_f.shape,
+                dim=joint_f.shape[0],
                 inputs=[joint_q, joint_f],
             )
 
@@ -181,6 +182,7 @@ class Example:
             lambda q, qd: q[2] == 0.0 and newton.math.vec_allclose(q.q, wp.quat_identity()),
             indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -215,6 +217,7 @@ class Example:
             and qd[5] == 0.0,
             indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
+        # fmt: on
 
     @staticmethod
     def create_parser():
