@@ -513,8 +513,6 @@ def parse_usd(
         """
         if _is_enabled_collider(prim) or prim.HasAPI(UsdPhysics.RigidBodyAPI):
             return
-        if UsdGeom.Imageable(prim).GetVisibilityAttr().Get() == "invisible":
-            return
         path_name = str(prim.GetPath())
         if any(re.match(path, path_name) for path in ignore_paths):
             return
