@@ -29,6 +29,12 @@ def kernel_test_geom(
     hfd_arr: wp.array[HeightfieldData],
     heightfield_elevations: wp.array[wp.float32],
 ):
+    """Invoke :func:`ray_intersect_geom` and write the hit distance to ``out_t``.
+
+    ``hfd_arr`` is a one-element array for HFIELD tests and ``None`` for other
+    geometry types; the ternary short-circuits so ``hfd_arr[0]`` is not evaluated
+    when the array is null.
+    """
     tid = wp.tid()
     t, _n = ray_intersect_geom(
         geom_to_world,
@@ -41,6 +47,35 @@ def kernel_test_geom(
         heightfield_elevations,
     )
     out_t[tid] = t
+
+
+@wp.kernel
+def kernel_test_geom_with_normal(
+    out_t: wp.array[float],
+    out_n: wp.array[wp.vec3],
+    geom_to_world: wp.transform,
+    size: wp.vec3,
+    geomtype: int,
+    ray_origin: wp.vec3,
+    ray_direction: wp.vec3,
+    mesh_id: wp.uint64,
+    hfd_arr: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
+):
+    """Variant of :func:`kernel_test_geom` that also writes the hit normal."""
+    tid = wp.tid()
+    t, n = ray_intersect_geom(
+        geom_to_world,
+        size,
+        geomtype,
+        ray_origin,
+        ray_direction,
+        mesh_id,
+        hfd_arr[0] if hfd_arr else HeightfieldData(),
+        heightfield_elevations,
+    )
+    out_t[tid] = t
+    out_n[tid] = n
 
 
 @wp.kernel
@@ -455,6 +490,75 @@ def test_ray_intersect_heightfield_via_geom(test: TestRaycast, device: str):
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=delta)
 
 
+def test_ray_intersect_heightfield_normals(test: TestRaycast, device: str):
+    """Validate surface normals returned for HFIELD hits.
+
+    For a flat heightfield the normal is exactly world +Z. For the tilted
+    (p00, p10, p11) triangle with p11 raised to z=1 over a [-1, 1]^2 cell, the
+    plane normal is proportional to ``(0, -1, 2)`` -- we check the unit-length
+    version.
+    """
+    out_t = wp.zeros(1, dtype=float, device=device)
+    out_n = wp.zeros(1, dtype=wp.vec3, device=device)
+    size = wp.vec3(1.0, 1.0, 1.0)
+    identity = wp.transform_identity()
+
+    flat = np.full((3, 3), 1.0, dtype=np.float32)
+    hfd_flat, elev_flat = _hfield_arrays(device, flat, hx=2.0, hy=2.0, min_z=1.0, max_z=1.0)
+    tilt = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    hfd_tilt, elev_tilt = _hfield_arrays(device, tilt, hx=1.0, hy=1.0, min_z=0.0, max_z=1.0)
+
+    sqrt5 = float(np.sqrt(5.0))
+    # (name, hfd_arr, elevations, origin, direction, expected_t, expected_normal)
+    cases = [
+        (
+            "flat_normal_z",
+            hfd_flat,
+            elev_flat,
+            wp.vec3(0.0, 0.0, 5.0),
+            wp.vec3(0.0, 0.0, -1.0),
+            4.0,
+            np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        ),
+        (
+            "sloped_normal",
+            hfd_tilt,
+            elev_tilt,
+            wp.vec3(0.5, -0.5, 2.0),
+            wp.vec3(0.0, 0.0, -1.0),
+            1.75,
+            np.array([0.0, -1.0 / sqrt5, 2.0 / sqrt5], dtype=np.float32),
+        ),
+    ]
+
+    for name, hfd_arr, elevations, origin, direction, expected_t, expected_n in cases:
+        with test.subTest(name):
+            wp.launch(
+                kernel_test_geom_with_normal,
+                dim=1,
+                inputs=[
+                    out_t,
+                    out_n,
+                    identity,
+                    size,
+                    GeoType.HFIELD,
+                    origin,
+                    direction,
+                    0,
+                    hfd_arr,
+                    elevations,
+                ],
+                device=device,
+            )
+            test.assertAlmostEqual(out_t.numpy()[0], expected_t, delta=1e-4)
+            got_n = out_n.numpy()[0]
+            # Normal must be unit length (ray_intersect_geom normalises it).
+            test.assertAlmostEqual(float(np.linalg.norm(got_n)), 1.0, delta=1e-4)
+            # Match the analytic normal component-wise.
+            for axis, expected_val in enumerate(expected_n):
+                test.assertAlmostEqual(float(got_n[axis]), float(expected_val), delta=1e-4)
+
+
 devices = get_test_devices()
 add_function_test(TestRaycast, "test_ray_intersect_plane", test_ray_intersect_plane, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_sphere", test_ray_intersect_sphere, devices=devices)
@@ -472,6 +576,12 @@ add_function_test(
     TestRaycast,
     "test_ray_intersect_heightfield_via_geom",
     test_ray_intersect_heightfield_via_geom,
+    devices=devices,
+)
+add_function_test(
+    TestRaycast,
+    "test_ray_intersect_heightfield_normals",
+    test_ray_intersect_heightfield_normals,
     devices=devices,
 )
 

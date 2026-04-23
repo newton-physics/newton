@@ -702,8 +702,8 @@ def ray_intersect_heightfield(
     """Ray-heightfield intersection in world space.
 
     Thin wrapper that maps the ray into the heightfield's local frame, delegates
-    to :func:`~newton._src.utils.heightfield.ray_intersect_heightfield_local`,
-    and rotates the local surface normal back to world space.
+    to ``ray_intersect_heightfield_local`` (in ``utils.heightfield``), and rotates
+    the local surface normal back to world space.
 
     Args:
         geom_to_world: World transform of the heightfield.

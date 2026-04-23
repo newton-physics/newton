@@ -402,9 +402,9 @@ def ray_intersect_heightfield_local(
     with 2D DDA, testing the two triangles per cell with Moller-Trumbore. Stops
     early once the next cell's entry parameter exceeds the best hit found so far.
 
-    Call :func:`~newton._src.geometry.raycast.ray_intersect_heightfield` from a
-    world-space kernel -- that thin wrapper does the world-to-local transform and
-    rotates the returned normal back to world space.
+    Call ``ray_intersect_heightfield`` (in ``geometry.raycast``) from a world-space
+    kernel -- that thin wrapper does the world-to-local transform and rotates the
+    returned normal back to world space.
 
     Args:
         hfd: Per-shape heightfield metadata (extents, grid size, z-range, data offset).
@@ -460,7 +460,7 @@ def ray_intersect_heightfield_local(
     row = wp.clamp(row, 0, hfd.nrow - 2)
 
     # DDA deltas and first-boundary parameters per XY axis.
-    step_col = int(0)
+    step_col = 0
     t_delta_x = float(1.0e30)
     t_next_x = float(1.0e30)
     if rd[0] > _PARALLEL_TOL:
@@ -472,7 +472,7 @@ def ray_intersect_heightfield_local(
         t_delta_x = -dx / rd[0]
         t_next_x = (-hfd.hx + wp.float32(col) * dx - ro[0]) / rd[0]
 
-    step_row = int(0)
+    step_row = 0
     t_delta_y = float(1.0e30)
     t_next_y = float(1.0e30)
     if rd[1] > _PARALLEL_TOL:
