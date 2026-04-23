@@ -332,7 +332,7 @@ def Xform "ant" (
             float physxLimit:angular:damping = 0.1 (
                 allowedTokens = []
             )
-            float2 mjc:solref = (0.5, 0.05)
+            float2 mjc:solreflimit = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 10
             float state:angular:physics:velocity = 0.1
@@ -384,7 +384,7 @@ def Xform "ant" (
             float physxLimit:angular:damping = 0.1 (
                 allowedTokens = []
             )
-            float2 mjc:solref = (0.5, 0.05)
+            float2 mjc:solreflimit = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 20
             float state:angular:physics:velocity = 0.2
@@ -418,7 +418,7 @@ def Xform "ant" (
             float physxLimit:angular:damping = 0.1 (
                 allowedTokens = []
             )
-            float2 mjc:solref = (0.5, 0.05)
+            float2 mjc:solreflimit = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 30
             float state:angular:physics:velocity = 0.3
@@ -452,7 +452,7 @@ def Xform "ant" (
             float physxLimit:angular:damping = 0.1 (
                 allowedTokens = []
             )
-            float2 mjc:solref = (0.5, 0.05)
+            float2 mjc:solreflimit = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 30
             float state:angular:physics:velocity = 0.3
@@ -486,7 +486,7 @@ def Xform "ant" (
             float physxLimit:angular:damping = 0.1 (
                 allowedTokens = []
             )
-            float2 mjc:solref = (0.5, 0.05)
+            float2 mjc:solreflimit = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 40
             float state:angular:physics:velocity = 0.4
@@ -520,7 +520,7 @@ def Xform "ant" (
             float physxLimit:angular:damping = 0.1 (
                 allowedTokens = []
             )
-            float2 mjc:solref = (0.5, 0.05)
+            float2 mjc:solreflimit = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 60
             float state:angular:physics:velocity = 0.6
@@ -554,7 +554,7 @@ def Xform "ant" (
             float physxLimit:angular:damping = 0.1 (
                 allowedTokens = []
             )
-            float2 mjc:solref = (0.5, 0.05)
+            float2 mjc:solreflimit = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 70
             float state:angular:physics:velocity = 0.7
@@ -588,7 +588,7 @@ def Xform "ant" (
             float physxLimit:angular:damping = 0.1 (
                 allowedTokens = []
             )
-            float2 mjc:solref = (0.5, 0.05)
+            float2 mjc:solreflimit = (0.5, 0.05)
             float state:angular:physics:appliedForce = 0
             float state:angular:physics:position = 80
             float state:angular:physics:velocity = 0.8
