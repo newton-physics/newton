@@ -62,9 +62,11 @@ from .kernels import (
     update_eq_data_and_active_kernel,
     update_eq_properties_kernel,
     update_geom_properties_kernel,
+    update_geom_solref_from_invweight0_kernel,
     update_jnt_connect_constraint_anchors_kernel,
     update_jnt_connect_constraint_rel_body_poses_at_qref_kernel,
     update_jnt_properties_kernel,
+    update_jnt_solref_from_invweight0_kernel,
     update_joint_transforms_kernel,
     update_mimic_eq_data_and_active_kernel,
     update_mocap_transforms_kernel,
@@ -3261,6 +3263,15 @@ class SolverMuJoCo(SolverBase):
             flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES
         )
 
+        # Any change that touches ``invweight0`` (via ``set_const_0`` /
+        # ``mj_setConst``) **or** that overwrites ``shape_material_ke/kd`` or
+        # ``joint_limit_ke/kd`` requires re-scaling ``jnt_solref`` /
+        # ``geom_solref`` so the MuJoCo constraint solver produces the
+        # force-space stiffness Newton users configured (#2009).
+        need_solref_update = bool(need_const_0) or bool(
+            flags & (SolverNotifyFlags.SHAPE_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        )
+
         if self.use_mujoco_cpu:
             if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
@@ -3272,6 +3283,11 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
             if need_length_range or need_const_fixed or need_const_0:
                 self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+            if need_solref_update:
+                # ``_update_solref_from_invweight0`` depends on MuJoCo having
+                # populated ``*_invweight0`` and ``*_solimp`` via
+                # ``mj_setConst`` above.
+                self._update_solref_from_invweight0()
             # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
             # without accounting for Newton's dof_ref, so we overwrite with the
             # correctly computed values.
@@ -3285,6 +3301,7 @@ class SolverMuJoCo(SolverBase):
                 need_length_range
                 or need_const_fixed
                 or need_const_0
+                or need_solref_update
                 or update_connect_constraint_anchor_rel_xform_at_ref_pose
                 or update_connect_constraint_anchors
             ):
@@ -3295,6 +3312,11 @@ class SolverMuJoCo(SolverBase):
                         self._mujoco_warp.set_const_fixed(self.mjw_model, self.mjw_data)
                     if need_const_0:
                         self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+                    if need_solref_update:
+                        # Depends on ``set_const_0`` having already populated
+                        # ``body_invweight0`` / ``dof_invweight0`` in
+                        # ``self.mjw_model``.
+                        self._update_solref_from_invweight0()
                     # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
                     # without accounting for Newton's dof_ref, so we overwrite with the
                     # correctly computed values.
@@ -5880,8 +5902,6 @@ class SolverMuJoCo(SolverBase):
             dim=(nworld, njnt),
             inputs=[
                 self.mjc_jnt_to_newton_dof,
-                self.model.joint_limit_ke,
-                self.model.joint_limit_kd,
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
                 self.model.joint_effort_limit,
@@ -5891,7 +5911,6 @@ class SolverMuJoCo(SolverBase):
             ],
             outputs=[
                 self.mjw_model.jnt_solimp,
-                self.mjw_model.jnt_solref,
                 self.mjw_model.jnt_stiffness,
                 self.mjw_model.jnt_margin,
                 self.mjw_model.jnt_range,
@@ -5899,6 +5918,9 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
+        # Joint limit solref is scaled by dof_invweight0 * (1 - dmax) in
+        # ``_update_solref_from_invweight0`` after ``set_const_0`` /
+        # ``mj_setConst`` populate ``dof_invweight0`` and ``jnt_solimp``.
 
         # Sync qpos0 and qpos_spring from Newton model data before set_const.
         # set_const copies qpos0 → d.qpos and runs FK to compute derived fields,
@@ -6384,8 +6406,6 @@ class SolverMuJoCo(SolverBase):
             dim=(world_count, num_geoms),
             inputs=[
                 self.model.shape_material_mu,
-                self.model.shape_material_ke,
-                self.model.shape_material_kd,
                 self.model.shape_scale,
                 self.model.shape_transform,
                 self.mjc_geom_to_newton_shape,
@@ -6403,7 +6423,6 @@ class SolverMuJoCo(SolverBase):
             ],
             outputs=[
                 self.mjw_model.geom_friction,
-                self.mjw_model.geom_solref,
                 self.mjw_model.geom_size,
                 self.mjw_model.geom_pos,
                 self.mjw_model.geom_quat,
@@ -6414,6 +6433,70 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
+        # Geom solref is scaled by body_invweight0 * (1 - dmax) in
+        # ``_update_solref_from_invweight0`` after ``set_const_0`` /
+        # ``mj_setConst`` populate ``body_invweight0`` and ``geom_solimp``.
+
+    def _update_solref_from_invweight0(self):
+        """Scale ``jnt_solref`` and ``geom_solref`` using ``invweight0`` and ``solimp``.
+
+        MuJoCo's constraint solver computes an effective stiffness
+        ``k_eff = k / (invweight * (1 - dmax))`` where ``invweight`` depends on
+        the body/DOF inertia and ``dmax = solimp[1]``. Newton's user-facing
+        ``shape_material_ke``/``shape_material_kd`` and
+        ``joint_limit_ke``/``joint_limit_kd`` are force-space quantities, so
+        ``solref`` has to be pre-scaled by ``invweight0 * (1 - dmax)`` for the
+        downstream ``k_eff`` to match the user's intent (issue #2009).
+
+        This must run **after** MuJoCo populates ``dof_invweight0``,
+        ``body_invweight0``, ``jnt_solimp`` and ``geom_solimp`` — i.e., after
+        ``set_const_0`` / ``mj_setConst`` on the current
+        ``ModelBuilder``/``notify_model_changed`` cycle, and once right after
+        ``put_model`` during initialisation so the initial spec values are
+        replaced with correctly scaled ones.
+        """
+        if self.use_mujoco_cpu:
+            # The CPU ``MjData`` path keeps ``jnt_solref``/``geom_solref`` on
+            # the MjModel (not a warp array), and the unit tests target the
+            # warp path. CPU callers still get the (buggy) unscaled mapping
+            # from the spec until a dedicated code path is added.
+            return
+
+        nworld = self.mjc_jnt_to_newton_dof.shape[0]
+
+        njnt = self.mjc_jnt_to_newton_dof.shape[1]
+        if njnt > 0 and self.model.joint_limit_ke is not None:
+            wp.launch(
+                update_jnt_solref_from_invweight0_kernel,
+                dim=(nworld, njnt),
+                inputs=[
+                    self.mjc_jnt_to_newton_dof,
+                    self.model.joint_limit_ke,
+                    self.model.joint_limit_kd,
+                    self.mjw_model.jnt_dofadr,
+                    self.mjw_model.dof_invweight0,
+                    self.mjw_model.jnt_solimp,
+                ],
+                outputs=[self.mjw_model.jnt_solref],
+                device=self.model.device,
+            )
+
+        ngeom = self.mjc_geom_to_newton_shape.shape[1]
+        if ngeom > 0 and self.model.shape_material_ke is not None:
+            wp.launch(
+                update_geom_solref_from_invweight0_kernel,
+                dim=(nworld, ngeom),
+                inputs=[
+                    self.model.shape_material_ke,
+                    self.model.shape_material_kd,
+                    self.mjc_geom_to_newton_shape,
+                    self.mjw_model.geom_bodyid,
+                    self.mjw_model.body_invweight0,
+                    self.mjw_model.geom_solimp,
+                ],
+                outputs=[self.mjw_model.geom_solref],
+                device=self.model.device,
+            )
 
     def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.

@@ -2054,8 +2054,6 @@ def update_body_properties_kernel(
 @wp.kernel
 def update_jnt_properties_kernel(
     mjc_jnt_to_newton_dof: wp.array2d[wp.int32],
-    joint_limit_ke: wp.array[float],
-    joint_limit_kd: wp.array[float],
     joint_limit_lower: wp.array[float],
     joint_limit_upper: wp.array[float],
     joint_effort_limit: wp.array[float],
@@ -2064,7 +2062,6 @@ def update_jnt_properties_kernel(
     limit_margin: wp.array[float],
     # outputs
     jnt_solimp: wp.array2d[vec5],
-    jnt_solref: wp.array2d[wp.vec2],
     jnt_stiffness: wp.array2d[float],
     jnt_margin: wp.array2d[float],
     jnt_range: wp.array2d[wp.vec2],
@@ -2073,16 +2070,17 @@ def update_jnt_properties_kernel(
     """Update MuJoCo joint properties from Newton DOF properties.
 
     Iterates over MuJoCo joints [world, jnt], looks up Newton DOF,
-    and copies joint-level properties (limits, stiffness, solref, solimp).
+    and copies joint-level properties (limits, stiffness, solimp).
+
+    ``jnt_solref`` for joint limits is **not** written here. It must be scaled
+    by ``dof_invweight0 * (1 - dmax)`` (see ``update_jnt_solref_from_invweight0_kernel``),
+    which requires that ``dof_invweight0`` and ``jnt_solimp`` have already been
+    populated by MuJoCo's ``set_const_0``/``mj_setConst``.
     """
     world, mjc_jnt = wp.tid()
     newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
     if newton_dof < 0:
         return
-
-    # Update joint limit solref using negative convention
-    if joint_limit_ke[newton_dof] > 0.0:
-        jnt_solref[world, mjc_jnt] = wp.vec2(-joint_limit_ke[newton_dof], -joint_limit_kd[newton_dof])
 
     # Update solimplimit
     if solimplimit:
@@ -2237,8 +2235,6 @@ def update_model_properties_kernel(
 @wp.kernel
 def update_geom_properties_kernel(
     shape_mu: wp.array[float],
-    shape_ke: wp.array[float],
-    shape_kd: wp.array[float],
     shape_size: wp.array[wp.vec3f],
     shape_transform: wp.array[wp.transform],
     mjc_geom_to_newton_shape: wp.array2d[wp.int32],
@@ -2255,7 +2251,6 @@ def update_geom_properties_kernel(
     zero_margin: int,
     # outputs
     geom_friction: wp.array2d[wp.vec3f],
-    geom_solref: wp.array2d[wp.vec2f],
     geom_size: wp.array2d[wp.vec3f],
     geom_pos: wp.array2d[wp.vec3f],
     geom_quat: wp.array2d[wp.quatf],
@@ -2268,6 +2263,11 @@ def update_geom_properties_kernel(
 
     Iterates over MuJoCo geoms [world, geom], looks up Newton shape index,
     and copies shape properties to geom properties.
+
+    ``geom_solref`` is **not** written here. It must be scaled by
+    ``body_invweight0 * (1 - dmax)`` (see ``update_geom_solref_from_invweight0_kernel``),
+    which requires that ``body_invweight0`` and ``geom_solimp`` have already
+    been populated by MuJoCo's ``set_const_0``/``mj_setConst``.
 
     Note: geom_rbound (collision radius) is not updated here. MuJoCo computes
     this internally based on the geometry, and Newton's shape_collision_radius
@@ -2291,11 +2291,6 @@ def update_geom_properties_kernel(
     torsional = shape_mu_torsional[shape_idx]
     rolling = shape_mu_rolling[shape_idx]
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
-
-    # update geom_solref (timeconst, dampratio) using stiffness and damping
-    # we don't use the negative convention to support controlling the mixing of shapes' stiffnesses via solmix
-    # use approximation of d(0) = d(width) = 1
-    geom_solref[world, geom_idx] = convert_solref(shape_ke[shape_idx], shape_kd[shape_idx], 1.0, 1.0)
 
     # update geom_solimp from custom attribute
     if shape_geom_solimp:
@@ -2330,6 +2325,107 @@ def update_geom_properties_kernel(
     # store position and orientation
     geom_pos[world, geom_idx] = tf.p
     geom_quat[world, geom_idx] = quat_xyzw_to_wxyz(tf.q)
+
+
+@wp.kernel
+def update_geom_solref_from_invweight0_kernel(
+    shape_ke: wp.array[float],
+    shape_kd: wp.array[float],
+    mjc_geom_to_newton_shape: wp.array2d[wp.int32],
+    geom_bodyid: wp.array[wp.int32],
+    body_invweight0: wp.array2d[wp.vec2],
+    geom_solimp: wp.array2d[vec5],
+    # outputs
+    geom_solref: wp.array2d[wp.vec2f],
+):
+    """Scale ``geom_solref`` so MuJoCo's effective stiffness matches force-space ``ke``/``kd``.
+
+    Newton exposes ``shape_material_ke``/``shape_material_kd`` as force-space
+    stiffness and damping (N/m, N·s/m). MuJoCo's constraint solver, however,
+    computes the effective stiffness as ``k_eff = k / (invweight * (1 - dmax))``
+    where ``invweight`` is the sum of the contacting bodies' ``body_invweight0``
+    and ``dmax = solimp[1]``. Pre-multiplying ``solref`` by
+    ``body_invweight0 * (1 - dmax)`` cancels the downstream scaling, leaving
+    a contact stiffness that matches the user-specified value for the single-body
+    case (sphere against world, etc.).
+
+    ``body_invweight0`` is only valid after MuJoCo's ``set_const_0`` /
+    ``mj_setConst`` has run, so this kernel must be launched from
+    ``notify_model_changed`` **after** those calls (and once at initialisation
+    right after ``put_model``).
+
+    The positive (``timeconst``, ``dampratio``) convention is retained so
+    ``solmix``-weighted contact mixing continues to work. Static bodies
+    (``invweight0 == 0``) fall back to ``factor = 1.0`` and keep the previous
+    unscaled mapping — this is a graceful default when mixing against a
+    dynamic geom whose own solref is already correctly scaled.
+    """
+    world, geom_idx = wp.tid()
+
+    shape_idx = mjc_geom_to_newton_shape[world, geom_idx]
+    if shape_idx < 0:
+        return
+
+    body_id = geom_bodyid[geom_idx]
+    # body_invweight0 is (translational, rotational); contact uses translational.
+    invw = body_invweight0[world, body_id][0]
+    dmax = geom_solimp[world, geom_idx][1]
+
+    factor = float(1.0)
+    if invw > 0.0 and dmax < 1.0:
+        factor = invw * (1.0 - dmax)
+
+    ke = shape_ke[shape_idx] * factor
+    kd = shape_kd[shape_idx] * factor
+    geom_solref[world, geom_idx] = convert_solref(ke, kd, 1.0, 1.0)
+
+
+@wp.kernel
+def update_jnt_solref_from_invweight0_kernel(
+    mjc_jnt_to_newton_dof: wp.array2d[wp.int32],
+    joint_limit_ke: wp.array[float],
+    joint_limit_kd: wp.array[float],
+    jnt_dofadr: wp.array[wp.int32],
+    dof_invweight0: wp.array2d[float],
+    jnt_solimp: wp.array2d[vec5],
+    # outputs
+    jnt_solref: wp.array2d[wp.vec2],
+):
+    """Scale joint-limit ``jnt_solref`` so MuJoCo's ``k_eff`` matches Newton's ``limit_ke``/``limit_kd``.
+
+    Newton's ``joint_limit_ke``/``joint_limit_kd`` are force-space
+    stiffness and damping (N·m/rad, N·m·s/rad for revolute joints). MuJoCo's
+    limit constraint uses ``k_eff = k / (invweight * (1 - dmax))`` where
+    ``invweight = dof_invweight0`` for the DOF that owns this joint. Pre-scaling
+    ``solref`` by ``dof_invweight0 * (1 - dmax)`` cancels that scaling so the
+    simulated restoring torque matches the user-specified ``limit_ke`` /
+    ``limit_kd``.
+
+    The limit uses the negative (stiffness, damping) convention so the result is
+    ``solref = (-ke * factor, -kd * factor)``. ``dof_invweight0`` is only valid
+    after MuJoCo's ``set_const_0`` / ``mj_setConst`` has run, so this kernel must
+    be launched from ``notify_model_changed`` after those calls (and once at
+    initialisation right after ``put_model``).
+    """
+    world, mjc_jnt = wp.tid()
+    newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
+    if newton_dof < 0:
+        return
+
+    ke = joint_limit_ke[newton_dof]
+    kd = joint_limit_kd[newton_dof]
+    if ke <= 0.0:
+        return  # Keep the default solref inherited from the spec.
+
+    dof_idx = jnt_dofadr[mjc_jnt]
+    invw = dof_invweight0[world, dof_idx]
+    dmax = jnt_solimp[world, mjc_jnt][1]
+
+    factor = float(1.0)
+    if invw > 0.0 and dmax < 1.0:
+        factor = invw * (1.0 - dmax)
+
+    jnt_solref[world, mjc_jnt] = wp.vec2(-ke * factor, -kd * factor)
 
 
 @wp.kernel(enable_backward=False)

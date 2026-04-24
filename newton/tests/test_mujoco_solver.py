@@ -1403,7 +1403,9 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
     def test_joint_limit_solref_conversion(self):
         """
         Verify that joint_limit_ke and joint_limit_kd are properly converted to MuJoCo's solref_limit
-        using the negative convention: solref_limit = (-stiffness, -damping)
+        using the negative convention ``solref_limit = (-ke * factor, -kd * factor)`` where
+        ``factor = dof_invweight0 * (1 - dmax)`` makes MuJoCo's effective stiffness match the
+        force-space values users configure (issue #2009).
         """
         # Skip if no joints
         if self.model.joint_dof_count == 0:
@@ -1439,13 +1441,23 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         mjc_revolute_indices = [2, 3]  # MuJoCo joint indices for revolute joints
         newton_revolute_dof_indices = [12, 13]  # Newton DOF indices for revolute joints
 
+        jnt_dofadr = solver.mjw_model.jnt_dofadr.numpy()
+
+        def expected_scaled_solref(world_idx, mjc_idx, ke, kd):
+            dof_adr = int(jnt_dofadr[mjc_idx])
+            invw = float(solver.mjw_model.dof_invweight0.numpy()[world_idx, dof_adr])
+            dmax = float(solver.mjw_model.jnt_solimp.numpy()[world_idx, mjc_idx][1])
+            factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
+            return -ke * factor, -kd * factor
+
         for world_idx in range(self.model.world_count):
             for _i, (mjc_idx, newton_dof_idx) in enumerate(
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
                 global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
-                expected_ke = -initial_limit_ke[global_dof_idx]
-                expected_kd = -initial_limit_kd[global_dof_idx]
+                expected_ke, expected_kd = expected_scaled_solref(
+                    world_idx, mjc_idx, initial_limit_ke[global_dof_idx], initial_limit_kd[global_dof_idx]
+                )
 
                 # Get actual values from MuJoCo's jnt_solref array
                 actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
@@ -1478,8 +1490,9 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
                 global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
-                expected_ke = -updated_limit_ke[global_dof_idx]
-                expected_kd = -updated_limit_kd[global_dof_idx]
+                expected_ke, expected_kd = expected_scaled_solref(
+                    world_idx, mjc_idx, updated_limit_ke[global_dof_idx], updated_limit_kd[global_dof_idx]
+                )
 
                 # Get actual values from MuJoCo's jnt_solref array
                 actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
@@ -2168,15 +2181,24 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
                 # Test 2: Contact parameters (solref)
+                # ``geom_solref`` is scaled by ``body_invweight0 * (1 - dmax)`` so MuJoCo's
+                # effective stiffness matches the force-space ``shape_material_ke``/``kd``
+                # users configure (issue #2009).
                 actual_solref = geom_solref[world_idx, geom_idx]
 
-                # Compute expected solref based on Newton's conversion logic
-                ke = shape_ke[shape_idx]
-                kd = shape_kd[shape_idx]
+                ke = float(shape_ke[shape_idx])
+                kd = float(shape_kd[shape_idx])
 
-                if ke > 0.0 and kd > 0.0:
-                    timeconst = 2.0 / kd
-                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * ke))
+                geom_bodyid = int(solver.mjw_model.geom_bodyid.numpy()[geom_idx])
+                body_invweight0 = float(solver.mjw_model.body_invweight0.numpy()[world_idx, geom_bodyid][0])
+                dmax = float(solver.mjw_model.geom_solimp.numpy()[world_idx, geom_idx][1])
+                factor = body_invweight0 * (1.0 - dmax) if body_invweight0 > 0.0 and dmax < 1.0 else 1.0
+                scaled_ke = ke * factor
+                scaled_kd = kd * factor
+
+                if scaled_ke > 0.0 and scaled_kd > 0.0:
+                    timeconst = 2.0 / scaled_kd
+                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * scaled_ke))
                     expected_solref = (timeconst, dampratio)
                 else:
                     expected_solref = (0.02, 1.0)
@@ -8949,6 +8971,188 @@ class TestUpdateContactsPointPositions(unittest.TestCase):
                 break
 
         self.assertTrue(found_contacts, "No contacts detected after 200 steps")
+
+
+class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
+    """Regression tests for issue #2009.
+
+    Newton users set :attr:`ModelBuilder.ShapeConfig.ke`/``kd`` and
+    :meth:`ModelBuilder.add_joint_revolute` ``limit_ke``/``limit_kd`` as
+    *force-space* stiffness/damping (N/m or N·m/rad). MuJoCo's constraint
+    solver, however, applies effective stiffness ``k_eff = k / (invweight *
+    (1 - dmax))``. Unless the Newton→MuJoCo ``solref`` conversion pre-multiplies
+    by ``invweight0 * (1 - dmax)`` the resulting simulation stiffness ends up
+    scaled by the body/DOF inertia, which is the bug reported in
+    https://github.com/newton-physics/newton/issues/2009.
+    """
+
+    def _build_pendulum_model(
+        self, mass: float, ke: float, kd: float, *, inertia: float = 0.5, gravity: float = -9.81
+    ):
+        builder = newton.ModelBuilder(gravity=gravity)
+        inertia_tensor = wp.mat33(np.eye(3) * inertia)
+        link = builder.add_link(mass=mass, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia_tensor)
+        joint = builder.add_joint_revolute(
+            parent=-1,
+            child=link,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=ke,
+            limit_kd=kd,
+        )
+        builder.add_articulation([joint])
+        return builder.finalize()
+
+    def _build_contact_model(self, mass: float, ke: float, kd: float):
+        builder = newton.ModelBuilder()
+        cfg = newton.ModelBuilder.ShapeConfig(ke=ke, kd=kd)
+        inertia_tensor = wp.mat33(np.eye(3) * 0.05)
+        link = builder.add_link(mass=mass, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia_tensor)
+        joint = builder.add_joint_free(child=link)
+        builder.add_articulation([joint])
+        builder.add_shape_sphere(body=link, radius=0.1, cfg=cfg)
+        return builder.finalize()
+
+    def _expected_positive_solref(self, ke: float, kd: float, factor: float):
+        """Force-space ke/kd + ``factor = invweight0 * (1 - dmax)`` -> (timeconst, dampratio)."""
+        timeconst = 2.0 / (kd * factor)
+        dampratio = (1.0 / timeconst) * np.sqrt(1.0 / (ke * factor))
+        return timeconst, dampratio
+
+    def _dynamic_geom(self, solver):
+        mjc_geom_to_newton_shape = solver.mjc_geom_to_newton_shape.numpy()[0]
+        geom_bodyid = solver.mjw_model.geom_bodyid.numpy()
+        for g, shape in enumerate(mjc_geom_to_newton_shape):
+            if shape >= 0 and int(geom_bodyid[g]) > 0:
+                return int(g), int(geom_bodyid[g])
+        raise RuntimeError("No dynamic geom found")
+
+    def test_joint_limit_solref_uses_dof_invweight0(self):
+        """``jnt_solref`` for joint limits must be scaled by ``dof_invweight0 * (1 - dmax)``."""
+        ke = 10000.0
+        kd = 100.0
+        # Use inertia = 0.5 so ``dof_invweight0 = 1/0.5 = 2`` and factor = 2 * 0.05 = 0.1,
+        # which is far enough from 1.0 that the test distinguishes fixed from buggy behavior.
+        model = self._build_pendulum_model(mass=2.0, ke=ke, kd=kd, inertia=0.5)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+        solimp = solver.mjw_model.jnt_solimp.numpy()[0, 0]
+        dmax = float(solimp[1])
+        factor = dof_invweight0 * (1.0 - dmax)
+
+        actual_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
+        self.assertAlmostEqual(float(actual_solref[0]), -ke * factor, places=5)
+        self.assertAlmostEqual(float(actual_solref[1]), -kd * factor, places=5)
+
+    def test_joint_limit_solref_updates_after_mass_change(self):
+        """Changing inertia and notifying the solver must recompute the ``invweight0`` factor."""
+        ke = 8000.0
+        kd = 80.0
+        model = self._build_pendulum_model(mass=1.5, ke=ke, kd=kd, inertia=0.5)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        new_mass = np.array([4.0], dtype=np.float32)
+        new_inertia = np.array([np.eye(3, dtype=np.float32) * 0.2], dtype=np.float32)
+        model.body_mass.assign(new_mass)
+        model.body_inertia.assign(new_inertia)
+        model.body_inv_mass.assign(1.0 / new_mass)
+        model.body_inv_inertia.assign(np.linalg.inv(new_inertia))
+
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+        solimp = solver.mjw_model.jnt_solimp.numpy()[0, 0]
+        dmax = float(solimp[1])
+        factor = dof_invweight0 * (1.0 - dmax)
+
+        actual_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
+        self.assertAlmostEqual(float(actual_solref[0]), -ke * factor, places=5)
+        self.assertAlmostEqual(float(actual_solref[1]), -kd * factor, places=5)
+
+    def test_geom_solref_uses_body_invweight0(self):
+        """``geom_solref`` for dynamic bodies must convert with ``invweight0 * (1 - dmax)``."""
+        ke = 5000.0
+        kd = 200.0
+        model = self._build_contact_model(mass=0.5, ke=ke, kd=kd)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        dynamic_geom, body_id = self._dynamic_geom(solver)
+
+        body_invweight0 = float(solver.mjw_model.body_invweight0.numpy()[0, body_id][0])
+        solimp = solver.mjw_model.geom_solimp.numpy()[0, dynamic_geom]
+        dmax = float(solimp[1])
+        factor = body_invweight0 * (1.0 - dmax)
+
+        expected_tc, expected_dr = self._expected_positive_solref(ke, kd, factor)
+        actual_solref = solver.mjw_model.geom_solref.numpy()[0, dynamic_geom]
+        self.assertAlmostEqual(float(actual_solref[0]), expected_tc, places=5)
+        self.assertAlmostEqual(float(actual_solref[1]), expected_dr, places=5)
+
+    def test_geom_solref_updates_after_shape_ke_change(self):
+        """Changing ``shape_material_ke``/``kd`` must recompute ``geom_solref`` using the current ``invweight0``."""
+        model = self._build_contact_model(mass=0.5, ke=5000.0, kd=200.0)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        new_ke = 20000.0
+        new_kd = 350.0
+        shape_ke = model.shape_material_ke.numpy()
+        shape_kd = model.shape_material_kd.numpy()
+        shape_ke[:] = new_ke
+        shape_kd[:] = new_kd
+        model.shape_material_ke.assign(shape_ke)
+        model.shape_material_kd.assign(shape_kd)
+
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+
+        dynamic_geom, body_id = self._dynamic_geom(solver)
+        body_invweight0 = float(solver.mjw_model.body_invweight0.numpy()[0, body_id][0])
+        solimp = solver.mjw_model.geom_solimp.numpy()[0, dynamic_geom]
+        dmax = float(solimp[1])
+        factor = body_invweight0 * (1.0 - dmax)
+
+        expected_tc, expected_dr = self._expected_positive_solref(new_ke, new_kd, factor)
+        actual_solref = solver.mjw_model.geom_solref.numpy()[0, dynamic_geom]
+        self.assertAlmostEqual(float(actual_solref[0]), expected_tc, places=5)
+        self.assertAlmostEqual(float(actual_solref[1]), expected_dr, places=5)
+
+    def test_joint_limit_torque_matches_configured_stiffness(self):
+        """A joint driven past its limit must feel a restoring acceleration of ``ke * overshoot / I_eff``."""
+        mass = 1.0
+        inertia = 0.5
+        ke = 50000.0
+        kd = 500.0
+        model = self._build_pendulum_model(mass=mass, ke=ke, kd=kd, inertia=inertia, gravity=0.0)
+
+        solver = SolverMuJoCo(model, iterations=50, disable_contacts=True)
+
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        overshoot = 0.1
+        joint_q = state_0.joint_q.numpy()
+        joint_q[0] = 1.0 + overshoot
+        state_0.joint_q.assign(joint_q)
+        joint_qd = state_0.joint_qd.numpy()
+        joint_qd[:] = 0.0
+        state_0.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+        dt = 1e-3
+        solver.step(state_0, state_1, control, None, dt)
+
+        qd_after = float(state_1.joint_qd.numpy()[0])
+        # With the fix in place, the restoring torque is ``ke * overshoot`` (force-space),
+        # so the angular acceleration is ``ke * overshoot / inertia = 50000 * 0.1 / 0.5 = 10000 rad/s^2``
+        # and the velocity after a single ``1 ms`` step is roughly ``-10 rad/s``.
+        # Without the fix, ``dof_invweight0 * (1 - dmax) = 2 * 0.05 = 0.1`` enters the math
+        # and the acceleration is ``ke * overshoot / (inertia * factor) = 100000 rad/s^2`` -> ``qd ≈ -100 rad/s``.
+        # The window below fails under either extreme of the bug.
+        self.assertLess(qd_after, -1.0)
+        self.assertGreater(qd_after, -30.0)
 
 
 if __name__ == "__main__":
