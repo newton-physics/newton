@@ -2398,28 +2398,39 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
                 # Verify 2: Contact parameters updated (solref)
-                # Compute expected values based on new ke/kd using timeconst/dampratio conversion
+                # Compute expected values based on new ke/kd using timeconst/dampratio conversion.
+                # The MuJoCo solver stores geom_solref pre-scaled by
+                # ``body_invweight0 * (1 - dmax)`` so the effective stiffness matches
+                # Newton's force-space ke/kd (see issue #2009). Replicate that scaling here.
                 ke = new_ke[shape_idx]
                 kd = new_kd[shape_idx]
 
-                if ke > 0.0 and kd > 0.0:
-                    timeconst = 2.0 / kd
-                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * ke))
+                body_id = int(solver.mjw_model.geom_bodyid.numpy()[geom_idx])
+                invw = float(solver.mjw_model.body_invweight0.numpy()[world_idx, body_id][0])
+                dmax = float(solver.mjw_model.geom_solimp.numpy()[world_idx, geom_idx][1])
+                factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
+                ke_scaled = ke * factor
+                kd_scaled = kd * factor
+
+                if ke_scaled > 0.0 and kd_scaled > 0.0:
+                    timeconst = 2.0 / kd_scaled
+                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * ke_scaled))
                     expected_solref = (timeconst, dampratio)
                 else:
                     expected_solref = (0.02, 1.0)
 
+                rel_tol = 1e-4
                 self.assertAlmostEqual(
                     float(updated_solref[world_idx, geom_idx][0]),
                     expected_solref[0],
-                    places=5,
+                    delta=max(abs(expected_solref[0]) * rel_tol, 1e-6),
                     msg=f"Updated solref[0] should match expected for shape {shape_idx}",
                 )
 
                 self.assertAlmostEqual(
                     float(updated_solref[world_idx, geom_idx][1]),
                     expected_solref[1],
-                    places=5,
+                    delta=max(abs(expected_solref[1]) * rel_tol, 1e-6),
                     msg=f"Updated solref[1] should match expected for shape {shape_idx}",
                 )
 
@@ -3902,10 +3913,20 @@ class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def setUp(self):
-        """Set up a simple model with a sphere and a plane."""
+        """Set up a simple model with a sphere and a plane.
+
+        Issue #2009 changed ``shape_material_ke``/``shape_material_kd`` to
+        force-space semantics, so the effective contact stiffness in MuJoCo
+        matches the user-specified value instead of being divided by
+        ``invweight0 * (1 - dmax)``. The sphere here is a dense
+        ``radius=0.5`` body (~523 kg) against a static ground plane.
+        Under the corrected semantics, ``ke=1e6`` is needed to keep the
+        sphere from sinking through the plane -- ``ke=1e4`` used to work
+        only because of the ~10,000x over-stiffness that #2009 removed.
+        """
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.ke = 1e4
-        builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.ke = 1e6
+        builder.default_shape_cfg.kd = 1e4
         builder.add_ground_plane()
 
         self.sphere_radius = 0.5
