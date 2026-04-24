@@ -3,7 +3,7 @@
 
 from .articulation import eval_fk, eval_ik, eval_jacobian, eval_mass_matrix
 from .builder import ModelBuilder
-from .collide import CollisionPipeline
+from .collide import CollisionPipeline, SpeculativeContactConfig
 from .contacts import Contacts
 from .control import Control
 from .enums import (
@@ -25,6 +25,7 @@ __all__ = [
     "JointType",
     "Model",
     "ModelBuilder",
+    "SpeculativeContactConfig",
     "State",
     "eval_fk",
     "eval_ik",

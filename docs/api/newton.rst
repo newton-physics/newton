@@ -57,6 +57,7 @@ newton
    ParticleFlags
    SDF
    ShapeFlags
+   SpeculativeContactConfig
    State
    TetMesh
 
