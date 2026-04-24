@@ -57,8 +57,7 @@ class Example:
             excluded_types.extend([newton.GeoType.CYLINDER])
             supported_shape_types = list(PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES)
             supported_type_pairs = list(PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS)
-            supported_type_pairs_reversed = [(b, a) for (a, b) in supported_type_pairs]
-            supported_type_pairs.extend(supported_type_pairs_reversed)
+            supported_type_pairs = set(supported_type_pairs) | {(b, a) for (a, b) in supported_type_pairs}
             for shape_bottom in supported_shape_types:
                 shape_bottom_name = shape_bottom.name.lower()
                 for shape_top in supported_shape_types:

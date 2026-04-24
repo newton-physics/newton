@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example Robot DR TestMech
+# Example for basic DR TestMech system
 #
 # Shows how to simulate DR TestMech with multiple worlds using SolverKamino.
 #
-# Command: python -m newton.examples kamino_robot_dr_testmech --world-count 16
+# Command: python -m newton.examples kamino_basic_dr_testmech --world-count 16
 #
 ###########################################################################
 

@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example for basic four-bar mechanism
+# Example for basic boxes nunchaku system.
 #
-# Shows how to simulate a basic four-bar linkage with multiple worlds using SolverKamino.
+# Shows how to simulate a basic boxes nunchaku with multiple worlds using SolverKamino.
 #
-# Command: python -m newton.examples kamino_basic_fourbar --world-count 16
+# Command: python -m newton.examples kamino_basic_boxes_nunchaku --world-count 16
 #
 ###########################################################################
 
@@ -174,7 +174,7 @@ class Example:
             "--from-usd",
             type=argparse.BooleanOptionalAction,
             default=False,
-            help="Load the basic four-bar mechanism from USD.",
+            help="Load the basic boxes nunchaku from USD.",
         )
         return parser
 

@@ -36,7 +36,7 @@ class Example:
         builder.default_shape_cfg.margin = 0.0
         builder.default_shape_cfg.gap = 0.0
 
-        # Manually build the basic box on plane using the builder API
+        # Build one world per supported joint type on the shared builder.
         testing_newton.build_all_joints_test(builder=builder)
 
         # Create the model from the builder
