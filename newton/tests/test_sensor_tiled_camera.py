@@ -110,8 +110,8 @@ class TestSensorTiledCamera(unittest.TestCase):
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
 
         state = model.state()
-        newton.geometry.build_shape_bvh(model, state)
-        newton.geometry.build_particle_bvh(model, state)
+        newton.geometry.build_bvh_shape(model, state)
+        newton.geometry.build_bvh_particle(model, state)
         tiled_camera_sensor.update(
             state, camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
         )
@@ -142,8 +142,8 @@ class TestSensorTiledCamera(unittest.TestCase):
         camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
 
         state = model.state()
-        newton.geometry.build_shape_bvh(model, state)
-        newton.geometry.build_particle_bvh(model, state)
+        newton.geometry.build_bvh_shape(model, state)
+        newton.geometry.build_bvh_particle(model, state)
 
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)

@@ -83,8 +83,8 @@ class RenderContext:
         Populates shape, triangle, and texture data from *model*. BVH
         acceleration structures for shapes and particles live on
         :class:`~newton.Model` and must be refit via
-        :func:`~newton.geometry.refit_shape_bvh` and
-        :func:`~newton.geometry.refit_particle_bvh` before rendering.
+        :func:`~newton.geometry.refit_bvh_shape` and
+        :func:`~newton.geometry.refit_bvh_particle` before rendering.
 
         Args:
             model: Newton simulation model providing shapes and particles.
@@ -118,8 +118,8 @@ class RenderContext:
         """Synchronize triangle-mesh points from the current simulation state.
 
         Shape and particle BVHs are refit separately via
-        :func:`~newton.geometry.refit_shape_bvh` and
-        :func:`~newton.geometry.refit_particle_bvh`.
+        :func:`~newton.geometry.refit_bvh_shape` and
+        :func:`~newton.geometry.refit_bvh_particle`.
 
         Args:
             model: Newton simulation model (for shape metadata).
@@ -149,8 +149,8 @@ class RenderContext:
         ``(world_count, camera_count, height, width)``.
 
         Shape and particle BVHs on *model* must be refit for the current
-        *state* via :func:`~newton.geometry.refit_shape_bvh` and
-        :func:`~newton.geometry.refit_particle_bvh` before calling this
+        *state* via :func:`~newton.geometry.refit_bvh_shape` and
+        :func:`~newton.geometry.refit_bvh_particle` before calling this
         method.
 
         Args:

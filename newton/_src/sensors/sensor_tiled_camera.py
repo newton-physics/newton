@@ -167,8 +167,8 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         :meth:`update` calls this automatically when *state* is not None.
 
         Shape and particle BVHs on :attr:`model` must be refit separately
-        via :func:`~newton.geometry.refit_shape_bvh` and
-        :func:`~newton.geometry.refit_particle_bvh` prior to calling
+        via :func:`~newton.geometry.refit_bvh_shape` and
+        :func:`~newton.geometry.refit_bvh_particle` prior to calling
         :meth:`update`.
 
         Args:
@@ -196,8 +196,8 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         channel is optional -- pass None to skip that channel's rendering entirely.
 
         Shape and particle BVHs on :attr:`model` must be refit for *state* via
-        :func:`~newton.geometry.refit_shape_bvh` and
-        :func:`~newton.geometry.refit_particle_bvh` before calling this method.
+        :func:`~newton.geometry.refit_bvh_shape` and
+        :func:`~newton.geometry.refit_bvh_particle` before calling this method.
 
         Args:
             state: Simulation state with body and particle transforms.

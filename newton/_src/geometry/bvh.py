@@ -336,8 +336,13 @@ def compute_bvh_group_roots(bvh_id: wp.uint64, out_bvh_group_roots: wp.array[wp.
     out_bvh_group_roots[tid] = wp.bvh_get_group_root(bvh_id, tid)
 
 
-def _compute_shape_bvh_bounds_launch(model: Model) -> None:
-    """Launch the shape BVH bounds kernel into the BVH's ``lowers``/``uppers``/``groups`` arrays."""
+def _compute_shape_bvh_bounds_launch(
+    model: Model,
+    lowers: wp.array,
+    uppers: wp.array,
+    groups: wp.array,
+) -> None:
+    """Launch the shape BVH bounds kernel into the provided ``lowers``/``uppers``/``groups`` arrays."""
     wp.launch(
         kernel=compute_shape_bvh_bounds,
         dim=model.bvh_shape_count_enabled,
@@ -350,9 +355,9 @@ def _compute_shape_bvh_bounds_launch(model: Model) -> None:
             model.shape_scale,
             model.bvh_shape_world_transforms,
             model.bvh_shape_bounds,
-            model.bvh_shapes.lowers,
-            model.bvh_shapes.uppers,
-            model.bvh_shapes.groups,
+            lowers,
+            uppers,
+            groups,
         ],
         device=model.device,
     )
@@ -373,13 +378,13 @@ def _compute_shape_world_transforms_launch(model: Model, state: State) -> None:
     )
 
 
-def build_shape_bvh(model: Model, state: State) -> None:
+def build_bvh_shape(model: Model, state: State) -> None:
     """Build the shape BVH stored on *model*.
 
     Allocates :attr:`~newton.Model.bvh_shapes` and related fields (shape
     enabled filter, per-shape local AABBs, world-space transforms, group
     roots) and populates them from the current *state*. Must be called
-    before :func:`refit_shape_bvh` and before any sensor that reads the
+    before :func:`refit_bvh_shape` and before any sensor that reads the
     shape BVH (e.g. :class:`~newton.sensors.SensorTiledCamera`).
 
     Args:
@@ -430,8 +435,8 @@ def build_shape_bvh(model: Model, state: State) -> None:
     lowers = wp.zeros(model.bvh_shape_count_enabled, dtype=wp.vec3f, device=device)
     uppers = wp.zeros(model.bvh_shape_count_enabled, dtype=wp.vec3f, device=device)
     groups = wp.zeros(model.bvh_shape_count_enabled, dtype=wp.int32, device=device)
+    _compute_shape_bvh_bounds_launch(model, lowers, uppers, groups)
     model.bvh_shapes = wp.Bvh(lowers, uppers, groups=groups)
-    _compute_shape_bvh_bounds_launch(model)
 
     model.bvh_shapes_group_roots = wp.zeros(world_count_total, dtype=wp.int32, device=device)
     wp.launch(
@@ -442,10 +447,10 @@ def build_shape_bvh(model: Model, state: State) -> None:
     )
 
 
-def refit_shape_bvh(model: Model, state: State) -> None:
+def refit_bvh_shape(model: Model, state: State) -> None:
     """Refit the shape BVH stored on *model* for the current *state*.
 
-    Requires :func:`build_shape_bvh` to have been called beforehand. Updates
+    Requires :func:`build_bvh_shape` to have been called beforehand. Updates
     world-space shape transforms from ``state.body_q`` and refits the BVH
     in place.
 
@@ -456,15 +461,23 @@ def refit_shape_bvh(model: Model, state: State) -> None:
     if model.shape_count == 0 or model.bvh_shape_count_enabled == 0:
         return
     if model.bvh_shapes is None:
-        raise RuntimeError("refit_shape_bvh requires build_shape_bvh to have been called first.")
+        raise RuntimeError("refit_bvh_shape requires build_bvh_shape to have been called first.")
 
     _compute_shape_world_transforms_launch(model, state)
-    _compute_shape_bvh_bounds_launch(model)
+    _compute_shape_bvh_bounds_launch(
+        model, model.bvh_shapes.lowers, model.bvh_shapes.uppers, model.bvh_shapes.groups
+    )
     model.bvh_shapes.refit()
 
 
-def _compute_particle_bvh_bounds_launch(model: Model, state: State) -> None:
-    """Launch the particle BVH bounds kernel into the BVH's ``lowers``/``uppers``/``groups`` arrays."""
+def _compute_particle_bvh_bounds_launch(
+    model: Model,
+    state: State,
+    lowers: wp.array,
+    uppers: wp.array,
+    groups: wp.array,
+) -> None:
+    """Launch the particle BVH bounds kernel into the provided ``lowers``/``uppers``/``groups`` arrays."""
     wp.launch(
         kernel=compute_particle_bvh_bounds,
         dim=state.particle_count,
@@ -474,20 +487,20 @@ def _compute_particle_bvh_bounds_launch(model: Model, state: State) -> None:
             model.particle_world,
             state.particle_q,
             model.particle_radius,
-            model.bvh_particles.lowers,
-            model.bvh_particles.uppers,
-            model.bvh_particles.groups,
+            lowers,
+            uppers,
+            groups,
         ],
         device=model.device,
     )
 
 
-def build_particle_bvh(model: Model, state: State) -> None:
+def build_bvh_particle(model: Model, state: State) -> None:
     """Build the particle BVH stored on *model*.
 
     Allocates :attr:`~newton.Model.bvh_particles` and
     :attr:`~newton.Model.bvh_particles_group_roots` and populates them from
-    the current *state*. Must be called before :func:`refit_particle_bvh`
+    the current *state*. Must be called before :func:`refit_bvh_particle`
     and before any sensor that reads the particle BVH.
 
     Args:
@@ -504,8 +517,8 @@ def build_particle_bvh(model: Model, state: State) -> None:
     lowers = wp.zeros(num_particles, dtype=wp.vec3f, device=device)
     uppers = wp.zeros(num_particles, dtype=wp.vec3f, device=device)
     groups = wp.zeros(num_particles, dtype=wp.int32, device=device)
+    _compute_particle_bvh_bounds_launch(model, state, lowers, uppers, groups)
     model.bvh_particles = wp.Bvh(lowers, uppers, groups=groups)
-    _compute_particle_bvh_bounds_launch(model, state)
 
     model.bvh_particles_group_roots = wp.zeros(world_count_total, dtype=wp.int32, device=device)
     wp.launch(
@@ -516,10 +529,10 @@ def build_particle_bvh(model: Model, state: State) -> None:
     )
 
 
-def refit_particle_bvh(model: Model, state: State) -> None:
+def refit_bvh_particle(model: Model, state: State) -> None:
     """Refit the particle BVH stored on *model* for the current *state*.
 
-    Requires :func:`build_particle_bvh` to have been called beforehand.
+    Requires :func:`build_bvh_particle` to have been called beforehand.
     Recomputes particle bounds from ``state.particle_q`` and refits the BVH
     in place.
 
@@ -530,7 +543,9 @@ def refit_particle_bvh(model: Model, state: State) -> None:
     if state.particle_q is None or state.particle_count == 0:
         return
     if model.bvh_particles is None:
-        raise RuntimeError("refit_particle_bvh requires build_particle_bvh to have been called first.")
+        raise RuntimeError("refit_bvh_particle requires build_bvh_particle to have been called first.")
 
-    _compute_particle_bvh_bounds_launch(model, state)
+    _compute_particle_bvh_bounds_launch(
+        model, state, model.bvh_particles.lowers, model.bvh_particles.uppers, model.bvh_particles.groups
+    )
     model.bvh_particles.refit()
