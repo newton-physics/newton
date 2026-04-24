@@ -35,6 +35,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
 - :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
+- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image as a dockable window in :class:`~newton.viewer.ViewerGL` (no-op on other backends)
 
 **Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
 All viewers support the ``max_worlds`` parameter to limit visualization to a subset of environments:
@@ -551,6 +552,47 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 .. code-block:: python
 
     viewer.log_gizmo("/debug/target_frame", wp.transform(pos, rot))
+
+**Logging images:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
+outputs from :class:`~newton.sensors.SensorTiledCamera`) as dockable windows in
+:class:`~newton.viewer.ViewerGL`. Accepted shapes are ``(H, W)``, ``(H, W, C)``,
+``(N, H, W)``, and ``(N, H, W, C)`` with ``C in (1, 3, 4)``. Accepted dtypes are
+``uint8`` (values in ``[0, 255]``) and ``float32`` (values in ``[0, 1]``; values
+outside the range are clipped).
+
+.. testcode:: viewer-log-image
+
+    from newton.sensors import SensorTiledCamera
+
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0)
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerNull()
+    viewer.set_model(model)
+
+    # Grayscale heatmap: normalize to [0, 1] before logging so float32
+    # values land in the accepted range.
+    depth_image = np.full((16, 16), 2.0, dtype=np.float32)
+    heatmap = depth_image / max(depth_image.max(), 1e-6)
+    viewer.log_image("heatmap", heatmap)
+
+    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
+    # output once and the RGBA buffer once, then reuse both every frame.
+    sensor = SensorTiledCamera(model=model)
+    W, H, camera_count = 16, 16, 1
+    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
+    rgba = wp.empty((model.world_count * camera_count, H, W, 4), dtype=wp.uint8)
+    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
+    sensor.utils.to_batched_rgba_from_color(color_image, out_buffer=rgba)
+    viewer.log_image("tiled_camera", rgba)
+
+For a 3D input ``(H, W, C)``, a last-axis of 1, 3, or 4 is interpreted as
+channel count (single color image); any other value is interpreted as a
+batch of ``C`` grayscale images ``(N, H, W)``. Pass a 4D array if the
+disambiguation matters.
 
 **Camera and world layout:**
 

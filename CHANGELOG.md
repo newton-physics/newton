@@ -14,6 +14,7 @@
 - Add `Mesh.is_watertight` property (cached) that reports whether every geometric edge is shared by exactly two triangles
 - Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
 - Add fast parity-based SDF construction path for watertight meshes in `SDF.create_from_mesh`, using `wp.mesh_query_point_sign_parity` instead of winding numbers; selected via the new `sign_method` argument (`"auto"` — the default — picks parity when `Mesh.is_watertight` is true, or `"parity"` / `"winding"` to force either strategy)
+- Add `Viewer.log_image()` for displaying single or batched images in `ViewerGL`; other backends inherit a no-op. Also add `SensorTiledCamera.utils.to_batched_rgba_from_color()`, `to_batched_rgba_from_normal()`, `to_batched_rgba_from_depth()`, and `to_batched_rgba_from_shape_index()` (hash palette or caller-provided RGB lookup) adapters producing output consumable by `log_image()`.
 - Add `ViewerBase.log_arrows()` for arrow rendering (wide line + arrowhead) in the GL viewer with a dedicated geometry shader
 - Add frame-to-frame contact matching via `CollisionPipeline(contact_matching=...)` with modes `"latest"` (populates `contacts.rigid_contact_match_index`) and `"sticky"` (experimental; additionally replays previous-frame contact geometry on matched contacts — the sticky update strategy may change without warning). Optional `contact_report=True` exposes new/broken contact index lists on `Contacts`.
 - Add `enable_multiccd` parameter to `SolverMuJoCo` for multi-CCD contact generation (up to 4 contact points per geom pair)
@@ -33,6 +34,10 @@
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
 - Disable process reuse in the test runner on multi-GPU systems to prevent CUDA errors from cascading across test suites, keeping process reuse enabled on single-GPU systems for faster throughput
+
+### Deprecated
+
+- Deprecate `SensorTiledCamera.utils.flatten_color_image_to_rgba`, `flatten_normal_image_to_rgba`, and `flatten_depth_image_to_rgba` in favor of `to_batched_rgba_from_color`, `to_batched_rgba_from_normal`, and `to_batched_rgba_from_depth` used with `Viewer.log_image`.
 
 ### Fixed
 
