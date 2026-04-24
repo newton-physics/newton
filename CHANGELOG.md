@@ -31,6 +31,11 @@
 - Bump `mujoco` and `mujoco-warp` dependencies to `~=3.7.0` (`mujoco-warp` requires `>=3.7.0.1`)
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
+- Change `ModelBuilder.add_joint_free` to initialize `joint_q` to the identity transform like every other joint type; the initial world pose of a floating-base body is now carried by `joint_X_p` and applied via forward kinematics (`body_q = parent * joint_X_p * X_j * inv(joint_X_c)`). This is a breaking change: reads and writes of `state.joint_q[:7]` for floating roots no longer return or set the body world pose — use `state.body_q`, `ArticulationView.get_root_transforms`/`set_root_transforms`, or set `builder.joint_X_p[root_joint]` / pass `xform=` to `add_body` instead.
+
+### Deprecated
+
+### Removed
 
 ### Fixed
 

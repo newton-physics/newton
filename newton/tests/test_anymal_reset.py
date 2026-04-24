@@ -49,8 +49,11 @@ class TestAnymalReset(unittest.TestCase):
         self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        builder.joint_q[:3] = [0.0, 0.0, 0.92]
-        builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
+        # place the floating base at the desired world pose via joint_X_p and body_q
+        free_joint_idx = builder.joint_type.index(newton.JointType.FREE)
+        desired_root_xform = wp.transform((0.0, 0.0, 0.92), (0.0, 0.0, 0.7071, 0.7071))
+        builder.joint_X_p[free_joint_idx] = desired_root_xform
+        builder.body_q[builder.joint_child[free_joint_idx]] = desired_root_xform
         builder.joint_q[7:] = [0.0, -0.4, 0.8, 0.0, -0.4, 0.8, 0.0, 0.4, -0.8, 0.0, 0.4, -0.8]
 
         for i in range(len(builder.joint_target_ke)):

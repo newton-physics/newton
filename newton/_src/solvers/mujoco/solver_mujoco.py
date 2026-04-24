@@ -3482,6 +3482,8 @@ class SolverMuJoCo(SolverBase):
                 model.joint_qd_start,
                 model.joint_dof_dim,
                 model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
                 model.body_com,
                 dof_ref,
                 self.mj_q_start,
@@ -3543,6 +3545,8 @@ class SolverMuJoCo(SolverBase):
                 model.joint_qd_start,
                 model.joint_dof_dim,
                 model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
                 model.body_com,
                 dof_ref,
                 model.body_flags,
@@ -4566,8 +4570,7 @@ class SolverMuJoCo(SolverBase):
             is_fixed_root = parent == -1 and j_type == JointType.FIXED
 
             # Compute body transform for the MjSpec body pos/quat.
-            # For free joints, the parent/child xforms are identity and the
-            # initial position lives in body_q (see add_joint_free docstring).
+            # For free joints, body_q holds the child body's world pose directly.
             child_xform = wp.transform(*joint_child_xform[j])
             if j_type == JointType.FREE:
                 bq = body_q[child]

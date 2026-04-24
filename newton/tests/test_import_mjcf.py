@@ -368,7 +368,9 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(child_quat, expected_quat, atol=1e-6)
 
     def test_floating_base_transform(self):
-        """Test 2: Floating base body → verify joint_q contains correct world coordinates, including rotation."""
+        """Test 2: Floating base body → verify body_q holds the expected world pose and
+        joint_q starts at the identity transform (encoded via joint_X_p).
+        """
         # Add a rotation: 90 deg about Z axis
         angle = np.pi / 2
         quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
@@ -388,32 +390,26 @@ class TestImportMjcfBasic(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
-        # For floating base, joint_q should contain the body's world transform
         body_idx = model.body_label.index("test/worldbody/floating_body")
         joint_idx = model.joint_label.index("test/worldbody/floating_body/floating_body_freejoint")
 
-        # Get joint arrays at once
+        # The initial world pose is carried by joint_X_p; joint_q[0:7] stays at the identity transform.
         joint_q_start = model.joint_q_start.numpy()
         joint_q = model.joint_q.numpy()
-
         joint_start = joint_q_start[joint_idx]
+        np.testing.assert_allclose(joint_q[joint_start : joint_start + 7], np.array(wp.transform_identity()), atol=1e-6)
 
-        # Extract position and orientation from joint_q
-        joint_pos = [joint_q[joint_start + 0], joint_q[joint_start + 1], joint_q[joint_start + 2]]
-        # Extract quaternion from joint_q (warp: [x, y, z, w])
-        joint_quat = [
-            joint_q[joint_start + 3],
-            joint_q[joint_start + 4],
-            joint_q[joint_start + 5],
-            joint_q[joint_start + 6],
-        ]
-
-        # Should match the body's world transform
+        # The body's world pose reflects the <body pos=.../quat=...> attributes.
         body_q = model.body_q.numpy()
         body_pos = body_q[body_idx, :3]
         body_quat = body_q[body_idx, 3:]
-        np.testing.assert_allclose(joint_pos, body_pos, atol=1e-6)
-        np.testing.assert_allclose(joint_quat, body_quat, atol=1e-6)
+        np.testing.assert_allclose(body_pos, [2.0, 3.0, 4.0], atol=1e-6)
+        np.testing.assert_allclose(body_quat, np.array(quat), atol=1e-6)
+
+        # joint_X_p encodes the same pose (child anchor is identity for <freejoint/>).
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+        np.testing.assert_allclose(joint_X_p[:3], body_pos, atol=1e-6)
+        np.testing.assert_allclose(joint_X_p[3:], body_quat, atol=1e-6)
 
     def test_floating_base_with_import_xform_is_relative(self):
         """Test that xform composes with (does not overwrite) a floating root body's local transform."""
@@ -466,16 +462,18 @@ class TestImportMjcfBasic(unittest.TestCase):
         joint_q_start = model.joint_q_start.numpy()
         joint_q = model.joint_q.numpy()
         joint_start = joint_q_start[joint_idx]
-        joint_pos = np.array([joint_q[joint_start + 0], joint_q[joint_start + 1], joint_q[joint_start + 2]])
-        joint_quat = np.array(
-            [joint_q[joint_start + 3], joint_q[joint_start + 4], joint_q[joint_start + 5], joint_q[joint_start + 6]]
-        )
+
+        # joint_q is initialized to identity; the composed world pose is carried by joint_X_p.
+        np.testing.assert_allclose(joint_q[joint_start : joint_start + 7], np.array(wp.transform_identity()), atol=1e-6)
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+        joint_pos = joint_X_p[:3]
+        joint_quat = joint_X_p[3:]
 
         np.testing.assert_allclose(joint_pos, expected_pos, atol=1e-6)
         joint_quat_match = np.allclose(joint_quat, expected_quat, atol=1e-6) or np.allclose(
             joint_quat, -expected_quat, atol=1e-6
         )
-        self.assertTrue(joint_quat_match, f"Joint quaternion does not match composed transform. Got {joint_quat}")
+        self.assertTrue(joint_quat_match, f"joint_X_p quaternion does not match composed transform. Got {joint_quat}")
 
     def test_chain_with_rotations(self):
         """Test 3: Chain of bodies with different pos/quat → verify each body's world transform."""

@@ -1669,10 +1669,15 @@ def parse_mjcf(
                     )
                 )
             elif floating is not None and floating and parent == -1:
-                # floating=True only makes sense when connecting to world
+                # floating=True only makes sense when connecting to world;
+                # _xform is the body's initial world pose, carried via parent_xform.
                 joint_indices.append(
                     builder._add_base_joint(
-                        child=link, floating=True, label=f"{body_label_path}/floating_base", parent=parent
+                        child=link,
+                        floating=True,
+                        label=f"{body_label_path}/floating_base",
+                        parent_xform=_xform,
+                        parent=parent,
                     )
                 )
             else:
@@ -1697,8 +1702,14 @@ def parse_mjcf(
             joint_label = f"{body_label_path}/{joint_label_name}"
             if joint_type == JointType.FREE:
                 assert parent == -1, "Free joints must have the world body as parent"
+                # <freejoint pos=...> sets the joint's child anchor; the parent anchor
+                # carries the resulting body world pose.
+                free_child_xform = wp.transform(joint_pos, wp.quat_identity())
+                free_parent_xform = world_xform * free_child_xform
                 joint_idx = builder.add_joint_free(
                     link,
+                    parent_xform=free_parent_xform,
+                    child_xform=free_child_xform,
                     label=joint_label,
                     custom_attributes=joint_custom_attributes,
                 )

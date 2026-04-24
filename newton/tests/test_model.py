@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.selection
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
 from newton.tests.unittest_utils import assert_np_equal
@@ -556,12 +557,14 @@ class TestModelJoints(unittest.TestCase):
         assert builder.articulation_count == 2  # Now we have two articulations
 
         # a non-fixed joint followed by fixed joints
+        # The initial body pose is carried by parent_xform, not by joint_q; joint_q[-7:] stays at
+        # the identity transform (zero translation + identity quaternion).
         free_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.4, 0.5, 0.6))
         b4 = builder.add_link(xform=free_xform)
         builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
-        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
+        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=free_xform)
         assert_np_equal(builder.body_q[b4], np.array(free_xform))
-        assert_np_equal(builder.joint_q[-7:], np.array(free_xform))
+        assert_np_equal(builder.joint_q[-7:], np.array(wp.transform_identity()))
         assert builder.joint_count == 8
         assert builder.body_count == 8
         _last_body2, joints2 = add_three_cubes(builder, parent_body=b4)
@@ -1771,7 +1774,8 @@ class TestModelWorld(unittest.TestCase):
 
         floating_base = ModelBuilder()
         b1 = floating_base.add_link(xform=orig_xform)
-        j1 = floating_base.add_joint_free(parent=-1, child=b1)
+        # The initial body pose is carried by the joint's parent anchor transform (FK convention).
+        j1 = floating_base.add_joint_free(parent=-1, child=b1, parent_xform=orig_xform)
         floating_base.add_articulation([j1])
         floating_base.add_shape_sphere(body=b1, xform=orig_xform)
 
@@ -1801,13 +1805,72 @@ class TestModelWorld(unittest.TestCase):
         self.assertEqual(builder.body_q[1], offset_xform * orig_xform)
         # fixed base has updated parent transform
         assert_np_equal(np.array(builder.joint_X_p[0]), np.array(offset_xform * orig_xform), tol=1.0e-6)
-        # floating base has updated joint coordinates
-        assert_np_equal(np.array(builder.joint_q[1:]), np.array(offset_xform * orig_xform), tol=1.0e-6)
+        # floating base: initial world pose is in joint_X_p; joint_q stays at identity
+        assert_np_equal(np.array(builder.joint_X_p[1]), np.array(offset_xform * orig_xform), tol=1.0e-6)
+        assert_np_equal(np.array(builder.joint_q[1:]), np.array(wp.transform_identity()), tol=1.0e-6)
         # shapes with a parent body keep the original transform
         assert_np_equal(np.array(builder.shape_transform[0]), np.array(orig_xform), tol=1.0e-6)
         assert_np_equal(np.array(builder.shape_transform[1]), np.array(orig_xform), tol=1.0e-6)
         # static shape receives the offset transform
         assert_np_equal(np.array(builder.shape_transform[2]), np.array(offset_xform * orig_xform), tol=1.0e-6)
+
+    def test_add_joint_free_non_identity_anchors(self):
+        """FREE joints must encode the initial body pose through parent_xform/child_xform
+        rather than via joint_q; forward kinematics must reproduce the expected body pose
+        with joint_q initialized to the identity transform.
+        """
+        parent_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.4, 0.5, 0.6))
+        child_xform = wp.transform(wp.vec3(0.1, -0.2, 0.3), wp.quat_rpy(-0.2, 0.1, 0.3))
+
+        builder = ModelBuilder()
+        body = builder.add_link()
+        joint = builder.add_joint_free(
+            parent=-1,
+            child=body,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+        builder.add_articulation([joint])
+
+        q_start = builder.joint_q_start[joint]
+        assert_np_equal(np.array(builder.joint_q[q_start : q_start + 7]), np.array(wp.transform_identity()))
+
+        expected_body_q = parent_xform * wp.transform_inverse(child_xform)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[body], np.array(expected_body_q), tol=1.0e-6)
+
+    def test_articulation_view_root_transforms_roundtrip(self):
+        """ArticulationView.get_root_transforms / set_root_transforms must round-trip the
+        root body's world pose through joint_X_p / joint_X_c composition.
+        """
+        parent_xform = wp.transform(wp.vec3(2.0, -1.0, 0.5), wp.quat_rpy(0.1, -0.2, 0.3))
+
+        builder = ModelBuilder()
+        body = builder.add_link()
+        builder.add_shape_sphere(body=body)
+        joint = builder.add_joint_free(parent=-1, child=body, parent_xform=parent_xform)
+        builder.add_articulation([joint])
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        view = newton.selection.ArticulationView(model, pattern="*")
+        transforms = view.get_root_transforms(state).numpy()
+        assert_np_equal(transforms.reshape(-1, 7)[0], state.body_q.numpy()[body], tol=1.0e-6)
+
+        new_pose = wp.transform(wp.vec3(-1.0, 2.0, 3.0), wp.quat_rpy(0.2, 0.3, 0.4))
+        new_values = wp.array(
+            [[new_pose]],
+            dtype=wp.transform,
+            device=model.device,
+        )
+        view.set_root_transforms(state, new_values)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[body], np.array(new_pose), tol=1.0e-6)
 
 
 class TestModelValidation(unittest.TestCase):

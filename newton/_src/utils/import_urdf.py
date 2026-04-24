@@ -697,7 +697,8 @@ def parse_urdf(
         )
         joint_indices.append(base_joint_id)
     elif floating and base_parent == -1:
-        # floating=True only makes sense when connecting to world
+        # floating=True only makes sense when connecting to world;
+        # xform is the body's initial world pose, carried via parent_xform.
         floating_joint_id = builder._add_base_joint(
             child=root,
             floating=True,
@@ -706,18 +707,6 @@ def parse_urdf(
             parent=base_parent,
         )
         joint_indices.append(floating_joint_id)
-
-        # set dofs to transform for the floating base joint
-        start = builder.joint_q_start[floating_joint_id]
-
-        builder.joint_q[start + 0] = xform.p[0]
-        builder.joint_q[start + 1] = xform.p[1]
-        builder.joint_q[start + 2] = xform.p[2]
-
-        builder.joint_q[start + 3] = xform.q[0]
-        builder.joint_q[start + 4] = xform.q[1]
-        builder.joint_q[start + 5] = xform.q[2]
-        builder.joint_q[start + 6] = xform.q[3]
     else:
         # Fixed joint to world or to parent_body
         # When parent_body is set, xform is interpreted as relative to the parent body

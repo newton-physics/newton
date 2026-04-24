@@ -53,11 +53,13 @@ with warnings.catch_warnings():
 
 
 def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravity_vec, command):
-    root_quat_w = torch.tensor(state.joint_q[3:7], device=device, dtype=torch.float32).unsqueeze(0)
-    root_lin_vel_w = torch.tensor(state.joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
-    root_ang_vel_w = torch.tensor(state.joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
-    joint_pos_current = torch.tensor(state.joint_q[7:], device=device, dtype=torch.float32).unsqueeze(0)
-    joint_vel_current = torch.tensor(state.joint_qd[6:], device=device, dtype=torch.float32).unsqueeze(0)
+    root_body_q = torch.tensor(state.body_q.numpy()[0], device=device, dtype=torch.float32).unsqueeze(0)
+    root_body_qd = torch.tensor(state.body_qd.numpy()[0], device=device, dtype=torch.float32).unsqueeze(0)
+    root_quat_w = root_body_q[:, 3:7]
+    root_lin_vel_w = root_body_qd[:, 0:3]
+    root_ang_vel_w = root_body_qd[:, 3:6]
+    joint_pos_current = torch.tensor(state.joint_q.numpy()[7:], device=device, dtype=torch.float32).unsqueeze(0)
+    joint_vel_current = torch.tensor(state.joint_qd.numpy()[6:], device=device, dtype=torch.float32).unsqueeze(0)
     vel_b = quat_rotate_inverse(root_quat_w, root_lin_vel_w)
     a_vel_b = quat_rotate_inverse(root_quat_w, root_ang_vel_w)
     grav = quat_rotate_inverse(root_quat_w, gravity_vec)

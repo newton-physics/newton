@@ -125,13 +125,16 @@ def compute_obs(
     Returns:
         Observation tensor for policy input
     """
-    # Extract state information with proper handling
     joint_q = state.joint_q if state.joint_q is not None else []
     joint_qd = state.joint_qd if state.joint_qd is not None else []
+    body_q = state.body_q if state.body_q is not None else []
+    body_qd = state.body_qd if state.body_qd is not None else []
 
-    root_quat_w = torch.tensor(joint_q[3:7], device=device, dtype=torch.float32).unsqueeze(0)
-    root_lin_vel_w = torch.tensor(joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
-    root_ang_vel_w = torch.tensor(joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
+    root_body_q = torch.tensor(body_q.numpy()[0], device=device, dtype=torch.float32).unsqueeze(0)
+    root_body_qd = torch.tensor(body_qd.numpy()[0], device=device, dtype=torch.float32).unsqueeze(0)
+    root_quat_w = root_body_q[:, 3:7]
+    root_lin_vel_w = root_body_qd[:, 0:3]
+    root_ang_vel_w = root_body_qd[:, 3:6]
     joint_pos_current = torch.tensor(joint_q[7:], device=device, dtype=torch.float32).unsqueeze(0)
     joint_vel_current = torch.tensor(joint_qd[6:], device=device, dtype=torch.float32).unsqueeze(0)
 
@@ -252,8 +255,9 @@ class Example:
         # builder's gravity isn't a vec3. use model.set_gravity()
         # builder.gravity = wp.vec3(0.0, 0.0, -9.81)
 
-        builder.joint_q[:3] = [0.0, 0.0, 0.76]
-        builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
+        root_pose = wp.transform((0.0, 0.0, 0.76), wp.quat(0.0, 0.0, 0.7071, 0.7071))
+        builder.joint_X_p[0] = root_pose
+        builder.body_q[0] = root_pose
         builder.joint_q[7:] = config["mjw_joint_pos"]
 
         for i in range(len(config["mjw_joint_stiffness"])):

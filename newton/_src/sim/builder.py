@@ -3068,19 +3068,13 @@ class ModelBuilder:
                 self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
 
         if builder.joint_count:
-            start_q = len(self.joint_q)
             start_X_p = len(self.joint_X_p)
             self.joint_X_p.extend(builder.joint_X_p)
             self.joint_q.extend(builder.joint_q)
             if xform is not None:
+                # apply the merge offset to every root joint's parent anchor
                 for i in range(len(builder.joint_X_p)):
-                    if builder.joint_type[i] == JointType.FREE:
-                        qi = builder.joint_q_start[i]
-                        xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
-                        tf = transform_mul(xform, xform_prev)
-                        qi += start_q
-                        self.joint_q[qi : qi + 7] = tf
-                    elif builder.joint_parent[i] == -1:
+                    if builder.joint_parent[i] == -1:
                         self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
             # offset the indices
@@ -3687,9 +3681,10 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
-        # Add a free joint to make it float
+        # add a free joint carrying the body's initial world pose via parent_xform
         joint_id = self.add_joint_free(
             child=body_id,
+            parent_xform=xform if xform is not None else wp.transform_identity(),
             label=f"{label}_free_joint" if label else None,
         )
 
@@ -4187,11 +4182,12 @@ class ModelBuilder:
     ) -> int:
         """Adds a free joint to the model.
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (see :ref:`Twist conventions in Newton <Twist conventions>`).
-        The positional dofs are initialized by the child body's transform (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
+
+        :attr:`joint_q` is initialized to the identity transform and represents the relative transform between the parent and child anchor frames. The initial world pose of the child body is therefore determined by ``parent_xform``, ``child_xform``, and the parent body's pose via the forward-kinematics composition ``body_q[parent] * parent_xform * X_j * inv(child_xform)``. To place a floating-base body at world pose ``T`` pass ``parent_xform=T`` (with ``parent=-1`` and ``child_xform=identity``); :meth:`add_body` does this automatically.
 
         Args:
             child: The index of the child body.
-            parent_xform: The transform of the joint in the parent body's local frame.
+            parent_xform: The transform of the joint in the parent body's local frame. For a world-parented free joint this is also the initial world pose of the child body (when ``child_xform`` is the identity).
             child_xform: The transform of the joint in the child body's local frame.
             parent: The index of the parent body (-1 by default to use the world frame, e.g. to make the child body and its children a floating-base mechanism).
             label: The label of the joint.
@@ -4204,7 +4200,7 @@ class ModelBuilder:
 
         """
 
-        joint_id = self.add_joint(
+        return self.add_joint(
             JointType.FREE,
             parent,
             child,
@@ -4225,10 +4221,6 @@ class ModelBuilder:
             ],
             custom_attributes=custom_attributes,
         )
-        q_start = self.joint_q_start[joint_id]
-        # set the positional dofs to the child body's transform
-        self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
-        return joint_id
 
     def add_joint_distance(
         self,
@@ -8756,9 +8748,12 @@ class ModelBuilder:
             return self.add_joint(**joint_params)
         elif floating is True or (floating is None and parent == -1):
             # FREE joint (floating=True always requires parent==-1, validated above)
-            # Note: We don't pass parent_xform here because add_joint_free initializes joint_q from body_q[child]
-            # and the caller (e.g., URDF importer) will set the correct joint_q values afterward
-            return self.add_joint_free(child, label=label)
+            return self.add_joint_free(
+                child,
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                label=label,
+            )
         else:
             # FIXED joint (floating=False or floating=None with parent body)
             return self.add_joint_fixed(parent, child, parent_xform, child_xform, label=label)

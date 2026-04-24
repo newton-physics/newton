@@ -133,6 +133,95 @@ def set_articulation_attribute_4d_per_world_kernel(
         attrib[i, j, k, l] = values[i, j, k, l]
 
 
+# Root-body transform compose/decompose kernels.
+#
+# For a floating base, the root body's world pose is composed from the root joint's
+# anchors and its joint_q as
+#     world_body_pose = joint_X_p * transform(joint_q[0:3], joint_q[3:7]) * inv(joint_X_c)
+# These kernels expose the world pose to ArticulationView and write back the matching
+# joint_q when the user sets it.
+
+
+@wp.kernel
+def compose_root_world_transform_kernel(
+    root_joint_X_p: Any,  # (world, arti) wp.transform
+    root_joint_X_c: Any,  # (world, arti) wp.transform
+    root_joint_q_tf: Any,  # (world, arti) wp.transform (joint_q[0:7] reinterpreted)
+    # outputs
+    out: wp.array2d(dtype=wp.transform),  # (world, arti) wp.transform
+):
+    wid, aid = wp.tid()
+    xp = root_joint_X_p[wid, aid]
+    xc = root_joint_X_c[wid, aid]
+    jt = root_joint_q_tf[wid, aid]
+    out[wid, aid] = xp * jt * wp.transform_inverse(xc)
+
+
+@wp.kernel
+def decompose_root_world_transform_kernel(
+    view_mask: wp.array(dtype=bool),  # (world,) mask in ArticulationView
+    values: wp.array2d(dtype=wp.transform),  # (world, arti) user-supplied world poses
+    root_joint_X_p: Any,  # (world, arti) wp.transform
+    root_joint_X_c: Any,  # (world, arti) wp.transform
+    # outputs
+    root_joint_q_tf: Any,  # (world, arti) wp.transform (joint_q[0:7] reinterpreted)
+):
+    wid, aid = wp.tid()
+    if not view_mask[wid]:
+        return
+    xp = root_joint_X_p[wid, aid]
+    xc = root_joint_X_c[wid, aid]
+    wt = values[wid, aid]
+    root_joint_q_tf[wid, aid] = wp.transform_inverse(xp) * wt * xc
+
+
+@wp.kernel
+def decompose_root_world_transform_per_arti_kernel(
+    view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+    values: wp.array2d(dtype=wp.transform),  # (world, arti) user-supplied world poses
+    root_joint_X_p: Any,  # (world, arti) wp.transform
+    root_joint_X_c: Any,  # (world, arti) wp.transform
+    # outputs
+    root_joint_q_tf: Any,  # (world, arti) wp.transform (joint_q[0:7] reinterpreted)
+):
+    wid, aid = wp.tid()
+    if not view_mask[wid, aid]:
+        return
+    xp = root_joint_X_p[wid, aid]
+    xc = root_joint_X_c[wid, aid]
+    wt = values[wid, aid]
+    root_joint_q_tf[wid, aid] = wp.transform_inverse(xp) * wt * xc
+
+
+# overloads for wp.array and wp.indexedarray operand combinations
+for _src in [wp.array, wp.indexedarray]:
+    for _dst in [wp.array, wp.indexedarray]:
+        wp.overload(
+            compose_root_world_transform_kernel,
+            {
+                "root_joint_X_p": _src(dtype=wp.transform, ndim=2),
+                "root_joint_X_c": _src(dtype=wp.transform, ndim=2),
+                "root_joint_q_tf": _src(dtype=wp.transform, ndim=2),
+            },
+        )
+        wp.overload(
+            decompose_root_world_transform_kernel,
+            {
+                "root_joint_X_p": _src(dtype=wp.transform, ndim=2),
+                "root_joint_X_c": _src(dtype=wp.transform, ndim=2),
+                "root_joint_q_tf": _dst(dtype=wp.transform, ndim=2),
+            },
+        )
+        wp.overload(
+            decompose_root_world_transform_per_arti_kernel,
+            {
+                "root_joint_X_p": _src(dtype=wp.transform, ndim=2),
+                "root_joint_X_c": _src(dtype=wp.transform, ndim=2),
+                "root_joint_q_tf": _dst(dtype=wp.transform, ndim=2),
+            },
+        )
+
+
 # explicit overloads to avoid module reloading
 for dtype in [float, int, wp.transform, wp.spatial_vector]:
     for src_array_type in [wp.array, wp.indexedarray]:
@@ -1362,6 +1451,12 @@ class ArticulationView:
         """
         Get the root transforms of the articulations.
 
+        For floating-base articulations the returned transform is the root body's
+        world pose, composed from the root joint's anchors and current ``joint_q``
+        coordinates:
+
+            ``world_body_pose = joint_X_p * transform(joint_q[0:7]) * inv(joint_X_c)``
+
         Args:
             source (Model | State): Where to get the root transforms (Model or State).
 
@@ -1369,19 +1464,37 @@ class ArticulationView:
             array: The root transforms (dtype=wp.transform).
         """
         if self.is_floating_base:
-            attrib = self._get_attribute_values("joint_q", source, _slice=Slice(0, 7))
-        else:
-            attrib = self._get_attribute_values("joint_X_p", self.model, _slice=0)
+            root_x_p = self._get_attribute_array("joint_X_p", self.model, _slice=0)
+            root_x_c = self._get_attribute_array("joint_X_c", self.model, _slice=0)
+            root_q = self._get_attribute_array("joint_q", source, _slice=Slice(0, 7))
+            if root_q.dtype is not wp.transform:
+                root_q = wp.array(root_q, dtype=wp.transform, device=self.device, copy=False)
+            out = wp.empty((self.world_count, self.count_per_world), dtype=wp.transform, device=self.device)
+            wp.launch(
+                compose_root_world_transform_kernel,
+                dim=(self.world_count, self.count_per_world),
+                inputs=[root_x_p, root_x_c, root_q],
+                outputs=[out],
+                device=self.device,
+            )
+            return out
 
+        attrib = self._get_attribute_values("joint_X_p", self.model, _slice=0)
         if attrib.dtype is wp.transform:
             return attrib
-        else:
-            return wp.array(attrib, dtype=wp.transform, device=self.device, copy=False)
+        return wp.array(attrib, dtype=wp.transform, device=self.device, copy=False)
 
     def set_root_transforms(self, target: Model | State, values: wp.array, mask=None):
         """
         Set the root transforms of the articulations.
         Call :meth:`eval_fk` to apply changes to all articulation links.
+
+        For floating-base articulations the supplied world poses are decomposed
+        into ``joint_q[0:7]`` via
+
+            ``joint_q_transform = inv(joint_X_p) * world_body_pose * joint_X_c``
+
+        so that subsequent forward kinematics reproduces the requested body pose.
 
         Args:
             target (Model | State): Where to set the root transforms (Model or State).
@@ -1389,9 +1502,42 @@ class ArticulationView:
             mask (array): Mask of articulations in this ArticulationView (all by default).
         """
         if self.is_floating_base:
-            self._set_attribute_values("joint_q", target, values, mask=mask, _slice=Slice(0, 7))
-        else:
-            self._set_attribute_values("joint_X_p", self.model, values, mask=mask, _slice=0)
+            root_x_p = self._get_attribute_array("joint_X_p", self.model, _slice=0)
+            root_x_c = self._get_attribute_array("joint_X_c", self.model, _slice=0)
+            root_q = self._get_attribute_array("joint_q", target, _slice=Slice(0, 7))
+            if root_q.dtype is not wp.transform:
+                root_q = wp.array(root_q, dtype=wp.transform, device=self.device, copy=False)
+
+            if not is_array(values) or values.dtype != wp.transform:
+                values = wp.array(
+                    values,
+                    dtype=wp.transform,
+                    shape=(self.world_count, self.count_per_world),
+                    device=self.device,
+                    copy=False,
+                )
+
+            resolved_mask = self.full_mask if mask is None else self._resolve_mask(mask)
+            if resolved_mask.ndim == 1:
+                wp.launch(
+                    decompose_root_world_transform_kernel,
+                    dim=(self.world_count, self.count_per_world),
+                    inputs=[resolved_mask, values, root_x_p, root_x_c],
+                    outputs=[root_q],
+                    device=self.device,
+                )
+            else:
+                wp.launch(
+                    decompose_root_world_transform_per_arti_kernel,
+                    dim=(self.world_count, self.count_per_world),
+                    inputs=[resolved_mask, values, root_x_p, root_x_c],
+                    outputs=[root_q],
+                    device=self.device,
+                )
+
+            return
+
+        self._set_attribute_values("joint_X_p", self.model, values, mask=mask, _slice=0)
 
     def get_root_velocities(self, source: Model | State):
         """

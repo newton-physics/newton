@@ -592,8 +592,10 @@ Use :meth:`newton.selection.ArticulationView.set_root_transforms` to move select
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     assert np.allclose(view.get_root_transforms(state).numpy()[0, :, 0], [0.2, 2.2])
 
-For floating-base articulations (root joint type ``FREE`` or ``DISTANCE``), this updates
-the root coordinates in ``joint_q``.
+For floating-base articulations, ``set_root_transforms()`` decomposes each desired world
+transform through the root joint's ``joint_X_p`` and ``joint_X_c`` so that forward kinematics
+(``body_q[root] = joint_X_p * X_j * inv(joint_X_c)``) reproduces it; ``joint_q`` of the root
+free joint is therefore the *relative* joint transform, not an absolute world pose.
 For non-floating-base articulations (for example ``FIXED`` or a world-attached
 ``REVOLUTE`` root), ``set_root_transforms()`` moves the articulation by writing
 ``Model.joint_X_p`` because there is no root pose stored in state coordinates.

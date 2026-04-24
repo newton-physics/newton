@@ -48,8 +48,9 @@ class Example:
             up_axis="Z",
         )
 
-        # Joint initial positions
-        articulation_builder.joint_q[:7] = [0.0, 0.0, 1.5, *start_rot]
+        root_pose = wp.transform((0.0, 0.0, 1.5), start_rot)
+        articulation_builder.joint_X_p[0] = root_pose
+        articulation_builder.body_q[0] = root_pose
 
         builder = newton.ModelBuilder()
         for _i in range(self.world_count):
