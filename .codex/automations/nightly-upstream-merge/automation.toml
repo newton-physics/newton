@@ -7,11 +7,11 @@ schedule = "0 6 * * *"  # Daily at 6:00 AM
 content = """
 Read AGENTS.md and then run the repo-owned nightly sync runner:
 
-uv run --script scripts/nightly_upstream_merge.py --push
+uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync
 
 The runner will:
 - fetch `origin` and `upstream`
-- fast-forward `origin/main` to `upstream/main` when safe
+- leave fork `origin/main` alone
 - merge `upstream/main` into each active origin branch in disposable worktrees
 - validate `research/pressure-field` with focused pressure-field tests and the hydro pressure slice example
 - refuse to push a branch when the merge or validation fails
