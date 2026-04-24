@@ -17,8 +17,7 @@ from .control import Control
 from .state import State
 
 if TYPE_CHECKING:
-    from newton_actuators import Actuator
-
+    from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 

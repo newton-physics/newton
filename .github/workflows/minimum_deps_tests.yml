@@ -126,6 +126,8 @@ jobs:
           uv tree --depth 1
 
       - name: Run Tests
+        env:
+          PYTHONFAULTHANDLER: "1"
         run: uv run --extra dev -m newton.tests --junit-report-xml rspec.xml
 
       - name: Test Summary

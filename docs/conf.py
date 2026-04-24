@@ -183,6 +183,7 @@ autodoc_type_aliases = {
     "UsdGeom.Mesh": "pxr.UsdGeom.Mesh",
     "UsdShade.Material": "pxr.UsdShade.Material",
     "UsdShade.Shader": "pxr.UsdShade.Shader",
+    "State": "newton.State",
 }
 
 
@@ -196,15 +197,13 @@ extlinks = {
 }
 
 doctest_global_setup = """
+import warnings
 from typing import Any
 import numpy as np
 import warp as wp
 import newton
 
-# Suppress warnings by setting warp_showwarning to an empty function
-def empty_warning(*args, **kwargs):
-    pass
-wp.utils.warp_showwarning = empty_warning
+warnings.filterwarnings("ignore")
 
 wp.config.quiet = True
 wp.init()
@@ -226,7 +225,7 @@ autodoc_default_options = {
     "member-order": "groupwise",
     "special-members": "__init__",
     "undoc-members": False,
-    "exclude-members": "__weakref__",
+    "exclude-members": "__weakref__, State",
     "imported-members": True,
     "autosummary": True,
 }
