@@ -215,7 +215,7 @@ class Example:
                 body=self.object_body_local, radius=radius, half_height=length / 2, cfg=shape_cfg_primitives
             )
             self.grasping_offset = [-0.03, 0.0, 0.13]
-            self.place_offset = -0.02
+            self.place_offset = 0.01
 
         elif self.scene == SceneType.CUBE:
             size = 0.04
@@ -431,7 +431,21 @@ class Example:
                 f"max lift={max_lift:.3f} (expected > {min_lift_height})"
             )
 
-        # NOTE: in-cup placement check removed due to flaky failures (see #1345)
+        # Verify that the object ended up in the cup
+        if self.put_in_cup:
+            body_q = self.state_0.body_q.numpy()
+            cup_x, cup_y, cup_z = self.cup_pos
+            tolerance_xy = 0.05
+            min_z = cup_z - 0.05
+
+            for world_idx in range(self.world_count):
+                object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
+                x, y, z = body_q[object_body_idx][:3]
+                assert abs(x - cup_x) < tolerance_xy and abs(y - cup_y) < tolerance_xy and z > min_z, (
+                    f"World {world_idx}: Object is not in the cup. "
+                    f"Object pos=({x:.3f}, {y:.3f}, {z:.3f}), "
+                    f"cup pos=({cup_x:.3f}, {cup_y:.3f}, {cup_z:.3f})"
+                )
 
     def setup_ik(self):
         self.ee_index = 10
@@ -485,17 +499,17 @@ class Example:
         ]
 
         if self.put_in_cup:
-            loose_pos = 0.71
+            loose_pos = 0.69
             wps = []
             cup_pos_higher = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest])
             cup_pos_lower = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest - 0.1])
             wps.extend(
                 [
                     [cup_pos_higher, 2.0, grasp_pos, rot_hand],
-                    [cup_pos_higher, 2.0, loose_pos, rot_hand],
-                    [cup_pos_higher, 1.0, loose_pos, rot_hand],
-                    [cup_pos_lower, 1.0, loose_pos, rot_hand],
-                    [cup_pos_lower, 1.0, 0.0, rot_hand],
+                    [cup_pos_higher, 0.25, loose_pos, rot_hand],
+                    [cup_pos_higher, 1.0, grasp_pos, rot_hand],
+                    [cup_pos_lower, 1.0, grasp_pos, rot_hand],
+                    [cup_pos_lower, 1.0, no_grasp_pos, rot_hand],
                 ]
             )
             self.waypoints.extend(wps)

@@ -28,7 +28,7 @@ description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "warp-lang>=1.12.0",
+    "warp-lang==1.13.0.dev20260423",
 ]
 
 [project.optional-dependencies]
@@ -36,9 +36,9 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp~=3.6.0; python_version < '3.14'",  # MuJoCo, warp-accelerated (depends on mujoco which has no 3.14 wheels yet)
-    "mujoco~=3.6.0; python_version < '3.14'",        # MuJoCo physics engine (no 3.14 wheels yet)
-    "newton-actuators>=0.1.0",
+    "mujoco-warp>=3.7.0.1,~=3.7.0; python_version < '3.14'",  # MuJoCo, warp-accelerated (3.7.0 was broken; depends on mujoco which has no 3.14 wheels yet)
+    "mujoco~=3.7.0; python_version < '3.14'",        # MuJoCo physics engine (no 3.14 wheels yet)
+    "newton-actuators>=0.1.0",  # deprecated — kept for backward compat, will be removed
 ]
 
 # Asset import and mesh processing dependencies
@@ -62,7 +62,7 @@ importers = [
     "usd-exchange>=2.2.0 ; platform_machine == 'aarch64' and python_version < '3.13'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.1.0",
+    "newton-usd-schemas>=0.2.0rc1",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)

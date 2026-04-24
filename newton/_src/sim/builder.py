@@ -13,11 +13,14 @@ import warnings
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 import warp as wp
 
+from ..actuators.clamping.clamping_max_effort import ClampingMaxEffort
+from ..actuators.controllers.controller_pd import ControllerPD
+from ..actuators.controllers.controller_pid import ControllerPID
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -65,10 +68,16 @@ from .graph_coloring import (
 )
 from .model import Model
 
+try:
+    from newton_actuators import Actuator as _LegacyActuator
+except ImportError:
+    _LegacyActuator = None
+
 if TYPE_CHECKING:
-    from newton_actuators import Actuator
     from pxr import Usd
 
+    from ..actuators.clamping.base import Clamping
+    from ..actuators.controllers.base import Controller
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -191,18 +200,32 @@ class ModelBuilder:
         color = ModelBuilder._SHAPE_COLOR_PALETTE[index % len(ModelBuilder._SHAPE_COLOR_PALETTE)]
         return (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
 
+    @staticmethod
+    def _coerce_shape_color(color: Vec3 | None) -> tuple[float, float, float] | None:
+        if color is None:
+            return None
+        return (float(color[0]), float(color[1]), float(color[2]))
+
     @dataclass
     class ActuatorEntry:
-        """Stores accumulated indices and arguments for one actuator type + scalar params combo.
+        """Stores accumulated specs for one group of compatible composed actuators.
 
-        Each element in input_indices/output_indices represents one actuator.
-        For single-input actuators: [[idx1], [idx2], ...] → flattened to 1D array
-        For multi-input actuators: [[idx1, idx2], [idx3, idx4], ...] → 2D array
+        Each element in ``indices`` is a single DOF index.  The entry key is
+        ``(controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)``
+        where shared params (e.g. ``model_path``, lookup tables) must
+        be identical across all actuators in a group.  Delay step values
+        are per-DOF; the buffer is sized to ``max(delay_step_values) + 1``.
         """
 
-        input_indices: list[list[int]]  # Per-actuator input indices
-        output_indices: list[list[int]]  # Per-actuator output indices
-        args: list[dict[str, Any]]  # Per-actuator array params (scalar params in dict key)
+        controller_class: type  # Controller subclass (e.g. ControllerPD)
+        clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
+        clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
+        controller_shared_kwargs: dict  # Shared controller kwargs (e.g. model_path)
+        indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
+        pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
+        controller_args: list[dict[str, Any]]  # Per-actuator controller array params
+        delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
+        clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
     @dataclass
     class ShapeConfig:
@@ -1217,9 +1240,9 @@ class ModelBuilder:
         """Running counts for custom string frequencies used to size custom attribute arrays."""
 
         # Actuator entries (accumulated during add_actuator calls)
-        # Key is (actuator_class, scalar_params_tuple) to separate instances with different scalar params
-        self.actuator_entries: dict[tuple[type[Actuator], tuple[Any, ...]], ModelBuilder.ActuatorEntry] = {}
-        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by class and scalar parameters."""
+        # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
+        self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
+        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
@@ -1674,75 +1697,228 @@ class ModelBuilder:
                     f"Custom attribute '{attr_key}' has unsupported frequency {custom_attr.frequency} for joints"
                 )
 
-    def add_actuator(
+    # Maps legacy newton_actuators class names to (newton.actuators controller class name, has_delay).
+    _LEGACY_ACTUATOR_CLASS_MAP: ClassVar[dict[str, tuple[str, bool]]] = {
+        "ActuatorPD": ("ControllerPD", False),
+        "ActuatorPID": ("ControllerPID", False),
+        "ActuatorDelayedPD": ("ControllerPD", True),
+    }
+
+    def _add_actuator_legacy(
         self,
-        actuator_class: type[Actuator],
-        input_indices: list[int],
-        output_indices: list[int] | None = None,
+        actuator_class: type,
+        input_indices: list[int] | None,
+        output_indices: list[int] | None,
         **kwargs: Any,
     ) -> None:
-        """Add an external actuator, independent of any ``UsdPhysics`` joint drives.
+        """Translate a legacy ``newton_actuators``-style call to the new API.
 
-        External actuators (e.g. :class:`newton_actuators.ActuatorPD`) apply
-        forces computed outside the physics engine. Multiple calls with the same
-        *actuator_class* and identical scalar parameters are accumulated into one
-        entry; the actuator instance is created during :meth:`finalize <ModelBuilder.finalize>`.
+        Mirrors the old ``main``-branch signature::
+
+            add_actuator(actuator_class, input_indices, output_indices=None, **kwargs)
+
+        *input_indices* / *output_indices* may arrive either as explicit
+        arguments or inside *kwargs* (keyword style).  All old per-DOF
+        params (``kp``, ``kd``, ``delay``, ``max_effort``, ``gear``, …)
+        are expected in *kwargs*.
+        """
+        if input_indices is None:
+            raise TypeError("Legacy add_actuator() requires 'input_indices'")
+
+        # --- Map old class name → new controller class ---
+        class_name = actuator_class.__name__
+        mapping = self._LEGACY_ACTUATOR_CLASS_MAP.get(class_name)
+        if mapping is None:
+            raise TypeError(
+                f"Unknown legacy actuator class '{class_name}'. "
+                f"Supported: {', '.join(self._LEGACY_ACTUATOR_CLASS_MAP)}."
+            )
+
+        ctrl_name, class_has_delay = mapping
+        controller_class: type = {"ControllerPD": ControllerPD, "ControllerPID": ControllerPID}[ctrl_name]
+
+        delay_val: int | None = kwargs.pop("delay_steps", kwargs.pop("delay", None))
+        if class_has_delay and delay_val is None:
+            raise ValueError(f"{class_name} requires a 'delay_steps' argument")
+
+        max_effort_val = kwargs.pop("max_force", None)
+        gear_val = kwargs.pop("gear", None)
+
+        if gear_val is not None and gear_val != 1.0:
+            warnings.warn(
+                f"'gear={gear_val}' is not supported in the new actuator API and will be "
+                f"ignored. Fold the gear ratio into kp/kd/const_effort manually.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+        clamping: list[tuple[type, dict[str, Any]]] | None = None
+        if max_effort_val is not None and max_effort_val != math.inf:
+            clamping = [(ClampingMaxEffort, {"max_effort": max_effort_val})]
+
+        if output_indices is not None and output_indices != input_indices:
+            warnings.warn(
+                "'output_indices' is not supported in the new actuator API and will be "
+                "ignored. Forces are written to the same DOF index by default.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+        for dof_idx in input_indices:
+            self.add_actuator(
+                controller_class,
+                index=dof_idx,
+                clamping=clamping,
+                delay_steps=delay_val,
+                **kwargs,
+            )
+
+    def add_actuator(
+        self,
+        controller_class: type[Controller] | None = None,
+        index: int | None = None,
+        clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
+        delay_steps: int | None = None,
+        pos_index: int | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Add an external actuator for a single DOF.
+
+        External actuators apply forces computed outside the physics engine.
+        Multiple calls with the same *controller_class*, *clamping*
+        types, and identical shared parameters are accumulated into one
+        :class:`~newton.actuators.Actuator` instance during
+        :meth:`finalize <ModelBuilder.finalize>`.  Different delay
+        values are supported within the same group; the buffer is
+        sized to ``max(delay_step_values)``.
+
+        .. deprecated::
+            The legacy ``newton_actuators`` signature is still accepted::
+
+                add_actuator(ActuatorPD, input_indices=[dof], kp=50.0)
+                add_actuator(ActuatorPD, [dof], kp=50.0)
+                add_actuator(actuator_class=ActuatorPD, input_indices=[dof], kp=50.0)
+
+            It will be removed in a future release.  Use the new per-DOF
+            signature instead.
 
         Args:
-            actuator_class: The actuator class (must derive from
-                :class:`newton_actuators.Actuator`).
-            input_indices: DOF indices this actuator reads from. Length 1 for single-input,
-                length > 1 for multi-input actuators.
-            output_indices: DOF indices for writing output. Defaults to *input_indices*.
-            **kwargs: Actuator parameters (e.g., ``kp``, ``kd``, ``max_force``).
+            controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
+                The deprecated keyword ``actuator_class`` is also accepted.
+            index: DOF index into ``joint_qd``-shaped arrays (velocities,
+                velocity targets, feedforward, forces).
+            clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
+                post-controller. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
+            delay_steps: Optional number of timesteps [timesteps] to delay inputs.
+            pos_index: DOF index into ``joint_q``-shaped arrays (positions,
+                position targets). Defaults to *index*. Differs from
+                *index* for floating-base or ball-joint articulations
+                where ``joint_q`` and ``joint_qd`` have different layouts.
+            **kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
         """
-        if output_indices is None:
-            output_indices = input_indices.copy()
+        legacy_cls = kwargs.pop("actuator_class", None)
+        if (
+            legacy_cls is None
+            and _LegacyActuator is not None
+            and isinstance(controller_class, type)
+            and issubclass(controller_class, _LegacyActuator)
+        ):
+            legacy_cls = controller_class
 
-        resolved = actuator_class.resolve_arguments(kwargs)
+        if legacy_cls is not None:
+            warnings.warn(
+                "add_actuator() with a newton_actuators class is deprecated. "
+                "Use newton.actuators controller classes instead "
+                "(e.g. ControllerPD, ControllerPID).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            input_indices = kwargs.pop("input_indices", index)
+            output_indices = kwargs.pop("output_indices", clamping)
+            if delay_steps is not None:
+                kwargs["delay_steps"] = delay_steps
+            self._add_actuator_legacy(legacy_cls, input_indices, output_indices, **kwargs)
+            return
 
-        # Extract scalar params to form the entry key
-        scalar_param_names = getattr(actuator_class, "SCALAR_PARAMS", set())
-        scalar_key = tuple(sorted((k, resolved[k]) for k in scalar_param_names if k in resolved))
+        if controller_class is None:
+            raise TypeError("add_actuator() requires 'controller_class'")
 
-        # Key is (class, scalar_params) so different scalar values create separate entries
-        entry_key = (actuator_class, scalar_key)
+        if index is None:
+            raise TypeError("add_actuator() missing required argument: 'index'")
+
+        clamping = clamping or []
+
+        # --- Resolve controller kwargs and separate shared from per-DOF ---
+        resolved_ctrl = controller_class.resolve_arguments(kwargs)
+        unrecognized = set(kwargs) - set(resolved_ctrl)
+        if unrecognized:
+            warnings.warn(
+                f"add_actuator: {controller_class.__name__} ignoring "
+                f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
+                stacklevel=2,
+            )
+        ctrl_shared_names = getattr(controller_class, "SHARED_PARAMS", set())
+        ctrl_shared = {k: resolved_ctrl[k] for k in ctrl_shared_names if k in resolved_ctrl}
+        ctrl_array_params = {k: v for k, v in resolved_ctrl.items() if k not in ctrl_shared_names}
+
+        # --- Resolve per-clamping kwargs and separate shared from per-DOF ---
+        clamping_classes = tuple(cc for cc, _ in clamping)
+        clamping_shared_list = []
+        clamping_array_params_list = []
+        for comp_class, comp_kwargs in clamping:
+            resolved_comp = comp_class.resolve_arguments(comp_kwargs)
+            comp_shared_names = getattr(comp_class, "SHARED_PARAMS", set())
+            comp_shared = {k: resolved_comp[k] for k in comp_shared_names if k in resolved_comp}
+            comp_array = {k: v for k, v in resolved_comp.items() if k not in comp_shared_names}
+            clamping_shared_list.append(comp_shared)
+            clamping_array_params_list.append(comp_array)
+
+        clamping_shared_kwargs = tuple(clamping_shared_list)
+
+        # --- Build entry key: identifies a group of compatible actuators ---
+        # Groups differ when controller class, presence of delay, clamping
+        # types/shared-params, or controller shared params differ.
+        # Delay values are per-DOF; the buffer is sized to max(delays).
+        def _make_hashable(v: Any) -> Any:
+            if isinstance(v, list):
+                return tuple(v)
+            return v
+
+        ctrl_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in ctrl_shared.items()))
+        clamping_key = tuple(
+            (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
+            for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
+        )
+        entry_key = (controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)
+
         entry = self.actuator_entries.setdefault(
             entry_key,
-            ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+            ModelBuilder.ActuatorEntry(
+                controller_class=controller_class,
+                clamping_classes=clamping_classes,
+                clamping_shared_kwargs=clamping_shared_kwargs,
+                controller_shared_kwargs=ctrl_shared,
+                indices=[],
+                pos_indices=[],
+                controller_args=[],
+                delay_args=[],
+                clamping_args=[],
+            ),
         )
 
-        # Filter out scalar params from args (they're already in the key)
-        array_params = {k: v for k, v in resolved.items() if k not in scalar_param_names}
-
-        # Validate dimension consistency before appending
-        if entry.input_indices:
-            expected_input_dim = len(entry.input_indices[0])
-            if len(input_indices) != expected_input_dim:
-                raise ValueError(
-                    f"Input indices dimension mismatch for {actuator_class.__name__}: "
-                    f"expected {expected_input_dim}, got {len(input_indices)}. "
-                    f"All actuators of the same type must have the same number of inputs."
-                )
-        if entry.output_indices:
-            expected_output_dim = len(entry.output_indices[0])
-            if len(output_indices) != expected_output_dim:
-                raise ValueError(
-                    f"Output indices dimension mismatch for {actuator_class.__name__}: "
-                    f"expected {expected_output_dim}, got {len(output_indices)}. "
-                    f"All actuators of the same type must have the same number of outputs."
-                )
-
-        # Each call adds one actuator with its input/output indices
-        entry.input_indices.append(input_indices)
-        entry.output_indices.append(output_indices)
-        entry.args.append(array_params)
+        entry.indices.append(index)
+        entry.pos_indices.append(pos_index if pos_index is not None else index)
+        entry.controller_args.append(ctrl_array_params)
+        if delay_steps is not None:
+            entry.delay_args.append({"delay_steps": delay_steps})
+        entry.clamping_args.append(clamping_array_params_list)
 
     def _stack_args_to_arrays(
         self,
         args_list: list[dict[str, Any]],
         device: Devicelike | None = None,
         requires_grad: bool = False,
+        default_dtype: type = wp.float32,
     ) -> dict[str, wp.array]:
         """Convert list of per-index arg dicts into dict of warp arrays.
 
@@ -1750,6 +1926,11 @@ class ModelBuilder:
             args_list: List of dicts, one per index. Each dict has same keys.
             device: Device for warp arrays.
             requires_grad: Whether the arrays require gradients.
+            default_dtype: Warp dtype used for columns where all values are
+                numeric.  Defaults to ``wp.float32`` so that Python ``int``
+                gains (e.g. ``kp=100``) produce float arrays as controllers
+                expect.  Pass ``wp.int32`` when integer semantics are needed
+                (e.g. delay steps).
 
         Returns:
             Mapping from parameter names to warp arrays.
@@ -1760,44 +1941,35 @@ class ModelBuilder:
         result = {}
         for key in args_list[0].keys():
             values = [args[key] for args in args_list]
-            result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            for v in values:
+                if not isinstance(v, int | float):
+                    raise TypeError(
+                        f"add_actuator expects scalar per-DOF params, but "
+                        f"parameter '{key}' got {type(v).__name__}; pass one "
+                        f"scalar per add_actuator call"
+                    )
+            if default_dtype == wp.int32 and all(isinstance(v, int) for v in values):
+                result[key] = wp.array(values, dtype=wp.int32, device=device)
+            else:
+                rg = requires_grad and default_dtype != wp.int32
+                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=rg)
 
         return result
 
     @staticmethod
-    def _build_index_array(indices: list[list[int]], device: Devicelike) -> wp.array:
-        """Build a warp array from nested index lists.
-
-        If all inner lists have length 1, creates a 1D array (N,).
-        Otherwise, creates a 2D array (N, M) where M is the inner list length.
+    def _build_index_array(indices: list[int], device: Devicelike) -> wp.array:
+        """Build a 1-D warp index array from a flat list of DOF indices.
 
         Args:
-            indices: Nested list of indices, one inner list per actuator.
+            indices: Flat list of DOF indices, one per actuator.
             device: Device for the warp array.
 
         Returns:
-            Array with shape ``(N,)`` or ``(N, M)``.
-
-        Raises:
-            ValueError: If inner lists have inconsistent lengths (for 2D case).
+            Array with shape ``(N,)``.
         """
         if not indices:
             return wp.array([], dtype=wp.uint32, device=device)
-
-        inner_lengths = [len(idx_list) for idx_list in indices]
-        max_len = max(inner_lengths)
-
-        if max_len == 1:
-            # All single-input: flatten to 1D
-            flat = [idx_list[0] for idx_list in indices]
-            return wp.array(flat, dtype=wp.uint32, device=device)
-        else:
-            # Multi-input: create 2D array
-            if not all(length == max_len for length in inner_lengths):
-                raise ValueError(
-                    f"All actuators must have the same number of inputs for 2D indexing. Got lengths: {inner_lengths}"
-                )
-            return wp.array(indices, dtype=wp.uint32, device=device)
+        return wp.array(indices, dtype=wp.uint32, device=device)
 
     @property
     def default_site_cfg(self) -> ShapeConfig:
@@ -3266,14 +3438,25 @@ class ModelBuilder:
         for entry_key, sub_entry in builder.actuator_entries.items():
             entry = self.actuator_entries.setdefault(
                 entry_key,
-                ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+                ModelBuilder.ActuatorEntry(
+                    controller_class=sub_entry.controller_class,
+                    clamping_classes=sub_entry.clamping_classes,
+                    clamping_shared_kwargs=sub_entry.clamping_shared_kwargs,
+                    controller_shared_kwargs=sub_entry.controller_shared_kwargs,
+                    indices=[],
+                    pos_indices=[],
+                    controller_args=[],
+                    delay_args=[],
+                    clamping_args=[],
+                ),
             )
-            # Offset indices by start_joint_dof_idx (each actuator's indices are a list)
-            for idx_list in sub_entry.input_indices:
-                entry.input_indices.append([idx + start_joint_dof_idx for idx in idx_list])
-            for idx_list in sub_entry.output_indices:
-                entry.output_indices.append([idx + start_joint_dof_idx for idx in idx_list])
-            entry.args.extend(sub_entry.args)
+            for idx in sub_entry.indices:
+                entry.indices.append(idx + start_joint_dof_idx)
+            for idx in sub_entry.pos_indices:
+                entry.pos_indices.append(idx + start_joint_coord_idx)
+            entry.controller_args.extend(sub_entry.controller_args)
+            entry.delay_args.extend(sub_entry.delay_args)
+            entry.clamping_args.extend(sub_entry.clamping_args)
 
     @staticmethod
     def _coerce_mat33(value: Any) -> wp.mat33:
@@ -5200,7 +5383,7 @@ class ModelBuilder:
             scale: The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
             src: The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH`. Defaults to `None`.
             is_static: If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color. Mesh-backed shapes fall back to :attr:`~newton.Mesh.color`.
+            color: Optional display RGB color with values in [0, 1]. If `None`, mesh-backed shapes fall back to :attr:`~newton.Mesh.color`; otherwise the per-shape palette sequence is used.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated (e.g., "shape_N"). Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5278,9 +5461,9 @@ class ModelBuilder:
                 ~ShapeFlags.HYDROELASTIC
             )  # Falling back to mesh/primitive collisions for plane and hfield shapes
 
-        resolved_color = color
+        resolved_color = ModelBuilder._coerce_shape_color(color)
         if resolved_color is None and src is not None:
-            resolved_color = getattr(src, "color", None)
+            resolved_color = ModelBuilder._coerce_shape_color(getattr(src, "color", None))
         if resolved_color is None:
             resolved_color = ModelBuilder._shape_palette_color(shape)
 
@@ -5365,7 +5548,7 @@ class ModelBuilder:
             length: The visual/collision extent of the plane along its local Y-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
             body: The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the per-shape display color.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5446,7 +5629,7 @@ class ModelBuilder:
             radius: The radius of the sphere. Defaults to `1.0`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
+            color: Optional display RGB color with values in [0, 1]. If `None`, uses the per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5502,7 +5685,7 @@ class ModelBuilder:
             rz: The semi-axis of the ellipsoid along its local Z-axis [m]. Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
+            color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5591,7 +5774,7 @@ class ModelBuilder:
             hz: The half-extent of the box along its local Z-axis. Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
+            color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5639,7 +5822,7 @@ class ModelBuilder:
             half_height: The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
+            color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -5692,7 +5875,7 @@ class ModelBuilder:
             half_height: The half-length of the cylinder along the Z-axis. Defaults to `0.5`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
+            color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5746,7 +5929,7 @@ class ModelBuilder:
             half_height: The half-height of the cone (distance from the geometric center to either the base or apex). The total height is 2*half_height. Defaults to `0.5`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
+            color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5879,7 +6062,7 @@ class ModelBuilder:
             heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
             scale: The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
+            color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: An optional label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
@@ -5935,7 +6118,7 @@ class ModelBuilder:
                 - ``None``: no collision (render-only).
                 - ``"convex_hull"``: auto-generate convex hull from Gaussian positions.
                 - A :class:`Mesh` instance: use the provided mesh as collision proxy.
-            color: Optional display RGB color with values in [0, 1]. If `None`, uses the default per-shape display color.
+            color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: Optional unique label for identifying the shape.
             custom_attributes: Dictionary of custom attribute values for SHAPE
                 frequency attributes.
@@ -9888,6 +10071,7 @@ class ModelBuilder:
                                         margin=shape_gap,
                                         narrow_band_range=tuple(sdf_narrow_band_range),
                                         max_resolution=effective_max_resolution,
+                                        target_voxel_size=sdf_target_voxel_size,
                                         quantization_mode=_tex_fmt_map[sdf_tex_fmt],
                                         scale_baked=True,
                                         device=device,
@@ -10338,18 +10522,49 @@ class ModelBuilder:
             )
 
             # Create actuators from accumulated entries
+            from ..actuators.actuator import Actuator  # noqa: PLC0415
+            from ..actuators.delay import Delay  # noqa: PLC0415
+
             m.actuators = []
-            for (actuator_class, scalar_key), entry in self.actuator_entries.items():
-                input_indices = self._build_index_array(entry.input_indices, device)
-                output_indices = self._build_index_array(entry.output_indices, device)
-                param_arrays = self._stack_args_to_arrays(entry.args, device=device, requires_grad=requires_grad)
-                scalar_params = dict(scalar_key)
-                actuator = actuator_class(
-                    input_indices=input_indices,
-                    output_indices=output_indices,
-                    **param_arrays,
-                    **scalar_params,
+            for entry in self.actuator_entries.values():
+                indices = self._build_index_array(entry.indices, device)
+
+                pos_indices_arg = None
+                if entry.pos_indices != entry.indices:
+                    pos_indices_arg = self._build_index_array(entry.pos_indices, device)
+
+                # Build controller from stacked per-DOF arrays + shared kwargs
+                ctrl_arrays = self._stack_args_to_arrays(
+                    entry.controller_args, device=device, requires_grad=requires_grad
                 )
+                controller = entry.controller_class(**ctrl_arrays, **entry.controller_shared_kwargs)
+
+                delay_obj = None
+                if entry.delay_args:
+                    delay_arrays = self._stack_args_to_arrays(entry.delay_args, device=device, default_dtype=wp.int32)
+                    max_delay = max(d["delay_steps"] for d in entry.delay_args)
+                    delay_obj = Delay(**delay_arrays, max_delay=max_delay)
+
+                # Build clamping objects from per-DOF arrays + shared kwargs
+                clamping_objs = []
+                for i, (comp_class, shared_kw) in enumerate(
+                    zip(entry.clamping_classes, entry.clamping_shared_kwargs, strict=True)
+                ):
+                    comp_args_per_actuator = [per_act[i] for per_act in entry.clamping_args]
+                    comp_arrays = self._stack_args_to_arrays(
+                        comp_args_per_actuator, device=device, requires_grad=requires_grad
+                    )
+                    clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
+
+                actuator = Actuator(
+                    indices=indices,
+                    controller=controller,
+                    delay=delay_obj,
+                    clamping=clamping_objs if clamping_objs else None,
+                    pos_indices=pos_indices_arg,
+                    requires_grad=requires_grad,
+                )
+
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)

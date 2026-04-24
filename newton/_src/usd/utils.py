@@ -1765,8 +1765,8 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
             return material_props
         return None
 
-    # Always call _extract_shader_properties even if shader_id is None (e.g., for MDL shaders like OmniPBR)
-    # because _extract_shader_properties has fallback logic for common input names
+    # Always call _extract_shader_properties even if shader_id is None because
+    # it has fallback logic for common shader input names.
     properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
     for key in ("texture", "color", "metallic", "roughness"):

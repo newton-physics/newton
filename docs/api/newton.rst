@@ -10,6 +10,7 @@ newton
 .. toctree::
    :hidden:
 
+   newton_actuators
    newton_geometry
    newton_ik
    newton_math
@@ -22,6 +23,7 @@ newton
 
 .. rubric:: Submodules
 
+- :doc:`newton.actuators <newton_actuators>`
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
 - :doc:`newton.math <newton_math>`
