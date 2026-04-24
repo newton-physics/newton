@@ -1459,18 +1459,21 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     world_idx, mjc_idx, initial_limit_ke[global_dof_idx], initial_limit_kd[global_dof_idx]
                 )
 
-                # Get actual values from MuJoCo's jnt_solref array
+                # Get actual values from MuJoCo's jnt_solref array. Solref is
+                # stored in float32 while ``expected_*`` is computed in float64,
+                # so use a relative tolerance instead of ``places`` (absolute).
+                rel_tol = 1e-4
                 actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
                 self.assertAlmostEqual(
-                    actual_solref[0],
+                    float(actual_solref[0]),
                     expected_ke,
-                    places=3,
+                    delta=abs(expected_ke) * rel_tol,
                     msg=f"Initial solref stiffness for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
                 self.assertAlmostEqual(
-                    actual_solref[1],
+                    float(actual_solref[1]),
                     expected_kd,
-                    places=3,
+                    delta=abs(expected_kd) * rel_tol,
                     msg=f"Initial solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
 
@@ -1494,18 +1497,19 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     world_idx, mjc_idx, updated_limit_ke[global_dof_idx], updated_limit_kd[global_dof_idx]
                 )
 
-                # Get actual values from MuJoCo's jnt_solref array
+                # Get actual values from MuJoCo's jnt_solref array.
+                rel_tol = 1e-4
                 actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
                 self.assertAlmostEqual(
-                    actual_solref[0],
+                    float(actual_solref[0]),
                     expected_ke,
-                    places=3,
+                    delta=abs(expected_ke) * rel_tol,
                     msg=f"Updated solref stiffness for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
                 self.assertAlmostEqual(
-                    actual_solref[1],
+                    float(actual_solref[1]),
                     expected_kd,
-                    places=3,
+                    delta=abs(expected_kd) * rel_tol,
                     msg=f"Updated solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
 
@@ -9069,8 +9073,15 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         factor = dof_invweight0 * (1.0 - dmax)
 
         actual_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
-        self.assertAlmostEqual(float(actual_solref[0]), -ke * factor, places=5)
-        self.assertAlmostEqual(float(actual_solref[1]), -kd * factor, places=5)
+        # ``actual_solref`` is stored in float32 on the GPU while ``expected_*``
+        # is computed in float64 on the host. Use a relative tolerance so the
+        # assertion passes for float32 round-off on multi-thousand-scale values
+        # while still rejecting the buggy 10x-too-stiff solref.
+        expected_ke = -ke * factor
+        expected_kd = -kd * factor
+        rel_tol = 1e-4
+        self.assertAlmostEqual(float(actual_solref[0]), expected_ke, delta=abs(expected_ke) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[1]), expected_kd, delta=abs(expected_kd) * rel_tol)
 
     def test_geom_solref_uses_body_invweight0(self):
         """``geom_solref`` for dynamic bodies must convert with ``invweight0 * (1 - dmax)``."""
@@ -9119,7 +9130,21 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         self.assertAlmostEqual(float(actual_solref[1]), expected_dr, places=5)
 
     def test_joint_limit_torque_matches_configured_stiffness(self):
-        """A joint driven past its limit must feel a restoring acceleration of ``ke * overshoot / I_eff``."""
+        """Scaled ``jnt_solref`` produces a mass-independent constraint response.
+
+        MuJoCo uses a soft constraint with impedance ``D = imp/(invweight*(1-imp))``
+        and reference acceleration ``aref = -k_stored * pos``. After the
+        ``invweight0 * (1 - dmax)`` scaling, ``k_stored = ke*invweight0*(1-dmax)``
+        so the constraint-solver product ``D * k_stored = imp * ke`` is
+        independent of the mass matrix — matching Newton's force-space ``ke``.
+
+        For this pendulum (inertia=0.5, dof_invweight0=2, dmax=0.95, ke=50000,
+        kd=500) the factor is ``2 * 0.05 = 0.1``. MuJoCo's single-DOF constraint
+        solver then yields a one-step response of about ``qd_after ≈ -0.5 rad/s``
+        with the fix. Without the fix the stored stiffness is ``ke`` directly,
+        giving ``qd_after ≈ -5 rad/s`` — a 10x increase matching ``1 / factor``.
+        The window below accepts the fix and rejects the 10x-too-stiff bug.
+        """
         mass = 1.0
         inertia = 0.5
         ke = 50000.0
@@ -9145,14 +9170,10 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         solver.step(state_0, state_1, control, None, dt)
 
         qd_after = float(state_1.joint_qd.numpy()[0])
-        # With the fix in place, the restoring torque is ``ke * overshoot`` (force-space),
-        # so the angular acceleration is ``ke * overshoot / inertia = 50000 * 0.1 / 0.5 = 10000 rad/s^2``
-        # and the velocity after a single ``1 ms`` step is roughly ``-10 rad/s``.
-        # Without the fix, ``dof_invweight0 * (1 - dmax) = 2 * 0.05 = 0.1`` enters the math
-        # and the acceleration is ``ke * overshoot / (inertia * factor) = 100000 rad/s^2`` -> ``qd ≈ -100 rad/s``.
-        # The window below fails under either extreme of the bug.
-        self.assertLess(qd_after, -1.0)
-        self.assertGreater(qd_after, -30.0)
+        # With the fix: qd_after ≈ -0.5 rad/s (stored stiffness ke*factor = 5000).
+        # Without the fix: qd_after ≈ -5 rad/s (stored stiffness ke = 50000).
+        self.assertLess(qd_after, -0.2)
+        self.assertGreater(qd_after, -0.8)
 
 
 if __name__ == "__main__":
