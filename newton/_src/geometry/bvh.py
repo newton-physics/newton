@@ -464,9 +464,7 @@ def refit_bvh_shape(model: Model, state: State) -> None:
         raise RuntimeError("refit_bvh_shape requires build_bvh_shape to have been called first.")
 
     _compute_shape_world_transforms_launch(model, state)
-    _compute_shape_bvh_bounds_launch(
-        model, model.bvh_shapes.lowers, model.bvh_shapes.uppers, model.bvh_shapes.groups
-    )
+    _compute_shape_bvh_bounds_launch(model, model.bvh_shapes.lowers, model.bvh_shapes.uppers, model.bvh_shapes.groups)
     model.bvh_shapes.refit()
 
 
