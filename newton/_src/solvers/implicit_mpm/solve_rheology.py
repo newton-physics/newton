@@ -3,6 +3,7 @@
 
 import gc
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -1630,7 +1631,7 @@ def _run_solver_loop(
 
 
 def solve_rheology(
-    solver: str,
+    solver: str | Sequence[str],
     max_iterations: int,
     tolerance: float,
     momentum: MomentumData,
@@ -1660,14 +1661,14 @@ def solve_rheology(
     strain increment and plastic strain delta fields are produced.
 
     Args:
-        solver: Solver type string, optionally chained with ``+``.
+        solver: Solver type string or ordered sequence of solver type strings.
             Base solvers: ``"gauss-seidel"`` (or ``"gs"``),
             ``"gauss-seidel-soa"`` (or ``"gs-soa"``),
             ``"gauss-seidel-batched"`` (or ``"gs-batched"``),
             ``"jacobi"``, ``"cg"``, ``"cr"``, ``"gmres"``.
             Chained solvers run left-to-right as warmstarts for the
-            final solver, e.g. ``"cr+gs"`` runs CR then Gauss-Seidel,
-            ``"cg+jacobi+gs-batched"`` runs CG, then a Jacobi smoother,
+            final solver, e.g. ``("cr", "gs")`` runs CR then Gauss-Seidel,
+            ``("cg", "jacobi", "gs-batched")`` runs CG, then a Jacobi smoother,
             then batched Gauss-Seidel.
             ``"gauss-seidel-soa"`` uses an entry-major SoA strain
             matrix layout for improved memory coalescing.
@@ -1707,8 +1708,9 @@ def solve_rheology(
     delassus_operator = _DelassusOperator(rheology, momentum, temporary_store)
     tolerance_scale = math.sqrt(1 + delassus_operator.size)
 
-    # Check for iterative method prefix (cg, cr, gmres), optionally followed by +<solver>
-    solvers = solver.split("+")
+    solvers = (solver,) if isinstance(solver, str) else tuple(solver)
+    if len(solvers) == 0:
+        raise ValueError("Solver sequence must contain at least one solver.")
 
     if len(solvers) == 1 and solvers[0] in _ITERATIVE_LINEAR_SOLVERS:
         if collision.has_colliders:
@@ -1747,8 +1749,8 @@ def solve_rheology(
 
     if len(solvers) != 1:
         raise ValueError(
-            f"Invalid solver string {solver!r}: unexpected tokens {solvers[1:]!r}. "
-            f"Accepted form: [linear+][jacobi+]<final>, where linear is one of "
+            f"Invalid solver sequence {solver!r}: unexpected tokens {solvers[1:]!r}. "
+            f"Accepted form: [linear, ][jacobi, ]<final>, where linear is one of "
             f"{list(_ITERATIVE_LINEAR_SOLVERS)} and final is one of {list(_RHEOLOGY_SOLVERS)}."
         )
     rheology_solver_class = _RHEOLOGY_SOLVERS.get(solvers[0])
