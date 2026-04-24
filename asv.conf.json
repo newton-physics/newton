@@ -20,6 +20,6 @@
     "python -m pip install -U mujoco==3.7.0",
     "python -m pip install -U mujoco-warp==3.7.0.1",
     "python -m pip install -U torch==2.10.0+cu130 --index-url https://download.pytorch.org/whl/cu130",
-    "in-dir={env_dir} python -m pip install {wheel_file}[dev]"
+    "in-dir={env_dir} python -m pip install --extra-index-url=https://pypi.nvidia.com/ {wheel_file}[dev]"
   ]
 }
