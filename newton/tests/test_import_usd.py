@@ -5163,10 +5163,23 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        result = builder.add_usd(stage, load_sites=False)
+        result = builder.add_usd(stage, load_sites=False, schema_resolvers=[usd.SchemaResolverMjc()])
+        self.assertEqual(builder.body_count, 2)
+        self.assertEqual(builder.joint_count, 2)
+        self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
+        self.assertEqual(builder.joint_dof_count, 12)
+        self.assertEqual(builder.joint_coord_count, 14)
         model = builder.finalize()
 
         self.assertNotIn("/World/EqualityConnect", result["path_joint_map"])
+        self.assertIn("/World/EqualityConnect", result["schema_attrs"]["mjc"])
+        np.testing.assert_allclose(
+            result["schema_attrs"]["mjc"]["/World/EqualityConnect"]["mjc:solref"],
+            np.array([0.04, 0.7]),
+        )
+        self.assertEqual(model.joint_count, 2)
+        self.assertEqual(model.joint_dof_count, 12)
+        self.assertEqual(model.joint_coord_count, 14)
         self.assertEqual(model.equality_constraint_count, 1)
         body0_idx = result["path_body_map"]["/World/Body0"]
         body1_idx = result["path_body_map"]["/World/Body1"]
@@ -5178,6 +5191,52 @@ def Xform "Articulation" (
             model.mujoco.eq_solimp.numpy()[0],
             np.array([0.9, 0.95, 0.001, 0.5, 2.0], dtype=np.float32),
         )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_equality_disabled_connect_filtering(self):
+        """Test that disabled MjcEqualityConnectAPI prims honor only_load_enabled_joints."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body0 = UsdGeom.Cube.Define(stage, "/World/Body0")
+        body0.CreateSizeAttr(0.2)
+        UsdPhysics.RigidBodyAPI.Apply(body0.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body0.GetPrim())
+
+        body1 = UsdGeom.Cube.Define(stage, "/World/Body1")
+        body1.CreateSizeAttr(0.2)
+        UsdPhysics.RigidBodyAPI.Apply(body1.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body1.GetPrim())
+
+        connect = UsdPhysics.SphericalJoint.Define(stage, "/World/DisabledEqualityConnect")
+        connect.CreateBody0Rel().SetTargets([body0.GetPath()])
+        connect.CreateBody1Rel().SetTargets([body1.GetPath()])
+        connect.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        connect.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        connect.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        connect.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        connect.CreateJointEnabledAttr().Set(False)
+        connect_prim = connect.GetPrim()
+        connect_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityConnectAPI"]))
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.equality_constraint_count, 0)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, only_load_enabled_joints=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.equality_constraint_count, 1)
+        self.assertFalse(bool(model.equality_constraint_enabled.numpy()[0]))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_weld_parsing(self):
@@ -5217,9 +5276,17 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(stage)
+        self.assertEqual(builder.body_count, 2)
+        self.assertEqual(builder.joint_count, 2)
+        self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
+        self.assertEqual(builder.joint_dof_count, 12)
+        self.assertEqual(builder.joint_coord_count, 14)
         model = builder.finalize()
 
         self.assertNotIn("/World/EqualityWeld", result["path_joint_map"])
+        self.assertEqual(model.joint_count, 2)
+        self.assertEqual(model.joint_dof_count, 12)
+        self.assertEqual(model.joint_coord_count, 14)
         self.assertEqual(model.equality_constraint_count, 1)
         body0_idx = result["path_body_map"]["/World/Body0"]
         body1_idx = result["path_body_map"]["/World/Body1"]

@@ -482,13 +482,19 @@ def parse_usd(
             )
             return None, None
 
-        # Empty target → world body (index -1)
+        # Empty target means world body (index -1).
         body0_info = _get_target_body_and_local_pos(target0) if target0 else (-1, wp.vec3())
         body1_info = _get_target_body_and_local_pos(target1) if target1 else (-1, wp.vec3())
 
         if body0_info is None or body1_info is None:
+            failed_targets = []
+            if body0_info is None:
+                failed_targets.append(f"physics:body0='{target0}'")
+            if body1_info is None:
+                failed_targets.append(f"physics:body1='{target1}'")
             warnings.warn(
-                f"{schema_name} on '{joint_path}' references unresolved body targets; skipping.",
+                f"{schema_name} on '{joint_path}' references unresolved body target(s) "
+                f"{', '.join(failed_targets)}; skipping.",
                 stacklevel=3,
             )
             return None, None
@@ -3168,6 +3174,12 @@ def parse_usd(
             if not (is_connect or is_weld or is_eq_joint):
                 continue
 
+            if only_load_enabled_joints and not joint_desc.jointEnabled:
+                continue
+
+            if collect_schema_attrs and (is_connect or is_weld):
+                R.collect_prim_attrs(joint_prim)
+
             eq_custom_attrs = usd.get_custom_attribute_values(
                 joint_prim, builder_custom_attr_eq, context={"builder": builder}
             )
@@ -3190,7 +3202,7 @@ def parse_usd(
                     # only when target0 is a site prim that is not itself a body.
                     anchor = (
                         wp.vec3(*joint_desc.localPose0Position)
-                        if (not target0 or target0 in path_body_map)
+                        if (target0 in ("", "/") or target0 in path_body_map)
                         else site0_local_pos
                     )
                     builder.add_equality_constraint_connect(
@@ -3206,7 +3218,7 @@ def parse_usd(
                     # world; use site-derived local position only for site targets.
                     anchor = (
                         wp.vec3(*joint_desc.localPose1Position)
-                        if (not target1 or target1 in path_body_map)
+                        if (target1 in ("", "/") or target1 in path_body_map)
                         else site1_local_pos
                     )
                     local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
