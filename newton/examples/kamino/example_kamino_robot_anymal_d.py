@@ -25,6 +25,7 @@ class Example:
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
+        self.use_kamino_contacts = args.use_kamino_contacts if args else False
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -40,10 +41,19 @@ class Example:
         robot_builder.add_usd(
             asset_file,
             force_position_velocity_actuation=True,
-            collapse_fixed_joints=True,
+            collapse_fixed_joints=False,
             enable_self_collisions=True,
             hide_collision_shapes=True,
         )
+
+        # # TODO: FIX THIS
+        # # Set joint PD targets and gains for the robot
+        # for i in range(7, robot_builder.joint_dof_count):
+        #     robot_builder.joint_target_mode[i] = int(newton.JointTargetMode.POSITION)
+        #     robot_builder.joint_target_ke[i] = 150
+        #     robot_builder.joint_target_kd[i] = 5
+        #     robot_builder.joint_armature[i] = 0.1
+        #     robot_builder.joint_friction[i] = 0.001
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
@@ -58,23 +68,32 @@ class Example:
         self.model = builder.finalize(skip_validation_joints=True)
 
         # Create the Kamino solver for the given model
-        self.solver = newton.solvers.SolverKamino(self.model)
+        self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
+        self.config.use_fk_solver = True
+        self.config.use_collision_detector = self.use_kamino_contacts
+        self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
-        # Create state, control, and contacts data containers
+        # Create state and control data containers
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
 
-        # Use Newton's collision pipeline (same as standard Newton examples)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        # Configure CD components based on whether we want to use Kamino's
+        # internal contact solver or Newton's collision pipeline
+        if not self.use_kamino_contacts:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.model.contacts(collision_pipeline=self.collision_pipeline)
+        else:
+            self.collision_pipeline = None
+            self.contacts = self.model.contacts()
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
 
         # Warm-start the simulation
-        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+        if not self.use_kamino_contacts:
+            self.collision_pipeline.collide(self.state_0, self.contacts)
+        self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
         self.solver.reset(self.state_0)
 
         # Reset the simulation state to a valid initial configuration above the ground
@@ -108,8 +127,12 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            if not self.use_kamino_contacts:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
+                self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            else:
+                self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.update_contacts(self.contacts, self.state_0)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -152,6 +175,7 @@ class Example:
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
         parser.set_defaults(world_count=1)
+        parser.set_defaults(use_kamino_contacts=True)
         return parser
 
 

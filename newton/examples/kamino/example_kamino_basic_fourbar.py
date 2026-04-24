@@ -75,8 +75,8 @@ class Example:
         solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
         solver_config.use_collision_detector = True
         solver_config.use_fk_solver = True
-        solver_config.collision_detector.pipeline = "unified"
-        solver_config.collision_detector.max_contacts = 32 * self.world_count
+        solver_config.collision_detector.pipeline = "primitive"
+        solver_config.collision_detector.max_contacts = 32 * self.model.world_count
         solver_config.dynamics.preconditioning = True
         solver_config.padmm.primal_tolerance = 1e-4
         solver_config.padmm.dual_tolerance = 1e-4
@@ -184,8 +184,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
-        newton.examples.add_kamino_contacts_arg(parser)
-        parser.set_defaults(world_count=4)
+        parser.set_defaults(world_count=1)
         parser.add_argument(
             "--from-usd",
             type=argparse.BooleanOptionalAction,

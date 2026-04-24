@@ -153,7 +153,6 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
-        newton.examples.add_kamino_contacts_arg(parser)
         parser.set_defaults(world_count=1)
         return parser
 

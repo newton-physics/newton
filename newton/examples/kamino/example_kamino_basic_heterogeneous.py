@@ -24,23 +24,33 @@ class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
         # Set simulation run-time configurations
         self.fps = 50
-        self.sim_dt = 0.001
+        self.sim_dt = 0.0025
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
         self.viewer = viewer
         self.device = wp.get_device()
 
-        # Create a single-robot model builder and register the Kamino-specific custom attributes
-        msg.notif("Creating and configuring the model builder for Kamino...")
-        robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
-        robot_builder.default_shape_cfg.margin = 0.0
-        robot_builder.default_shape_cfg.gap = 0.0
+        # Define a helper function to load each basic model from USD and
+        # add it to the builder, with consistent settings for all models
+        def load_basic_asset_from_usd(asset_file: str) -> newton.ModelBuilder:
+            asset_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+            newton.solvers.SolverKamino.register_custom_attributes(asset_builder)
+            asset_builder.default_shape_cfg.margin = 0.0
+            asset_builder.default_shape_cfg.gap = 0.0
+            asset_builder.add_usd(
+                asset_file,
+                joint_ordering=None,
+                force_show_colliders=True,
+                force_position_velocity_actuation=True,
+                enable_self_collisions=False,
+                hide_collision_shapes=False,
+            )
+            return asset_builder
 
-        # Load the basic cartpole either from USD or by manually building it
-        # with the builder API, depending on the command-line argument `--from-usd`
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        # Load the basic cartpole either from USD or manually using the model
+        # builder API, depending on the command-line argument `--from-usd`
+        builder = newton.ModelBuilder()
         if args.from_usd:
             # Load all basic USD assets and add them to the builder
             asset_names = [
@@ -54,32 +64,26 @@ class Example:
             msg.notif("Loading USD asset and adding it to the model builder...")
             for asset_name in asset_names:
                 asset_file = os.path.join(get_basics_usd_assets_path(), f"{asset_name}.usda")
-                robot_builder.add_usd(
-                    asset_file,
-                    joint_ordering=None,
-                    force_show_colliders=True,
-                    force_position_velocity_actuation=True,
-                    enable_self_collisions=False,
-                    hide_collision_shapes=False,
-                )
-                builder.add_world(robot_builder)
+                builder.add_world(builder=load_basic_asset_from_usd(asset_file))
         else:
             # Manually build the basic cartpole using the builder API
-            basics_newton.make_basics_heterogeneous_builder(builder=robot_builder, ground=True)
+            msg.notif("Creating the model builder with basic models using the builder API...")
+            basics_newton.make_basics_heterogeneous_builder(builder=builder, ground=True)
 
         # Create the model from the builder
         msg.notif("Creating the model from the builder...")
         self.model = builder.finalize(skip_validation_joints=True)
-        self.model.rigid_contact_max = 1450  # TODO
 
         # Create and configure settings for SolverKamino and the collision detector
         solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
         solver_config.use_collision_detector = True
         solver_config.use_fk_solver = True
+        solver_config.collision_detector.pipeline = "primitive"
+        solver_config.collision_detector.max_contacts = 32 * self.model.world_count
         solver_config.dynamics.preconditioning = True
-        solver_config.padmm.primal_tolerance = 1e-6
-        solver_config.padmm.dual_tolerance = 1e-6
-        solver_config.padmm.compl_tolerance = 1e-6
+        solver_config.padmm.primal_tolerance = 1e-4
+        solver_config.padmm.dual_tolerance = 1e-4
+        solver_config.padmm.compl_tolerance = 1e-4
         solver_config.padmm.max_iterations = 200
         solver_config.padmm.rho_0 = 0.1
         solver_config.padmm.use_acceleration = True
@@ -98,6 +102,7 @@ class Example:
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets(spacing=(5.0, 5.0, 0.0))
 
         # Warm-start the simulation
         self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
@@ -171,7 +176,6 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
-        newton.examples.add_kamino_contacts_arg(parser)
         parser.add_argument(
             "--from-usd",
             type=argparse.BooleanOptionalAction,

@@ -190,7 +190,6 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
-        newton.examples.add_kamino_contacts_arg(parser)
         parser.add_argument(
             "--pipeline",
             type=str,

@@ -26,6 +26,7 @@ class Example:
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
+        self.use_kamino_contacts = args.use_kamino_contacts if args else False
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -69,8 +70,8 @@ class Example:
 
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
-        self.config.use_collision_detector = True
         self.config.use_fk_solver = True
+        self.config.use_collision_detector = self.use_kamino_contacts
         self.config.padmm.max_iterations = 200
         self.config.padmm.primal_tolerance = 1e-4
         self.config.padmm.dual_tolerance = 1e-4
@@ -89,13 +90,23 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+
+        # Configure CD components based on whether we want to use Kamino's
+        # internal contact solver or Newton's collision pipeline
+        if not self.use_kamino_contacts:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.model.contacts(collision_pipeline=self.collision_pipeline)
+        else:
+            self.collision_pipeline = None
+            self.contacts = self.model.contacts()
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
 
         # Warm-start the simulation
-        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+        if not self.use_kamino_contacts:
+            self.collision_pipeline.collide(self.state_0, self.contacts)
+        self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
         self.solver.reset(self.state_0)
 
         # Reset the simulation state to a valid initial configuration above the ground
@@ -129,7 +140,11 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            if not self.use_kamino_contacts:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
+                self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            else:
+                self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.solver.update_contacts(self.contacts, self.state_0)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -144,7 +159,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_1)
+        self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     def test_final(self):
@@ -163,7 +178,7 @@ class Example:
                 self.state_0,
                 "body velocities are small",
                 lambda q, qd: max(abs(qd))
-                < 0.25,  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
+                < 0.25,  # Relaxed from 0.1 - collision pipeline has residual velocities up to ~0.2
             )
             # fmt: on
 
@@ -173,6 +188,7 @@ class Example:
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
         parser.set_defaults(world_count=1)
+        parser.set_defaults(use_kamino_contacts=True)
         return parser
 
 
@@ -180,5 +196,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
-    msg.notif("Starting the simulation...")
     newton.examples.run(example, args)

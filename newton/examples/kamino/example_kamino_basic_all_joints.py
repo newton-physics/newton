@@ -140,9 +140,7 @@ class Example:
 
     @staticmethod
     def create_parser():
-        parser = newton.examples.create_parser()
-        newton.examples.add_kamino_contacts_arg(parser)
-        return parser
+        return newton.examples.create_parser()
 
 
 if __name__ == "__main__":
