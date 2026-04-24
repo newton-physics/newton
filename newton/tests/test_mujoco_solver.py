@@ -3920,13 +3920,20 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         matches the user-specified value instead of being divided by
         ``invweight0 * (1 - dmax)``. The sphere here is a dense
         ``radius=0.5`` body (~523 kg) against a static ground plane.
-        Under the corrected semantics, ``ke=1e6`` is needed to keep the
-        sphere from sinking through the plane -- ``ke=1e4`` used to work
-        only because of the ~10,000x over-stiffness that #2009 removed.
+        MuJoCo mixes per-geom ``solref`` in (timeconst, dampratio) space
+        rather than in (ke, kd) space, so when one geom is static
+        (``body_invweight0 == 0`` -> factor 1.0) and the other is
+        dynamic (factor << 1), the mixed ``solref`` infers an
+        effective stiffness much lower than the user-specified ``ke``.
+        To still exercise the collision path for a 523 kg sphere under
+        the corrected semantics we crank ``ke`` up so the mixed
+        stiffness is large enough to support the weight; ``ke=1e4``
+        used to work only because of the ~10,000x over-stiffness that
+        #2009 removed.
         """
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.ke = 1e6
-        builder.default_shape_cfg.kd = 1e4
+        builder.default_shape_cfg.ke = 1e8
+        builder.default_shape_cfg.kd = 1e6
         builder.add_ground_plane()
 
         self.sphere_radius = 0.5
