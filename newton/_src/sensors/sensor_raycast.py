@@ -187,6 +187,9 @@ class SensorRaycast:
                     self.model.shape_type,
                     self.model.shape_scale,
                     self.model.shape_source_ptr,
+                    self.model.shape_heightfield_index,
+                    self.model.heightfield_data,
+                    self.model.heightfield_elevations,
                     # Camera parameters
                     camera_position,
                     camera_direction,
