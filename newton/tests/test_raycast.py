@@ -7,8 +7,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton import GeoType
-from newton._src.geometry.raycast import ray_intersect_geom, ray_intersect_mesh
+from newton import GeoType, Heightfield
+from newton._src.geometry.raycast import ray_intersect_geom, ray_intersect_mesh, raycast_kernel
 from newton._src.utils.heightfield import HeightfieldData
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -559,6 +559,82 @@ def test_ray_intersect_heightfield_normals(test: TestRaycast, device: str):
                 test.assertAlmostEqual(float(got_n[axis]), float(expected_val), delta=1e-4)
 
 
+def test_ray_intersect_heightfield_scaled(test: TestRaycast, device: str):
+    """Per-instance ``scale`` on ``add_shape_heightfield`` is honored by the raycast.
+
+    Exercises the full ``ModelBuilder -> finalize -> raycast_kernel`` pipeline so the
+    scale-baking into :class:`HeightfieldData` is covered. A ray at ``x=1.5``
+    (outside the unit-scale extent of ``[-1, 1]`` but inside the scaled extent
+    of ``[-2, 2]``) must hit on the scaled instance and must miss on the unscaled
+    one. On the scaled instance it must also hit at ``z=2`` (scaled max_z).
+    """
+    # ``min_z = max_z = 1`` pins the flat surface at local z=1 regardless of
+    # the Heightfield constructor's elevation normalization.
+    flat = np.ones((3, 3), dtype=np.float32)
+    hf = Heightfield(data=flat, nrow=3, ncol=3, hx=1.0, hy=1.0, min_z=1.0, max_z=1.0)
+
+    # Scaled instance: expected baked extents hx=2, hy=2, min_z=0, max_z=2.
+    builder_scaled = newton.ModelBuilder()
+    builder_scaled.add_shape_heightfield(heightfield=hf, scale=(2.0, 2.0, 2.0))
+    model_scaled = builder_scaled.finalize(device=device)
+    state_scaled = model_scaled.state()
+
+    # Unscaled instance: extents hx=1, hy=1, min_z=0, max_z=1.
+    builder_unscaled = newton.ModelBuilder()
+    builder_unscaled.add_shape_heightfield(heightfield=hf)
+    model_unscaled = builder_unscaled.finalize(device=device)
+    state_unscaled = model_unscaled.state()
+
+    def cast(model, state, origin, direction):
+        min_dist = wp.array([1.0e10], dtype=float, device=device)
+        min_index = wp.array([-1], dtype=int, device=device)
+        min_body_index = wp.array([-1], dtype=int, device=device)
+        lock = wp.array([0], dtype=wp.int32, device=device)
+        empty_world = wp.array([], dtype=int, device=device)
+        empty_offsets = wp.array([], dtype=wp.vec3, device=device)
+        empty_mask = wp.array([], dtype=int, device=device)
+        wp.launch(
+            raycast_kernel,
+            dim=model.shape_count,
+            inputs=[
+                state.body_q,
+                model.shape_body,
+                model.shape_transform,
+                model.shape_type,
+                model.shape_scale,
+                model.shape_source_ptr,
+                model.shape_heightfield_index,
+                model.heightfield_data,
+                model.heightfield_elevations,
+                origin,
+                direction,
+                lock,
+            ],
+            outputs=[min_dist, min_index, min_body_index, empty_world, empty_offsets, empty_mask],
+            device=device,
+        )
+        dist = float(min_dist.numpy()[0])
+        return dist if dist < 1.0e10 else -1.0
+
+    direction = wp.vec3(0.0, 0.0, -1.0)
+
+    # Inside scaled extent [-2, 2] at x=1.5 but outside unit extent [-1, 1].
+    with test.subTest("scaled_hit_outside_unit_extent"):
+        t_scaled = cast(model_scaled, state_scaled, wp.vec3(1.5, 0.0, 5.0), direction)
+        test.assertAlmostEqual(t_scaled, 3.0, delta=1e-4)  # 5 - scaled max_z=2
+    with test.subTest("unscaled_miss_outside_unit_extent"):
+        t_unscaled = cast(model_unscaled, state_unscaled, wp.vec3(1.5, 0.0, 5.0), direction)
+        test.assertAlmostEqual(t_unscaled, -1.0, delta=1e-5)
+
+    # Center ray confirms the scaled z-range: hit at z=2 vs z=1 unscaled.
+    with test.subTest("scaled_center_z"):
+        t_scaled_center = cast(model_scaled, state_scaled, wp.vec3(0.0, 0.0, 5.0), direction)
+        test.assertAlmostEqual(t_scaled_center, 3.0, delta=1e-4)
+    with test.subTest("unscaled_center_z"):
+        t_unscaled_center = cast(model_unscaled, state_unscaled, wp.vec3(0.0, 0.0, 5.0), direction)
+        test.assertAlmostEqual(t_unscaled_center, 4.0, delta=1e-4)
+
+
 devices = get_test_devices()
 add_function_test(TestRaycast, "test_ray_intersect_plane", test_ray_intersect_plane, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_sphere", test_ray_intersect_sphere, devices=devices)
@@ -582,6 +658,12 @@ add_function_test(
     TestRaycast,
     "test_ray_intersect_heightfield_normals",
     test_ray_intersect_heightfield_normals,
+    devices=devices,
+)
+add_function_test(
+    TestRaycast,
+    "test_ray_intersect_heightfield_scaled",
+    test_ray_intersect_heightfield_scaled,
     devices=devices,
 )
 

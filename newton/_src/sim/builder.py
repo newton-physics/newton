@@ -5883,7 +5883,7 @@ class ModelBuilder:
         Args:
             xform: The transform of the heightfield in world frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
-            scale: Deprecated. Currently still applied to the broad-phase collision AABB but ignored by narrow-phase collision and raycast, so non-identity values produce inconsistent behavior. Size the surface via :attr:`Heightfield.hx`, :attr:`Heightfield.hy`, :attr:`Heightfield.min_z`, and :attr:`Heightfield.max_z` instead. Passing ``scale`` emits a :class:`DeprecationWarning`; the parameter (and the AABB scaling) will be removed in a future release.
+            scale: Per-instance scale applied to the heightfield extents (``hx``, ``hy``, ``min_z``, ``max_z``). Lets the same :class:`Heightfield` asset be reused at different sizes across shapes. Defaults to ``None``, which is treated as ``(1.0, 1.0, 1.0)``.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: An optional label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
@@ -5896,17 +5896,6 @@ class ModelBuilder:
             raise ValueError("add_shape_heightfield() requires a Heightfield instance.")
         if cfg is None:
             cfg = self.default_shape_cfg
-
-        if scale is not None:
-            warnings.warn(
-                "add_shape_heightfield() 'scale' is deprecated: narrow-phase collision "
-                "and raycast ignore it, so non-identity values give inconsistent results. "
-                "Size the surface via Heightfield.hx, Heightfield.hy, Heightfield.min_z, "
-                "and Heightfield.max_z instead. 'scale' (and the broad-phase AABB scaling "
-                "that still honors it) will be removed in a future release.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
 
         return self.add_shape(
             body=-1,
@@ -9972,14 +9961,22 @@ class ModelBuilder:
                 for i in range(len(self.shape_type)):
                     if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
                         hf = self.shape_source[i]
+                        # Bake the per-instance scale into the extents so narrow-phase
+                        # collision and raycast (which read from HeightfieldData) match
+                        # the scaled broad-phase AABB. Use abs() on hx/hy and min/max on
+                        # the signed z range so negative scales still yield valid bounds
+                        # (matching the AABB computation a few hundred lines above).
+                        sx, sy, sz = self.shape_scale[i]
+                        z_lo = hf.min_z * sz
+                        z_hi = hf.max_z * sz
                         hd = HeightfieldData()
                         hd.data_offset = offset
                         hd.nrow = hf.nrow
                         hd.ncol = hf.ncol
-                        hd.hx = hf.hx
-                        hd.hy = hf.hy
-                        hd.min_z = hf.min_z
-                        hd.max_z = hf.max_z
+                        hd.hx = abs(hf.hx * sx)
+                        hd.hy = abs(hf.hy * sy)
+                        hd.min_z = min(z_lo, z_hi)
+                        hd.max_z = max(z_lo, z_hi)
                         shape_heightfield_index[i] = len(compact_heightfield_data)
                         compact_heightfield_data.append(hd)
                         elevation_chunks.append(hf.data.flatten())
