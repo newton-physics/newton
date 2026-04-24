@@ -709,6 +709,15 @@ def compute_link_velocity(
 
     I_s = transform_spatial_inertia(X_sm, I_m)
     f_b_s = I_s * a_s + spatial_cross_dual(v_s, I_s * v_s)
+    if type == JointType.FREE or type == JointType.DISTANCE:
+        # ``v_s`` is still the world-origin twist needed by the articulated
+        # recurrence, but Newton's FREE/DISTANCE linear coordinates are the
+        # child COM velocity in world space. The standard origin-frame bias
+        # wrench therefore injects an extra ``m * omega x v_com`` linear term
+        # (and the matching moment shift) that would only be correct for
+        # origin-referenced linear coordinates.
+        linear_bias = m * wp.cross(omega_world, v_com_world)
+        f_b_s -= wp.spatial_vector(linear_bias, wp.cross(x_com_world, linear_bias))
 
     body_v_s[child] = v_s
     body_a_s[child] = a_s
