@@ -31,6 +31,10 @@
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
 
+### Deprecated
+
+- Deprecate the `scale` parameter of `ModelBuilder.add_shape_heightfield`. It is honored by the broad-phase collision AABB but ignored by narrow-phase collision and raycast, so non-identity values produce inconsistent behavior. Size the surface via `Heightfield.hx`, `Heightfield.hy`, `Heightfield.min_z`, and `Heightfield.max_z` instead. Passing `scale` now emits a `DeprecationWarning`; the parameter (and the residual AABB scaling) will be removed in a future release.
+
 ### Fixed
 
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration

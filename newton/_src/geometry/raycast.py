@@ -822,6 +822,9 @@ def raycast_kernel(
         geom_type: Array of geometry types for each geometry.
         geom_size: Array of sizes for each geometry.
         shape_source_ptr: Array of mesh IDs for mesh geometries (wp.uint64).
+        shape_heightfield_index: Per-shape index into ``heightfield_data``. Can be ``None`` or empty when the model has no heightfields.
+        heightfield_data: Compact array of ``HeightfieldData`` structs, one per HFIELD shape. Can be ``None`` or empty when the model has no heightfields.
+        heightfield_elevations: Concatenated normalized [0, 1] elevation array indexed via ``HeightfieldData.data_offset``. Can be ``None`` or empty when the model has no heightfields.
         ray_origin: The origin of the ray.
         ray_direction: The direction of the ray.
         lock: Lock array used for synchronization. Expected to be initialized to 0.
@@ -984,6 +987,9 @@ def sensor_raycast_kernel(
         geom_type: Array of geometry types for each geometry
         geom_size: Array of sizes for each geometry
         shape_source_ptr: Array of mesh IDs for mesh geometries
+        shape_heightfield_index: Per-shape index into ``heightfield_data``. Can be ``None`` or empty when the model has no heightfields.
+        heightfield_data: Compact array of ``HeightfieldData`` structs, one per HFIELD shape. Can be ``None`` or empty when the model has no heightfields.
+        heightfield_elevations: Concatenated normalized [0, 1] elevation array indexed via ``HeightfieldData.data_offset``. Can be ``None`` or empty when the model has no heightfields.
         camera_position: Camera position in world space
         camera_direction: Camera forward direction (normalized)
         camera_up: Camera up direction (normalized)

@@ -5883,7 +5883,7 @@ class ModelBuilder:
         Args:
             xform: The transform of the heightfield in world frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
-            scale: The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
+            scale: Deprecated. Currently still applied to the broad-phase collision AABB but ignored by narrow-phase collision and raycast, so non-identity values produce inconsistent behavior. Size the surface via :attr:`Heightfield.hx`, :attr:`Heightfield.hy`, :attr:`Heightfield.min_z`, and :attr:`Heightfield.max_z` instead. Passing ``scale`` emits a :class:`DeprecationWarning`; the parameter (and the AABB scaling) will be removed in a future release.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: An optional label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
@@ -5896,6 +5896,17 @@ class ModelBuilder:
             raise ValueError("add_shape_heightfield() requires a Heightfield instance.")
         if cfg is None:
             cfg = self.default_shape_cfg
+
+        if scale is not None:
+            warnings.warn(
+                "add_shape_heightfield() 'scale' is deprecated: narrow-phase collision "
+                "and raycast ignore it, so non-identity values give inconsistent results. "
+                "Size the surface via Heightfield.hx, Heightfield.hy, Heightfield.min_z, "
+                "and Heightfield.max_z instead. 'scale' (and the broad-phase AABB scaling "
+                "that still honors it) will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         return self.add_shape(
             body=-1,
