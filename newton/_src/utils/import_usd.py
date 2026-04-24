@@ -12,7 +12,7 @@ import os
 import posixpath
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin
 
@@ -42,6 +42,46 @@ from .import_utils import should_show_collider
 AttributeFrequency = Model.AttributeFrequency
 
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
+
+
+def _usd_bbox_diagonal(prim) -> float | None:
+    """Length of the local-space AABB diagonal for a USD prim [m].
+
+    Uses UsdGeom.BBoxCache so it works uniformly for meshes (from points)
+    and primitives (from their size/radius attributes). Returns None if
+    the bbox is empty or degenerate.
+    """
+    from pxr import Usd, UsdGeom
+
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), includedPurposes=[UsdGeom.Tokens.default_])
+    bbox = cache.ComputeLocalBound(prim)
+    rng = bbox.ComputeAlignedRange()
+    if rng.IsEmpty():
+        return None
+    diag = rng.GetSize().GetLength()
+    return float(diag) if diag > 0 else None
+
+
+def _prim_has_applied_schema(prim, name: str) -> bool:
+    """Check whether an API schema is applied on a prim.
+
+    Reads the ``apiSchemas`` metadata directly so detection works even when
+    the schema is not registered with the USD runtime (codeless schemas
+    loaded only by plugInfo may still be unregistered in test environments).
+    """
+    op = prim.GetMetadata("apiSchemas")
+    if op is None:
+        return False
+    for items in (
+        op.explicitItems,
+        op.prependedItems,
+        op.appendedItems,
+        op.addedItems,
+        op.orderedItems,
+    ):
+        if items and name in items:
+            return True
+    return False
 
 
 def _external_stacklevel() -> int:
@@ -2540,6 +2580,134 @@ def parse_usd(
                     shape_kd = builder.default_shape_cfg.kd
 
                 shape_color = material_props.get("color")
+
+                # SDF parameters.
+                # Feature activation is explicit. Applying NewtonSDFCollisionAPI
+                # (or the hydro API that inherits from it) implies the schema
+                # default newton:sdfEnabled=true, mirroring the OpenUSD convention
+                # for physics:rigidBodyEnabled. Authored newton:sdfEnabled always
+                # wins — in particular newton:sdfEnabled=false is the explicit
+                # disable that preserves the other authored values. Presence of
+                # newton:sdfMaxResolution or newton:sdfTargetVoxelSize alone is
+                # also treated as intent to enable, for compatibility with assets
+                # that predate the dedicated API schema.
+                sdf_enabled = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_enabled", verbose=verbose)
+                has_hydro_api = _prim_has_applied_schema(prim, "NewtonHydroelasticCollisionAPI")
+                # Hydro inherits from SDF in the schema; treat hydro-applied as SDF-applied too.
+                has_sdf_api = has_hydro_api or _prim_has_applied_schema(prim, "NewtonSDFCollisionAPI")
+                if sdf_enabled is None and has_sdf_api:
+                    sdf_enabled = True
+                if sdf_enabled is False:
+                    # Explicitly disabled: skip all SDF/hydro param resolution
+                    sdf_max_resolution = None
+                    sdf_target_voxel_size = None
+                    sdf_narrow_band_range = builder.default_shape_cfg.sdf_narrow_band_range
+                    sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
+                    sdf_margin = None
+                    kh = builder.default_shape_cfg.kh
+                    is_hydroelastic = False
+                else:
+                    sdf_max_resolution = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
+                    )
+                    if sdf_max_resolution is None:
+                        # When the API is applied but the attribute is not authored,
+                        # fall back to the schema default (64). Otherwise use the
+                        # Newton builder default (which is None for this field).
+                        sdf_max_resolution = 64 if has_sdf_api else builder.default_shape_cfg.sdf_max_resolution
+
+                    sdf_target_voxel_size = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
+                    )
+                    # Schema default is 0 meaning "use sdfMaxResolution instead"
+                    if sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+                        sdf_target_voxel_size = None
+                    if sdf_target_voxel_size is None:
+                        sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
+
+                    sdf_narrow_band_inner = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
+                    )
+                    sdf_narrow_band_outer = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
+                    )
+                    # Fractional variants: when authored non-zero, override absolute.
+                    nb_inner_frac = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner_fraction", verbose=verbose
+                    )
+                    nb_outer_frac = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer_fraction", verbose=verbose
+                    )
+                    margin_frac = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_margin_fraction", verbose=verbose
+                    )
+                    has_fractional = any(f is not None and f != 0 for f in (nb_inner_frac, nb_outer_frac, margin_frac))
+                    bbox_diag = _usd_bbox_diagonal(prim) if has_fractional else None
+                    if has_fractional and bbox_diag is None:
+                        warnings.warn(
+                            f"{prim.GetPath()}: fractional SDF attributes authored but bbox is empty; "
+                            f"falling back to absolute values.",
+                            stacklevel=_external_stacklevel(),
+                        )
+                    if nb_inner_frac is not None and nb_inner_frac != 0 and bbox_diag is not None:
+                        sdf_narrow_band_inner = nb_inner_frac * bbox_diag
+                    if nb_outer_frac is not None and nb_outer_frac != 0 and bbox_diag is not None:
+                        sdf_narrow_band_outer = nb_outer_frac * bbox_diag
+                    default_nb = builder.default_shape_cfg.sdf_narrow_band_range
+                    sdf_narrow_band_range = (
+                        sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
+                        sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
+                    )
+
+                    sdf_texture_format = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose
+                    )
+                    if sdf_texture_format is None:
+                        sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
+
+                    sdf_margin = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_margin", verbose=verbose)
+                    if margin_frac is not None and margin_frac != 0 and bbox_diag is not None:
+                        sdf_margin = margin_frac * bbox_diag
+                    elif sdf_margin is None and has_sdf_api:
+                        # Applied API, no authored margin: fall back to schema default.
+                        sdf_margin = 0.05
+
+                    # Hydroelastic activation is driven by newton:hydroelasticEnabled
+                    # only. Applying NewtonHydroelasticCollisionAPI implies the
+                    # schema default (true). newton:kh alone is a material parameter
+                    # and does NOT flip the feature on — users must explicitly
+                    # signal intent via the enable bool or the applied API.
+                    hydroelastic_enabled = R.get_value(
+                        prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
+                    )
+                    if hydroelastic_enabled is None and has_hydro_api:
+                        hydroelastic_enabled = True
+                    kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                    if hydroelastic_enabled is False:
+                        is_hydroelastic = False
+                    elif hydroelastic_enabled is True:
+                        is_hydroelastic = True
+                    else:
+                        is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
+                    if kh is None:
+                        kh = builder.default_shape_cfg.kh
+
+                    # Early validation: hydroelastic meshes need an SDF source.
+                    # For primitives, a texture SDF is generated from a synthesized
+                    # watertight mesh at finalize(), but meshes require either an
+                    # attached mesh.sdf or a resolution/voxel_size so one can be
+                    # built deferred.
+                    if (
+                        is_hydroelastic
+                        and key == UsdPhysics.ObjectType.MeshShape
+                        and sdf_max_resolution is None
+                        and sdf_target_voxel_size is None
+                    ):
+                        raise ValueError(
+                            f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
+                            f"or newton:sdfTargetVoxelSize so an SDF can be generated."
+                        )
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -2561,6 +2729,13 @@ def parse_usd(
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
+                        sdf_max_resolution=sdf_max_resolution,
+                        sdf_narrow_band_range=sdf_narrow_band_range,
+                        sdf_target_voxel_size=sdf_target_voxel_size,
+                        sdf_texture_format=sdf_texture_format,
+                        sdf_margin=sdf_margin,
+                        is_hydroelastic=is_hydroelastic,
+                        kh=kh,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
@@ -2637,11 +2812,38 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
+                    # add_shape_mesh() rejects SDF params in ShapeConfig for meshes,
+                    # so we strip SDF fields and pass a clean cfg. SDF building is
+                    # deferred to finalize() where instances can be deduplicated.
+                    # We write SDF params directly to the builder's per-shape lists
+                    # after the shape is added.
+                    mesh_shape_params = dict(shape_params)
+                    mesh_shape_params["cfg"] = replace(
+                        shape_params["cfg"],
+                        sdf_max_resolution=None,
+                        sdf_target_voxel_size=None,
+                        sdf_narrow_band_range=(-0.1, 0.1),
+                        sdf_texture_format="uint16",
+                        sdf_margin=None,
+                        is_hydroelastic=False,
+                    )
                     shape_id = builder.add_shape_mesh(
                         scale=wp.vec3(*shape_spec.meshScale),
                         mesh=mesh,
-                        **shape_params,
+                        **mesh_shape_params,
                     )
+                    # Store SDF intent on the builder (deferred to finalize).
+                    builder.shape_sdf_max_resolution[shape_id] = sdf_max_resolution
+                    builder.shape_sdf_target_voxel_size[shape_id] = sdf_target_voxel_size
+                    builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
+                    builder.shape_sdf_texture_format[shape_id] = sdf_texture_format
+                    builder.shape_sdf_margin[shape_id] = sdf_margin
+                    # kh is a material parameter; persist it regardless of
+                    # hydroelastic state so overrides survive even when hydro
+                    # is disabled.
+                    builder.shape_material_kh[shape_id] = kh
+                    if is_hydroelastic:
+                        builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
                     if not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:
