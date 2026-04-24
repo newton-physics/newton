@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import time
 import unittest
 
 import numpy as np
@@ -11,7 +12,68 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 class TestPhysicsValidation(unittest.TestCase):
-    pass
+    @unittest.skip("Visual debugging - run manually to view simulation")
+    def test_view_static_friction_vbd(self):
+        """Watch the static-friction scene run under VBD. No asserts — purely for visual inspection."""
+        self._run_static_friction_viewer(
+            solver_fn=lambda model: newton.solvers.SolverVBD(model, iterations=10),
+            uses_newton_contacts=True,
+            solver_name="vbd",
+        )
+
+    def _run_static_friction_viewer(self, solver_fn, uses_newton_contacts, solver_name):
+        device = wp.get_device("cuda:0")
+        model, F_below, F_above, _box_half_extent = _build_static_friction_scene(device)
+
+        try:
+            viewer = newton.viewer.ViewerGL()
+            viewer.set_model(model)
+        except Exception as e:
+            self.skipTest(f"ViewerGL not available: {e}")
+            return
+
+        # Frame the two boxes (b_below near origin, b_above at z=5).
+        viewer.set_camera(wp.vec3(8.0, 4.0, 2.5), pitch=-20.0, yaw=-90.0)
+
+        solver = solver_fn(model)
+        contacts = model.contacts() if uses_newton_contacts else None
+        state_0 = model.state()
+        state_1 = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        sim_dt = 1e-3
+        substeps_per_frame = 16  # ~16 ms of sim per rendered frame
+        num_frames = 400
+
+        wrenches = np.zeros((2, 6), dtype=np.float32)
+        wrenches[0, 0] = F_below
+        wrenches[1, 0] = F_above
+
+        print(f"\nRunning static friction scene under {solver_name} for {num_frames} frames. Close the viewer to stop.")
+        sim_time = 0.0
+        step_idx = 0
+        try:
+            for _frame in range(num_frames):
+                viewer.begin_frame(sim_time)
+                viewer.log_state(state_0)
+                if contacts is not None:
+                    viewer.log_contacts(contacts, state_0)
+                viewer.end_frame()
+
+                for _ in range(substeps_per_frame):
+                    state_0.clear_forces()
+                    if step_idx > 20:
+                        state_0.body_f.assign(wrenches)
+                    if contacts is not None:
+                        model.collide(state_0, contacts)
+                    solver.step(state_0, state_1, None, contacts, sim_dt)
+                    state_0, state_1 = state_1, state_0
+                    step_idx += 1
+
+                sim_time += substeps_per_frame * sim_dt
+                time.sleep(0.016)
+        except KeyboardInterrupt:
+            print("\nSimulation stopped by user.")
 
 
 # ---------------------------------------------------------------------------
@@ -502,14 +564,24 @@ def test_momentum_conservation(test, device, solver_fn, uses_generalized_coords)
 # Test 7: Static Friction
 # Verify Coulomb static friction: no sliding before threshold, sliding above threshold.
 # ---------------------------------------------------------------------------
-def test_static_friction(test, device, solver_fn, uses_newton_contacts):
-    # Test parameters: gravity, static friction coefficient, box size, box mass.
+_DEFAULT_STATIC_FRICTION_THRESHOLDS = {
+    "below_x_max": 0.01,  # below threshold: max allowed |x| drift (should not slide)
+    "below_y_delta": 0.01,  # below threshold: y tolerance around box_half_extent (stays on ground)
+    "above_x_min": 0.05,  # above threshold: min required x displacement (should slide)
+    "above_y_delta": 0.01,  # above threshold: y tolerance around box_half_extent
+}
+
+
+def _build_static_friction_scene(device):
+    """Build the two-box static friction scene.
+
+    Returns ``(model, F_below, F_above, box_half_extent)``.
+    """
     g = -10.0
     mu = 0.5
     box_half_extent = 0.25
     mass = 1000.0 * (2 * box_half_extent) ** 3
 
-    # Shape config
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.mu = mu
     cfg.ke = 1e4
@@ -517,18 +589,22 @@ def test_static_friction(test, device, solver_fn, uses_newton_contacts):
     cfg.kf = 0.0
     cfg.gap = 0.1
 
-    # Force below and above static friction
     F_below = 0.3 * mu * mass * abs(g)
     F_above = 2.0 * mu * mass * abs(g)
 
-    # Two boxes on the same ground plane: body 0 gets sub-threshold force, body 1 gets above-threshold
     builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
     builder.add_ground_plane(cfg=cfg)
     b_below = builder.add_body(xform=wp.transform(wp.vec3(0.0, box_half_extent + 0.001, 0.0), wp.quat_identity()))
     b_above = builder.add_body(xform=wp.transform(wp.vec3(0.0, box_half_extent + 0.001, 5.0), wp.quat_identity()))
     builder.add_shape_box(b_below, hx=box_half_extent, hy=box_half_extent, hz=box_half_extent, cfg=cfg)
     builder.add_shape_box(b_above, hx=box_half_extent, hy=box_half_extent, hz=box_half_extent, cfg=cfg)
+    builder.color()
     model = builder.finalize(device=device)
+    return model, F_below, F_above, box_half_extent
+
+
+def test_static_friction(test, device, solver_fn, uses_newton_contacts, thresholds=_DEFAULT_STATIC_FRICTION_THRESHOLDS):
+    model, F_below, F_above, box_half_extent = _build_static_friction_scene(device)
 
     solver = solver_fn(model)
     contacts = model.contacts() if uses_newton_contacts else None
@@ -553,15 +629,32 @@ def test_static_friction(test, device, solver_fn, uses_newton_contacts):
 
     body_q = state_0.body_q.numpy()
 
+    below_x_max = thresholds["below_x_max"]
+    below_y_delta = thresholds["below_y_delta"]
+    above_x_min = thresholds["above_x_min"]
+    above_y_delta = thresholds["above_y_delta"]
+
     # Below threshold: box should NOT slide
     pos_below = body_q[0][:3]
-    test.assertLess(abs(pos_below[0]), 0.01, f"Below threshold: box drifted X={pos_below[0]:.6f} (should be < 0.01)")
-    test.assertAlmostEqual(pos_below[1], box_half_extent, delta=0.01, msg="Box should stay on ground (below)")
+    test.assertLess(
+        abs(pos_below[0]),
+        below_x_max,
+        f"Below threshold: box drifted X={pos_below[0]:.6f} (should be < {below_x_max})",
+    )
+    test.assertAlmostEqual(
+        pos_below[1], box_half_extent, delta=below_y_delta, msg="Box should stay on ground (below)"
+    )
 
     # Above threshold: box SHOULD slide
     pos_above = body_q[1][:3]
-    test.assertGreater(pos_above[0], 0.05, f"Above threshold: box displacement X={pos_above[0]:.6f} (should be > 0.05)")
-    test.assertAlmostEqual(pos_above[1], box_half_extent, delta=0.01, msg="Box should stay on ground (above)")
+    test.assertGreater(
+        pos_above[0],
+        above_x_min,
+        f"Above threshold: box displacement X={pos_above[0]:.6f} (should be > {above_x_min})",
+    )
+    test.assertAlmostEqual(
+        pos_above[1], box_half_extent, delta=above_y_delta, msg="Box should stay on ground (above)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1632,11 +1725,25 @@ for device in devices:
             False,
             True,
         ),
+        "vbd": (
+            lambda model: newton.solvers.SolverVBD(model, iterations=10),
+            True,
+            False,
+        ),
+    }
+    # Per-solver tolerances for test_static_friction. Solvers not listed use the default.
+    static_friction_thresholds = {
+        "vbd": {
+            "below_x_max": 0.05,
+            "below_y_delta": 0.03,
+            "above_x_min": 0.05,
+            "above_y_delta": 0.03,
+        },
     }
     for solver_name, (solver_fn, uses_newton_contacts, uses_gen_coords) in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
-        if not device.is_cuda and solver_name in ("mujoco_warp", "xpbd"):
+        if not device.is_cuda and solver_name in ("mujoco_warp", "xpbd", "vbd"):
             continue
 
         add_function_test(
@@ -1646,6 +1753,7 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
             uses_newton_contacts=uses_newton_contacts,
+            thresholds=static_friction_thresholds.get(solver_name, _DEFAULT_STATIC_FRICTION_THRESHOLDS),
         )
 
         add_function_test(
