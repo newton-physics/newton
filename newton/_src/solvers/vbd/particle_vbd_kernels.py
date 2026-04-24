@@ -395,13 +395,12 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
     s = lmbd * (J - alpha)
     P_vec = rest_volume * (mu * f + s * cof_vec)
 
-    # ============ Hessian (SPD-projected) ============
-    # The cofactor-derivative term s * d(cof F)/dF is indefinite in general.
-    # Clamp s -> max(0, s) so the whole contribution is dropped when the tet
-    # is compressed below rest (J < alpha), matching the membrane SPD-projection
-    # strategy. Stretched regime (s >= 0) uses the raw derivative.
-    s_clamp = wp.max(0.0, s)
-    H = mu * wp.identity(n=9, dtype=float) + lmbd * wp.outer(cof_vec, cof_vec) + compute_cofactor_derivative(F, s_clamp)
+    # ============ Hessian ============
+    # The full elastic Hessian also has an s * d^2 J / dF^2 term, but its
+    # contribution to VBD's per-vertex 3x3 block is identically zero:
+    # the Levi-Civita tensor in d^2 J / dF^2 contracts against (m^a x m^a),
+    # which vanishes. Drop it; the remaining two terms are SPD by inspection.
+    H = mu * wp.identity(n=9, dtype=float) + lmbd * wp.outer(cof_vec, cof_vec)
     H = rest_volume * H
 
     # ============ Assemble Pointwise Force ============
