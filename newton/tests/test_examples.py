@@ -795,7 +795,7 @@ add_example_test(
 )
 add_example_test(
     TestKaminoExamples,
-    name="kamino.example_kamino_box_on_plane",
+    name="kamino.example_kamino_basic_box_on_plane",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
