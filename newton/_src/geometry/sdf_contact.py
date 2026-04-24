@@ -450,7 +450,6 @@ def get_edge_from_mesh(
 def get_edge_from_heightfield(
     hfd: HeightfieldData,
     elevation_data: wp.array[wp.float32],
-    mesh_scale: wp.vec3,
     X_ws: wp.transform,
     edge_idx: int,
 ) -> tuple[wp.vec3, wp.vec3]:
@@ -462,10 +461,13 @@ def get_edge_from_heightfield(
     - Vertical edges: ``(nrow - 1) * ncol`` edges along columns.
     - Diagonal edges: ``(nrow - 1) * (ncol - 1)`` edges across cells.
 
+    ``hfd`` already carries the per-instance scale baked into ``hx``, ``hy``,
+    ``min_z``, and ``max_z`` by the builder, so the returned vertices do not
+    need a further scale multiplication.
+
     Args:
-        hfd: Heightfield descriptor.
+        hfd: Heightfield descriptor (extents are scale-baked).
         elevation_data: Flat elevation array.
-        mesh_scale: Scale to apply to vertices (component-wise).
         X_ws: World-space transform.
         edge_idx: Linear edge index (0-based).
 
@@ -519,11 +521,8 @@ def get_edge_from_heightfield(
     h1 = elevation_data[base + r1 * ncol + c1]
     p1 = wp.vec3(x1, y1, hfd.min_z + h1 * z_range)
 
-    v0_local = wp.cw_mul(p0, mesh_scale)
-    v1_local = wp.cw_mul(p1, mesh_scale)
-
-    v0_world = wp.transform_point(X_ws, v0_local)
-    v1_world = wp.transform_point(X_ws, v1_local)
+    v0_world = wp.transform_point(X_ws, p0)
+    v1_world = wp.transform_point(X_ws, p1)
 
     return v0_world, v1_world
 
@@ -818,7 +817,7 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
                 if wp.static(enable_heightfields):
                     if edge_shape_type == GeoType.HFIELD:
                         v0_scaled, v1_scaled = get_edge_from_heightfield(
-                            hfd_edge, elevation_data, mesh_scale, mesh_to_sdf_transform, edge_idx
+                            hfd_edge, elevation_data, mesh_to_sdf_transform, edge_idx
                         )
                     else:
                         v0_scaled, v1_scaled = get_edge_from_mesh(
@@ -1176,7 +1175,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         if wp.static(enable_heightfields):
                             if tri_type == GeoType.HFIELD:
                                 v0s, v1s = get_edge_from_heightfield(
-                                    hfd_tri, heightfield_elevations, mesh_scale_tri, X_mesh_to_sdf, edge_idx
+                                    hfd_tri, heightfield_elevations, X_mesh_to_sdf, edge_idx
                                 )
                             else:
                                 v0s, v1s = get_edge_from_mesh(
@@ -1477,7 +1476,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         if wp.static(enable_heightfields):
                             if tri_type == GeoType.HFIELD:
                                 v0s, v1s = get_edge_from_heightfield(
-                                    hfd_tri, heightfield_elevations, mesh_scale_tri, X_mesh_to_sdf, edge_idx
+                                    hfd_tri, heightfield_elevations, X_mesh_to_sdf, edge_idx
                                 )
                             else:
                                 v0s, v1s = get_edge_from_mesh(

@@ -9961,22 +9961,18 @@ class ModelBuilder:
                 for i in range(len(self.shape_type)):
                     if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
                         hf = self.shape_source[i]
-                        # Bake the per-instance scale into the extents so narrow-phase
-                        # collision and raycast (which read from HeightfieldData) match
-                        # the scaled broad-phase AABB. Use abs() on hx/hy and min/max on
-                        # the signed z range so negative scales still yield valid bounds
-                        # (matching the AABB computation a few hundred lines above).
-                        sx, sy, sz = self.shape_scale[i]
-                        z_lo = hf.min_z * sz
-                        z_hi = hf.max_z * sz
                         hd = HeightfieldData()
                         hd.data_offset = offset
                         hd.nrow = hf.nrow
                         hd.ncol = hf.ncol
-                        hd.hx = abs(hf.hx * sx)
-                        hd.hy = abs(hf.hy * sy)
-                        hd.min_z = min(z_lo, z_hi)
-                        hd.max_z = max(z_lo, z_hi)
+                        # Bake the per-instance scale into the extents so narrow-phase
+                        # collision and raycast (which read from HeightfieldData) apply
+                        # scale consistently.
+                        sx, sy, sz = self.shape_scale[i]
+                        hd.hx = hf.hx * sx
+                        hd.hy = hf.hy * sy
+                        hd.min_z = hf.min_z * sz
+                        hd.max_z = hf.max_z * sz
                         shape_heightfield_index[i] = len(compact_heightfield_data)
                         compact_heightfield_data.append(hd)
                         elevation_chunks.append(hf.data.flatten())
