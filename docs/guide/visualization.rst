@@ -128,21 +128,39 @@ The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``
 
     viewer.register_ui_callback(my_ui, position="side")
 
-Keyboard shortcuts when working with the OpenGL Viewer:
+Viewer controls:
 
-.. list-table:: Keyboard Shortcuts
+.. list-table:: ViewerGL Controls
     :header-rows: 1
 
     * - Key(s)
       - Description
-    * - ``W``, ``A``, ``S``, ``D`` (or arrow keys) + mouse drag
-      - Move the camera like in a FPS game
+    * - ``W``, ``A``, ``S``, ``D`` or arrow keys
+      - Move the camera in the ground plane
+    * - ``Q`` / ``E``
+      - Move the camera down / up
+    * - Left drag
+      - Look around
+    * - Middle drag
+      - Orbit around the current camera pivot
+    * - ``Shift`` + middle drag
+      - Pan the camera and pivot
+    * - ``Ctrl`` + middle drag or mouse wheel
+      - Dolly toward or away from the pivot
+    * - ``Ctrl`` + mouse wheel
+      - Adjust field of view
+    * - ``F``
+      - Frame the visible model and set the orbit pivot
     * - ``H``
-      - Toggle Sidebar
+      - Toggle the sidebar
     * - ``SPACE``
-      - Pause/continue the simulation
+      - Pause or continue the simulation
+    * - ``ESC``
+      - Close the viewer
     * - ``Right Click``
       - Pick objects
+
+Orbit mode keeps the pivot fixed while the camera rotates around it; use ``F`` to center the pivot on the model, ``Shift`` + middle drag to move the pivot, and the wheel to change orbit distance.
 
 **Troubleshooting:**
 
