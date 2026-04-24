@@ -116,7 +116,7 @@ class Example:
         # camera position for better view of the system
         self.viewer._paused = True
         if hasattr(self.viewer, "set_camera"):
-            camera_pos = wp.vec3(-6.4, -11.0, 1.5)
+            camera_pos = wp.vec3(0.0, -15.0, 1.6)
             pitch = -1.5
             yaw = 92.0
             self.viewer.set_camera(camera_pos, pitch, yaw)
