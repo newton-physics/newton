@@ -929,11 +929,13 @@ def evaluate_neo_hookean_membrane_force_hessian(
     dpsi_dx = P_col0 * df0_dx + P_col1 * df1_dx
     force = -dpsi_dx
 
-    # --- Hessian (SPD-projected via clamping the cofactor-derivative coefficient) ---
-    # Clamp s for PSD guarantee: only the cofactor-derivative term uses s_clamp
+    # --- Hessian (per-vertex 3x3, SPD-projected) ---
+    # max(0, s) is the tight PSD clamp for the membrane per-vertex block.
+    # The volumetric-tet cancellation does not apply here (F is 3x2, J_s
+    # non-polynomial), so the cofactor-derivative term must be kept.
     s_clamp = wp.max(0.0, s)
     r = s_clamp * inv_J_s
-    c1 = lmbd - r  # coefficient for outer(dJ_dx, dJ_dx); >= 0 when lmbd > 0
+    c1 = lmbd - r
 
     df0_dx_sq = df0_dx * df0_dx
     df1_dx_sq = df1_dx * df1_dx
