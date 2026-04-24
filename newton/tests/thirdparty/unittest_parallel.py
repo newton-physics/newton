@@ -120,7 +120,9 @@ def main(argv=None):
         "--disable-process-pooling",
         action="store_true",
         default=False,
-        help="Do not reuse processes used to run test suites",
+        help="Do not reuse processes used to run test suites (max_tasks_per_child=1). "
+        "For the concurrent.futures backend, this is also enabled automatically when "
+        "multiple CUDA devices are detected.",
     )
     group_parallel.add_argument(
         "--disable-concurrent-futures",
@@ -231,12 +233,15 @@ def main(argv=None):
                         results = pool.map(test_manager.run_tests, test_suites)
                 else:
                     # NVIDIA Modification added concurrent.futures
-                    with concurrent.futures.ProcessPoolExecutor(
-                        max_workers=process_count,
-                        mp_context=multiprocessing.get_context(method="spawn"),
-                        initializer=initialize_test_process,
-                        initargs=(manager.Lock(), shared_index, args, temp_dir),
-                    ) as executor:
+                    executor_kwargs = {
+                        "max_workers": process_count,
+                        "mp_context": multiprocessing.get_context(method="spawn"),
+                        "initializer": initialize_test_process,
+                        "initargs": (manager.Lock(), shared_index, args, temp_dir),
+                    }
+                    if sys.version_info >= (3, 11) and (args.disable_process_pooling or wp.get_cuda_device_count() > 1):
+                        executor_kwargs["max_tasks_per_child"] = 1
+                    with concurrent.futures.ProcessPoolExecutor(**executor_kwargs) as executor:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
                         results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
         else:
