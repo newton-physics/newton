@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -19,6 +20,10 @@ import warp as wp
 
 pxr = importlib.util.find_spec("pxr")
 USD_AVAILABLE = pxr is not None
+
+# Root of the newton package — used as the default warning_source_root so
+# CheckOutput catches unexpected warnings from newton code in all tests.
+_NEWTON_ROOT = os.path.dirname(os.path.dirname(__file__))
 
 # default test mode (see get_test_devices())
 #   "basic" - only run on CPU and first GPU device
@@ -192,33 +197,174 @@ class StdOutCapture(StreamCapture):
         super().__init__("stdout")
 
 
+def is_noise_line(line: str) -> bool:
+    """Return True if *line* is a known noisy framework message that should be ignored.
+
+    Only truly global infrastructure noise belongs here — messages that any
+    test can emit at any time due to Warp runtime internals.  Test-specific
+    noise (asset downloads, matplotlib, etc.) should use ``allowed_patterns``
+    on the individual test instead.
+    """
+    stripped = line.lstrip()
+    if stripped.startswith("Module") and "load on device" in stripped:
+        return True
+    return False
+
+
 class CheckOutput:
-    def __init__(self, test):
+    """Context manager that captures stdout, stderr, and warnings, failing on unexpected output.
+
+    Warning capture is targeted: only warnings whose source file is under
+    *warning_source_root* are intercepted and validated.  Warnings from
+    other packages (Warp, NumPy, stdlib, etc.) are written to the real
+    stderr (bypassing capture) so they are never silently swallowed and
+    still respect ``-W error`` flags.
+
+    Args:
+        test: The ``unittest.TestCase`` instance used for assertions.
+        expected_patterns: Regex strings that must each match at least once
+            in the combined stdout + stderr + warning text.
+        allowed_patterns: Regex strings that suppress unexpected-output
+            failures without requiring a match.  Use this for output that
+            may or may not appear (e.g. intermittent download messages).
+        warning_source_root: Warnings whose ``filename`` starts with this path
+            are checked against the allow-list; warnings from other paths
+            pass through to normal handling.  Defaults to the newton package
+            root.  Pass ``None`` to disable warning capture entirely.
+    """
+
+    _DEFAULT_WARNING_ROOT = _NEWTON_ROOT
+
+    def __init__(
+        self,
+        test,
+        expected_patterns: list[str] | None = None,
+        allowed_patterns: list[str] | None = None,
+        warning_source_root: str | None = _DEFAULT_WARNING_ROOT,
+    ):
         self.test = test
+        self.stdout_output = ""
+        self.stderr_output = ""
+        self._expected = [re.compile(p) for p in expected_patterns] if expected_patterns else []
+        # Both expected and allowed patterns suppress "unexpected output"
+        # failures — expected patterns are additionally asserted to appear.
+        self._allowed = self._expected + ([re.compile(p) for p in allowed_patterns] if allowed_patterns else [])
+        self._warning_source_root = warning_source_root
 
     def __enter__(self):
-        # wp.force_load()
+        self._stdout_capture = StdOutCapture()
+        self._stdout_capture.begin()
+        self._stderr_capture = StdErrCapture()
+        self._stderr_capture.begin()
+        # Create a file object for the real stderr (pre-capture fd) so
+        # warnings that go through showwarning bypass capture and remain
+        # visible.  This is needed unconditionally because stderr is always
+        # captured — without the redirect, any showwarning call (even from
+        # the default handler) would land in captured stderr.
+        self._real_stderr = os.fdopen(os.dup(self._stderr_capture.target), "w")
+        self._caught = []
+        # Save/restore filter state and showwarning via catch_warnings,
+        # but do NOT use record=True — that would intercept all warnings.
+        self._warning_ctx = warnings.catch_warnings()
+        self._warning_ctx.__enter__()
+        original_showwarning = warnings.showwarning
+        real_stderr = self._real_stderr
+        if self._warning_source_root is not None:
+            # Ensure newton warnings are never suppressed by Python's default
+            # "ignore::DeprecationWarning" filter.  Note: this filter matches
+            # on module __name__ while _selective_showwarning matches on file
+            # path — the two are correlated but not identical (e.g. exec'd
+            # code or warnings.warn_explicit with a custom filename).  In
+            # practice they agree for all normal newton imports.
+            warnings.filterwarnings("always", module=r"newton\..*")
+            # Install a targeted hook: intercept newton warnings into
+            # self._caught; delegate everything else to the original handler
+            # with output directed to real stderr.
+            root = self._warning_source_root + os.sep
+            caught = self._caught
 
-        self.capture = StdOutCapture()
-        self.capture.begin()
+            def _selective_showwarning(message, category, filename, lineno, file=None, line=None):
+                if str(filename).startswith(root):
+                    caught.append(warnings.WarningMessage(message, category, filename, lineno, file, line))
+                else:
+                    original_showwarning(message, category, filename, lineno, file=real_stderr, line=line)
+
+            warnings.showwarning = _selective_showwarning
+        else:
+            # No newton warning interception, but still redirect all
+            # showwarning output to real stderr so it bypasses capture.
+            def _passthrough_showwarning(message, category, filename, lineno, file=None, line=None):
+                original_showwarning(message, category, filename, lineno, file=real_stderr, line=line)
+
+            warnings.showwarning = _passthrough_showwarning
+        return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        # ensure any stdout output is flushed
+        # Restore warning filters and showwarning before flushing output.
+        # This means warnings emitted during wp.synchronize() go through
+        # normal handling rather than being captured — the right tradeoff,
+        # since sync-time warnings are typically from device-side code.
+        self._warning_ctx.__exit__(exc_type, exc_value, traceback)
+
+        # Ensure any pending output is flushed
         wp.synchronize()
 
-        s = self.capture.end()
-        if s != "":
-            print(s.rstrip())
+        # End captures and close real_stderr *after* sync so that any
+        # warnings emitted during wp.synchronize() that go through the
+        # (now-restored) default showwarning can still reach real_stderr.
+        self.stdout_output = self._stdout_capture.end()
+        self.stderr_output = self._stderr_capture.end()
+        self._real_stderr.close()
 
-            # fail if test produces unexpected output (e.g.: from wp.expect_eq() builtins)
-            # we allow strings starting of the form "Module xxx load on device xxx"
-            # for lazy loaded modules
-            filtered_s = "\n".join(
-                [line for line in s.splitlines() if not (line.startswith("Module") and "load on device" in line)]
+        if exc_type is not None:
+            if self.stdout_output.strip():
+                print(f"Captured stdout before crash:\n{self.stdout_output.rstrip()}")
+            if self.stderr_output.strip():
+                print(f"Captured stderr before crash:\n{self.stderr_output.rstrip()}", file=sys.stderr)
+            return
+
+        if self.stdout_output:
+            print(self.stdout_output.rstrip())
+        if self.stderr_output:
+            print(self.stderr_output.rstrip(), file=sys.stderr)
+
+        # Assert each expected pattern appears in combined stdout + stderr + warnings
+        if self._expected:
+            warning_messages = [str(w.message) for w in self._caught]
+            combined = "\n".join(warning_messages)
+            if self.stdout_output.strip():
+                combined += "\n" + self.stdout_output
+            if self.stderr_output.strip():
+                combined += "\n" + self.stderr_output
+            for pat in self._expected:
+                if not pat.search(combined):
+                    self.test.fail(f"Expected output pattern not found: {pat.pattern}")
+
+        # Fail on unexpected stdout
+        if self.stdout_output:
+            filtered = "\n".join(
+                line
+                for line in self.stdout_output.splitlines()
+                if not is_noise_line(line) and not any(p.search(line) for p in self._allowed)
             )
+            if filtered.strip():
+                self.test.fail(f"Unexpected stdout:\n'{self.stdout_output.rstrip()}'")
 
-            if filtered_s.strip():
-                self.test.fail(f"Unexpected output:\n'{s.rstrip()}'")
+        # Fail on unexpected stderr
+        if self.stderr_output:
+            filtered = "\n".join(
+                line
+                for line in self.stderr_output.splitlines()
+                if not is_noise_line(line) and not any(p.search(line) for p in self._allowed)
+            )
+            if filtered.strip():
+                self.test.fail(f"Unexpected stderr:\n'{self.stderr_output.rstrip()}'")
+
+        # Fail on unexpected warnings from newton
+        for w in self._caught:
+            msg = str(w.message)
+            if not any(p.search(msg) for p in self._allowed):
+                self.test.fail(f"Unexpected warning: {msg}")
 
 
 def assert_array_equal(result: wp.array, expect: wp.array):
@@ -273,12 +419,37 @@ def find_nonfinite_members(obj: Any | None) -> list[str]:
     return nonfinite_members
 
 
-# if check_output is True any output to stdout will be treated as an error
-def create_test_func(func, device, check_output, **kwargs):
-    # pass args to func
+_UNSET = object()
+
+
+def create_test_func(
+    func,
+    device,
+    check_output,
+    expected_patterns=None,
+    expected_patterns_cpu=None,
+    allowed_patterns=None,
+    warning_source_root=_UNSET,
+    **kwargs,
+):
+    # Resolve per-device patterns at registration time
+    patterns = list(expected_patterns or [])
+    if device is not None and str(device).startswith("cpu"):
+        patterns.extend(expected_patterns_cpu or [])
+
+    # Build CheckOutput kwargs — omit warning_source_root when not explicitly
+    # provided so the CheckOutput default (_NEWTON_ROOT) applies.
+    co_kwargs = {}
+    if patterns:
+        co_kwargs["expected_patterns"] = patterns
+    if allowed_patterns is not None:
+        co_kwargs["allowed_patterns"] = allowed_patterns
+    if warning_source_root is not _UNSET:
+        co_kwargs["warning_source_root"] = warning_source_root
+
     def test_func(self):
         if check_output:
-            with CheckOutput(self):
+            with CheckOutput(self, **co_kwargs):
                 func(self, device, **kwargs)
         else:
             func(self, device, **kwargs)
@@ -305,9 +476,26 @@ def sanitize_identifier(s):
         return re.sub(r"\W|^(?=\d)", "_", s)
 
 
-def add_function_test(cls, name, func, devices=None, check_output=True, **kwargs):
+def add_function_test(
+    cls,
+    name,
+    func,
+    devices=None,
+    check_output=True,
+    expected_patterns=None,
+    expected_patterns_cpu=None,
+    allowed_patterns=None,
+    warning_source_root=_UNSET,
+    **kwargs,
+):
+    co_kwargs = {
+        "expected_patterns": expected_patterns,
+        "expected_patterns_cpu": expected_patterns_cpu,
+        "allowed_patterns": allowed_patterns,
+        "warning_source_root": warning_source_root,
+    }
     if devices is None:
-        setattr(cls, name, create_test_func(func, None, check_output, **kwargs))
+        setattr(cls, name, create_test_func(func, None, check_output, **co_kwargs, **kwargs))
     elif isinstance(devices, list):
         if not devices:
             # No devices to run this test
@@ -317,13 +505,13 @@ def add_function_test(cls, name, func, devices=None, check_output=True, **kwargs
                 setattr(
                     cls,
                     name + "_" + sanitize_identifier(device),
-                    create_test_func(func, device, check_output, **kwargs),
+                    create_test_func(func, device, check_output, **co_kwargs, **kwargs),
                 )
     else:
         setattr(
             cls,
             name + "_" + sanitize_identifier(devices),
-            create_test_func(func, devices, check_output, **kwargs),
+            create_test_func(func, devices, check_output, **co_kwargs, **kwargs),
         )
 
 

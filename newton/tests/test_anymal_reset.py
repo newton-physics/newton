@@ -301,7 +301,6 @@ add_function_test(
     test_reset_functionality,
     devices=devices,
     cone_type="elliptic",
-    check_output=False,
 )
 add_function_test(
     TestAnymalReset,
@@ -309,7 +308,6 @@ add_function_test(
     test_reset_functionality,
     devices=devices,
     cone_type="pyramidal",
-    check_output=False,
 )
 
 

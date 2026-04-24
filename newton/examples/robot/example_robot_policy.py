@@ -409,63 +409,42 @@ class Example:
         )
 
 
-if __name__ == "__main__":
-    # Create parser that inherits common arguments and adds
-    # example-specific ones
-    parser = newton.examples.create_parser()
-    parser.add_argument(
-        "--robot", type=str, default="g1_29dof", choices=list(ROBOT_CONFIGS.keys()), help="Robot name to load"
-    )
-    parser.add_argument("--physx", action="store_true", help="Run physX policy instead of MJWarp.")
-
-    # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init(parser)
-
-    # Get robot configuration
-    if args.robot not in ROBOT_CONFIGS:
-        print(f"[ERROR] Unknown robot: {args.robot}")
-        print(f"[INFO] Available robots: {list(ROBOT_CONFIGS.keys())}")
-        exit(1)
-
+def create_example(viewer, args):
+    """Factory that performs asset download, config loading, and Example construction."""
     robot_config = ROBOT_CONFIGS[args.robot]
-    print(f"[INFO] Selected robot: {args.robot}")
 
-    # Download assets from newton-assets repository
     asset_directory = str(newton.utils.download_asset(robot_config.asset_dir))
-    print(f"[INFO] Asset directory: {asset_directory}")
 
-    # Load robot configuration from YAML file in the downloaded assets
     yaml_file_path = f"{asset_directory}/{robot_config.yaml_path}"
-    try:
-        with open(yaml_file_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-    except FileNotFoundError:
-        print(f"[ERROR] Robot config file not found: {yaml_file_path}")
-        exit(1)
-    except yaml.YAMLError as e:
-        print(f"[ERROR] Error parsing YAML file: {e}")
-        exit(1)
-
-    print(f"[INFO] Loaded config with {config['num_dofs']} DOFs")
+    with open(yaml_file_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f)
 
     mjc_to_physx = list(range(config["num_dofs"]))
     physx_to_mjc = list(range(config["num_dofs"]))
 
-    if args.physx:
+    if getattr(args, "physx", False):
         if "physx" not in robot_config.policy_path or "physx_joint_names" not in config:
             physx_robots = [name for name, cfg in ROBOT_CONFIGS.items() if "physx" in cfg.policy_path]
-            print(f"[ERROR] PhysX policy not available for robot '{args.robot}'.")
-            print(f"[INFO] Robots with PhysX support: {physx_robots}")
-            exit(1)
+            raise ValueError(
+                f"PhysX policy not available for robot '{args.robot}'. Robots with PhysX support: {physx_robots}"
+            )
         policy_path = f"{asset_directory}/{robot_config.policy_path['physx']}"
         mjc_to_physx, physx_to_mjc = find_physx_mjwarp_mapping(config["mjw_joint_names"], config["physx_joint_names"])
     else:
         policy_path = f"{asset_directory}/{robot_config.policy_path['mjw']}"
 
     example = Example(viewer, robot_config, config, asset_directory, mjc_to_physx, physx_to_mjc)
-
-    # Use utility function to load policy and setup tensors
     load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
+    return example
 
-    # Run using standard example loop
+
+if __name__ == "__main__":
+    parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--robot", type=str, default="g1_29dof", choices=list(ROBOT_CONFIGS.keys()), help="Robot name to load"
+    )
+    parser.add_argument("--physx", action="store_true", help="Run physX policy instead of MJWarp.")
+
+    viewer, args = newton.examples.init(parser)
+    example = create_example(viewer, args)
     newton.examples.run(example, args)
