@@ -1759,8 +1759,11 @@ class ViewerGL(ViewerBase):
         return self.renderer.is_key_down(pyglet.window.key.LCTRL) or self.renderer.is_key_down(pyglet.window.key.RCTRL)
 
     def _camera_pan_scale(self) -> float:
-        """World-space meters per pixel for screen-plane camera panning."""
+        """World-space meters per window pixel for screen-plane camera panning."""
         height = max(float(self.camera.height), 1.0)
+        if hasattr(self.renderer, "window"):
+            _, window_height = self.renderer.window.get_size()
+            height = max(float(window_height), 1.0)
         distance = max(self.camera.pivot_distance, self.camera.MIN_PIVOT_DISTANCE)
         visible_height = 2.0 * distance * np.tan(np.radians(self.camera.fov) * 0.5)
         return visible_height / height

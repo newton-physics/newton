@@ -5,12 +5,9 @@ import math
 import unittest
 
 import numpy as np
-import pyglet
 
 from newton._src.viewer.camera import Camera
 from newton._src.viewer.viewer_gl import ViewerGL
-
-pyglet.options["headless"] = True
 
 
 def _as_np(value):
@@ -19,6 +16,13 @@ def _as_np(value):
 
 def _assert_vec_close(test, actual, expected, tol=1.0e-6):
     np.testing.assert_allclose(_as_np(actual), np.array(expected, dtype=float), atol=tol, rtol=0.0)
+
+
+def _pyglet_window():
+    import pyglet
+
+    pyglet.options["headless"] = True
+    return pyglet.window
 
 
 class TestViewerCameraOrbit(unittest.TestCase):
@@ -112,9 +116,22 @@ class TestViewerCameraOrbit(unittest.TestCase):
         self.assertGreater(camera.pivot_distance, distance_after_dolly_in)
 
 
+class _FakeWindow:
+    def __init__(self, size=(640, 360), framebuffer_size=(1280, 720)):
+        self._size = size
+        self._framebuffer_size = framebuffer_size
+
+    def get_size(self):
+        return self._size
+
+    def get_framebuffer_size(self):
+        return self._framebuffer_size
+
+
 class _FakeRenderer:
     def __init__(self):
         self.pressed_keys = set()
+        self.window = _FakeWindow()
 
     def is_key_down(self, symbol):
         return symbol in self.pressed_keys
@@ -147,8 +164,10 @@ class TestViewerGLCameraInput(unittest.TestCase):
         self.assertEqual(viewer.camera.fov, start_fov)
 
     def test_ctrl_scroll_keeps_fov_zoom_escape_hatch(self):
+        window = _pyglet_window()
+
         viewer = _make_viewer_for_camera_input()
-        viewer.renderer.pressed_keys.add(pyglet.window.key.LCTRL)
+        viewer.renderer.pressed_keys.add(window.key.LCTRL)
         start_distance = viewer.camera.pivot_distance
         start_fov = viewer.camera.fov
 
@@ -158,6 +177,8 @@ class TestViewerGLCameraInput(unittest.TestCase):
         self.assertLess(viewer.camera.fov, start_fov)
 
     def test_middle_mouse_drag_orbits_about_pivot(self):
+        window = _pyglet_window()
+
         viewer = _make_viewer_for_camera_input()
         start_pos = _as_np(viewer.camera.pos)
 
@@ -166,7 +187,7 @@ class TestViewerGLCameraInput(unittest.TestCase):
             y=0.0,
             dx=25.0,
             dy=10.0,
-            buttons=pyglet.window.mouse.MIDDLE,
+            buttons=window.mouse.MIDDLE,
             modifiers=0,
         )
 
@@ -175,6 +196,8 @@ class TestViewerGLCameraInput(unittest.TestCase):
         self.assertAlmostEqual(viewer.camera.pivot_distance, 10.0)
 
     def test_shift_middle_mouse_drag_pans_camera_and_pivot(self):
+        window = _pyglet_window()
+
         viewer = _make_viewer_for_camera_input()
         start_pos = _as_np(viewer.camera.pos)
         start_pivot = _as_np(viewer.camera.pivot)
@@ -184,8 +207,8 @@ class TestViewerGLCameraInput(unittest.TestCase):
             y=0.0,
             dx=25.0,
             dy=10.0,
-            buttons=pyglet.window.mouse.MIDDLE,
-            modifiers=pyglet.window.key.MOD_SHIFT,
+            buttons=window.mouse.MIDDLE,
+            modifiers=window.key.MOD_SHIFT,
         )
 
         self.assertFalse(np.allclose(_as_np(viewer.camera.pos), start_pos))
@@ -197,6 +220,8 @@ class TestViewerGLCameraInput(unittest.TestCase):
         )
 
     def test_ctrl_middle_mouse_drag_dollies_without_moving_pivot(self):
+        window = _pyglet_window()
+
         viewer = _make_viewer_for_camera_input()
         start_distance = viewer.camera.pivot_distance
         start_pivot = _as_np(viewer.camera.pivot)
@@ -206,12 +231,21 @@ class TestViewerGLCameraInput(unittest.TestCase):
             y=0.0,
             dx=0.0,
             dy=10.0,
-            buttons=pyglet.window.mouse.MIDDLE,
-            modifiers=pyglet.window.key.MOD_CTRL,
+            buttons=window.mouse.MIDDLE,
+            modifiers=window.key.MOD_CTRL,
         )
 
         self.assertLess(viewer.camera.pivot_distance, start_distance)
         _assert_vec_close(self, viewer.camera.pivot, start_pivot)
+
+    def test_shift_middle_pan_uses_window_pixel_scale(self):
+        viewer = _make_viewer_for_camera_input()
+        viewer.camera.fov = 90.0
+        viewer.renderer.window = _FakeWindow(size=(640, 360), framebuffer_size=(1280, 720))
+
+        pan_scale = viewer._camera_pan_scale()
+
+        self.assertAlmostEqual(pan_scale, 2.0 * viewer.camera.pivot_distance / 360.0)
 
 
 if __name__ == "__main__":
