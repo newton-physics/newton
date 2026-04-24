@@ -9967,10 +9967,13 @@ class ModelBuilder:
                         hd.ncol = hf.ncol
                         # Bake the per-instance scale into the extents so narrow-phase
                         # collision and raycast (which read from HeightfieldData) apply
-                        # scale consistently.
+                        # scale consistently. ``abs`` on hx/hy because the raycast DDA
+                        # and parallel-slab checks assume non-negative planar extents;
+                        # z uses raw multiplication so ``sz < 0`` inverts the surface
+                        # (``min_z > max_z`` already encodes an inverted heightfield).
                         sx, sy, sz = self.shape_scale[i]
-                        hd.hx = hf.hx * sx
-                        hd.hy = hf.hy * sy
+                        hd.hx = abs(hf.hx * sx)
+                        hd.hy = abs(hf.hy * sy)
                         hd.min_z = hf.min_z * sz
                         hd.max_z = hf.max_z * sz
                         shape_heightfield_index[i] = len(compact_heightfield_data)
