@@ -369,6 +369,177 @@ def test_particle_shape_restitution_accounts_for_body_velocity(test, device):
     )
 
 
+def test_rigid_restitution_zero_settles(test, device):
+    """
+    Regression test for issue #1137 (Bug 1): shape restitution values were silently
+    ignored because enable_restitution defaulted to False.
+
+    The fix changes the default to True. This test verifies the fix by running two
+    spheres dropped from the same height — one with restitution=0.0 (fully inelastic)
+    and one with restitution=1.0 (fully elastic). With the fix, they must behave
+    differently after impact: the inelastic sphere must not bounce back up while the
+    elastic one does.
+
+    Before the fix, both behaved identically regardless of the restitution setting
+    because the restitution pass never ran.
+
+    Setup:
+    - Sphere dropped from z=0.3 onto the ground plane (Z-up, default gravity).
+    - 25 frames at 60 fps with 16 substeps (well past the first impact at ~frame 12).
+
+    Assertions:
+    1. restitution=0.0: z is monotonically non-increasing after first contact — no bounce.
+    2. restitution=1.0: z increases at least once after first contact — bounces back.
+    3. The elastic sphere reaches a meaningfully higher peak than the inelastic one.
+    """
+    radius = 0.05
+    drop_z = 0.3
+    fps, substeps = 60, 16
+    dt = 1.0 / fps / substeps
+    n_frames = 25
+
+    def simulate(restitution):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
+        cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=restitution, mu=0.0)
+        builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+        model = builder.finalize(device=device)
+        solver = newton.solvers.SolverXPBD(model)  # enable_restitution=True by default
+        state_0, state_1 = model.state(), model.state()
+        control, contacts = model.control(), model.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        zs = []
+        for _ in range(n_frames):
+            for _ in range(substeps):
+                state_0.clear_forces()
+                model.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+            zs.append(float(state_0.body_q.numpy()[0][2]))
+        return zs
+
+    zs_inelastic = simulate(restitution=0.0)
+    zs_elastic = simulate(restitution=1.0)
+
+    # Find the first contact frame: first frame where z drops to within 2x radius of ground.
+    contact_frame = next((i for i, z in enumerate(zs_inelastic) if z < 2.0 * radius), None)
+    test.assertIsNotNone(contact_frame, "Sphere never reached the ground in the simulation.")
+
+    post_impact_inelastic = zs_inelastic[contact_frame:]
+    post_impact_elastic = zs_elastic[contact_frame:]
+
+    # restitution=0.0: z must not increase after first contact — fully inelastic.
+    # Allow 1 mm tolerance for numerical noise from position-based constraints.
+    z_at_contact = post_impact_inelastic[0]
+    bounced_up = any(z > z_at_contact + 0.001 for z in post_impact_inelastic[1:])
+    test.assertFalse(
+        bounced_up,
+        msg=(
+            f"With restitution=0.0, sphere should not bounce after first contact "
+            f"(z_at_contact={z_at_contact:.4f} m). Post-impact z values: {post_impact_inelastic}. "
+            f"Before the fix, the restitution pass never ran so this bounced like restitution=1.0."
+        ),
+    )
+
+    # restitution=1.0: z must increase after contact — elastic bounce exists.
+    z_at_contact_elastic = post_impact_elastic[0]
+    did_bounce = any(z > z_at_contact_elastic + 0.005 for z in post_impact_elastic[1:])
+    test.assertTrue(
+        did_bounce,
+        msg=(
+            f"With restitution=1.0, sphere should bounce back up after first contact "
+            f"(z_at_contact={z_at_contact_elastic:.4f} m). Post-impact z values: {post_impact_elastic}."
+        ),
+    )
+
+    # The elastic peak must be meaningfully higher than the inelastic one.
+    peak_inelastic = max(post_impact_inelastic)
+    peak_elastic = max(post_impact_elastic)
+    test.assertGreater(
+        peak_elastic,
+        peak_inelastic + 0.02,
+        msg=(
+            f"Elastic peak ({peak_elastic:.4f} m) should be > inelastic peak ({peak_inelastic:.4f} m) "
+            f"by at least 2 cm. Before the fix both were identical (restitution values ignored)."
+        ),
+    )
+
+
+def test_rigid_restitution_elastic_no_explosion(test, device):
+    """
+    Regression test for Bug 2: energy explosion when enable_restitution=True with
+    high restitution coefficient.
+
+    Before the fix, XPBD positional corrections accumulated large velocities in body_qd
+    via Δv = Δq/dt each substep. The restitution pass then amplified these, sending
+    bodies to ~1e29 m in a single frame at low restitution values, or many metres above
+    the drop height at restitution=1.0.
+
+    After the fix, update_body_velocities is called before the restitution pass,
+    giving it a physically bounded velocity from (q_final - q_init)/dt. An elastic
+    bounce should reach approximately the drop height without diverging.
+
+    Setup:
+    - Box dropped from z=0.3 onto the ground plane (Z-up, default gravity).
+    - restitution=1.0 (fully elastic), mu=0.0 (no friction).
+    - enable_restitution=True.
+
+    Assert:
+    - All body Z positions remain finite throughout the simulation.
+    - Peak Z after impact does not exceed 2x the drop height (a conservative
+      physical bound). The bug caused positions > 1e29 m.
+    """
+    hz = 0.05
+    drop_z = 0.3
+
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
+    cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=1.0, mu=0.0)
+    builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=hz, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    fps, substeps = 60, 16
+    dt = 1.0 / fps / substeps
+
+    z_history = []
+    for _ in range(60):
+        for _ in range(substeps):
+            state_0.clear_forces()
+            model.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+        z_history.append(float(state_0.body_q.numpy()[0][2]))
+
+    for i, z in enumerate(z_history):
+        test.assertTrue(
+            np.isfinite(z),
+            msg=f"Body Z is not finite at frame {i}: {z}. The bug caused explosion to ~1e29 m.",
+        )
+
+    # Physical elastic bounce from drop_z ≈ drop_z (energy-conserving).
+    # Allow 2x drop_z as a generous bound: catches the bug (bodies reached ~1e29 m)
+    # while passing any physically plausible elastic bounce.
+    max_z = max(z_history)
+    test.assertLess(
+        max_z,
+        2.0 * drop_z,
+        msg=(
+            f"With restitution=1.0, peak height should be < {2.0 * drop_z:.2f} m; "
+            f"got {max_z:.4f} m. "
+            f"The bug (inflated body_qd in restitution pass) caused ~1e29 m."
+        ),
+    )
+
+
 def test_articulation_contact_drift(test, device):
     """
     Regression test for articulated bodies drifting laterally on the ground (#2030).
@@ -789,6 +960,22 @@ add_function_test(
     check_output=False,
 )
 
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_zero_settles",
+    test_rigid_restitution_zero_settles,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_elastic_no_explosion",
+    test_rigid_restitution_elastic_no_explosion,
+    devices=devices,
+    check_output=False,
+)
 
 add_function_test(
     TestSolverXPBD,

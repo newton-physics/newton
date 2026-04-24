@@ -90,7 +90,7 @@ class SolverXPBD(SolverBase):
         rigid_contact_relaxation: float = 0.8,
         rigid_contact_con_weighting: bool = True,
         angular_damping: float = 0.0,
-        enable_restitution: bool = False,
+        enable_restitution: bool = True,
     ):
         super().__init__(model=model)
         self.iterations = iterations
@@ -623,7 +623,11 @@ class SolverXPBD(SolverBase):
                     state_out.body_qd.assign(body_qd)
 
             # update body velocities from position changes
-            if self.compute_body_velocity_from_position_delta and model.body_count and not requires_grad:
+            if (
+                (self.compute_body_velocity_from_position_delta or self.enable_restitution)
+                and model.body_count
+                and not requires_grad
+            ):
                 # causes gradient issues (probably due to numerical problems
                 # when computing velocities from position changes)
                 if requires_grad:
