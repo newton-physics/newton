@@ -8988,9 +8988,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
     is tracked separately.
     """
 
-    def _build_pendulum_model(
-        self, mass: float, ke: float, kd: float, *, inertia: float = 0.5, gravity: float = -9.81
-    ):
+    def _build_pendulum_model(self, mass: float, ke: float, kd: float, *, inertia: float = 0.5, gravity: float = -9.81):
         builder = newton.ModelBuilder(gravity=gravity)
         inertia_tensor = wp.mat33(np.eye(3) * inertia)
         link = builder.add_link(mass=mass, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia_tensor)

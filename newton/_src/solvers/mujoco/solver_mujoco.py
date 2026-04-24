@@ -3267,9 +3267,7 @@ class SolverMuJoCo(SolverBase):
         # requires re-scaling ``jnt_solref`` so the MuJoCo limit-constraint
         # solver produces the force-space stiffness Newton users configured
         # (#2009).
-        need_solref_update = bool(need_const_0) or bool(
-            flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES
-        )
+        need_solref_update = bool(need_const_0) or bool(flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         if self.use_mujoco_cpu:
             if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
