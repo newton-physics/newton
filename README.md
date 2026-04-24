@@ -26,7 +26,7 @@ For detailed system requirements and tested configurations, see the [installatio
 
 ```bash
 pip install "newton[examples]"
-python -m newton.examples basic_pendulum
+python -m newton.examples
 ```
 
 To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
@@ -782,7 +782,7 @@ Some examples may add additional arguments (see their respective source files fo
 
 ```bash
 # List available examples
-python -m newton.examples
+python -m newton.examples --list
 
 # Run with the USD viewer and save to my_output.usd
 python -m newton.examples basic_viewer --viewer usd --output-path my_output.usd
