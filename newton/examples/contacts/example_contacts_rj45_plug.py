@@ -26,11 +26,11 @@ import newton.utils
 from newton.math import quat_between_vectors_robust
 from newton.solvers import SolverVBD
 
-CONTACT_KE = 1.0e4
-CONTACT_KD = 1.0e-2
+CONTACT_KE = 1.0e5
+CONTACT_KD = 0.0
 
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
-    mu=0.1,
+    mu=0.0,
     ke=CONTACT_KE,
     kd=CONTACT_KD,
     gap=0.002,
