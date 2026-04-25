@@ -1064,6 +1064,13 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
 
 class TestHydroelastic(ViewerTestMixin, unittest.TestCase):
+    """Hydroelastic-contact tests plus visual-debug viewer modes.
+
+    The ``test_view_*`` methods are decorated with :func:`unittest.skip` and
+    meant for local visual debugging; the viewer loop itself is provided by
+    :class:`~newton.tests.viewer_test_utils.ViewerTestMixin`.
+    """
+
     DEFAULT_NUM_FRAMES = VIEWER_NUM_FRAMES
     DEFAULT_SIM_DT = SIM_DT
 
@@ -1078,6 +1085,14 @@ class TestHydroelastic(ViewerTestMixin, unittest.TestCase):
         self._run_viewer_test(ShapeType.MESH)
 
     def _run_viewer_test(self, shape_type: ShapeType, solver_name: str = "xpbd", cube_half: float = CUBE_HALF_LARGE):
+        """Build the stacked-cubes scene and hand it to :class:`ViewerTestMixin`.
+
+        Args:
+            shape_type: Whether the stacked cubes are primitive boxes or meshes.
+            solver_name: Key into the module-level ``solvers`` dict.
+            cube_half: Half-extent of each cube in meters; SDF parameters scale
+                proportionally to this value.
+        """
         device = wp.get_device("cuda:0")
         solver_fn = solvers[solver_name]
 
@@ -1088,6 +1103,7 @@ class TestHydroelastic(ViewerTestMixin, unittest.TestCase):
         collision_pipeline.collide(state_0, contacts)
 
         def step(scene: ViewerScene, dt: float) -> None:
+            """Advance the hydroelastic simulation by ``dt`` using ``SIM_SUBSTEPS`` substeps."""
             scene.state_0, scene.state_1 = simulate(
                 solver,
                 scene.model,
@@ -1101,6 +1117,7 @@ class TestHydroelastic(ViewerTestMixin, unittest.TestCase):
             )
 
         def log_hydro_surface(viewer, _scene: ViewerScene) -> None:
+            """Overlay the current hydroelastic contact surface onto the viewer frame."""
             viewer.log_hydro_contact_surface(
                 collision_pipeline.hydroelastic_sdf.get_contact_surface()
                 if collision_pipeline.hydroelastic_sdf is not None
