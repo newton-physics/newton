@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import time
 import unittest
 
 import numpy as np
@@ -12,136 +11,7 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 class TestPhysicsValidation(unittest.TestCase):
-    @unittest.skip("Visual debugging - run manually to view simulation")
-    def test_view_static_friction_vbd(self):
-        """Watch the static-friction scene run under VBD. No asserts — purely for visual inspection."""
-        self._run_static_friction_viewer(
-            solver_fn=lambda model: newton.solvers.SolverVBD(model, iterations=10),
-            uses_newton_contacts=True,
-            solver_name="vbd",
-        )
-
-    @unittest.skip("Visual debugging - run manually to view simulation")
-    def test_view_dynamic_friction_vbd(self):
-        """Watch the dynamic-friction scene run under VBD. No asserts — purely for visual inspection."""
-        self._run_dynamic_friction_viewer(
-            solver_fn=lambda model: newton.solvers.SolverVBD(model, iterations=10),
-            uses_newton_contacts=True,
-            uses_generalized_coords=False,
-            solver_name="vbd",
-        )
-
-    def _run_static_friction_viewer(self, solver_fn, uses_newton_contacts, solver_name):
-        device = wp.get_device("cuda:0")
-        model, F_below, F_above, _box_half_extent = _build_static_friction_scene(device)
-
-        try:
-            viewer = newton.viewer.ViewerGL()
-            viewer.set_model(model)
-        except Exception as e:
-            self.skipTest(f"ViewerGL not available: {e}")
-            return
-
-        # Frame the two boxes (b_below near origin, b_above at z=5).
-        viewer.set_camera(wp.vec3(8.0, 4.0, 2.5), pitch=-20.0, yaw=-90.0)
-
-        solver = solver_fn(model)
-        contacts = model.contacts() if uses_newton_contacts else None
-        state_0 = model.state()
-        state_1 = model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-        sim_dt = 1e-3
-        substeps_per_frame = 16  # ~16 ms of sim per rendered frame
-        num_frames = 400
-
-        wrenches = np.zeros((2, 6), dtype=np.float32)
-        wrenches[0, 0] = F_below
-        wrenches[1, 0] = F_above
-
-        print(f"\nRunning static friction scene under {solver_name} for {num_frames} frames. Close the viewer to stop.")
-        sim_time = 0.0
-        step_idx = 0
-        try:
-            for _frame in range(num_frames):
-                viewer.begin_frame(sim_time)
-                viewer.log_state(state_0)
-                if contacts is not None:
-                    viewer.log_contacts(contacts, state_0)
-                viewer.end_frame()
-
-                for _ in range(substeps_per_frame):
-                    state_0.clear_forces()
-                    if step_idx > 20:
-                        state_0.body_f.assign(wrenches)
-                    if contacts is not None:
-                        model.collide(state_0, contacts)
-                    solver.step(state_0, state_1, None, contacts, sim_dt)
-                    state_0, state_1 = state_1, state_0
-                    step_idx += 1
-
-                sim_time += substeps_per_frame * sim_dt
-                time.sleep(0.016)
-        except KeyboardInterrupt:
-            print("\nSimulation stopped by user.")
-
-    def _run_dynamic_friction_viewer(self, solver_fn, uses_newton_contacts, uses_generalized_coords, solver_name):
-        device = wp.get_device("cuda:0")
-        model, v0, t_stop, _d_stop, _box_half_extent = _build_dynamic_friction_scene(device)
-
-        try:
-            viewer = newton.viewer.ViewerGL()
-            viewer.set_model(model)
-        except Exception as e:
-            self.skipTest(f"ViewerGL not available: {e}")
-            return
-
-        # Box slides from origin along +X for ~0.5 m; frame it from above-right.
-        viewer.set_camera(wp.vec3(1.5, 1.5, 2.5), pitch=-25.0, yaw=-25.0)
-
-        solver = solver_fn(model)
-        contacts = model.contacts() if uses_newton_contacts else None
-        state_0 = model.state()
-        state_1 = model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-        qd = state_0.body_qd.numpy()
-        qd[0, 0] = v0
-        state_0.body_qd.assign(qd)
-
-        if uses_generalized_coords:
-            q_ik = wp.zeros_like(model.joint_q, device=device)
-            qd_ik = wp.zeros_like(model.joint_qd, device=device)
-            newton.eval_ik(model, state_0, q_ik, qd_ik)
-            state_0.joint_q.assign(q_ik)
-            state_0.joint_qd.assign(qd_ik)
-
-        sim_dt = 1e-3
-        substeps_per_frame = 16
-        # Run ~1.5 × analytical stop time so the user sees the box come to rest.
-        num_frames = int(1.5 * t_stop / (substeps_per_frame * sim_dt)) + 60
-
-        print(f"\nRunning dynamic friction scene under {solver_name} for {num_frames} frames. Close the viewer to stop.")
-        sim_time = 0.0
-        try:
-            for _frame in range(num_frames):
-                viewer.begin_frame(sim_time)
-                viewer.log_state(state_0)
-                if contacts is not None:
-                    viewer.log_contacts(contacts, state_0)
-                viewer.end_frame()
-
-                for _ in range(substeps_per_frame):
-                    state_0.clear_forces()
-                    if contacts is not None:
-                        model.collide(state_0, contacts)
-                    solver.step(state_0, state_1, None, contacts, sim_dt)
-                    state_0, state_1 = state_1, state_0
-
-                sim_time += substeps_per_frame * sim_dt
-                time.sleep(0.016)
-        except KeyboardInterrupt:
-            print("\nSimulation stopped by user.")
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -645,11 +515,13 @@ def _build_static_friction_scene(device):
 
     Returns ``(model, F_below, F_above, box_half_extent)``.
     """
+    # Test parameters: gravity, static friction coefficient, box size, box mass.
     g = -10.0
     mu = 0.5
     box_half_extent = 0.25
     mass = 1000.0 * (2 * box_half_extent) ** 3
 
+    # Shape config
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.mu = mu
     cfg.ke = 1e4
@@ -657,9 +529,11 @@ def _build_static_friction_scene(device):
     cfg.kf = 0.0
     cfg.gap = 0.1
 
+    # Force below and above static friction
     F_below = 0.3 * mu * mass * abs(g)
     F_above = 2.0 * mu * mass * abs(g)
 
+    # Two boxes on the same ground plane: body 0 gets sub-threshold force, body 1 gets above-threshold
     builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
     builder.add_ground_plane(cfg=cfg)
     b_below = builder.add_body(xform=wp.transform(wp.vec3(0.0, box_half_extent + 0.001, 0.0), wp.quat_identity()))
@@ -734,14 +608,17 @@ def _build_dynamic_friction_scene(device):
 
     Returns ``(model, v0, t_stop, d_stop_analytical, box_half_extent)``.
     """
+    # Test parameters: gravity, dynamic friction coefficient, initial velocity, box size
     g = -10.0
     mu = 0.4
     v0 = 2.0
     box_half_extent = 0.25
 
+    # Analytical stopping time and distance
     t_stop = v0 / (mu * abs(g))
     d_stop_analytical = v0**2 / (2.0 * mu * abs(g))
 
+    # Shape config
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.mu = mu
     cfg.ke = 1e4
@@ -749,6 +626,7 @@ def _build_dynamic_friction_scene(device):
     cfg.kf = 0.0
     cfg.gap = 0.1
 
+    # A simple box on a ground plane
     builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
     builder.add_ground_plane(cfg=cfg)
     b = builder.add_body(xform=wp.transform(wp.vec3(0.0, box_half_extent + 0.001, 0.0), wp.quat_identity()))
@@ -807,6 +685,7 @@ def test_dynamic_friction(
     final_vel_max = thresholds["final_vel_max"]
     y_delta = thresholds["y_delta"]
 
+    # Stopping distance within 1% of analytical
     final_pos = state_0.body_q.numpy()[0][:3]
     test.assertAlmostEqual(
         final_pos[0],
@@ -818,6 +697,7 @@ def test_dynamic_friction(
         ),
     )
 
+    # Sanity checks
     final_vel = state_0.body_qd.numpy()[0][:3]
     test.assertAlmostEqual(
         abs(final_vel[0]),
