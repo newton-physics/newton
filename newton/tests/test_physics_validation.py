@@ -15,6 +15,41 @@ class TestPhysicsValidation(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Friction-test thresholds (default + per-solver overrides) — kept together
+# for easy tuning. See test_static_friction / test_dynamic_friction below.
+# ---------------------------------------------------------------------------
+_DEFAULT_STATIC_FRICTION_THRESHOLDS = {
+    "below_x_max": 0.01,  # below threshold: max allowed |x| drift (should not slide)
+    "below_y_delta": 0.01,  # below threshold: y tolerance around box_half_extent (stays on ground)
+    "above_x_min": 0.05,  # above threshold: min required x displacement (should slide)
+    "above_y_delta": 0.01,  # above threshold: y tolerance around box_half_extent
+}
+# Per-solver tolerances for test_static_friction. Solvers not listed use the default.
+_STATIC_FRICTION_THRESHOLDS = {
+    "vbd": {
+        "below_x_max": 0.05,
+        "below_y_delta": 0.03,
+        "above_x_min": 0.05,
+        "above_y_delta": 0.03,
+    },
+}
+
+_DEFAULT_DYNAMIC_FRICTION_THRESHOLDS = {
+    "stop_distance_rel": 0.01,  # stopping distance tolerance as a fraction of d_stop_analytical
+    "final_vel_max": 0.01,  # max allowed |v_x| at end of sim (box should be nearly stopped)
+    "y_delta": 0.01,  # y tolerance around box_half_extent (stays on ground)
+}
+# Per-solver tolerances for test_dynamic_friction. Solvers not listed use the default.
+_DYNAMIC_FRICTION_THRESHOLDS = {
+    "vbd": {
+        "stop_distance_rel": 3.0,
+        "final_vel_max": 2.5,
+        "y_delta": 0.03,
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Test 1: Free Fall
 # Verify free-fall trajectory against y(t) = h0 + 0.5*g*t^2 and v(t) = g*t.
 # ---------------------------------------------------------------------------
@@ -502,14 +537,6 @@ def test_momentum_conservation(test, device, solver_fn, uses_generalized_coords)
 # Test 7: Static Friction
 # Verify Coulomb static friction: no sliding before threshold, sliding above threshold.
 # ---------------------------------------------------------------------------
-_DEFAULT_STATIC_FRICTION_THRESHOLDS = {
-    "below_x_max": 0.01,  # below threshold: max allowed |x| drift (should not slide)
-    "below_y_delta": 0.01,  # below threshold: y tolerance around box_half_extent (stays on ground)
-    "above_x_min": 0.05,  # above threshold: min required x displacement (should slide)
-    "above_y_delta": 0.01,  # above threshold: y tolerance around box_half_extent
-}
-
-
 def _build_static_friction_scene(device):
     """Build the two-box static friction scene.
 
@@ -634,13 +661,6 @@ def _build_dynamic_friction_scene(device):
     builder.color()
     model = builder.finalize(device=device)
     return model, v0, t_stop, d_stop_analytical, box_half_extent
-
-
-_DEFAULT_DYNAMIC_FRICTION_THRESHOLDS = {
-    "stop_distance_rel": 0.01,  # stopping distance tolerance as a fraction of d_stop_analytical
-    "final_vel_max": 0.01,  # max allowed |v_x| at end of sim (box should be nearly stopped)
-    "y_delta": 0.01,  # y tolerance around box_half_extent (stays on ground)
-}
 
 
 def test_dynamic_friction(
@@ -1711,23 +1731,6 @@ for device in devices:
             False,
         ),
     }
-    # Per-solver tolerances for test_static_friction. Solvers not listed use the default.
-    static_friction_thresholds = {
-        "vbd": {
-            "below_x_max": 0.05,
-            "below_y_delta": 0.03,
-            "above_x_min": 0.05,
-            "above_y_delta": 0.03,
-        },
-    }
-    # Per-solver tolerances for test_dynamic_friction. Solvers not listed use the default.
-    dynamic_friction_thresholds = {
-        "vbd": {
-            "stop_distance_rel": 3.0,
-            "final_vel_max": 2.5,
-            "y_delta": 0.03,
-        },
-    }
     for solver_name, (solver_fn, uses_newton_contacts, uses_gen_coords) in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
@@ -1741,7 +1744,7 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
             uses_newton_contacts=uses_newton_contacts,
-            thresholds=static_friction_thresholds.get(solver_name, _DEFAULT_STATIC_FRICTION_THRESHOLDS),
+            thresholds=_STATIC_FRICTION_THRESHOLDS.get(solver_name, _DEFAULT_STATIC_FRICTION_THRESHOLDS),
         )
 
         add_function_test(
@@ -1752,7 +1755,7 @@ for device in devices:
             solver_fn=solver_fn,
             uses_newton_contacts=uses_newton_contacts,
             uses_generalized_coords=uses_gen_coords,
-            thresholds=dynamic_friction_thresholds.get(solver_name, _DEFAULT_DYNAMIC_FRICTION_THRESHOLDS),
+            thresholds=_DYNAMIC_FRICTION_THRESHOLDS.get(solver_name, _DEFAULT_DYNAMIC_FRICTION_THRESHOLDS),
         )
 
     # Restitution test
