@@ -138,14 +138,16 @@ Viewer controls:
     * - ``W``, ``A``, ``S``, ``D`` or arrow keys
       - Move the camera in the ground plane
     * - ``Q`` / ``E``
-      - Move the camera down / up
+      - Move the camera down or up
     * - Left drag
       - Look around
     * - Middle drag
       - Orbit around the current camera pivot
     * - ``Shift`` + middle drag
       - Pan the camera and pivot
-    * - ``Ctrl`` + middle drag or mouse wheel
+    * - ``Ctrl`` + middle drag
+      - Dolly toward or away from the pivot
+    * - Mouse wheel
       - Dolly toward or away from the pivot
     * - ``Ctrl`` + mouse wheel
       - Adjust field of view
@@ -157,10 +159,10 @@ Viewer controls:
       - Pause or continue the simulation
     * - ``ESC``
       - Close the viewer
-    * - ``Right Click``
+    * - Right click
       - Pick objects
 
-Orbit mode keeps the pivot fixed while the camera rotates around it; use ``F`` to center the pivot on the model, ``Shift`` + middle drag to move the pivot, and the wheel to change orbit distance.
+Orbit mode keeps the pivot fixed while the camera rotates around it. Use ``F`` to center the pivot on the model, ``Shift`` + middle drag to pan the pivot with the camera, and the mouse wheel to change the orbit distance.
 
 **Troubleshooting:**
 
