@@ -167,7 +167,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model, contact_matching=True)
+        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
         self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         self.viewer.set_model(self.model)
