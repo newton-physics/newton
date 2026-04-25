@@ -1779,6 +1779,7 @@ def repeat_array_kernel(
 @wp.kernel
 def update_solver_options_kernel(
     # WORLD frequency inputs (None if overridden/unavailable)
+    newton_timestep: wp.array[float],
     newton_impratio: wp.array[float],
     newton_tolerance: wp.array[float],
     newton_ls_tolerance: wp.array[float],
@@ -1788,6 +1789,7 @@ def update_solver_options_kernel(
     newton_wind: wp.array[wp.vec3],
     newton_magnetic: wp.array[wp.vec3],
     # outputs - MuJoCo per-world arrays
+    opt_timestep: wp.array[float],
     opt_impratio_invsqrt: wp.array[float],
     opt_tolerance: wp.array[float],
     opt_ls_tolerance: wp.array[float],
@@ -1800,6 +1802,7 @@ def update_solver_options_kernel(
     """Update per-world solver options from Newton model.
 
     Args:
+        newton_timestep: Per-world timestep values from Newton model (None if overridden)
         newton_impratio: Per-world impratio values from Newton model (None if overridden)
         newton_tolerance: Per-world tolerance values (None if overridden)
         newton_ls_tolerance: Per-world line search tolerance values (None if overridden)
@@ -1808,6 +1811,7 @@ def update_solver_options_kernel(
         newton_viscosity: Per-world medium viscosity values (None if overridden)
         newton_wind: Per-world wind velocity vectors (None if overridden)
         newton_magnetic: Per-world magnetic flux vectors (None if overridden)
+        opt_timestep: MuJoCo Warp opt.timestep array (shape: nworld)
         opt_impratio_invsqrt: MuJoCo Warp opt.impratio_invsqrt array (shape: nworld)
         opt_tolerance: MuJoCo Warp opt.tolerance array (shape: nworld)
         opt_ls_tolerance: MuJoCo Warp opt.ls_tolerance array (shape: nworld)
@@ -1820,6 +1824,9 @@ def update_solver_options_kernel(
     worldid = wp.tid()
 
     # Only update if Newton array exists (None means overridden or not available)
+    if newton_timestep:
+        opt_timestep[worldid] = newton_timestep[worldid]
+
     if newton_impratio:
         # MuJoCo stores impratio as inverse square root
         # Guard against zero/negative values to avoid NaN/Inf

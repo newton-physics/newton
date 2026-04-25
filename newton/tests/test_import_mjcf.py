@@ -3485,8 +3485,9 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 """
 
     def test_option_scalar_world_parsing(self):
-        """Test parsing of WORLD frequency scalar options from MJCF (6 options)."""
+        """Test parsing of WORLD frequency scalar options from MJCF (7 options)."""
         test_cases = [
+            ("timestep", "0.0025", 0.0025, 10),
             ("impratio", "1.5", 1.5, 6),
             ("tolerance", "1e-6", 1e-6, 10),
             ("ls_tolerance", "0.001", 0.001, 6),
@@ -3514,7 +3515,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         robot_a = newton.ModelBuilder()
         robot_a.add_mjcf("""
 <mujoco>
-    <option impratio="1.5" tolerance="1e-6" ls_tolerance="0.001"/>
+    <option timestep="0.002" impratio="1.5" tolerance="1e-6" ls_tolerance="0.001"/>
     <worldbody>
         <body name="a" pos="0 0 1">
             <joint type="hinge" axis="0 0 1"/>
@@ -3528,7 +3529,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         robot_b = newton.ModelBuilder()
         robot_b.add_mjcf("""
 <mujoco>
-    <option impratio="2.0" tolerance="1e-7" ls_tolerance="0.002"/>
+    <option timestep="0.005" impratio="2.0" tolerance="1e-7" ls_tolerance="0.002"/>
     <worldbody>
         <body name="b" pos="0 0 1">
             <joint type="hinge" axis="0 0 1"/>
@@ -3545,18 +3546,23 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         model = main.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "timestep"))
         self.assertTrue(hasattr(model.mujoco, "impratio"))
         self.assertTrue(hasattr(model.mujoco, "tolerance"))
         self.assertTrue(hasattr(model.mujoco, "ls_tolerance"))
 
+        timestep = model.mujoco.timestep.numpy()
         impratio = model.mujoco.impratio.numpy()
         tolerance = model.mujoco.tolerance.numpy()
         ls_tolerance = model.mujoco.ls_tolerance.numpy()
 
         # Should have 2 worlds with different values
+        self.assertEqual(len(timestep), 2)
         self.assertEqual(len(impratio), 2)
         self.assertEqual(len(tolerance), 2)
         self.assertEqual(len(ls_tolerance), 2)
+        self.assertAlmostEqual(timestep[0], 0.002, places=10, msg="World 0 should have timestep=0.002")
+        self.assertAlmostEqual(timestep[1], 0.005, places=10, msg="World 1 should have timestep=0.005")
         self.assertAlmostEqual(impratio[0], 1.5, places=4, msg="World 0 should have impratio=1.5")
         self.assertAlmostEqual(impratio[1], 2.0, places=4, msg="World 1 should have impratio=2.0")
         self.assertAlmostEqual(tolerance[0], 1e-6, places=10, msg="World 0 should have tolerance=1e-6")
