@@ -1089,8 +1089,15 @@ class TestHydroelastic(ViewerTestMixin, unittest.TestCase):
 
         def step(scene: ViewerScene, dt: float) -> None:
             scene.state_0, scene.state_1 = simulate(
-                solver, scene.model, scene.state_0, scene.state_1,
-                scene.control, scene.contacts, collision_pipeline, dt, SIM_SUBSTEPS,
+                solver,
+                scene.model,
+                scene.state_0,
+                scene.state_1,
+                scene.control,
+                scene.contacts,
+                collision_pipeline,
+                dt,
+                SIM_SUBSTEPS,
             )
 
         def log_hydro_surface(viewer, _scene: ViewerScene) -> None:

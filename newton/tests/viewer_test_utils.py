@@ -24,8 +24,13 @@ Example
 
             def step(scene, dt):
                 scene.state_0, scene.state_1 = advance(
-                    solver, scene.model, scene.state_0, scene.state_1,
-                    scene.control, scene.contacts, dt,
+                    solver,
+                    scene.model,
+                    scene.state_0,
+                    scene.state_1,
+                    scene.control,
+                    scene.contacts,
+                    dt,
                 )
 
             self._run_viewer(
@@ -44,8 +49,9 @@ Example
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import newton
 
@@ -74,11 +80,11 @@ class ViewerScene:
     model: Any
     state_0: Any
     state_1: Any
-    step_fn: Callable[["ViewerScene", float], None]
+    step_fn: Callable[[ViewerScene, float], None]
     contacts: Any | None = None
     control: Any | None = None
-    pre_step: Callable[["ViewerScene", int], None] | None = None
-    extra_logs: list[Callable[[Any, "ViewerScene"], None]] = field(default_factory=list)
+    pre_step: Callable[[ViewerScene, int], None] | None = None
+    extra_logs: list[Callable[[Any, ViewerScene], None]] = field(default_factory=list)
 
 
 class ViewerTestMixin:
