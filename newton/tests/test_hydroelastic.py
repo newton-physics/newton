@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import time
 import unittest
 from enum import Enum
 
@@ -14,6 +13,7 @@ from newton.tests.unittest_utils import (
     add_function_test,
     get_selected_cuda_test_devices,
 )
+from newton.tests.viewer_test_utils import ViewerScene, ViewerTestMixin
 
 # --- Configuration ---
 
@@ -1063,7 +1063,10 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 # --- Test class ---
 
 
-class TestHydroelastic(unittest.TestCase):
+class TestHydroelastic(ViewerTestMixin, unittest.TestCase):
+    DEFAULT_NUM_FRAMES = VIEWER_NUM_FRAMES
+    DEFAULT_SIM_DT = SIM_DT
+
     @unittest.skip("Visual debugging - run manually to view simulation")
     def test_view_stacked_primitive_cubes(self):
         """View stacked primitive cubes simulation with hydroelastic contacts."""
@@ -1081,47 +1084,33 @@ class TestHydroelastic(unittest.TestCase):
         model, solver, state_0, state_1, control, collision_pipeline, _, _ = build_stacked_cubes_scene(
             device, solver_fn, shape_type, cube_half
         )
-
-        try:
-            viewer = newton.viewer.ViewerGL()
-            viewer.set_model(model)
-        except Exception as e:
-            self.skipTest(f"ViewerGL not available: {e}")
-            return
-
-        sim_time = 0.0
         contacts = collision_pipeline.contacts()
         collision_pipeline.collide(state_0, contacts)
 
-        print(
-            f"\nRunning {shape_type.value} cubes simulation with {solver_name} solver for {VIEWER_NUM_FRAMES} frames..."
+        def step(scene: ViewerScene, dt: float) -> None:
+            scene.state_0, scene.state_1 = simulate(
+                solver, scene.model, scene.state_0, scene.state_1,
+                scene.control, scene.contacts, collision_pipeline, dt, SIM_SUBSTEPS,
+            )
+
+        def log_hydro_surface(viewer, _scene: ViewerScene) -> None:
+            viewer.log_hydro_contact_surface(
+                collision_pipeline.hydroelastic_sdf.get_contact_surface()
+                if collision_pipeline.hydroelastic_sdf is not None
+                else None,
+                penetrating_only=False,
+            )
+
+        scene = ViewerScene(
+            model=model,
+            state_0=state_0,
+            state_1=state_1,
+            contacts=contacts,
+            control=control,
+            step_fn=step,
+            extra_logs=[log_hydro_surface],
         )
-        print("Close the viewer window to stop.")
-
-        try:
-            for _frame in range(VIEWER_NUM_FRAMES):
-                viewer.begin_frame(sim_time)
-                viewer.log_state(state_0)
-                viewer.log_contacts(contacts, state_0)
-                viewer.log_hydro_contact_surface(
-                    (
-                        collision_pipeline.hydroelastic_sdf.get_contact_surface()
-                        if collision_pipeline.hydroelastic_sdf is not None
-                        else None
-                    ),
-                    penetrating_only=False,
-                )
-                viewer.end_frame()
-
-                state_0, state_1 = simulate(
-                    solver, model, state_0, state_1, control, contacts, collision_pipeline, SIM_DT, SIM_SUBSTEPS
-                )
-
-                sim_time += SIM_DT
-                time.sleep(0.016)
-
-        except KeyboardInterrupt:
-            print("\nSimulation stopped by user.")
+        self._run_viewer(scene, label=f"{shape_type.value} cubes ({solver_name})")
 
 
 # --- Register tests ---
