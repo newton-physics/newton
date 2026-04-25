@@ -692,6 +692,18 @@ class SolverMuJoCo(SolverBase):
         # Solver options (frequency WORLD for per-world values)
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="timestep",
+                frequency=AttributeFrequency.WORLD,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.002,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:timestep",
+                mjcf_attribute_name="timestep",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="impratio",
                 frequency=AttributeFrequency.WORLD,
                 assignment=AttributeAssignment.MODEL,
@@ -2882,6 +2894,7 @@ class SolverMuJoCo(SolverBase):
         integrator: int | str | None = None,
         cone: int | str | None = None,
         jacobian: int | str | None = None,
+        timestep: float | None = None,
         impratio: float | None = None,
         tolerance: float | None = None,
         ls_tolerance: float | None = None,
@@ -2921,6 +2934,7 @@ class SolverMuJoCo(SolverBase):
             integrator: Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("implicitfast").
             cone: The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("pyramidal").
             jacobian: Jacobian computation method. Can be "dense", "sparse", or "auto", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or MuJoCo's default ("auto").
+            timestep: Simulation timestep. If None, uses model custom attribute or MuJoCo's default (0.002).
             impratio: Frictional-to-normal constraint impedance ratio. If None, uses model custom attribute or MuJoCo's default (1.0).
             tolerance: Solver tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (1e-8).
             ls_tolerance: Line search tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (0.01).
@@ -3094,6 +3108,7 @@ class SolverMuJoCo(SolverBase):
                 sdf_initpoints=sdf_initpoints,
                 cone=cone,
                 jacobian=jacobian,
+                timestep=timestep,
                 impratio=impratio,
                 tolerance=tolerance,
                 ls_tolerance=ls_tolerance,
@@ -3868,6 +3883,7 @@ class SolverMuJoCo(SolverBase):
         enableflags: int = 0,
         disableflags: int = 0,
         disable_contacts: bool = False,
+        timestep: float | None = None,
         impratio: float | None = None,
         tolerance: float | None = None,
         ls_tolerance: float | None = None,
@@ -3909,6 +3925,7 @@ class SolverMuJoCo(SolverBase):
             enableflags: MuJoCo enable flags bitmask.
             disableflags: MuJoCo disable flags bitmask.
             disable_contacts: If True, disable contact computation.
+            timestep: Simulation timestep. If None, uses model custom attribute or MuJoCo default (0.002).
             impratio: Impedance ratio for contacts. If None, uses model custom attribute or MuJoCo default (1.0).
             tolerance: Solver tolerance. If None, uses model custom attribute or MuJoCo default (1e-8).
             ls_tolerance: Line search tolerance. If None, uses model custom attribute or MuJoCo default (0.01).
@@ -4028,6 +4045,7 @@ class SolverMuJoCo(SolverBase):
             return None
 
         # Resolve all WORLD frequency scalar options
+        timestep = resolve_option("timestep", timestep)
         impratio = resolve_option("impratio", impratio)
         tolerance = resolve_option("tolerance", tolerance)
         ls_tolerance = resolve_option("ls_tolerance", ls_tolerance)
@@ -4083,6 +4101,8 @@ class SolverMuJoCo(SolverBase):
         spec.option.gravity = np.array([*model.gravity.numpy()[0]])
         spec.option.solver = solver
         spec.option.integrator = integrator
+        if timestep is not None:
+            spec.option.timestep = timestep
         spec.option.iterations = iterations
         spec.option.ls_iterations = ls_iterations
         spec.option.cone = cone
@@ -5682,7 +5702,7 @@ class SolverMuJoCo(SolverBase):
 
         # Solver option fields to expand (nested in mj_model.opt)
         opt_fields_to_expand = {
-            # "timestep",  # Excluded: conflicts with step() function parameter
+            "timestep",
             "impratio_invsqrt",
             "tolerance",
             "ls_tolerance",
@@ -5750,6 +5770,7 @@ class SolverMuJoCo(SolverBase):
             return getattr(mujoco_attrs, name)
 
         # Get all WORLD frequency scalar arrays
+        newton_timestep = get_option("timestep")
         newton_impratio = get_option("impratio")
         newton_tolerance = get_option("tolerance")
         newton_ls_tolerance = get_option("ls_tolerance")
@@ -5765,6 +5786,7 @@ class SolverMuJoCo(SolverBase):
         if all(
             x is None
             for x in [
+                newton_timestep,
                 newton_impratio,
                 newton_tolerance,
                 newton_ls_tolerance,
@@ -5781,6 +5803,7 @@ class SolverMuJoCo(SolverBase):
             update_solver_options_kernel,
             dim=nworld,
             inputs=[
+                newton_timestep,
                 newton_impratio,
                 newton_tolerance,
                 newton_ls_tolerance,
@@ -5791,6 +5814,7 @@ class SolverMuJoCo(SolverBase):
                 newton_magnetic,
             ],
             outputs=[
+                self.mjw_model.opt.timestep,
                 self.mjw_model.opt.impratio_invsqrt,
                 self.mjw_model.opt.tolerance,
                 self.mjw_model.opt.ls_tolerance,
