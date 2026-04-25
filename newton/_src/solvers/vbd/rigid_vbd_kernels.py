@@ -20,7 +20,6 @@ Organization:
 import warp as wp
 
 from newton._src.core.types import MAXVAL
-from newton._src.geometry.hashtable import HASHTABLE_EMPTY_KEY, hashtable_find, hashtable_find_or_insert
 from newton._src.math import quat_velocity
 from newton._src.sim import JointType
 from newton._src.solvers.solver import integrate_rigid_body
@@ -51,72 +50,25 @@ _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 _NUM_CONTACT_THREADS_PER_BODY = wp.constant(4)
 """Threads per body for contact accumulation using strided iteration"""
 
-_CONTACT_HASH_GRID_DIM = wp.constant(128)
-"""Grid dimension per axis for contact spatial hashing (128^3 = ~2M cells, fits in 21 bits)"""
-
 _STICK_FLAG_ANCHOR = wp.constant(1)
 """contact_stick_flag value: frozen anchor (kinematic-dynamic contacts)"""
 
 _STICK_FLAG_DEADZONE = wp.constant(2)
 """contact_stick_flag value: anti-creep deadzone (dynamic-dynamic contacts)"""
 
-_CONTACT_MATCH_NORMAL_DOT_THRESH = wp.constant(0.5)
-"""Normal agreement gate for contact history matching (about 60 degree tolerance)"""
-
-# ---------------------------------
-# Contact history hash helpers
-# ---------------------------------
-
-
-@wp.func
-def _pack_shape_pair_bits(s0: int, s1: int) -> wp.uint64:
-    """Canonical shape pair packed into upper 42 bits (21 bits each, min/max ordered)."""
-    lo = wp.min(s0, s1)
-    hi = wp.max(s0, s1)
-    return (wp.uint64(lo) << wp.uint64(21) | wp.uint64(hi)) << wp.uint64(21)
-
-
-@wp.func
-def _compute_spatial_cell(point: wp.vec3, cell_size_inv: float) -> int:
-    """Quantize body-local point to 1D cell ID on a 128^3 grid."""
-    gd = _CONTACT_HASH_GRID_DIM
-    ix = int(wp.floor(point[0] * cell_size_inv)) % gd
-    iy = int(wp.floor(point[1] * cell_size_inv)) % gd
-    iz = int(wp.floor(point[2] * cell_size_inv)) % gd
-    if ix < 0:
-        ix += gd
-    if iy < 0:
-        iy += gd
-    if iz < 0:
-        iz += gd
-    return ix * gd * gd + iy * gd + iz
-
-
-@wp.func
-def _offset_cell(base_cell: int, dx: int, dy: int, dz: int) -> int:
-    """Compute neighbor cell ID from a base cell and 3D offset."""
-    gd = _CONTACT_HASH_GRID_DIM
-    ix = (base_cell // (gd * gd) + dx) % gd
-    iy = ((base_cell // gd) % gd + dy) % gd
-    iz = (base_cell % gd + dz) % gd
-    if ix < 0:
-        ix += gd
-    if iy < 0:
-        iy += gd
-    if iz < 0:
-        iz += gd
-    return ix * gd * gd + iy * gd + iz
-
-
-@wp.func
-def _build_contact_history_key(pair_bits: wp.uint64, cell: int) -> wp.uint64:
-    """Compose a 64-bit hash key from shape-pair bits (upper 42) and cell ID (lower 21)."""
-    return pair_bits | wp.uint64(cell)
-
-
 # ---------------------------------
 # Helper classes and device functions
 # ---------------------------------
+
+
+@wp.struct
+class RigidContactHistory:
+    lambda_: wp.array[wp.vec3]
+    stick_flag: wp.array[wp.int32]
+    penalty_k: wp.array[float]
+    point0: wp.array[wp.vec3]
+    point1: wp.array[wp.vec3]
+    normal: wp.array[wp.vec3]
 
 
 @wp.func
@@ -2163,17 +2115,10 @@ def init_body_body_contacts_avbd(
     shape_material_kd: wp.array[float],
     shape_material_mu: wp.array[float],
     hard_contacts: int,
-    # Cross-step state
-    ht_keys: wp.array[wp.uint64],
-    history_point0: wp.array[wp.vec3],
-    history_point1: wp.array[wp.vec3],
-    history_lambda: wp.array[wp.vec3],
-    history_normal: wp.array[wp.vec3],
-    history_stick_flag: wp.array[wp.int32],
-    history_penalty_k: wp.array[float],
+    # Pipeline-owned correspondence and VBD-owned cross-step state
+    match_index: wp.array[wp.int32],
+    history: RigidContactHistory,
     # Scalar parameters
-    cell_size_inv: float,
-    match_tolerance_sq: float,
     k_start: float,
     # Outputs
     contact_penalty_k: wp.array[float],
@@ -2182,13 +2127,16 @@ def init_body_body_contacts_avbd(
     contact_material_mu: wp.array[float],
     contact_material_ke: wp.array[float],
 ):
-    """Restore body-body contact state from hash table history.
+    """Restore body-body contact state from match indices.
 
     For hard contacts: restores lambda (rotated from old to new contact frame),
-    penalty_k, and stick-anchor points.
+    penalty_k, and stick-anchor points when the previous matched contact stuck.
     For soft contacts: only penalty_k restoration is meaningful (lambda and
     stick_flag are stored but inert in the soft penalty path).
     C0 and decay are handled by step_body_body_contact_C0_lambda.
+
+    match_index[i] addresses saved contact rows from the last snapshot.
+    Negative values (-1 unmatched, -2 broken) cold-start identically.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -2208,53 +2156,17 @@ def init_body_body_contacts_avbd(
     contact_material_kd[i] = avg_kd
     contact_material_mu[i] = avg_mu
 
-    p0 = rigid_contact_point0[i]
-    p1 = rigid_contact_point1[i]
     n_new = rigid_contact_normal[i]
-    pair_bits = _pack_shape_pair_bits(s0, s1)
-    base_cell = _compute_spatial_cell(p0, cell_size_inv)
-
-    best_dist_sq = match_tolerance_sq
-    best_slot = int(-1)
-
-    center_key = _build_contact_history_key(pair_bits, base_cell)
-    center_slot = hashtable_find(center_key, ht_keys)
-
-    if center_slot >= 0:
-        dp0 = p0 - history_point0[center_slot]
-        dp1 = p1 - history_point1[center_slot]
-        dist_sq = wp.dot(dp0, dp0) + wp.dot(dp1, dp1)
-        n_dot = wp.dot(n_new, history_normal[center_slot])
-        if dist_sq < best_dist_sq and n_dot > _CONTACT_MATCH_NORMAL_DOT_THRESH:
-            best_dist_sq = dist_sq
-            best_slot = center_slot
-
-    if best_slot < 0:
-        for dx in range(-1, 2):
-            for dy in range(-1, 2):
-                for dz in range(-1, 2):
-                    if dx == 0 and dy == 0 and dz == 0:
-                        continue
-                    cell = _offset_cell(base_cell, dx, dy, dz)
-                    key = _build_contact_history_key(pair_bits, cell)
-                    slot = hashtable_find(key, ht_keys)
-                    if slot >= 0:
-                        dp0 = p0 - history_point0[slot]
-                        dp1 = p1 - history_point1[slot]
-                        dist_sq = wp.dot(dp0, dp0) + wp.dot(dp1, dp1)
-                        n_dot = wp.dot(n_new, history_normal[slot])
-                        if dist_sq < best_dist_sq and n_dot > _CONTACT_MATCH_NORMAL_DOT_THRESH:
-                            best_dist_sq = dist_sq
-                            best_slot = slot
 
     contact_material_ke[i] = avg_ke
     k_floor = avg_ke if k_start < 0.0 else wp.min(k_start, avg_ke)
+    slot = match_index[i]
 
-    if best_slot >= 0:
-        contact_penalty_k[i] = wp.clamp(history_penalty_k[best_slot], k_floor, avg_ke)
-        lam_hist = history_lambda[best_slot]
+    if slot >= 0:
+        contact_penalty_k[i] = wp.clamp(history.penalty_k[slot], k_floor, avg_ke)
+        lam_hist = history.lambda_[slot]
         if hard_contacts == 1:
-            n_old = history_normal[best_slot]
+            n_old = history.normal[slot]
             lam_n = wp.dot(lam_hist, n_old)
             lam_t_old = lam_hist - n_old * lam_n
             lam_t_new = lam_t_old - n_new * wp.dot(lam_t_old, n_new)
@@ -2262,124 +2174,49 @@ def init_body_body_contacts_avbd(
         else:
             contact_lambda[i] = lam_hist
 
-        # Restore previous contact points when the matched slot was sticking
-        # (ANCHOR or DEADZONE) so persistent contacts keep their anchor frame.
+        # Replay saved points only for contacts whose saved state was sticking.
         if hard_contacts == 1 and (
-            history_stick_flag[best_slot] == _STICK_FLAG_ANCHOR
-            or history_stick_flag[best_slot] == _STICK_FLAG_DEADZONE
+            history.stick_flag[slot] == _STICK_FLAG_ANCHOR or history.stick_flag[slot] == _STICK_FLAG_DEADZONE
         ):
-            rigid_contact_point0[i] = history_point0[best_slot]
-            rigid_contact_point1[i] = history_point1[best_slot]
+            rigid_contact_point0[i] = history.point0[slot]
+            rigid_contact_point1[i] = history.point1[slot]
     else:
         contact_penalty_k[i] = k_floor
         contact_lambda[i] = wp.vec3(0.0)
 
 
 @wp.kernel
-def snapshot_contact_history(
+def snapshot_body_body_contact_history(
     rigid_contact_count: wp.array[int],
-    rigid_contact_shape0: wp.array[int],
-    rigid_contact_shape1: wp.array[int],
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
     contact_stick_flag: wp.array[wp.int32],
     contact_penalty_k: wp.array[float],
-    # Hash table
-    ht_keys: wp.array[wp.uint64],
-    ht_active_slots: wp.array[wp.int32],
-    cell_size_inv: float,
-    # Outputs
-    history_point0: wp.array[wp.vec3],
-    history_point1: wp.array[wp.vec3],
-    history_lambda: wp.array[wp.vec3],
-    history_normal: wp.array[wp.vec3],
-    history_stick_flag: wp.array[wp.int32],
-    history_penalty_k: wp.array[float],
-    history_age: wp.array[int],
-    cached_slots: wp.array[int],
+    # Outputs, same order as RigidContactHistory
+    prev_lambda: wp.array[wp.vec3],
+    prev_stick_flag: wp.array[wp.int32],
+    prev_penalty_k: wp.array[float],
+    prev_point0: wp.array[wp.vec3],
+    prev_point1: wp.array[wp.vec3],
+    prev_normal: wp.array[wp.vec3],
 ):
-    """Snapshot converged contact state into the history hash table (post-solve).
+    """Snapshot converged contact state by contact row.
 
-    Stores penalty_k, lambda, normal, stick state, and contact points.
-    In soft mode, lambda and stick_flag are inert but stored uniformly.
-    Caches the resolved slot index per contact so that subsequent
-    non-rebuild steps can update history without re-hashing.
+    The next match_index refers to the rows written here, so VBD history is
+    stored directly by contact row index.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
         return
 
-    s0 = rigid_contact_shape0[i]
-    s1 = rigid_contact_shape1[i]
-    p0 = rigid_contact_point0[i]
-
-    pair_bits = _pack_shape_pair_bits(s0, s1)
-    cell = _compute_spatial_cell(p0, cell_size_inv)
-    key = _build_contact_history_key(pair_bits, cell)
-
-    slot = hashtable_find_or_insert(key, ht_keys, ht_active_slots)
-    cached_slots[i] = slot
-    if slot >= 0:
-        history_point0[slot] = p0
-        history_point1[slot] = rigid_contact_point1[i]
-        history_lambda[slot] = contact_lambda[i]
-        history_normal[slot] = rigid_contact_normal[i]
-        history_stick_flag[slot] = contact_stick_flag[i]
-        history_penalty_k[slot] = contact_penalty_k[i]
-        history_age[slot] = 0
-
-
-@wp.kernel
-def evict_contact_history(
-    ht_keys: wp.array[wp.uint64],
-    history_age: wp.array[int],
-    max_age: int,
-):
-    """Increment age for all occupied history slots and evict stale entries.
-
-    Scans the full hash table capacity (not active_slots) to avoid unbounded
-    active-list growth and ensure all persisted entries are properly aged.
-
-    Note: snapshot_contact_history sets age = 0, and this kernel increments
-    before comparing, so effective retention is max_age + 1 steps.
-    """
-    idx = wp.tid()
-    if ht_keys[idx] == HASHTABLE_EMPTY_KEY:
-        return
-    age = history_age[idx] + 1
-    if age > max_age:
-        ht_keys[idx] = HASHTABLE_EMPTY_KEY
-    else:
-        history_age[idx] = age
-
-
-@wp.kernel
-def snapshot_contact_history_light(
-    rigid_contact_count: wp.array[int],
-    cached_slots: wp.array[int],
-    contact_lambda: wp.array[wp.vec3],
-    contact_stick_flag: wp.array[wp.int32],
-    contact_penalty_k: wp.array[float],
-    # Outputs (hash table history arrays, indexed by cached slot)
-    history_lambda: wp.array[wp.vec3],
-    history_stick_flag: wp.array[wp.int32],
-    history_penalty_k: wp.array[float],
-):
-    """Write latest lambda/stick/penalty_k to the hash table at pre-cached slot positions.
-
-    Runs on non-rebuild steps to keep the hash table fresh without hashing
-    or probing.  Slots were cached by the previous full snapshot.
-    """
-    i = wp.tid()
-    if i >= rigid_contact_count[0]:
-        return
-    slot = cached_slots[i]
-    if slot >= 0:
-        history_lambda[slot] = contact_lambda[i]
-        history_stick_flag[slot] = contact_stick_flag[i]
-        history_penalty_k[slot] = contact_penalty_k[i]
+    prev_lambda[i] = contact_lambda[i]
+    prev_stick_flag[i] = contact_stick_flag[i]
+    prev_penalty_k[i] = contact_penalty_k[i]
+    prev_point0[i] = rigid_contact_point0[i]
+    prev_point1[i] = rigid_contact_point1[i]
+    prev_normal[i] = rigid_contact_normal[i]
 
 
 @wp.kernel

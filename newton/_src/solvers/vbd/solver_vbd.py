@@ -9,8 +9,6 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from newton._src.geometry.hashtable import HashTable
-
 from ...core.types import override
 from ...sim import (
     Contacts,
@@ -54,6 +52,7 @@ from .particle_vbd_kernels import (
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
+    RigidContactHistory,
     RigidForceElementAdjacencyInfo,
     _count_num_adjacent_joints,
     _fill_adjacent_joints,
@@ -64,13 +63,11 @@ from .rigid_vbd_kernels import (
     check_contact_overflow,
     compute_cable_dahl_parameters,
     compute_rigid_contact_forces,
-    evict_contact_history,
     forward_step_rigid_bodies,
     init_body_body_contact_materials,
     init_body_body_contacts_avbd,
     init_body_particle_contacts,
-    snapshot_contact_history,
-    snapshot_contact_history_light,
+    snapshot_body_body_contact_history,
     solve_rigid_body,
     step_body_body_contact_C0_lambda,
     step_joint_C0_lambda,
@@ -212,7 +209,6 @@ class SolverVBD(SolverBase):
         # Rigid body - contacts
         rigid_contact_hard: bool = True,  # Hard = AL with lambda + C0 stabilization; soft = penalty only
         rigid_contact_history: bool = False,  # Persist contact state across steps (hard: k+lambda+C0; soft: k only)
-        rigid_contact_match_tolerance: float = 0.01,
         rigid_contact_k_start: float = 1.0e2,  # Contact penalty seed (used when beta > 0)
         rigid_body_contact_buffer_size: int = 64,
         rigid_body_particle_contact_buffer_size: int = 256,
@@ -291,11 +287,10 @@ class SolverVBD(SolverBase):
                 decay faster, improving stability at the cost of slower convergence.
             rigid_contact_hard: Whether body-body rigid contacts use hard mode (augmented Lagrangian with
                 persistent lambda and C0 stabilization) or soft mode (penalty only).
-            rigid_contact_history: Whether to persist body-body contact state across steps via
-                spatial hash matching. For hard contacts, restores lambda, C0, and penalty k.
-                For soft contacts, restores penalty k only (useful with ramping).
-            rigid_contact_match_tolerance: World-space tolerance used to match current contacts against contact
-                history entries when ``rigid_contact_history=True``.
+            rigid_contact_history: Whether to persist body-body contact state across steps using
+                ``Contacts.rigid_contact_match_index`` from the collision pipeline. For hard contacts,
+                restores lambda, C0, and penalty k. For soft contacts, restores penalty k only
+                (useful with ramping).
             rigid_contact_k_start: Contact penalty seed for AVBD ramping. Used when ``rigid_avbd_beta > 0``.
                 When beta is 0, k is fixed at the contact stiffness regardless of this value.
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
@@ -379,7 +374,6 @@ class SolverVBD(SolverBase):
             rigid_avbd_contact_alpha,
             rigid_contact_hard,
             rigid_contact_history,
-            rigid_contact_match_tolerance,
             rigid_contact_k_start,
             rigid_body_contact_buffer_size,
             rigid_body_particle_contact_buffer_size,
@@ -508,7 +502,6 @@ class SolverVBD(SolverBase):
         rigid_avbd_contact_alpha: float | None,
         rigid_contact_hard: bool,
         rigid_contact_history: bool,
-        rigid_contact_match_tolerance: float,
         rigid_contact_k_start: float,
         rigid_body_contact_buffer_size: int,
         rigid_body_particle_contact_buffer_size: int,
@@ -557,16 +550,10 @@ class SolverVBD(SolverBase):
         else:
             # Zero alpha works better without contact history: no warm duals to stabilize.
             self.rigid_contact_alpha = rigid_avbd_alpha if (rigid_contact_history and rigid_contact_hard) else 0.0
-        rigid_contact_match_tolerance = max(0.0, rigid_contact_match_tolerance)
-        self.rigid_contact_match_tolerance = rigid_contact_match_tolerance
-        self.rigid_contact_match_cell_size_inv = 1.0 / max(rigid_contact_match_tolerance, 1.0e-8)
-        self.rigid_contact_match_tolerance_sq = rigid_contact_match_tolerance * rigid_contact_match_tolerance
 
         # DEADZONE body-snap thresholds; suppressed by _STICK_FLAG_ANCHOR.
         self.rigid_contact_stick_freeze_translation_eps = 1.0e-4
         self.rigid_contact_stick_freeze_angular_eps = 1.0e-4
-
-        self._rigid_contact_match_max_age = 0  # multi-frame persistence untested; clear+refresh each frame
 
         # Joint constraint stiffness and damping for non-cable structural joints
         self.rigid_joint_linear_ke = rigid_joint_linear_ke
@@ -632,16 +619,13 @@ class SolverVBD(SolverBase):
             self.body_body_contact_C0 = wp.zeros(0, dtype=wp.vec3, device=self.device)
             self.body_body_contact_stick_flag = wp.zeros(0, dtype=wp.int32, device=self.device)
 
-            # Contact history (same pattern as body-body contact state).
-            self.contact_history_ht = None
-            self.contact_history_point0 = None
-            self.contact_history_point1 = None
-            self.contact_history_lambda = None
-            self.contact_history_normal = None
-            self.contact_history_stick_flag = None
-            self.contact_history_penalty_k = None
-            self.contact_history_age = None
-            self.contact_history_slots = None
+            # Rigid contact warm-start buffers.
+            self._prev_contact_lambda = None
+            self._prev_contact_stick_flag = None
+            self._prev_contact_penalty_k = None
+            self._prev_contact_point0 = None
+            self._prev_contact_point1 = None
+            self._prev_contact_normal = None
 
             # Joint augmented-Lagrangian state (vec3, per-joint, bilateral)
             self.joint_lambda_lin = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
@@ -688,17 +672,14 @@ class SolverVBD(SolverBase):
         # with kinematic bodies zeroed out.
         self._init_kinematic_state()
 
-        # Pre-allocate body-body contact buffers when the collision pipeline
-        # has already been created (model.rigid_contact_max > 0).  When the
-        # solver is created before model.contacts(), rigid_contact_max is 0
-        # and we fall back to lazy allocation in _initialize_rigid_bodies.
+        # Pre-allocate body-body contact buffers when the contact capacity is
+        # already known; otherwise lazy allocation handles the first step.
         rcm = getattr(self.model, "rigid_contact_max", 0) or 0
         if rcm > 0 and self.model.body_count > 0 and not self.integrate_with_external_rigid_solver:
             self._init_body_body_contact_state(rcm)
             if self.rigid_contact_history:
-                self._init_contact_history(rcm)
-        # Body-particle buffers are always pre-allocated from model topology
-        # (shape_count * particle_count); no pipeline dependency.
+                self._init_rigid_contact_warmstart(rcm)
+        # Body-particle buffers are always pre-allocated from model topology.
         if self.model.particle_count > 0 and self.model.shape_count > 0:
             self._init_body_particle_contact_state(self.model.shape_count * self.model.particle_count)
 
@@ -738,19 +719,15 @@ class SolverVBD(SolverBase):
         self.body_particle_contact_material_kd = wp.zeros(soft_contact_max, dtype=float, device=self.device)
         self.body_particle_contact_material_mu = wp.zeros(soft_contact_max, dtype=float, device=self.device)
 
-    def _init_contact_history(self, rigid_contact_max: int) -> None:
-        """Allocate the contact history hash table sized to the given contact buffer capacity."""
-        ht_capacity = max(256, 4 * rigid_contact_max)
-        self.contact_history_ht = HashTable(capacity=ht_capacity, device=self.device)
-        ht_cap = self.contact_history_ht.capacity
-        self.contact_history_point0 = wp.zeros(ht_cap, dtype=wp.vec3, device=self.device)
-        self.contact_history_point1 = wp.zeros(ht_cap, dtype=wp.vec3, device=self.device)
-        self.contact_history_lambda = wp.zeros(ht_cap, dtype=wp.vec3, device=self.device)
-        self.contact_history_normal = wp.zeros(ht_cap, dtype=wp.vec3, device=self.device)
-        self.contact_history_stick_flag = wp.zeros(ht_cap, dtype=wp.int32, device=self.device)
-        self.contact_history_penalty_k = wp.zeros(ht_cap, dtype=float, device=self.device)
-        self.contact_history_age = wp.zeros(ht_cap, dtype=int, device=self.device)
-        self.contact_history_slots = wp.full(rigid_contact_max, -1, dtype=int, device=self.device)
+    def _init_rigid_contact_warmstart(self, rigid_contact_max: int) -> None:
+        """Allocate rigid contact warm-start buffers."""
+        cap = max(1, rigid_contact_max)
+        self._prev_contact_lambda = wp.zeros(cap, dtype=wp.vec3, device=self.device)
+        self._prev_contact_stick_flag = wp.zeros(cap, dtype=wp.int32, device=self.device)
+        self._prev_contact_penalty_k = wp.zeros(cap, dtype=float, device=self.device)
+        self._prev_contact_point0 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
+        self._prev_contact_point1 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
+        self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
 
     @staticmethod
     def _to_numpy(arr, dtype=None):
@@ -1512,21 +1489,16 @@ class SolverVBD(SolverBase):
             self._solve_rigid_body_iteration(state_in, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
-        # Snapshot rigid contact history before rigid finalize advances body_q_prev.
-        self._snapshot_rigid_contact_history(contacts, update_rigid)
+        # Snapshot at the end of the iteration phase: stick flags set during
+        # dual updates are now final and need to be preserved for next frame.
+        self._snapshot_rigid_contact_history(contacts)
         self._finalize_rigid_bodies(
             state_in, state_out, dt, apply_stick_deadzone=contacts is not None and self.rigid_contact_hard
         )
         self._finalize_particles(state_out, dt)
 
-    def _snapshot_rigid_contact_history(self, contacts: Contacts | None, refresh: bool):
-        """Write contact solver state to the hash table.
-
-        When contact history is enabled:
-        - On refresh steps: full snapshot into the hash table and cache slot indices.
-        - On non-refresh steps: light update of lambda/stick/penalty_k at cached slot indices.
-        In soft mode, lambda and stick_flag are inert but stored uniformly.
-        """
+    def _snapshot_rigid_contact_history(self, contacts: Contacts | None):
+        """Write solved contact state for next frame's match-index warm-start."""
         if not self.rigid_contact_history or contacts is None:
             return
 
@@ -1534,70 +1506,32 @@ class SolverVBD(SolverBase):
             return
 
         contact_launch_dim = contacts.rigid_contact_max
-        if refresh:
-            ht = self.contact_history_ht
-            if self._rigid_contact_match_max_age == 0:
-                ht.clear()
-            else:
-                wp.launch(
-                    kernel=evict_contact_history,
-                    dim=ht.capacity,
-                    inputs=[
-                        ht.keys,
-                        self.contact_history_age,
-                        self._rigid_contact_match_max_age,
-                    ],
-                    device=self.device,
-                )
-                ht.active_slots.zero_()
-            wp.launch(
-                kernel=snapshot_contact_history,
-                dim=contact_launch_dim,
-                inputs=[
-                    contacts.rigid_contact_count,
-                    contacts.rigid_contact_shape0,
-                    contacts.rigid_contact_shape1,
-                    contacts.rigid_contact_point0,
-                    contacts.rigid_contact_point1,
-                    contacts.rigid_contact_normal,
-                    self.body_body_contact_lambda,
-                    self.body_body_contact_stick_flag,
-                    self.body_body_contact_penalty_k,
-                    ht.keys,
-                    ht.active_slots,
-                    self.rigid_contact_match_cell_size_inv,
-                ],
-                outputs=[
-                    self.contact_history_point0,
-                    self.contact_history_point1,
-                    self.contact_history_lambda,
-                    self.contact_history_normal,
-                    self.contact_history_stick_flag,
-                    self.contact_history_penalty_k,
-                    self.contact_history_age,
-                    self.contact_history_slots,
-                ],
-                device=self.device,
-            )
+        if self._prev_contact_lambda is None or self._prev_contact_lambda.shape[0] < contact_launch_dim:
+            self._init_rigid_contact_warmstart(contact_launch_dim)
 
-        else:
-            wp.launch(
-                kernel=snapshot_contact_history_light,
-                dim=contact_launch_dim,
-                inputs=[
-                    contacts.rigid_contact_count,
-                    self.contact_history_slots,
-                    self.body_body_contact_lambda,
-                    self.body_body_contact_stick_flag,
-                    self.body_body_contact_penalty_k,
-                ],
-                outputs=[
-                    self.contact_history_lambda,
-                    self.contact_history_stick_flag,
-                    self.contact_history_penalty_k,
-                ],
-                device=self.device,
-            )
+        # Snapshot solved contact rows for the next step's warm-start.
+        wp.launch(
+            kernel=snapshot_body_body_contact_history,
+            dim=contact_launch_dim,
+            inputs=[
+                contacts.rigid_contact_count,
+                contacts.rigid_contact_point0,
+                contacts.rigid_contact_point1,
+                contacts.rigid_contact_normal,
+                self.body_body_contact_lambda,
+                self.body_body_contact_stick_flag,
+                self.body_body_contact_penalty_k,
+            ],
+            outputs=[
+                self._prev_contact_lambda,
+                self._prev_contact_stick_flag,
+                self._prev_contact_penalty_k,
+                self._prev_contact_point0,
+                self._prev_contact_point1,
+                self._prev_contact_normal,
+            ],
+            device=self.device,
+        )
 
     def _penetration_free_truncation(self, particle_q_out=None):
         """
@@ -1775,11 +1709,24 @@ class SolverVBD(SolverBase):
 
                     # Restore AVBD body-body contact state from history and pre-compute material properties
                     if self.rigid_contact_history:
-                        if (
-                            self.contact_history_ht is None
-                            or self.contact_history_slots.shape[0] < contacts.rigid_contact_max
-                        ):
-                            self._init_contact_history(contacts.rigid_contact_max)
+                        if contacts.rigid_contact_match_index is None:
+                            raise RuntimeError(
+                                "SolverVBD(rigid_contact_history=True) requires Contacts with "
+                                "rigid_contact_match_index populated. Create contacts through "
+                                'CollisionPipeline(contact_matching="latest") for VBD warm-starting, '
+                                "or set rigid_contact_history=False."
+                            )
+
+                        if self._prev_contact_lambda is None or self._prev_contact_lambda.shape[0] < contact_launch_dim:
+                            self._init_rigid_contact_warmstart(contact_launch_dim)
+
+                        history = RigidContactHistory()
+                        history.lambda_ = self._prev_contact_lambda
+                        history.stick_flag = self._prev_contact_stick_flag
+                        history.penalty_k = self._prev_contact_penalty_k
+                        history.point0 = self._prev_contact_point0
+                        history.point1 = self._prev_contact_point1
+                        history.normal = self._prev_contact_normal
 
                         wp.launch(
                             kernel=init_body_body_contacts_avbd,
@@ -1795,15 +1742,8 @@ class SolverVBD(SolverBase):
                                 model.shape_material_kd,
                                 model.shape_material_mu,
                                 self.rigid_contact_hard,
-                                self.contact_history_ht.keys,
-                                self.contact_history_point0,
-                                self.contact_history_point1,
-                                self.contact_history_lambda,
-                                self.contact_history_normal,
-                                self.contact_history_stick_flag,
-                                self.contact_history_penalty_k,
-                                self.rigid_contact_match_cell_size_inv,
-                                self.rigid_contact_match_tolerance_sq,
+                                contacts.rigid_contact_match_index,
+                                history,
                                 self.rigid_contact_k_start_value,
                             ],
                             outputs=[
