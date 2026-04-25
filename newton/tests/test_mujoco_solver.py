@@ -1405,7 +1405,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         Verify that joint_limit_ke and joint_limit_kd are properly converted to MuJoCo's solref_limit
         using the negative convention ``solref_limit = (-ke * factor, -kd * factor)`` where
         ``factor = dof_invweight0 * (1 - dmax)`` makes MuJoCo's effective stiffness match the
-        force-space values users configure (issue #2009).
+        force-space values users configure.
         """
         # Skip if no joints
         if self.model.joint_dof_count == 0:
@@ -8969,7 +8969,7 @@ class TestUpdateContactsPointPositions(unittest.TestCase):
 
 
 class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
-    """Regression tests for the joint-limit portion of issue #2009.
+    """Regression tests for joint-limit solref calibration.
 
     Newton users set :meth:`ModelBuilder.add_joint_revolute` ``limit_ke`` /
     ``limit_kd`` as *force-space* stiffness/damping (N·m/rad). MuJoCo's
@@ -8977,15 +8977,15 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
     ``k_eff = k / (invweight * (1 - dmax))``. Unless the Newton→MuJoCo
     ``jnt_solref`` conversion pre-multiplies by
     ``dof_invweight0 * (1 - dmax)`` the simulated stiffness ends up
-    scaled by the DOF inertia — the bug reported in
-    https://github.com/newton-physics/newton/issues/2009.
+    scaled by the DOF inertia instead of matching the configured
+    force-space limit response.
 
     The analogous scaling for ``shape_material_ke``/``kd`` on
     ``geom_solref`` is **not** applied, because MuJoCo mixes contact
     ``solref`` linearly in ``(timeconst, dampratio)`` space, which is
     non-linear in ``(ke, kd)`` and collapses dynamic-vs-static contact
-    stiffness. A fix for the contact case needs contact-time mixing and
-    is tracked separately.
+    stiffness. The contact case therefore needs a separate contact-time
+    mixing design.
     """
 
     def _build_pendulum_model(self, mass: float, ke: float, kd: float, *, inertia: float = 0.5, gravity: float = -9.81):
@@ -9020,8 +9020,9 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         factor = dof_invweight0 * (1.0 - dmax)
 
         actual_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
-        self.assertAlmostEqual(float(actual_solref[0]), -ke * factor, places=5)
-        self.assertAlmostEqual(float(actual_solref[1]), -kd * factor, places=5)
+        rel_tol = 1e-4
+        self.assertAlmostEqual(float(actual_solref[0]), -ke * factor, delta=abs(ke * factor) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[1]), -kd * factor, delta=abs(kd * factor) * rel_tol)
 
     def test_joint_limit_solref_updates_after_mass_change(self):
         """Changing inertia and notifying the solver must recompute the ``invweight0`` factor."""
@@ -9054,6 +9055,55 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         rel_tol = 1e-4
         self.assertAlmostEqual(float(actual_solref[0]), expected_ke, delta=abs(expected_ke) * rel_tol)
         self.assertAlmostEqual(float(actual_solref[1]), expected_kd, delta=abs(expected_kd) * rel_tol)
+
+    def test_joint_limit_solref_resets_to_default_when_limit_ke_is_disabled(self):
+        """Runtime ``ke -> 0`` updates must restore the same limit ``solref`` as a fresh ``ke=0`` model."""
+        model = self._build_pendulum_model(mass=2.0, ke=10000.0, kd=100.0, inertia=0.5)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        default_model = self._build_pendulum_model(mass=2.0, ke=0.0, kd=0.0, inertia=0.5)
+        default_solver = SolverMuJoCo(default_model, iterations=1, disable_contacts=True)
+        expected_solref = default_solver.mjw_model.jnt_solref.numpy()[0, 0]
+
+        initial_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
+        self.assertNotAlmostEqual(float(initial_solref[0]), float(expected_solref[0]), places=3)
+        self.assertNotAlmostEqual(float(initial_solref[1]), float(expected_solref[1]), places=3)
+
+        model.joint_limit_ke.assign(np.array([0.0], dtype=np.float32))
+        model.joint_limit_kd.assign(np.array([0.0], dtype=np.float32))
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        actual_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
+        self.assertAlmostEqual(float(actual_solref[0]), float(expected_solref[0]), places=6)
+        self.assertAlmostEqual(float(actual_solref[1]), float(expected_solref[1]), places=6)
+
+    def test_cpu_backend_scales_joint_limit_solref_after_set_const(self):
+        """CPU ``MjModel.jnt_solref`` must use the same force-space scaling as the warp backend."""
+        ke = 50000.0
+        kd = 500.0
+        model = self._build_pendulum_model(mass=1.0, ke=ke, kd=kd, inertia=0.5, gravity=0.0)
+        solver = SolverMuJoCo(model, iterations=50, disable_contacts=True, use_mujoco_cpu=True)
+
+        def assert_scaled_solref():
+            dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+            dmax = float(solver.mj_model.jnt_solimp[0, 1])
+            factor = dof_invweight0 * (1.0 - dmax)
+            expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+            actual_solref = np.array(solver.mj_model.jnt_solref[0], dtype=np.float64)
+            np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-6, atol=1e-6)
+
+        assert_scaled_solref()
+
+        new_mass = np.array([4.0], dtype=np.float32)
+        new_inertia = np.array([np.eye(3, dtype=np.float32) * 0.2], dtype=np.float32)
+        model.body_mass.assign(new_mass)
+        model.body_inertia.assign(new_inertia)
+        model.body_inv_mass.assign(1.0 / new_mass)
+        model.body_inv_inertia.assign(np.linalg.inv(new_inertia))
+
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        assert_scaled_solref()
 
     def test_joint_limit_torque_matches_configured_stiffness(self):
         """Scaled ``jnt_solref`` produces a mass-independent constraint response.

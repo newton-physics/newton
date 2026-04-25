@@ -2072,10 +2072,10 @@ def update_jnt_properties_kernel(
     Iterates over MuJoCo joints [world, jnt], looks up Newton DOF,
     and copies joint-level properties (limits, stiffness, solimp).
 
-    ``jnt_solref`` for joint limits is **not** written here. It must be scaled
-    by ``dof_invweight0 * (1 - dmax)`` (see ``update_jnt_solref_from_invweight0_kernel``),
-    which requires that ``dof_invweight0`` and ``jnt_solimp`` have already been
-    populated by MuJoCo's ``set_const_0``/``mj_setConst``.
+    ``jnt_solref`` for joint limits is **not** written here. This kernel writes
+    the current ``jnt_solimp`` values; ``update_jnt_solref_from_invweight0_kernel``
+    must run later, after MuJoCo refreshes ``dof_invweight0`` via
+    ``set_const_0`` / ``mj_setConst``.
     """
     world, mjc_jnt = wp.tid()
     newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
@@ -2352,7 +2352,9 @@ def update_jnt_solref_from_invweight0_kernel(
     ``limit_kd``.
 
     The limit uses the negative (stiffness, damping) convention so the result is
-    ``solref = (-ke * factor, -kd * factor)``. ``dof_invweight0`` is only valid
+    ``solref = (-ke * factor, -kd * factor)``. When ``ke <= 0``, Newton restores
+    MuJoCo's default ``(0.02, 1.0)`` pair so runtime disablement matches a fresh
+    model compiled without ``solref_limit``. ``dof_invweight0`` is only valid
     after MuJoCo's ``set_const_0`` / ``mj_setConst`` has run, so this kernel must
     be launched from ``notify_model_changed`` after those calls (and once at
     initialisation right after ``put_model``).
@@ -2365,7 +2367,10 @@ def update_jnt_solref_from_invweight0_kernel(
     ke = joint_limit_ke[newton_dof]
     kd = joint_limit_kd[newton_dof]
     if ke <= 0.0:
-        return  # Keep the default solref inherited from the spec.
+        # Restore MuJoCo's compiled default so runtime ``ke -> 0`` updates
+        # behave the same as a fresh model built without a custom limit solref.
+        jnt_solref[world, mjc_jnt] = wp.vec2(0.02, 1.0)
+        return
 
     dof_idx = jnt_dofadr[mjc_jnt]
     invw = dof_invweight0[world, dof_idx]

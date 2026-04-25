@@ -161,6 +161,7 @@ class SolverMuJoCo(SolverBase):
     """
 
     _KINEMATIC_ARMATURE = 1.0e10
+    _DEFAULT_LIMIT_SOLREF = np.array((0.02, 1.0), dtype=np.float64)
 
     class CtrlSource(IntEnum):
         """Control source for MuJoCo actuators.
@@ -3262,12 +3263,10 @@ class SolverMuJoCo(SolverBase):
             flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES
         )
 
-        # Any change that touches ``dof_invweight0`` (via ``set_const_0`` /
-        # ``mj_setConst``) **or** that overwrites ``joint_limit_ke``/``kd``
-        # requires re-scaling ``jnt_solref`` so the MuJoCo limit-constraint
-        # solver produces the force-space stiffness Newton users configured
-        # (#2009).
-        need_solref_update = bool(need_const_0) or bool(flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        # ``need_const_0`` already covers every update that changes the derived
+        # ``dof_invweight0`` factors or the source joint-limit data, so it also
+        # captures every case that needs ``jnt_solref`` to be re-scaled.
+        need_solref_update = need_const_0
 
         if self.use_mujoco_cpu:
             if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
@@ -3281,9 +3280,9 @@ class SolverMuJoCo(SolverBase):
             if need_length_range or need_const_fixed or need_const_0:
                 self._mujoco.mj_setConst(self.mj_model, self.mj_data)
             if need_solref_update:
-                # ``_update_solref_from_invweight0`` depends on MuJoCo having
-                # populated ``*_invweight0`` and ``*_solimp`` via
-                # ``mj_setConst`` above.
+                # ``mj_setConst`` refreshes the derived ``dof_invweight0``
+                # factors; ``jnt_solimp`` was already written by
+                # ``_update_joint_dof_properties`` above.
                 self._update_solref_from_invweight0()
             # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
             # without accounting for Newton's dof_ref, so we overwrite with the
@@ -3310,9 +3309,9 @@ class SolverMuJoCo(SolverBase):
                     if need_const_0:
                         self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
                     if need_solref_update:
-                        # Depends on ``set_const_0`` having already populated
-                        # ``body_invweight0`` / ``dof_invweight0`` in
-                        # ``self.mjw_model``.
+                        # ``set_const_0`` refreshes ``dof_invweight0`` and
+                        # ``jnt_solimp`` was already written by
+                        # ``_update_joint_dof_properties`` above.
                         self._update_solref_from_invweight0()
                     # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
                     # without accounting for Newton's dof_ref, so we overwrite with the
@@ -5888,7 +5887,7 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-        # Update joint properties (limits, stiffness, solref, solimp) - iterate over MuJoCo joints
+        # Update joint properties (limits, stiffness, solimp) per MuJoCo joint.
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
         joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
         joint_stiffness = getattr(mujoco_attrs, "dof_passive_stiffness", None) if mujoco_attrs is not None else None
@@ -5915,9 +5914,9 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
-        # Joint limit solref is scaled by dof_invweight0 * (1 - dmax) in
-        # ``_update_solref_from_invweight0`` after ``set_const_0`` /
-        # ``mj_setConst`` populate ``dof_invweight0`` and ``jnt_solimp``.
+        # Joint-limit solref is updated later, after ``set_const_0`` /
+        # ``mj_setConst`` refresh ``dof_invweight0``. ``jnt_solimp`` already
+        # comes from the launch above.
 
         # Sync qpos0 and qpos_spring from Newton model data before set_const.
         # set_const copies qpos0 → d.qpos and runs FK to compute derived fields,
@@ -6443,12 +6442,13 @@ class SolverMuJoCo(SolverBase):
         user-facing ``joint_limit_ke``/``joint_limit_kd`` are force-space
         quantities, so ``jnt_solref`` has to be pre-scaled by
         ``dof_invweight0 * (1 - dmax)`` for the downstream ``k_eff`` to
-        match the user's intent (issue #2009).
+        match the user's configured force-space stiffness and damping.
 
-        This must run **after** MuJoCo populates ``dof_invweight0`` and
-        ``jnt_solimp`` — i.e., after ``set_const_0`` / ``mj_setConst`` on
-        the current ``ModelBuilder``/``notify_model_changed`` cycle, and
-        once right after ``put_model`` during initialisation.
+        This must run **after** ``_update_joint_dof_properties`` writes the
+        current ``jnt_solimp`` values and after MuJoCo refreshes
+        ``dof_invweight0`` via ``set_const_0`` / ``mj_setConst`` on the
+        current ``ModelBuilder`` / ``notify_model_changed`` cycle (and once
+        right after ``put_model`` during initialisation).
 
         ``geom_solref`` is **not** scaled the same way: MuJoCo mixes the
         two contacting geoms' ``solref`` linearly in ``(timeconst,
@@ -6459,31 +6459,50 @@ class SolverMuJoCo(SolverBase):
         stiffness collapses. Shape-material contact stiffness therefore
         stays on MuJoCo's existing (unscaled) pathway.
         """
+        njnt = self.mjc_jnt_to_newton_dof.shape[1]
+        if njnt == 0 or self.model.joint_limit_ke is None:
+            return
+
         if self.use_mujoco_cpu:
-            # The CPU ``MjData`` path keeps ``jnt_solref`` on the MjModel
-            # (not a warp array), and the unit tests target the warp path.
-            # CPU callers still get the (buggy) unscaled mapping from the
-            # spec until a dedicated code path is added.
+            joint_limit_ke = self.model.joint_limit_ke.numpy()
+            joint_limit_kd = self.model.joint_limit_kd.numpy()
+            jnt_to_newton_dof = self.mjc_jnt_to_newton_dof.numpy()[0]
+            jnt_solref = np.array(self.mj_model.jnt_solref, dtype=np.float64, copy=True)
+
+            for mjc_jnt, newton_dof in enumerate(jnt_to_newton_dof):
+                if newton_dof < 0:
+                    continue
+
+                ke = float(joint_limit_ke[newton_dof])
+                if ke <= 0.0:
+                    jnt_solref[mjc_jnt] = self._DEFAULT_LIMIT_SOLREF
+                    continue
+
+                kd = float(joint_limit_kd[newton_dof])
+                dof_idx = int(self.mj_model.jnt_dofadr[mjc_jnt])
+                invw = float(self.mj_model.dof_invweight0[dof_idx])
+                dmax = float(self.mj_model.jnt_solimp[mjc_jnt][1])
+                factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
+                jnt_solref[mjc_jnt] = (-ke * factor, -kd * factor)
+
+            self.mj_model.jnt_solref[:] = jnt_solref
             return
 
         nworld = self.mjc_jnt_to_newton_dof.shape[0]
-
-        njnt = self.mjc_jnt_to_newton_dof.shape[1]
-        if njnt > 0 and self.model.joint_limit_ke is not None:
-            wp.launch(
-                update_jnt_solref_from_invweight0_kernel,
-                dim=(nworld, njnt),
-                inputs=[
-                    self.mjc_jnt_to_newton_dof,
-                    self.model.joint_limit_ke,
-                    self.model.joint_limit_kd,
-                    self.mjw_model.jnt_dofadr,
-                    self.mjw_model.dof_invweight0,
-                    self.mjw_model.jnt_solimp,
-                ],
-                outputs=[self.mjw_model.jnt_solref],
-                device=self.model.device,
-            )
+        wp.launch(
+            update_jnt_solref_from_invweight0_kernel,
+            dim=(nworld, njnt),
+            inputs=[
+                self.mjc_jnt_to_newton_dof,
+                self.model.joint_limit_ke,
+                self.model.joint_limit_kd,
+                self.mjw_model.jnt_dofadr,
+                self.mjw_model.dof_invweight0,
+                self.mjw_model.jnt_solimp,
+            ],
+            outputs=[self.mjw_model.jnt_solref],
+            device=self.model.device,
+        )
 
     def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.
