@@ -667,6 +667,24 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(leaf2_pos, expected_leaf2_xform.p, atol=1e-6)
         np.testing.assert_allclose(leaf2_quat, expected_leaf2_xform.q, atol=1e-6)
 
+    def test_native_ball_joint_preserves_friction(self):
+        """Regression: authored frictionloss on <joint type="ball"/> must reach joint_friction."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="root">
+            <joint name="j" type="ball" armature="0.5" frictionloss="1.25"/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_type[0], newton.JointType.BALL)
+        # Ball joint has 3 DOFs; all three should carry the authored friction.
+        self.assertEqual(builder.joint_friction, [1.25, 1.25, 1.25])
+
     def test_replace_3d_hinge_with_ball_joint(self):
         """Test that 3D hinge joints are replaced with ball joints."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -3989,6 +4007,41 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
 
+    def test_eq_solref_from_default(self):
+        """Regression test: <default><equality solref="..."/></default> attributes propagate.
+
+        Before the fix, equality constraints that didn't specify solref inline
+        fell back to MuJoCo's hardcoded [0.02, 1] instead of the class default.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <default>
+        <equality solref="0.005 1"/>
+    </default>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+    <equality>
+        <connect body1="body1" body2="body2" anchor="0 0 0"/>
+    </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertEqual(model.equality_constraint_count, 1)
+        eq_solref = model.mujoco.eq_solref.numpy()[0].tolist()
+        self.assertAlmostEqual(eq_solref[0], 0.005, places=6)
+        self.assertAlmostEqual(eq_solref[1], 1.0, places=6)
+
     def test_parse_mujoco_options_disabled(self):
         """Test that solver options from <option> tag are not parsed when parse_mujoco_options=False."""
         mjcf = """<?xml version="1.0" ?>
@@ -6523,9 +6576,10 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], np.deg2rad(45), places=4)
         self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], np.deg2rad(30), places=4)
 
-        # stiffness/damping: converted from Nm/deg to Nm/rad (10 Nm/deg -> 10 * 180/pi Nm/rad)
-        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10 * (180 / np.pi), places=2)
-        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5 * (180 / np.pi), places=2)
+        # stiffness/damping: MuJoCo stores these in Nm/rad and Nm*s/rad regardless of
+        # compiler.angle (velocity is always rad/s internally), so values pass through unchanged.
+        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10.0, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5.0, places=4)
 
 
 class TestMjcfMultipleWorldbody(unittest.TestCase):
@@ -6908,16 +6962,16 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         np.testing.assert_allclose(m.solimplimit.numpy()[j_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
         np.testing.assert_allclose(m.solreffriction.numpy()[j_def], [0.05, 2.0], atol=1e-4)
         np.testing.assert_allclose(m.solimpfriction.numpy()[j_def], [0.7, 0.85, 0.02, 0.3, 1.5], atol=1e-4)
-        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_def]), 2.0 * self.RAD2DEG, places=2)
-        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_def]), 3.0 * self.RAD2DEG, places=2)
+        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_def]), 2.0, places=5)
+        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_def]), 3.0, places=5)
         self.assertAlmostEqual(float(m.dof_springref.numpy()[j_def]), 45.0 * self.DEG2RAD, places=4)
         self.assertAlmostEqual(float(m.dof_ref.numpy()[j_def]), 30.0 * self.DEG2RAD, places=4)
         self.assertEqual(bool(m.jnt_actgravcomp.numpy()[j_def]), True)
 
         j_cls = idx(f"{wb}/b_class/j_class")
         self.assertAlmostEqual(float(m.limit_margin.numpy()[j_cls]), 10.0, places=5)
-        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_cls]), 20.0 * self.RAD2DEG, places=1)
-        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_cls]), 30.0 * self.RAD2DEG, places=1)
+        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_cls]), 20.0, places=5)
+        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_cls]), 30.0, places=5)
         self.assertAlmostEqual(float(m.dof_springref.numpy()[j_cls]), 90.0 * self.DEG2RAD, places=4)
         self.assertAlmostEqual(float(m.dof_ref.numpy()[j_cls]), 60.0 * self.DEG2RAD, places=4)
 

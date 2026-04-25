@@ -3,7 +3,7 @@
 
 """Frame-to-frame contact matching via binary search on sorted contact keys.
 
-Given the previous frame's sorted contacts (keys, world-space positions,
+Given the previous frame's sorted contacts (keys, world-space midpoints,
 normals) and the current frame's unsorted contacts, this module finds
 correspondences using the deterministic sort key from
 :func:`~newton._src.geometry.contact_data.make_contact_sort_key`.
@@ -11,8 +11,10 @@ correspondences using the deterministic sort key from
 For each new contact the matcher binary-searches the previous frame's
 sorted keys for the ``(shape_a, shape_b)`` pair range — ignoring the
 ``sort_sub_key`` bits — then picks the closest previous contact in that
-range whose normal also passes the dot-product threshold.  The result
-is a per-contact match index:
+range whose normal also passes the dot-product threshold.  "Closest" is
+measured in world space between the contact *midpoints*
+``0.5 * (world(point0) + world(point1))``, i.e. symmetric in shape 0 and
+shape 1.  The result is a per-contact match index:
 
 - ``>= 0``: index of the matched contact in the previous frame's sorted buffer.
 - ``MATCH_NOT_FOUND (-1)``: shape pair has no prior contacts.
@@ -55,25 +57,35 @@ Memory efficiency
 -----------------
 The matcher reuses the :class:`ContactSorter`'s existing scratch buffers
 (:attr:`ContactSorter.scratch_pos_world`, :attr:`ContactSorter.scratch_normal`)
-to store previous-frame world-space positions and normals between frames.
-This works because matching runs *before* sorting each frame (so the
-scratch data is still intact), and the save step runs *after* sorting
-(overwriting the scratch with the new sorted data).  The only additional
-per-contact allocation is the ``_prev_sorted_keys`` buffer (8 bytes/contact)
-since the sorter's key buffer is overwritten by ``_prepare_sort`` each frame.
+to store previous-frame world-space contact midpoints and normals between
+frames.  This works for the *match* kernel because matching runs **before**
+``ContactSorter.sort_full``, so the scratch buffers still hold the previous
+frame's saved data; ``save_sorted_state`` runs **after** sorting and
+refreshes them in-place for the next frame.  The only additional
+per-contact allocation for the non-sticky path is the ``_prev_sorted_keys``
+buffer (8 bytes/contact) since the sorter's key buffer is overwritten by
+``_prepare_sort`` each frame.
+
+Sticky mode needs one extra dedicated buffer (``_prev_normal_sticky``,
+12 bytes/contact) because :meth:`replay_matched` runs **after**
+``sort_full``, at which point the sorter's ``scratch_normal`` has been
+clobbered by the sort's backup pass and no longer contains the previous
+frame's sorted normals.  The body-frame point/offset columns already use
+dedicated sticky buffers for the same reason.
 
 Per-frame call order (inside :class:`~newton.CollisionPipeline`)::
 
     matcher.match(...)  # before ContactSorter.sort_full()
     sorter.sort_full(...)  # match_index is permuted with contacts
+    matcher.replay_matched(...)  # sticky-only; overwrite matched rows
     matcher.build_report(...)  # optional; must precede save_sorted_state
-    matcher.save_sorted_state(...)  # after sorting and report
+    matcher.save_sorted_state(...)  # after sorting, replay, and report
 
-The ``build_report`` / ``save_sorted_state`` ordering is load-bearing:
-``save_sorted_state`` overwrites ``_prev_count`` with the current frame's
-count, while ``build_report`` reads the *old* ``_prev_count`` to bound the
-broken-contact enumeration.  Swapping the two silently narrows the
-broken-contact scan to the current frame's active range.
+The ordering matters: ``save_sorted_state`` overwrites ``_prev_count`` with
+the current frame's count, while ``build_report`` reads the *old*
+``_prev_count`` to bound the broken-contact enumeration, and sticky
+``replay_matched`` must see the post-sort ``match_index`` and the pre-save
+``_prev_*`` buffers it reads from.
 """
 
 from __future__ import annotations
@@ -164,16 +176,20 @@ def _pack_claim(dist_sq: float, tid: int) -> wp.int64:
 class _MatchData:
     """Bundled arrays for the contact match kernel."""
 
-    # Previous frame (sorted) — pos/normal reuse ContactSorter scratch buffers
+    # Previous frame (sorted) — pos/normal reuse ContactSorter scratch buffers.
+    # ``prev_pos_world`` holds the world-space *midpoint* between shape 0's and
+    # shape 1's contact points, saved by the previous frame's save kernel.
     prev_keys: wp.array[wp.int64]
     prev_pos_world: wp.array[wp.vec3]
     prev_normal: wp.array[wp.vec3]
     prev_count: wp.array[wp.int32]
 
-    # Current frame (unsorted)
+    # Current frame (unsorted).
     new_keys: wp.array[wp.int64]
     new_point0: wp.array[wp.vec3]
+    new_point1: wp.array[wp.vec3]
     new_shape0: wp.array[wp.int32]
+    new_shape1: wp.array[wp.int32]
     new_normal: wp.array[wp.vec3]
     new_count: wp.array[wp.int32]
 
@@ -211,12 +227,25 @@ def _match_contacts_kernel(data: _MatchData):
 
     target_key = data.new_keys[tid]
 
-    # Compute world-space position for the new contact.
-    bid = data.shape_body[data.new_shape0[tid]]
-    if bid == -1:
-        new_pos_w = data.new_point0[tid]
+    # World-space midpoint of the two contact points (symmetric in shape 0 /
+    # shape 1).  Matches the quantity persisted by ``_save_sorted_state_kernel``
+    # for the previous frame, so both sides of ``diff`` below measure the same
+    # physical quantity.
+    p0 = data.new_point0[tid]
+    bid0 = data.shape_body[data.new_shape0[tid]]
+    if bid0 == -1:
+        p0w = p0
     else:
-        new_pos_w = wp.transform_point(data.body_q[bid], data.new_point0[tid])
+        p0w = wp.transform_point(data.body_q[bid0], p0)
+
+    p1 = data.new_point1[tid]
+    bid1 = data.shape_body[data.new_shape1[tid]]
+    if bid1 == -1:
+        p1w = p1
+    else:
+        p1w = wp.transform_point(data.body_q[bid1], p1)
+
+    new_pos_w = 0.5 * (p0w + p1w)
     new_n = data.new_normal[tid]
 
     # Binary search the [range_lo, range_hi) interval of prev contacts
@@ -314,11 +343,24 @@ def _resolve_claims_kernel(
 
 @wp.struct
 class _SaveStateData:
-    """Bundled arrays for the save-sorted-state kernel."""
+    """Bundled arrays for the save-sorted-state kernel.
+
+    ``src_point0`` / ``src_point1`` and their shape indices are consumed every
+    frame to compute the symmetric world-space midpoint written into
+    ``dst_pos_world``.  ``src_offset*`` and the ``dst_*_body`` columns are
+    only consumed when ``has_sticky != 0``; when sticky is disabled the
+    matcher passes dummy arrays for those slots and the kernel's
+    ``if has_sticky`` guard skips the extra writes, so sticky-only columns
+    need zero allocation in the non-sticky path.
+    """
 
     src_keys: wp.array[wp.int64]
     src_point0: wp.array[wp.vec3]
+    src_point1: wp.array[wp.vec3]
+    src_offset0: wp.array[wp.vec3]
+    src_offset1: wp.array[wp.vec3]
     src_shape0: wp.array[wp.int32]
+    src_shape1: wp.array[wp.int32]
     src_normal: wp.array[wp.vec3]
     src_count: wp.array[wp.int32]
 
@@ -326,25 +368,114 @@ class _SaveStateData:
     shape_body: wp.array[wp.int32]
 
     dst_keys: wp.array[wp.int64]
-    dst_pos_world: wp.array[wp.vec3]
+    dst_pos_world: wp.array[wp.vec3]  # world-space midpoint of point0 and point1
     dst_normal: wp.array[wp.vec3]
+    dst_point0_body: wp.array[wp.vec3]
+    dst_point1_body: wp.array[wp.vec3]
+    dst_offset0_body: wp.array[wp.vec3]
+    dst_offset1_body: wp.array[wp.vec3]
+    # Dedicated sticky-replay normal buffer.  Duplicates ``dst_normal`` content
+    # but lives in its own allocation so sticky replay (which runs between
+    # ``sort_full`` and the next ``save_sorted_state``) is not reading the
+    # sorter's ``scratch_normal`` after the sort has clobbered it.
+    dst_normal_sticky: wp.array[wp.vec3]
     dst_count: wp.array[wp.int32]
+
+    has_sticky: int
 
 
 @wp.kernel(enable_backward=False)
 def _save_sorted_state_kernel(data: _SaveStateData):
-    """Copy sorted contacts into the previous-frame buffers for next-frame matching."""
+    """Copy sorted contacts into the previous-frame buffers for next-frame matching.
+
+    The persisted ``dst_pos_world`` is the world-space *midpoint* of the two
+    contact points, so the next frame's match kernel compares a shape-symmetric
+    quantity.
+    """
     i = wp.tid()
     if i == 0:
         data.dst_count[0] = data.src_count[0]
     if i < data.src_count[0]:
         data.dst_keys[i] = data.src_keys[i]
-        bid = data.shape_body[data.src_shape0[i]]
-        if bid == -1:
-            data.dst_pos_world[i] = data.src_point0[i]
+
+        p0 = data.src_point0[i]
+        bid0 = data.shape_body[data.src_shape0[i]]
+        if bid0 == -1:
+            p0w = p0
         else:
-            data.dst_pos_world[i] = wp.transform_point(data.body_q[bid], data.src_point0[i])
+            p0w = wp.transform_point(data.body_q[bid0], p0)
+
+        p1 = data.src_point1[i]
+        bid1 = data.shape_body[data.src_shape1[i]]
+        if bid1 == -1:
+            p1w = p1
+        else:
+            p1w = wp.transform_point(data.body_q[bid1], p1)
+
+        data.dst_pos_world[i] = 0.5 * (p0w + p1w)
         data.dst_normal[i] = data.src_normal[i]
+
+        if data.has_sticky != 0:
+            data.dst_point0_body[i] = p0
+            data.dst_point1_body[i] = p1
+            data.dst_offset0_body[i] = data.src_offset0[i]
+            data.dst_offset1_body[i] = data.src_offset1[i]
+            data.dst_normal_sticky[i] = data.src_normal[i]
+
+
+# ------------------------------------------------------------------
+# Sticky-mode replay (matched rows only)
+# ------------------------------------------------------------------
+#
+# Sticky mode preserves only the fields that actually change across frames
+# for a matched contact: the body-frame contact points (``point0``/``point1``)
+# and offsets (``offset0``/``offset1``), plus the world-frame normal (which
+# is already persisted for matching in ``prev_normal``, no extra allocation).
+#
+# Everything else is either key-derived or a per-shape constant that does
+# not change between frames, so the new frame's values are already correct:
+#
+# - ``shape0`` / ``shape1``  : implied by the sort key; identical by
+#   construction for matched contacts.
+# - ``margin0`` / ``margin1``: ``radius_eff + margin``, per-shape constant.
+# - ``stiffness`` / ``damping`` / ``friction``: per-shape constants, and
+#   contact matching for hydroelastic contacts (the only path that writes
+#   these) is not supported anyway.
+
+
+@wp.struct
+class _ReplayData:
+    """Bundled arrays for the sticky replay kernel."""
+
+    match_index: wp.array[wp.int32]
+    contact_count: wp.array[wp.int32]
+
+    prev_point0: wp.array[wp.vec3]
+    prev_point1: wp.array[wp.vec3]
+    prev_offset0: wp.array[wp.vec3]
+    prev_offset1: wp.array[wp.vec3]
+    prev_normal: wp.array[wp.vec3]
+
+    point0: wp.array[wp.vec3]
+    point1: wp.array[wp.vec3]
+    offset0: wp.array[wp.vec3]
+    offset1: wp.array[wp.vec3]
+    normal: wp.array[wp.vec3]
+
+
+@wp.kernel(enable_backward=False)
+def _replay_matched_kernel(data: _ReplayData):
+    tid = wp.tid()
+    if tid >= data.contact_count[0]:
+        return
+    idx = data.match_index[tid]
+    if idx < wp.int32(0):
+        return  # MATCH_NOT_FOUND or MATCH_BROKEN -- keep new-frame data.
+    data.point0[tid] = data.prev_point0[idx]
+    data.point1[tid] = data.prev_point1[idx]
+    data.offset0[tid] = data.prev_offset0[idx]
+    data.offset1[tid] = data.prev_offset1[idx]
+    data.normal[tid] = data.prev_normal[idx]
 
 
 # ------------------------------------------------------------------
@@ -397,44 +528,45 @@ class ContactMatcher:
     :class:`~newton.Contacts` container; this class only owns cross-frame state.
 
     Pre-allocates all buffers at construction time for CUDA graph capture
-    compatibility.  The typical per-frame call sequence is::
+    compatibility.  See the module docstring for the per-frame call order and
+    the ordering constraints between :meth:`match`, :meth:`replay_matched`,
+    :meth:`build_report`, and :meth:`save_sorted_state`.
 
-        matcher.match(...)  # before ContactSorter.sort_full()
-        sorter.sort_full(...)  # match_index is permuted with contacts
-        matcher.build_report(...)  # optional; must precede save_sorted_state
-        matcher.save_sorted_state(...)  # after sorting and report
-
-    The ``build_report`` → ``save_sorted_state`` order is required:
-    ``save_sorted_state`` overwrites ``_prev_count`` with the current frame's
-    count, while ``build_report`` reads the *old* ``_prev_count`` to bound
-    the broken-contact enumeration.
-
-    Memory is minimised by reusing the *sorter*'s existing scratch buffers
-    for the previous-frame world-space positions and normals.  The
-    matcher owns two small per-contact buffers in addition: the sorted
-    key cache (8 bytes/contact) and the per-prev claim word used by the
-    ``atomic_min`` race that keeps new→prev injective (8 bytes/contact).
-    When ``contact_report`` is disabled, the ``prev_was_matched`` flag
-    array (4 bytes) is also skipped.
+    Memory is minimised by reusing the sorter's existing scratch buffers for
+    the previous-frame world-space contact midpoints and normals.  The matcher
+    owns two small per-contact buffers in addition: the sorted key cache
+    (8 bytes/contact) and the per-prev claim word used by the ``atomic_min``
+    race that keeps new→prev injective (8 bytes/contact).  When
+    ``contact_report`` is disabled, the ``prev_was_matched`` flag array is
+    also skipped.
 
     .. note::
         Previous-frame state persists across :meth:`~newton.CollisionPipeline.collide`
-        calls — that is the whole point.  But in RL-style workflows where a
-        user resets or teleports all bodies between episodes, the stale
-        previous-frame data will produce spurious matches on the next frame.
-        Call :meth:`reset` after such discontinuities to zero ``_prev_count``
-        so the next frame starts fresh with all ``MATCH_NOT_FOUND``.
+        calls — that is the whole point.  In RL-style workflows where the user
+        resets or teleports bodies between episodes, call :meth:`reset` after
+        such discontinuities so the next frame starts fresh with all
+        :data:`MATCH_NOT_FOUND`.
 
     Args:
         capacity: Maximum number of contacts (must match :class:`ContactSorter`).
         sorter: The :class:`ContactSorter` whose scratch buffers will be
             reused for storing previous-frame positions and normals.
-        pos_threshold: World-space distance threshold [m].  Contacts whose
-            positions moved more than this between frames are considered broken.
+        pos_threshold: World-space distance threshold [m] between the
+            previous and current contact midpoints
+            ``0.5 * (world(point0) + world(point1))``.  Contacts whose midpoint
+            moved more than this between frames are considered broken.
         normal_dot_threshold: Minimum dot product between old and new contact
             normals.  Below this the contact is considered broken.
         contact_report: Allocate the ``prev_was_matched`` flag array needed
             to enumerate broken contacts in :meth:`build_report`.
+        sticky: Allocate five extra per-contact ``wp.vec3`` buffers
+            (``point0``/``point1``/``offset0``/``offset1`` body-frame, plus a
+            dedicated ``normal`` buffer) used by :meth:`replay_matched`.  The
+            world-frame normal needs its own allocation because sticky replay
+            runs after ``ContactSorter.sort_full`` has clobbered the
+            ``scratch_normal`` alias the match kernel reads pre-sort.  When
+            ``False`` these attributes are ``None`` and no extra kernel
+            launches are added.
         device: Device to allocate on.
     """
 
@@ -443,9 +575,10 @@ class ContactMatcher:
         capacity: int,
         *,
         sorter: ContactSorter,
-        pos_threshold: float = 0.02,
-        normal_dot_threshold: float = 0.9,
+        pos_threshold: float = 0.0005,
+        normal_dot_threshold: float = 0.995,
         contact_report: bool = False,
+        sticky: bool = False,
         device: Devicelike = None,
     ):
         with wp.ScopedDevice(device):
@@ -476,6 +609,29 @@ class ContactMatcher:
                 # Dummy single-element array so the Warp struct is always valid.
                 self._prev_was_matched = wp.zeros(1, dtype=wp.int32)
 
+            # Sticky-mode buffers.  Only the body-frame point/offset pairs
+            # and the world-frame normal need preserving -- shape indices,
+            # margins, and per-shape properties are either key-derived or
+            # per-shape constants and so identical on the next frame for a
+            # matched contact.  The normal cannot reuse the sorter's
+            # ``scratch_normal`` like the match kernel does, because sticky
+            # replay runs *after* ``ContactSorter.sort_full`` and by then
+            # ``scratch_normal`` has been clobbered with the current frame's
+            # pre-sort normals by the sort's backup pass.
+            self._sticky = sticky
+            if sticky:
+                self._prev_point0 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_point1 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_offset0 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_offset1 = wp.zeros(capacity, dtype=wp.vec3)
+                self._prev_normal_sticky = wp.zeros(capacity, dtype=wp.vec3)
+            else:
+                self._prev_point0 = None
+                self._prev_point1 = None
+                self._prev_offset0 = None
+                self._prev_offset1 = None
+                self._prev_normal_sticky = None
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -486,7 +642,12 @@ class ContactMatcher:
         return self._has_report
 
     @property
-    def prev_contact_count(self) -> wp.array:
+    def is_sticky(self) -> bool:
+        """Whether sticky-mode full-record buffers are allocated."""
+        return self._sticky
+
+    @property
+    def prev_contact_count(self) -> wp.array[wp.int32]:
         """Device-side previous frame contact count (single-element int32)."""
         return self._prev_count
 
@@ -494,15 +655,11 @@ class ContactMatcher:
         """Clear cross-frame state so the next frame starts fresh.
 
         Use this after any discontinuity that invalidates the previous
-        frame's contacts — e.g. resetting an RL environment, teleporting
-        bodies, or loading a new scene.  After ``reset()`` the next call to
-        :meth:`match` produces all :data:`MATCH_NOT_FOUND` and
-        :meth:`build_report` reports zero broken contacts.
-
-        Zeroing ``_prev_count`` is sufficient to short-circuit both paths;
-        the previous-frame key and position buffers are not touched, but
-        they will not be read because both kernels gate on ``_prev_count``
-        / ``prev_count``.
+        frame's contacts (RL episode reset, teleported bodies, scene
+        reload).  After ``reset()`` the next :meth:`match` produces all
+        :data:`MATCH_NOT_FOUND` and :meth:`build_report` reports zero broken
+        contacts.  Zeroing ``_prev_count`` is sufficient because both kernels
+        gate on it.
         """
         self._prev_count.zero_()
 
@@ -512,14 +669,16 @@ class ContactMatcher:
 
     def match(
         self,
-        sort_keys: wp.array,
-        contact_count: wp.array,
-        point0: wp.array,
-        shape0: wp.array,
-        normal: wp.array,
-        body_q: wp.array,
-        shape_body: wp.array,
-        match_index_out: wp.array,
+        sort_keys: wp.array[wp.int64],
+        contact_count: wp.array[wp.int32],
+        point0: wp.array[wp.vec3],
+        point1: wp.array[wp.vec3],
+        shape0: wp.array[wp.int32],
+        shape1: wp.array[wp.int32],
+        normal: wp.array[wp.vec3],
+        body_q: wp.array[wp.transform],
+        shape_body: wp.array[wp.int32],
+        match_index_out: wp.array[wp.int32],
         *,
         device: Devicelike = None,
     ) -> None:
@@ -527,11 +686,17 @@ class ContactMatcher:
 
         Must be called **before** :meth:`ContactSorter.sort_full`.
 
+        Distance is measured between world-space contact midpoints
+        (``0.5 * (world(point0) + world(point1))``) so the metric is symmetric
+        in shape 0 / shape 1.
+
         Args:
             sort_keys: Current frame's unsorted int64 sort keys.
             contact_count: Single-element int array with active contact count.
             point0: Body-frame contact points on shape 0 (current frame).
+            point1: Body-frame contact points on shape 1 (current frame).
             shape0: Shape indices for shape 0 (current frame).
+            shape1: Shape indices for shape 1 (current frame).
             normal: Contact normals (current frame).
             body_q: Body transforms for the current frame.
             shape_body: Shape-to-body index map.
@@ -562,7 +727,9 @@ class ContactMatcher:
         data.prev_count = self._prev_count
         data.new_keys = sort_keys
         data.new_point0 = point0
+        data.new_point1 = point1
         data.new_shape0 = shape0
+        data.new_shape1 = shape1
         data.new_normal = normal
         data.new_count = contact_count
         data.body_q = body_q
@@ -588,60 +755,147 @@ class ContactMatcher:
 
     def save_sorted_state(
         self,
-        sorted_keys: wp.array,
-        contact_count: wp.array,
-        sorted_point0: wp.array,
-        sorted_shape0: wp.array,
-        sorted_normal: wp.array,
-        body_q: wp.array,
-        shape_body: wp.array,
+        sorted_keys: wp.array[wp.int64],
+        contact_count: wp.array[wp.int32],
+        sorted_point0: wp.array[wp.vec3],
+        sorted_point1: wp.array[wp.vec3],
+        sorted_shape0: wp.array[wp.int32],
+        sorted_shape1: wp.array[wp.int32],
+        sorted_normal: wp.array[wp.vec3],
+        body_q: wp.array[wp.transform],
+        shape_body: wp.array[wp.int32],
         *,
+        sorted_offset0: wp.array[wp.vec3] | None = None,
+        sorted_offset1: wp.array[wp.vec3] | None = None,
         device: Devicelike = None,
     ) -> None:
         """Save current frame's sorted contacts for next-frame matching.
 
-        Must be called **after** :meth:`ContactSorter.sort_full`.
-
-        World-space positions and normals are written into the sorter's scratch
-        buffers (:attr:`ContactSorter.scratch_pos_world`,
+        Must be called **after** :meth:`ContactSorter.sort_full`.  The
+        world-space midpoint of ``sorted_point0``/``sorted_point1`` and the
+        sorted normal are written into the sorter's scratch buffers
+        (:attr:`ContactSorter.scratch_pos_world` /
         :attr:`ContactSorter.scratch_normal`), which are idle between frames.
-        Sorted keys go to an owned buffer since the sorter's key buffer is
-        overwritten by ``_prepare_sort`` each frame.
+
+        When the matcher was built with ``sticky=True``, the body-frame
+        point/offset columns are also persisted for :meth:`replay_matched` in
+        the same kernel launch.  ``sorted_offset0`` / ``sorted_offset1`` are
+        required in that case and ignored otherwise.
 
         Args:
             sorted_keys: Sorted int64 keys (use :attr:`ContactSorter.sorted_keys_view`).
             contact_count: Single-element int array with active contact count.
             sorted_point0: Sorted body-frame contact points on shape 0.
+            sorted_point1: Sorted body-frame contact points on shape 1.
             sorted_shape0: Sorted shape 0 indices.
+            sorted_shape1: Sorted shape 1 indices.
             sorted_normal: Sorted contact normals.
             body_q: Body transforms (current frame).
             shape_body: Shape-to-body index map.
+            sorted_offset0, sorted_offset1: Required when sticky is enabled;
+                ignored otherwise.
             device: Device to launch on.
         """
         data = _SaveStateData()
         data.src_keys = sorted_keys
         data.src_point0 = sorted_point0
+        data.src_point1 = sorted_point1
         data.src_shape0 = sorted_shape0
+        data.src_shape1 = sorted_shape1
         data.src_normal = sorted_normal
         data.src_count = contact_count
         data.body_q = body_q
         data.shape_body = shape_body
         data.dst_keys = self._prev_sorted_keys
-        # Write world-space positions and normals into sorter's scratch buffers.
+        # Write world-space midpoint and normal into the sorter's scratch buffers.
         data.dst_pos_world = self._sorter.scratch_pos_world
         data.dst_normal = self._sorter.scratch_normal
         data.dst_count = self._prev_count
 
+        if self._sticky:
+            if sorted_offset0 is None or sorted_offset1 is None:
+                raise ValueError("save_sorted_state requires sorted_offset0/offset1 when sticky is enabled")
+            data.src_offset0 = sorted_offset0
+            data.src_offset1 = sorted_offset1
+            data.dst_point0_body = self._prev_point0
+            data.dst_point1_body = self._prev_point1
+            data.dst_offset0_body = self._prev_offset0
+            data.dst_offset1_body = self._prev_offset1
+            data.dst_normal_sticky = self._prev_normal_sticky
+            data.has_sticky = 1
+        else:
+            # The struct requires a valid array for every field -- the
+            # kernel guards with has_sticky==0 and never reads/writes them.
+            data.src_offset0 = sorted_point0
+            data.src_offset1 = sorted_point0
+            data.dst_point0_body = self._sorter.scratch_pos_world
+            data.dst_point1_body = self._sorter.scratch_pos_world
+            data.dst_offset0_body = self._sorter.scratch_pos_world
+            data.dst_offset1_body = self._sorter.scratch_pos_world
+            data.dst_normal_sticky = self._sorter.scratch_pos_world
+            data.has_sticky = 0
+
         wp.launch(_save_sorted_state_kernel, dim=self._capacity, inputs=[data], device=device)
+
+    def replay_matched(
+        self,
+        contact_count: wp.array[wp.int32],
+        match_index: wp.array[wp.int32],
+        *,
+        point0: wp.array[wp.vec3],
+        point1: wp.array[wp.vec3],
+        offset0: wp.array[wp.vec3],
+        offset1: wp.array[wp.vec3],
+        normal: wp.array[wp.vec3],
+        device: Devicelike = None,
+    ) -> None:
+        """Overwrite matched rows with the saved previous-frame contact geometry.
+
+        Only valid when the matcher was constructed with ``sticky=True``.  Must
+        run **after** :meth:`ContactSorter.sort_full` and **before**
+        :meth:`save_sorted_state`.  Unmatched rows (``match_index < 0``) are
+        left untouched so new contacts keep their fresh narrow-phase geometry.
+        Only ``point0``/``point1``/``offset0``/``offset1``/``normal`` are
+        restored; other fields (``shape0``/``shape1``, margins, ...) are
+        already identical for a matched contact.
+
+        Args:
+            contact_count: Single-element int array with the active contact count.
+            match_index: Sorted match_index array (from :class:`Contacts`).
+            point0, point1, offset0, offset1, normal: Current-frame sorted
+                contact record to be overwritten on matched rows.
+            device: Device to launch on.
+        """
+        if not self._sticky:
+            raise ValueError("replay_matched requires the matcher to be constructed with sticky=True")
+
+        data = _ReplayData()
+        data.match_index = match_index
+        data.contact_count = contact_count
+        data.prev_point0 = self._prev_point0
+        data.prev_point1 = self._prev_point1
+        data.prev_offset0 = self._prev_offset0
+        data.prev_offset1 = self._prev_offset1
+        # Use the dedicated sticky normal buffer, NOT sorter.scratch_normal:
+        # replay runs after ``sort_full``, which has clobbered scratch_normal
+        # with the current frame's pre-sort normals during its backup pass.
+        data.prev_normal = self._prev_normal_sticky
+        data.point0 = point0
+        data.point1 = point1
+        data.offset0 = offset0
+        data.offset1 = offset1
+        data.normal = normal
+
+        wp.launch(_replay_matched_kernel, dim=self._capacity, inputs=[data], device=device)
 
     def build_report(
         self,
-        match_index: wp.array,
-        contact_count: wp.array,
-        new_indices: wp.array,
-        new_count: wp.array,
-        broken_indices: wp.array,
-        broken_count: wp.array,
+        match_index: wp.array[wp.int32],
+        contact_count: wp.array[wp.int32],
+        new_indices: wp.array[wp.int32],
+        new_count: wp.array[wp.int32],
+        broken_indices: wp.array[wp.int32],
+        broken_count: wp.array[wp.int32],
         *,
         device: Devicelike = None,
     ) -> None:

@@ -3212,35 +3212,62 @@ def parse_usd(
         )
 
     # Parse Newton actuator prims from the USD stage.
-    try:
-        from newton_actuators import parse_actuator_prim  # noqa: PLC0415
-    except ImportError:
-        parse_actuator_prim = None
+    from ..actuators.delay import Delay  # noqa: PLC0415
+    from ..actuators.usd_parser import parse_actuator_prim  # noqa: PLC0415
 
     actuator_count = 0
-    if parse_actuator_prim is not None:
-        path_to_dof = {
-            path: builder.joint_qd_start[idx] + merged_dof_offset.get(path, 0)
-            for path, idx in path_joint_map.items()
-            if idx < len(builder.joint_qd_start)
-        }
-        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
-            parsed = parse_actuator_prim(prim)
-            if parsed is None:
-                continue
-            dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
-            if dof_indices:
-                builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
-                actuator_count += 1
-    else:
-        # TODO: Replace this string-based type name check with a proper schema query
-        # once the Newton actuator USD schema is merged
-        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
-            if prim.GetTypeName() == "Actuator":
-                raise ImportError(
-                    f"USD stage contains actuator prims (e.g. {prim.GetPath()}) but newton-actuators is not installed. "
-                    "Install with: pip install newton[sim]"
-                )
+    path_to_dof = {
+        path: builder.joint_qd_start[idx] + merged_dof_offset.get(path, 0)
+        for path, idx in path_joint_map.items()
+        if idx < len(builder.joint_qd_start)
+    }
+    path_to_coord = {
+        path: builder.joint_q_start[idx] + merged_dof_offset.get(path, 0)
+        for path, idx in path_joint_map.items()
+        if idx < len(builder.joint_q_start)
+    }
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        parsed = parse_actuator_prim(prim)
+        if parsed is None:
+            continue
+        target_path = parsed.target_path
+        if target_path not in path_to_dof:
+            raise ValueError(
+                f"Actuator prim {prim.GetPath()} targets '{target_path}' which does not resolve to a known joint DOF"
+            )
+        joint_idx = path_joint_map[target_path]
+        dof_start = builder.joint_qd_start[joint_idx]
+        next_start = (
+            builder.joint_qd_start[joint_idx + 1]
+            if joint_idx + 1 < len(builder.joint_qd_start)
+            else builder.joint_dof_count
+        )
+        if next_start - dof_start != 1:
+            raise ValueError(
+                f"Actuator prim {prim.GetPath()} targets '{target_path}' which has "
+                f"{next_start - dof_start} DOF(s); only 1-DOF joints (Revolute/Prismatic) are supported"
+            )
+        dof_index = path_to_dof[target_path]
+        coord_index = path_to_coord.get(target_path)
+        pos_index = coord_index if coord_index is not None and coord_index != dof_index else None
+
+        delay_val = None
+        clamping_specs = []
+        for comp_class, comp_kwargs in parsed.component_specs:
+            if comp_class is Delay:
+                delay_val = comp_kwargs.get("delay_steps")
+            else:
+                clamping_specs.append((comp_class, comp_kwargs))
+
+        builder.add_actuator(
+            parsed.controller_class,
+            index=dof_index,
+            clamping=clamping_specs if clamping_specs else None,
+            delay_steps=delay_val,
+            pos_index=pos_index,
+            **parsed.controller_kwargs,
+        )
+        actuator_count += 1
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
 
