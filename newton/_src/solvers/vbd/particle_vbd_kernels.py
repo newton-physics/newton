@@ -372,10 +372,15 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
 
     # ============ Useful Quantities ============
     J = wp.determinant(F)
-    # Guard against division by zero in lambda (Lamé's first parameter)
-    # For numerical stability, ensure lmbd has a reasonable minimum magnitude
-    lmbd_safe = wp.sign(lmbd) * wp.max(wp.abs(lmbd), 1e-6)
-    alpha = 1.0 + mu / lmbd_safe
+    # Convert Lamé parameters to stable Neo-Hookean parameters per Smith et al.
+    # 2018, §3.4 (eq. 13): the symbols (mu, lambda) appearing in the NH energy
+    # are not directly the Lamé parameters; matching the small-strain limit
+    # gives mu_NH = mu_Lamé, lambda_NH = lambda_Lamé + mu_Lamé.
+    mu_nh = mu
+    lmbd_nh = lmbd + mu
+    # Guard against division by zero in lambda_NH
+    lmbd_safe = wp.sign(lmbd_nh) * wp.max(wp.abs(lmbd_nh), 1e-6)
+    alpha = 1.0 + mu_nh / lmbd_safe
     # Compute cofactor (adjugate) matrix directly for numerical stability when J ≈ 0
     cof = compute_cofactor(F)
 
@@ -392,15 +397,15 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
     )
 
     # ============ Stress ============
-    s = lmbd * (J - alpha)
-    P_vec = rest_volume * (mu * f + s * cof_vec)
+    s = lmbd_nh * (J - alpha)
+    P_vec = rest_volume * (mu_nh * f + s * cof_vec)
 
     # ============ Hessian ============
     # The full elastic Hessian also has an s * d^2 J / dF^2 term, but its
     # contribution to VBD's per-vertex 3x3 block is identically zero:
     # the Levi-Civita tensor in d^2 J / dF^2 contracts against (m^a x m^a),
     # which vanishes. Drop it; the remaining two terms are SPD by inspection.
-    H = mu * wp.identity(n=9, dtype=float) + lmbd * wp.outer(cof_vec, cof_vec)
+    H = mu_nh * wp.identity(n=9, dtype=float) + lmbd_nh * wp.outer(cof_vec, cof_vec)
     H = rest_volume * H
 
     # ============ Assemble Pointwise Force ============
@@ -904,18 +909,21 @@ def evaluate_neo_hookean_membrane_force_hessian(
     J_s = wp.sqrt(J_s_sq)
     inv_J_s = 1.0 / J_s
 
-    # Stable neo-Hookean parameters
-    lmbd_safe = wp.sign(lmbd) * wp.max(wp.abs(lmbd), 1.0e-6)
-    alpha = 1.0 + mu / lmbd_safe
+    # Convert Lamé parameters to stable Neo-Hookean parameters per Smith et al.
+    # 2018, §3.4 (eq. 13): mu_NH = mu_Lamé, lambda_NH = lambda_Lamé + mu_Lamé.
+    mu_nh = mu
+    lmbd_nh = lmbd + mu
+    lmbd_safe = wp.sign(lmbd_nh) * wp.max(wp.abs(lmbd_nh), 1.0e-6)
+    alpha = 1.0 + mu_nh / lmbd_safe
 
     # 2D "cofactor" vectors: g_i = dJ_s/df_i
     g0 = inv_J_s * (f1_dot_f1 * f0 - f0_dot_f1 * f1)
     g1 = inv_J_s * (f0_dot_f0 * f1 - f0_dot_f1 * f0)
 
     # First Piola-Kirchhoff stress: P = mu*F + lambda*(J_s - alpha)*[g0, g1]
-    s = lmbd * (J_s - alpha)
-    P_col0 = mu * f0 + s * g0
-    P_col1 = mu * f1 + s * g1
+    s = lmbd_nh * (J_s - alpha)
+    P_col0 = mu_nh * f0 + s * g0
+    P_col1 = mu_nh * f1 + s * g1
 
     # Vertex selection masks
     mask0 = float(v_order == 0)
@@ -935,7 +943,7 @@ def evaluate_neo_hookean_membrane_force_hessian(
     # non-polynomial), so the cofactor-derivative term must be kept.
     s_clamp = wp.max(0.0, s)
     r = s_clamp * inv_J_s
-    c1 = lmbd - r
+    c1 = lmbd_nh - r
 
     df0_dx_sq = df0_dx * df0_dx
     df1_dx_sq = df1_dx * df1_dx
@@ -945,7 +953,7 @@ def evaluate_neo_hookean_membrane_force_hessian(
     # Cross-column vector for cofactor-derivative contraction
     w = f1 * df0_dx - f0 * df1_dx
 
-    I_coeff = mu * (df0_dx_sq + df1_dx_sq) + r * (
+    I_coeff = mu_nh * (df0_dx_sq + df1_dx_sq) + r * (
         df0_dx_sq * f1_dot_f1 + df1_dx_sq * f0_dot_f0 - 2.0 * df0_dx * df1_dx * f0_dot_f1
     )
 
