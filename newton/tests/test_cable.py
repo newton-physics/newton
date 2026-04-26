@@ -3386,7 +3386,13 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
         test.assertEqual(len(builder.body_shapes[body_b]), 1, msg="expected one shape per rod body in this test")
         sa = int(builder.body_shapes[body_a][0])
         sb = int(builder.body_shapes[body_b][0])
-        pair = (min(sa, sb), max(sa, sb))
+        t1 = model.shape_body[sa]
+        t2 = model.shape_body[sb]
+        if t1 > t2:
+            sa, sb = sb, sa
+        elif t1 == t2 and sa > sb:
+            sa, sb = sb, sa
+        pair = (sa, sb)
         test.assertIn(
             pair, model.shape_collision_filter_pairs, msg=f"missing collision filter pair for bodies {body_a}-{body_b}"
         )

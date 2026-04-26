@@ -1245,13 +1245,19 @@ class ModelBuilder:
         """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
-        """Add a collision filter pair in canonical order.
+        """Add a collision filter pair in canonical order (canonicalized by GeoType, then Index).
 
         Args:
             shape_a: First shape index
             shape_b: Second shape index
         """
-        self.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
+        type1 = self.shape_type[shape_a]
+        type2 = self.shape_type[shape_b]
+        if type1 > type2:
+            shape_a, shape_b = shape_b, shape_a
+        elif type1 == type2 and shape_a > shape_b:
+            shape_a, shape_b = shape_b, shape_a
+        self.shape_collision_filter_pairs.append((shape_a, shape_b))
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
         """
@@ -5454,11 +5460,7 @@ class ModelBuilder:
 
         self.shape_body.append(body)
         shape = self.shape_count
-        if cfg.has_shape_collision:
-            # no contacts between shapes of the same body
-            for same_body_shape in self.body_shapes[body]:
-                self.add_shape_collision_filter_pair(same_body_shape, shape)
-        self.body_shapes[body].append(shape)
+
         self.shape_label.append(label or f"shape_{shape}")
         self.shape_transform.append(xform)
         # Get flags and clear HYDROELASTIC for unsupported shape types (PLANE, HFIELD)
@@ -5498,6 +5500,12 @@ class ModelBuilder:
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
+
+        if cfg.has_shape_collision:
+            # no contacts between shapes of the same body
+            for same_body_shape in self.body_shapes[body]:
+                self.add_shape_collision_filter_pair(same_body_shape, shape)
+        self.body_shapes[body].append(shape)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
@@ -9806,9 +9814,16 @@ class ModelBuilder:
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
 
-            m.shape_collision_filter_pairs = {
-                (min(s1, s2), max(s1, s2)) for s1, s2 in self.shape_collision_filter_pairs
-            }
+            for s1, s2 in self.shape_collision_filter_pairs:
+                t1 = self.shape_type[s1]
+                t2 = self.shape_type[s2]
+                a, b = s1, s2
+                if t1 > t2:
+                    a, b = s2, s1
+                elif t1 == t2 and s1 > s2:
+                    a, b = s2, s1
+                m.shape_collision_filter_pairs.add((a, b))
+
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
@@ -10783,7 +10798,16 @@ class ModelBuilder:
                 if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
 
-                if s1 > s2:
+                type1 = self.shape_type[s1]
+                type2 = self.shape_type[s2]
+
+                if type1 > type2:
+                    # If type1 is "larger" (e.g., MESH vs SPHERE), swap them
+                    # so the simpler shape is always shape_a
+                    shape_a, shape_b = s2, s1
+                elif type1 == type2 and s1 > s2:
+                    # If they are the same type, fall back to index sorting
+                    # to maintain a consistent unique order
                     shape_a, shape_b = s2, s1
                 else:
                     shape_a, shape_b = s1, s2
