@@ -237,9 +237,7 @@ def compute_required_contact_capacity(
         s2 = int(shape_pair[1])
         type1 = int(shape_type_np[s1])
         type2 = int(shape_type_np[s2])
-        if type1 > type2:
-            s1, s2 = s2, s1
-            type1, type2 = type2, type1
+
         num_contacts_a, num_contacts_b = max_contacts_for_shape_pair(
             type_a=type1,
             type_b=type2,
