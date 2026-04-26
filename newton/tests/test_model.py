@@ -330,7 +330,7 @@ class TestModelMesh(unittest.TestCase):
             t2 = builder.shape_type[b]
             if t1 > t2:
                 return (b, a)
-            elif t1 == t2 and s1 > s2:
+            elif t1 == t2 and a > b:
                 return (b, a)
             return (a, b)
 
@@ -493,9 +493,9 @@ class TestModelMesh(unittest.TestCase):
         # Verify all collision filter pairs are in canonical order (s1 < s2)
         for s1, s2 in model.shape_collision_filter_pairs:
             self.assertLess(
-                mode.shape_type[s1],
-                model.shape_type[s2],
-                f"Collision filter pair ({s1}, {s2}) type ({model.shape_type[s1]}, {model.shape_type[s2]})is not in canonical order",
+                model.shape_type.numpy()[s1],
+                model.shape_type.numpy()[s2],
+                f"Collision filter pair ({s1}, {s2}) type ({model.shape_type.numpy()[s1]}, {model.shape_type.numpy()[s2]})is not in canonical order",
             )
 
         # Verify we have the expected pairs (should be normalized to canonical order)

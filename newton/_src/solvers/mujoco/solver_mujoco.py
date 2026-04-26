@@ -3657,8 +3657,8 @@ class SolverMuJoCo(SolverBase):
             excluded = True
             for shape_1 in shapes_1:
                 for shape_2 in shapes_2:
-                    type_1 = model.shape_type[shape_1]
-                    type_2 = model.shape_type[shape_2]
+                    type_1 = model.shape_type.numpy()[shape_1]
+                    type_2 = model.shape_type.numpy()[shape_2]
                     if type_1 > type_2:
                         s1, s2 = shape_2, shape_1
                     elif type_1 == type_2 and shape_1 > shape_2:
@@ -3706,8 +3706,8 @@ class SolverMuJoCo(SolverBase):
         for i, j in zip(shape_a, shape_b, strict=True):
             s1 = selected_shapes[i]
             s2 = selected_shapes[j]
-            t1 = model.shape_type[s1]
-            t2 = model.shape_type[s2]
+            t1 = model.shape_type.numpy()[s1]
+            t2 = model.shape_type.numpy()[s2]
             if t1 > t2:
                 s1, s2 = s2, s1
             elif t1 == t2 and s1 > s2:
