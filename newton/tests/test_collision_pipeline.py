@@ -481,12 +481,17 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
         n = contacts.rigid_contact_count.numpy()[0]
-        excluded = (min(shape_a, shape_b), max(shape_a, shape_b))
+        shape_type_np = model.shape_type.numpy()
+        ta, tb = shape_type_np[shape_a], shape_type_np[shape_b]
+        if ta > tb or (ta == tb and shape_a > shape_b):
+            excluded = (shape_b, shape_a)
+        else:
+            excluded = (shape_a, shape_b)
         for i in range(n):
             s0 = int(contacts.rigid_contact_shape0.numpy()[i])
             s1 = int(contacts.rigid_contact_shape1.numpy()[i])
-            t1 = model.shape_type.numpy()[s0]
-            t2 = model.shape_type.numpy()[s1]
+            t1 = shape_type_np[s0]
+            t2 = shape_type_np[s1]
             if t1 > t2:
                 s0, s1 = s1, s0
             elif t1 == t2 and s0 > s1:
