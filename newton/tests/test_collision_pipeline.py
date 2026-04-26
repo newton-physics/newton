@@ -548,6 +548,14 @@ def test_collision_filter_consistent_across_broadphases(test, device):
 
         excluded = (shape_a, shape_b)
 
+        shape_type_np = model.shape_type.numpy()
+
+        def _canonical(s0: int, s1: int) -> tuple[int, int]:
+            t0, t1 = shape_type_np[s0], shape_type_np[s1]
+            if t0 > t1 or (t0 == t1 and s0 > s1):
+                return (s1, s0)
+            return (s0, s1)
+
         def _contact_pairs(broad_phase):
             pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
             state = model.state()
@@ -560,7 +568,7 @@ def test_collision_filter_consistent_across_broadphases(test, device):
             for i in range(n):
                 s0 = int(shape0_np[i])
                 s1 = int(shape1_np[i])
-                pairs.add((min(s0, s1), max(s0, s1)))
+                pairs.add(_canonical(s0, s1))
             return pairs
 
         pairs_explicit = _contact_pairs("explicit")
