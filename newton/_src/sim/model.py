@@ -244,7 +244,7 @@ class Model:
         self.shape_collision_group: wp.array[wp.int32] | None = None
         """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
-        """Pairs of shape indices (s1, s2) that should not collide. Pairs are in canonical order: s1 < s2."""
+        """Pairs of shape indices (s1, s2) that should not collide. Pairs are in canonical order (First GeoType then Index): t2 < t1, s1 < s2."""
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs: wp.array[wp.vec2i] | None = None

@@ -3721,7 +3721,11 @@ class SolverMuJoCo(SolverBase):
             excluded = True
             for shape_1 in shapes_1:
                 for shape_2 in shapes_2:
-                    if shape_1 > shape_2:
+                    type_1 = model.shape_type[shape_1]
+                    type_2 = model.shape_type[shape_2]
+                    if type_1 > type_2:
+                        s1, s2 = shape_2, shape_1
+                    elif type_1 == type_2 and shape_1 > shape_2:
                         s1, s2 = shape_2, shape_1
                     else:
                         s1, s2 = shape_1, shape_2
@@ -3762,15 +3766,20 @@ class SolverMuJoCo(SolverBase):
         shape_collision_group_np = model.shape_collision_group.numpy()
         cgroup = [shape_collision_group_np[i] for i in selected_shapes]
         # edges representing colliding shape pairs
-        graph_edges = [
-            (i, j)
-            for i, j in zip(shape_a, shape_b, strict=True)
-            if (
-                (min(selected_shapes[i], selected_shapes[j]), max(selected_shapes[i], selected_shapes[j]))
-                not in model.shape_collision_filter_pairs
-                and (cgroup[i] == cgroup[j] or cgroup[i] == -1 or cgroup[j] == -1)
-            )
-        ]
+        graph_edges = []
+        for i, j in zip(shape_a, shape_b, strict=True):
+            s1 = selected_shapes[i]
+            s2 = selected_shapes[j]
+            t1 = model.shape_type[s1]
+            t2 = model.shape_type[s2]
+            if t1 > t2:
+                s1, s2 = s2, s1
+            elif t1 == t2 and s1 > s2:
+                s1, s2 = s2, s1
+            if (s1, s2) not in model.shape_collision_filter_pairs:
+                if cgroup[i] == cgroup[j] or cgroup[i] == -1 or cgroup[j] == -1:
+                    graph_edges.append((i, j))
+
         shape_color = np.zeros(model.shape_count, dtype=np.int32)
         if len(graph_edges) > 0:
             color_groups = color_graph(

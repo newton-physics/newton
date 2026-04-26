@@ -325,11 +325,17 @@ class TestModelMesh(unittest.TestCase):
         self.assertAlmostEqual(model.approx_attr.numpy()[extra_shape], shape_attr, places=6)
 
     def test_approximate_meshes_collision_filter_child_bodies(self):
-        def normalize_pair(a, b):
-            return (min(a, b), max(a, b))
+        def normalize_pair(builder, a, b):
+            t1 = builder.shape_type[a]
+            t2 = builder.shape_type[b]
+            if t1 > t2:
+                return (b, a)
+            elif t1 == t2 and s1 > s2:
+                return (b, a)
+            return (a, b)
 
         def get_filter_set(builder):
-            return {normalize_pair(a, b) for a, b in builder.shape_collision_filter_pairs}
+            return {normalize_pair(builder, a, b) for a, b in builder.shape_collision_filter_pairs}
 
         builder = ModelBuilder()
 
@@ -353,12 +359,12 @@ class TestModelMesh(unittest.TestCase):
         # At this point, initial shapes should be filtered between adjacent bodies
         filter_set = get_filter_set(builder)
         self.assertIn(
-            normalize_pair(shape0_initial, shape1_initial),
+            normalize_pair(builder, shape0_initial, shape1_initial),
             filter_set,
             "Initial body0-body1 shapes should be filtered",
         )
         self.assertIn(
-            normalize_pair(shape1_initial, shape2_initial),
+            normalize_pair(builder, shape1_initial, shape2_initial),
             filter_set,
             "Initial body1-body2 shapes should be filtered",
         )
@@ -374,7 +380,7 @@ class TestModelMesh(unittest.TestCase):
         # Verify: new body0 shapes should filter with ALL body1 shapes (including initial)
         for parent_shape in [shape0_extra1, shape0_extra2]:
             for child_shape in [shape1_initial, shape1_extra1]:
-                expected_pair = normalize_pair(parent_shape, child_shape)
+                expected_pair = normalize_pair(builder, parent_shape, child_shape)
                 self.assertIn(
                     expected_pair,
                     filter_set,
@@ -384,7 +390,7 @@ class TestModelMesh(unittest.TestCase):
         # Verify: new body1 shapes should filter with ALL body0 shapes (parent)
         for child_shape in [shape1_extra1]:
             for parent_shape in [shape0_initial, shape0_extra1, shape0_extra2]:
-                expected_pair = normalize_pair(parent_shape, child_shape)
+                expected_pair = normalize_pair(builder, parent_shape, child_shape)
                 self.assertIn(
                     expected_pair,
                     filter_set,
@@ -393,7 +399,7 @@ class TestModelMesh(unittest.TestCase):
 
         # Verify: new body1 shapes should filter with ALL body2 shapes (child)
         for parent_shape in [shape1_extra1]:
-            expected_pair = normalize_pair(parent_shape, shape2_initial)
+            expected_pair = normalize_pair(builder, parent_shape, shape2_initial)
             self.assertIn(
                 expected_pair,
                 filter_set,
@@ -486,12 +492,16 @@ class TestModelMesh(unittest.TestCase):
 
         # Verify all collision filter pairs are in canonical order (s1 < s2)
         for s1, s2 in model.shape_collision_filter_pairs:
-            self.assertLess(s1, s2, f"Collision filter pair ({s1}, {s2}) is not in canonical order")
+            self.assertLess(
+                mode.shape_type[s1],
+                model.shape_type[s2],
+                f"Collision filter pair ({s1}, {s2}) type ({model.shape_type[s1]}, {model.shape_type[s2]})is not in canonical order",
+            )
 
         # Verify we have the expected pairs (should be normalized to canonical order)
         self.assertIn((shape0, shape1), model.shape_collision_filter_pairs)
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
-        self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
+        self.assertIn((shape2, shape1), model.shape_collision_filter_pairs)
 
     def test_validate_structure_invalid_shape_body(self):
         """Test that _validate_structure catches invalid shape_body references."""

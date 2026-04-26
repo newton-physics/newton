@@ -474,7 +474,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
         body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
         shape_b = builder.add_shape_sphere(body=body_b, radius=0.5)
         # Exclude this pair so they must not generate contacts
-        builder.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
+        builder.add_shape_collision_filter_pair(shape_a, shape_b)
         model = builder.finalize(device=device)
         pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
         state = model.state()
@@ -485,7 +485,13 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
         for i in range(n):
             s0 = int(contacts.rigid_contact_shape0.numpy()[i])
             s1 = int(contacts.rigid_contact_shape1.numpy()[i])
-            pair = (min(s0, s1), max(s0, s1))
+            t1 = model.shape_type[s0]
+            t2 = model.shape_type[s1]
+            if t1 > t2:
+                s0, s1 = s1, s0
+            elif t1 == t2 and s1 > s2:
+                s0, s1 = s1, s0
+            pair = (s0, s1)
             test.assertNotEqual(
                 pair,
                 excluded,
@@ -530,8 +536,7 @@ def test_collision_filter_consistent_across_broadphases(test, device):
         builder.add_shape_sphere(body=body_c, radius=0.5)
 
         # Exclude one pair so only two pairs should generate contacts
-        excluded = (min(shape_a, shape_b), max(shape_a, shape_b))
-        builder.shape_collision_filter_pairs.append(excluded)
+        builder.add_shape_collision_filter_pair(shape_a, shape_b)
 
         model = builder.finalize(device=device)
 
