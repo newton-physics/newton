@@ -489,7 +489,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
             t2 = model.shape_type.numpy()[s1]
             if t1 > t2:
                 s0, s1 = s1, s0
-            elif t1 == t2 and s1 > s2:
+            elif t1 == t2 and s0 > s1:
                 s0, s1 = s1, s0
             pair = (s0, s1)
             test.assertNotEqual(
@@ -537,7 +537,6 @@ def test_collision_filter_consistent_across_broadphases(test, device):
 
         # Exclude one pair so only two pairs should generate contacts
         builder.add_shape_collision_filter_pair(shape_a, shape_b)
-        t1 = builder.shape_type
         model = builder.finalize(device=device)
 
         t1 = model.shape_type.numpy()[shape_a]

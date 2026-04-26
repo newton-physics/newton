@@ -491,17 +491,27 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize()
 
         # Verify all collision filter pairs are in canonical order (s1 < s2)
+
+        shape_type = model.shape_type.numpy()
+
+        def normalize_pair(s1, s2):
+            t1 = shape_type[s1]
+            t2 = shape_type[s2]
+            if t1 > t2 or (t1 == t2 and s1 > s2):
+                return (s2, s1)
+            return (s1, s2)
+
         for s1, s2 in model.shape_collision_filter_pairs:
-            self.assertLess(
-                model.shape_type.numpy()[s1],
-                model.shape_type.numpy()[s2],
-                f"Collision filter pair ({s1}, {s2}) type ({model.shape_type.numpy()[s1]}, {model.shape_type.numpy()[s2]})is not in canonical order",
+            self.assertEqual(
+                (s1, s2),
+                normalize_pair(s1, s2),
+                f"Collision filter pair ({s1}, {s2}) with types ({shape_type[s1]}, {shape_type[s2]}) is not in canonical order",
             )
 
         # Verify we have the expected pairs (should be normalized to canonical order)
-        self.assertIn((shape0, shape1), model.shape_collision_filter_pairs)
-        self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
-        self.assertIn((shape2, shape1), model.shape_collision_filter_pairs)
+        self.assertIn(normalize_pair(shape0, shape1), model.shape_collision_filter_pairs)
+        self.assertIn(normalize_pair(shape0, shape2), model.shape_collision_filter_pairs)
+        self.assertIn(normalize_pair(shape2, shape1), model.shape_collision_filter_pairs)
 
     def test_validate_structure_invalid_shape_body(self):
         """Test that _validate_structure catches invalid shape_body references."""
