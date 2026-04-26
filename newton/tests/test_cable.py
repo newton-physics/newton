@@ -3576,8 +3576,8 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
         test.assertEqual(len(builder.body_shapes[body_b]), 1, msg="expected one shape per rod body in this test")
         sa = int(builder.body_shapes[body_a][0])
         sb = int(builder.body_shapes[body_b][0])
-        t1 = model.shape_body[sa]
-        t2 = model.shape_body[sb]
+        t1 = model.shape_body.numpy()[sa]
+        t2 = model.shape_body.numpy()[sb]
         if t1 > t2:
             sa, sb = sb, sa
         elif t1 == t2 and sa > sb:

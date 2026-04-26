@@ -485,8 +485,8 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
         for i in range(n):
             s0 = int(contacts.rigid_contact_shape0.numpy()[i])
             s1 = int(contacts.rigid_contact_shape1.numpy()[i])
-            t1 = model.shape_type[s0]
-            t2 = model.shape_type[s1]
+            t1 = model.shape_type.numpy()[s0]
+            t2 = model.shape_type.numpy()[s1]
             if t1 > t2:
                 s0, s1 = s1, s0
             elif t1 == t2 and s1 > s2:
@@ -537,8 +537,17 @@ def test_collision_filter_consistent_across_broadphases(test, device):
 
         # Exclude one pair so only two pairs should generate contacts
         builder.add_shape_collision_filter_pair(shape_a, shape_b)
-
+        t1 = builder.shape_type
         model = builder.finalize(device=device)
+
+        t1 = model.shape_type.numpy()[shape_a]
+        t2 = model.shape_type.numpy()[shape_b]
+        if t1 > t2:
+            shape_a, shape_b = shape_b, shape_a
+        elif t1 == t2 and shape_a > shape_b:
+            shape_a, shape_b = shape_b, shape_a
+
+        excluded = (shape_a, shape_b)
 
         def _contact_pairs(broad_phase):
             pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
