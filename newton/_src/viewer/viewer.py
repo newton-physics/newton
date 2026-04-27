@@ -68,7 +68,8 @@ class ViewerBase(ABC):
     def should_step(self) -> bool:
         """Return True if the loop should advance one step.
 
-        Consumes a pending single-step request, so call exactly once per frame.
+        Subclasses that support single-stepping may consume a pending request
+        here, so callers should invoke this exactly once per frame.
         """
         return not self.is_paused()
 
