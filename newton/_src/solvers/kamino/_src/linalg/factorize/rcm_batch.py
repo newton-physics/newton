@@ -342,6 +342,7 @@ def create_rcm_batch_launch(
     dims: wp.array,
     mio: wp.array,
     vio: wp.array,
+    scratch: dict,
     num_blocks: int,
     max_dim: int,
     tol: float = 0.0,
@@ -358,6 +359,13 @@ def create_rcm_batch_launch(
         Flat buffers for the concatenated block matrices and output permutations.
     dims, mio, vio:
         ``int32`` arrays describing the per-block sizes and flat offsets.
+    scratch:
+        Caller-owned scratch buffers from :func:`allocate_rcm_batch_scratch`.
+        The caller must keep this dict alive for the lifetime of the returned
+        callback: the Warp CPU backend does not retain strong Python refs to
+        recorded-launch inputs, so scratch owned only by this function's
+        locals would be collected and the callback would write into freed
+        memory on replay.
     num_blocks, max_dim:
         Host-side sizing used to pick fixed launch dimensions.
     tol, max_bfs_iters, use_cuda_graph, device, stream:
@@ -366,15 +374,12 @@ def create_rcm_batch_launch(
     if perm_flat.dtype != wp.int32:
         raise TypeError(f"perm_flat must be int32; got {perm_flat.dtype}")
     dtype = A_flat.dtype
-    total_vec = int(perm_flat.shape[0])
 
     if device is None:
         device = A_flat.device
     if max_bfs_iters is None:
         max_bfs_iters = _default_bfs_iters(max_dim)
     max_bfs_iters = min(max_bfs_iters, max_dim)
-
-    scratch = allocate_rcm_batch_scratch(total_vec, num_blocks, device=device)
 
     K = _make_rcm_batch_kernels(dtype)
 
