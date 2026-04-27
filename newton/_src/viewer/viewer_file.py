@@ -615,7 +615,7 @@ def transfer_to_model(source_dict, target_obj, post_load_init_callback=None, _pa
         return
 
     # Handle case where source_dict is not a dict (primitive value)
-    if not isinstance(source_dict, dict):
+    if not isinstance(source_dict, Mapping):
         return
 
     # Iterate through all attributes of the target object
@@ -641,7 +641,7 @@ def transfer_to_model(source_dict, target_obj, post_load_init_callback=None, _pa
             continue
 
         # Handle different types of values
-        if hasattr(target_value, "__dict__") and isinstance(source_value, dict):
+        if hasattr(target_value, "__dict__") and isinstance(source_value, Mapping):
             # Recursively transfer for custom objects
             # Build path only when needed (optimization: lazy string formatting)
             current_path = f"{_path}.{attr_name}" if _path else attr_name
@@ -694,7 +694,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
         return result
 
     # If not a dict with __type__, return as-is
-    if not isinstance(data, dict) or "__type__" not in data:
+    if not isinstance(data, Mapping) or "__type__" not in data:
         return data
 
     type_name = data["__type__"]
@@ -742,7 +742,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
         }
 
     # Unknown type - return the data as-is
-    return data["value"] if isinstance(data, dict) and "value" in data else data
+    return data["value"] if isinstance(data, Mapping) and "value" in data else data
 
 
 def extract_type_path(class_str: str) -> str:
@@ -910,7 +910,7 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
 
     def callback(x, path):
         # Optimization: extract type once to avoid repeated isinstance and dict lookups
-        x_type = x.get("__type__") if isinstance(x, dict) else None
+        x_type = x.get("__type__") if isinstance(x, Mapping) else None
 
         if x_type == "warp.array_ref":
             if cache is None:
@@ -997,7 +997,7 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
     result = deserialize(data, callback, format_type=format_type, cache=cache)
 
     def _resolve_cache_refs(obj):
-        if isinstance(obj, dict):
+        if isinstance(obj, Mapping):
             # Optimization: single dict lookup instead of checking membership then accessing
             cache_ref = obj.get("__cache_ref__")
             if cache_ref is not None:
