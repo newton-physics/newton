@@ -8,17 +8,7 @@ MuJoCo Integration
 
 :class:`~newton.solvers.SolverMuJoCo` wraps `mujoco_warp
 <https://github.com/google-deepmind/mujoco_warp>`_ behind Newton's standard
-solver interface. A minimal setup looks like this::
-
-    import newton
-    from newton.solvers import SolverMuJoCo
-
-    builder = newton.ModelBuilder()
-    SolverMuJoCo.register_custom_attributes(builder)
-    builder.add_mjcf("robot.xml")        # or build the model directly
-    model = builder.finalize()
-    solver = SolverMuJoCo(model)
-    # ...then call solver.step(state_in, state_out, control, contacts, dt)
+solver interface.
 
 Because MuJoCo has its own modelling conventions, many Newton properties
 are mapped differently or not at all. The sections below describe which
@@ -28,22 +18,6 @@ lives in the source. MuJoCo-specific behaviour that has no Newton-core
 equivalent is exposed through the :ref:`custom-attribute namespace
 <mujoco-custom-attributes>`. A :ref:`code pointers <mujoco-code-pointers>`
 section at the bottom collects the most useful anchor points.
-
-
-Coordinate conventions
-----------------------
-
-**Quaternion order.**
-  Newton stores quaternions as ``(x, y, z, w)``; MuJoCo uses ``(w, x, y, z)``.
-  The solver converts between the two automatically (via
-  ``quat_xyzw_to_wxyz`` / ``quat_wxyz_to_xyzw`` in ``kernels.py``). Be aware
-  of this when inspecting raw MuJoCo objects — e.g. through ``save_to_mjcf``
-  or the solver's ``mj_model``/``mj_data`` attributes.
-
-**Body ordering.**
-  The solver sorts joints in depth-first topological order when building
-  MuJoCo's kinematic tree. If the Newton model's joint order differs, a
-  warning is emitted because kinematics may otherwise diverge.
 
 
 Joint types
@@ -81,9 +55,6 @@ Joint types
    * - ``DISTANCE``, ``CABLE``
      - *unsupported*
      - Not forwarded to MuJoCo.
-
-Per-DOF ``joint_velocity_limit`` values have no MuJoCo equivalent and are
-ignored.
 
 
 Geometry types
@@ -387,9 +358,9 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **User data and arbitrary custom elements** (``<custom>``, ``<numeric>``,
   ``<text>``) — not imported. Newton-specific user data should use the
   Newton custom-attribute system instead.
-- **Actuator transmission types beyond joint / tendon / site / body /
-  slidercrank** — notably, MuJoCo's ``adhesion`` transmission is not
-  supported.
+- **Actuator transmissions** — not all MuJoCo transmission types are
+  supported. See :class:`~newton.solvers.SolverMuJoCo.TrnType` for the
+  full list.
 
 Smaller limitations are documented inline where they are most relevant —
 see `Caveats`_ below for ``gap``, collision-radius, convex-hull fallback,
