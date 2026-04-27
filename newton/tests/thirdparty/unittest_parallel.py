@@ -19,12 +19,6 @@ import unittest
 from contextlib import contextmanager
 from io import StringIO
 
-# Work around a known OpenUSD thread-safety crash in
-# UsdPhysics.LoadUsdPhysicsFromRange for collider-dense assets. OpenUSD reads
-# this once when pxr initializes, so set it before test modules import pxr and
-# preserve any caller-provided override.
-os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
-
 from newton.tests.unittest_utils import (  # NVIDIA modification
     ParallelJunitTestResult,
     write_junit_results,

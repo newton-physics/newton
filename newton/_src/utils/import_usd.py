@@ -336,7 +336,7 @@ def parse_usd(
             print(f"Failed to get linear unit: {e}")
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
-    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
+    ret_dict = UsdPhysics.UsdPhysicsLoadStageFromPrimRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)

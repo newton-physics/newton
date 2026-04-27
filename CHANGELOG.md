@@ -30,6 +30,7 @@
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
 - Inline a `wp.vec3`-specialized point-to-triangle squared-distance helper in the implicit-MPM rasterized collider, removing the dependency on Warp's internal `warp.fem.geometry.closest_point`
 - Bump `mujoco` and `mujoco-warp` dependencies to `~=3.7.0` (`mujoco-warp` requires `>=3.7.0.1`)
+- Bump `usd-core` floor to `>=26.5` to pick up the thread-safe `UsdPhysicsParsingUtility` (PR `PixarAnimationStudios/OpenUSD#4002`); migrate calls to `UsdPhysics.UsdPhysicsLoadStageFromPrimRange` and drop the `PXR_WORK_THREAD_LIMIT=1` workaround in the parallel test runner
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
 - Disable process reuse in the test runner on multi-GPU systems to prevent CUDA errors from cascading across test suites, keeping process reuse enabled on single-GPU systems for faster throughput
