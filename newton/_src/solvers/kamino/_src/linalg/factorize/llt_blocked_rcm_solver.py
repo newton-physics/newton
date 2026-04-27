@@ -136,6 +136,11 @@ class LLTBlockedRCMSolver(DirectSolver):
         self._inv_P: wp.array | None = None
         self._tile_pattern: wp.array | None = None
         self._tpo: wp.array | None = None
+        # Batched-RCM scratch (owned here so the recorded launches in
+        # ``_reorder_callback`` never reference buffers that outlive our
+        # dict). Allocated in ``_allocate_impl`` alongside the other solver
+        # buffers, and reset in ``_reset_impl``.
+        self._rcm_scratch: dict | None = None
         self._max_dim: int = 0
         # Batched-RCM launch callback: closure that replays a recorded launch
         # set over all blocks. Rebound whenever the caller-owned ``A`` buffer
@@ -259,6 +264,15 @@ class LLTBlockedRCMSolver(DirectSolver):
             self._tile_pattern = wp.zeros(shape=(total_tp_size,), dtype=int32)
             self._tpo = wp.array(tp_offsets[:-1], dtype=int32)
 
+            # Batched-RCM scratch. Owning these here matches how the other
+            # linalg solvers hold their buffers and keeps the recorded-launch
+            # inputs alive for as long as the solver is alive.
+            self._rcm_scratch = _rcm_batch.allocate_rcm_batch_scratch(
+                total_vec=info.total_vec_size,
+                num_blocks=info.num_blocks,
+                device=self._device,
+            )
+
         # The batched-RCM launch callback (``self._reorder_callback``) is
         # (re)built lazily in ``_ensure_reorder_launches_bound`` the first
         # time a concrete A buffer arrives, and rebound only if its device
@@ -296,6 +310,7 @@ class LLTBlockedRCMSolver(DirectSolver):
                 dims=info.dim,
                 mio=info.mio,
                 vio=info.vio,
+                scratch=self._rcm_scratch,
                 num_blocks=info.num_blocks,
                 max_dim=int(info.max_dimension),
                 tol=self._reorder_tol,

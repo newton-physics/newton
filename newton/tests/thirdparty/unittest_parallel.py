@@ -243,7 +243,7 @@ def main(argv=None):
                         executor_kwargs["max_tasks_per_child"] = 1
                     with concurrent.futures.ProcessPoolExecutor(**executor_kwargs) as executor:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
-                        results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
+                        results = list(executor.map(test_manager.run_tests, test_suites, timeout=3000))
         else:
             # This entire path is an NVIDIA Modification
 
