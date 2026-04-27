@@ -213,12 +213,11 @@ class _ExampleBrowser:
                             if clicked:
                                 self.switch_target = module_path
                         imgui.tree_pop()
-                imgui.separator()
-                if imgui.button("Reset"):
-                    self._reset_requested = True
 
         self.callback = _browser_ui
         viewer.register_ui_callback(_browser_ui, position="panel")
+        if hasattr(viewer, "set_reset_callback"):
+            viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
 
     def _register_ui(self, example):
         """Re-register the example's GUI callback (panel callbacks survive clear_model)."""
