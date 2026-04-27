@@ -1638,16 +1638,19 @@ class ViewerGL(ViewerBase):
         return self._paused
 
     @override
-    def pop_step_request(self) -> bool:
+    def should_step(self) -> bool:
         """
-        Consume a pending single-step request.
+        Return True if the loop should advance one step.
 
-        Returns:
-            bool: True if a step was requested since the last call, then resets to False.
+        Consumes a pending single-step request, so call exactly once per frame.
         """
-        requested = self._step_requested
-        self._step_requested = False
-        return requested
+        if not self._paused:
+            self._step_requested = False
+            return True
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
 
     @override
     def close(self):
@@ -2240,8 +2243,10 @@ class ViewerGL(ViewerBase):
                     # Pause simulation checkbox
                     changed, self._paused = imgui.checkbox("Pause", self._paused)
                     imgui.same_line()
-                    if imgui.button("Step") and self._paused:
+                    imgui.begin_disabled(not self._paused)
+                    if imgui.button("Step"):
                         self._step_requested = True
+                    imgui.end_disabled()
 
                 # Visualization Controls section
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)

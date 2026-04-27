@@ -289,7 +289,7 @@ def run(example, args):
             viewer.end_frame()
             continue
 
-        if not viewer.is_paused() or viewer.pop_step_request():
+        if viewer.should_step():
             with wp.ScopedTimer("step", active=False):
                 example.step()
         if test_post_step:
