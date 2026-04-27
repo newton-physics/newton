@@ -64,7 +64,7 @@ Pre-release planning
      - Determine target version (``X.Y.Z``).
    * - ☐
      - Confirm dependency versions and availability: warp-lang, mujoco,
-       mujoco-warp, newton-usd-schemas, newton-actuators.
+       mujoco-warp, newton-usd-schemas.
    * - ☐
      - Set timeline: code freeze → RC1 → testing window → GA.
    * - ☐

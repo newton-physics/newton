@@ -238,6 +238,33 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
    world_count: 4
    body_count: 8
 
+.. important::
+   Call :meth:`~newton.ModelBuilder.approximate_meshes` on the sub-builder
+   **before** passing it to :meth:`~newton.ModelBuilder.replicate`.
+   Replication copies mesh references across worlds, so approximating first
+   produces a single simplified copy shared by all worlds; approximating
+   afterwards allocates one copy per replicated shape.
+
+.. testcode::
+
+   import newton
+
+   arm = newton.ModelBuilder()
+   link = arm.add_link(mass=1.0)
+   mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, compute_inertia=False)
+   arm.add_shape_mesh(body=link, mesh=mesh)
+   arm.approximate_meshes(method="convex_hull")
+
+   scene = newton.ModelBuilder()
+   scene.replicate(arm, world_count=4)
+
+   replicated_model = scene.finalize()
+   print("world_count:", replicated_model.world_count)
+
+.. testoutput::
+
+   world_count: 4
+
 
 .. _Per-world gravity:
 
