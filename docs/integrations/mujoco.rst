@@ -8,7 +8,9 @@ MuJoCo Integration
 
 :class:`~newton.solvers.SolverMuJoCo` wraps `mujoco_warp
 <https://github.com/google-deepmind/mujoco_warp>`_ behind Newton's standard
-solver interface.
+solver interface. Newton compatible-release-pins (``~=``) both ``mujoco``
+and ``mujoco-warp`` to keep the two version-aligned; see
+:github:`pyproject.toml` for the current pins.
 
 Because MuJoCo has its own modelling conventions, many Newton properties
 are mapped differently or not at all. The sections below describe which
@@ -84,8 +86,9 @@ Geometry types
      -
    * - :attr:`~newton.GeoType.PLANE`
      - ``mjGEOM_PLANE``
-     - Must be attached to the world body. Rendered size defaults to
-       ``5 × 5 × 5``.
+     - Must be a static shape (``body=-1``); attaching a plane to a body
+       raises ``ValueError`` at conversion time. Rendered size defaults
+       to ``5 × 5 × 5`` when ``shape_size`` is unset.
    * - :attr:`~newton.GeoType.HFIELD`
      - ``mjGEOM_HFIELD``
      - Heightfield data is normalized to ``[0, 1]``; the geom origin is
@@ -95,7 +98,7 @@ Geometry types
      - ``mjGEOM_MESH``
      - MuJoCo only supports **convex** collision meshes. Non-convex meshes
        are convex-hulled automatically, which changes the collision
-       boundary. ``maxhullvert`` is forwarded from the mesh source when set.
+       boundary. The mesh source's ``maxhullvert`` is forwarded.
    * - :attr:`~newton.GeoType.CONE`, :attr:`~newton.GeoType.GAUSSIAN`
      - *unsupported*
      - Not present in the MuJoCo geom-type map.
@@ -152,13 +155,14 @@ Equality constraints
    * - Newton type
      - MuJoCo equivalent
      - Notes
-   * - ``CONNECT``
+   * - :attr:`~newton.EqType.CONNECT`
      - ``mjEQ_CONNECT``
      - Anchor forwarded in ``data[0:3]``.
-   * - ``WELD``
+   * - :attr:`~newton.EqType.WELD`
      - ``mjEQ_WELD``
-     - Relative pose and torque scale forwarded.
-   * - ``JOINT``
+     - Anchor forwarded in ``data[0:3]``, relative pose in ``data[3:10]``,
+       torque scale in ``data[10]``.
+   * - :attr:`~newton.EqType.JOINT`
      - ``mjEQ_JOINT``
      - Polynomial coefficients forwarded in ``data[0:5]``.
    * - Mimic
@@ -242,10 +246,10 @@ box-box pairs (its default NATIVECCD path) and on any box/mesh pair
 when ``enable_multiccd=True``. To stay compatible the solver zeroes
 ``geom_margin`` model-wide at compile time whenever a box geom exists,
 or whenever ``enable_multiccd=True`` is combined with mesh geoms; geoms
-with non-zero authored margins emit a warning. The Newton model's
-``shape_margin`` array is left untouched, and when
-``use_mujoco_contacts=False`` the authored margins are restored at
-runtime through ``update_geom_properties_kernel``.
+with non-zero authored margins emit a warning when
+``use_mujoco_contacts=True``. The Newton model's ``shape_margin`` array
+is left untouched, and when ``use_mujoco_contacts=False`` the authored
+margins are restored at runtime through ``update_geom_properties_kernel``.
 
 
 Multi-world support
@@ -255,9 +259,13 @@ When ``separate_worlds=True`` (the default for GPU mode with multiple
 worlds), the solver builds a MuJoCo model from the **first world** only and
 replicates it across all worlds via ``mujoco_warp``. This requires all
 Newton worlds to be structurally identical (same bodies, joints, and
-shapes). Global entities (those with a negative world index) may only
-include static shapes — they are shared across all worlds without
-replication.
+shapes); the solver validates this at construction and raises
+``ValueError`` on a mismatch.
+
+Bodies, joints, equality constraints, and mimic constraints cannot have
+a negative world index — assigning any of them to the global world
+raises ``ValueError``. Only shapes may live in the global world (-1);
+they are shared across all worlds without replication.
 
 
 Runtime state synchronisation
@@ -274,7 +282,11 @@ same three-phase cycle:
    ``state_in.body_f`` (→ ``xfrc_applied``). Direct MuJoCo actuator
    control is exposed through ``control.mujoco.ctrl``. When
    ``use_mujoco_contacts=False``, Newton-side contacts are converted into
-   ``mjData.contact`` before the integrator runs.
+   ``mjData.contact`` before the integrator runs. The state sync
+   (``joint_q`` / ``joint_qd`` → ``qpos`` / ``qvel``) is gated by the
+   ``update_data_interval`` kwarg, which defaults to ``1`` (sync every
+   step); larger values amortise the sync, and ``0`` disables it after
+   construction so MuJoCo simulates from its own internal state.
 2. **Integrate.** ``mujoco_warp`` (or the CPU MuJoCo backend when
    ``use_mujoco_cpu=True``) steps the MuJoCo model forward by ``dt``.
 3. **Pull MuJoCo → Newton.** Integrated ``qpos`` / ``qvel`` are copied
@@ -290,17 +302,14 @@ when you need contact points, forces, or material indices in Newton form.
 Push, pull, and contact-conversion are implemented by
 ``SolverMuJoCo._apply_mjc_control``, ``SolverMuJoCo._update_newton_state``,
 and :meth:`~newton.solvers.SolverMuJoCo.update_contacts`, using kernels
-from ``newton/_src/solvers/mujoco/kernels.py`` — see
+from :github:`newton/_src/solvers/mujoco/kernels.py` — see
 `Code pointers`_ for the full anchor list.
 
 
 Solver options
 --------------
 
-MuJoCo solver parameters (``iterations``, ``ls_iterations``, ``solver``,
-``integrator``, ``cone``, ``jacobian``, ``tolerance``, ``ls_tolerance``,
-``impratio``, ``wind``, ``viscosity``, ``density``, ``magnetic``, and the
-CCD / SDF iteration counts) follow a three-level resolution priority:
+MuJoCo solver parameters follow a three-level resolution priority:
 
 1. **Constructor argument** passed to :class:`~newton.solvers.SolverMuJoCo`
    — one value, applied to all worlds. The full list of kwargs, their
@@ -349,7 +358,7 @@ system works in general.
 
 A subset of ``mjc:*`` USD attributes is additionally mapped onto Newton's
 built-in properties during USD import by
-:class:`~newton.usd.SchemaResolverMjc` (``newton/_src/usd/schemas.py``) —
+:class:`~newton.usd.SchemaResolverMjc` (:github:`newton/_src/usd/schemas.py`) —
 for example, joint-limit stiffness/damping from ``mjc:solreflimit``, and
 torsional/rolling friction from ``mjc:torsionalfriction`` /
 ``mjc:rollingfriction``. Attributes not handled by the schema resolver
@@ -489,10 +498,10 @@ API and subject to change.
 - ``SolverMuJoCo._apply_mjc_control`` and
   ``SolverMuJoCo._update_newton_state`` — per-step control and state sync
   between Newton and MuJoCo.
-- ``newton/_src/solvers/mujoco/kernels.py`` — Warp kernels for coordinate,
-  contact, and state conversion (``quat_wxyz_to_xyzw``,
+- :github:`newton/_src/solvers/mujoco/kernels.py` — Warp kernels for
+  coordinate, contact, and state conversion (``quat_wxyz_to_xyzw``,
   ``convert_mj_coords_to_warp_kernel``,
   ``convert_newton_contacts_to_mjwarp_kernel``, ``convert_solref``, …).
 - :class:`~newton.usd.SchemaResolverMjc`
-  (``newton/_src/usd/schemas.py``) — USD ``mjc:*`` attribute → Newton
-  built-in property mapping.
+  (:github:`newton/_src/usd/schemas.py`) — USD ``mjc:*`` attribute →
+  Newton built-in property mapping.
