@@ -41,6 +41,16 @@ class TestViewerCameraOrbit(unittest.TestCase):
         _assert_vec_close(self, _as_np(camera.pivot) - _as_np(camera.pos), start_offset)
         self.assertAlmostEqual(camera.pivot_distance, 7.0)
 
+    def test_pivot_distance_is_derived_from_pivot_and_position(self):
+        camera = Camera(pos=(0.0, 0.0, 0.0), up_axis="Z")
+        self.assertFalse(hasattr(camera, "_pivot_distance"))
+
+        camera.pivot = camera._as_vec3((0.0, 0.0, 0.0))
+        self.assertAlmostEqual(camera.pivot_distance, camera.MIN_PIVOT_DISTANCE)
+
+        camera.pos = camera._as_vec3((0.0, 0.0, 2.0))
+        self.assertAlmostEqual(camera.pivot_distance, 2.0)
+
     def test_orbit_keeps_pivot_fixed_and_points_at_pivot(self):
         camera = Camera(pos=(10.0, 0.0, 0.0), up_axis="Z")
         camera.look_at((0.0, 0.0, 0.0))

@@ -53,8 +53,7 @@ class Camera:
         self.pitch = 0.0
         self.yaw = -180.0
 
-        self._pivot_distance = self.DEFAULT_PIVOT_DISTANCE
-        self.pivot = self.pos + self.get_front() * self._pivot_distance
+        self.pivot = self.pos + self.get_front() * self.DEFAULT_PIVOT_DISTANCE
 
     @staticmethod
     def _as_vec3(value):
@@ -80,9 +79,7 @@ class Camera:
     def pivot_distance(self) -> float:
         """Distance from the camera position to the orbit pivot [m]."""
         distance = self._length(self.pivot - self.pos)
-        if distance > self.MIN_PIVOT_DISTANCE:
-            self._pivot_distance = distance
-        return self._pivot_distance
+        return max(distance, self.MIN_PIVOT_DISTANCE)
 
     def _set_orientation_from_direction(self, direction):
         """Set yaw and pitch from a normalized view direction."""
@@ -104,11 +101,8 @@ class Camera:
     def set_pivot(self, pivot):
         """Set the orbit pivot without changing the current view direction."""
         self.pivot = self._as_vec3(pivot)
-        distance = self._length(self.pivot - self.pos)
-        if distance <= self.MIN_PIVOT_DISTANCE:
+        if self._length(self.pivot - self.pos) <= self.MIN_PIVOT_DISTANCE:
             self.sync_pivot_to_view(distance=self.MIN_PIVOT_DISTANCE)
-        else:
-            self._pivot_distance = distance
 
     def sync_pivot_to_view(self, distance: float | None = None):
         """Place the orbit pivot along the current view direction.
@@ -119,7 +113,6 @@ class Camera:
         if distance is None:
             distance = self.pivot_distance
         distance = max(float(distance), self.MIN_PIVOT_DISTANCE)
-        self._pivot_distance = distance
         self.pivot = self.pos + self.get_front() * distance
 
     def look_at(self, target):
@@ -133,7 +126,6 @@ class Camera:
 
         self._set_orientation_from_direction(to_target)
         self.pivot = target
-        self._pivot_distance = distance
 
     def translate(self, delta):
         """Translate the camera and pivot by the same world-space offset [m]."""
@@ -152,7 +144,6 @@ class Camera:
         self.yaw = self._wrap_yaw(self.yaw + delta_yaw)
         self.pitch = self._clamp_pitch(self.pitch + delta_pitch)
         self.pos = self.pivot - self.get_front() * distance
-        self._pivot_distance = distance
 
     def pan(self, delta_right: float, delta_up: float):
         """Pan the camera and pivot in the camera plane [m]."""
@@ -176,7 +167,6 @@ class Camera:
 
         new_distance = max(distance * float(np.exp(-amount)), self.MIN_PIVOT_DISTANCE)
         self.pos = self.pivot - direction_to_pivot * new_distance
-        self._pivot_distance = new_distance
 
     def get_front(self):
         """Get the camera front direction vector (read-only)."""
