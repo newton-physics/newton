@@ -18,12 +18,16 @@ from ._src.geometry.utils import remesh_mesh
 from ._src.utils.mesh import (
     MeshAdjacency,
     solidify_mesh,
+    validate_tet_mesh,
+    validate_triangle_mesh,
 )
 
 __all__ += [
     "MeshAdjacency",
     "remesh_mesh",
     "solidify_mesh",
+    "validate_tet_mesh",
+    "validate_triangle_mesh",
 ]
 
 # ==================================================================================
