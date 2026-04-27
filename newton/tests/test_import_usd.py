@@ -2881,7 +2881,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
     from pxr import Sdf, Usd, UsdPhysics
 
     stage = Usd.Stage.Open(file)
-    parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
+    parsed = UsdPhysics.UsdPhysicsLoadStageFromPrimRange(stage, ["/"])
     # since the key is generated from USD paths we can assume that keys are unique
     body_key_to_idx = dict(zip(model.body_label, range(model.body_count), strict=False))
     shape_key_to_idx = dict(zip(model.shape_label, range(model.shape_count), strict=False))

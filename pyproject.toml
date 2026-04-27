@@ -58,7 +58,7 @@ importers = [
     "open3d>=0.18.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",  # for importing Gaussian .ply files where wheels are available (no 3.13 wheels yet)
 
     # USD core libraries
-    "usd-core>=25.5 ; platform_machine != 'aarch64' and python_version < '3.14'",
+    "usd-core>=26.5 ; platform_machine != 'aarch64' and python_version < '3.14'",
     "usd-exchange>=2.2.0 ; platform_machine == 'aarch64' and python_version < '3.13'",
 
     # Newton USD Schemas
