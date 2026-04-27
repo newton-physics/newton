@@ -580,13 +580,13 @@ outside the range are clipped).
     viewer.log_image("heatmap", heatmap)
 
     # Batched color tiles from a tiled-camera sensor. Allocate the sensor
-    # output once and the RGBA buffer once, then reuse both every frame.
+    # output once and reuse it every frame; the RGBA conversion is a
+    # zero-copy view.
     sensor = SensorTiledCamera(model=model)
     W, H, camera_count = 16, 16, 1
     color_image = sensor.utils.create_color_image_output(W, H, camera_count)
-    rgba = wp.empty((model.world_count * camera_count, H, W, 4), dtype=wp.uint8)
     # ... in a real pipeline, sensor.update(...) fills color_image each frame.
-    sensor.utils.to_batched_rgba_from_color(color_image, out_buffer=rgba)
+    rgba = sensor.utils.to_batched_rgba_from_color(color_image)
     viewer.log_image("tiled_camera", rgba)
 
 For a 3D input ``(H, W, C)``, a last-axis of 1, 3, or 4 is interpreted as

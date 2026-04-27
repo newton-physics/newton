@@ -26,23 +26,14 @@ def _make_utils(world_count: int = 1, device=None):
 
 class TestToBatchedRgba(unittest.TestCase):
     def test_unpacks_uint32_to_batched_uint8(self):
-        # Import here so collection doesn't fail before the impl lands.
-        from newton._src.sensors.warp_raytrace.utils import unpack_uint32_to_batched_rgba_kernel  # noqa: PLC0415
-
         # 4D uint32 input: (W=2 worlds, C=3 cams, H=2, Wpix=2).
         # Packed RGBA: R=10, G=20, B=30, A=40 -> 0x28_1E_14_0A
         packed = (10) | (20 << 8) | (30 << 16) | (40 << 24)
         inp = np.full((2, 3, 2, 2), packed, dtype=np.uint32)
-        inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=wp.get_preferred_device())
+        utils = _make_utils(world_count=2)
+        inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=utils._Utils__render_context.device)
 
-        out = wp.empty((2 * 3, 2, 2, 4), dtype=wp.uint8, device=inp_wp.device)
-        wp.launch(
-            unpack_uint32_to_batched_rgba_kernel,
-            dim=(2, 3, 2, 2),
-            inputs=[inp_wp],
-            outputs=[out],
-            device=inp_wp.device,
-        )
+        out = utils.to_batched_rgba_from_color(inp_wp)
 
         got = out.numpy()
         self.assertEqual(got.shape, (6, 2, 2, 4))
@@ -53,8 +44,6 @@ class TestToBatchedRgba(unittest.TestCase):
 
     def test_world_camera_axis_ordering(self):
         """Distinct values per (world, camera) catch axis-swap bugs that a uniform input wouldn't."""
-        from newton._src.sensors.warp_raytrace.utils import unpack_uint32_to_batched_rgba_kernel  # noqa: PLC0415
-
         # world_count=3, camera_count=2, H=1, W=1.
         # Encode world & camera in R and G so a swap would flip which channel holds which index.
         # world index -> R; camera index -> G; B=0; A=255
@@ -65,15 +54,9 @@ class TestToBatchedRgba(unittest.TestCase):
                 packed = (w) | (c << 8) | (0 << 16) | (255 << 24)
                 inp[w, c, 0, 0] = packed
 
-        inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=wp.get_preferred_device())
-        out = wp.empty((world_count * camera_count, 1, 1, 4), dtype=wp.uint8, device=inp_wp.device)
-        wp.launch(
-            unpack_uint32_to_batched_rgba_kernel,
-            dim=(world_count, camera_count, 1, 1),
-            inputs=[inp_wp],
-            outputs=[out],
-            device=inp_wp.device,
-        )
+        utils = _make_utils(world_count=world_count)
+        inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=utils._Utils__render_context.device)
+        out = utils.to_batched_rgba_from_color(inp_wp)
         got = out.numpy()
 
         # Expected: tile i = w * camera_count + c; R = w, G = c
@@ -287,30 +270,12 @@ class TestToBatchedRgbaFromShapeIndex(unittest.TestCase):
 class TestUtilsPublicAdapterAPI(unittest.TestCase):
     """Exercise the public Utils.to_batched_rgba_from_* wrappers (not just raw kernels)."""
 
-    def test_color_allocates_when_out_buffer_none(self):
+    def test_color_returns_canonical_shape_and_dtype(self):
         utils = _make_utils(world_count=2)
         inp = wp.zeros((2, 3, 4, 4), dtype=wp.uint32, device=utils._Utils__render_context.device)
         out = utils.to_batched_rgba_from_color(inp)
         self.assertEqual(tuple(out.shape), (6, 4, 4, 4))
         self.assertEqual(out.dtype, wp.uint8)
-
-    def test_color_rejects_out_buffer_wrong_shape(self):
-        utils = _make_utils(world_count=2)
-        device = utils._Utils__render_context.device
-        inp = wp.zeros((2, 3, 4, 4), dtype=wp.uint32, device=device)
-        buf = wp.zeros((5, 4, 4, 4), dtype=wp.uint8, device=device)
-        with self.assertRaises(ValueError) as cm:
-            utils.to_batched_rgba_from_color(inp, out_buffer=buf)
-        self.assertIn("shape", str(cm.exception))
-
-    def test_color_rejects_out_buffer_wrong_dtype(self):
-        utils = _make_utils(world_count=2)
-        device = utils._Utils__render_context.device
-        inp = wp.zeros((2, 3, 4, 4), dtype=wp.uint32, device=device)
-        buf = wp.zeros((6, 4, 4, 4), dtype=wp.float32, device=device)
-        with self.assertRaises(ValueError) as cm:
-            utils.to_batched_rgba_from_color(inp, out_buffer=buf)
-        self.assertIn("dtype", str(cm.exception))
 
     def test_depth_accepts_tuple_range(self):
         utils = _make_utils(world_count=1)

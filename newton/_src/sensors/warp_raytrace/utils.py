@@ -146,25 +146,6 @@ def convert_ray_depth_to_forward_depth_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def unpack_uint32_to_batched_rgba_kernel(
-    image: wp.array4d[wp.uint32],
-    out: wp.array4d[wp.uint8],
-):
-    """Unpack (world, camera, H, W) uint32 RGBA into batched (N, H, W, 4) uint8.
-
-    N = world_count * camera_count, with world being the slower-changing axis.
-    """
-    world, camera, y, x = wp.tid()
-    camera_count = image.shape[1]
-    n = world * camera_count + camera
-    packed = image[world, camera, y, x]
-    out[n, y, x, 0] = wp.uint8(packed & wp.uint32(0xFF))
-    out[n, y, x, 1] = wp.uint8((packed >> wp.uint32(8)) & wp.uint32(0xFF))
-    out[n, y, x, 2] = wp.uint8((packed >> wp.uint32(16)) & wp.uint32(0xFF))
-    out[n, y, x, 3] = wp.uint8((packed >> wp.uint32(24)) & wp.uint32(0xFF))
-
-
-@wp.kernel(enable_backward=False)
 def unpack_normal_to_batched_rgba_kernel(
     image: wp.array4d[wp.vec3f],
     out: wp.array4d[wp.uint8],
@@ -523,9 +504,13 @@ class Utils:
     def to_batched_rgba_from_color(
         self,
         image: wp.array4d[wp.uint32],
-        out_buffer: wp.array4d[wp.uint8] | None = None,
     ) -> wp.array4d[wp.uint8]:
-        """Convert packed ``uint32`` RGBA color sensor output to batched ``uint8`` RGBA.
+        """Reinterpret packed ``uint32`` RGBA color sensor output as batched ``uint8`` RGBA.
+
+        Returns a zero-copy view: each ``uint32``
+        (``R | G<<8 | B<<16 | A<<24``) aliases 4 contiguous ``uint8``
+        channels and the ``(world_count, camera_count)`` axes are flattened.
+        The returned array shares memory with *image*; do not write into it.
 
         The returned array plugs directly into :meth:`~newton.viewer.ViewerBase.log_image`.
         World is the slower-changing axis: tile ``i`` has
@@ -534,33 +519,17 @@ class Utils:
         Args:
             image: Color sensor output, shape
                 ``(world_count, camera_count, H, W)``, dtype ``uint32``
-                (packed RGBA: ``R | G<<8 | B<<16 | A<<24``).
-            out_buffer: Optional pre-allocated output buffer with shape
-                ``(world_count * camera_count, H, W, 4)``, dtype ``uint8``.
+                (packed RGBA: ``R | G<<8 | B<<16 | A<<24``). Must be
+                contiguous; arrays returned by
+                :meth:`~newton.sensors.SensorTiledCamera.update` always satisfy this.
 
         Returns:
             Array of shape ``(world_count * camera_count, H, W, 4)``,
-            dtype ``uint8``.
+            dtype ``uint8``, aliasing *image*.
         """
-        world_count = image.shape[0]
-        camera_count = image.shape[1]
-        h = image.shape[2]
-        w = image.shape[3]
+        world_count, camera_count, h, w = image.shape
         n = world_count * camera_count
-
-        if out_buffer is None:
-            out_buffer = wp.empty((n, h, w, 4), dtype=wp.uint8, device=self.__render_context.device)
-        else:
-            _validate_batched_rgba_out_buffer("to_batched_rgba_from_color", out_buffer, (n, h, w, 4), image.device)
-
-        wp.launch(
-            unpack_uint32_to_batched_rgba_kernel,
-            dim=(world_count, camera_count, h, w),
-            inputs=[image],
-            outputs=[out_buffer],
-            device=self.__render_context.device,
-        )
-        return out_buffer
+        return image.view(wp.vec4ub).reshape((n, h, w)).view(wp.uint8)
 
     def to_batched_rgba_from_normal(
         self,

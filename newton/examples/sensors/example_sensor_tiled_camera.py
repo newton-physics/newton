@@ -189,14 +189,10 @@ class Example:
             device=self.tiled_camera_sensor_color_image.device,
         )
 
-        # Pre-allocate RGBA output buffers (one per logged stream) so the
-        # per-frame render_sensors() path does not allocate on every frame.
         device = self.tiled_camera_sensor_color_image.device
         n = self.world_count_total * self.camera_count
         H = self.sensor_render_height
         W = self.sensor_render_width
-        self.color_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
-        self.albedo_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.depth_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.normal_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.shape_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
@@ -240,8 +236,8 @@ class Example:
             clear_data=SensorTiledCamera.GRAY_CLEAR_DATA,
         )
         utils = self.tiled_camera_sensor.utils
-        utils.to_batched_rgba_from_color(self.tiled_camera_sensor_color_image, out_buffer=self.color_rgba)
-        utils.to_batched_rgba_from_color(self.tiled_camera_sensor_albedo_image, out_buffer=self.albedo_rgba)
+        color_rgba = utils.to_batched_rgba_from_color(self.tiled_camera_sensor_color_image)
+        albedo_rgba = utils.to_batched_rgba_from_color(self.tiled_camera_sensor_albedo_image)
         utils.to_batched_rgba_from_depth(
             self.tiled_camera_sensor_depth_image, depth_range=(0.0, 10.0), out_buffer=self.depth_rgba
         )
@@ -251,8 +247,8 @@ class Example:
             self.tiled_camera_sensor_shape_index_image, colors=self.semantic_palette, out_buffer=self.semantic_rgba
         )
 
-        self.viewer.log_image("color", self.color_rgba)
-        self.viewer.log_image("albedo", self.albedo_rgba)
+        self.viewer.log_image("color", color_rgba)
+        self.viewer.log_image("albedo", albedo_rgba)
         self.viewer.log_image("depth", self.depth_rgba)
         self.viewer.log_image("normal", self.normal_rgba)
         self.viewer.log_image("shape_index", self.shape_rgba)
