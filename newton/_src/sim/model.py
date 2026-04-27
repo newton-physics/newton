@@ -237,7 +237,11 @@ class Model:
         self.shape_scale: wp.array[wp.vec3] | None = None
         """Shape 3D scale, shape [shape_count], vec3."""
         self.shape_color: wp.array[wp.vec3] | None = None
-        """Shape display colors [0, 1], shape [shape_count], vec3."""
+        """Shape sRGB/display RGB colors [0, 1], shape [shape_count], vec3.
+
+        Shading backends convert these authored values to linear light only
+        when needed for lighting calculations.
+        """
         self.shape_filter: wp.array[wp.int32] | None = None
         """Shape filter group, shape [shape_count], int."""
 

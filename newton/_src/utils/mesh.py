@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..geometry.types import Mesh
+from .color import color_linear_to_srgb
 
 
 @wp.kernel
@@ -426,6 +427,8 @@ def _extract_trimesh_texture(visual_or_material, base_dir: str) -> np.ndarray | 
 
 def _extract_trimesh_material_params(
     material,
+    *,
+    authored_linear: bool = False,
 ) -> tuple[float | None, float | None, tuple[float, float, float] | None]:
     if material is None:
         return None, None, None
@@ -442,6 +445,8 @@ def _extract_trimesh_material_params(
     for candidate in color_candidates:
         if candidate is not None:
             base_color = _normalize_color(candidate)
+            if base_color is not None and authored_linear:
+                base_color = color_linear_to_srgb(base_color)
             break
 
     for attr_name in ("metallicFactor", "metallic"):
@@ -534,11 +539,11 @@ def load_meshes_from_file(
                             if strip(col.tag) == "color" and col.text:
                                 values = [float(x) for x in col.text.strip().split()]
                                 if len(values) >= 3:
-                                    # DAE diffuse colors are commonly authored in linear space.
-                                    # Convert to sRGB for the viewer shader (which converts to linear).
+                                    # DAE diffuse colors are commonly authored in linear
+                                    # space, but the Newton model now stores sRGB/display
+                                    # colors.
                                     diffuse = np.clip(values[:3], 0.0, 1.0)
-                                    srgb = np.power(diffuse, 1.0 / 2.2)
-                                    diffuse_color = (float(srgb[0]), float(srgb[1]), float(srgb[2]))
+                                    diffuse_color = color_linear_to_srgb(diffuse)
                                     break
                         continue
                     if tag == "specular":
@@ -621,7 +626,8 @@ def load_meshes_from_file(
 
     dae_face_materials: list[str] = []
     dae_material_colors: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
-    if filename.lower().endswith(".dae"):
+    authored_linear_material_colors = filename.lower().endswith(".dae")
+    if authored_linear_material_colors:
         dae_face_materials, dae_material_colors = _parse_dae_material_colors(filename)
 
     tri = trimesh.load(filename, force="mesh")
@@ -702,11 +708,16 @@ def load_meshes_from_file(
             for mat_index in np.unique(face_materials):
                 mat_faces = faces[face_materials == mat_index]
                 material = materials[int(mat_index)] if int(mat_index) < len(materials) else None
-                roughness, metallic, base_color = _extract_trimesh_material_params(material)
+                roughness, metallic, base_color = _extract_trimesh_material_params(
+                    material,
+                    authored_linear=authored_linear_material_colors,
+                )
                 mat_color = base_color
                 mat_texture = _extract_trimesh_texture(material, base_dir)
                 if mat_color is None and hasattr(tri_mesh.visual, "main_color"):
                     mat_color = _normalize_color(tri_mesh.visual.main_color)
+                    if mat_color is not None and authored_linear_material_colors:
+                        mat_color = color_linear_to_srgb(mat_color)
                 add_mesh_from_faces(
                     mat_faces,
                     mat_color=mat_color,
@@ -791,11 +802,16 @@ def load_meshes_from_file(
         metallic = None
         if color is None and hasattr(tri_mesh, "visual") and hasattr(tri_mesh.visual, "main_color"):
             color = _normalize_color(tri_mesh.visual.main_color)
+            if color is not None and authored_linear_material_colors:
+                color = color_linear_to_srgb(color)
 
         if hasattr(tri_mesh, "visual") and texture is None:
             texture = _extract_trimesh_texture(tri_mesh.visual, base_dir)
             material = getattr(tri_mesh.visual, "material", None)
-            roughness, metallic, base_color = _extract_trimesh_material_params(material)
+            roughness, metallic, base_color = _extract_trimesh_material_params(
+                material,
+                authored_linear=authored_linear_material_colors,
+            )
             if color is None and base_color is not None:
                 color = base_color
 

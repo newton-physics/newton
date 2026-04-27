@@ -37,16 +37,25 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
     Renders up to five image channels per (world, camera) pair:
 
-    - **color** -- RGBA shaded image (``uint32``).
+    - **color** -- RGBA shaded image packed into ``uint32``. By default these
+      bytes are display/sRGB-encoded; set
+      ``SensorTiledCamera.RenderConfig.encode_output_srgb=False`` to keep them
+      linear.
     - **depth** -- ray-hit distance [m] (``float32``); negative means no hit.
     - **normal** -- surface normal at hit point (``vec3f``).
-    - **albedo** -- unshaded surface color (``uint32``).
+    - **albedo** -- unshaded surface color packed into ``uint32`` using the
+      same output encoding convention as **color**.
     - **shape_index** -- shape id per pixel (``uint32``).
 
     All output arrays have shape ``(world_count, camera_count, height, width)``. Use the ``flatten_*`` helpers to
     rearrange them into tiled RGBA buffers for display, with one tile per (world, camera) pair laid out in a grid.
 
     Shapes without the ``VISIBLE`` flag are excluded.
+
+    Shape colors are stored on the model as sRGB/display RGB, then converted to
+    linear RGB internally for shading. Mesh textures authored as sRGB are
+    converted to linear before shading, and the packed ``color``/``albedo``
+    outputs are optionally encoded back to display/sRGB at the end.
 
     Example:
         ::
@@ -119,7 +128,9 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             config: Rendering configuration. Pass a :class:`RenderConfig` to
                 control raytrace settings directly, or ``None`` to use
                 defaults. The legacy :class:`Config` dataclass is still
-                accepted but deprecated.
+                accepted but deprecated. Use
+                ``RenderConfig.encode_output_srgb`` to control whether packed
+                ``color``/``albedo`` outputs are display-encoded or left linear.
             load_textures: Load texture data from the model. Set to ``False``
                 to skip texture loading when textures are not needed.
         """
@@ -196,11 +207,15 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
                 ``(camera_count, height, width, 2)``.
-            color_image: Output for RGBA color. None to skip.
+            color_image: Output for packed RGBA color. The bytes are sRGB by
+                default, or linear when
+                ``self.render_config.encode_output_srgb=False``. None to skip.
             depth_image: Output for ray-hit distance [m]. None to skip.
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
-            albedo_image: Output for unshaded surface color. None to skip.
+            albedo_image: Output for packed RGBA albedo. Uses the same output
+                encoding convention as ``color_image`` and
+                ``self.render_config.encode_output_srgb``. None to skip.
             refit_bvh: Refit the BVH before rendering.
             clear_data: Values to clear output buffers with.
                 See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
