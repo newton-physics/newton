@@ -3,7 +3,9 @@
 
 import ast
 import importlib
+import math
 import os
+import time
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
@@ -262,9 +264,62 @@ def _format_fps(fps: float) -> str:
     return f"{fps:.3f}"
 
 
+def _positive_float(value: str) -> float:
+    """Parse a finite, positive float for example CLI arguments."""
+    import argparse  # noqa: PLC0415
+
+    try:
+        result = float(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a valid float") from e
+
+    if not math.isfinite(result) or result <= 0.0:
+        raise argparse.ArgumentTypeError("must be a finite value greater than 0")
+
+    return result
+
+
+def _throttle_render_fps(
+    frame_start_time: float,
+    render_fps: float | None,
+    *,
+    time_fn: Callable[[], float] = time.perf_counter,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> float:
+    """Sleep to cap a render loop to ``render_fps``.
+
+    Args:
+        frame_start_time: Wall-clock time at the start of the current frame.
+        render_fps: Maximum render rate in frames per second, or ``None`` for
+            no cap.
+        time_fn: Clock function used to measure elapsed frame time.
+        sleep_fn: Sleep function used to delay the next frame.
+
+    Returns:
+        The sleep duration in seconds, or ``0.0`` when no sleep was needed.
+
+    Raises:
+        ValueError: If ``render_fps`` is not finite and positive.
+    """
+    if render_fps is None:
+        return 0.0
+
+    if not math.isfinite(render_fps) or render_fps <= 0.0:
+        raise ValueError("render_fps must be a finite value greater than 0")
+
+    target_period = 1.0 / render_fps
+    sleep_time = target_period - (time_fn() - frame_start_time)
+    if sleep_time <= 0.0:
+        return 0.0
+
+    sleep_fn(sleep_time)
+    return sleep_time
+
+
 def run(example, args):
     viewer = example.viewer
     example_class = type(example)
+    render_fps = getattr(args, "render_fps", None)
 
     perform_test = args is not None and args.test
     test_post_step = perform_test and hasattr(example, "test_post_step")
@@ -276,6 +331,8 @@ def run(example, args):
         viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
 
     while viewer.is_running():
+        frame_start_time = time.perf_counter()
+
         if browser is not None and browser.switch_target is not None:
             example, example_class = browser.switch(example_class)
             continue
@@ -297,6 +354,8 @@ def run(example, args):
 
         with wp.ScopedTimer("render", active=False):
             example.render()
+
+        _throttle_render_fps(frame_start_time, render_fps)
 
     if perform_test:
         if test_final:
@@ -444,6 +503,12 @@ def create_parser():
     )
     parser.add_argument("--num-frames", type=int, default=100, help="Total number of frames.")
     parser.add_argument(
+        "--render-fps",
+        type=_positive_float,
+        default=None,
+        help="Maximum render rate in frames per second. Does not change simulation frame timing.",
+    )
+    parser.add_argument(
         "--headless",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -501,7 +566,7 @@ def add_broad_phase_arg(parser):
 
 def add_mujoco_contacts_arg(parser):
     """Add ``--use-mujoco-contacts`` argument to *parser*."""
-    import argparse  # noqa: PLC0415  — needed for BooleanOptionalAction
+    import argparse  # noqa: PLC0415
 
     parser.add_argument(
         "--use-mujoco-contacts",
