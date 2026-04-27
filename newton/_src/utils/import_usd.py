@@ -412,15 +412,6 @@ def parse_usd(
     def _has_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
         return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
 
-    def _is_mjc_equality_connect_or_weld(prim: Usd.Prim) -> bool:
-        """Check whether *prim* carries an MjcEqualityConnectAPI or MjcEqualityWeldAPI schema.
-
-        These prims are parsed as equality constraints, not as regular joints.
-        MjcEqualityJointAPI is deliberately excluded because those joints are
-        created as normal DOFs *and* as equality constraints.
-        """
-        return _has_api_schema(prim, "MjcEqualityConnectAPI") or _has_api_schema(prim, "MjcEqualityWeldAPI")
-
     def _get_rigid_body_ancestor_path(prim: Usd.Prim) -> str | None:
         current = prim
         while current and current.IsValid():
@@ -1848,6 +1839,16 @@ def parse_usd(
             for path, joint_spec in zip(paths, joint_specs, strict=False):
                 joint_descriptions[str(path)] = joint_spec
 
+    mjc_equality_connect_paths: set[str] = set()
+    mjc_equality_weld_paths: set[str] = set()
+    for joint_path in joint_descriptions:
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if _has_api_schema(joint_prim, "MjcEqualityConnectAPI"):
+            mjc_equality_connect_paths.add(joint_path)
+        if _has_api_schema(joint_prim, "MjcEqualityWeldAPI"):
+            mjc_equality_weld_paths.add(joint_path)
+    mjc_equality_connect_or_weld_paths = mjc_equality_connect_paths | mjc_equality_weld_paths
+
     # Track which joints have been processed during articulation parsing.
     # This allows us to parse orphan joints (joints not included in any articulation)
     # even when articulations are present in the USD.
@@ -1981,8 +1982,7 @@ def parse_usd(
             for p in desc.articulatedJoints:
                 joint_path = str(p)
                 joint_desc = joint_descriptions[joint_path]
-                joint_prim = stage.GetPrimAtPath(p)
-                if _is_mjc_equality_connect_or_weld(joint_prim):
+                if joint_path in mjc_equality_connect_or_weld_paths:
                     if verbose:
                         print(f"Skipping equality connect/weld joint '{joint_path}' from articulation joint graph")
                     continue
@@ -2303,7 +2303,7 @@ def parse_usd(
             and not any(re.match(p, joint_path) for p in ignore_paths)
             and str(joint_desc.body0) not in ignored_body_paths
             and str(joint_desc.body1) not in ignored_body_paths
-            and not _is_mjc_equality_connect_or_weld(stage.GetPrimAtPath(joint_path))
+            and joint_path not in mjc_equality_connect_or_weld_paths
         )
         for joint_path, joint_desc in joint_descriptions.items()
     )
@@ -2328,8 +2328,7 @@ def parse_usd(
         # Skip joints that were already processed as part of an articulation
         if joint_path in processed_joints:
             continue
-        joint_prim = stage.GetPrimAtPath(joint_path)
-        if _is_mjc_equality_connect_or_weld(joint_prim):
+        if joint_path in mjc_equality_connect_or_weld_paths:
             if verbose:
                 print(f"Skipping equality connect/weld joint '{joint_path}' from orphan joint parsing")
             continue
@@ -3168,8 +3167,8 @@ def parse_usd(
             if any(re.match(p, joint_path) for p in ignore_paths):
                 continue
 
-            is_connect = _has_api_schema(joint_prim, "MjcEqualityConnectAPI")
-            is_weld = _has_api_schema(joint_prim, "MjcEqualityWeldAPI")
+            is_connect = joint_path in mjc_equality_connect_paths
+            is_weld = joint_path in mjc_equality_weld_paths
             is_eq_joint = _has_api_schema(joint_prim, "MjcEqualityJointAPI")
             if not (is_connect or is_weld or is_eq_joint):
                 continue
@@ -3214,17 +3213,17 @@ def parse_usd(
                         custom_attributes=eq_custom_attrs,
                     )
                 else:
-                    # Same logic as connect: use the authored localPose1 for bodies or
-                    # world; use site-derived local position only for site targets.
+                    local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
+                    local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
+                    local_pos0 = wp.vec3(*joint_desc.localPose0Position)
+                    local_pos1 = wp.vec3(*joint_desc.localPose1Position)
+                    # MuJoCo weld anchors are authored on the body1 side. Direct
+                    # body/world targets use localPose1; site targets use the site position.
                     anchor = (
                         wp.vec3(*joint_desc.localPose1Position)
                         if (target1 in ("", "/") or target1 in path_body_map)
                         else site1_local_pos
                     )
-                    local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
-                    local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
-                    local_pos0 = wp.vec3(*joint_desc.localPose0Position)
-                    local_pos1 = wp.vec3(*joint_desc.localPose1Position)
                     relpose_rot = local_rot0 * wp.quat_inverse(local_rot1)
                     relpose_pos = local_pos0 - wp.quat_rotate(relpose_rot, local_pos1)
                     torquescale_attr = joint_prim.GetAttribute("mjc:torqueScale")
