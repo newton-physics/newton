@@ -3354,6 +3354,88 @@ def parse_usd(
                 builder.add_custom_values(**values_dict)
                 if verbose:
                     print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
+
+    # Map USD MjcActuator position/velocity rows onto Newton joint targets so
+    # Control.joint_target_pos / joint_target_vel drive the asset. Other targets
+    # (tendon/site/body, per-axis D6 labels) stay CTRL_DIRECT and continue to be
+    # driven via Control.mujoco.ctrl.
+    if "mujoco:actuator_target_label" in builder.custom_attributes:
+        mjc_actuator_count = builder._custom_frequency_counts.get("mujoco:actuator", 0)
+    else:
+        mjc_actuator_count = 0
+
+    if mjc_actuator_count > 0:
+        biastype_affine = 1  # MuJoCo BiasType.AFFINE
+        ctrl_source_joint_target = 0  # SolverMuJoCo.CtrlSource.JOINT_TARGET
+
+        def _row(key: str, row: int) -> Any:
+            """Row value from a custom-frequency attribute, falling back to its default."""
+            attr = builder.custom_attributes[key]
+            value = attr.values[row] if row < len(attr.values) else None
+            return attr.default if value is None else value
+
+        autolimits = bool(_row("mujoco:autolimits", 0))
+        converted = 0
+
+        for row in range(mjc_actuator_count):
+            target_path = _row("mujoco:actuator_target_label", row)
+            dof = path_to_dof.get(target_path) if target_path else None
+            if dof is None or int(_row("mujoco:actuator_biastype", row)) != biastype_affine:
+                continue
+
+            gainprm = list(_row("mujoco:actuator_gainprm", row))
+            biasprm = list(_row("mujoco:actuator_biasprm", row))
+            kp = gainprm[0]
+            if kp <= 0.0:
+                continue
+
+            # MuJoCo "position" shortcut: gainprm=[kp,0,...], biasprm=[0,-kp,(-kv|dampratio|0),0,...]
+            # MuJoCo "velocity" shortcut: gainprm=[kv,0,...], biasprm=[0,0,-kv,0,...]
+            is_position = np.isclose(biasprm[0], 0.0) and np.isclose(biasprm[1], -kp)
+            is_velocity = np.isclose(biasprm[0], 0.0) and np.isclose(biasprm[1], 0.0) and np.isclose(biasprm[2], -kp)
+            if not (is_position or is_velocity):
+                continue
+
+            current_mode = builder.joint_target_mode[dof]
+            if is_position:
+                builder.joint_target_ke[dof] = kp
+                if current_mode == int(JointTargetMode.VELOCITY):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.POSITION_VELOCITY)
+                elif current_mode == int(JointTargetMode.NONE):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.POSITION)
+                    # Negative biasprm[2] encodes -kv; positive is an unresolved dampratio.
+                    builder.joint_target_kd[dof] = -biasprm[2] if biasprm[2] < 0.0 else 0.0
+            else:  # velocity
+                builder.joint_target_kd[dof] = kp
+                if current_mode == int(JointTargetMode.POSITION):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.POSITION_VELOCITY)
+                elif current_mode == int(JointTargetMode.NONE):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.VELOCITY)
+
+            # Override the row's CTRL_DIRECT default and write the DOF target index
+            # so _init_actuators routes through MuJoCo's joint_target_mode actuators.
+            builder.custom_attributes["mujoco:ctrl_source"].values[row] = ctrl_source_joint_target
+            builder.custom_attributes["mujoco:actuator_trnid"].values[row] = wp.vec2i(dof, 0)
+
+            # Tighten the joint effort limit when the actuator authored a forceRange.
+            if bool(_row("mujoco:actuator_has_forcerange", row)):
+                limited = int(_row("mujoco:actuator_forcelimited", row))
+                if limited == 1 or (limited == 2 and autolimits):
+                    force_range = list(_row("mujoco:actuator_forcerange", row))
+                    limit = max(abs(force_range[0]), abs(force_range[1]))
+                    current = builder.joint_effort_limit[dof]
+                    if not np.isfinite(current) or limit < current:
+                        if np.isfinite(current) and verbose:
+                            print(
+                                f"MuJoCo USD actuator {row} narrows joint DOF {dof} "
+                                f"effort limit from {current} to {limit}"
+                            )
+                        builder.joint_effort_limit[dof] = limit
+
+            converted += 1
+
+        if verbose and converted > 0:
+            print(f"Mapped {converted} MuJoCo USD actuator(s) to joint targets")
     return result
 
 
