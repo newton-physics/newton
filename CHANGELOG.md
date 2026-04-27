@@ -30,10 +30,12 @@
 - Honor `UsdGeomImageable` visibility (including inherited `invisible`) on USD prims imported via `ModelBuilder.add_usd()`; visual shapes, gaussian splats, and collider shapes are imported with `ShapeFlags.VISIBLE` cleared when the prim is effectively invisible, while collision behavior is preserved
 - Add more solver options to implicit MPM: `gs-soa` (or `gauss-seidel-soa`) for improved memory coalescing, `gs-batched` (or `gauss-seidel-batched`) merging GS colors with Jacobi-style mass-split parallelism, plus `cr` (Conjugate Residual) and `gmres` linear solver options.
 - Add frame-by-frame step support to `ViewerGL`: press `.` while paused to advance one simulation frame
+- Add `ViewerBase.should_step()` — call once per frame to determine whether the simulation loop should advance; returns `True` when running and consumes a pending single-step request when paused, replacing the `is_paused()` / `pop_step_request()` composition
 
 
 ### Changed
 
+- Replace `ViewerBase.pop_step_request()` with `ViewerBase.should_step()`; simulation loops should change from `if not viewer.is_paused() or viewer.pop_step_request():` to `if viewer.should_step():`
 - Use pre-computed local AABB for `CONVEX_MESH` shapes in `compute_shape_aabbs`, avoiding a per-frame support-function AABB computation
 - Build mesh SDFs via the texture-based sparse path only; sample via `SDF.texture_data` instead of `SDF.sparse_volume` / `SDF.coarse_volume`.
 - Change implicit MPM default `solver` from `"gs"` to `"auto"`, which selects `"gs"` for trilinear bases and `"gs-batched"` for higher-order ones. Set `solver="gs"` explicitly to restore the previous behavior.
@@ -73,6 +75,8 @@
 ### Fixed
 
 - Fix `remesh_convex_hull` raising `QhullError` on degenerate (coincident, collinear, or coplanar) point clouds; it now returns a zero-volume fallback mesh with a `UserWarning`, raises `ValueError` on empty input, and retries Qhull with `QJ` joggle as a last resort on the 3D path
+- Fix `ViewerGL` spurious single-step firing when `.` is pressed while the simulation is running and is subsequently paused; `should_step()` clears the stale request on any non-paused frame
+- Fix `ViewerGL` Step button remaining clickable while the simulation is running; the button is now greyed out when not paused
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration
 - Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
 - Show prismatic joints in the GL viewer when "Show Joints" is enabled
