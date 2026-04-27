@@ -504,8 +504,18 @@ def test_tet_energy(test, device):
         test.assertTrue(force_comparison.all())
 
         for i in range(4):
+            # The analytical Hessian drops the s * d^2 J / dF^2 term (zero per-vertex
+            # contribution by the Levi-Civita / m x m = 0 identity). The autodiff
+            # path computes it explicitly and only cancels at fp32 precision, so the
+            # residual scales with the magnitude of the analytical Hessian itself.
+            ref = max(np.max(np.abs(particle_hessian_analytical[i])), 1.0)
             test.assertTrue(
-                np.isclose(particle_hessian_auto_diff[i], particle_hessian_analytical[i], rtol=1.0e-2, atol=0.1).all()
+                np.isclose(
+                    particle_hessian_auto_diff[i],
+                    particle_hessian_analytical[i],
+                    rtol=1.0e-2,
+                    atol=1.0e-3 * ref,
+                ).all()
             )
 
 
