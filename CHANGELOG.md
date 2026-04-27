@@ -27,10 +27,13 @@
 - Use pre-computed local AABB for `CONVEX_MESH` shapes in `compute_shape_aabbs`, avoiding a per-frame support-function AABB computation
 - Build mesh SDFs via the texture-based sparse path only; sample via `SDF.texture_data` instead of `SDF.sparse_volume` / `SDF.coarse_volume`.
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
+- Add a Python 3.12+ conditional floor of `Pillow>=10.1.0` (the first release with `cp312` wheels); the existing `>=9.0.0` floor still applies on Python 3.10/3.11
 - Pin `mujoco` and `mujoco-warp` dependencies to `~=3.6.0`
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
 - Inline a `wp.vec3`-specialized point-to-triangle squared-distance helper in the implicit-MPM rasterized collider, removing the dependency on Warp's internal `warp.fem.geometry.closest_point`
 - Bump `mujoco` and `mujoco-warp` dependencies to `~=3.7.0` (`mujoco-warp` requires `>=3.7.0.1`)
+- Add a Python 3.12+ conditional floor of `open3d>=0.19.0` (the first release with `cp312` wheels); the existing `>=0.18.0` floor still applies on Python 3.10/3.11
+- Bump `meshio` floor to `>=5.3.5`; `5.3.0` calls `np.string_` which was removed in NumPy 2.0
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
 - Disable process reuse in the test runner on multi-GPU systems to prevent CUDA errors from cascading across test suites, keeping process reuse enabled on single-GPU systems for faster throughput
