@@ -227,6 +227,11 @@ def _pack_rgba_warp(src: wp.array[Any], c_count: int, out: wp.array[Any]) -> Non
     *out* must be ``wp.array3d[wp.uint8]`` with shape ``(N*H, W, 4)``.
     """
     n, h, w, _ = src.shape
+    # Fast path: contiguous (uint8, C=4) is already byte-identical to the
+    # target layout. Skip the kernel and DMA the bytes directly.
+    if src.dtype == wp.uint8 and c_count == 4 and src.is_contiguous:
+        wp.copy(out, src.reshape((n * h, w, 4)))
+        return
     if src.dtype == wp.uint8:
         kernel = _pack_rgba_u8_kernel
     elif src.dtype == wp.float32:
