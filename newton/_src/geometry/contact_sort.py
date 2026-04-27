@@ -117,6 +117,7 @@ class _FullContactArrays:
     offset0: wp.array[wp.vec3]
     offset1: wp.array[wp.vec3]
     normal: wp.array[wp.vec3]
+    distance: wp.array[float]
     margin0: wp.array[float]
     margin1: wp.array[float]
     tids: wp.array[wp.int32]
@@ -131,6 +132,7 @@ class _FullContactArrays:
     offset0_buf: wp.array[wp.vec3]
     offset1_buf: wp.array[wp.vec3]
     normal_buf: wp.array[wp.vec3]
+    distance_buf: wp.array[float]
     margin0_buf: wp.array[float]
     margin1_buf: wp.array[float]
     tids_buf: wp.array[wp.int32]
@@ -155,6 +157,7 @@ def _backup_full_kernel(data: _FullContactArrays, count: wp.array[int]):
     data.offset0_buf[i] = data.offset0[i]
     data.offset1_buf[i] = data.offset1[i]
     data.normal_buf[i] = data.normal[i]
+    data.distance_buf[i] = data.distance[i]
     data.margin0_buf[i] = data.margin0[i]
     data.margin1_buf[i] = data.margin1[i]
     data.tids_buf[i] = data.tids[i]
@@ -180,6 +183,7 @@ def _gather_full_kernel(data: _FullContactArrays, perm: wp.array[wp.int32], coun
     data.offset0[i] = data.offset0_buf[p]
     data.offset1[i] = data.offset1_buf[p]
     data.normal[i] = data.normal_buf[p]
+    data.distance[i] = data.distance_buf[p]
     data.margin0[i] = data.margin0_buf[p]
     data.margin1[i] = data.margin1_buf[p]
     data.tids[i] = data.tids_buf[p]
@@ -229,6 +233,7 @@ class ContactSorter:
             self._full_offset0_buf = wp.zeros(capacity, dtype=wp.vec3)
             self._full_offset1_buf = wp.zeros(capacity, dtype=wp.vec3)
             self._full_normal_buf = wp.zeros(capacity, dtype=wp.vec3)
+            self._full_distance_buf = wp.zeros(capacity, dtype=float)
             self._full_margin0_buf = wp.zeros(capacity, dtype=float)
             self._full_margin1_buf = wp.zeros(capacity, dtype=float)
             self._full_tids_buf = wp.zeros(capacity, dtype=wp.int32)
@@ -313,6 +318,7 @@ class ContactSorter:
         offset0: wp.array,
         offset1: wp.array,
         normal: wp.array,
+        distance: wp.array,
         margin0: wp.array,
         margin1: wp.array,
         tids: wp.array,
@@ -336,6 +342,7 @@ class ContactSorter:
             offset0: vec3 body-frame friction anchor offsets for shape 0.
             offset1: vec3 body-frame friction anchor offsets for shape 1.
             normal: vec3 contact normals.
+            distance: float per-contact signed surface-to-surface distance.
             margin0: float surface thickness for shape 0.
             margin1: float surface thickness for shape 1.
             tids: int tid array.
@@ -361,6 +368,7 @@ class ContactSorter:
         data.offset0 = offset0
         data.offset1 = offset1
         data.normal = normal
+        data.distance = distance
         data.margin0 = margin0
         data.margin1 = margin1
         data.tids = tids
@@ -379,6 +387,7 @@ class ContactSorter:
         data.offset0_buf = self._full_offset0_buf
         data.offset1_buf = self._full_offset1_buf
         data.normal_buf = self._full_normal_buf
+        data.distance_buf = self._full_distance_buf
         data.margin0_buf = self._full_margin0_buf
         data.margin1_buf = self._full_margin1_buf
         data.tids_buf = self._full_tids_buf

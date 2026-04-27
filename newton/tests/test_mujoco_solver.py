@@ -4422,8 +4422,9 @@ class TestMuJoCoContactForce(unittest.TestCase):
         """Box weight via pyramidal cone contacts must match mg."""
         model, ground_shape = self._build_box_on_ground(friction=0.5)
         force, shape0 = self._run_and_collect_forces(model, cone="pyramidal")
-        # Force on shape0: if ground is shape0 the box pushes it down (-Z), otherwise up (+Z).
-        expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ground_shape else self.BOX_MASS * self.GRAVITY
+        # Force exerted BY shape0 on shape1: if ground is shape0, it pushes the box up (+Z);
+        # if the box is shape0, it pushes the ground down (-Z).
+        expected_fz = self.BOX_MASS * self.GRAVITY if shape0 == ground_shape else -self.BOX_MASS * self.GRAVITY
         np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
         # Horizontal forces should be near zero for a resting box.
         np.testing.assert_allclose(force[0], 0.0, atol=1.0)
@@ -4433,7 +4434,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
         """Box weight via elliptic cone contacts must match mg."""
         model, ground_shape = self._build_box_on_ground(friction=0.5)
         force, shape0 = self._run_and_collect_forces(model, cone="elliptic")
-        expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ground_shape else self.BOX_MASS * self.GRAVITY
+        expected_fz = self.BOX_MASS * self.GRAVITY if shape0 == ground_shape else -self.BOX_MASS * self.GRAVITY
         np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
         # Horizontal forces should be near zero for a resting box.
         np.testing.assert_allclose(force[0], 0.0, atol=1.0)
@@ -4467,7 +4468,8 @@ class TestMuJoCoContactForce(unittest.TestCase):
         incline_angle = 0.25  # rad (~14°); mu=1.0 > tan(0.25)≈0.26 → static
         model, ramp_shape = self._build_incline_model(incline_angle)
         force, shape0 = self._run_and_collect_forces(model, cone="pyramidal", settle=300, avg=80)
-        expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ramp_shape else self.BOX_MASS * self.GRAVITY
+        # Force exerted BY shape0 on shape1: if ramp is shape0, it pushes the box up (+Z).
+        expected_fz = self.BOX_MASS * self.GRAVITY if shape0 == ramp_shape else -self.BOX_MASS * self.GRAVITY
         np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
 
 

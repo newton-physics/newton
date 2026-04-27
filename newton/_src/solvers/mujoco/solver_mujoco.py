@@ -3010,7 +3010,7 @@ class SolverMuJoCo(SolverBase):
         # Initialised before _convert_to_mjc because notify_model_changed (called
         # during conversion) may call _invalidate_contact_fast_path.
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
-        self._last_contact_generation: wp.array[wp.int32] | None = None
+        self._last_generation: wp.array[wp.int32] | None = None
         self._last_nacon_count: wp.array[wp.int32] | None = None
         self._last_contacts_id: int | None = None
 
@@ -3102,8 +3102,8 @@ class SolverMuJoCo(SolverBase):
         etc.) may be stale — e.g. after :meth:`notify_model_changed` updates
         geom properties.
         """
-        if self._last_contact_generation is not None:
-            self._last_contact_generation.fill_(_GENERATION_SENTINEL)
+        if self._last_generation is not None:
+            self._last_generation.fill_(_GENERATION_SENTINEL)
             self._last_nacon_count.zero_()
 
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
@@ -3114,27 +3114,29 @@ class SolverMuJoCo(SolverBase):
         # The kernel only produces valid output for tid < naconmax (the full
         # path clamps count and rejects cid >= naconmax).  Launching more
         # threads than naconmax wastes GPU resources, so cap the grid size.
-        launch_dim = min(contacts.rigid_contact_max, self.mjw_data.naconmax)
+        launch_dim = min(contacts.rigid_count_max, self.mjw_data.naconmax)
 
         # Lazy-allocate fast-path buffers; reallocate if launch_dim grew
-        # (e.g. a different Contacts object with a larger rigid_contact_max).
+        # (e.g. a different Contacts object with a larger rigid_count_max).
         # Also invalidate when the Contacts instance changes — a different
-        # object's contact_generation could coincidentally match our cached
-        # last_contact_generation while containing entirely different data.
-        contacts_id = id(contacts.contact_generation)
+        # object's generation could coincidentally match our cached
+        # last_generation while containing entirely different data.
+        contacts_id = id(contacts.generation)
         needs_realloc = self._contact_tid_to_cid is None or self._contact_tid_to_cid.shape[0] < launch_dim
         contacts_changed = self._last_contacts_id != contacts_id
 
         if needs_realloc or contacts_changed:
             if needs_realloc:
                 self._contact_tid_to_cid = wp.full(launch_dim, -1, dtype=wp.int32, device=model.device)
-            self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=model.device)
+            self._last_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=model.device)
             self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=model.device)
             self._last_contacts_id = contacts_id
 
         # Zero nacon before the kernel — the full path uses atomic_add to count
         # contacts; the fast path restores the count from last_nacon_count.
         self.mjw_data.nacon.zero_()
+        if launch_dim == 0:
+            return
 
         bodies_per_world = self.model.body_count // self.model.world_count
         wp.launch(
@@ -3155,17 +3157,17 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_margin,
                 self.mjw_model.geom_gap,
                 # Newton contacts
-                contacts.rigid_contact_count,
+                contacts.rigid_count_active,
                 contacts.rigid_contact_shape0,
                 contacts.rigid_contact_shape1,
-                contacts.rigid_contact_point0,
-                contacts.rigid_contact_point1,
-                contacts.rigid_contact_normal,
+                contacts.rigid_point_0,
+                contacts.rigid_point_1,
+                contacts.rigid_normal,
                 contacts.rigid_contact_margin0,
                 contacts.rigid_contact_margin1,
-                contacts.rigid_contact_stiffness,
-                contacts.rigid_contact_damping,
-                contacts.rigid_contact_friction,
+                contacts.rigid_stiffness,
+                contacts.rigid_damping,
+                contacts.rigid_friction,
                 model.shape_margin,
                 bodies_per_world,
                 self.newton_shape_to_mjc_geom,
@@ -3188,8 +3190,8 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_data.nworld,
                 self.mjw_data.ncollision,
                 # Fast-path generation tracking
-                contacts.contact_generation,
-                self._last_contact_generation,
+                contacts.generation,
+                self._last_generation,
                 self._contact_tid_to_cid,
                 self._last_nacon_count,
             ],
@@ -3201,7 +3203,7 @@ class SolverMuJoCo(SolverBase):
         # kernel AFTER the main kernel completes so that:
         #  - nacon_out has its final value (from atomic_add on full path, or
         #    restored from last_nacon_count on fast path)
-        #  - last_contact_generation is only updated after ALL threads in the
+        #  - last_generation is only updated after ALL threads in the
         #    main kernel have read it (avoids a cross-block race)
         wp.launch(
             _snapshot_nacon_count,
@@ -3209,8 +3211,8 @@ class SolverMuJoCo(SolverBase):
             inputs=[
                 self.mjw_data.nacon,
                 self._last_nacon_count,
-                contacts.contact_generation,
-                self._last_contact_generation,
+                contacts.generation,
+                self._last_generation,
             ],
             device=model.device,
         )
@@ -3736,7 +3738,26 @@ class SolverMuJoCo(SolverBase):
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
-        """Update `contacts` from MuJoCo contacts when running with ``use_mujoco_contacts``."""
+        """Update ``contacts`` from MuJoCo contacts when running with ``use_mujoco_contacts``.
+
+        Writes :attr:`~Contacts.rigid_count_active`, :attr:`~Contacts.rigid_shapes`,
+        :attr:`~Contacts.rigid_point_0`, :attr:`~Contacts.rigid_point_1`,
+        :attr:`~Contacts.rigid_normal`, :attr:`~Contacts.rigid_distance`, and
+        :attr:`~Contacts.rigid_margins`. When the ``rigid_force`` extended attribute
+        has been requested, :attr:`~Contacts.rigid_force` is also written; otherwise
+        the kernel skips the force computation.
+
+        The following Contacts fields are **not** populated on this path:
+        ``rigid_contact_offset0``, ``rigid_contact_offset1``,
+        :attr:`~Contacts.rigid_tids`, :attr:`~Contacts.rigid_stiffness` /
+        :attr:`~Contacts.rigid_damping` / :attr:`~Contacts.rigid_friction`, and the
+        ``rigid_diff_*`` arrays. Callers that need deterministic values for these fields
+        should construct the ``Contacts`` instance with ``clear_buffers=True`` and call
+        :meth:`~Contacts.clear`.
+
+        Raises:
+            ValueError: If ``mjw_data.naconmax`` exceeds :attr:`~Contacts.rigid_count_max`.
+        """
         if self.use_mujoco_cpu:
             raise NotImplementedError()
 
@@ -3745,12 +3766,16 @@ class SolverMuJoCo(SolverBase):
         mj_data = self.mjw_data
         mj_contact = mj_data.contact
 
-        if mj_data.naconmax > contacts.rigid_contact_max:
+        if mj_data.naconmax > contacts.rigid_count_max:
             raise ValueError(
-                f"MuJoCo naconmax ({mj_data.naconmax}) exceeds contacts.rigid_contact_max "
-                f"({contacts.rigid_contact_max}). Create Contacts with at least "
-                f"rigid_contact_max={mj_data.naconmax}."
+                f"MuJoCo naconmax ({mj_data.naconmax}) exceeds contacts.rigid_count_max "
+                f"({contacts.rigid_count_max}). Create Contacts with at least "
+                f"rigid_count_max={mj_data.naconmax}."
             )
+
+        if mj_data.naconmax == 0 or contacts.rigid_count_max == 0:
+            contacts.clear()
+            return
 
         wp.launch(
             self._convert_mjw_contacts_to_newton_kernel,
@@ -3771,7 +3796,9 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_bodyid,
                 mj_data.xpos,
                 mj_data.xquat,
+                self.model.shape_margin,
                 mj_data.njmax,
+                contacts.rigid_count_max,
             ],
             outputs=[
                 contacts.rigid_contact_count,
@@ -3780,11 +3807,12 @@ class SolverMuJoCo(SolverBase):
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
                 contacts.rigid_contact_normal,
-                contacts.force,
+                contacts.rigid_distance,
+                contacts.rigid_margins,
+                contacts.rigid_force,
             ],
             device=self.model.device,
         )
-        contacts.n_contacts = mj_data.nacon
 
     def _convert_to_mjc(
         self,

@@ -70,8 +70,12 @@ The canonical list is :attr:`Contacts.EXTENDED_ATTRIBUTES <newton.Contacts.EXTEN
 
    * - Attribute
      - Description
-   * - :attr:`~newton.Contacts.force`
-     - Contact spatial forces (used by :class:`~newton.sensors.SensorContact`)
+   * - :attr:`~newton.Contacts.rigid_force`
+     - Rigid contact spatial forces (used by :class:`~newton.sensors.SensorContact`)
+   * - :attr:`~newton.Contacts.rigid_velocity`
+     - Rigid contact spatial velocities (solver output)
+   * - :attr:`~newton.Contacts.rigid_key`
+     - Cross-step rigid contact identifier for warmstart matching (solver-populated)
 
 
 .. _extended_state_attributes:

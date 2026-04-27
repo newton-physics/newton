@@ -65,7 +65,7 @@ def test_first_frame_all_not_found(test, device):
         count = _collide_once(pipeline, state, contacts)
         test.assertGreater(count, 0, "Expected contacts between spheres and ground plane")
 
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count]
+        match_idx = contacts.rigid_match_index.numpy()[:count]
         test.assertTrue(
             np.all(match_idx == -1),
             f"First frame should have all MATCH_NOT_FOUND, got unique values: {np.unique(match_idx)}",
@@ -93,7 +93,7 @@ def test_stable_scene_identity_match(test, device):
         count2 = _collide_once(pipeline, state, contacts)
         test.assertEqual(count1, count2, "Contact count must be stable between identical frames")
 
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count2]
+        match_idx = contacts.rigid_match_index.numpy()[:count2]
         expected = np.arange(count2, dtype=np.int32)
         np.testing.assert_array_equal(
             match_idx,
@@ -112,7 +112,7 @@ def test_stable_scene_identity_across_three_frames(test, device):
         _collide_once(pipeline, state, contacts)  # frame 1
         for frame in range(2, 5):
             count = _collide_once(pipeline, state, contacts)
-            match_idx = contacts.rigid_contact_match_index.numpy()[:count]
+            match_idx = contacts.rigid_match_index.numpy()[:count]
             expected = np.arange(count, dtype=np.int32)
             np.testing.assert_array_equal(
                 match_idx,
@@ -152,7 +152,7 @@ def test_new_contact_detection(test, device):
         count2 = _collide_once(pipeline, state, contacts)
         test.assertGreater(count2, count1, "More contacts expected with third sphere on ground")
 
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count2]
+        match_idx = contacts.rigid_match_index.numpy()[:count2]
 
         n_new = np.sum(match_idx == -1)
         n_matched = np.sum(match_idx >= 0)
@@ -170,7 +170,7 @@ def test_broken_pos_threshold_all_contacts(test, device):
     Uses the default :attr:`CollisionPipeline.contact_matching_pos_threshold` so
     the test follows any future retune of the default.  ``contact_report=True``
     lets us close the loop and verify each broken new contact has a matching
-    entry in ``rigid_contact_broken_indices`` (the old contact was also
+    entry in ``rigid_broken_indices`` (the old contact was also
     reported as broken — broken-on-both-sides).
     """
     with wp.ScopedDevice(device):
@@ -194,7 +194,7 @@ def test_broken_pos_threshold_all_contacts(test, device):
         state.body_q = wp.array(q, dtype=wp.transform, device=device)
 
         count2 = _collide_once(pipeline, state, contacts)
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count2]
+        match_idx = contacts.rigid_match_index.numpy()[:count2]
 
         # Every new contact should be MATCH_BROKEN (-2): key matches but
         # position drifted beyond threshold.
@@ -206,13 +206,13 @@ def test_broken_pos_threshold_all_contacts(test, device):
         # And every old contact should appear in broken_contact_indices:
         # if the new side is broken, the old side must also be broken
         # (nothing matched it).
-        broken_count = contacts.rigid_contact_broken_count.numpy()[0]
+        broken_count = contacts.rigid_broken_count.numpy()[0]
         test.assertEqual(
             broken_count,
             count1,
             f"All {count1} old contacts should be reported as broken, got {broken_count}",
         )
-        broken_indices = contacts.rigid_contact_broken_indices.numpy()[:broken_count]
+        broken_indices = contacts.rigid_broken_indices.numpy()[:broken_count]
         np.testing.assert_array_equal(
             np.sort(broken_indices),
             np.arange(count1, dtype=np.int32),
@@ -246,7 +246,7 @@ def test_within_pos_threshold_still_matches(test, device):
         state.body_q = wp.array(q, dtype=wp.transform, device=device)
 
         count2 = _collide_once(pipeline, state, contacts)
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count2]
+        match_idx = contacts.rigid_match_index.numpy()[:count2]
 
         test.assertTrue(
             np.all(match_idx >= 0),
@@ -294,7 +294,7 @@ def test_broken_normal_threshold(test, device):
         count2 = _collide_once(pipeline, state, contacts)
         test.assertGreater(count2, 0, "Repositioned spheres must still produce contacts")
 
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count2]
+        match_idx = contacts.rigid_match_index.numpy()[:count2]
         test.assertTrue(
             np.all(match_idx == -2),
             f"Normal changed ~90°, all should be MATCH_BROKEN. Unique: {np.unique(match_idx)}",
@@ -312,26 +312,26 @@ def test_contact_report_indices_correct(test, device):
         count1 = _collide_once(pipeline, state, contacts)
         test.assertGreater(count1, 0)
 
-        new_count1 = contacts.rigid_contact_new_count.numpy()[0]
+        new_count1 = contacts.rigid_new_count.numpy()[0]
         test.assertEqual(new_count1, count1, "First frame: all contacts should be new")
 
         # Verify new_contact_indices point to valid sorted positions.
-        new_indices1 = contacts.rigid_contact_new_indices.numpy()[:new_count1]
+        new_indices1 = contacts.rigid_new_indices.numpy()[:new_count1]
         test.assertTrue(np.all(new_indices1 >= 0) and np.all(new_indices1 < count1))
 
         # Verify new_contact_indices match the actual -1 positions in match_index.
-        match_idx1 = contacts.rigid_contact_match_index.numpy()[:count1]
+        match_idx1 = contacts.rigid_match_index.numpy()[:count1]
         expected_new = np.where(match_idx1 < 0)[0].astype(np.int32)
         np.testing.assert_array_equal(
             np.sort(new_indices1),
             np.sort(expected_new),
-            err_msg="rigid_contact_new_indices must match positions where match_index < 0",
+            err_msg="rigid_new_indices must match positions where match_index < 0",
         )
 
         # Frame 2: stable scene — no new, no broken.
         _collide_once(pipeline, state, contacts)
-        test.assertEqual(contacts.rigid_contact_new_count.numpy()[0], 0)
-        test.assertEqual(contacts.rigid_contact_broken_count.numpy()[0], 0)
+        test.assertEqual(contacts.rigid_new_count.numpy()[0], 0)
+        test.assertEqual(contacts.rigid_broken_count.numpy()[0], 0)
 
 
 def test_contact_report_broken_indices(test, device):
@@ -361,11 +361,11 @@ def test_contact_report_broken_indices(test, device):
         count2 = _collide_once(pipeline, state, contacts)
         test.assertLess(count2, count1, "Fewer contacts after removing a sphere")
 
-        broken_count = contacts.rigid_contact_broken_count.numpy()[0]
+        broken_count = contacts.rigid_broken_count.numpy()[0]
         test.assertGreater(broken_count, 0, "Should have broken contacts from the removed sphere")
 
         # Broken indices must be valid positions in the OLD sorted buffer.
-        broken_indices = contacts.rigid_contact_broken_indices.numpy()[:broken_count]
+        broken_indices = contacts.rigid_broken_indices.numpy()[:broken_count]
         test.assertTrue(
             np.all(broken_indices >= 0) and np.all(broken_indices < count1),
             f"Broken indices must be in [0, {count1}), got: {broken_indices}",
@@ -387,9 +387,9 @@ def test_matching_disabled_no_allocation(test, device):
         model, _state = _build_simple_scene(device)
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
         contacts = pipeline.contacts()
-        test.assertIsNone(contacts.rigid_contact_match_index)
-        test.assertIsNone(contacts.rigid_contact_new_indices)
-        test.assertIsNone(contacts.rigid_contact_broken_indices)
+        test.assertIsNone(contacts.rigid_match_index)
+        test.assertIsNone(contacts.rigid_new_indices)
+        test.assertIsNone(contacts.rigid_broken_indices)
         test.assertEqual(pipeline.contact_matching, "disabled")
 
 
@@ -403,7 +403,7 @@ def test_match_index_valid_after_sort(test, device):
         _collide_once(pipeline, state, contacts)  # frame 1
         count = _collide_once(pipeline, state, contacts)  # frame 2
 
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count]
+        match_idx = contacts.rigid_match_index.numpy()[:count]
         matched = match_idx[match_idx >= 0]
 
         test.assertTrue(np.all(matched < count), f"Indices must be < {count}, max: {matched.max()}")
@@ -439,7 +439,7 @@ def test_dynamic_body_world_transform(test, device):
         # Frame 2: identical state → identity match.
         count2 = _collide_once(pipeline, state, contacts)
         test.assertEqual(count1, count2)
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count2]
+        match_idx = contacts.rigid_match_index.numpy()[:count2]
         np.testing.assert_array_equal(
             match_idx,
             np.arange(count2, dtype=np.int32),
@@ -472,7 +472,7 @@ def test_box_on_plane_multiple_contacts(test, device):
         # Frame 2: identical state → identity match for all contacts.
         count2 = _collide_once(pipeline, state, contacts)
         test.assertEqual(count1, count2)
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count2]
+        match_idx = contacts.rigid_match_index.numpy()[:count2]
         np.testing.assert_array_equal(
             match_idx,
             np.arange(count2, dtype=np.int32),
@@ -554,7 +554,7 @@ def test_sticky_matched_rows_replayed(test, device):
 
         count2 = _collide_once(pipeline, state, contacts)
         test.assertEqual(count1, count2)
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count2]
+        match_idx = contacts.rigid_match_index.numpy()[:count2]
         test.assertTrue(
             np.all(match_idx >= 0),
             f"All perturbed contacts should still match. Unique: {np.unique(match_idx)}",
@@ -616,7 +616,7 @@ def test_sticky_unmatched_rows_pass_through(test, device):
         count2 = _collide_once(pipeline, state, contacts)
         test.assertGreater(count2, count1)
 
-        match_idx = contacts.rigid_contact_match_index.numpy()[:count2]
+        match_idx = contacts.rigid_match_index.numpy()[:count2]
         shape0 = contacts.rigid_contact_shape0.numpy()[:count2]
         shape1 = contacts.rigid_contact_shape1.numpy()[:count2]
 

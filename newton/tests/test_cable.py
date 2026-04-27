@@ -3459,6 +3459,7 @@ def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
     builder.color()
     model = builder.finalize(device=device)
     model.set_gravity((0.0, 0.0, 0.0))
+    model.request_contact_attributes("rigid_force")
 
     state0 = model.state()
     contacts = model.contacts()
@@ -3486,12 +3487,13 @@ def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
 
     b0_np = c_b0.numpy()
     b1_np = c_b1.numpy()
-    f_np = c_f_b1.numpy()
+    # ``c_f_b1`` is ``contacts.rigid_force`` (spatial_vector); linear part is the first 3 entries.
+    f_linear = c_f_b1.numpy()[:count, :3]
     test.assertTrue(np.all(b0_np[:count] >= 0), msg="Invalid body0 ids in active contact range")
     test.assertTrue(np.all(b1_np[:count] >= 0), msg="Invalid body1 ids in active contact range")
-    test.assertTrue(np.isfinite(f_np[:count]).all(), msg="Non-finite contact force values in active contact range")
+    test.assertTrue(np.isfinite(f_linear).all(), msg="Non-finite contact force values in active contact range")
 
-    force_norms = np.linalg.norm(f_np[:count], axis=1)
+    force_norms = np.linalg.norm(f_linear, axis=1)
     test.assertTrue(np.any(force_norms > 1.0e-8), msg="Expected at least one non-zero rigid contact force")
 
 

@@ -117,7 +117,7 @@ def add_example_test(
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = warp_cache_path
         if not allow_deprecation_warnings:
-            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
+            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning,ignore:Contacts:DeprecationWarning"
         else:
             env_vars.pop("PYTHONWARNINGS", None)
 

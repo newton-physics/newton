@@ -16,6 +16,7 @@ from .kernels import (
     apply_particle_shape_restitution,
     apply_rigid_restitution,
     bending_constraint,
+    compute_rigid_offsets,
     convert_contact_impulse_to_force,
     copy_kinematic_body_state_kernel,
     solve_body_contact_positions,
@@ -264,6 +265,9 @@ class SolverXPBD(SolverBase):
         contact_impulse = None
         contact_impulse_iter = None
 
+        contact_offset0 = None
+        contact_offset1 = None
+
         if contacts:
             if self.rigid_contact_con_weighting:
                 rigid_contact_inv_weight = wp.zeros(model.body_count, dtype=float, device=model.device)
@@ -273,6 +277,26 @@ class SolverXPBD(SolverBase):
                 contact_impulse = wp.zeros(contacts.rigid_contact_max, dtype=wp.spatial_vector, device=model.device)
                 contact_impulse_iter = wp.zeros(
                     contacts.rigid_contact_max, dtype=wp.spatial_vector, device=model.device
+                )
+
+            if model.body_count:
+                contact_offset0 = wp.zeros(contacts.rigid_contact_max, dtype=wp.vec3, device=model.device)
+                contact_offset1 = wp.zeros(contacts.rigid_contact_max, dtype=wp.vec3, device=model.device)
+                wp.launch(
+                    kernel=compute_rigid_offsets,
+                    dim=contacts.rigid_contact_max,
+                    inputs=[
+                        state_in.body_q,
+                        model.shape_body,
+                        contacts.rigid_contact_count,
+                        contacts.rigid_contact_shape0,
+                        contacts.rigid_contact_shape1,
+                        contacts.rigid_contact_normal,
+                        contacts.rigid_contact_margin0,
+                        contacts.rigid_contact_margin1,
+                    ],
+                    outputs=[contact_offset0, contact_offset1],
+                    device=model.device,
                 )
 
         if control is None:
@@ -509,8 +533,8 @@ class SolverXPBD(SolverBase):
                                 contacts.rigid_contact_count,
                                 contacts.rigid_contact_point0,
                                 contacts.rigid_contact_point1,
-                                contacts.rigid_contact_offset0,
-                                contacts.rigid_contact_offset1,
+                                contact_offset0,
+                                contact_offset1,
                                 contacts.rigid_contact_normal,
                                 contacts.rigid_contact_margin0,
                                 contacts.rigid_contact_margin1,
@@ -694,8 +718,8 @@ class SolverXPBD(SolverBase):
                             model.shape_material_restitution,
                             contacts.rigid_contact_point0,
                             contacts.rigid_contact_point1,
-                            contacts.rigid_contact_offset0,
-                            contacts.rigid_contact_offset1,
+                            contact_offset0,
+                            contact_offset1,
                             contacts.rigid_contact_margin0,
                             contacts.rigid_contact_margin1,
                             rigid_contact_inv_weight_init,
@@ -725,9 +749,10 @@ class SolverXPBD(SolverBase):
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """Populate ``contacts.force`` from XPBD contact impulses accumulated during the last :meth:`step`.
 
-        Both force [N] and torque [N·m] components are written.  The torque
-        includes torsional and rolling friction contributions that cannot be
-        reconstructed from the linear force alone.
+        ``contacts.force`` stores the spatial force exerted **by body 0 on body 1**, collinear with
+        :attr:`~Contacts.rigid_normal` (which points from shape 0 toward shape 1). Both force [N] and
+        torque [N·m] components are written.  The torque includes torsional and rolling friction
+        contributions that cannot be reconstructed from the linear force alone.
 
         When ``rigid_contact_con_weighting`` is enabled, the raw per-contact
         impulse is scaled to reflect the ``1/N`` correction that
@@ -747,8 +772,8 @@ class SolverXPBD(SolverBase):
             state: Unused (accepted for API compatibility with :class:`SolverBase`).
 
         Raises:
-            ValueError: If ``contacts.force`` is ``None`` (not requested), if no step has been run yet,
-                or if the contacts capacity does not match the one used in the last :meth:`step`.
+            ValueError: If ``contacts.force`` is ``None`` (not requested), if no step has been run
+                yet, or if the contacts capacity does not match the one used in the last :meth:`step`.
         """
         if contacts.force is None:
             raise ValueError(
