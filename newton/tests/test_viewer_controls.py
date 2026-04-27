@@ -2,29 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from types import SimpleNamespace
 
+from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_null import ViewerNull
 
 
-class _StubViewerGL:
-    """Replicates only the pause/step state machine from ViewerGL.
-
-    ViewerGL requires a display to instantiate, so this stub lets us test the
-    should_step() logic in headless CI without a window.
-    """
-
-    def __init__(self):
-        self._paused = False
-        self._step_requested = False
-
-    def should_step(self) -> bool:
-        if not self._paused:
-            self._step_requested = False
-            return True
-        if self._step_requested:
-            self._step_requested = False
-            return True
-        return False
+def _make_gl_state(paused: bool = False, step_requested: bool = False) -> "ViewerGL":
+    # Lightweight stand-in with just the fields ViewerGL.should_step() needs.
+    return SimpleNamespace(_paused=paused, _step_requested=step_requested)  # type: ignore[return-value]
 
 
 class TestViewerBaseShouldStep(unittest.TestCase):
@@ -44,38 +30,32 @@ class TestViewerGLShouldStep(unittest.TestCase):
     """ViewerGL.should_step() state machine: running, paused, and single-step."""
 
     def test_returns_true_when_running(self):
-        v = _StubViewerGL()
-        self.assertTrue(v.should_step())
+        v = _make_gl_state(paused=False, step_requested=False)
+        self.assertTrue(ViewerGL.should_step(v))
 
     def test_returns_false_when_paused(self):
-        v = _StubViewerGL()
-        v._paused = True
-        self.assertFalse(v.should_step())
+        v = _make_gl_state(paused=True, step_requested=False)
+        self.assertFalse(ViewerGL.should_step(v))
 
     def test_returns_true_once_after_step_request(self):
-        v = _StubViewerGL()
-        v._paused = True
-        v._step_requested = True
-        self.assertTrue(v.should_step())
-        self.assertFalse(v.should_step())
+        v = _make_gl_state(paused=True, step_requested=True)
+        self.assertTrue(ViewerGL.should_step(v))
+        self.assertFalse(ViewerGL.should_step(v))
 
     def test_stale_request_cleared_when_running(self):
         # Reproduces the bug: . pressed while running, then SPACE to pause.
         # The flag must not survive into the paused state and fire a spurious step.
-        v = _StubViewerGL()
-        v._step_requested = True  # set while not paused
-        v.should_step()  # running frame — must clear the flag
+        v = _make_gl_state(paused=False, step_requested=True)
+        ViewerGL.should_step(v)  # running frame — must clear the flag
         v._paused = True
-        self.assertFalse(v.should_step())
+        self.assertFalse(ViewerGL.should_step(v))
 
     def test_multiple_step_requests_fire_once_each(self):
-        v = _StubViewerGL()
-        v._paused = True
+        v = _make_gl_state(paused=True, step_requested=True)
+        self.assertTrue(ViewerGL.should_step(v))
         v._step_requested = True
-        self.assertTrue(v.should_step())
-        v._step_requested = True
-        self.assertTrue(v.should_step())
-        self.assertFalse(v.should_step())
+        self.assertTrue(ViewerGL.should_step(v))
+        self.assertFalse(ViewerGL.should_step(v))
 
 
 if __name__ == "__main__":
