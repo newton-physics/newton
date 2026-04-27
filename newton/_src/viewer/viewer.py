@@ -65,6 +65,13 @@ class ViewerBase(ABC):
         """
         return False
 
+    def should_step(self) -> bool:
+        """Return True if the loop should advance one step.
+
+        Consumes a pending single-step request, so call exactly once per frame.
+        """
+        return not self.is_paused()
+
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.
 

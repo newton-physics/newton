@@ -20,9 +20,13 @@
 - Support `<joint type="ball"/>` in the MJCF importer, and preserve authored damping, stiffness, and frictionloss when exporting ball joints to MuJoCo specs (previously silently dropped)
 - Add `ViewerViser.log_scalar()` for live scalar time-series plots via uPlot
 - Honor `UsdGeomImageable` visibility (including inherited `invisible`) on USD prims imported via `ModelBuilder.add_usd()`; visual shapes, gaussian splats, and collider shapes are imported with `ShapeFlags.VISIBLE` cleared when the prim is effectively invisible, while collision behavior is preserved
+- Add frame-by-frame step support to `ViewerGL`: press `.` while paused to advance one simulation frame
+- Add `ViewerBase.should_step()` — call once per frame to determine whether the simulation loop should advance; returns `True` when running and consumes a pending single-step request when paused, replacing the `is_paused()` / `pop_step_request()` composition
+
 
 ### Changed
 
+- Replace `ViewerBase.pop_step_request()` with `ViewerBase.should_step()`; simulation loops should change from `if not viewer.is_paused() or viewer.pop_step_request():` to `if viewer.should_step():`
 - Use pre-computed local AABB for `CONVEX_MESH` shapes in `compute_shape_aabbs`, avoiding a per-frame support-function AABB computation
 - Build mesh SDFs via the texture-based sparse path only; sample via `SDF.texture_data` instead of `SDF.sparse_volume` / `SDF.coarse_volume`.
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
@@ -34,9 +38,12 @@
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
 - Disable process reuse in the test runner on multi-GPU systems to prevent CUDA errors from cascading across test suites, keeping process reuse enabled on single-GPU systems for faster throughput
 - Default `python -m newton.examples` with no argument to launch `basic_pendulum`; use `--list` to print available examples
+- Adjusted the grouping of `reset`, `step`, and `pause` so that they are all grouped together
 
 ### Fixed
 
+- Fix `ViewerGL` spurious single-step firing when `.` is pressed while the simulation is running and is subsequently paused; `should_step()` clears the stale request on any non-paused frame
+- Fix `ViewerGL` Step button remaining clickable while the simulation is running; the button is now greyed out when not paused
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration
 - Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
 - Show prismatic joints in the GL viewer when "Show Joints" is enabled

@@ -21,6 +21,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
+- :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
 
 **Camera and layout:**
@@ -76,9 +77,9 @@ Constructor parameters:
     viewer.log_state(state)
     viewer.end_frame()
 
-    # check if the simulation is paused (toggled with SPACE key):
-    if viewer.is_paused():
-        pass  # simulation stepping is paused
+    # advance the simulation each frame, or step once when paused:
+    if viewer.should_step():
+        pass  # call solver.step(), example.step(), etc.
 
 **Interactive forces and input:**
 
@@ -141,6 +142,8 @@ Keyboard shortcuts when working with the OpenGL Viewer:
       - Toggle Sidebar
     * - ``SPACE``
       - Pause/continue the simulation
+    * - ``.`` (when paused)
+      - Advance one simulation frame
     * - ``Right Click``
       - Pick objects
 
