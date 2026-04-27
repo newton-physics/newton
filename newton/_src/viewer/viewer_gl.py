@@ -267,6 +267,10 @@ class ViewerGL(ViewerBase):
         self._cam_speed = 4.0  # m/s
         self._cam_damp_tau = 0.083  # s
 
+        # Middle-mouse orbit / pan state
+        self._orbit_target: np.ndarray | None = None  # world-space orbit center
+        self._orbit_radius: float = 5.0  # distance from camera to orbit center [m]
+
         # initialize viewer-local timer for per-frame integration
         self._last_time = time.perf_counter()
 
@@ -1754,7 +1758,9 @@ class ViewerGL(ViewerBase):
 
     def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
         """
-        Handle mouse press events (object picking).
+        Handle mouse press events (object picking and orbit initialization).
+
+        Middle-click initializes the orbit target point used by middle-drag.
 
         Args:
             x: Mouse X position in window coordinates.
@@ -1773,6 +1779,12 @@ class ViewerGL(ViewerBase):
             ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
             if self._last_state is not None:
                 self.picking.pick(self._last_state, ray_start, ray_dir)
+
+        # Snapshot orbit target on middle-click so dragging orbits around a stable point.
+        if button == pyglet.window.mouse.MIDDLE:
+            front = np.array(self.camera.get_front(), dtype=np.float32)
+            pos = np.array(self.camera.pos, dtype=np.float32)
+            self._orbit_target = pos + front * self._orbit_radius
 
     def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
         """
@@ -1799,6 +1811,11 @@ class ViewerGL(ViewerBase):
         """
         Handle mouse drag events for camera and picking.
 
+        - Left drag: free-look (yaw/pitch in place).
+        - Middle drag: orbit camera around the look-at point snapshotted on press.
+        - Shift + Middle drag: pan camera (truck/pedestal) keeping the look-at point in view.
+        - Right drag: update object picking.
+
         Args:
             x: Mouse X position in window coordinates.
             y: Mouse Y position in window coordinates.
@@ -1821,6 +1838,35 @@ class ViewerGL(ViewerBase):
             # independent of world up-axis convention.
             self.camera.yaw = (self.camera.yaw - dx + 180.0) % 360.0 - 180.0
             self.camera.pitch = max(min(self.camera.pitch + dy, 89.0), -89.0)
+
+        if buttons & pyglet.window.mouse.MIDDLE:
+            pos_arr = np.array(self.camera.pos, dtype=np.float32)
+            right_arr = np.array(self.camera.get_right(), dtype=np.float32)
+            up_arr = np.array(self.camera.get_up(), dtype=np.float32)
+
+            if self._orbit_target is None:
+                front_arr = np.array(self.camera.get_front(), dtype=np.float32)
+                self._orbit_target = pos_arr + front_arr * self._orbit_radius
+
+            target = self._orbit_target
+
+            if modifiers & pyglet.window.key.MOD_SHIFT:
+                # Pan: translate the camera (and orbit target) along the camera's
+                # right and up axes.  Speed is proportional to orbit radius so
+                # panning feels consistent regardless of distance.
+                fov_rad = np.radians(self.camera.fov)
+                pan_speed = self._orbit_radius * 2.0 * float(np.tan(fov_rad / 2.0)) / max(self.camera.height, 1)
+                delta = (-dx * right_arr + dy * up_arr) * pan_speed
+                self.camera.pos = type(self.camera.pos)(*(pos_arr + delta))
+                self._orbit_target = target + delta
+            else:
+                # Orbit: rotate yaw/pitch as in free-look, then push the camera
+                # back onto the sphere of radius _orbit_radius around the target.
+                sensitivity = 0.1
+                self.camera.yaw = (self.camera.yaw - dx * sensitivity + 180.0) % 360.0 - 180.0
+                self.camera.pitch = max(min(self.camera.pitch + dy * sensitivity, 89.0), -89.0)
+                new_front = np.array(self.camera.get_front(), dtype=np.float32)
+                self.camera.pos = type(self.camera.pos)(*(target - new_front * self._orbit_radius))
 
         if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
