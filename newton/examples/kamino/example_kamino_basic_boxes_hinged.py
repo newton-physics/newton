@@ -2,34 +2,35 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example for basic four-bar mechanism
+# Example for basic boxes hinged system
 #
-# Shows how to simulate a basic four-bar linkage with multiple worlds using SolverKamino.
+# Shows how to simulate a basic boxes hinged with multiple worlds using SolverKamino.
 #
-# Command: python -m newton.examples example_fourbar --num-worlds 16
+# Command: python -m newton.examples kamino_basic_boxes_hinged --world-count 16
 #
 ###########################################################################
 
+import argparse
 import os
 
-import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
 from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
+from newton._src.solvers.kamino._src.models.builders import basics_newton
 from newton._src.solvers.kamino._src.utils import logger as msg
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=1, args=None):
+    def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
         # Set simulation run-time configurations
-        self.fps = 60
-        self.sim_dt = 0.0025
+        self.fps = 50
+        self.sim_dt = 0.001
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
-        self.num_worlds = num_worlds
+        self.world_count = args.world_count if args else 1
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -40,23 +41,29 @@ class Example:
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
 
-        # Load the basic four-bar USD and add it to the builder
-        msg.notif("Loading USD asset and adding it to the model builder...")
-        asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_fourbar.usda")
-        robot_builder.add_usd(
-            asset_file,
-            joint_ordering=None,
-            force_show_colliders=True,
-            force_position_velocity_actuation=True,
-            enable_self_collisions=False,
-            hide_collision_shapes=False,
-        )
+        # Load the basic boxes hinged either from USD or by manually building it
+        # with the builder API, depending on the command-line argument `--from-usd`
+        if args.from_usd:
+            # Load the basic boxes hinged USD and add it to the builder
+            msg.notif("Loading USD asset and adding it to the model builder...")
+            asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_hinged.usda")
+            robot_builder.add_usd(
+                asset_file,
+                joint_ordering=None,
+                force_show_colliders=True,
+                force_position_velocity_actuation=True,
+                enable_self_collisions=False,
+                hide_collision_shapes=False,
+            )
+        else:
+            # Manually build the basic boxes hinged using the builder API
+            basics_newton.build_boxes_hinged(builder=robot_builder)
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
-        msg.notif(f"Duplicating the model builder for {self.num_worlds} worlds and finalizing the model...")
+        msg.notif(f"Duplicating the model builder for {self.world_count} worlds and finalizing the model...")
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        for _ in range(self.num_worlds):
+        for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
         # Create the model from the builder
@@ -66,9 +73,7 @@ class Example:
         # Create and configure settings for SolverKamino and the collision detector
         solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
         solver_config.use_collision_detector = True
-        solver_config.use_fk_solver = True
-        solver_config.collision_detector.pipeline = "unified"
-        solver_config.collision_detector.max_contacts = 32 * self.num_worlds
+        solver_config.use_fk_solver = False
         solver_config.dynamics.preconditioning = True
         solver_config.padmm.primal_tolerance = 1e-4
         solver_config.padmm.dual_tolerance = 1e-4
@@ -89,24 +94,24 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
-        # Reset the simulation state to a valid initial configuration above the ground
-        msg.notif("Resetting the simulation state to a valid initial configuration above the ground...")
-        self.base_q = wp.zeros(shape=(self.num_worlds,), dtype=wp.transformf)
-        q_b = wp.quat_identity(dtype=wp.float32)
-        q_base = wp.transformf((0.0, 0.0, 0.1), q_b)
-        q_base = np.array(q_base)
-        q_base = np.tile(q_base, (self.num_worlds, 1))
-        for w in range(self.num_worlds):
-            q_base[w, :3] += np.array([0.0, 0.0, 0.2]) * float(w)
-        self.base_q.assign(q_base)
-        self.solver.reset(state_out=self.state_0, base_q=self.base_q)
-
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
+
+        # Warm-start the simulation
+        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+        self.solver.reset(self.state_0)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
         self.capture()
+
+        # If only a single-world is created, set initial
+        # camera position for better view of the system
+        if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
+            camera_pos = wp.vec3(-0.5, -5.2, 1.8)
+            pitch = -15.0
+            yaw = 90.0
+            self.viewer.set_camera(camera_pos, pitch, yaw)
 
     def capture(self):
         self.graph = None
@@ -160,21 +165,23 @@ class Example:
                 ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
             )
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        parser.set_defaults(world_count=1)
+        parser.add_argument(
+            "--from-usd",
+            type=argparse.BooleanOptionalAction,
+            default=False,
+            help="Load the basic boxes hinged from USD.",
+        )
+        return parser
+
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=1, help="Total number of simulated worlds.")
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args.num_worlds, args)
-    example.viewer._paused = True  # Start paused to inspect the initial configuration
-
-    # If only a single-world is created, set initial
-    # camera position for better view of the system
-    if args.num_worlds == 1 and hasattr(example.viewer, "set_camera"):
-        camera_pos = wp.vec3(-0.5, -1.0, 0.2)
-        pitch = -5.0
-        yaw = 70.0
-        example.viewer.set_camera(camera_pos, pitch, yaw)
-
+    example = Example(viewer, args)
     msg.notif("Starting the simulation...")
     newton.examples.run(example, args)

@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example Robot DR Legs
+# Example for basic DR TestMech system
 #
-# Shows how to simulate DR Legs with multiple worlds using SolverKamino.
+# Shows how to simulate DR TestMech with multiple worlds using SolverKamino.
 #
-# Command: python -m newton.examples robot_dr_legs --num-worlds 16
+# Command: python -m newton.examples kamino_basic_dr_testmech --world-count 16
 #
 ###########################################################################
 
@@ -18,14 +18,14 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=8, args=None):
+    def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
         # Set simulation run-time configurations
-        self.fps = 60
-        self.sim_dt = 0.01
+        self.fps = 50
+        self.sim_dt = 0.001
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
         self.sim_time = 0.0
-        self.num_worlds = num_worlds
+        self.world_count = args.world_count if args else 1
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -35,15 +35,15 @@ class Example:
         robot_builder.default_shape_cfg.margin = 1e-6
         robot_builder.default_shape_cfg.gap = 0.01
 
-        # Load the DR Legs USD and add it to the builder
+        # Load the DR TestMech USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
-        asset_file = str(asset_path / "dr_legs/usd" / "dr_legs_with_meshes_and_boxes.usda")
+        asset_file = str(asset_path / "dr_testmech/usd" / "dr_testmech.usda")
         robot_builder.add_usd(
             asset_file,
             joint_ordering=None,
             force_show_colliders=True,
-            force_position_velocity_actuation=True,
-            collapse_fixed_joints=False,  # TODO @cavemor: Fails when True, investigate (doesn't have fixed joints)
+            force_position_velocity_actuation=False,
+            collapse_fixed_joints=False,
             enable_self_collisions=False,
             hide_collision_shapes=True,
         )
@@ -51,11 +51,8 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        for _ in range(self.num_worlds):
+        for _ in range(self.world_count):
             builder.add_world(robot_builder)
-
-        # Add a global ground plane applied to all worlds
-        builder.add_ground_plane()
 
         # Create the model from the builder
         self.model = builder.finalize(skip_validation_joints=True)
@@ -69,21 +66,14 @@ class Example:
 
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
-        self.config.use_collision_detector = True
-        self.config.use_fk_solver = True
+        self.config.use_collision_detector = False
+        self.config.use_fk_solver = False
         self.config.padmm.max_iterations = 200
-        self.config.padmm.primal_tolerance = 1e-4
-        self.config.padmm.dual_tolerance = 1e-4
-        self.config.padmm.compl_tolerance = 1e-4
+        self.config.padmm.primal_tolerance = 1e-6
+        self.config.padmm.dual_tolerance = 1e-6
+        self.config.padmm.compl_tolerance = 1e-6
+        self.config.padmm.rho_0 = 0.01
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
-
-        # Set joint armature and viscous damping for better
-        # stability of the implicit joint-space PD controller
-        # TODO: Remove this once we add Newton USD schemas in the model asset
-        self.solver._solver_kamino._model.joints.a_j.fill_(0.011)  # Joint armature
-        self.solver._solver_kamino._model.joints.b_j.fill_(0.044)  # Joint viscous damping
-        self.solver._solver_kamino._model.joints.k_p_j.fill_(10.0)  # Proportional gain
-        self.solver._solver_kamino._model.joints.k_d_j.fill_(2.0)  # Derivative gain
 
         # Create state and control data containers
         self.state_0 = self.model.state()
@@ -91,19 +81,24 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
-        # Reset the simulation state to a valid initial configuration above the ground
-        self.base_q = wp.zeros(shape=(self.num_worlds,), dtype=wp.transformf)
-        q_b = wp.quat_identity(dtype=wp.float32)
-        q_base = wp.transformf((0.0, 0.0, 0.4), q_b)
-        self.base_q.assign([q_base] * self.num_worlds)
-        self.solver.reset(state_out=self.state_0, base_q=self.base_q)
-
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
+
+        # Warm-start the simulation
+        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+        self.solver.reset(self.state_0)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
         self.capture()
+
+        # If only a single-world is created, set initial
+        # camera position for better view of the system
+        if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
+            camera_pos = wp.vec3(0.2, 0.2, 0.15)
+            pitch = -20.0
+            yaw = 215.0
+            self.viewer.set_camera(camera_pos, pitch, yaw)
 
     def capture(self):
         self.graph = None
@@ -117,7 +112,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.solver.update_contacts(self.contacts, self.state_0)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -145,31 +140,26 @@ class Example:
         # Only check velocities on CUDA where we run 500 frames (enough time to settle)
         # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
         if self.device.is_cuda:
-            # fmt: off
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
                 "body velocities are small",
-                lambda q, qd: max(abs(qd))
-                < 0.25,  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
+                lambda q, qd: (
+                    max(abs(qd)) < 0.25
+                ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
             )
-            # fmt: on
+
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        parser.set_defaults(world_count=1)
+        return parser
 
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=1, help="Total number of simulated worlds.")
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args.num_worlds, args)
-    example.viewer._paused = True  # Start paused to inspect the initial configuration
-
-    # If only a single-world is created, set initial
-    # camera position for better view of the system
-    if args.num_worlds == 1 and hasattr(example.viewer, "set_camera"):
-        camera_pos = wp.vec3(1.34, 0.0, 0.25)
-        pitch = -7.0
-        yaw = -180.0
-        example.viewer.set_camera(camera_pos, pitch, yaw)
-
+    example = Example(viewer, args)
     msg.notif("Starting the simulation...")
     newton.examples.run(example, args)

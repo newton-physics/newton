@@ -1056,7 +1056,7 @@ class ModelKamino:
         joint_world_np = model.joint_world.numpy()
         body_world_start_np = model.body_world_start.numpy()
 
-        # Check for articulations
+        # First pass: assign base bodies based on articulation roots (if articulations are present)
         if model.articulation_count > 0:
             articulation_start_np = model.articulation_start.numpy()
             articulation_world_np = model.articulation_world.numpy()
@@ -1070,8 +1070,8 @@ class ModelKamino:
                     base_body_idx_np[wid] = base_body
                     base_joint_idx_np[wid] = base_joint
 
-        # Check for root joint (i.e. joint with no parent body (= -1))
-        elif model.joint_count > 0:
+        # Second pass: Check for root joint (i.e. joint with no parent body (= -1))
+        if model.joint_count > 0:
             # TODO: How to handle no free joint being defined?
             # Create a list of joint indices with parent body == -1 for each world
             world_parent_joints: dict[int, list[int]] = {w: [] for w in range(model.world_count)}
@@ -1084,6 +1084,10 @@ class ModelKamino:
             # If no joint with parent == -1 is found in a world, then assign the first body as base
             # If multiple joints with parent == -1 are found in a world, then assign the first one as the base
             for w in range(model.world_count):
+                # Skip if already assigned from articulation root
+                if base_body_idx_np[w] != -1 and base_joint_idx_np[w] != -1:
+                    continue
+                # Otherwise, assign based on parent == -1 joints if they exist, else default to first body in world
                 if len(world_parent_joints[w]) > 0:
                     j = world_parent_joints[w][0]
                     base_joint_idx_np[w] = j
@@ -1092,19 +1096,22 @@ class ModelKamino:
                     base_body_idx_np[w] = int(body_world_start_np[w])
                     base_joint_idx_np[w] = -1
 
-        # Fall-back: first body and joint in the world
-        else:
-            for w in range(model.world_count):
-                # Base body: first body in the world
-                for b in range(model.body_count):
-                    if body_world_np[b] == w:
-                        base_body_idx_np[w] = b
-                        break
-                # Base joint: first joint in the world
-                for j in range(model.joint_count):
-                    if joint_world_np[j] == w:
-                        base_joint_idx_np[w] = j
-                        break
+        # Third pass: Assign any remaining worlds with no base body/joint
+        # based on the first body/joint found in the world
+        for w in range(model.world_count):
+            # Skip if already assigned from articulation root
+            if base_body_idx_np[w] != -1 and base_joint_idx_np[w] != -1:
+                continue
+            # Base body: first body in the world
+            for b in range(model.body_count):
+                if body_world_np[b] == w:
+                    base_body_idx_np[w] = b
+                    break
+            # Base joint: first joint in the world
+            for j in range(model.joint_count):
+                if joint_world_np[j] == w:
+                    base_joint_idx_np[w] = j
+                    break
 
         # Ensure that all worlds have a base body assigned
         for w in range(model.world_count):
