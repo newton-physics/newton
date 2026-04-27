@@ -913,7 +913,7 @@ def write_free_distance_motion_subspace(
 
 @wp.func
 def jcalc_motion_subspace(
-    type: int,
+    joint_type_value: int,
     joint_axis: wp.array[wp.vec3],
     lin_axis_count: int,
     ang_axis_count: int,
@@ -947,17 +947,17 @@ def jcalc_motion_subspace(
         isotropic angular DOF) and are primarily designed for VBD solver.
         If encountered, their Jacobian columns will remain zero.
     """
-    if type == JointType.PRISMATIC:
+    if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
         S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
         joint_S_s[qd_start] = S_s
 
-    elif type == JointType.REVOLUTE:
+    elif joint_type_value == JointType.REVOLUTE:
         axis = joint_axis[qd_start]
         S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
         joint_S_s[qd_start] = S_s
 
-    elif type == JointType.D6:
+    elif joint_type_value == JointType.D6:
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
             S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
@@ -983,7 +983,7 @@ def jcalc_motion_subspace(
             S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
             joint_S_s[qd_start + lin_axis_count + 2] = S_s
 
-    elif type == JointType.BALL:
+    elif joint_type_value == JointType.BALL:
         S_0 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
         S_1 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
         S_2 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
@@ -991,7 +991,7 @@ def jcalc_motion_subspace(
         joint_S_s[qd_start + 1] = S_1
         joint_S_s[qd_start + 2] = S_2
 
-    elif type == JointType.FREE or type == JointType.DISTANCE:
+    elif joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE:
         x_child_com_world = wp.transform_point(X_wc, body_com_child)
         write_free_distance_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
 

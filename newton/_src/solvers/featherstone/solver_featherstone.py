@@ -300,6 +300,8 @@ class SolverFeatherstone(SolverBase):
             )
 
             # derived rigid body data (maximal coordinates)
+            target.body_q_fk = wp.empty_like(model.body_q, requires_grad=requires_grad)
+            target.body_qd_fk = wp.empty_like(model.body_qd, requires_grad=requires_grad)
             target.body_I_s = wp.empty(
                 (model.body_count,), dtype=wp.spatial_matrix, device=model.device, requires_grad=requires_grad
             )
@@ -365,19 +367,6 @@ class SolverFeatherstone(SolverBase):
             if state_in.body_count:
                 body_f = state_aug.body_f_ext
                 wp.copy(body_f, state_in.body_f)
-                if model.joint_count:
-                    wp.launch(
-                        accumulate_free_distance_joint_f_to_body_force,
-                        dim=model.joint_count,
-                        inputs=[
-                            model.joint_type,
-                            model.joint_child,
-                            model.joint_qd_start,
-                            control.joint_f,
-                        ],
-                        outputs=[body_f],
-                        device=model.device,
-                    )
 
             # damped springs
             eval_spring_forces(model, state_in, particle_f)
@@ -431,8 +420,8 @@ class SolverFeatherstone(SolverBase):
                         model.gravity,
                     ],
                     outputs=[
-                        state_in.body_q,
-                        state_in.body_qd,
+                        state_aug.body_q_fk,
+                        state_aug.body_qd_fk,
                         state_aug.joint_S_s,
                         state_aug.body_I_s,
                         state_aug.body_v_s,
@@ -442,8 +431,33 @@ class SolverFeatherstone(SolverBase):
                     device=model.device,
                 )
 
+                if body_f is not None:
+                    wp.launch(
+                        accumulate_free_distance_joint_f_to_body_force,
+                        dim=model.joint_count,
+                        inputs=[
+                            model.joint_type,
+                            model.joint_parent,
+                            model.joint_child,
+                            model.joint_qd_start,
+                            model.joint_X_p,
+                            state_aug.body_q_fk,
+                            control.joint_f,
+                        ],
+                        outputs=[body_f],
+                        device=model.device,
+                    )
+
             # particle shape contact (reads fresh body_q / body_qd from ID pass)
-            eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
+            eval_particle_body_contact_forces(
+                model,
+                state_in,
+                contacts,
+                particle_f,
+                body_f,
+                body_q=state_aug.body_q_fk if model.joint_count else None,
+                body_qd=state_aug.body_qd_fk if model.joint_count else None,
+            )
 
             # muscles
             if False:
@@ -458,8 +472,8 @@ class SolverFeatherstone(SolverBase):
                         kernel=eval_body_contact,
                         dim=contacts.rigid_contact_max,
                         inputs=[
-                            state_in.body_q,
-                            state_in.body_qd,
+                            state_aug.body_q_fk,
+                            state_aug.body_qd_fk,
                             model.body_com,
                             model.shape_material_ke,
                             model.shape_material_kd,
@@ -478,6 +492,7 @@ class SolverFeatherstone(SolverBase):
                             contacts.rigid_contact_stiffness,
                             contacts.rigid_contact_damping,
                             contacts.rigid_contact_friction,
+                            False,
                             self.friction_smoothing,
                         ],
                         outputs=[body_f],
@@ -519,7 +534,7 @@ class SolverFeatherstone(SolverBase):
                             model.joint_limit_ke,
                             model.joint_limit_kd,
                             state_aug.joint_S_s,
-                            state_in.body_q,
+                            state_aug.body_q_fk,
                             self.body_X_com,
                             state_aug.body_f_s,
                             body_f,
@@ -534,9 +549,9 @@ class SolverFeatherstone(SolverBase):
                     # print("joint_tau:")
                     # print(state_aug.joint_tau.numpy())
                     # print("body_q:")
-                    # print(state_in.body_q.numpy())
+                    # print(state_aug.body_q_fk.numpy())
                     # print("body_qd:")
-                    # print(state_in.body_qd.numpy())
+                    # print(state_aug.body_qd_fk.numpy())
 
                     if self._mass_matrix_dirty or self._step % self.update_mass_matrix_interval == 0:
                         # build J
@@ -735,9 +750,8 @@ class SolverFeatherstone(SolverBase):
                 # anchor frame using the parent's freshly-integrated
                 # ``body_qd`` / ``body_q``. Replaces the former
                 # ``integrate_generalized_joints`` + ``copy_kinematic_joint_state``
-                # + ``eval_fk`` pipeline with no scratch buffers and no
-                # world-frame intermediates - the solver stays in the
-                # public parent-anchor-frame convention end-to-end.
+                # + ``eval_fk`` pipeline while preserving a read-only pre-step
+                # FK snapshot for in-place stepping.
                 wp.launch(
                     kernel=integrate_and_fk_articulation,
                     dim=model.articulation_count,
@@ -756,7 +770,7 @@ class SolverFeatherstone(SolverBase):
                         model.body_flags,
                         state_in.joint_q,
                         state_in.joint_qd,
-                        state_in.body_q,
+                        state_aug.body_q_fk,
                         state_aug.joint_qdd,
                         dt,
                     ],

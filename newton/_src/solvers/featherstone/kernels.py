@@ -621,7 +621,7 @@ def compute_link_velocity(
     dedicated COM-staging pass (formerly a ``compute_body_q_com`` helper,
     now removed) before the Featherstone ID kernel.
     """
-    type = joint_type[i]
+    joint_type_value = joint_type[i]
     child = joint_child[i]
     parent = joint_parent[i]
     q_start = joint_q_start[i]
@@ -634,7 +634,7 @@ def compute_link_velocity(
 
     # Joint transform from current joint_q (same formulation as eval_fk).
     X_j = jcalc_transform(
-        type,
+        joint_type_value,
         joint_axis,
         qd_start,
         lin_axis_count,
@@ -655,9 +655,8 @@ def compute_link_velocity(
     # Child body frame in world space; matches eval_single_articulation_fk.
     X_wc = X_wcj * wp.transform_inverse(X_cj)
 
-    # Refresh the public body pose before the velocity and force stages so
-    # subsequent joints in this articulation (and any downstream consumers
-    # reading ``state_in.body_q``) see the current value derived from joint_q.
+    # Refresh the FK pose before the velocity and force stages so subsequent
+    # joints in this articulation see the current value derived from joint_q.
     body_q[child] = X_wc
 
     # World-frame COM transform. ``X_sm.pos`` is the absolute COM position
@@ -670,7 +669,7 @@ def compute_link_velocity(
     # type the return ``v_j_s`` is an s-frame (world-origin referenced)
     # twist, matching the existing Featherstone convention.
     v_j_s = jcalc_motion(
-        type,
+        joint_type_value,
         joint_axis,
         lin_axis_count,
         ang_axis_count,
@@ -709,7 +708,7 @@ def compute_link_velocity(
 
     I_s = transform_spatial_inertia(X_sm, I_m)
     f_b_s = I_s * a_s + spatial_cross_dual(v_s, I_s * v_s)
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE:
         # ``v_s`` is still the world-origin twist needed by the articulated
         # recurrence, but Newton's FREE/DISTANCE linear coordinates are the
         # child COM velocity in world space. The standard origin-frame bias
@@ -728,18 +727,20 @@ def compute_link_velocity(
 @wp.kernel
 def accumulate_free_distance_joint_f_to_body_force(
     joint_type: wp.array[int],
+    joint_parent: wp.array[int],
     joint_child: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
     joint_f_public: wp.array[float],
     body_f_ext: wp.array[wp.spatial_vector],
 ):
     """Accumulate FREE/DISTANCE control wrenches into Featherstone body forces.
 
-    Each Newton body can be the child of at most one joint, so the mapping
-    ``joint_id -> joint_child[joint_id]`` is unique across threads of this
-    kernel. That means no two threads will ever write the same
-    ``body_f_ext`` slot, and a plain read-modify-write is race-free - no
-    ``wp.atomic_add`` is required.
+    FREE/DISTANCE ``joint_f`` follows the same parent-anchor basis as
+    ``joint_qd``. ``body_f_ext`` stores public COM-frame body wrenches in world
+    coordinates, so rotate the linear and angular components through the
+    current parent-anchor transform before accumulating them.
     """
     joint_id = wp.tid()
     jtype = joint_type[joint_id]
@@ -747,22 +748,30 @@ def accumulate_free_distance_joint_f_to_body_force(
         return
 
     qd_start = joint_qd_start[joint_id]
+    parent = joint_parent[joint_id]
     child = joint_child[joint_id]
+    X_wpj = joint_X_p[joint_id]
+    if parent >= 0:
+        X_wpj = body_q[parent] * X_wpj
 
-    force = wp.vec3(
-        joint_f_public[qd_start + 0],
-        joint_f_public[qd_start + 1],
-        joint_f_public[qd_start + 2],
+    force = wp.transform_vector(
+        X_wpj,
+        wp.vec3(
+            joint_f_public[qd_start + 0],
+            joint_f_public[qd_start + 1],
+            joint_f_public[qd_start + 2],
+        ),
     )
-    torque_com = wp.vec3(
-        joint_f_public[qd_start + 3],
-        joint_f_public[qd_start + 4],
-        joint_f_public[qd_start + 5],
+    torque_com = wp.transform_vector(
+        X_wpj,
+        wp.vec3(
+            joint_f_public[qd_start + 3],
+            joint_f_public[qd_start + 4],
+            joint_f_public[qd_start + 5],
+        ),
     )
 
-    # Unique child guarantee (see docstring): plain accumulation is safe
-    # and avoids an atomic on every FREE/DISTANCE joint per step.
-    body_f_ext[child] = body_f_ext[child] + wp.spatial_vector(force, torque_com)
+    wp.atomic_add(body_f_ext, child, wp.spatial_vector(force, torque_com))
 
 
 # Inverse dynamics via Recursive Newton-Euler algorithm (Featherstone Table 5.1)
@@ -1569,7 +1578,7 @@ def _compute_free_distance_body_qd_from_joint_qd(
 
 @wp.func
 def _fk_single_joint(
-    type: int,
+    joint_type_value: int,
     parent: int,
     child: int,
     coord_start: int,
@@ -1597,21 +1606,21 @@ def _fk_single_joint(
     X_j = wp.transform_identity()
     v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
 
-    if type == JointType.PRISMATIC:
+    if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[dof_start]
         q = joint_q[coord_start]
         qd = joint_qd[dof_start]
         X_j = wp.transform(axis * q, wp.quat_identity())
         v_j = wp.spatial_vector(axis * qd, wp.vec3())
 
-    if type == JointType.REVOLUTE:
+    if joint_type_value == JointType.REVOLUTE:
         axis = joint_axis[dof_start]
         q = joint_q[coord_start]
         qd = joint_qd[dof_start]
         X_j = wp.transform(wp.vec3(), wp.quat_from_axis_angle(axis, q))
         v_j = wp.spatial_vector(wp.vec3(), axis * qd)
 
-    if type == JointType.BALL:
+    if joint_type_value == JointType.BALL:
         r = wp.quat(
             joint_q[coord_start + 0],
             joint_q[coord_start + 1],
@@ -1622,7 +1631,7 @@ def _fk_single_joint(
         X_j = wp.transform(wp.vec3(), r)
         v_j = wp.spatial_vector(wp.vec3(), w)
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE:
         t = wp.transform(
             wp.vec3(joint_q[coord_start + 0], joint_q[coord_start + 1], joint_q[coord_start + 2]),
             wp.quat(
@@ -1639,7 +1648,7 @@ def _fk_single_joint(
         X_j = t
         v_j = v
 
-    if type == JointType.D6:
+    if joint_type_value == JointType.D6:
         pos = wp.vec3(0.0)
         rot = wp.quat_identity()
         vel_v = wp.vec3(0.0)
@@ -1712,7 +1721,7 @@ def _fk_single_joint(
     linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
     angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
     linear_joint_origin = wp.vec3()
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE:
         # FREE/DISTANCE linear DOFs are COM-referenced; convert to origin-referenced.
         v_joint_origin = com_twist_to_origin_twist(
             wp.spatial_vector(linear_joint_world, angular_joint_world),
@@ -1775,15 +1784,14 @@ def integrate_and_fk_articulation(
     4. Run the standard FK path for all remaining joint types.
 
     This keeps the SolverFeatherstone integration end-to-end in the public
-    parent-anchor-frame convention (per ``conventions.rst`` and
-    ``docs/migration.rst``) with no intermediate world-frame buffers.
+    parent-anchor-frame convention with no intermediate world-frame buffers.
     """
     art_idx = wp.tid()
     start = articulation_start[art_idx]
     end = articulation_start[art_idx + 1]
 
     for i in range(start, end):
-        type = joint_type[i]
+        joint_type_value = joint_type[i]
         parent = joint_parent[i]
         child = joint_child[i]
         coord_start = joint_q_start[i]
@@ -1808,7 +1816,7 @@ def integrate_and_fk_articulation(
                 parent,
                 joint_X_c_i,
                 body_com[child],
-                type,
+                joint_type_value,
                 joint_q_in,
                 joint_qd_in,
                 joint_qdd,
@@ -1824,7 +1832,7 @@ def integrate_and_fk_articulation(
             # Transport only the FREE/DISTANCE velocity coordinates into the
             # new parent-anchor basis. Their pose update is rebuilt below
             # directly from the world-space body motion.
-            if parent >= 0 and (type == JointType.FREE or type == JointType.DISTANCE):
+            if parent >= 0 and (joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE):
                 _apply_free_distance_transport(
                     coord_start,
                     dof_start,
@@ -1835,7 +1843,11 @@ def integrate_and_fk_articulation(
                     joint_qd_out,
                 )
 
-        if parent >= 0 and (type == JointType.FREE or type == JointType.DISTANCE):
+        if (
+            parent >= 0
+            and not is_kinematic_child
+            and (joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE)
+        ):
             # Descendant FREE/DISTANCE pose integration is done in world space
             # from the pre-step body pose, then projected back into the new
             # parent-anchor basis. This avoids the large-angle rotating-frame
@@ -1894,7 +1906,7 @@ def integrate_and_fk_articulation(
             continue
 
         _fk_single_joint(
-            type,
+            joint_type_value,
             parent,
             child,
             coord_start,

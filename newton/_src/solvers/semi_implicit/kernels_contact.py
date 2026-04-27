@@ -167,6 +167,7 @@ def eval_particle_body_contact(
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
     contact_max: int,
+    body_f_in_world_frame: bool,
     # outputs
     particle_f: wp.array[wp.vec3],
     body_f: wp.array[wp.spatial_vector],
@@ -214,10 +215,12 @@ def eval_particle_body_contact(
     body_w = wp.spatial_bottom(body_v_s)
     body_v = wp.spatial_top(body_v_s)
 
-    # body velocity at the particle position. The body twist is the public
-    # COM-referenced spatial vector (v_com_world, omega_world), so the lever
-    # arm for the angular component is ``bx - x_com_world`` == ``r``.
-    bv = body_v + wp.transform_vector(X_wb, contact_body_vel[tid]) + wp.cross(body_w, r)
+    # body velocity at the particle position
+    bv = body_v + wp.transform_vector(X_wb, contact_body_vel[tid])
+    if body_f_in_world_frame:
+        bv += wp.cross(body_w, bx)
+    else:
+        bv += wp.cross(body_w, r)
 
     # relative velocity
     v = pv - bv
@@ -252,10 +255,10 @@ def eval_particle_body_contact(
     wp.atomic_sub(particle_f, particle_index, f_total)
 
     if body_index >= 0:
-        # Torque about the body's COM: r x f_total. The reaction wrench is
-        # accumulated into ``body_f`` which the solver interprets as a COM
-        # spatial vector (force, torque_com) matching the public convention.
-        wp.atomic_add(body_f, body_index, wp.spatial_vector(f_total, wp.cross(r, f_total)))
+        if body_f_in_world_frame:
+            wp.atomic_sub(body_f, body_index, wp.spatial_vector(f_total, wp.cross(bx, f_total)))
+        else:
+            wp.atomic_add(body_f, body_index, wp.spatial_vector(f_total, wp.cross(r, f_total)))
 
 
 @wp.kernel
@@ -397,6 +400,7 @@ def eval_body_contact(
     rigid_contact_stiffness: wp.array[float],
     rigid_contact_damping: wp.array[float],
     rigid_contact_friction_scale: wp.array[float],
+    force_in_world_frame: bool,
     friction_smoothing: float,
     # outputs
     body_f: wp.array[wp.spatial_vector],
@@ -485,13 +489,19 @@ def eval_body_contact(
         body_v_s_a = body_qd[body_a]
         body_w_a = wp.spatial_bottom(body_v_s_a)
         body_v_a = wp.spatial_top(body_v_s_a)
-        bv_a = body_v_a + wp.cross(body_w_a, r_a)
+        if force_in_world_frame:
+            bv_a = body_v_a + wp.cross(body_w_a, bx_a)
+        else:
+            bv_a = body_v_a + wp.cross(body_w_a, r_a)
 
     if body_b >= 0:
         body_v_s_b = body_qd[body_b]
         body_w_b = wp.spatial_bottom(body_v_s_b)
         body_v_b = wp.spatial_top(body_v_s_b)
-        bv_b = body_v_b + wp.cross(body_w_b, r_b)
+        if force_in_world_frame:
+            bv_b = body_v_b + wp.cross(body_w_b, bx_b)
+        else:
+            bv_b = body_v_b + wp.cross(body_w_b, r_b)
 
     # relative velocity
     v = bv_a - bv_b
@@ -534,10 +544,16 @@ def eval_body_contact(
     # f_total = n * fn
 
     if body_a >= 0:
-        wp.atomic_sub(body_f, body_a, wp.spatial_vector(f_total, wp.cross(r_a, f_total)))
+        if force_in_world_frame:
+            wp.atomic_add(body_f, body_a, wp.spatial_vector(f_total, wp.cross(bx_a, f_total)))
+        else:
+            wp.atomic_sub(body_f, body_a, wp.spatial_vector(f_total, wp.cross(r_a, f_total)))
 
     if body_b >= 0:
-        wp.atomic_add(body_f, body_b, wp.spatial_vector(f_total, wp.cross(r_b, f_total)))
+        if force_in_world_frame:
+            wp.atomic_sub(body_f, body_b, wp.spatial_vector(f_total, wp.cross(bx_b, f_total)))
+        else:
+            wp.atomic_add(body_f, body_b, wp.spatial_vector(f_total, wp.cross(r_b, f_total)))
 
 
 def eval_particle_contact_forces(model: Model, state: State, particle_f: wp.array):
@@ -587,17 +603,24 @@ def eval_body_contact_forces(
     state: State,
     contacts: Contacts | None,
     friction_smoothing: float = 1.0,
+    force_in_world_frame: bool = False,
     body_f_out: wp.array | None = None,
+    body_q: wp.array | None = None,
+    body_qd: wp.array | None = None,
 ):
     if contacts is not None and contacts.rigid_contact_max:
         if body_f_out is None:
             body_f_out = state.body_f
+        if body_q is None:
+            body_q = state.body_q
+        if body_qd is None:
+            body_qd = state.body_qd
         wp.launch(
             kernel=eval_body_contact,
             dim=contacts.rigid_contact_max,
             inputs=[
-                state.body_q,
-                state.body_qd,
+                body_q,
+                body_qd,
                 model.body_com,
                 model.shape_material_ke,
                 model.shape_material_kd,
@@ -616,6 +639,7 @@ def eval_body_contact_forces(
                 contacts.rigid_contact_stiffness,
                 contacts.rigid_contact_damping,
                 contacts.rigid_contact_friction,
+                force_in_world_frame,
                 friction_smoothing,
             ],
             outputs=[body_f_out],
@@ -629,16 +653,23 @@ def eval_particle_body_contact_forces(
     contacts: Contacts | None,
     particle_f: wp.array,
     body_f: wp.array,
+    body_f_in_world_frame: bool = False,
+    body_q: wp.array | None = None,
+    body_qd: wp.array | None = None,
 ):
     if contacts is not None and contacts.soft_contact_max:
+        if body_q is None:
+            body_q = state.body_q
+        if body_qd is None:
+            body_qd = state.body_qd
         wp.launch(
             kernel=eval_particle_body_contact,
             dim=contacts.soft_contact_max,
             inputs=[
                 state.particle_q,
                 state.particle_qd,
-                state.body_q,
-                state.body_qd,
+                body_q,
+                body_qd,
                 model.particle_radius,
                 model.particle_flags,
                 model.body_com,
@@ -660,6 +691,7 @@ def eval_particle_body_contact_forces(
                 contacts.soft_contact_body_vel,
                 contacts.soft_contact_normal,
                 contacts.soft_contact_max,
+                body_f_in_world_frame,
             ],
             # outputs
             outputs=[particle_f, body_f],

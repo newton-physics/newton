@@ -598,6 +598,13 @@ def test_featherstone_root_free_distance_angular_velocity_keeps_body_stationary_
         f"{_joint_type_name(joint_type)} root body origin drifted under pure angular velocity: {origin_drift}",
     )
 
+    quat_dot = abs(np.dot(body_q_initial[3:7], body_q_final[3:7]))
+    test.assertLess(
+        quat_dot,
+        1.0 - 1.0e-4,
+        f"{_joint_type_name(joint_type)} root body did not rotate under pure angular velocity",
+    )
+
 
 def test_featherstone_free_distance_descendant_matches_ping_pong_when_stepping_in_place(
     test: TestBodyVelocity,
