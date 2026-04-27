@@ -916,6 +916,23 @@ ACTUATOR_SKIP_FIELDS: set[str] = {
     "actuator_trntype_body_adr",
     "actuator_actadr",
     "actuator_actnum",
+    # Position/velocity-shortcut MjcActuator rows targeting single-DOF joints are
+    # promoted to CtrlSource.JOINT_TARGET on import (matching MJCF behavior).
+    # _init_actuators rebuilds the compiled MuJoCo actuators from joint_target_*,
+    # so these low-level fields differ from the native MJCF model and are not
+    # meaningful to compare. The same fields are also skipped by the MJCF
+    # menagerie tests in test_menagerie_mujoco.py for the same reason.
+    "actuator_dynprm",
+    "actuator_gainprm",
+    "actuator_biasprm",
+    "actuator_ctrlrange",
+    "actuator_ctrllimited",
+    "actuator_forcerange",
+    "actuator_forcelimited",
+    "actuator_actrange",
+    "actuator_actlimited",
+    "actuator_gear",
+    "actuator_cranklength",
 }
 
 

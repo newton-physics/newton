@@ -3380,7 +3380,25 @@ def parse_usd(
         for row in range(mjc_actuator_count):
             target_path = _row("mujoco:actuator_target_label", row)
             dof = path_to_dof.get(target_path) if target_path else None
-            if dof is None or int(_row("mujoco:actuator_biastype", row)) != biastype_affine:
+            if dof is None:
+                continue
+
+            # Convert only when JOINT_TARGET would not silently drop semantically
+            # important authored features. _init_actuators rebuilds JOINT_TARGET
+            # actuators with default dyntype/gaintype/biastype/gear, so non-default
+            # values for those force the actuator to stay CTRL_DIRECT.
+            #
+            # Authored ctrlrange/forcerange are not gating: ctrlrange has no
+            # equivalent under Control.joint_target_pos/vel (matching MJCF's
+            # behavior), and forcerange is propagated below into joint_effort_limit.
+            if (
+                int(_row("mujoco:actuator_biastype", row)) != biastype_affine
+                or int(_row("mujoco:actuator_dyntype", row)) != 0  # NONE
+                or int(_row("mujoco:actuator_gaintype", row)) != 0  # FIXED
+            ):
+                continue
+            gear = list(_row("mujoco:actuator_gear", row))
+            if not (np.isclose(gear[0], 1.0) and all(np.isclose(g, 0.0) for g in gear[1:])):
                 continue
 
             gainprm = list(_row("mujoco:actuator_gainprm", row))
@@ -3389,9 +3407,11 @@ def parse_usd(
             if kp <= 0.0:
                 continue
 
-            # MuJoCo "position" shortcut: gainprm=[kp,0,...], biasprm=[0,-kp,(-kv|dampratio|0),0,...]
-            # MuJoCo "velocity" shortcut: gainprm=[kv,0,...], biasprm=[0,0,-kv,0,...]
-            is_position = np.isclose(biasprm[0], 0.0) and np.isclose(biasprm[1], -kp)
+            # MuJoCo "position" shortcut: gainprm=[kp,0,...], biasprm=[0,-kp,(-kv|0),0,...].
+            # A positive biasprm[2] is a dampratio placeholder that MuJoCo's compiler
+            # resolves via mj_setConst; leaving such rows CTRL_DIRECT preserves that path.
+            # MuJoCo "velocity" shortcut: gainprm=[kv,0,...], biasprm=[0,0,-kv,0,...].
+            is_position = np.isclose(biasprm[0], 0.0) and np.isclose(biasprm[1], -kp) and biasprm[2] <= 0.0
             is_velocity = np.isclose(biasprm[0], 0.0) and np.isclose(biasprm[1], 0.0) and np.isclose(biasprm[2], -kp)
             if not (is_position or is_velocity):
                 continue
@@ -3403,8 +3423,7 @@ def parse_usd(
                     builder.joint_target_mode[dof] = int(JointTargetMode.POSITION_VELOCITY)
                 elif current_mode == int(JointTargetMode.NONE):
                     builder.joint_target_mode[dof] = int(JointTargetMode.POSITION)
-                    # Negative biasprm[2] encodes -kv; positive is an unresolved dampratio.
-                    builder.joint_target_kd[dof] = -biasprm[2] if biasprm[2] < 0.0 else 0.0
+                    builder.joint_target_kd[dof] = -biasprm[2]  # 0 or kv from biasprm=[0,-kp,-kv,...]
             else:  # velocity
                 builder.joint_target_kd[dof] = kp
                 if current_mode == int(JointTargetMode.POSITION):
