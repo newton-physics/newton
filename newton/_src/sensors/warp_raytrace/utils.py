@@ -145,6 +145,124 @@ def convert_ray_depth_to_forward_depth_kernel(
     out_depth[world_index, camera_index, py, px] = ray_depth * wp.dot(ray_dir_world, cam_forward_world)
 
 
+@wp.kernel(enable_backward=False)
+def unpack_normal_to_batched_rgba_kernel(
+    image: wp.array4d[wp.vec3f],
+    out: wp.array4d[wp.uint8],
+):
+    """Unpack (world, camera, H, W) vec3 normals into batched (N, H, W, 4) uint8 RGB.
+
+    Maps each component from [-1, 1] to [0, 255]. Alpha = 255.
+    """
+    world, camera, y, x = wp.tid()
+    camera_count = image.shape[1]
+    n = world * camera_count + camera
+    nrm = image[world, camera, y, x]
+    r = wp.uint8(wp.int32(wp.clamp((nrm[0] + 1.0) * 0.5, 0.0, 1.0) * 255.0))
+    g = wp.uint8(wp.int32(wp.clamp((nrm[1] + 1.0) * 0.5, 0.0, 1.0) * 255.0))
+    b = wp.uint8(wp.int32(wp.clamp((nrm[2] + 1.0) * 0.5, 0.0, 1.0) * 255.0))
+    out[n, y, x, 0] = r
+    out[n, y, x, 1] = g
+    out[n, y, x, 2] = b
+    out[n, y, x, 3] = wp.uint8(255)
+
+
+@wp.kernel(enable_backward=False)
+def unpack_depth_to_batched_rgba_kernel(
+    image: wp.array4d[wp.float32],
+    near: float,
+    far: float,
+    out: wp.array4d[wp.uint8],
+):
+    """Unpack (world, camera, H, W) depth into batched (N, H, W, 4) uint8 grayscale.
+
+    Invert and normalize to ``[50, 255]`` (closer = brighter). Miss pixels
+    (negative depth) render black. Alpha = 255.
+    """
+    world, camera, y, x = wp.tid()
+    camera_count = image.shape[1]
+    n = world * camera_count + camera
+    d = image[world, camera, y, x]
+    if d < 0.0:
+        out[n, y, x, 0] = wp.uint8(0)
+        out[n, y, x, 1] = wp.uint8(0)
+        out[n, y, x, 2] = wp.uint8(0)
+        out[n, y, x, 3] = wp.uint8(255)
+        return
+    denom = far - near
+    if denom <= 0.0:
+        t = wp.float32(0.0)
+    else:
+        t = wp.clamp((d - near) / denom, 0.0, 1.0)
+    # Closer -> brighter: near=255, far=50
+    v = wp.uint8(wp.int32((1.0 - t) * 205.0 + 50.0))
+    out[n, y, x, 0] = v
+    out[n, y, x, 1] = v
+    out[n, y, x, 2] = v
+    out[n, y, x, 3] = wp.uint8(255)
+
+
+@wp.kernel(enable_backward=False)
+def unpack_shape_index_hash_to_batched_rgba_kernel(
+    image: wp.array4d[wp.uint32],
+    out: wp.array4d[wp.uint8],
+):
+    """Colorize shape index with a deterministic hash palette."""
+    world, camera, y, x = wp.tid()
+    camera_count = image.shape[1]
+    n = world * camera_count + camera
+    idx = image[world, camera, y, x]
+    # Knuth multiplicative hash, masked to 24 bits.
+    h = (idx * wp.uint32(2654435761)) & wp.uint32(0xFFFFFF)
+    out[n, y, x, 0] = wp.uint8((h >> wp.uint32(16)) & wp.uint32(0xFF))
+    out[n, y, x, 1] = wp.uint8((h >> wp.uint32(8)) & wp.uint32(0xFF))
+    out[n, y, x, 2] = wp.uint8(h & wp.uint32(0xFF))
+    out[n, y, x, 3] = wp.uint8(255)
+
+
+@wp.kernel(enable_backward=False)
+def colorize_shape_index_with_palette_kernel(
+    image: wp.array4d[wp.uint32],
+    colors: wp.array2d[wp.uint8],
+    out: wp.array4d[wp.uint8],
+):
+    """Colorize shape index by indexing into a caller-provided RGB palette.
+
+    Indices out of range of the palette are rendered black.
+    """
+    world, camera, y, x = wp.tid()
+    camera_count = image.shape[1]
+    n = world * camera_count + camera
+    idx = image[world, camera, y, x]
+    num = wp.uint32(colors.shape[0])
+    if idx >= num:
+        out[n, y, x, 0] = wp.uint8(0)
+        out[n, y, x, 1] = wp.uint8(0)
+        out[n, y, x, 2] = wp.uint8(0)
+        out[n, y, x, 3] = wp.uint8(255)
+        return
+    i = wp.int32(idx)
+    out[n, y, x, 0] = colors[i, 0]
+    out[n, y, x, 1] = colors[i, 1]
+    out[n, y, x, 2] = colors[i, 2]
+    out[n, y, x, 3] = wp.uint8(255)
+
+
+def _validate_batched_rgba_out_buffer(
+    name: str,
+    out_buffer: wp.array[Any],
+    expected_shape: tuple[int, int, int, int],
+    expected_device: wp.Device,
+) -> None:
+    """Raise ``ValueError`` if *out_buffer* is not a canonical RGBA sink."""
+    if tuple(out_buffer.shape) != expected_shape:
+        raise ValueError(f"{name}: out_buffer shape {tuple(out_buffer.shape)} does not match expected {expected_shape}")
+    if out_buffer.dtype != wp.uint8:
+        raise ValueError(f"{name}: out_buffer dtype must be wp.uint8, got {out_buffer.dtype}")
+    if out_buffer.device != expected_device:
+        raise ValueError(f"{name}: out_buffer is on {out_buffer.device} but input is on {expected_device}")
+
+
 class Utils:
     """Utility functions for the RenderContext."""
 
@@ -152,7 +270,7 @@ class Utils:
         self.__render_context = render_context
 
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create a color output array for :meth:`~SensorTiledCamera.update`.
+        """Create a color output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -169,7 +287,7 @@ class Utils:
         )
 
     def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.float32]:
-        """Create a depth output array for :meth:`~SensorTiledCamera.update`.
+        """Create a depth output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -186,7 +304,7 @@ class Utils:
         )
 
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create a shape-index output array for :meth:`~SensorTiledCamera.update`.
+        """Create a shape-index output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -203,7 +321,7 @@ class Utils:
         )
 
     def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
-        """Create a normal output array for :meth:`~SensorTiledCamera.update`.
+        """Create a normal output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -220,7 +338,7 @@ class Utils:
         )
 
     def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create an albedo output array for :meth:`~SensorTiledCamera.update`.
+        """Create an albedo output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
 
         Args:
             width: Image width [px].
@@ -292,7 +410,8 @@ class Utils:
         transforming camera-space ``(0, 0, -1)`` into world space.
 
         Args:
-            depth_image: Ray-distance depth [m] from :meth:`update`, shape
+            depth_image: Ray-distance depth [m] from
+                :meth:`~newton.sensors.SensorTiledCamera.update`, shape
                 ``(world_count, camera_count, height, width)``.
             camera_transforms: World-space camera transforms, shape
                 ``(camera_count, world_count)``.
@@ -337,11 +456,23 @@ class Utils:
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
+        .. deprecated:: 1.2
+            Use :meth:`to_batched_rgba_from_color` with
+            :meth:`~newton.viewer.ViewerBase.log_image`. For a single
+            pre-tiled 2D image, reshape the batched output yourself
+            (``batched.reshape(rows, cols, H, W, 4).transpose(0, 2, 1, 3, 4).reshape(rows*H, cols*W, 4)``).
+
         Args:
-            image: Color output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
+            image: Color output from :meth:`~newton.sensors.SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
+        warnings.warn(
+            "SensorTiledCamera.utils.flatten_color_image_to_rgba is deprecated; "
+            "use to_batched_rgba_from_color with Viewer.log_image instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
         camera_count = image.shape[1]
         height = image.shape[2]
         width = image.shape[3]
@@ -370,6 +501,184 @@ class Utils:
         )
         return out_buffer
 
+    def to_batched_rgba_from_color(
+        self,
+        image: wp.array4d[wp.uint32],
+    ) -> wp.array4d[wp.uint8]:
+        """Reinterpret packed ``uint32`` RGBA color sensor output as batched ``uint8`` RGBA.
+
+        Returns a zero-copy view: each ``uint32``
+        (``R | G<<8 | B<<16 | A<<24``) aliases 4 contiguous ``uint8``
+        channels and the ``(world_count, camera_count)`` axes are flattened.
+        The returned array shares memory with *image*; do not write into it.
+
+        The returned array plugs directly into :meth:`~newton.viewer.ViewerBase.log_image`.
+        World is the slower-changing axis: tile ``i`` has
+        ``world = i // camera_count`` and ``camera = i % camera_count``.
+
+        Args:
+            image: Color sensor output, shape
+                ``(world_count, camera_count, H, W)``, dtype ``uint32``
+                (packed RGBA: ``R | G<<8 | B<<16 | A<<24``). Must be
+                contiguous; arrays returned by
+                :meth:`~newton.sensors.SensorTiledCamera.update` always satisfy this.
+
+        Returns:
+            Array of shape ``(world_count * camera_count, H, W, 4)``,
+            dtype ``uint8``, aliasing *image*.
+        """
+        world_count, camera_count, h, w = image.shape
+        n = world_count * camera_count
+        return image.view(wp.vec4ub).reshape((n, h, w)).view(wp.uint8)
+
+    def to_batched_rgba_from_normal(
+        self,
+        image: wp.array4d[wp.vec3f],
+        out_buffer: wp.array4d[wp.uint8] | None = None,
+    ) -> wp.array4d[wp.uint8]:
+        """Convert vec3 normal sensor output to batched ``uint8`` RGBA.
+
+        Args:
+            image: Normal output, shape ``(world_count, camera_count, H, W)``,
+                dtype ``vec3f``.
+            out_buffer: Optional pre-allocated output of shape
+                ``(world_count * camera_count, H, W, 4)``, dtype ``uint8``.
+
+        Returns:
+            Array of shape ``(world_count * camera_count, H, W, 4)``, dtype
+            ``uint8``. Suitable for :meth:`~newton.viewer.ViewerBase.log_image`.
+        """
+        world_count = image.shape[0]
+        camera_count = image.shape[1]
+        h = image.shape[2]
+        w = image.shape[3]
+        n = world_count * camera_count
+
+        if out_buffer is None:
+            out_buffer = wp.empty((n, h, w, 4), dtype=wp.uint8, device=self.__render_context.device)
+        else:
+            _validate_batched_rgba_out_buffer("to_batched_rgba_from_normal", out_buffer, (n, h, w, 4), image.device)
+
+        wp.launch(
+            unpack_normal_to_batched_rgba_kernel,
+            dim=(world_count, camera_count, h, w),
+            inputs=[image],
+            outputs=[out_buffer],
+            device=self.__render_context.device,
+        )
+        return out_buffer
+
+    def to_batched_rgba_from_depth(
+        self,
+        image: wp.array4d[wp.float32],
+        depth_range: wp.array[wp.float32] | tuple[float, float] | None = None,
+        out_buffer: wp.array4d[wp.uint8] | None = None,
+    ) -> wp.array4d[wp.uint8]:
+        """Convert float32 depth sensor output to batched ``uint8`` grayscale RGBA.
+
+        Closer pixels render brighter; miss pixels (negative depth) render
+        black. Alpha = 255.
+
+        Args:
+            image: Depth output, shape ``(world_count, camera_count, H, W)``,
+                dtype ``float32``. Negative values denote ray misses.
+            depth_range: Optional ``(near, far)`` [m] for normalization.
+                Accepts a 2-element ``wp.array[wp.float32]`` or a Python
+                ``(near, far)`` tuple. If ``None``, defaults to ``(0.0, 10.0)``.
+            out_buffer: Optional pre-allocated output of shape
+                ``(world_count * camera_count, H, W, 4)``, dtype ``uint8``.
+
+        Returns:
+            Array of shape ``(world_count * camera_count, H, W, 4)``, dtype
+            ``uint8``. Suitable for :meth:`~newton.viewer.ViewerBase.log_image`.
+        """
+        world_count = image.shape[0]
+        camera_count = image.shape[1]
+        h = image.shape[2]
+        w = image.shape[3]
+        n = world_count * camera_count
+
+        if depth_range is None:
+            near, far = 0.0, 10.0
+        elif isinstance(depth_range, wp.array):
+            dr = depth_range.numpy()
+            near, far = float(dr[0]), float(dr[1])
+        else:
+            near, far = float(depth_range[0]), float(depth_range[1])
+        if not (near < far):
+            raise ValueError(
+                f"to_batched_rgba_from_depth: depth_range must satisfy near < far, got near={near}, far={far}"
+            )
+
+        if out_buffer is None:
+            out_buffer = wp.empty((n, h, w, 4), dtype=wp.uint8, device=self.__render_context.device)
+        else:
+            _validate_batched_rgba_out_buffer("to_batched_rgba_from_depth", out_buffer, (n, h, w, 4), image.device)
+
+        wp.launch(
+            unpack_depth_to_batched_rgba_kernel,
+            dim=(world_count, camera_count, h, w),
+            inputs=[image, near, far],
+            outputs=[out_buffer],
+            device=self.__render_context.device,
+        )
+        return out_buffer
+
+    def to_batched_rgba_from_shape_index(
+        self,
+        image: wp.array4d[wp.uint32],
+        colors: wp.array2d[wp.uint8] | None = None,
+        out_buffer: wp.array4d[wp.uint8] | None = None,
+    ) -> wp.array4d[wp.uint8]:
+        """Convert uint32 shape-index sensor output to batched ``uint8`` RGBA.
+
+        Args:
+            image: Shape-index output, shape
+                ``(world_count, camera_count, H, W)``, dtype ``uint32``.
+            colors: Optional RGB palette of shape ``(num_entries, 3)``, dtype
+                ``uint8``. If provided, each pixel is colored by looking up
+                its shape index in this palette (indices past the palette
+                length render black). If ``None``, a deterministic hash
+                palette is used (good for debugging which shape hit which
+                pixel without a predefined class map).
+            out_buffer: Optional pre-allocated output of shape
+                ``(world_count * camera_count, H, W, 4)``, dtype ``uint8``.
+
+        Returns:
+            Array of shape ``(world_count * camera_count, H, W, 4)``, dtype
+            ``uint8``. Suitable for :meth:`~newton.viewer.ViewerBase.log_image`.
+        """
+        world_count = image.shape[0]
+        camera_count = image.shape[1]
+        h = image.shape[2]
+        w = image.shape[3]
+        n = world_count * camera_count
+
+        if out_buffer is None:
+            out_buffer = wp.empty((n, h, w, 4), dtype=wp.uint8, device=self.__render_context.device)
+        else:
+            _validate_batched_rgba_out_buffer(
+                "to_batched_rgba_from_shape_index", out_buffer, (n, h, w, 4), image.device
+            )
+
+        if colors is None:
+            wp.launch(
+                unpack_shape_index_hash_to_batched_rgba_kernel,
+                dim=(world_count, camera_count, h, w),
+                inputs=[image],
+                outputs=[out_buffer],
+                device=self.__render_context.device,
+            )
+        else:
+            wp.launch(
+                colorize_shape_index_with_palette_kernel,
+                dim=(world_count, camera_count, h, w),
+                inputs=[image, colors],
+                outputs=[out_buffer],
+                device=self.__render_context.device,
+            )
+        return out_buffer
+
     def flatten_normal_image_to_rgba(
         self,
         image: wp.array4d[wp.vec3f],
@@ -380,11 +689,21 @@ class Utils:
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
+        .. deprecated:: 1.2
+            Use :meth:`to_batched_rgba_from_normal` with
+            :meth:`~newton.viewer.ViewerBase.log_image`.
+
         Args:
-            image: Normal output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
+            image: Normal output from :meth:`~newton.sensors.SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
+        warnings.warn(
+            "SensorTiledCamera.utils.flatten_normal_image_to_rgba is deprecated; "
+            "use to_batched_rgba_from_normal with Viewer.log_image instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
         camera_count = image.shape[1]
         height = image.shape[2]
         width = image.shape[3]
@@ -425,12 +744,22 @@ class Utils:
         Encodes depth as grayscale: inverts values (closer = brighter) and normalizes to the ``[50, 255]``
         range. Background pixels (no hit) remain black.
 
+        .. deprecated:: 1.2
+            Use :meth:`to_batched_rgba_from_depth` with
+            :meth:`~newton.viewer.ViewerBase.log_image`.
+
         Args:
-            image: Depth output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
+            image: Depth output from :meth:`~newton.sensors.SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
             depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.
         """
+        warnings.warn(
+            "SensorTiledCamera.utils.flatten_depth_image_to_rgba is deprecated; "
+            "use to_batched_rgba_from_depth with Viewer.log_image instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
         camera_count = image.shape[1]
         height = image.shape[2]
         width = image.shape[3]
@@ -576,8 +905,10 @@ class Utils:
         worlds_per_row: int | None = None,
     ) -> wp.array():
         world_and_camera_count = self.__render_context.world_count * camera_count
-        if not worlds_per_row:
+        if worlds_per_row is None:
             worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
+        elif worlds_per_row < 1:
+            raise ValueError(f"worlds_per_row must be >= 1, got {worlds_per_row}")
         worlds_per_col = math.ceil(world_and_camera_count / worlds_per_row)
 
         if out_buffer is None:

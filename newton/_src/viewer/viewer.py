@@ -1202,6 +1202,30 @@ class ViewerBase(ABC):
         """
         return
 
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+        """
+        Log an image (or batch of images) for display in the viewer.
+
+        Args:
+            name: Stable identifier. Subsequent calls with the same *name*
+                update in place. In :class:`ViewerGL`, each name gets one
+                dockable window.
+            image: Image array. Accepted shapes:
+
+                * ``(H, W)`` -- single grayscale image
+                * ``(H, W, C)`` -- single color image, ``C in (1, 3, 4)``
+                * ``(N, H, W)`` -- batch of N grayscale images
+                * ``(N, H, W, C)`` -- batch of N color images, ``C in (1, 3, 4)``
+
+                Accepted dtypes: ``uint8`` (values in ``[0, 255]``) or
+                ``float32`` (values in ``[0, 1]``). Values outside the range
+                are clipped.
+
+        The base implementation is a no-op. Backends that render images
+        (currently only :class:`ViewerGL`) override this method.
+        """
+        return
+
     @abstractmethod
     def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
         """
