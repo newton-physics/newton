@@ -1,0 +1,1135 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Actuators &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=9912e11f"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/actuators';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="newton" href="../api/newton.html" />
+    <link rel="prev" title="Collisions" href="collisions.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.2.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Actuators</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="actuators">
+<h1>Actuators<a class="headerlink" href="#actuators" title="Link to this heading">#</a></h1>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>The actuator API is <strong>experimental</strong> and may change in future releases.
+Feedback is welcome — please file issues or discussion threads.</p>
+</div>
+<p>Actuators provide composable implementations that read physics simulation
+state, compute effort, and <strong>accumulate</strong> (scatter-add) the effort into
+control arrays for application to the simulation.  The caller must zero the
+output array before stepping actuators each frame.  The simulator does not
+need to be part of Newton: actuators are designed to be reusable anywhere the
+caller can provide state arrays and consume effort.</p>
+<p>Each <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator" title="newton.actuators.Actuator"><code class="xref py py-class docutils literal notranslate"><span class="pre">Actuator</span></code></a> instance is <strong>vectorized</strong>: a single actuator object
+operates on a batch of DOF indices in global state and control arrays, allowing
+efficient integration into RL workflows with many parallel environments.</p>
+<p>The goal is to provide canonical actuator models with support for
+<strong>differentiability</strong> and <strong>graphable execution</strong> where the underlying
+controller implementation supports it.  Actuators are designed to be easy to
+customize and extend for specific actuator models.</p>
+<section id="architecture">
+<h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h2>
+<p>An actuator is composed from three building blocks, applied in this order:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Actuator
+├── Delay       (optional: delays command inputs by N actuator timesteps)
+├── Controller  (control law that computes raw effort)
+└── Clamping[]  (clamps raw effort based on motor-limit modeling)
+    ├── ClampingMaxEffort        (±max_effort symmetric clamp)
+    ├── ClampingDCMotor         (velocity-dependent saturation)
+    └── ClampingPositionBased   (position-dependent lookup table)
+</pre></div>
+</div>
+<dl class="simple">
+<dt><strong>Delay</strong></dt><dd><p>Optionally delays command inputs (control targets and feedforward terms)
+by <em>N</em> actuator timesteps before they reach the controller, modeling
+communication or processing latency.  The delay always produces output;
+when the buffer is empty or a DOF has <code class="docutils literal notranslate"><span class="pre">delay_steps</span> <span class="pre">==</span> <span class="pre">0</span></code>, the current
+command inputs are used directly.  When underfilled, the lag is clamped
+to the available history so the oldest available entry is returned.</p>
+</dd>
+<dt><strong>Controller</strong></dt><dd><p>Computes raw actuator effort [N or N·m] from the current simulator state
+and control targets.  This is the actuator’s control law — for example PD,
+PID, or neural-network-based control.  See the individual controller class
+documentation for the control-law equations.</p>
+</dd>
+<dt><strong>Clamping</strong></dt><dd><p>Clamps raw effort based on motor-limit modeling.  This applies
+post-controller output limits to the computed effort to model motor limits
+such as saturation, back-EMF losses, performance envelopes, or
+position-dependent effort limits.  Multiple clamping stages can be combined
+on a single actuator.</p>
+</dd>
+</dl>
+<p>The per-step pipeline is:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Delay read → Controller → Clamping → Scatter-add → State updates (controller + delay write)
+</pre></div>
+</div>
+<p>Controllers and clamping objects are pluggable: implement the
+<a class="reference internal" href="../api/_generated/newton.actuators.Controller.html#newton.actuators.Controller" title="newton.actuators.Controller"><code class="xref py py-class docutils literal notranslate"><span class="pre">Controller</span></code></a> or <a class="reference internal" href="../api/_generated/newton.actuators.Clamping.html#newton.actuators.Clamping" title="newton.actuators.Clamping"><code class="xref py py-class docutils literal notranslate"><span class="pre">Clamping</span></code></a> base class to add new models.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Current limitations:</strong> the first version does not include a transmission
+model (gear ratios / linkage transforms), supports only single-input
+single-output (SISO) actuators (one DOF per actuator), and does not model
+actuator dynamics (inertia, friction, thermal effects).</p>
+</div>
+</section>
+<section id="usage">
+<h2>Usage<a class="headerlink" href="#usage" title="Link to this heading">#</a></h2>
+<p>Actuators are registered during model construction with
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_actuator" title="newton.ModelBuilder.add_actuator"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_actuator()</span></code></a> and are instantiated automatically
+when the model is finalized:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span><span class="o">.</span><span class="n">add_actuator</span><span class="p">(</span>
+    <span class="n">ControllerPD</span><span class="p">,</span>
+    <span class="n">index</span><span class="o">=</span><span class="n">dof_index</span><span class="p">,</span>
+    <span class="n">kp</span><span class="o">=</span><span class="mf">100.0</span><span class="p">,</span>
+    <span class="n">kd</span><span class="o">=</span><span class="mf">10.0</span><span class="p">,</span>
+    <span class="n">delay_steps</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>
+    <span class="n">clamping</span><span class="o">=</span><span class="p">[(</span><span class="n">ClampingMaxEffort</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;max_effort&quot;</span><span class="p">:</span> <span class="mf">50.0</span><span class="p">})],</span>
+<span class="p">)</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>For manual construction (outside of <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>), compose the
+components directly:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">indices</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint32</span><span class="p">)</span>
+<span class="n">kp</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">100.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="n">kd</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">10.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="n">max_e</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">50.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+
+<span class="n">actuator</span> <span class="o">=</span> <span class="n">Actuator</span><span class="p">(</span>
+    <span class="n">indices</span><span class="p">,</span>
+    <span class="n">controller</span><span class="o">=</span><span class="n">ControllerPD</span><span class="p">(</span><span class="n">kp</span><span class="o">=</span><span class="n">kp</span><span class="p">,</span> <span class="n">kd</span><span class="o">=</span><span class="n">kd</span><span class="p">),</span>
+    <span class="n">delay</span><span class="o">=</span><span class="n">Delay</span><span class="p">(</span><span class="n">delay_steps</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">5</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span> <span class="n">max_delay</span><span class="o">=</span><span class="mi">5</span><span class="p">),</span>
+    <span class="n">clamping</span><span class="o">=</span><span class="p">[</span><span class="n">ClampingMaxEffort</span><span class="p">(</span><span class="n">max_effort</span><span class="o">=</span><span class="n">max_e</span><span class="p">)],</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="stateful-actuators">
+<h2>Stateful Actuators<a class="headerlink" href="#stateful-actuators" title="Link to this heading">#</a></h2>
+<p>Controllers that maintain internal state (e.g. <a class="reference internal" href="../api/_generated/newton.actuators.ControllerPID.html#newton.actuators.ControllerPID" title="newton.actuators.ControllerPID"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerPID</span></code></a> with an
+integral accumulator, or <a class="reference internal" href="../api/_generated/newton.actuators.ControllerNeuralLSTM.html#newton.actuators.ControllerNeuralLSTM" title="newton.actuators.ControllerNeuralLSTM"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerNeuralLSTM</span></code></a> with hidden/cell state) and
+actuators with a <a class="reference internal" href="../api/_generated/newton.actuators.Delay.html#newton.actuators.Delay" title="newton.actuators.Delay"><code class="xref py py-class docutils literal notranslate"><span class="pre">Delay</span></code></a> require explicit double-buffered state
+management.  Create two state objects with <a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.state" title="newton.actuators.Actuator.state"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.state()</span></code></a> and swap them
+after each step:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">state_0</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">actuators</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">state_1</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">actuators</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
+
+<span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">):</span>
+    <span class="n">control</span><span class="o">.</span><span class="n">joint_f</span><span class="o">.</span><span class="n">zero_</span><span class="p">()</span>  <span class="c1"># zero output before stepping actuators</span>
+    <span class="n">model</span><span class="o">.</span><span class="n">actuators</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+    <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">state_0</span>
+</pre></div>
+</div>
+<p>Stateless actuators (e.g. a plain PD controller without delay) do not require
+state objects — simply omit them:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Build a stateless actuator (no delay, stateless controller)</span>
+<span class="n">b2</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">lk</span> <span class="o">=</span> <span class="n">b2</span><span class="o">.</span><span class="n">add_link</span><span class="p">()</span>
+<span class="n">jt</span> <span class="o">=</span> <span class="n">b2</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">lk</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">newton</span><span class="o">.</span><span class="n">Axis</span><span class="o">.</span><span class="n">Z</span><span class="p">)</span>
+<span class="n">b2</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">jt</span><span class="p">])</span>
+<span class="n">b2</span><span class="o">.</span><span class="n">add_actuator</span><span class="p">(</span><span class="n">ControllerPD</span><span class="p">,</span> <span class="n">index</span><span class="o">=</span><span class="n">b2</span><span class="o">.</span><span class="n">joint_qd_start</span><span class="p">[</span><span class="n">jt</span><span class="p">],</span> <span class="n">kp</span><span class="o">=</span><span class="mf">50.0</span><span class="p">)</span>
+<span class="n">m2</span> <span class="o">=</span> <span class="n">b2</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="n">m2</span><span class="o">.</span><span class="n">actuators</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">m2</span><span class="o">.</span><span class="n">state</span><span class="p">(),</span> <span class="n">m2</span><span class="o">.</span><span class="n">control</span><span class="p">())</span>
+</pre></div>
+</div>
+</section>
+<section id="differentiability-and-graph-capture">
+<h2>Differentiability and Graph Capture<a class="headerlink" href="#differentiability-and-graph-capture" title="Link to this heading">#</a></h2>
+<p>Whether an actuator supports differentiability and CUDA graph capture depends on
+its controller.  <a class="reference internal" href="../api/_generated/newton.actuators.ControllerPD.html#newton.actuators.ControllerPD" title="newton.actuators.ControllerPD"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerPD</span></code></a> and <a class="reference internal" href="../api/_generated/newton.actuators.ControllerPID.html#newton.actuators.ControllerPID" title="newton.actuators.ControllerPID"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerPID</span></code></a> are fully
+graphable.  Neural-network controllers (<a class="reference internal" href="../api/_generated/newton.actuators.ControllerNeuralMLP.html#newton.actuators.ControllerNeuralMLP" title="newton.actuators.ControllerNeuralMLP"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerNeuralMLP</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.actuators.ControllerNeuralLSTM.html#newton.actuators.ControllerNeuralLSTM" title="newton.actuators.ControllerNeuralLSTM"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerNeuralLSTM</span></code></a>) require PyTorch and are not graphable due to
+framework interop overhead.</p>
+<p><a class="reference internal" href="../api/_generated/newton.actuators.Actuator.html#newton.actuators.Actuator.is_graphable" title="newton.actuators.Actuator.is_graphable"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Actuator.is_graphable()</span></code></a> returns <code class="docutils literal notranslate"><span class="pre">True</span></code> when all components can be
+captured in a CUDA graph.</p>
+</section>
+<section id="available-components">
+<h2>Available Components<a class="headerlink" href="#available-components" title="Link to this heading">#</a></h2>
+<section id="delay">
+<h3>Delay<a class="headerlink" href="#delay" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.Delay.html#newton.actuators.Delay" title="newton.actuators.Delay"><code class="xref py py-class docutils literal notranslate"><span class="pre">Delay</span></code></a> — circular-buffer delay for control targets (stateful).</p></li>
+</ul>
+</section>
+<section id="controllers">
+<h3>Controllers<a class="headerlink" href="#controllers" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ControllerPD.html#newton.actuators.ControllerPD" title="newton.actuators.ControllerPD"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerPD</span></code></a> — proportional-derivative control law (stateless).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ControllerPID.html#newton.actuators.ControllerPID" title="newton.actuators.ControllerPID"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerPID</span></code></a> — proportional-integral-derivative control law
+(stateful: integral accumulator with anti-windup clamp).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ControllerNeuralMLP.html#newton.actuators.ControllerNeuralMLP" title="newton.actuators.ControllerNeuralMLP"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerNeuralMLP</span></code></a> — MLP neural-network controller (requires
+PyTorch, stateful: position/velocity history buffers).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ControllerNeuralLSTM.html#newton.actuators.ControllerNeuralLSTM" title="newton.actuators.ControllerNeuralLSTM"><code class="xref py py-class docutils literal notranslate"><span class="pre">ControllerNeuralLSTM</span></code></a> — LSTM neural-network controller (requires
+PyTorch, stateful: hidden/cell state).</p></li>
+</ul>
+<p>See the API documentation for each controller’s control-law equations.</p>
+</section>
+<section id="clamping">
+<h3>Clamping<a class="headerlink" href="#clamping" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ClampingMaxEffort.html#newton.actuators.ClampingMaxEffort" title="newton.actuators.ClampingMaxEffort"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingMaxEffort</span></code></a> — symmetric clamp to ±max_effort per actuator.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ClampingDCMotor.html#newton.actuators.ClampingDCMotor" title="newton.actuators.ClampingDCMotor"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingDCMotor</span></code></a> — velocity-dependent effort saturation using the DC
+motor effort-speed characteristic.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.actuators.ClampingPositionBased.html#newton.actuators.ClampingPositionBased" title="newton.actuators.ClampingPositionBased"><code class="xref py py-class docutils literal notranslate"><span class="pre">ClampingPositionBased</span></code></a> — position-dependent effort limits via
+interpolated lookup table (e.g. for linkage-driven joints).</p></li>
+</ul>
+<p>Multiple clamping objects can be stacked on a single actuator; they are applied
+in sequence.</p>
+</section>
+</section>
+<section id="customization">
+<h2>Customization<a class="headerlink" href="#customization" title="Link to this heading">#</a></h2>
+<p>Any actuator can be assembled from the existing building blocks — mix and
+match controllers, clamping stages, and delay to fit a specific use case.
+When the built-in components are not sufficient, implement new ones by
+subclassing <a class="reference internal" href="../api/_generated/newton.actuators.Controller.html#newton.actuators.Controller" title="newton.actuators.Controller"><code class="xref py py-class docutils literal notranslate"><span class="pre">Controller</span></code></a> or <a class="reference internal" href="../api/_generated/newton.actuators.Clamping.html#newton.actuators.Clamping" title="newton.actuators.Clamping"><code class="xref py py-class docutils literal notranslate"><span class="pre">Clamping</span></code></a>.</p>
+<p>For example, a custom controller needs to implement
+<a class="reference internal" href="../api/_generated/newton.actuators.Controller.html#newton.actuators.Controller.compute" title="newton.actuators.Controller.compute"><code class="xref py py-meth docutils literal notranslate"><span class="pre">compute()</span></code></a>, <a class="reference internal" href="../api/_generated/newton.actuators.Controller.html#newton.actuators.Controller.resolve_arguments" title="newton.actuators.Controller.resolve_arguments"><code class="xref py py-meth docutils literal notranslate"><span class="pre">resolve_arguments()</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.actuators.Controller.html#newton.actuators.Controller.is_stateful" title="newton.actuators.Controller.is_stateful"><code class="xref py py-meth docutils literal notranslate"><span class="pre">is_stateful()</span></code></a>, and <a class="reference internal" href="../api/_generated/newton.actuators.Controller.html#newton.actuators.Controller.is_graphable" title="newton.actuators.Controller.is_graphable"><code class="xref py py-meth docutils literal notranslate"><span class="pre">is_graphable()</span></code></a>:</p>
+<div class="literal-block-wrapper docutils container" id="id1">
+<div class="code-block-caption"><span class="caption-text">Skeleton — the <code class="docutils literal notranslate"><span class="pre">compute</span></code> body is omitted; see existing
+controllers for complete examples.</span><a class="headerlink" href="#id1" title="Link to this code">#</a></div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.actuators</span><span class="w"> </span><span class="kn">import</span> <span class="n">Controller</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyController</span><span class="p">(</span><span class="n">Controller</span><span class="p">):</span>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">resolve_arguments</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;gain&quot;</span><span class="p">:</span> <span class="n">args</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;gain&quot;</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)}</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">gain</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">gain</span> <span class="o">=</span> <span class="n">gain</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_stateful</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="kc">False</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_graphable</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="kc">True</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">compute</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">positions</span><span class="p">,</span> <span class="n">velocities</span><span class="p">,</span> <span class="n">target_pos</span><span class="p">,</span> <span class="n">target_vel</span><span class="p">,</span>
+                <span class="n">feedforward</span><span class="p">,</span> <span class="n">pos_indices</span><span class="p">,</span> <span class="n">vel_indices</span><span class="p">,</span>
+                <span class="n">target_pos_indices</span><span class="p">,</span> <span class="n">target_vel_indices</span><span class="p">,</span>
+                <span class="n">forces</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+        <span class="c1"># Launch a Warp kernel that writes effort into `forces`</span>
+        <span class="o">...</span>
+</pre></div>
+</div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">resolve_arguments</span></code> maps user-provided keyword arguments (from
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_actuator" title="newton.ModelBuilder.add_actuator"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_actuator()</span></code></a> or USD schemas) to constructor
+parameters, filling in defaults where needed.</p>
+<p>Similarly, a custom clamping stage subclasses <a class="reference internal" href="../api/_generated/newton.actuators.Clamping.html#newton.actuators.Clamping" title="newton.actuators.Clamping"><code class="xref py py-class docutils literal notranslate"><span class="pre">Clamping</span></code></a> and implements
+<a class="reference internal" href="../api/_generated/newton.actuators.Clamping.html#newton.actuators.Clamping.modify_forces" title="newton.actuators.Clamping.modify_forces"><code class="xref py py-meth docutils literal notranslate"><span class="pre">modify_forces()</span></code></a> (which reads effort from a source buffer and writes bounded effort to a destination buffer).</p>
+</section>
+<section id="see-also">
+<h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/newton_actuators.html#module-newton.actuators" title="newton.actuators"><code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.actuators</span></code></a> — full API reference</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_actuator" title="newton.ModelBuilder.add_actuator"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_actuator()</span></code></a> — registering actuators during
+model construction</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#usage">Usage</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stateful-actuators">Stateful Actuators</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#differentiability-and-graph-capture">Differentiability and Graph Capture</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#available-components">Available Components</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#delay">Delay</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#controllers">Controllers</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#clamping">Clamping</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#customization">Customization</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See Also</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

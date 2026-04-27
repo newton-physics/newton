@@ -1,0 +1,23 @@
+[
+  {
+    "name": "dev",
+    "version": "dev",
+    "url": "https://newton-physics.github.io/newton/latest/"
+  },
+  {
+    "name": "1.1.0 (stable)",
+    "version": "1.1.0",
+    "preferred": true,
+    "url": "https://newton-physics.github.io/newton/1.1.0/"
+  },
+  {
+    "name": "1.0.0",
+    "version": "1.0.0",
+    "url": "https://newton-physics.github.io/newton/1.0.0/"
+  },
+  {
+    "name": "0.2.2",
+    "version": "0.2.2",
+    "url": "https://newton-physics.github.io/newton/0.2.2/"
+  }
+]

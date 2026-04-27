@@ -1,0 +1,6 @@
+﻿newton.utils.event\_scope
+=========================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: event_scope

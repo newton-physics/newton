@@ -1,0 +1,8 @@
+﻿newton.ik.IKJacobianType
+========================
+
+.. autoclass:: newton.ik.IKJacobianType
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise
