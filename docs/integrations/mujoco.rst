@@ -30,29 +30,29 @@ Joint types
    * - Newton type
      - MuJoCo equivalent
      - Notes
-   * - ``FREE``
+   * - :attr:`~newton.JointType.FREE`
      - ``mjJNT_FREE``
      - Initial pose taken from ``body_q``.
-   * - ``BALL``
+   * - :attr:`~newton.JointType.BALL`
      - ``mjJNT_BALL``
      - Per-axis actuators mapped via ``gear``.
-   * - ``REVOLUTE``
+   * - :attr:`~newton.JointType.REVOLUTE`
      - ``mjJNT_HINGE``
      -
-   * - ``PRISMATIC``
+   * - :attr:`~newton.JointType.PRISMATIC`
      - ``mjJNT_SLIDE``
      -
-   * - ``D6``
+   * - :attr:`~newton.JointType.D6`
      - Up to 3 × ``mjJNT_SLIDE`` + 3 × ``mjJNT_HINGE``
      - Each active linear/angular DOF becomes a separate MuJoCo joint
        (``_lin``/``_ang`` suffixes, with numeric indices when multiple axes
        are active).
-   * - ``FIXED``
+   * - :attr:`~newton.JointType.FIXED`
      - *(no joint)*
      - The child body is nested directly under its parent. A fixed joint
        connecting to the world produces a **mocap** body, driven via
        ``mjData.mocap_pos`` / ``mjData.mocap_quat``.
-   * - ``DISTANCE``, ``CABLE``
+   * - :attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.CABLE`
      - *unsupported*
      - Not forwarded to MuJoCo.
 
@@ -67,36 +67,36 @@ Geometry types
    * - Newton type
      - MuJoCo equivalent
      - Notes
-   * - ``SPHERE``
+   * - :attr:`~newton.GeoType.SPHERE`
      - ``mjGEOM_SPHERE``
      -
-   * - ``CAPSULE``
+   * - :attr:`~newton.GeoType.CAPSULE`
      - ``mjGEOM_CAPSULE``
      -
-   * - ``CYLINDER``
+   * - :attr:`~newton.GeoType.CYLINDER`
      - ``mjGEOM_CYLINDER``
      -
-   * - ``BOX``
+   * - :attr:`~newton.GeoType.BOX`
      - ``mjGEOM_BOX``
      -
-   * - ``ELLIPSOID``
+   * - :attr:`~newton.GeoType.ELLIPSOID`
      - ``mjGEOM_ELLIPSOID``
      -
-   * - ``PLANE``
+   * - :attr:`~newton.GeoType.PLANE`
      - ``mjGEOM_PLANE``
      - Must be attached to the world body. Rendered size defaults to
        ``5 × 5 × 5``.
-   * - ``HFIELD``
+   * - :attr:`~newton.GeoType.HFIELD`
      - ``mjGEOM_HFIELD``
      - Heightfield data is normalized to ``[0, 1]``; the geom origin is
        shifted by ``min_z`` so the lowest point is at the correct world
        height.
-   * - ``MESH`` / ``CONVEX_MESH``
+   * - :attr:`~newton.GeoType.MESH` / :attr:`~newton.GeoType.CONVEX_MESH`
      - ``mjGEOM_MESH``
      - MuJoCo only supports **convex** collision meshes. Non-convex meshes
        are convex-hulled automatically, which changes the collision
        boundary. ``maxhullvert`` is forwarded from the mesh source when set.
-   * - ``CONE``, ``GAUSSIAN``
+   * - :attr:`~newton.GeoType.CONE`, :attr:`~newton.GeoType.GAUSSIAN`
      - *unsupported*
      - Not present in the MuJoCo geom-type map.
 
@@ -104,24 +104,10 @@ Geometry types
 non-colliding reference frames used for sensor attachment and spatial
 tendon wrap anchors.
 
-SDF-based and hydroelastic collisions are not part of the MuJoCo geometry
-model; they are only available through Newton's collision pipeline (see
-`Collision pipeline`_ below).
-
-
-Mass and inertia
-----------------
-
-Bodies with positive mass are exported with ``explicitinertial=True``,
-forwarding mass, centre-of-mass offset (``ipos``), and inertia tensor.
-When the inertia tensor is diagonal it is passed as a 3-element vector
-(preserving MuJoCo's sameframe optimisation, ``body_simple=1``); otherwise
-it is passed as the full 6-element symmetric form.
-
-Zero-mass bodies (e.g. sensor frames, reference links) omit mass and
-inertia entirely. The solver sets the compiler option
-``inertiafromgeom = auto`` globally, so MuJoCo derives inertia from child
-geoms for any body that was exported without an explicit inertia tensor.
+Several Newton collision features — for example non-convex trimesh,
+SDF-based contacts, and hydroelastic contacts — are not part of the
+MuJoCo geometry model. They are only available through Newton's
+collision pipeline (see `Collision pipeline`_ below).
 
 
 Actuators
@@ -178,7 +164,24 @@ Equality constraints
    * - Mimic
      - ``mjEQ_JOINT``
      - ``coef0`` / ``coef1`` mapped to polynomial coefficients. Only
-       ``REVOLUTE`` and ``PRISMATIC`` joints are supported.
+       :attr:`~newton.JointType.REVOLUTE` and
+       :attr:`~newton.JointType.PRISMATIC` joints are supported.
+
+**Loop closures.** Newton joints with no associated articulation
+(``joint_articulation == -1``) are treated as loop closures rather than
+tree joints. They are not emitted as MuJoCo joints; instead, the solver
+synthesises equality constraints:
+
+- :attr:`~newton.JointType.FIXED` → ``mjEQ_WELD`` (constrains all 6 DOFs).
+- :attr:`~newton.JointType.REVOLUTE` → two ``mjEQ_CONNECT`` constraints,
+  the second offset by 0.1 m along the hinge axis, so 5 DOFs are
+  constrained and one rotational DOF remains free.
+- :attr:`~newton.JointType.BALL` → one ``mjEQ_CONNECT`` (3 translational
+  DOFs constrained, all 3 rotational DOFs free).
+
+Other joint types in this configuration are not supported and produce a
+warning. Loop-joint DOFs and coordinates are excluded from MuJoCo's
+``nq`` / ``nv``.
 
 
 Tendons and contact pairs
@@ -229,6 +232,21 @@ Newton's pipeline supports non-convex meshes, SDF-based contacts, and
 hydroelastic contacts, which are not available through MuJoCo's collision
 detection.
 
+**Multi-contact CCD.** With ``enable_multiccd=True`` the solver allows
+up to four contact points per geom pair instead of one. Pairs where
+either geom has ``margin > 0`` still fall back to a single contact
+regardless of the flag.
+
+**Margin zeroing.** ``mujoco_warp`` rejects non-zero geom margins on
+box-box pairs (its default NATIVECCD path) and on any box/mesh pair
+when ``enable_multiccd=True``. To stay compatible the solver zeroes
+``geom_margin`` model-wide at compile time whenever a box geom exists,
+or whenever ``enable_multiccd=True`` is combined with mesh geoms; geoms
+with non-zero authored margins emit a warning. The Newton model's
+``shape_margin`` array is left untouched, and when
+``use_mujoco_contacts=False`` the authored margins are restored at
+runtime through ``update_geom_properties_kernel``.
+
 
 Multi-world support
 -------------------
@@ -273,7 +291,7 @@ Push, pull, and contact-conversion are implemented by
 ``SolverMuJoCo._apply_mjc_control``, ``SolverMuJoCo._update_newton_state``,
 and :meth:`~newton.solvers.SolverMuJoCo.update_contacts`, using kernels
 from ``newton/_src/solvers/mujoco/kernels.py`` — see
-`Where the conversion lives`_ for the full anchor list.
+`Code pointers`_ for the full anchor list.
 
 
 Solver options
@@ -293,6 +311,12 @@ CCD / SDF iteration counts) follow a three-level resolution priority:
    used, with one Newton-opinionated exception: ``integrator`` defaults
    to ``implicitfast`` (MuJoCo's default is ``euler``) for better
    stability on stiff systems.
+
+See MuJoCo's `solver documentation
+<https://mujoco.readthedocs.io/en/stable/computation/index.html>`_ and
+`\<option\> XML reference
+<https://mujoco.readthedocs.io/en/stable/XMLreference.html#option>`_ for
+what each parameter does and when to tune it.
 
 
 .. _mujoco-custom-attributes:
@@ -431,7 +455,7 @@ to their joint type:
   prescribed, effectively infinite-mass coordinates.
 - **Roots attached to world with a fixed joint** are exported as MuJoCo
   mocap bodies. This applies to both kinematic and non-kinematic Newton
-  roots attached to world by :class:`~newton.JointType.FIXED`. MuJoCo has
+  roots attached to world by :attr:`~newton.JointType.FIXED`. MuJoCo has
   no joint coordinates for a fixed root, so Newton drives the pose through
   ``mjData.mocap_pos`` and ``mjData.mocap_quat`` instead.
 - **World-attached shapes that are not part of an articulation** remain
@@ -445,8 +469,8 @@ to synchronise the updated fixed-root poses into MuJoCo.
 
 .. _mujoco-code-pointers:
 
-Where the conversion lives
---------------------------
+Code pointers
+-------------
 
 For readers navigating the source, the following symbols are the most
 useful entry points. Symbols with a leading underscore are **internal
