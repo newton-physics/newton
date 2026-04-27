@@ -169,8 +169,6 @@ def _rigid_contact_history_restore_from_match_index(test, device):
                 contact_count,
                 shape0,
                 shape1,
-                point0,
-                point1,
                 normal,
                 shape_ke,
                 shape_kd,
@@ -180,7 +178,15 @@ def _rigid_contact_history_restore_from_match_index(test, device):
                 history,
                 10.0,
             ],
-            outputs=[penalty_k, lam, material_kd, material_mu, material_ke],
+            outputs=[
+                point0,
+                point1,
+                penalty_k,
+                lam,
+                material_kd,
+                material_mu,
+                material_ke,
+            ],
             device=device,
         )
 
@@ -202,8 +208,8 @@ def _rigid_contact_history_restore_from_match_index(test, device):
         np.testing.assert_allclose(point0_out[3], point0_in[3])
 
 
-def _rigid_contact_history_soft_restore_no_geometry_replay(test, device):
-    """Soft contacts restore penalty/lambda state but do not replay sticky geometry."""
+def _rigid_contact_history_soft_restores_penalty_only(test, device):
+    """Soft contacts restore penalty state only; saved lambda and anchors stay unused."""
     with wp.ScopedDevice(device):
         contact_count = wp.array([1], dtype=int, device=device)
         shape0 = wp.array([0], dtype=int, device=device)
@@ -235,8 +241,6 @@ def _rigid_contact_history_soft_restore_no_geometry_replay(test, device):
                 contact_count,
                 shape0,
                 shape1,
-                point0,
-                point1,
                 normal,
                 wp.array([100.0, 200.0], dtype=float, device=device),
                 wp.array([1.0, 3.0], dtype=float, device=device),
@@ -246,12 +250,20 @@ def _rigid_contact_history_soft_restore_no_geometry_replay(test, device):
                 history,
                 10.0,
             ],
-            outputs=[penalty_k, lam, material_kd, material_mu, material_ke],
+            outputs=[
+                point0,
+                point1,
+                penalty_k,
+                lam,
+                material_kd,
+                material_mu,
+                material_ke,
+            ],
             device=device,
         )
 
         np.testing.assert_allclose(penalty_k.numpy(), [40.0])
-        np.testing.assert_allclose(lam.numpy(), [[1.0, 2.0, 3.0]])
+        np.testing.assert_allclose(lam.numpy(), [[0.0, 0.0, 0.0]])
         np.testing.assert_allclose(point0.numpy(), point0_in)
         np.testing.assert_allclose(point1.numpy(), point1_in)
 
@@ -311,8 +323,8 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_rigid_contact_history_soft_restore_no_geometry_replay",
-    _rigid_contact_history_soft_restore_no_geometry_replay,
+    "test_rigid_contact_history_soft_restores_penalty_only",
+    _rigid_contact_history_soft_restores_penalty_only,
     devices=devices,
 )
 add_function_test(

@@ -346,7 +346,7 @@ def _update_dual_vec3(
         C_vec: Current constraint violation vector.
         C0: Initial constraint violation snapshot for stabilization.
         alpha: C0 stabilization factor.
-        k: Fixed penalty stiffness.
+        k: Current penalty stiffness.
         lam: Current Lagrange multiplier.
         is_hard: 1 for hard (AL), 0 for soft (penalty-only).
 
@@ -1981,9 +1981,9 @@ def step_joint_C0_lambda(
     joint_constraint_dim: wp.array[wp.int32],
     joint_is_hard: wp.array[wp.int32],
     gamma: float,
-    joint_penalty_k: wp.array[float],
     joint_penalty_k_min: wp.array[float],
     joint_penalty_k_max: wp.array[float],
+    joint_penalty_k: wp.array[float],
     joint_C0_lin: wp.array[wp.vec3],
     joint_C0_ang: wp.array[wp.vec3],
     joint_lambda_lin: wp.array[wp.vec3],
@@ -2107,8 +2107,6 @@ def init_body_body_contacts_avbd(
     # Constraint data
     rigid_contact_shape0: wp.array[int],
     rigid_contact_shape1: wp.array[int],
-    rigid_contact_point0: wp.array[wp.vec3],
-    rigid_contact_point1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
     # Material
     shape_material_ke: wp.array[float],
@@ -2120,6 +2118,9 @@ def init_body_body_contacts_avbd(
     history: RigidContactHistory,
     # Scalar parameters
     k_start: float,
+    # In/out: replayed only for matched hard contacts that were sticking.
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
     # Outputs
     contact_penalty_k: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
@@ -2131,8 +2132,10 @@ def init_body_body_contacts_avbd(
 
     For hard contacts: restores lambda (rotated from old to new contact frame),
     penalty_k, and stick-anchor points when the previous matched contact stuck.
-    For soft contacts: only penalty_k restoration is meaningful (lambda and
-    stick_flag are stored but inert in the soft penalty path).
+    For soft contacts: restores penalty_k only; lambda stays zero because the
+    soft path is penalty-only.
+    Sticky hard contacts may overwrite rigid_contact_point0/1 in place with the
+    previously saved contact anchors.
     C0 and decay are handled by step_body_body_contact_C0_lambda.
 
     match_index[i] addresses saved contact rows from the last snapshot.
@@ -2153,33 +2156,31 @@ def init_body_body_contacts_avbd(
         shape_material_kd[s1],
         shape_material_mu[s1],
     )
+    contact_material_ke[i] = avg_ke
     contact_material_kd[i] = avg_kd
     contact_material_mu[i] = avg_mu
 
-    n_new = rigid_contact_normal[i]
-
-    contact_material_ke[i] = avg_ke
     k_floor = avg_ke if k_start < 0.0 else wp.min(k_start, avg_ke)
     slot = match_index[i]
 
     if slot >= 0:
         contact_penalty_k[i] = wp.clamp(history.penalty_k[slot], k_floor, avg_ke)
-        lam_hist = history.lambda_[slot]
         if hard_contacts == 1:
+            lam_hist = history.lambda_[slot]
+            n_new = rigid_contact_normal[i]
             n_old = history.normal[slot]
             lam_n = wp.dot(lam_hist, n_old)
             lam_t_old = lam_hist - n_old * lam_n
             lam_t_new = lam_t_old - n_new * wp.dot(lam_t_old, n_new)
             contact_lambda[i] = n_new * lam_n + lam_t_new
-        else:
-            contact_lambda[i] = lam_hist
 
-        # Replay saved points only for contacts whose saved state was sticking.
-        if hard_contacts == 1 and (
-            history.stick_flag[slot] == _STICK_FLAG_ANCHOR or history.stick_flag[slot] == _STICK_FLAG_DEADZONE
-        ):
-            rigid_contact_point0[i] = history.point0[slot]
-            rigid_contact_point1[i] = history.point1[slot]
+            stick_flag = history.stick_flag[slot]
+            # Replay saved points only for contacts whose saved state was sticking.
+            if stick_flag == _STICK_FLAG_ANCHOR or stick_flag == _STICK_FLAG_DEADZONE:
+                rigid_contact_point0[i] = history.point0[slot]
+                rigid_contact_point1[i] = history.point1[slot]
+        else:
+            contact_lambda[i] = wp.vec3(0.0)
     else:
         contact_penalty_k[i] = k_floor
         contact_lambda[i] = wp.vec3(0.0)
@@ -2310,9 +2311,9 @@ def init_body_particle_contacts(
         shape_material_mu[shape_idx],
     )
 
+    body_particle_contact_material_ke[i] = avg_ke
     body_particle_contact_material_kd[i] = avg_kd
     body_particle_contact_material_mu[i] = avg_mu
-    body_particle_contact_material_ke[i] = avg_ke
 
     k_floor = avg_ke if k_start < 0.0 else wp.min(k_start, avg_ke)
     body_particle_contact_penalty_k[i] = k_floor
@@ -3404,12 +3405,15 @@ def update_duals_joint(
         x_c = wp.transform_get_translation(X_wc)
         C_vec = x_c - x_p
         C_vec_perp = P_lin * C_vec
+        # P_lin rotates with the parent; re-project stored lambda into the current
+        # constrained subspace before accumulating.
+        lam_old = P_lin * joint_lambda_lin[j]
         lam_new = _update_dual_vec3(
             C_vec_perp,
             P_lin * joint_C0_lin[j],
             avbd_alpha,
             joint_penalty_k[i_lin],
-            joint_lambda_lin[j],
+            lam_old,
             joint_is_hard[i_lin],
         )
         joint_lambda_lin[j] = lam_new
@@ -3470,12 +3474,15 @@ def update_duals_joint(
         C_vec = x_c - x_p
         if lin_count < 3:
             C_vec_perp = P_lin * C_vec
+            # P_lin rotates with the parent; re-project stored lambda into the current
+            # constrained subspace before accumulating.
+            lam_old = P_lin * joint_lambda_lin[j]
             lam_new = _update_dual_vec3(
                 C_vec_perp,
                 P_lin * joint_C0_lin[j],
                 avbd_alpha,
                 joint_penalty_k[i_lin],
-                joint_lambda_lin[j],
+                lam_old,
                 joint_is_hard[i_lin],
             )
             joint_lambda_lin[j] = lam_new

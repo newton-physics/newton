@@ -43,7 +43,7 @@ class Example:
         if self.solver_type == "vbd":
             quadruped.default_joint_cfg.target_ke = 1.0e4
             quadruped.default_joint_cfg.target_kd = 0.0
-            quadruped.default_shape_cfg.ke = 1.0e5
+            quadruped.default_shape_cfg.ke = 1.0e4
             quadruped.default_shape_cfg.kd = 0.0
             quadruped.default_shape_cfg.mu = 1.0
         else:
@@ -86,16 +86,16 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
 
         if self.solver_type == "vbd":
-            self.update_step_interval = 1
+            self.update_step_interval = 10
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=1,
-                # Example-specific stabilization for low-iteration AVBD; prefer more iterations / non-zero damping.
+                # Example-specific AVBD history decay for this one-iteration demo; prefer more iterations and damping.
                 rigid_avbd_gamma=0.9,
             )
         else:
             self.update_step_interval = 1
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=1)
+            self.solver = newton.solvers.SolverXPBD(self.model)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -123,6 +123,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
+            # Collision detection and contact refresh cadence.
             refresh_contacts = (substep % self.update_step_interval) == 0
             if refresh_contacts:
                 self.model.collide(self.state_0, self.contacts)

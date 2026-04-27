@@ -109,68 +109,6 @@ def _assert_surface_attachment(
 # -----------------------------------------------------------------------------
 
 
-@wp.kernel
-def _set_kinematic_body_pose(
-    body_id: wp.int32,
-    pose: wp.transform,
-    body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-):
-    body_q[body_id] = pose
-    body_qd[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-
-@wp.kernel
-def _drive_gripper_boxes_kernel(
-    ramp_time: float,
-    t: float,
-    body_ids: wp.array[wp.int32],
-    signs: wp.array[wp.float32],
-    anchor_p: wp.vec3,
-    anchor_q: wp.quat,
-    seg_half_len: float,
-    target_offset_mag: float,
-    initial_offset_mag: float,
-    pull_start_time: float,
-    pull_ramp_time: float,
-    pull_distance: float,
-    body_q: wp.array[wp.transform],
-):
-    """Kinematically move two gripper boxes toward an anchor frame, then pull along anchor +Z.
-
-    Used by `test_cable_kinematic_gripper_picks_capsule` to validate that **friction with kinematic
-    bodies** transfers motion to a dynamic payload (i.e., the payload can be lifted without gravity).
-
-    Notes:
-        - This kernel is purely a scripted pose driver (no joints/constraints involved).
-        - It writes only `body_q` (poses).
-    """
-    tid = wp.tid()
-    b = body_ids[tid]
-    sgn = signs[tid]
-
-    rot = anchor_q
-    center = anchor_p + wp.quat_rotate(rot, wp.vec3(0.0, 0.0, seg_half_len))
-
-    t = wp.float32(t)
-    pull_end_time = wp.float32(pull_start_time + pull_ramp_time)
-    t_eff = wp.min(t, pull_end_time)
-
-    # Linear close-in: ramp from initial_offset_mag -> target_offset_mag over ramp_time.
-    u = wp.clamp(t_eff / wp.float32(ramp_time), 0.0, 1.0)
-    offset_mag = (1.0 - u) * initial_offset_mag + u * target_offset_mag
-
-    # Linear lift: ramp from 0 -> pull_distance over pull_ramp_time starting at pull_start_time.
-    tp = wp.clamp((t_eff - wp.float32(pull_start_time)) / wp.float32(pull_ramp_time), 0.0, 1.0)
-    pull = wp.float32(pull_distance) * tp
-
-    pull_dir = wp.quat_rotate(rot, wp.vec3(0.0, 0.0, 1.0))
-    local_off = wp.vec3(0.0, sgn * offset_mag, 0.0)
-    pos = center + pull_dir * pull + wp.quat_rotate(rot, local_off)
-
-    body_q[b] = wp.transform(pos, rot)
-
-
 # -----------------------------------------------------------------------------
 # Device-side time kernels (for CUDA graph capture with kinematic bodies)
 # -----------------------------------------------------------------------------
@@ -289,7 +227,7 @@ def _drive_gripper_boxes_graph_kernel(
     pull_distance: float,
     body_q: wp.array[wp.transform],
 ):
-    """Graph-capturable variant of _drive_gripper_boxes_kernel that reads time from a device array."""
+    """Kinematically move two gripper boxes using device-side time for graph capture."""
     tid = wp.tid()
     b = body_ids[tid]
     sgn = signs[tid]
@@ -319,6 +257,9 @@ def _run_sim_loop(simulate_fn, num_steps, device):
     ``simulate_fn()`` must be graph-capturable: no host-side branching, no
     scalar time arguments — use device-side ``sim_time`` arrays and the
     ``_advance_time`` kernel instead.
+    If it swaps ping-pong state buffers, each call must leave those buffers in
+    the same orientation it received them, e.g. by performing an even number of
+    ``state0, state1 = state1, state0`` swaps.
     """
     use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
     graph = None
@@ -3320,41 +3261,41 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
 
     # Run a fixed number of frames for a lightweight regression test.
     num_frames = 100
-    num_steps = num_frames * sim_substeps
 
     sim_time_arr = wp.zeros(1, dtype=float, device=device)
 
     def simulate():
         nonlocal state0, state1
-        state0.clear_forces()
+        for _substep in range(sim_substeps):
+            state0.clear_forces()
 
-        wp.launch(
-            kernel=_drive_gripper_boxes_graph_kernel,
-            dim=2,
-            inputs=[
-                float(ramp_time),
-                sim_time_arr,
-                gripper_body_ids,
-                gripper_signs,
-                anchor_p,
-                anchor_q,
-                0.0,  # seg_half_len
-                float(target_offset_mag),
-                float(initial_offset_mag),
-                float(pull_start_time),
-                float(pull_ramp_time),
-                float(pull_distance),
-                state0.body_q,
-            ],
-            device=device,
-        )
+            wp.launch(
+                kernel=_drive_gripper_boxes_graph_kernel,
+                dim=2,
+                inputs=[
+                    float(ramp_time),
+                    sim_time_arr,
+                    gripper_body_ids,
+                    gripper_signs,
+                    anchor_p,
+                    anchor_q,
+                    0.0,  # seg_half_len
+                    float(target_offset_mag),
+                    float(initial_offset_mag),
+                    float(pull_start_time),
+                    float(pull_ramp_time),
+                    float(pull_distance),
+                    state0.body_q,
+                ],
+                device=device,
+            )
 
-        model.collide(state0, contacts)
-        solver.step(state0, state1, control, contacts, sim_dt)
-        state0, state1 = state1, state0
-        wp.launch(_advance_time, dim=1, inputs=[sim_time_arr, sim_dt], device=device)
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, sim_dt)
+            state0, state1 = state1, state0
+            wp.launch(_advance_time, dim=1, inputs=[sim_time_arr, sim_dt], device=device)
 
-    _run_sim_loop(simulate, num_steps, device)
+    _run_sim_loop(simulate, num_frames, device)
 
     qf = state0.body_q.numpy()
     test.assertTrue(np.isfinite(qf).all(), "Non-finite body transforms detected in gripper friction test")

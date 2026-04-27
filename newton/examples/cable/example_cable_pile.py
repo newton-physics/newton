@@ -60,7 +60,7 @@ class Example:
         # Material properties
         builder.default_shape_cfg.mu = 1.0e0
         builder.default_shape_cfg.ke = 1.0e5
-        builder.default_shape_cfg.kd = 1.0e-4
+        builder.default_shape_cfg.kd = 0.0
 
         cable_shape_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,

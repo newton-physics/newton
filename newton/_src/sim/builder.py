@@ -4383,7 +4383,7 @@ class ModelBuilder:
                 translation is the attachment point.
             child_xform: The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point.
-            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e9.
+            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e4.
             stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
                 this is a dimensionless (Rayleigh-style) coefficient. If None,
                 defaults to 0.0.
@@ -6587,7 +6587,7 @@ class ModelBuilder:
             stretch_stiffness: Stretch stiffness for the cable joints. For rods, this is treated as a
                 material-like axial/shear stiffness (commonly interpreted as EA)
                 with units [N] and is internally converted to an effective point stiffness [N/m] by dividing by
-                segment length. If None, defaults to 1.0e9.
+                segment length. If None, defaults to 1.0e4.
             stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             bend_stiffness: Bend/twist stiffness for the cable joints. For rods, this is treated as a
@@ -6618,8 +6618,8 @@ class ModelBuilder:
             ValueError: If the rod has fewer than 2 segments.
 
         Note:
-            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to a high
-              stiffness (1.0e9), which keeps neighboring capsules closely coupled (approximately inextensible).
+            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e4;
+              pass a larger value when neighboring capsules should remain nearly inextensible.
             - Internally, stretch and bend stiffnesses are pre-scaled by dividing by segment length so solver kernels
               do not need per-segment length normalization.
             - Damping values are passed through as provided (per joint) and are not length-normalized.
@@ -6632,7 +6632,7 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
 
-        # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
+        # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e4 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
@@ -6786,7 +6786,7 @@ class ModelBuilder:
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Material-like axial stiffness (EA) [N], normalized by edge length
-                into an effective joint stiffness [N/m]. Defaults to 1.0e9.
+                into an effective joint stiffness [N/m]. Defaults to 1.0e4.
             stretch_damping: Stretch damping (per joint). Defaults to 0.0.
             bend_stiffness: Material-like bend/twist stiffness (EI) [N*m^2], normalized by edge
                 length into an effective joint stiffness [N*m]. Defaults to 0.0.
@@ -6810,7 +6810,7 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
 
-        # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
+        # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e4 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
