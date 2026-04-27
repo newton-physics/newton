@@ -28,6 +28,7 @@
 - Build mesh SDFs via the texture-based sparse path only; sample via `SDF.texture_data` instead of `SDF.sparse_volume` / `SDF.coarse_volume`.
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
 - Pin `mujoco` and `mujoco-warp` dependencies to `~=3.6.0`
+- Make `SolverFeatherstone` consume the public Newton FREE/DISTANCE `joint_qd` convention (child-COM linear velocity and angular velocity in the joint parent frame) directly, removing its internal parent-origin twist basis and the associated velocity conversion kernels
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
 - Inline a `wp.vec3`-specialized point-to-triangle squared-distance helper in the implicit-MPM rasterized collider, removing the dependency on Warp's internal `warp.fem.geometry.closest_point`
 - Bump `mujoco` and `mujoco-warp` dependencies to `~=3.7.0` (`mujoco-warp` requires `>=3.7.0.1`)
