@@ -32,6 +32,7 @@
 - Inline a `wp.vec3`-specialized point-to-triangle squared-distance helper in the implicit-MPM rasterized collider, removing the dependency on Warp's internal `warp.fem.geometry.closest_point`
 - Bump `mujoco` and `mujoco-warp` dependencies to `~=3.7.0` (`mujoco-warp` requires `>=3.7.0.1`)
 - Bump `open3d` floor to `>=0.19.0`; earlier releases have no Python 3.12 wheels
+- Bump `meshio` floor to `>=5.3.5`; `5.3.0` calls `np.string_` which was removed in NumPy 2.0
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
 - Disable process reuse in the test runner on multi-GPU systems to prevent CUDA errors from cascading across test suites, keeping process reuse enabled on single-GPU systems for faster throughput
