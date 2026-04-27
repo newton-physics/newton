@@ -11,7 +11,7 @@ import warp as wp
 import newton
 from newton import Heightfield
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 _cuda_available = wp.is_cuda_available()
 
@@ -397,7 +397,7 @@ class TestHeightfield(unittest.TestCase):
             indices=np.asarray(indices, dtype=np.int32),
         )
 
-    def _build_mesh_vs_heightfield(self, mesh: newton.Mesh, mesh_z: float = 0.15):
+    def _build_mesh_vs_heightfield(self, mesh: newton.Mesh, mesh_z: float = 0.15, device=None):
         """Build a model with a non-convex mesh above a flat heightfield."""
         builder = newton.ModelBuilder()
         nrow, ncol = 10, 10
@@ -406,21 +406,7 @@ class TestHeightfield(unittest.TestCase):
         builder.add_shape_heightfield(heightfield=hfield)
         mesh_body = builder.add_body(xform=wp.transform((0.0, 0.0, mesh_z), wp.quat_identity()))
         builder.add_shape_mesh(body=mesh_body, mesh=mesh)
-        return builder.finalize(), mesh_body
-
-    @unittest.skipUnless(_cuda_available, "mesh-heightfield collision requires CUDA")
-    def test_non_convex_mesh_vs_heightfield(self):
-        """Test non-convex mesh (no SDF) generates contacts against a flat heightfield."""
-        mesh = self._create_non_convex_mesh()
-        model, _mesh_body = self._build_mesh_vs_heightfield(mesh)
-        state = model.state()
-
-        pipeline = newton.CollisionPipeline(model)
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)
-
-        contact_count = int(contacts.rigid_contact_count.numpy()[0])
-        self.assertGreater(contact_count, 0, "No contacts between non-convex mesh and heightfield")
+        return builder.finalize(device=device), mesh_body
 
     @unittest.skipUnless(_cuda_available, "build_sdf requires CUDA")
     def test_non_convex_mesh_with_sdf_vs_heightfield(self):
@@ -436,20 +422,6 @@ class TestHeightfield(unittest.TestCase):
 
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(contact_count, 0, "No contacts between SDF mesh and heightfield")
-
-    @unittest.skipUnless(_cuda_available, "mesh-heightfield collision requires CUDA")
-    def test_non_convex_mesh_vs_heightfield_no_contact(self):
-        """Test no contacts when non-convex mesh is far above heightfield."""
-        mesh = self._create_non_convex_mesh()
-        model, _mesh_body = self._build_mesh_vs_heightfield(mesh, mesh_z=5.0)
-        state = model.state()
-
-        pipeline = newton.CollisionPipeline(model)
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)
-
-        contact_count = int(contacts.rigid_contact_count.numpy()[0])
-        self.assertEqual(contact_count, 0, f"Unexpected contacts: {contact_count}")
 
     def test_particle_heightfield_soft_contacts(self):
         """Test that particles generate soft contacts against heightfield via on-the-fly SDF."""
@@ -475,6 +447,57 @@ class TestHeightfield(unittest.TestCase):
         soft_count = int(contacts.soft_contact_count.numpy()[0])
         self.assertGreater(soft_count, 0)
         self.assertEqual(int(contacts.soft_contact_shape.numpy()[0]), hfield_shape)
+
+
+# Parametrized per-device versions of the mesh-vs-heightfield contact tests.
+# These exercise the mesh-SDF narrow-phase path (including CPU) explicitly on
+# every available device, rather than only the default device.
+
+
+def test_non_convex_mesh_vs_heightfield(test, device):
+    """Non-convex mesh (no SDF) generates contacts against a flat heightfield."""
+    with wp.ScopedDevice(device):
+        mesh = TestHeightfield._create_non_convex_mesh()
+        model, _mesh_body = TestHeightfield._build_mesh_vs_heightfield(test, mesh, device=device)
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreater(contact_count, 0, "No contacts between non-convex mesh and heightfield")
+
+
+def test_non_convex_mesh_vs_heightfield_no_contact(test, device):
+    """No contacts when the non-convex mesh is far above the heightfield."""
+    with wp.ScopedDevice(device):
+        mesh = TestHeightfield._create_non_convex_mesh()
+        model, _mesh_body = TestHeightfield._build_mesh_vs_heightfield(test, mesh, mesh_z=5.0, device=device)
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertEqual(contact_count, 0, f"Unexpected contacts: {contact_count}")
+
+
+add_function_test(
+    TestHeightfield,
+    "test_non_convex_mesh_vs_heightfield",
+    test_non_convex_mesh_vs_heightfield,
+    devices=get_test_devices(mode="basic"),
+    check_output=False,
+)
+add_function_test(
+    TestHeightfield,
+    "test_non_convex_mesh_vs_heightfield_no_contact",
+    test_non_convex_mesh_vs_heightfield_no_contact,
+    devices=get_test_devices(mode="basic"),
+    check_output=False,
+)
 
 
 if __name__ == "__main__":

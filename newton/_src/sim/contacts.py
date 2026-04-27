@@ -93,6 +93,8 @@ class Contacts:
         per_contact_shape_properties: bool = False,
         clear_buffers: bool = False,
         requested_attributes: set[str] | None = None,
+        contact_matching: bool = False,
+        contact_report: bool = False,
     ):
         """
         Initialize Contacts storage.
@@ -115,11 +117,22 @@ class Contacts:
                 than the conservative path and safe since solvers only read up to contact_count.
             requested_attributes: Set of extended contact attribute names to allocate.
                 See :attr:`EXTENDED_ATTRIBUTES` for available options.
+            contact_matching: Allocate a per-contact match index array
+                (:attr:`rigid_contact_match_index`) that stores frame-to-frame
+                contact correspondences filled by the collision pipeline.
+            contact_report: Allocate compact index lists of new and broken
+                contacts (:attr:`rigid_contact_new_indices`,
+                :attr:`rigid_contact_new_count`,
+                :attr:`rigid_contact_broken_indices`,
+                :attr:`rigid_contact_broken_count`) populated each frame by
+                the collision pipeline.  Requires ``contact_matching=True``.
 
         .. note::
             The ``rigid_contact_diff_*`` arrays allocated when ``requires_grad=True`` are
             **experimental**; see :meth:`newton.CollisionPipeline.collide`.
         """
+        if contact_report and not contact_matching:
+            raise ValueError("contact_report=True requires contact_matching=True")
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
         with wp.ScopedDevice(device):
@@ -210,6 +223,43 @@ class Contacts:
                 self.rigid_contact_friction = None
                 """Per-contact friction coefficient [dimensionless], shape (rigid_contact_max,), dtype float."""
 
+            # Contact matching index — filled by the collision pipeline when
+            # contact_matching is enabled.
+            self.contact_matching = contact_matching
+            self.contact_report = contact_report
+            if contact_matching:
+                self.rigid_contact_match_index = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+                """Per-contact match index from frame-to-frame matching.
+
+                Values: ``>= 0`` matched old contact index;
+                :data:`newton.geometry.MATCH_NOT_FOUND` (``-1``) new contact;
+                :data:`newton.geometry.MATCH_BROKEN` (``-2``) key matched but
+                position/normal thresholds exceeded.
+                Shape (rigid_contact_max,), dtype int32."""
+            else:
+                self.rigid_contact_match_index = None
+
+            if contact_report:
+                self.rigid_contact_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
+                """Indices of new contacts in the current sorted buffer (where ``match_index < 0``).
+
+                Valid after the collision pipeline runs.
+                Shape (rigid_contact_max,), dtype int32."""
+                self.rigid_contact_new_count = wp.zeros(1, dtype=wp.int32)
+                """Device-side count of new contacts (single-element int32)."""
+                self.rigid_contact_broken_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
+                """Indices of broken contacts in the previous frame's sorted buffer.
+
+                Valid after the collision pipeline runs.
+                Shape (rigid_contact_max,), dtype int32."""
+                self.rigid_contact_broken_count = wp.zeros(1, dtype=wp.int32)
+                """Device-side count of broken contacts (single-element int32)."""
+            else:
+                self.rigid_contact_new_indices = None
+                self.rigid_contact_new_count = None
+                self.rigid_contact_broken_indices = None
+                self.rigid_contact_broken_count = None
+
             # soft contacts — requires_grad flows through here for differentiable simulation
             self.soft_contact_count = self.contact_counters[1:2]
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
@@ -289,6 +339,9 @@ class Contacts:
                 self.rigid_contact_stiffness.zero_()
                 self.rigid_contact_damping.zero_()
                 self.rigid_contact_friction.zero_()
+
+            if self.rigid_contact_match_index is not None:
+                self.rigid_contact_match_index.fill_(-1)
 
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)

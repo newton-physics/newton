@@ -2121,6 +2121,13 @@ class ModelBuilder:
             `set_world_offsets()` method instead of physical spacing. This improves numerical
             stability by keeping all worlds at the origin in the physics simulation.
 
+        .. important::
+            To approximate mesh shapes, call
+            :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
+            passing it here. Replication copies mesh references, so approximating
+            first yields a single simplified copy shared across all worlds;
+            approximating afterwards allocates one copy per replicated shape.
+
         Args:
             builder: The builder to replicate. All entities from this builder will be copied.
             world_count: The number of worlds to create.
@@ -6282,6 +6289,28 @@ class ModelBuilder:
             - If `False`, a warning is logged, and the method falls back to the next available method in the order of preference:
                 - If convex decomposition via CoACD or V-HACD fails or dependencies are not available, the method will fall back to using the ``convex_hull`` method.
                 - If convex hull approximation fails, it will fall back to the ``bounding_box`` method.
+
+        .. important::
+
+            Apply this method to a builder **before** passing it to
+            :meth:`~newton.ModelBuilder.replicate` or
+            :meth:`~newton.ModelBuilder.add_world`, not to the parent builder
+            afterwards. Replication copies mesh *references*, not mesh data, so
+            ``N`` worlds share one :class:`~newton.Mesh` object. Approximating
+            first produces a single simplified copy that is shared across all
+            replicated worlds; approximating afterwards allocates one copy per
+            replicated shape — up to ``N`` times the memory for identical data.
+
+            Recommended:
+
+            .. code-block:: python
+
+                arm = newton.ModelBuilder()
+                # ... populate arm ...
+                arm.approximate_meshes(method="convex_hull")
+
+                scene = newton.ModelBuilder()
+                scene.replicate(arm, world_count=N)
 
         Args:
             method: The method to use for approximating the mesh shapes.
