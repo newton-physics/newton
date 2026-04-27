@@ -108,8 +108,7 @@ class Example:
         self.viewer.set_model(self.model)
 
         if isinstance(self.viewer, newton.viewer.ViewerGL):
-            pos = type(self.viewer.camera.pos)(12.5, 0.0, 2.0)
-            self.viewer.camera.pos = pos
+            self.viewer.set_camera(wp.vec3(12.5, 0.0, 2.0), self.viewer.camera.pitch, self.viewer.camera.yaw)
 
         # capture forward/backward passes
         self.capture()
