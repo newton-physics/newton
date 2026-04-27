@@ -870,15 +870,14 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         self,
         delassus_operator: _DelassusOperator,
         temporary_store: fem.TemporaryStore | None = None,
-        n_batches: int = 16,
+        n_batches: int | None = None,
     ) -> None:
         # split_mass=False, skip_factorization=True — we compute the diagonal ourselves
         # with per-batch mass splitting after building the batch structures below
         super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store, skip_factorization=True)
 
         self.color_count = self.rheology.color_offsets.shape[0] - 1
-        self.n_batches = min(n_batches, self.color_count)
-        self.colors_per_batch = self.color_count // self.n_batches
+        self.n_batches, self.colors_per_batch = _resolve_batched_gs_batching(self.color_count, n_batches)
 
         # ── Determine max_entries ────────────────────────────────────────
 
@@ -1268,6 +1267,27 @@ _RHEOLOGY_SOLVERS = {
     "gs-soa": _ReorderedGaussSeidelSolver,
     "gs-batched": _BatchedGaussSeidelSolver,
 }
+
+
+def _resolve_batched_gs_batching(color_count: int, n_batches: int | None) -> tuple[int, int]:
+    """Resolve batch count and colors per batch for batched Gauss-Seidel."""
+    if color_count <= 0:
+        raise ValueError("Batched Gauss-Seidel requires at least one color.")
+
+    if n_batches is None:
+        n_batches = 9 if color_count == 27 else 16
+
+    if n_batches <= 0:
+        raise ValueError(f"Batched Gauss-Seidel requires a positive batch count, got {n_batches}.")
+
+    n_batches = min(n_batches, color_count)
+    if color_count % n_batches != 0:
+        raise ValueError(
+            "Batched Gauss-Seidel requires the color count to be divisible by the batch count, "
+            f"got color_count={color_count} and n_batches={n_batches}."
+        )
+
+    return n_batches, color_count // n_batches
 
 
 class _LinearSolver:
