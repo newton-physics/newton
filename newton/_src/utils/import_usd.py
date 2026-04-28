@@ -3354,6 +3354,134 @@ def parse_usd(
                 builder.add_custom_values(**values_dict)
                 if verbose:
                     print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
+
+    # USD MjcActuator does not preserve the original MJCF authoring tag:
+    # MuJoCo's compiler expands <position>/<velocity> shortcuts into raw
+    # gain/bias/dyntype fields before USD export, so a <position kp=K> and a
+    # hand-written <general> with the same gains produce bit-identical prims.
+    # We can't recover the author's intent, so we fix a contract:
+    #
+    #   USD MjcActuator rows targeting a joint DOF with the position/velocity
+    #   shape and default dyntype/gaintype/gear are imported as JOINT_TARGET
+    #   and driven by Control.joint_target_pos / joint_target_vel.
+    #
+    # Rows that author non-default dyntype (filter, integrator, ...), gaintype,
+    # gear, or carry an unresolved dampratio placeholder (positive biasprm[2])
+    # stay CTRL_DIRECT, because JOINT_TARGET would silently drop those features
+    # when _init_actuators rebuilds the MuJoCo actuators. Tendon/site/body
+    # targets and synthesized per-axis spherical DOF labels also stay
+    # CTRL_DIRECT (they don't appear in path_to_dof).
+    #
+    # Note: per-axis prim paths from joints that were merged into a D6 (the
+    # cycle-detection fix from #2557) ARE in path_to_dof and map to single
+    # DOFs of the merged joint, so they convert just like single-DOF
+    # revolutes -- mirroring how the MJCF importer uses mjcf_joint_name_to_dof
+    # to target specific DOFs in combined joints (see import_mjcf.py).
+    if "mujoco:actuator_target_label" in builder.custom_attributes:
+        mjc_actuator_count = builder._custom_frequency_counts.get("mujoco:actuator", 0)
+    else:
+        mjc_actuator_count = 0
+
+    if mjc_actuator_count > 0:
+        # Lazy imports: only needed when MuJoCo custom attributes are registered
+        # (i.e. SolverMuJoCo is in use), and avoids a top-level mujoco dependency
+        # for USD parsing in non-MuJoCo configurations.
+        import mujoco
+
+        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+        biastype_affine = int(mujoco.mjtBias.mjBIAS_AFFINE)
+        dyntype_none = int(mujoco.mjtDyn.mjDYN_NONE)
+        gaintype_fixed = int(mujoco.mjtGain.mjGAIN_FIXED)
+        ctrl_source_joint_target = int(SolverMuJoCo.CtrlSource.JOINT_TARGET)
+
+        def _row(key: str, row: int) -> Any:
+            """Row value from a custom-frequency attribute, falling back to its default."""
+            attr = builder.custom_attributes[key]
+            value = attr.values[row] if row < len(attr.values) else None
+            return attr.default if value is None else value
+
+        autolimits = bool(_row("mujoco:autolimits", 0))
+        converted = 0
+
+        for row in range(mjc_actuator_count):
+            target_path = _row("mujoco:actuator_target_label", row)
+            dof = path_to_dof.get(target_path) if target_path else None
+            if dof is None:
+                continue
+
+            # Convert only when JOINT_TARGET would not silently drop semantically
+            # important authored features. _init_actuators rebuilds JOINT_TARGET
+            # actuators with default dyntype/gaintype/biastype/gear, so non-default
+            # values for those force the actuator to stay CTRL_DIRECT.
+            #
+            # Authored ctrlrange/forcerange are not gating: ctrlrange has no
+            # equivalent under Control.joint_target_pos/vel (matching MJCF's
+            # behavior), and forcerange is propagated below into joint_effort_limit.
+            if (
+                int(_row("mujoco:actuator_biastype", row)) != biastype_affine
+                or int(_row("mujoco:actuator_dyntype", row)) != dyntype_none
+                or int(_row("mujoco:actuator_gaintype", row)) != gaintype_fixed
+            ):
+                continue
+            gear = list(_row("mujoco:actuator_gear", row))
+            if not (np.isclose(gear[0], 1.0) and all(np.isclose(g, 0.0) for g in gear[1:])):
+                continue
+
+            gainprm = list(_row("mujoco:actuator_gainprm", row))
+            biasprm = list(_row("mujoco:actuator_biasprm", row))
+            kp = gainprm[0]
+            if kp <= 0.0:
+                continue
+
+            # MuJoCo "position" shortcut: gainprm=[kp,0,...], biasprm=[0,-kp,(-kv|0),0,...].
+            # A positive biasprm[2] is a dampratio placeholder that MuJoCo's compiler
+            # resolves via mj_setConst; leaving such rows CTRL_DIRECT preserves that path.
+            # MuJoCo "velocity" shortcut: gainprm=[kv,0,...], biasprm=[0,0,-kv,0,...].
+            is_position = np.isclose(biasprm[0], 0.0) and np.isclose(biasprm[1], -kp) and biasprm[2] <= 0.0
+            is_velocity = np.isclose(biasprm[0], 0.0) and np.isclose(biasprm[1], 0.0) and np.isclose(biasprm[2], -kp)
+            if not (is_position or is_velocity):
+                continue
+
+            current_mode = builder.joint_target_mode[dof]
+            if is_position:
+                builder.joint_target_ke[dof] = kp
+                if current_mode == int(JointTargetMode.VELOCITY):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.POSITION_VELOCITY)
+                elif current_mode == int(JointTargetMode.NONE):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.POSITION)
+                    builder.joint_target_kd[dof] = -biasprm[2]  # 0 or kv from biasprm=[0,-kp,-kv,...]
+            else:  # velocity
+                builder.joint_target_kd[dof] = kp
+                if current_mode == int(JointTargetMode.POSITION):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.POSITION_VELOCITY)
+                elif current_mode == int(JointTargetMode.NONE):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.VELOCITY)
+
+            # Override the row's CTRL_DIRECT default and write the DOF target index
+            # so _init_actuators routes through MuJoCo's joint_target_mode actuators.
+            builder.custom_attributes["mujoco:ctrl_source"].values[row] = ctrl_source_joint_target
+            builder.custom_attributes["mujoco:actuator_trnid"].values[row] = wp.vec2i(dof, 0)
+
+            # Tighten the joint effort limit when the actuator authored a forceRange.
+            if bool(_row("mujoco:actuator_has_forcerange", row)):
+                limited = int(_row("mujoco:actuator_forcelimited", row))
+                if limited == 1 or (limited == 2 and autolimits):
+                    force_range = list(_row("mujoco:actuator_forcerange", row))
+                    limit = max(abs(force_range[0]), abs(force_range[1]))
+                    current = builder.joint_effort_limit[dof]
+                    if not np.isfinite(current) or limit < current:
+                        if np.isfinite(current) and verbose:
+                            print(
+                                f"MuJoCo USD actuator {row} narrows joint DOF {dof} "
+                                f"effort limit from {current} to {limit}"
+                            )
+                        builder.joint_effort_limit[dof] = limit
+
+            converted += 1
+
+        if verbose and converted > 0:
+            print(f"Mapped {converted} MuJoCo USD actuator(s) to joint targets")
     return result
 
 

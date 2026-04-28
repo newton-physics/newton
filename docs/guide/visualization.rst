@@ -536,8 +536,8 @@ Use :meth:`~newton.viewer.ViewerBase.log_lines` to draw line segments — useful
     # Draw force vectors at body positions
     viewer.log_lines(
         "/debug/forces",
-        starts=positions,       # wp.array(dtype=wp.vec3)
-        ends=positions + forces, # wp.array(dtype=wp.vec3)
+        starts=positions,        # wp.array[wp.vec3]
+        ends=positions + forces, # wp.array[wp.vec3]
         colors=(1.0, 0.0, 0.0), # red
         width=0.005,
     )
@@ -550,9 +550,9 @@ Use :meth:`~newton.viewer.ViewerBase.log_points` to draw a point cloud:
 
     viewer.log_points(
         "/debug/targets",
-        points=target_positions, # wp.array(dtype=wp.vec3)
-        radii=0.02,              # uniform radius, or wp.array(dtype=wp.float32)
-        colors=(0.0, 1.0, 0.0), # green
+        points=target_positions, # wp.array[wp.vec3]
+        radii=0.02,              # uniform radius, or wp.array[wp.float32]
+        colors=(0.0, 1.0, 0.0),  # green
     )
 
 **Visualizing contacts:**
