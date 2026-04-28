@@ -727,20 +727,17 @@ def compute_link_velocity(
 @wp.kernel
 def accumulate_free_distance_joint_f_to_body_force(
     joint_type: wp.array[int],
-    joint_parent: wp.array[int],
     joint_child: wp.array[int],
     joint_qd_start: wp.array[int],
-    joint_X_p: wp.array[wp.transform],
-    body_q: wp.array[wp.transform],
     joint_f_public: wp.array[float],
     body_f_ext: wp.array[wp.spatial_vector],
 ):
     """Accumulate FREE/DISTANCE control wrenches into Featherstone body forces.
 
-    FREE/DISTANCE ``joint_f`` follows the same parent-anchor basis as
-    ``joint_qd``. ``body_f_ext`` stores public COM-frame body wrenches in world
-    coordinates, so rotate the linear and angular components through the
-    current parent-anchor transform before accumulating them.
+    FREE/DISTANCE ``joint_f`` follows the same public COM-frame, world-space
+    wrench convention as ``State.body_f``. Route it through ``body_f_ext`` so
+    external body wrenches and free-joint control wrenches share the same
+    origin-shift path in ``eval_rigid_tau``.
     """
     joint_id = wp.tid()
     jtype = joint_type[joint_id]
@@ -748,27 +745,16 @@ def accumulate_free_distance_joint_f_to_body_force(
         return
 
     qd_start = joint_qd_start[joint_id]
-    parent = joint_parent[joint_id]
     child = joint_child[joint_id]
-    X_wpj = joint_X_p[joint_id]
-    if parent >= 0:
-        X_wpj = body_q[parent] * X_wpj
-
-    force = wp.transform_vector(
-        X_wpj,
-        wp.vec3(
-            joint_f_public[qd_start + 0],
-            joint_f_public[qd_start + 1],
-            joint_f_public[qd_start + 2],
-        ),
+    force = wp.vec3(
+        joint_f_public[qd_start + 0],
+        joint_f_public[qd_start + 1],
+        joint_f_public[qd_start + 2],
     )
-    torque_com = wp.transform_vector(
-        X_wpj,
-        wp.vec3(
-            joint_f_public[qd_start + 3],
-            joint_f_public[qd_start + 4],
-            joint_f_public[qd_start + 5],
-        ),
+    torque_com = wp.vec3(
+        joint_f_public[qd_start + 3],
+        joint_f_public[qd_start + 4],
+        joint_f_public[qd_start + 5],
     )
 
     wp.atomic_add(body_f_ext, child, wp.spatial_vector(force, torque_com))

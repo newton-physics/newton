@@ -437,11 +437,8 @@ class SolverFeatherstone(SolverBase):
                         dim=model.joint_count,
                         inputs=[
                             model.joint_type,
-                            model.joint_parent,
                             model.joint_child,
                             model.joint_qd_start,
-                            model.joint_X_p,
-                            state_aug.body_q_fk,
                             control.joint_f,
                         ],
                         outputs=[body_f],
