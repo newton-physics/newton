@@ -3383,8 +3383,17 @@ def parse_usd(
         mjc_actuator_count = 0
 
     if mjc_actuator_count > 0:
-        biastype_affine = 1  # MuJoCo BiasType.AFFINE
-        ctrl_source_joint_target = 0  # SolverMuJoCo.CtrlSource.JOINT_TARGET
+        # Lazy imports: only needed when MuJoCo custom attributes are registered
+        # (i.e. SolverMuJoCo is in use), and avoids a top-level mujoco dependency
+        # for USD parsing in non-MuJoCo configurations.
+        import mujoco
+
+        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+        biastype_affine = int(mujoco.mjtBias.mjBIAS_AFFINE)
+        dyntype_none = int(mujoco.mjtDyn.mjDYN_NONE)
+        gaintype_fixed = int(mujoco.mjtGain.mjGAIN_FIXED)
+        ctrl_source_joint_target = int(SolverMuJoCo.CtrlSource.JOINT_TARGET)
 
         def _row(key: str, row: int) -> Any:
             """Row value from a custom-frequency attribute, falling back to its default."""
@@ -3411,8 +3420,8 @@ def parse_usd(
             # behavior), and forcerange is propagated below into joint_effort_limit.
             if (
                 int(_row("mujoco:actuator_biastype", row)) != biastype_affine
-                or int(_row("mujoco:actuator_dyntype", row)) != 0  # NONE
-                or int(_row("mujoco:actuator_gaintype", row)) != 0  # FIXED
+                or int(_row("mujoco:actuator_dyntype", row)) != dyntype_none
+                or int(_row("mujoco:actuator_gaintype", row)) != gaintype_fixed
             ):
                 continue
             gear = list(_row("mujoco:actuator_gear", row))
