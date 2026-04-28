@@ -315,7 +315,7 @@ class ViewerViser(ViewerBase):
                 viser_package_dir / "static",
             ):
                 if (candidate / "index.html").exists():
-                    return candidate
+                    return candidate.resolve()
 
         raise FileNotFoundError(
             "Viser client files not found in the installed viser package. "

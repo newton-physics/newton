@@ -114,6 +114,7 @@ docs = [
     "ipykernel>=6.0.0,<7.0.0",      # required by nbsphinx to execute notebooks (pinned <7 for rerun-sdk compatibility)
     "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
     "pypandoc_binary>=1.11",        # bundled pandoc binary
+    "GitPython>=3.1.44",            # for downloading tutorial assets via newton.utils.download_asset()
     "viser==1.0.26",                # required for ViewerViser in tutorial notebooks
 ]
 
