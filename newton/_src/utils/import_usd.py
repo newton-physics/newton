@@ -3355,10 +3355,22 @@ def parse_usd(
                 if verbose:
                     print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
 
-    # Map USD MjcActuator position/velocity rows onto Newton joint targets so
-    # Control.joint_target_pos / joint_target_vel drive the asset. Other targets
-    # (tendon/site/body, per-axis D6 labels) stay CTRL_DIRECT and continue to be
-    # driven via Control.mujoco.ctrl.
+    # USD MjcActuator does not preserve the original MJCF authoring tag:
+    # MuJoCo's compiler expands <position>/<velocity> shortcuts into raw
+    # gain/bias/dyntype fields before USD export, so a <position kp=K> and a
+    # hand-written <general> with the same gains produce bit-identical prims.
+    # We can't recover the author's intent, so we fix a contract:
+    #
+    #   USD MjcActuator rows targeting a joint DOF with the position/velocity
+    #   shape and default dyntype/gaintype/gear are imported as JOINT_TARGET
+    #   and driven by Control.joint_target_pos / joint_target_vel.
+    #
+    # Rows that author non-default dyntype (filter, integrator, ...), gaintype,
+    # gear, or carry an unresolved dampratio placeholder (positive biasprm[2])
+    # stay CTRL_DIRECT, because JOINT_TARGET would silently drop those features
+    # when _init_actuators rebuilds the MuJoCo actuators. Tendon/site/body
+    # targets and synthesized per-axis spherical DOF labels also stay
+    # CTRL_DIRECT (they don't appear in path_to_dof).
     if "mujoco:actuator_target_label" in builder.custom_attributes:
         mjc_actuator_count = builder._custom_frequency_counts.get("mujoco:actuator", 0)
     else:
