@@ -60,6 +60,14 @@ class RenderConfig:
     enable_backface_culling: bool = True
     """Cull back-facing triangles."""
 
+    encode_output_srgb: bool = True
+    """Encode packed color/albedo outputs to display/sRGB.
+
+    When ``False``, :class:`SensorTiledCamera` writes packed linear RGB bytes
+    instead, which can be useful for training pipelines that want to avoid
+    display transfer functions.
+    """
+
     render_order: int = RenderOrder.PIXEL_PRIORITY
     """Render traversal order (see :class:`RenderOrder`)."""
 
@@ -115,7 +123,9 @@ class TextureData:
     Attributes:
         texture: 2D Texture as ``wp.Texture2D``.
         repeat: UV tiling factors along U and V axes.
+        color_space: ``0`` for raw/linear textures, ``1`` for sRGB textures.
     """
 
     texture: wp.Texture2D
     repeat: wp.vec2f
+    color_space: wp.int32

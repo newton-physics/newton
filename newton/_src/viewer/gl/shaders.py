@@ -255,21 +255,40 @@ vec3 sample_env_map(vec3 dir, float lod)
     return textureLod(env_map, vec2(u, v), lod).rgb;
 }
 
+vec3 srgb_to_linear(vec3 color)
+{
+    bvec3 cutoff = lessThanEqual(color, vec3(0.04045));
+    vec3 lower = color / 12.92;
+    vec3 upper = pow((color + 0.055) / 1.055, vec3(2.4));
+    return mix(upper, lower, cutoff);
+}
+
+vec3 linear_to_srgb(vec3 color)
+{
+    bvec3 cutoff = lessThanEqual(color, vec3(0.0031308));
+    vec3 lower = color * 12.92;
+    vec3 upper = 1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055;
+    return mix(upper, lower, cutoff);
+}
+
 void main()
 {
     // material properties from vertex shader
     float roughness = clamp(Material.x, 0.0, 1.0);
     float metallic = clamp(Material.y, 0.0, 1.0);
     float checker_enable = Material.z;
-    float texture_enable = Material.w;
+    float texture_mode = Material.w;
     float checker_scale = 1.0;
 
-    // convert to linear space
-    vec3 albedo = pow(ObjectColor, vec3(2.2));
-    if (texture_enable > 0.5)
+    vec3 albedo = srgb_to_linear(ObjectColor);
+    if (texture_mode > 0.5)
     {
         vec3 tex_color = texture(albedo_map, TexCoord).rgb;
-        albedo *= pow(tex_color, vec3(2.2));
+        if (texture_mode < 1.5)
+        {
+            tex_color = srgb_to_linear(tex_color);
+        }
+        albedo *= tex_color;
     }
 
     // Optional checker pattern in object-space so it follows instance transforms
@@ -354,7 +373,7 @@ void main()
     // Environment / image-based lighting for metals
     vec3 R = reflect(-V, N);
     float env_lod = roughness * 8.0;
-    vec3 env_color = pow(sample_env_map(R, env_lod), vec3(2.2));
+    vec3 env_color = srgb_to_linear(sample_env_map(R, env_lod));
     vec3 env_F = F0 + (F_max - F0) * pow(1.0 - NdotV, 5.0);
     vec3 env_spec = env_color * env_F * env_intensity;
     color += env_spec * metallic;
@@ -364,7 +383,7 @@ void main()
     float fog_start = 20.0;
     float fog_end   = 200.0;
     float fog_factor = clamp((dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
-    color = mix(color, pow(fogColor, vec3(2.2)), fog_factor);
+    color = mix(color, srgb_to_linear(fogColor), fog_factor);
 
     // ACES filmic tone mapping
     color = color * exposure;
@@ -373,7 +392,7 @@ void main()
     color = clamp(color, 0.0, 1.0);
 
     // gamma correction (sRGB)
-    color = pow(color, vec3(1.0 / 2.2));
+    color = linear_to_srgb(color);
 
     FragColor = vec4(color, 1.0);
 }

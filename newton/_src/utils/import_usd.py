@@ -37,6 +37,7 @@ from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
+from .color import color_linear_to_srgb
 from .import_utils import should_show_collider
 
 AttributeFrequency = Model.AttributeFrequency
@@ -389,6 +390,13 @@ def parse_usd(
             material_props_cache[prim_path] = usd.resolve_material_properties_for_prim(prim)
         return material_props_cache[prim_path]
 
+    def _get_material_display_color(prim: Usd.Prim) -> tuple[float, float, float] | None:
+        """Resolve a prim's material color into display/sRGB space for model storage."""
+        color = _get_material_props_cached(prim).get("color")
+        if color is None:
+            return None
+        return color_linear_to_srgb(color)
+
     def _get_mesh_cached(prim: Usd.Prim, *, load_uvs: bool = False, load_normals: bool = False) -> Mesh:
         """Load and cache mesh data to avoid repeated expensive USD mesh extraction."""
         prim_path = str(prim.GetPath())
@@ -436,6 +444,7 @@ def parse_usd(
             mesh = physics_mesh.copy(recompute_inertia=False)
         if texture:
             mesh.texture = texture
+            mesh.texture_color_space = material_props.get("texture_color_space", "auto")
         if mesh.texture is not None and mesh.uvs is None:
             warnings.warn(
                 f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
@@ -443,7 +452,7 @@ def parse_usd(
             )
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
-            mesh.color = material_props["color"]
+            mesh.color = _get_material_display_color(prim)
         if material_props.get("roughness") is not None:
             mesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
@@ -556,10 +565,9 @@ def parse_usd(
 
         visual_shape_cfg_for_prim = copy.copy(visual_shape_cfg)
         visual_shape_cfg_for_prim.is_visible = is_site or _is_effectively_visible(prim)
-        material_props = _get_material_props_cached(prim)
-        shape_color = material_props.get("color")
 
         if path_name not in path_shape_map:
+            shape_color = _get_material_display_color(prim)
             if type_name == "cube":
                 size = usd.get_float(prim, "size", 2.0)
                 side_lengths = scale * size
@@ -2539,7 +2547,6 @@ def parse_usd(
                 if shape_kd is None:
                     shape_kd = builder.default_shape_cfg.kd
 
-                shape_color = material_props.get("color")
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -2562,9 +2569,9 @@ def parse_usd(
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
                     ),
+                    "color": _get_material_display_color(prim),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
-                    "color": shape_color,
                 }
                 # print(path, shape_params)
                 if key == UsdPhysics.ObjectType.CubeShape:
@@ -2837,14 +2844,13 @@ def parse_usd(
             gaussian = usd.get_gaussian(gaussian_prim)
             splat_cfg = copy.copy(visual_shape_cfg)
             splat_cfg.is_visible = _is_effectively_visible(gaussian_prim)
-            splat_material_props = _get_material_props_cached(gaussian_prim)
             shape_id = builder.add_shape_gaussian(
                 body_id,
                 gaussian=gaussian,
                 xform=wp.transform(g_pos, g_rot),
                 scale=g_scale,
                 cfg=splat_cfg,
-                color=splat_material_props.get("color"),
+                color=_get_material_display_color(gaussian_prim),
                 label=gaussian_path,
             )
             path_shape_map[gaussian_path] = shape_id
