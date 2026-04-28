@@ -23,6 +23,27 @@ _get_shared_memory_sdf_cache = create_shared_memory_pointer_block_dim_mul_func(1
 
 
 @wp.func
+def _query_mesh_face_normal(
+    mesh_id: wp.uint64,
+    point_local: wp.vec3,
+    max_dist: float = 1000.0,
+) -> wp.vec3:
+    """Return the outward face normal of the closest triangle on a mesh.
+
+    Falls back to the point-to-center direction when the query misses.
+    The returned vector is in mesh-local space and is normalized.
+    """
+    face_index = int(0)
+    face_u = float(0.0)
+    face_v = float(0.0)
+    sign = float(0.0)
+    res = wp.mesh_query_point_sign_normal(mesh_id, point_local, max_dist, sign, face_index, face_u, face_v)
+    if res:
+        return wp.mesh_eval_face_normal(mesh_id, face_index)
+    return wp.vec3(0.0, 1.0, 0.0)
+
+
+@wp.func
 def scale_sdf_result_to_world(
     distance: float,
     gradient: wp.vec3,
@@ -937,6 +958,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     writer_func: Any,
     enable_heightfields: bool = True,
     reduce_contacts: bool = False,
+    speculative: bool = False,
 ):
     find_interesting_edges, do_edge_sdf_collision = _create_sdf_contact_funcs(enable_heightfields)
 
@@ -947,7 +969,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     # compiled code, otherwise FMA-fusion or register-allocation
     # differences between independent JIT compilations can produce subtly
     # different floating-point results, breaking bit-exact reproducibility.
-    _module = f"sdf_contact_{writer_func.__name__}_{enable_heightfields}_{reduce_contacts}"
+    _module = f"sdf_contact_{writer_func.__name__}_{enable_heightfields}_{reduce_contacts}_{speculative}"
 
     @wp.kernel(enable_backward=False, module=_module)
     def mesh_sdf_collision_kernel(
@@ -969,6 +991,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_edge_range: wp.array[wp.vec2i],
         writer_data: Any,
         total_num_blocks: int,
+        shape_lin_vel: wp.array[wp.vec3],
+        shape_ang_speed_bound: wp.array[float],
+        speculative_dt: float,
+        max_speculative_extension: float,
     ):
         """Process mesh-mesh and mesh-heightfield collisions using SDF-based detection."""
         block_id, t = wp.tid()
@@ -985,7 +1011,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 has_hfield = False
                 pair = pair_encoded
 
-            gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
+            base_gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
+            gap_sum = base_gap_sum
+
+            if wp.static(speculative):
+                vel_rel = shape_lin_vel[pair[1]] - shape_lin_vel[pair[0]]
+                rel_speed = wp.length(vel_rel) + shape_ang_speed_bound[pair[0]] + shape_ang_speed_bound[pair[1]]
+                gap_sum = gap_sum + wp.min(rel_speed * speculative_dt, max_speculative_extension)
 
             for mode in range(2):
                 tri_shape = pair[mode]
@@ -1193,6 +1225,15 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 else:
                                     direction_world = wp.vec3(0.0, 1.0, 0.0)
 
+                            if wp.static(speculative):
+                                base_threshold = base_gap_sum + triangle_mesh_margin + sdf_mesh_margin
+                                if dist > base_threshold and not sdf_is_hfield:
+                                    face_n = _query_mesh_face_normal(mesh_id_sdf, point)
+                                    face_n_world = wp.transform_vector(X_sdf_ws, face_n)
+                                    fn_len = wp.length(face_n_world)
+                                    if fn_len > 0.0:
+                                        direction_world = face_n_world / fn_len
+
                             contact_normal = -direction_world if mode == 0 else direction_world
 
                             contact_data = ContactData()
@@ -1246,6 +1287,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         block_offsets: wp.array[wp.int32],
         reducer_data: GlobalContactReducerData,
         total_num_blocks: int,
+        shape_lin_vel: wp.array[wp.vec3],
+        shape_ang_speed_bound: wp.array[float],
+        speculative_dt: float,
+        max_speculative_extension: float,
     ):
         """Process mesh-mesh collisions with global hashtable contact reduction.
 
@@ -1282,7 +1327,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 has_hfield = False
                 pair = pair_encoded
 
-            gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
+            base_gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
+            gap_sum = base_gap_sum
+
+            if wp.static(speculative):
+                vel_rel = shape_lin_vel[pair[1]] - shape_lin_vel[pair[0]]
+                rel_speed = wp.length(vel_rel) + shape_ang_speed_bound[pair[0]] + shape_ang_speed_bound[pair[1]]
+                gap_sum = gap_sum + wp.min(rel_speed * speculative_dt, max_speculative_extension)
 
             for mode in range(2):
                 tri_shape = pair[mode]
@@ -1493,6 +1544,15 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     direction_world = fallback_dir / fallback_len
                                 else:
                                     direction_world = wp.vec3(0.0, 1.0, 0.0)
+
+                            if wp.static(speculative):
+                                base_threshold = base_gap_sum + triangle_mesh_margin + sdf_mesh_margin
+                                if dist > base_threshold and not sdf_is_hfield:
+                                    face_n = _query_mesh_face_normal(mesh_id_sdf, point)
+                                    face_n_world = wp.transform_vector(X_sdf_ws, face_n)
+                                    fn_len = wp.length(face_n_world)
+                                    if fn_len > 0.0:
+                                        direction_world = face_n_world / fn_len
 
                             contact_normal = -direction_world if mode == 0 else direction_world
 

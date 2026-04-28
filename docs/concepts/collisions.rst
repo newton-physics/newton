@@ -1111,6 +1111,48 @@ Example (mesh SDF workflow):
 
 The builder's ``rigid_gap`` (default 0.1) applies to shapes without explicit ``gap``. Alternatively, use ``builder.default_shape_cfg.gap``.
 
+.. _Speculative Contacts:
+
+Speculative Contacts
+--------------------
+
+Fast-moving objects can travel farther than the contact gap in a single time
+step, causing them to tunnel through thin geometry.  **Speculative contacts**
+widen the detection window based on per-shape velocity so that contacts which
+*will* occur within the next collision update interval are caught early.
+
+Enable speculative contacts by passing a :class:`SpeculativeContactConfig` to
+:class:`CollisionPipeline`:
+
+.. code-block:: python
+
+    config = newton.SpeculativeContactConfig(
+        max_speculative_extension=0.5,   # cap per-axis AABB growth [m]
+        collision_update_dt=1.0 / 60.0,  # expected interval between collide() calls
+    )
+    pipeline = newton.CollisionPipeline(model, speculative_config=config)
+
+At each ``collide()`` call the pipeline:
+
+1. Computes per-shape linear velocity and an angular-speed bound from
+   ``State.body_qd``.
+2. Expands each shape AABB by the clamped velocity contribution (capped by
+   ``max_speculative_extension``) so the broad phase returns candidate pairs
+   that are about to collide.
+3. In the narrow phase, recomputes the contact gap using the normal-projected
+   approach speed of the relative linear velocity **plus** per-shape
+   angular-speed bounds (clamped by ``max_speculative_extension``), so only
+   genuinely approaching pairs are accepted.
+
+The ``collision_update_dt`` can be overridden per call:
+
+.. code-block:: python
+
+    pipeline.collide(state, contacts, dt=sim_dt)
+
+When ``speculative_config`` is ``None`` (the default), all speculative code
+paths are eliminated at compile time with zero runtime overhead.
+
 .. _Common Patterns:
 
 Common Patterns
