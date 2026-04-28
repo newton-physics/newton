@@ -4,14 +4,11 @@
 import math
 import os
 import unittest
-from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sensors import sensor_tiled_camera as sensor_tiled_camera_module
-from newton._src.sensors.warp_raytrace.render_context import RenderContext
 from newton.sensors import SensorTiledCamera
 
 
