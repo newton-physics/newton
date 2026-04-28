@@ -41,9 +41,6 @@
 
 - Fix `remesh_convex_hull` raising `QhullError` on degenerate (coincident, collinear, or coplanar) point clouds; it now returns a zero-volume fallback mesh with a `UserWarning`, raises `ValueError` on empty input, and retries Qhull with `QJ` joggle as a last resort on the 3D path
 - Change `SolverXPBD` `enable_restitution` default from `False` to `True`; pass `enable_restitution=False` to restore the previous behavior
-
-### Fixed
-
 - Fix `SolverXPBD` energy explosion when `enable_restitution=True` and a body had large positional corrections: velocity-from-position-delta update now runs before the restitution pass so restitution reads physically bounded velocities
 - Fix `SolverXPBD` ignoring per-shape `restitution` values when `enable_restitution` was left at its old default of `False`
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration
