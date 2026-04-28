@@ -1487,6 +1487,24 @@ class TestUrdfUriResolution(unittest.TestCase):
         self.assertIn("could not resolve", str(cm.warning).lower())
         self.assertEqual(builder.shape_count, 0)
 
+    def test_package_uri_fallback_does_not_match_substrings(self):
+        """Test fallback package resolution only matches full path components."""
+        accidental = self.base_path / "not" / "pkg" / "meshes"
+        accidental.mkdir(parents=True)
+        (accidental / "link.obj").write_text(MESH_OBJ)
+
+        misleading = self.base_path / "notpkg"
+        (misleading / "urdf").mkdir(parents=True)
+        urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="package://pkg/meshes/link.obj"))
+        (misleading / "urdf" / "robot.urdf").write_text(urdf)
+
+        with patch("newton._src.utils.import_urdf.resolve_robotics_uri", None):
+            builder = newton.ModelBuilder()
+            with self.assertWarns(UserWarning) as cm:
+                builder.add_urdf(str(misleading / "urdf" / "robot.urdf"), up_axis="Z")
+            self.assertIn('could not resolve package "pkg"', str(cm.warning))
+            self.assertEqual(builder.shape_count, 0)
+
     @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
     def test_automatic_vs_manual_resolution(self):
         """Test automatic resolution matches manual workaround from original ticket."""
