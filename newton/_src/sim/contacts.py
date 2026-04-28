@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import warnings
+from typing import ClassVar
 
 import warp as wp
 from warp import DeviceLike as Devicelike
@@ -83,7 +84,7 @@ class Contacts:
     See :ref:`extended_contact_attributes` for details and usage.
     """
 
-    _LEGACY_EXTENDED_ATTRIBUTES: dict[str, str] = {
+    _LEGACY_EXTENDED_ATTRIBUTES: ClassVar[dict[str, str]] = {
         "force": "rigid_force",
         "velocity": "rigid_velocity",
         "key": "rigid_key",
