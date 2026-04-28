@@ -84,9 +84,6 @@
 - Fix the example viewer's Reset button discarding user-provided CLI options (e.g. `--world-count`) and rebuilding the example with parser defaults instead
 - Fix `ModelBuilder.finalize()` crashing with 3+ articulations after `collapse_fixed_joints()` reordered `articulation_start` and dropped per-articulation metadata
 - Change `SolverXPBD` `enable_restitution` default from `False` to `True`; pass `enable_restitution=False` to restore the previous behavior
-
-### Fixed
-
 - Fix `SolverXPBD` energy explosion when `enable_restitution=True` and a body had large positional corrections: velocity-from-position-delta update now runs before the restitution pass so restitution reads physically bounded velocities
 - Fix `SolverXPBD` ignoring per-shape `restitution` values when `enable_restitution` was left at its old default of `False`
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration
