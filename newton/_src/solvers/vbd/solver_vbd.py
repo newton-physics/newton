@@ -182,6 +182,7 @@ class SolverVBD(SolverBase):
           - FIXED/REVOLUTE/PRISMATIC/D6: LINEAR and ANGULAR
 
         Drive/limit slots start at slot 2 and are not represented here.
+        STRETCH and BEND are cable-only aliases for LINEAR and ANGULAR.
         """
 
         LINEAR = 0
@@ -1435,6 +1436,9 @@ class SolverVBD(SolverBase):
 
         Structural slots are LINEAR (slot 0) and ANGULAR (slot 1). Drive/limit slots
         (slot 2+) are always soft and cannot be set to hard.
+
+        By default, cable stretch and bend slots are soft, while non-cable
+        structural slots are hard.
 
         For bulk initialization of non-cable joints at build time (avoids
         per-joint roundtrips), use the ``joint_is_hard`` model custom attribute::

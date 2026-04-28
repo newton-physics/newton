@@ -892,7 +892,8 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
         positions=positions,
         quaternions=quats,
         radius=0.05,
-        bend_stiffness=1.0e4,
+        stretch_stiffness=5.0e4,
+        bend_stiffness=5.0e4,
         bend_damping=0.0,
         label="twist_chain_orthogonal",
     )
