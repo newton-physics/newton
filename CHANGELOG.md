@@ -15,8 +15,7 @@
 - Add `Mesh.is_watertight` property (cached) that reports whether every geometric edge is shared by exactly two triangles
 - Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
 - Add fast parity-based SDF construction path for watertight meshes in `SDF.create_from_mesh`, using `wp.mesh_query_point_sign_parity` instead of winding numbers; selected via the new `sign_method` argument (`"auto"` — the default — picks parity when `Mesh.is_watertight` is true, or `"parity"` / `"winding"` to force either strategy)
-- Enable full CPU execution of the collision pipeline, including mesh–mesh and mesh–heightfield SDF contacts that were previously CUDA-only; contact reduction (`reduce_contacts`) also runs on CPU. The previous `"NarrowPhase running on CPU: mesh-mesh contacts will be skipped"` warning is no longer emitted — CPU runs now execute the same kernels as CUDA.
-- Add `Contacts.rigid_distance` (signed contact gap) and the request-gated `rigid_velocity` / `rigid_key` extended attributes (solver-populated spatial velocity and cross-step warmstart identifier)
+- Add `Contacts.rigid_distance` (signed contact gap) and the request-gated extended attributes `rigid_velocity` and `rigid_key`
 - Add `ViewerBase.log_arrows()` for arrow rendering (wide line + arrowhead) in the GL viewer with a dedicated geometry shader
 - Add frame-to-frame contact matching via `CollisionPipeline(contact_matching=...)` with modes `"latest"` (populates `contacts.rigid_match_index`) and `"sticky"` (experimental; additionally replays previous-frame contact geometry on matched contacts — the sticky update strategy may change without warning). Optional `contact_report=True` exposes new/broken contact index lists on `Contacts`.
 - Add `enable_multiccd` parameter to `SolverMuJoCo` for multi-CCD contact generation (up to 4 contact points per geom pair)
@@ -27,9 +26,8 @@
 ### Changed
 
 - Use pre-computed local AABB for `CONVEX_MESH` shapes in `compute_shape_aabbs`, avoiding a per-frame support-function AABB computation
-- Rename `Contacts` attributes to drop the `_contact` infix and pack paired arrays: `rigid_contact_point0/1` → `rigid_point_0/1`, `rigid_contact_shape0/1` → `rigid_shapes` (packed `vec2i`), `rigid_contact_margin0/1` → `rigid_margins` (packed `vec2f`), `rigid_contact_normal` → `rigid_normal`, `rigid_contact_count`/`max` → `rigid_count_active`/`rigid_count_max`, `soft_contact_*` → `soft_*`, plus matching renames for `rigid_contact_force/stiffness/damping/friction/tids/diff_*`. All old names remain as deprecated `@property` aliases backed by views (no data copy); update call sites to the new names at your convenience.
-- Flip the sign convention of the `Contacts` contact-force attribute to represent the spatial force exerted **by body 0 on body 1** (collinear with `rigid_normal`, which points from shape 0 toward shape 1) instead of the force on body 0. Solvers (`SolverMuJoCo`, `SolverXPBD.update_contacts`) and `SensorContact` have been updated to match; code reading the attribute directly must negate previous expectations.
-- Rename the rigid-contact extended attributes on `Contacts` to carry a `rigid_` prefix for dichotomy with `rigid_*` / `soft_*`: `force` → `rigid_force`, sized `rigid_count_max` (the former rigid-plus-soft sizing is dropped; add separate `soft_*` attributes if soft-contact values are ever needed). Old names (`force`, `velocity`, `key`) remain as deprecated read-only property aliases; passing them to `Model.request_contact_attributes()` is also accepted with a deprecation warning.
+- Rename `Contacts` attributes to drop the `_contact_` infix and pack paired scalars into `vec2` buffers (e.g. `rigid_contact_normal` → `rigid_normal`, `rigid_contact_shape0/1` → `rigid_shapes` (`vec2i`), `soft_contact_*` → `soft_*`); old names kept as deprecated property aliases backed by views
+- Replace the `force` extended attribute with `Contacts.rigid_force`, sized `rigid_count_max` only (was rigid+soft) and flip its sign convention to the spatial force exerted **by body 0 on body 1**, codirectional with `rigid_normal` (previously anti-directional); `SolverMuJoCo`, `SolverXPBD.update_contacts`, and `SensorContact` are updated; `Model.request_contact_attributes("force")` is still accepted with a deprecation warning
 - Build mesh SDFs via the texture-based sparse path only; sample via `SDF.texture_data` instead of `SDF.sparse_volume` / `SDF.coarse_volume`.
 - Change GL viewer scroll to dolly toward the orbit pivot; use Ctrl+scroll for FOV zoom
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
@@ -44,7 +42,8 @@
 
 ### Deprecated
 
-- Deprecate `Contacts.rigid_contact_offset0` / `rigid_contact_offset1`; will be removed in a future release. `SolverXPBD` now computes its body-frame friction-anchor offsets internally and no other solver consumed them.
+- Deprecate `Contacts.rigid_contact_offset0` / `rigid_contact_offset1`: trivial to derive from `rigid_normal` and `rigid_margins`; `SolverXPBD` and `ViewerBase` (the only consumers) updated to derive them locally
+- Deprecate the always-allocated `Contacts.rigid_contact_force` (vec3): solver-internal, replaced by the request-gated `rigid_force` extended attribute
 
 ### Fixed
 
