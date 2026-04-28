@@ -3220,25 +3220,27 @@ class SolverMuJoCo(SolverBase):
         need_const_fixed = False
         need_const_0 = False
         need_length_range = False
+        need_geom_update = False
 
         if flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
             need_const_fixed = True
             need_const_0 = True
+            need_geom_update = True
         if flags & SolverNotifyFlags.JOINT_PROPERTIES:
             self._update_joint_properties()
         if flags & SolverNotifyFlags.BODY_PROPERTIES:
             self._update_body_properties()
-            self._invalidate_contact_fast_path()
             need_const_0 = True
+            need_geom_update = True
         if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
             self._update_joint_dof_properties()
             need_const_0 = True
             need_length_range = True
+            need_geom_update = True
         if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
-            self._update_geom_properties()
             self._update_pair_properties()
-            self._invalidate_contact_fast_path()
+            need_geom_update = True
         if flags & SolverNotifyFlags.MODEL_PROPERTIES:
             self._update_model_properties()
         if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
@@ -3302,6 +3304,12 @@ class SolverMuJoCo(SolverBase):
                         update_connect_constraint_anchor_rel_xform_at_ref_pose,
                         update_connect_constraint_anchors,
                     )
+
+        if need_geom_update:
+            self._update_geom_properties()
+            self._invalidate_contact_fast_path()
+            if self.use_mujoco_cpu:
+                self._sync_cpu_geom_properties()
 
     def _create_inverse_shape_mapping(self):
         """
@@ -6389,6 +6397,9 @@ class SolverMuJoCo(SolverBase):
                 self.model.shape_scale,
                 self.model.shape_transform,
                 self.mjc_geom_to_newton_shape,
+                self.mjw_model.geom_bodyid,
+                self.mjw_model.body_weldid,
+                self.mjw_model.body_invweight0,
                 self.mjw_model.geom_type,
                 self._mujoco.mjtGeom.mjGEOM_MESH,
                 self.mjw_model.geom_dataid,
@@ -6414,6 +6425,18 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
+
+    def _sync_cpu_geom_properties(self) -> None:
+        """Copy runtime-updated geom properties from MJWarp back to the CPU model."""
+        self.mj_model.geom_friction[:] = self.mjw_model.geom_friction.numpy()[0]
+        self.mj_model.geom_solref[:] = self.mjw_model.geom_solref.numpy()[0]
+        self.mj_model.geom_size[:] = self.mjw_model.geom_size.numpy()[0]
+        self.mj_model.geom_pos[:] = self.mjw_model.geom_pos.numpy()[0]
+        self.mj_model.geom_quat[:] = self.mjw_model.geom_quat.numpy()[0]
+        self.mj_model.geom_solimp[:] = self.mjw_model.geom_solimp.numpy()[0]
+        self.mj_model.geom_solmix[:] = self.mjw_model.geom_solmix.numpy()[0]
+        self.mj_model.geom_gap[:] = self.mjw_model.geom_gap.numpy()[0]
+        self.mj_model.geom_margin[:] = self.mjw_model.geom_margin.numpy()[0]
 
     def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.

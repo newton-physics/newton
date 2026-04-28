@@ -200,6 +200,27 @@ def convert_solref(ke: float, kd: float, d_width: float, d_r: float) -> wp.vec2:
 
 
 @wp.func
+def geom_solref_scale_factor(
+    world: int,
+    geom_idx: int,
+    geom_bodyid: wp.array[int],
+    body_weldid: wp.array[int],
+    body_invweight0: wp.array2d[wp.vec2],
+    dmax: float,
+) -> float:
+    """Return the q0-based impedance scale for MuJoCo geom solref conversion."""
+    body_idx = geom_bodyid[geom_idx]
+    if body_idx < 0:
+        return 1.0
+
+    effective_body_idx = body_weldid[body_idx]
+    factor = body_invweight0[world, effective_body_idx][0] * (1.0 - dmax)
+    if factor > 0.0:
+        return factor
+    return 1.0
+
+
+@wp.func
 def quat_wxyz_to_xyzw(q: wp.quat) -> wp.quat:
     """Convert a quaternion from MuJoCo wxyz storage to Warp xyzw format."""
     return wp.quat(q[1], q[2], q[3], q[0])
@@ -2242,6 +2263,9 @@ def update_geom_properties_kernel(
     shape_size: wp.array[wp.vec3f],
     shape_transform: wp.array[wp.transform],
     mjc_geom_to_newton_shape: wp.array2d[wp.int32],
+    geom_bodyid: wp.array[int],
+    body_weldid: wp.array[int],
+    body_invweight0: wp.array2d[wp.vec2],
     geom_type: wp.array[int],
     GEOM_TYPE_MESH: int,
     geom_dataid: wp.array2d[int],
@@ -2292,14 +2316,31 @@ def update_geom_properties_kernel(
     rolling = shape_mu_rolling[shape_idx]
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
-    # update geom_solref (timeconst, dampratio) using stiffness and damping
-    # we don't use the negative convention to support controlling the mixing of shapes' stiffnesses via solmix
-    # use approximation of d(0) = d(width) = 1
-    geom_solref[world, geom_idx] = convert_solref(shape_ke[shape_idx], shape_kd[shape_idx], 1.0, 1.0)
+    dmax = geom_solimp[world, geom_idx][1]
 
     # update geom_solimp from custom attribute
     if shape_geom_solimp:
         geom_solimp[world, geom_idx] = shape_geom_solimp[shape_idx]
+        dmax = shape_geom_solimp[shape_idx][1]
+
+    # update geom_solref (timeconst, dampratio) using stiffness and damping
+    # we don't use the negative convention to support controlling the mixing of
+    # shapes' stiffnesses via solmix. MuJoCo's force-space conversion depends on
+    # the frozen q0 invweight0 factor and the geom's dmax impedance.
+    solref_scale = geom_solref_scale_factor(
+        world,
+        geom_idx,
+        geom_bodyid,
+        body_weldid,
+        body_invweight0,
+        dmax,
+    )
+    geom_solref[world, geom_idx] = convert_solref(
+        shape_ke[shape_idx],
+        shape_kd[shape_idx],
+        solref_scale,
+        solref_scale,
+    )
 
     # update geom_solmix from custom attribute
     if shape_geom_solmix:

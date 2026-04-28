@@ -2095,6 +2095,40 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
+    @staticmethod
+    def _expected_geom_solref(
+        solver: SolverMuJoCo,
+        world_idx: int,
+        geom_idx: int,
+        ke: float,
+        kd: float,
+    ) -> tuple[float, float]:
+        """Compute the expected MuJoCo solref for a Newton shape material."""
+        if ke <= 0.0 or kd <= 0.0:
+            return 0.02, 1.0
+
+        geom_bodyid = np.asarray(solver.mjw_model.geom_bodyid.numpy())
+        body_weldid = np.asarray(solver.mjw_model.body_weldid.numpy())
+
+        if geom_bodyid.ndim > 1:
+            geom_bodyid = geom_bodyid[world_idx]
+        if body_weldid.ndim > 1:
+            body_weldid = body_weldid[world_idx]
+
+        body_id = int(geom_bodyid[geom_idx])
+        factor = 1.0
+        if body_id >= 0:
+            effective_body = int(body_weldid[body_id])
+            dmax = float(solver.mjw_model.geom_solimp.numpy()[world_idx, geom_idx][1])
+            invweight0 = float(solver.mjw_model.body_invweight0.numpy()[world_idx, effective_body][0])
+            scaled_factor = invweight0 * (1.0 - dmax)
+            if scaled_factor > 0.0:
+                factor = scaled_factor
+
+        timeconst = 2.0 / (kd * factor)
+        dampratio = kd / 2.0 * np.sqrt(factor / ke)
+        return timeconst, dampratio
+
     def test_geom_property_conversion(self):
         """
         Test that ALL Newton shape properties are correctly converted to MuJoCo geom properties.
@@ -2173,13 +2207,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 # Compute expected solref based on Newton's conversion logic
                 ke = shape_ke[shape_idx]
                 kd = shape_kd[shape_idx]
-
-                if ke > 0.0 and kd > 0.0:
-                    timeconst = 2.0 / kd
-                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * ke))
-                    expected_solref = (timeconst, dampratio)
-                else:
-                    expected_solref = (0.02, 1.0)
+                expected_solref = self._expected_geom_solref(solver, world_idx, geom_idx, ke, kd)
 
                 self.assertAlmostEqual(
                     float(actual_solref[0]),
@@ -2375,13 +2403,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 # Compute expected values based on new ke/kd using timeconst/dampratio conversion
                 ke = new_ke[shape_idx]
                 kd = new_kd[shape_idx]
-
-                if ke > 0.0 and kd > 0.0:
-                    timeconst = 2.0 / kd
-                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * ke))
-                    expected_solref = (timeconst, dampratio)
-                else:
-                    expected_solref = (0.02, 1.0)
+                expected_solref = self._expected_geom_solref(solver, world_idx, geom_idx, ke, kd)
 
                 self.assertAlmostEqual(
                     float(updated_solref[world_idx, geom_idx][0]),
