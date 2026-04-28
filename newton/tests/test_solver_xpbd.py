@@ -388,8 +388,8 @@ def test_rigid_restitution_zero_settles(test, device):
     - 25 frames at 60 fps with 16 substeps (well past the first impact at ~frame 12).
 
     Assertions:
-    1. restitution=0.0: z is monotonically non-increasing after first contact — no bounce.
-    2. restitution=1.0: z increases at least once after first contact — bounces back.
+    1. restitution=0.0: z must not rise above its post-impact minimum — no bounce.
+    2. restitution=1.0: z rises meaningfully above its post-impact minimum — bounces back.
     3. The elastic sphere reaches a meaningfully higher peak than the inelastic one.
     """
     radius = 0.05
@@ -423,34 +423,39 @@ def test_rigid_restitution_zero_settles(test, device):
     zs_inelastic = simulate(restitution=0.0)
     zs_elastic = simulate(restitution=1.0)
 
-    # Find the first contact frame: first frame where z drops to within 2x radius of ground.
+    # 2*radius triggers on the descent before the true minimum. z is sampled once per
+    # frame, so XPBD's intra-substep recovery keeps the snapshot above radius*1.1.
+    # The false-reference issue from early triggering is fixed by min(post_impact) below.
     contact_frame = next((i for i, z in enumerate(zs_inelastic) if z < 2.0 * radius), None)
     test.assertIsNotNone(contact_frame, "Sphere never reached the ground in the simulation.")
 
     post_impact_inelastic = zs_inelastic[contact_frame:]
     post_impact_elastic = zs_elastic[contact_frame:]
 
-    # restitution=0.0: z must not increase after first contact — fully inelastic.
-    # Allow 1 mm tolerance for numerical noise from position-based constraints.
-    z_at_contact = post_impact_inelastic[0]
-    bounced_up = any(z > z_at_contact + 0.001 for z in post_impact_inelastic[1:])
+    # restitution=0.0: z must not rise above its post-impact minimum — fully inelastic.
+    # Anchoring to the minimum (not the first sub-threshold sample) catches trajectories
+    # like 0.09→0.05→0.08 that the old z_at_contact reference would miss.
+    z_min_inelastic = min(post_impact_inelastic)
+    z_min_idx = post_impact_inelastic.index(z_min_inelastic)
+    bounced_up = any(z > z_min_inelastic + 0.001 for z in post_impact_inelastic[z_min_idx + 1 :])
     test.assertFalse(
         bounced_up,
         msg=(
-            f"With restitution=0.0, sphere should not bounce after first contact "
-            f"(z_at_contact={z_at_contact:.4f} m). Post-impact z values: {post_impact_inelastic}. "
+            f"With restitution=0.0, sphere should not rise above its impact minimum "
+            f"(z_min={z_min_inelastic:.4f} m). Post-impact z values: {post_impact_inelastic}. "
             f"Before the fix, the restitution pass never ran so this bounced like restitution=1.0."
         ),
     )
 
-    # restitution=1.0: z must increase after contact — elastic bounce exists.
-    z_at_contact_elastic = post_impact_elastic[0]
-    did_bounce = any(z > z_at_contact_elastic + 0.005 for z in post_impact_elastic[1:])
+    # restitution=1.0: z must rise meaningfully above its post-impact minimum — elastic bounce.
+    z_min_elastic = min(post_impact_elastic)
+    z_min_idx_elastic = post_impact_elastic.index(z_min_elastic)
+    did_bounce = any(z > z_min_elastic + 0.005 for z in post_impact_elastic[z_min_idx_elastic + 1 :])
     test.assertTrue(
         did_bounce,
         msg=(
-            f"With restitution=1.0, sphere should bounce back up after first contact "
-            f"(z_at_contact={z_at_contact_elastic:.4f} m). Post-impact z values: {post_impact_elastic}."
+            f"With restitution=1.0, sphere should bounce back up after impact minimum "
+            f"(z_min={z_min_elastic:.4f} m). Post-impact z values: {post_impact_elastic}."
         ),
     )
 
@@ -490,6 +495,9 @@ def test_rigid_restitution_elastic_no_explosion(test, device):
     - All body Z positions remain finite throughout the simulation.
     - Peak Z after impact does not exceed 2x the drop height (a conservative
       physical bound). The bug caused positions > 1e29 m.
+    - The box rebounds above its impact minimum by a meaningful margin. Without this
+      check a fix that silently suppresses restitution would pass (finite, below
+      2*drop_z, but no bounce).
     """
     hz = 0.05
     drop_z = 0.3
@@ -538,6 +546,28 @@ def test_rigid_restitution_elastic_no_explosion(test, device):
             f"With restitution=1.0, peak height should be < {2.0 * drop_z:.2f} m; "
             f"got {max_z:.4f} m. "
             f"The bug (inflated body_qd in restitution pass) caused ~1e29 m."
+        ),
+    )
+
+    # Positive rebound check: the box must bounce back above its impact minimum.
+    # Without this, a fix that suppresses restitution entirely passes the finite/bound
+    # checks above (box lands, stays at z≈hz, all values finite and below 2*drop_z).
+    contact_idx = next((i for i, z in enumerate(z_history) if z < hz * 1.5), None)
+    test.assertIsNotNone(contact_idx, "Box never contacted the ground — check simulation length.")
+    post_impact = z_history[contact_idx:]
+    z_min_box = min(post_impact)
+    z_min_box_idx = post_impact.index(z_min_box)
+    peak_after_impact = max(post_impact[z_min_box_idx:])
+    # XPBD dissipates energy through position corrections, so restitution=1.0 yields
+    # only ~2 cm of rebound here. 1 cm still distinguishes working from suppressed
+    # restitution (suppressed: peak ≈ z_min + sub-mm gravity noise).
+    test.assertGreater(
+        peak_after_impact,
+        z_min_box + 0.01,
+        msg=(
+            f"With restitution=1.0, box should rebound at least 1 cm above its impact minimum "
+            f"(z_min={z_min_box:.4f} m, peak after={peak_after_impact:.4f} m). "
+            f"A fix that suppresses restitution would leave the box resting on the ground."
         ),
     )
 
