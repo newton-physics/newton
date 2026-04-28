@@ -1745,8 +1745,17 @@ def update_body_inertia_kernel(
     if newton_body < 0:
         return
 
+    inertia = body_inertia[newton_body]
+    off_diag = wp.abs(inertia[0, 1]) + wp.abs(inertia[0, 2]) + wp.abs(inertia[1, 2])
+    if off_diag <= 1.0e-12:
+        body_inertia_out[world, mjc_body] = wp.vec3(inertia[0, 0], inertia[1, 1], inertia[2, 2])
+        # MuJoCo stores quaternions as wxyz. Keep axis-aligned inertia in the
+        # body frame instead of choosing an arbitrary basis for repeated moments.
+        body_iquat_out[world, mjc_body] = wp.quat(1.0, 0.0, 0.0, 0.0)
+        return
+
     # Eigendecomposition of inertia tensor
-    eigenvectors, eigenvalues = wp.eig3(body_inertia[newton_body])
+    eigenvectors, eigenvalues = wp.eig3(inertia)
 
     # Sort descending (MuJoCo convention)
     eigenvalues, V = _sort_eigenpairs_descending(eigenvalues, eigenvectors)
