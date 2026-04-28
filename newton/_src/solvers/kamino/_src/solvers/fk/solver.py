@@ -9,6 +9,7 @@ See the :mod:`newton._src.solvers.kamino._src.solvers.fk` module for a detailed 
 
 from __future__ import annotations
 
+import math
 import sys
 
 import numpy as np
@@ -45,10 +46,11 @@ from .kernels import (
     _reset_state,
     _reset_state_base_q,
     _update_cg_tolerance_kernel,
+    create_1d_tile_based_kernels,
+    create_2d_tile_based_kernels,
     create_eval_joint_constraints_jacobian_kernel,
     create_eval_joint_constraints_kernel,
     create_eval_joint_constraints_sparse_jacobian_kernel,
-    create_tile_based_kernels,
 )
 from .types import FKJointDoFType, ForwardKinematicsPreconditionerType, ForwardKinematicsStatus
 
@@ -443,10 +445,16 @@ class ForwardKinematicsSolver:
         self.num_constraints_max = np.max(num_constraints)
 
         # Retrieve / compute dimensions - Number of tiles (for kernels using Tile API)
-        self.num_tiles_constraints = (
-            self.num_constraints_max + self.config.TILE_SIZE_CTS - 1
-        ) // self.config.TILE_SIZE_CTS
-        self.num_tiles_states = (self.num_states_max + self.config.TILE_SIZE_VRS - 1) // self.config.TILE_SIZE_VRS
+        # For 1d reduction kernels, large tiles yield the best performance
+        self.tile_size_cts_1d = min(2048, 2 ** math.ceil(math.log(self.num_constraints_max, 2)))
+        self.num_tiles_cts_1d = (self.num_constraints_max + self.tile_size_cts_1d - 1) // self.tile_size_cts_1d
+        self.tile_size_vrs_1d = min(2048, 2 ** math.ceil(math.log(self.num_states_max, 2)))
+        self.num_tiles_vrs_1d = (self.num_states_max + self.tile_size_vrs_1d - 1) // self.tile_size_vrs_1d
+        # For 2d matrix product kernels, smaller 16x16 tiles give the best tradeoff (also for using sparsity)
+        self.tile_size_cts_2d = 16
+        self.num_tiles_cts_2d = (self.num_constraints_max + self.tile_size_cts_2d - 1) // self.tile_size_cts_2d
+        self.tile_size_vrs_2d = 16
+        self.num_tiles_vrs_2d = (self.num_states_max + self.tile_size_vrs_2d - 1) // self.tile_size_vrs_2d
 
         # Data allocation or transfer from numpy to warp
         with wp.ScopedDevice(self.device):
@@ -560,12 +568,14 @@ class ForwardKinematicsSolver:
         )
         (
             self._eval_pattern_T_pattern_kernel,
-            self._eval_max_constraint_kernel,
             self._eval_jacobian_T_jacobian_kernel,
             self._eval_jacobian_T_constraints_kernel,
+        ) = create_2d_tile_based_kernels(self.tile_size_cts_2d, self.tile_size_vrs_2d)
+        (
+            self._eval_max_constraint_kernel,
             self._eval_merit_function_kernel,
             self._eval_merit_function_gradient_kernel,
-        ) = create_tile_based_kernels(self.config.TILE_SIZE_CTS, self.config.TILE_SIZE_VRS)
+        ) = create_1d_tile_based_kernels(self.tile_size_cts_1d, self.tile_size_vrs_1d)
 
         # Compute sparsity pattern and initialize linear solver for dense (semi-sparse) case
         if not self.config.use_sparsity:
@@ -598,9 +608,9 @@ class ForwardKinematicsSolver:
             )
             wp.launch_tiled(
                 self._eval_pattern_T_pattern_kernel,
-                dim=(num_classes, self.num_tiles_states, self.num_tiles_states),
+                dim=(num_classes, self.num_tiles_vrs_2d, self.num_tiles_vrs_2d),
                 inputs=[sparsity_pattern_wp, sparsity_pattern_lhs_wp],
-                block_dim=64,
+                block_dim=32,
                 device=self.device,
             )
             sparsity_pattern_lhs = sparsity_pattern_lhs_wp.numpy().astype("int32")
@@ -615,6 +625,22 @@ class ForwardKinematicsSolver:
             )
             num_states_per_class = np.array([num_states[eq_class[0]] for eq_class in classes])
             self.linear_solver_llt.capture_sparsity_pattern(sparsity_pattern_lhs, num_states_per_class, classes)
+
+            # Compute tile-level Jacobian sparsity pattern, to skip zero tiles in tile-based matrix products
+            tile_sparsity_pattern_np = np.zeros(
+                (self.num_worlds, self.num_tiles_cts_2d, self.num_tiles_vrs_2d), dtype=np.int32
+            )
+            for class_id, eq_class in enumerate(classes):
+                pattern = np.zeros((self.num_tiles_cts_2d, self.num_tiles_vrs_2d), dtype=np.int32)
+                for i in range(self.num_constraints_max):
+                    for j in range(self.num_states_max):
+                        if sparsity_pattern[class_id, i, j] != 0:
+                            tile_row = i // self.tile_size_cts_2d
+                            tile_col = j // self.tile_size_vrs_2d
+                            pattern[tile_row, tile_col] = 1
+                for wd_id in eq_class:
+                    tile_sparsity_pattern_np[wd_id] = pattern
+            self.tile_sparsity_pattern = wp.from_numpy(tile_sparsity_pattern_np, dtype=wp.int32, device=self.device)
 
         # Compute sparsity pattern and initialize linear solver for sparse case
         if self.config.use_sparsity:
@@ -909,9 +935,9 @@ class ForwardKinematicsSolver:
         max_constraint.zero_()
         wp.launch_tiled(
             self._eval_max_constraint_kernel,
-            dim=(self.num_worlds, self.num_tiles_constraints),
+            dim=(self.num_worlds, self.num_tiles_cts_1d),
             inputs=[constraints, max_constraint],
-            block_dim=64,
+            block_dim=max(32, min(256, self.tile_size_cts_1d // 8)),
             device=self.device,
         )
 
@@ -1040,9 +1066,9 @@ class ForwardKinematicsSolver:
         error.zero_()
         wp.launch_tiled(
             self._eval_merit_function_kernel,
-            dim=(self.num_worlds, self.num_tiles_constraints),
+            dim=(self.num_worlds, self.num_tiles_cts_1d),
             inputs=[constraints, error],
-            block_dim=64,
+            block_dim=max(32, min(256, self.tile_size_cts_1d // 8)),
             device=self.device,
         )
 
@@ -1059,9 +1085,9 @@ class ForwardKinematicsSolver:
         error_grad.zero_()
         wp.launch_tiled(
             self._eval_merit_function_gradient_kernel,
-            dim=(self.num_worlds, self.num_tiles_states),
+            dim=(self.num_worlds, self.num_tiles_vrs_1d),
             inputs=[step, grad, error_grad],
-            block_dim=64,
+            block_dim=max(32, min(256, self.tile_size_vrs_1d // 8)),
             device=self.device,
         )
 
@@ -1154,16 +1180,16 @@ class ForwardKinematicsSolver:
         else:
             wp.launch_tiled(
                 self._eval_jacobian_T_jacobian_kernel,
-                dim=(self.num_worlds, self.num_tiles_states, self.num_tiles_states),
-                inputs=[self.jacobian, self.newton_mask, self.lhs],
-                block_dim=64,
+                dim=(self.num_worlds, self.num_tiles_vrs_2d, self.num_tiles_vrs_2d),
+                inputs=[self.jacobian, self.tile_sparsity_pattern, self.newton_mask, self.lhs],
+                block_dim=32,
                 device=self.device,
             )
             wp.launch_tiled(
                 self._eval_jacobian_T_constraints_kernel,
-                dim=(self.num_worlds, self.num_tiles_states),
-                inputs=[self.jacobian, self.constraints, self.newton_mask, self.grad],
-                block_dim=64,
+                dim=(self.num_worlds, self.num_tiles_vrs_2d),
+                inputs=[self.jacobian, self.constraints, self.tile_sparsity_pattern, self.newton_mask, self.grad],
+                block_dim=32,
                 device=self.device,
             )
         wp.launch(
@@ -1303,16 +1329,16 @@ class ForwardKinematicsSolver:
         else:
             wp.launch_tiled(
                 self._eval_jacobian_T_jacobian_kernel,
-                dim=(self.num_worlds, self.num_tiles_states, self.num_tiles_states),
-                inputs=[self.jacobian, world_mask, self.lhs],
-                block_dim=64,
+                dim=(self.num_worlds, self.num_tiles_cts_2d, self.num_tiles_cts_2d),
+                inputs=[self.jacobian, self.tile_sparsity_pattern, world_mask, self.lhs],
+                block_dim=32,
                 device=self.device,
             )
             wp.launch_tiled(
                 self._eval_jacobian_T_constraints_kernel,
-                dim=(self.num_worlds, self.num_tiles_states),
-                inputs=[self.jacobian, self.target_cts_u, world_mask, self.rhs],
-                block_dim=64,
+                dim=(self.num_worlds, self.num_tiles_vrs_2d),
+                inputs=[self.jacobian, self.target_cts_u, self.tile_sparsity_pattern, world_mask, self.rhs],
+                block_dim=32,
                 device=self.device,
             )
 
