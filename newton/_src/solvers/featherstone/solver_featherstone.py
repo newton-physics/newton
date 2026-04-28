@@ -5,7 +5,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import BodyFlags, Contacts, Control, Model, State
+from ...sim import BodyFlags, Contacts, Control, JointType, Model, State
 from ..flags import SolverNotifyFlags
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
@@ -151,7 +151,14 @@ class SolverFeatherstone(SolverBase):
         model = self.model
         self.has_kinematic_bodies = False
         self.has_kinematic_joints = False
+        self.has_free_distance_joints = False
         self.joint_armature_effective = model.joint_armature
+
+        if model.joint_count:
+            joint_type = model.joint_type.numpy()
+            self.has_free_distance_joints = bool(
+                np.any((joint_type == int(JointType.FREE)) | (joint_type == int(JointType.DISTANCE)))
+            )
 
         if model.body_count:
             body_flags = model.body_flags.numpy()
@@ -431,7 +438,7 @@ class SolverFeatherstone(SolverBase):
                     device=model.device,
                 )
 
-                if body_f is not None:
+                if body_f is not None and self.has_free_distance_joints:
                     wp.launch(
                         accumulate_free_distance_joint_f_to_body_force,
                         dim=model.joint_count,
