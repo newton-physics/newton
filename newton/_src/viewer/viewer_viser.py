@@ -628,7 +628,7 @@ class ViewerViser(ViewerBase):
         self,
         name: str,
         plane_info: dict[str, float | bool],
-        xforms: wp.array(dtype=wp.transform) | None,
+        xforms: wp.array[wp.transform] | None,
         hidden: bool = False,
     ):
         """Render plane instances as finite line grids instead of opaque meshes."""

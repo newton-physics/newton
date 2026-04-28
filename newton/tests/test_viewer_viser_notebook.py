@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import sys
 import tempfile
 import types
 import unittest
-from pathlib import Path
 from importlib.machinery import PathFinder
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 # ruff: noqa: PLC0415
 
@@ -62,15 +63,29 @@ class TestViewerViserNotebookUrls(unittest.TestCase):
                 self.assertEqual(viewer.url, "/user/alice/proxy/9123/")
 
     def test_show_notebook_uses_proxy_url_for_live_server(self):
+        mock_ipython = types.ModuleType("IPython")
+        mock_ipython.__path__ = []
+
+        mock_display_module = types.ModuleType("IPython.display")
+        mock_display_module.HTML = Mock()
+        mock_display_module.IFrame = Mock()
+        mock_display_module.display = Mock()
+        mock_ipython.display = mock_display_module
+
         with patch("importlib.util.find_spec", side_effect=_find_spec_with_proxy):
             with patch.dict(os.environ, {"JUPYTERHUB_SERVICE_PREFIX": "/user/alice/"}, clear=False):
-                viewer = self._make_viewer(port=9456)
-                with patch("IPython.display.IFrame") as mock_iframe:
-                    with patch("IPython.display.display") as mock_display:
-                        viewer.show_notebook(width=640, height=480)
+                with patch.dict(
+                    sys.modules,
+                    {
+                        "IPython": mock_ipython,
+                        "IPython.display": mock_display_module,
+                    },
+                ):
+                    viewer = self._make_viewer(port=9456)
+                    viewer.show_notebook(width=640, height=480)
 
-        mock_iframe.assert_called_once_with(src="/user/alice/proxy/9456/", width=640, height=480)
-        mock_display.assert_called_once_with(mock_iframe.return_value)
+        mock_display_module.IFrame.assert_called_once_with(src="/user/alice/proxy/9456/", width=640, height=480)
+        mock_display_module.display.assert_called_once_with(mock_display_module.IFrame.return_value)
 
     def test_get_viser_client_dir_prefers_installed_package_build(self):
         from newton._src.viewer.viewer_viser import ViewerViser
@@ -89,7 +104,7 @@ class TestViewerViserNotebookUrls(unittest.TestCase):
             mock_viser.__file__ = str(package_init)
 
             with patch.object(ViewerViser, "_get_viser", return_value=mock_viser):
-                self.assertEqual(ViewerViser._get_viser_client_dir(), package_build_dir)
+                self.assertEqual(ViewerViser._get_viser_client_dir(), package_build_dir.resolve())
 
     def test_get_viser_client_dir_raises_without_installed_build(self):
         from newton._src.viewer.viewer_viser import ViewerViser
