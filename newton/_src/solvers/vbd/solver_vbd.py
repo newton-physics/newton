@@ -2607,9 +2607,7 @@ class SolverVBD(SolverBase):
                 self._rigid_contact_body1,
                 self._rigid_contact_point0_world,
                 self._rigid_contact_point1_world,
-                contacts.rigid_contact_force
-                if contacts is not None
-                else self._rigid_contact_zero_force,
+                contacts.rigid_contact_force if contacts is not None else self._rigid_contact_zero_force,
                 self._rigid_contact_zero_count,
             )
 

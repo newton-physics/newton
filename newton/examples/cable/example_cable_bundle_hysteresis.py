@@ -172,7 +172,7 @@ class Example:
         self.cable_length = 4.0
         self.cable_radius = 0.02
         self.cable_gap_multiplier = 1.1
-        bend_stiffness = 1.0e1
+        bend_stiffness = 1.0e2
         bend_damping = 5.0e-2
 
         builder = newton.ModelBuilder()

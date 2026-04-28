@@ -311,6 +311,7 @@ class Example:
 
         cable_points = _load_cable_centerline(stage)
         cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
+        bend_stiffness = 1.0e1
 
         rod_bodies, _ = builder.add_rod(
             positions=cable_points,
@@ -322,7 +323,7 @@ class Example:
                 kd=CONTACT_KD,
                 mu=CABLE_MU,
             ),
-            bend_stiffness=1.0e-1,
+            bend_stiffness=bend_stiffness,
             bend_damping=1.0e-1,
             label="cable",
         )

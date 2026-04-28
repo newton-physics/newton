@@ -143,17 +143,11 @@ def _rigid_contact_history_restore_from_match_index(test, device):
         match_index = wp.array([2, -1, 0, -2], dtype=wp.int32, device=device)
 
         history = RigidContactHistory()
-        history.lambda_ = wp.array(
-            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [0.0, 0.0, 7.0]], dtype=wp.vec3, device=device
-        )
+        history.lambda_ = wp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [0.0, 0.0, 7.0]], dtype=wp.vec3, device=device)
         history.stick_flag = wp.array([0, 1, 2], dtype=wp.int32, device=device)
         history.penalty_k = wp.array([20.0, 30.0, 40.0], dtype=float, device=device)
-        history.point0 = wp.array(
-            [[20.0, 0.0, 0.0], [21.0, 0.0, 0.0], [22.0, 0.0, 0.0]], dtype=wp.vec3, device=device
-        )
-        history.point1 = wp.array(
-            [[20.0, 0.0, 1.0], [21.0, 0.0, 1.0], [22.0, 0.0, 1.0]], dtype=wp.vec3, device=device
-        )
+        history.point0 = wp.array([[20.0, 0.0, 0.0], [21.0, 0.0, 0.0], [22.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+        history.point1 = wp.array([[20.0, 0.0, 1.0], [21.0, 0.0, 1.0], [22.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3, device=device)
 
         penalty_k = wp.zeros(4, dtype=float, device=device)

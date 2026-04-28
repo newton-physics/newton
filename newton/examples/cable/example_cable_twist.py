@@ -126,10 +126,10 @@ class Example:
         self.cable_length = self.num_elements * segment_length
         cable_radius = 0.02
 
-        stretch_stiffness = 1.0e5
+        stretch_stiffness = 1.0e6
 
         # Stiffness sweep (increasing) for bend stiffness
-        bend_stiffness_values = [1.0e1, 1.0e2, 1.0e3]
+        bend_stiffness_values = [1.0e2, 1.0e3, 1.0e4]
 
         # All cables start untwisted, will be spun dynamically
         self.num_cables = len(bend_stiffness_values)

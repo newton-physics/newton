@@ -4383,7 +4383,7 @@ class ModelBuilder:
                 translation is the attachment point.
             child_xform: The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point.
-            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e4.
+            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
             stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
                 this is a dimensionless (Rayleigh-style) coefficient. If None,
                 defaults to 0.0.
@@ -4403,7 +4403,7 @@ class ModelBuilder:
 
         """
         # Linear DOF (stretch)
-        se_ke = 1.0e4 if stretch_stiffness is None else stretch_stiffness
+        se_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         se_kd = 0.0 if stretch_damping is None else stretch_damping
         ax_lin = ModelBuilder.JointDofConfig(target_ke=se_ke, target_kd=se_kd)
 
@@ -6585,7 +6585,7 @@ class ModelBuilder:
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
-                If None, defaults to 1.0e4.
+                If None, defaults to 1.0e5.
             stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m]
@@ -6614,7 +6614,7 @@ class ModelBuilder:
             ValueError: If the rod has fewer than 2 segments.
 
         Note:
-            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e4;
+            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
               pass a larger value when neighboring capsules should remain nearly inextensible.
             - Stretch, bend, and damping values are passed through as provided per joint.
             - Each segment is implemented as a capsule primitive. The segment's body transform is
@@ -6627,7 +6627,7 @@ class ModelBuilder:
             cfg = self.default_shape_cfg
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
-        stretch_stiffness = 1.0e4 if stretch_stiffness is None else stretch_stiffness
+        stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)
@@ -6776,7 +6776,7 @@ class ModelBuilder:
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
-                Defaults to 1.0e4.
+                Defaults to 1.0e5.
             stretch_damping: Stretch damping (per joint). Defaults to 0.0.
             bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m].
                 Defaults to 0.0.
@@ -6801,7 +6801,7 @@ class ModelBuilder:
             cfg = self.default_shape_cfg
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
-        stretch_stiffness = 1.0e4 if stretch_stiffness is None else stretch_stiffness
+        stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)

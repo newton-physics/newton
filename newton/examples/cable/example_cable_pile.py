@@ -45,6 +45,7 @@ class Example:
         segment_length = 0.05
         self.cable_length = self.num_elements * segment_length
         cable_radius = 0.012
+        bend_stiffness = 2.0e1
 
         # Layers and lanes
         layers = 10
@@ -147,7 +148,7 @@ class Example:
                     quaternions=edge_q,
                     radius=cable_radius,
                     cfg=cable_shape_cfg,
-                    bend_stiffness=1.0e0,
+                    bend_stiffness=bend_stiffness,
                     bend_damping=1.0e0,
                     label=f"cable_l{layer}_{lane}",
                 )
