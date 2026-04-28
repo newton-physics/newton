@@ -3269,6 +3269,12 @@ class SolverMuJoCo(SolverBase):
         need_solref_update = need_const_0
 
         if self.use_mujoco_cpu:
+            if flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES:
+                self.mj_model.body_ipos[:] = self.mjw_model.body_ipos.numpy()[0]
+                self.mj_model.body_mass[:] = self.mjw_model.body_mass.numpy()[0]
+                self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
+                self.mj_model.body_inertia[:] = self.mjw_model.body_inertia.numpy()[0]
+                self.mj_model.body_iquat[:] = self.mjw_model.body_iquat.numpy()[0]
             if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
                 self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
@@ -3277,6 +3283,12 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model.dof_solref[:] = self.mjw_model.dof_solref.numpy()[0]
                 self.mj_model.qpos0[:] = self.mjw_model.qpos0.numpy()[0]
                 self.mj_model.qpos_spring[:] = self.mjw_model.qpos_spring.numpy()[0]
+            if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
+                self.mj_model.jnt_solimp[:] = self.mjw_model.jnt_solimp.numpy()[0]
+                self.mj_model.jnt_stiffness[:] = self.mjw_model.jnt_stiffness.numpy()[0]
+                self.mj_model.jnt_margin[:] = self.mjw_model.jnt_margin.numpy()[0]
+                self.mj_model.jnt_range[:] = self.mjw_model.jnt_range.numpy()[0]
+                self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
             if need_length_range or need_const_fixed or need_const_0:
                 self._mujoco.mj_setConst(self.mj_model, self.mj_data)
             if need_solref_update:
@@ -5236,11 +5248,6 @@ class SolverMuJoCo(SolverBase):
 
         mujoco.mj_forward(self.mj_model, self.mj_data)
 
-        if target_filename:
-            with open(target_filename, "w") as f:
-                f.write(spec.to_xml())
-                print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
-
         # now that the model is compiled, get the actual geom indices and compute
         # shape transform corrections
         shape_to_geom_idx = {}
@@ -5538,6 +5545,13 @@ class SolverMuJoCo(SolverBase):
             # so far we have only defined the first world,
             # now complete the data from the Newton model
             self.notify_model_changed(SolverNotifyFlags.ALL)
+
+            if target_filename:
+                for mjc_jnt, solref in enumerate(self.mj_model.jnt_solref):
+                    spec.joints[mjc_jnt].solref_limit = solref
+                with open(target_filename, "w") as f:
+                    f.write(spec.to_xml())
+                    print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
 
     def _expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
@@ -6503,6 +6517,7 @@ class SolverMuJoCo(SolverBase):
             outputs=[self.mjw_model.jnt_solref],
             device=self.model.device,
         )
+        self.mj_model.jnt_solref[:] = self.mjw_model.jnt_solref.numpy()[0]
 
     def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.

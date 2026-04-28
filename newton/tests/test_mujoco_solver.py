@@ -8988,8 +8988,19 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
     mixing design.
     """
 
-    def _build_pendulum_model(self, mass: float, ke: float, kd: float, *, inertia: float = 0.5, gravity: float = -9.81):
+    def _build_pendulum_model(
+        self,
+        mass: float,
+        ke: float,
+        kd: float,
+        *,
+        inertia: float = 0.5,
+        gravity: float = -9.81,
+        register_mujoco_attrs: bool = False,
+    ):
         builder = newton.ModelBuilder(gravity=gravity)
+        if register_mujoco_attrs:
+            SolverMuJoCo.register_custom_attributes(builder)
         inertia_tensor = wp.mat33(np.eye(3) * inertia)
         link = builder.add_link(mass=mass, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia_tensor)
         joint = builder.add_joint_revolute(
@@ -9056,6 +9067,56 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         self.assertAlmostEqual(float(actual_solref[0]), expected_ke, delta=abs(expected_ke) * rel_tol)
         self.assertAlmostEqual(float(actual_solref[1]), expected_kd, delta=abs(expected_kd) * rel_tol)
 
+    def test_saved_mjcf_and_mj_model_use_scaled_joint_limit_solref(self):
+        """The host ``MjModel`` and exported MJCF must match the scaled warp ``jnt_solref``."""
+        ke = 10000.0
+        kd = 100.0
+        model = self._build_pendulum_model(mass=2.0, ke=ke, kd=kd, inertia=0.5)
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+
+            dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+            dmax = float(solver.mj_model.jnt_solimp[0, 1])
+            factor = dof_invweight0 * (1.0 - dmax)
+            expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+
+            np.testing.assert_allclose(solver.mj_model.jnt_solref[0], expected_solref, rtol=1e-6, atol=1e-6)
+
+            tree = ET.parse(xml_path)
+            joint = next(tree.iter("joint"))
+            solref = np.array([float(x) for x in joint.get("solreflimit").split()], dtype=np.float64)
+            np.testing.assert_allclose(solref, expected_solref, rtol=1e-6, atol=1e-6)
+        finally:
+            os.unlink(xml_path)
+
+    def test_cpu_backend_solref_uses_updated_solimp(self):
+        """CPU runtime solref scaling must use the latest ``solimplimit`` values."""
+        ke = 8000.0
+        kd = 80.0
+        model = self._build_pendulum_model(
+            mass=2.0,
+            ke=ke,
+            kd=kd,
+            inertia=0.5,
+            register_mujoco_attrs=True,
+        )
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
+
+        solimp = np.array([[0.8, 0.8, 0.001, 0.5, 2.0]], dtype=np.float32)
+        model.mujoco.solimplimit.assign(wp.array(solimp, dtype=vec5, device=model.device))
+
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mj_model.jnt_solimp[0], solimp[0], rtol=1e-6, atol=1e-6)
+        dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+        dmax = float(solimp[0, 1])
+        factor = dof_invweight0 * (1.0 - dmax)
+        expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+        np.testing.assert_allclose(solver.mj_model.jnt_solref[0], expected_solref, rtol=1e-6, atol=1e-6)
+
     def test_joint_limit_solref_resets_to_default_when_limit_ke_is_disabled(self):
         """Runtime ``ke -> 0`` updates must restore the same limit ``solref`` as a fresh ``ke=0`` model."""
         model = self._build_pendulum_model(mass=2.0, ke=10000.0, kd=100.0, inertia=0.5)
@@ -9084,15 +9145,16 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         model = self._build_pendulum_model(mass=1.0, ke=ke, kd=kd, inertia=0.5, gravity=0.0)
         solver = SolverMuJoCo(model, iterations=50, disable_contacts=True, use_mujoco_cpu=True)
 
-        def assert_scaled_solref():
+        def assert_scaled_solref(expected_invweight0):
             dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+            self.assertAlmostEqual(dof_invweight0, expected_invweight0, delta=1e-4)
             dmax = float(solver.mj_model.jnt_solimp[0, 1])
             factor = dof_invweight0 * (1.0 - dmax)
             expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
             actual_solref = np.array(solver.mj_model.jnt_solref[0], dtype=np.float64)
             np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-6, atol=1e-6)
 
-        assert_scaled_solref()
+        assert_scaled_solref(expected_invweight0=2.0)
 
         new_mass = np.array([4.0], dtype=np.float32)
         new_inertia = np.array([np.eye(3, dtype=np.float32) * 0.2], dtype=np.float32)
@@ -9103,7 +9165,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
 
         solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
 
-        assert_scaled_solref()
+        assert_scaled_solref(expected_invweight0=5.0)
 
     def test_joint_limit_torque_matches_configured_stiffness(self):
         """Scaled ``jnt_solref`` produces a mass-independent constraint response.
