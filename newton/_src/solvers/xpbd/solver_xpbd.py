@@ -623,28 +623,23 @@ class SolverXPBD(SolverBase):
                     state_out.body_qd.assign(body_qd)
 
             # update body velocities from position changes
+            # skipped when requires_grad=True due to numerical issues with gradients
             if (
                 (self.compute_body_velocity_from_position_delta or self.enable_restitution)
                 and model.body_count
                 and not requires_grad
             ):
-                # causes gradient issues (probably due to numerical problems
-                # when computing velocities from position changes)
-                if requires_grad:
-                    out_body_qd = wp.clone(state_out.body_qd)
-                else:
-                    out_body_qd = state_out.body_qd
-
-                # update body velocities
                 wp.launch(
                     kernel=update_body_velocities,
                     dim=model.body_count,
                     inputs=[state_out.body_q, body_q_init, model.body_com, dt],
-                    outputs=[out_body_qd],
+                    outputs=[state_out.body_qd],
                     device=model.device,
                 )
 
-            if self.enable_restitution and contacts is not None:
+            # restitution requires corrected velocities from update_body_velocities above;
+            # skip on grad-enabled steps where that update is intentionally omitted
+            if self.enable_restitution and contacts is not None and not requires_grad:
                 if model.particle_count:
                     wp.launch(
                         kernel=apply_particle_shape_restitution,
