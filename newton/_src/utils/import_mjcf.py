@@ -1537,6 +1537,7 @@ def parse_mjcf(
 
                 # Parse solreflimit for joint limit stiffness and damping
                 solreflimit = parse_vec(joint_attrib, "solreflimit", (0.02, 1.0))
+                raw_solreflimit = wp.vec2(solreflimit[0], solreflimit[1])
                 limit_ke, limit_kd = solref_to_stiffness_damping(solreflimit)
                 # Handle None return values (invalid solref)
                 if limit_ke is None:
@@ -1591,8 +1592,11 @@ def parse_mjcf(
                     parsing_mode="mjcf",
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
-                # assemble custom attributes for each DOF (dict mapping DOF index to value)
-                # Only store values that were explicitly specified in the source
+                if builder.has_custom_attribute("mujoco:solreflimit"):
+                    dof_attr.setdefault("mujoco:solreflimit", raw_solreflimit)
+                # assemble custom attributes for each DOF (dict mapping DOF index to value).
+                # Most values come from explicit source attributes; solreflimit is also
+                # stored when omitted so SolverMuJoCo can preserve MuJoCo's native default.
                 for key, value in dof_attr.items():
                     if key not in dof_custom_attributes:
                         dof_custom_attributes[key] = {}

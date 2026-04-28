@@ -506,6 +506,20 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="solreflimit",
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                # Sentinel for "not authored". MJCF import fills this with the
+                # raw MuJoCo solreflimit for native-compatibility.
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solreflimit",
+                mjcf_attribute_name="solreflimit",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="solreffriction",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
@@ -4143,6 +4157,7 @@ class SolverMuJoCo(SolverBase):
         shape_geom_solmix = get_custom_attribute("geom_solmix")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
+        joint_solref_limit = get_custom_attribute("solreflimit")
         joint_dof_solref = get_custom_attribute("solreffriction")
         joint_dof_solimp = get_custom_attribute("solimpfriction")
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
@@ -4778,8 +4793,12 @@ class SolverMuJoCo(SolverBase):
 
                     # we're piping these through unconditionally even though they are only active with limited joints
                     joint_params["range"] = (lower, upper)
-                    # Use negative convention for solref_limit: (-stiffness, -damping)
-                    if joint_limit_ke[ai] > 0:
+                    if joint_solref_limit is not None and np.any(joint_solref_limit[ai] != 0.0):
+                        joint_params["solref_limit"] = joint_solref_limit[ai]
+                    # Seed user-authored Newton stiffness with MuJoCo's negative
+                    # convention; this is rescaled after compilation once
+                    # ``dof_invweight0`` is available.
+                    elif joint_limit_ke[ai] > 0:
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
@@ -4876,8 +4895,12 @@ class SolverMuJoCo(SolverBase):
 
                     # we're piping these through unconditionally even though they are only active with limited joints
                     joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
-                    # Use negative convention for solref_limit: (-stiffness, -damping)
-                    if joint_limit_ke[ai] > 0:
+                    if joint_solref_limit is not None and np.any(joint_solref_limit[ai] != 0.0):
+                        joint_params["solref_limit"] = joint_solref_limit[ai]
+                    # Seed user-authored Newton stiffness with MuJoCo's negative
+                    # convention; this is rescaled after compilation once
+                    # ``dof_invweight0`` is available.
+                    elif joint_limit_ke[ai] > 0:
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
@@ -6458,6 +6481,10 @@ class SolverMuJoCo(SolverBase):
         ``dof_invweight0 * (1 - dmax)`` for the downstream ``k_eff`` to
         match the user's configured force-space stiffness and damping.
 
+        MJCF import stores authored ``solreflimit`` values separately in
+        ``mujoco.solreflimit``. When present, those raw MuJoCo values are
+        forwarded unchanged so imported MuJoCo assets keep native dynamics.
+
         This must run **after** ``_update_joint_dof_properties`` writes the
         current ``jnt_solimp`` values and after MuJoCo refreshes
         ``dof_invweight0`` via ``set_const_0`` / ``mj_setConst`` on the
@@ -6477,14 +6504,22 @@ class SolverMuJoCo(SolverBase):
         if njnt == 0 or self.model.joint_limit_ke is None:
             return
 
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        joint_limit_solref = getattr(mujoco_attrs, "solreflimit", None) if mujoco_attrs is not None else None
+
         if self.use_mujoco_cpu:
             joint_limit_ke = self.model.joint_limit_ke.numpy()
             joint_limit_kd = self.model.joint_limit_kd.numpy()
+            joint_limit_solref_np = joint_limit_solref.numpy() if joint_limit_solref is not None else None
             jnt_to_newton_dof = self.mjc_jnt_to_newton_dof.numpy()[0]
             jnt_solref = np.array(self.mj_model.jnt_solref, dtype=np.float64, copy=True)
 
             for mjc_jnt, newton_dof in enumerate(jnt_to_newton_dof):
                 if newton_dof < 0:
+                    continue
+
+                if joint_limit_solref_np is not None and np.any(joint_limit_solref_np[newton_dof] != 0.0):
+                    jnt_solref[mjc_jnt] = joint_limit_solref_np[newton_dof]
                     continue
 
                 ke = float(joint_limit_ke[newton_dof])
@@ -6500,6 +6535,7 @@ class SolverMuJoCo(SolverBase):
                 jnt_solref[mjc_jnt] = (-ke * factor, -kd * factor)
 
             self.mj_model.jnt_solref[:] = jnt_solref
+            self.mjw_model.jnt_solref.assign(jnt_solref.reshape(1, njnt, 2))
             return
 
         nworld = self.mjc_jnt_to_newton_dof.shape[0]
@@ -6510,6 +6546,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjc_jnt_to_newton_dof,
                 self.model.joint_limit_ke,
                 self.model.joint_limit_kd,
+                joint_limit_solref,
                 self.mjw_model.jnt_dofadr,
                 self.mjw_model.dof_invweight0,
                 self.mjw_model.jnt_solimp,

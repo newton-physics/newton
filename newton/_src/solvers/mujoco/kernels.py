@@ -2335,6 +2335,7 @@ def update_jnt_solref_from_invweight0_kernel(
     mjc_jnt_to_newton_dof: wp.array2d[wp.int32],
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
+    joint_limit_solref: wp.array[wp.vec2],
     jnt_dofadr: wp.array[wp.int32],
     dof_invweight0: wp.array2d[float],
     jnt_solimp: wp.array2d[vec5],
@@ -2354,15 +2355,22 @@ def update_jnt_solref_from_invweight0_kernel(
     The limit uses the negative (stiffness, damping) convention so the result is
     ``solref = (-ke * factor, -kd * factor)``. When ``ke <= 0``, Newton restores
     MuJoCo's default ``(0.02, 1.0)`` pair so runtime disablement matches a fresh
-    model compiled without ``solref_limit``. ``dof_invweight0`` is only valid
-    after MuJoCo's ``set_const_0`` / ``mj_setConst`` has run, so this kernel must
-    be launched from ``notify_model_changed`` after those calls (and once at
-    initialisation right after ``put_model``).
+    model compiled without ``solref_limit``. MJCF-imported raw ``solreflimit``
+    values are forwarded unchanged when present. ``dof_invweight0`` is only
+    valid after MuJoCo's ``set_const_0`` / ``mj_setConst`` has run, so this
+    kernel must be launched from ``notify_model_changed`` after those calls (and
+    once at initialisation right after ``put_model``).
     """
     world, mjc_jnt = wp.tid()
     newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
     if newton_dof < 0:
         return
+
+    if joint_limit_solref:
+        raw_solref = joint_limit_solref[newton_dof]
+        if raw_solref[0] != 0.0 or raw_solref[1] != 0.0:
+            jnt_solref[world, mjc_jnt] = raw_solref
+            return
 
     ke = joint_limit_ke[newton_dof]
     kd = joint_limit_kd[newton_dof]

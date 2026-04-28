@@ -115,9 +115,12 @@ Shape parameters
   (``timeconst = 0.02``, ``dampratio = 1.0``).
 
 **Joint-limit stiffness and damping (solref_limit).**
-  ``joint_limit_ke`` and ``joint_limit_kd`` are forwarded as negative
-  ``solref_limit`` values ``(-ke, -kd)``, which MuJoCo interprets as direct
-  stiffness/damping rather than time-constant/damp-ratio.
+  ``joint_limit_ke`` and ``joint_limit_kd`` are force-space stiffness/damping.
+  The solver writes MuJoCo's negative ``solref_limit`` form, scaled by
+  ``dof_invweight0 * (1 - dmax)``, so MuJoCo's effective joint-limit response
+  matches the Newton values.  When loading MJCF, imported ``solreflimit`` values
+  (including MuJoCo's default) are preserved as MuJoCo-native solver parameters
+  instead of being reinterpreted as Newton force-space gains.
 
 **Margin.**
   Newton's ``shape_margin`` maps to MuJoCo ``geom_margin``.
