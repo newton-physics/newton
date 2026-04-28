@@ -574,6 +574,9 @@ class TestModelJoints(unittest.TestCase):
         assert builder.joint_count == 2
         assert builder.articulation_count == 2
         assert builder.articulation_start == [0, 1]
+        assert builder.articulation_label == ["articulation_1", "articulation_2"]
+        assert builder.articulation_world == [-1, -1]
+        assert builder.joint_articulation == [0, 1]
         assert builder.joint_type == [newton.JointType.REVOLUTE, newton.JointType.FREE]
         assert builder.shape_count == 11
         assert builder.shape_body == [-1, -1, -1, -1, -1, -1, 0, 1, 1, 1, 1]

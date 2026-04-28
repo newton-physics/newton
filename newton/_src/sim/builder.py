@@ -5131,23 +5131,57 @@ class ModelBuilder:
         # sort joints so they appear in the same order as before
         retained_joints.sort(key=lambda x: x["original_id"])
 
+        original_articulation_start = self.articulation_start[:]
+        original_articulation_label = self.articulation_label[:]
+        original_articulation_world = self.articulation_world[:]
+        original_joint_articulation = self.joint_articulation[:] if self.joint_articulation else []
+
         joint_remap = {}
+        articulation_first_joint: dict[int, int] = {}
         for i, joint in enumerate(retained_joints):
-            joint_remap[joint["original_id"]] = i
-        # update articulation_start
-        for i, old_i in enumerate(self.articulation_start):
-            start_i = old_i
-            while start_i not in joint_remap:
-                start_i += 1
-                if start_i >= self.joint_count:
-                    break
-            self.articulation_start[i] = joint_remap.get(start_i, start_i)
-        # remove empty articulation starts, i.e. where the start and end are the same
-        self.articulation_start = list(set(self.articulation_start))
+            old_joint_idx = joint["original_id"]
+            joint_remap[old_joint_idx] = i
+            if original_joint_articulation and old_joint_idx < len(original_joint_articulation):
+                old_articulation = original_joint_articulation[old_joint_idx]
+                if old_articulation >= 0 and old_articulation not in articulation_first_joint:
+                    articulation_first_joint[old_articulation] = i
+
+        # Update articulation starts from retained joints' original articulation
+        # ownership. This preserves articulation order while dropping empty
+        # articulations whose joints were fully collapsed away.
+        articulation_remap: dict[int, int] = {}
+        new_articulation_start: list[int] = []
+        new_articulation_label: list[str] = []
+        new_articulation_world: list[int] = []
+        for articulation_idx in range(len(original_articulation_start)):
+            if articulation_idx not in articulation_first_joint:
+                continue
+
+            articulation_remap[articulation_idx] = len(new_articulation_start)
+            new_articulation_start.append(articulation_first_joint[articulation_idx])
+            if articulation_idx < len(original_articulation_label):
+                new_articulation_label.append(original_articulation_label[articulation_idx])
+            else:
+                new_articulation_label.append(f"articulation_{articulation_idx}")
+            if articulation_idx < len(original_articulation_world):
+                new_articulation_world.append(original_articulation_world[articulation_idx])
+            else:
+                new_articulation_world.append(self.current_world)
+
+        self.articulation_start = new_articulation_start
+        self.articulation_label = new_articulation_label
+        self.articulation_world = new_articulation_world
+
+        for custom_attr in self.get_custom_attributes_by_frequency([Model.AttributeFrequency.ARTICULATION]):
+            if isinstance(custom_attr.values, dict):
+                custom_attr.values = {
+                    new_idx: custom_attr.values[old_idx]
+                    for old_idx, new_idx in articulation_remap.items()
+                    if old_idx in custom_attr.values
+                }
 
         # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
-        original_articulation = self.joint_articulation[:] if self.joint_articulation else []
 
         self.joint_label.clear()
         self.joint_type.clear()
@@ -5200,8 +5234,9 @@ class ModelBuilder:
                 # If no world was assigned, use default -1
                 self.joint_world.append(-1)
             # Rebuild joint articulation assignment
-            if original_articulation and joint["original_id"] < len(original_articulation):
-                self.joint_articulation.append(original_articulation[joint["original_id"]])
+            if original_joint_articulation and joint["original_id"] < len(original_joint_articulation):
+                old_articulation = original_joint_articulation[joint["original_id"]]
+                self.joint_articulation.append(articulation_remap.get(old_articulation, -1))
             else:
                 self.joint_articulation.append(-1)
             for axis in joint["axes"]:
