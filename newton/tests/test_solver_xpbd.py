@@ -400,6 +400,7 @@ def test_rigid_restitution_zero_settles(test, device):
 
     def simulate(restitution):
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.restitution = restitution
         builder.add_ground_plane()
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
         cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=restitution, mu=0.0)
@@ -494,6 +495,7 @@ def test_rigid_restitution_elastic_no_explosion(test, device):
     drop_z = 0.3
 
     builder = newton.ModelBuilder()
+    builder.default_shape_cfg.restitution = 1.0
     builder.add_ground_plane()
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
     cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=1.0, mu=0.0)
