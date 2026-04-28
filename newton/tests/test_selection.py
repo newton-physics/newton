@@ -9,7 +9,6 @@ import warp as wp
 import newton
 import newton.examples
 from newton.selection import ArticulationView
-from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 
 
@@ -433,7 +432,6 @@ class TestSelection(unittest.TestCase):
 
         # Create a single articulation with 3 joints.
         single_articuation_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(single_articuation_builder)
         single_articuation_builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
 
         # Create a world with 2 articulations
@@ -836,7 +834,6 @@ class TestSelection(unittest.TestCase):
 
         # Create a single articulation
         single_articulation_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(single_articulation_builder)
         single_articulation_builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
 
         # Create a world with 2 articulations
@@ -1234,7 +1231,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_count(self):
         """Test that tendon count is correctly detected."""
         builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1244,7 +1240,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_selection_shapes(self):
         """Test that tendon selection API returns correct shapes."""
         builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1264,7 +1259,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_generic_api(self):
         """Test that tendon attributes are accessible via generic get/set_attribute."""
         builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1294,7 +1288,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_multi_world(self):
         """Test that tendon selection works with multiple worlds."""
         individual_builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(self.TENDON_MJCF)
 
         W = 4  # num worlds
@@ -1319,7 +1312,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_set_values(self):
         """Test that setting tendon values works correctly."""
         individual_builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(self.TENDON_MJCF)
 
         W = 2  # num worlds
@@ -1340,7 +1332,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_names(self):
         """Test that tendon names are correctly populated."""
         builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1388,7 +1379,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(with_tendons_mjcf)
         builder.add_mjcf(no_tendons_mjcf)
         model = builder.finalize()
@@ -1407,7 +1397,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
         """Test tendon selection with multiple articulations in a single world."""
         # Build a single articulation with tendons
         individual_builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(self.TENDON_MJCF)
 
         # Create a world with multiple copies of the articulation

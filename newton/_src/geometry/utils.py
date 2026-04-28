@@ -88,8 +88,7 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         return np.linalg.norm(vmax)
     elif geo_type == GeoType.PLANE:
         if scale[0] > 0.0 and scale[1] > 0.0:
-            # finite plane
-            return np.linalg.norm(scale)
+            return np.linalg.norm(scale) * 0.5
         else:
             return 1.0e6
     elif geo_type == GeoType.HFIELD:
@@ -612,38 +611,262 @@ def remesh_quadratic(
     return simplify(vertices, faces, target_reduction=target_reduction, target_count=target_count, **kwargs)
 
 
-def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0):
+def _degenerate_hull_point(p: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Build a degenerate hull for a 0-dimensional point cloud (all vertices coincident).
+
+    Emits three coincident vertices and two opposite-winding triangles so that
+    downstream code that expects a closed triangle mesh still works.
+    """
+    verts = np.tile(p.astype(np.float32), (3, 1))
+    faces = np.array([[0, 1, 2], [0, 2, 1]], dtype=np.int32)
+    return verts, faces
+
+
+def _degenerate_hull_line(
+    vertices: np.ndarray, direction: np.ndarray, centre: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build a degenerate hull for a 1-dimensional (collinear) point cloud.
+
+    Emits the two extreme points along ``direction`` plus their midpoint as a
+    third vertex, with two opposite-winding triangles forming a zero-area sliver.
+    """
+    t = (vertices - centre) @ direction
+    i_min = int(np.argmin(t))
+    i_max = int(np.argmax(t))
+    a = vertices[i_min].astype(np.float32)
+    b = vertices[i_max].astype(np.float32)
+    mid = (0.5 * (a + b)).astype(np.float32)
+    verts = np.stack([a, b, mid], axis=0)
+    faces = np.array([[0, 1, 2], [0, 2, 1]], dtype=np.int32)
+    return verts, faces
+
+
+def _convex_hull_2d_indices(points2d: np.ndarray) -> np.ndarray:
+    """Return indices of the 2D convex hull of ``points2d`` in CCW order.
+
+    Uses ``scipy.spatial.ConvexHull`` in 2D, which handles collinear / near-flat
+    inputs gracefully. Falls back to a monotone-chain implementation if SciPy's
+    Qhull still rejects the input.
+    """
+    from scipy.spatial import ConvexHull, QhullError
+
+    try:
+        hull = ConvexHull(points2d, qhull_options="Qt")
+        # ConvexHull.vertices in 2D are already ordered CCW.
+        return hull.vertices.astype(np.int32)
+    except QhullError:
+        pass
+
+    # Monotone chain fallback (Andrew's algorithm).
+    n = points2d.shape[0]
+    order = np.lexsort((points2d[:, 1], points2d[:, 0]))
+    sorted_pts = points2d[order]
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[int] = []
+    for i in range(n):
+        while len(lower) >= 2 and cross(sorted_pts[lower[-2]], sorted_pts[lower[-1]], sorted_pts[i]) <= 0:
+            lower.pop()
+        lower.append(i)
+    upper: list[int] = []
+    for i in range(n - 1, -1, -1):
+        while len(upper) >= 2 and cross(sorted_pts[upper[-2]], sorted_pts[upper[-1]], sorted_pts[i]) <= 0:
+            upper.pop()
+        upper.append(i)
+    chain = lower[:-1] + upper[:-1]
+    return order[np.array(chain, dtype=np.int32)]
+
+
+def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 1e-6):
     """Compute the convex hull of a set of 3D points and return the vertices and faces of the convex hull mesh.
 
-    Uses ``scipy.spatial.ConvexHull`` to compute the convex hull.
+    Uses ``scipy.spatial.ConvexHull`` to compute the convex hull. Degenerate point
+    clouds (coincident, collinear, or coplanar) are detected up front via an SVD
+    of the centered points and handled without invoking Qhull's full 3D simplex
+    construction, which would otherwise raise
+    ``QH6154 Qhull precision error: Initial simplex is flat``.
 
     Args:
         vertices: A numpy array of shape (N, 3) containing the vertex positions.
         maxhullvert: The maximum number of vertices for the convex hull. If 0, no limit is applied.
+        eps: Relative threshold used to classify a point cloud as coincident,
+            collinear, or coplanar. A singular value is considered zero if it is
+            smaller than ``eps`` times the largest singular value (or ``eps``
+            itself in absolute terms for the zero-extent case).
 
     Returns:
         A tuple (verts, faces) where:
+
         - verts: A numpy array of shape (M, 3) containing the vertex positions of the convex hull.
         - faces: A numpy array of shape (K, 3) containing the vertex indices of the triangular faces of the convex hull.
+
+    Raises:
+        ValueError: If ``vertices`` is empty. Empty input has no geometric
+            interpretation; the caller must decide whether to skip the hull
+            computation or supply a fallback rather than having this function
+            fabricate a point at the origin.
+
+    Guarantees:
+        - Never raises on non-empty degenerate input; always returns a
+          well-formed ``(verts, faces)`` pair with ``M >= 3`` and ``K >= 2``.
+        - ``verts`` is always a subset of the true convex hull's vertex set.
+        - For full-rank (rank-3) inputs, the output is a closed 3D convex hull
+          with outward-facing triangle windings, unchanged from the pre-degeneracy
+          behavior.
+
+    Degenerate outputs (rank < 3):
+        - **Coplanar (rank 2):** a flat, zero-volume triangle soup covering the
+          planar convex hull. The 2D hull is fan-triangulated and each triangle
+          is emitted twice with opposite windings so the mesh is double-sided.
+          Callers that expect each face to appear exactly once will see twice
+          the triangle count compared to a hypothetical single-sided flat hull.
+        - **Collinear (rank 1):** the two extrema along the principal direction
+          plus their midpoint, as two zero-area triangles with opposite windings.
+        - **Coincident (rank 0):** three copies of the single point with two
+          opposite-winding triangles.
+        - In all degenerate cases the resulting mesh has zero 3D volume, so
+          ``compute_inertia_mesh`` (and anything else that integrates over the
+          interior) will return zero mass / volume / inertia. Callers that
+          require a nonzero-volume collider must guard for this themselves.
+        - The rank thresholds are relative (``s[i] <= eps * s[0]``), so highly
+          anisotropic but technically 3D inputs (e.g. a slab 1e-7 wide next to
+          1 m) are treated as flat. This matches Qhull's behavior (it would
+          fail on such input anyway) and is almost always the desired behavior
+          for a collision collider, but it does mean near-flat 3D hulls are
+          silently flattened.
+        - ``maxhullvert`` in the planar branch is implemented by uniformly
+          decimating the 2D boundary loop; the specific retained vertices may
+          differ from what a 3D ``TAn`` pass would have selected (which is
+          unavoidable, since Qhull cannot answer the 3D question for flat input).
+        - As a last-resort safety net, the full-3D branch retries with Qhull's
+          ``QJ`` (joggle) option if the initial call raises. Qhull computes
+          the hull of the perturbed input, but the returned ``verts`` are
+          indexed back into the original ``vertices`` so the output remains
+          a strict subset of the caller's input (any connectivity error of
+          order ~1e-11 from the joggle is absorbed into the face topology).
+
+    Warnings:
+        Rank-0/1/2 degenerate branches emit a ``UserWarning`` describing the
+        detected degeneracy so that callers (e.g. :meth:`Mesh.convex_hull`,
+        :meth:`PointCloud.as_mesh`, :func:`remesh`) don't silently end up
+        with a zero-volume, zero-mass collider. Filter with
+        ``warnings.filterwarnings("ignore", message="remesh_convex_hull: ...")``
+        if the caller has already validated the input.
     """
 
-    from scipy.spatial import ConvexHull
+    from scipy.spatial import ConvexHull, QhullError
 
+    vertices = np.asarray(vertices, dtype=np.float64)
+
+    # Empty input has no geometric interpretation: fabricating a point at the
+    # origin would silently inject phantom geometry into the simulation. Let
+    # the caller decide whether to skip or supply a fallback.
+    if vertices.shape[0] == 0:
+        raise ValueError("remesh_convex_hull requires at least one input vertex; got an empty array.")
+
+    def _warn_degenerate(rank: str) -> None:
+        # Warn so callers (Mesh.convex_hull, PointCloud.as_mesh, remesh, ...)
+        # don't silently end up with a zero-volume, zero-mass collider.
+        warnings.warn(
+            f"remesh_convex_hull: input point cloud is {rank}; returning a "
+            "zero-volume fallback mesh. Downstream inertia computations will "
+            "produce zero mass / COM / inertia.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    if vertices.shape[0] == 1:
+        _warn_degenerate("a single point (rank 0)")
+        return _degenerate_hull_point(vertices[0])
+
+    # Classify dimensionality via SVD of the centred point cloud.
+    centre = vertices.mean(axis=0)
+    centred = vertices - centre
+    # ``full_matrices=False`` gives vh of shape (3, 3); singular values sorted descending.
+    _, s, vh = np.linalg.svd(centred, full_matrices=False)
+    s0 = float(s[0]) if s.size > 0 else 0.0
+    s1 = float(s[1]) if s.size > 1 else 0.0
+    s2 = float(s[2]) if s.size > 2 else 0.0
+    scale = max(s0, eps)
+
+    # Rank 0: all points coincident.
+    if s0 <= eps:
+        _warn_degenerate("coincident (rank 0)")
+        return _degenerate_hull_point(centre)
+
+    # Rank 1: collinear.
+    if s1 <= eps * scale:
+        _warn_degenerate("collinear (rank 1)")
+        direction = vh[0]
+        return _degenerate_hull_line(vertices, direction, centre)
+
+    # Rank 2: coplanar. Project onto the two largest principal axes, run a 2D
+    # convex hull, fan-triangulate, and emit each triangle twice with opposite
+    # winding so the flat hull is double-sided.
+    if s2 <= eps * scale:
+        _warn_degenerate("coplanar (rank 2)")
+        axis_u = vh[0]
+        axis_v = vh[1]
+        points2d = np.stack([centred @ axis_u, centred @ axis_v], axis=1)
+
+        hull_idx = _convex_hull_2d_indices(points2d)
+        if hull_idx.size < 3:
+            # Should not happen once rank >= 2, but guard anyway.
+            if hull_idx.size == 2:
+                direction = vh[0]
+                return _degenerate_hull_line(vertices, direction, centre)
+            return _degenerate_hull_point(centre)
+
+        if maxhullvert > 0 and hull_idx.size > maxhullvert:
+            # Uniformly decimate the boundary loop to respect the vertex budget.
+            sel = np.linspace(0, hull_idx.size, num=maxhullvert, endpoint=False).astype(np.int32)
+            hull_idx = hull_idx[sel]
+
+        verts = vertices[hull_idx].astype(np.float32)
+        m = verts.shape[0]
+        # Fan triangulation from vertex 0; each triangle emitted twice (CW + CCW).
+        faces_ccw = np.stack(
+            [
+                np.zeros(m - 2, dtype=np.int32),
+                np.arange(1, m - 1, dtype=np.int32),
+                np.arange(2, m, dtype=np.int32),
+            ],
+            axis=1,
+        )
+        faces_cw = faces_ccw[:, [0, 2, 1]]
+        faces = np.concatenate([faces_ccw, faces_cw], axis=0)
+        return verts, faces
+
+    # General (full 3D) case.
     qhull_options = "Qt"
     if maxhullvert > 0:
         # qhull "TA" actually means "number of vertices added after the initial simplex"
         # from mujoco's user_mesh.cc
         qhull_options += f" TA{maxhullvert - 4}"
-    hull = ConvexHull(vertices, qhull_options=qhull_options)
-    verts = hull.points.copy().astype(np.float32)
+    try:
+        hull = ConvexHull(vertices, qhull_options=qhull_options)
+    except QhullError:
+        # Retry with joggled input as a last resort before giving up on 3D.
+        # QJ perturbs coordinates in-place (~1e-11); it does not reorder or
+        # drop points, so hull.simplices indices still refer to the same rows
+        # of the original input array. We intentionally pull coordinates from
+        # `vertices` rather than `hull.points` below so the returned verts
+        # remain a strict subset of the caller's input (preserving the
+        # docstring invariant).
+        hull = ConvexHull(vertices, qhull_options=qhull_options + " QJ")
+    # Index into the original (un-joggled) input so that verts is always a
+    # subset of the caller's vertices, even through the QJ retry path.
+    verts = vertices.astype(np.float32)
     faces = hull.simplices.astype(np.int32)
 
     # fix winding order of faces
-    centre = verts.mean(0)
+    centre_f = verts.mean(0)
     for i, tri in enumerate(faces):
         a, b, c = verts[tri]
         normal = np.cross(b - a, c - a)
-        if np.dot(normal, a - centre) < 0:
+        if np.dot(normal, a - centre_f) < 0:
             faces[i] = tri[[0, 2, 1]]
 
     # trim vertices to only those that are used in the faces

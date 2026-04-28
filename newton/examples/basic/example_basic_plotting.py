@@ -20,6 +20,8 @@
 #
 ###########################################################################
 
+import warnings
+
 import numpy as np
 import warp as wp
 
@@ -89,7 +91,7 @@ class Example:
                 self.graph = capture.graph
             except Exception as exc:
                 self.graph = None
-                wp.utils.warn(f"CUDA graph capture failed: {exc}")
+                warnings.warn(f"CUDA graph capture failed: {exc}", stacklevel=2)
         else:
             self.graph = None
 

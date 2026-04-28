@@ -48,3 +48,15 @@ newton.geometry
    sdf_plane
    sdf_sphere
    transform_inertia
+
+.. rubric:: Constants
+
+.. list-table::
+   :header-rows: 1
+
+   * - Name
+     - Value
+   * - ``MATCH_BROKEN``
+     - ``-2``
+   * - ``MATCH_NOT_FOUND``
+     - ``-1``

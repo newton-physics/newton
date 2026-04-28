@@ -33,7 +33,7 @@ wp.set_module_options({"enable_backward": False})
 ###
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _llt_sequential_factorize(
     # Inputs:
     dim_in: wp.array(dtype=int32),
@@ -71,7 +71,7 @@ def _llt_sequential_factorize(
                 L_out[m_ij] = (A_ij - sum) / L_jj
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _llt_sequential_solve(
     # Inputs:
     dim_in: wp.array(dtype=int32),
@@ -114,7 +114,7 @@ def _llt_sequential_solve(
         x_out[vio + i] = sum_i / LT_ii
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _llt_sequential_solve_inplace(
     # Inputs:
     dim_in: wp.array(dtype=int32),

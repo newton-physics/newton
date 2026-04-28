@@ -17,8 +17,7 @@ from .control import Control
 from .state import State
 
 if TYPE_CHECKING:
-    from newton_actuators import Actuator
-
+    from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 
@@ -280,6 +279,8 @@ class Model:
         """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
 
         # Heightfield collision data (compact table + per-shape index indirection)
+        self.has_heightfields: bool = False
+        """True iff the model contains at least one ``GeoType.HFIELD`` shape. Lets launch sites pick lean kernel variants."""
         self.shape_heightfield_index: wp.array[wp.int32] | None = None
         """Per-shape heightfield index, shape [shape_count]. -1 means shape has no heightfield."""
         self.heightfield_data: wp.array[HeightfieldData] | None = None

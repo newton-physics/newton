@@ -549,8 +549,8 @@ class LLTBlockedSolver(DirectSolver):
     def __init__(
         self,
         operator: DenseLinearOperatorData | None = None,
-        block_size: int = 16,
-        solve_block_dim: int = 64,
+        block_size: int = 32,
+        solve_block_dim: int = 128,
         factortize_block_dim: int = 128,
         atol: float | None = None,
         rtol: float | None = None,

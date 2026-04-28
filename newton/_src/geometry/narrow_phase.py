@@ -1430,6 +1430,7 @@ class NarrowPhase:
         use_lean_gjk_mpr: bool = False,
         deterministic: bool = False,
         contact_max: int | None = None,
+        verify_buffers: bool = True,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -1461,6 +1462,20 @@ class NarrowPhase:
                 Defaults to ``max_candidate_pairs``.  Set this to a larger value when
                 a single candidate pair can emit multiple contacts (e.g. up to 4 for
                 primitive multi-contact paths).
+            verify_buffers: When True (the default), launch a ``dim=[1]``
+                diagnostic kernel (:func:`verify_narrow_phase_buffers`) at the
+                end of :meth:`launch` that compares each public counter on this
+                class (``gjk_candidate_pairs_count``, ``shape_pairs_mesh_count``,
+                ``triangle_pairs_count``, ``shape_pairs_mesh_plane_count``,
+                ``shape_pairs_mesh_mesh_count``, ``shape_pairs_sdf_sdf_count``)
+                and the output ``contact_count`` against the capacity of its
+                backing array, printing ``wp.printf`` warnings on overflow.
+                Users who want a programmatic overflow hook can disable this and
+                read those counters themselves.  Overhead is one extra kernel
+                launch per collision pass (roughly a few µs of launch latency on
+                CUDA; the kernel body is a handful of scalar comparisons on one
+                thread).  Disable in hot loops or CUDA graph capture once buffer
+                sizes are known to be adequate.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -1469,6 +1484,7 @@ class NarrowPhase:
         self.has_meshes = has_meshes
         self.has_heightfields = has_heightfields
         self.deterministic = deterministic
+        self.verify_buffers = verify_buffers
 
         # Warn when running on CPU with meshes: mesh-mesh SDF contacts require CUDA
         is_gpu_device = wp.get_device(device).is_cuda
@@ -2097,30 +2113,31 @@ class NarrowPhase:
             )
 
         # Verify no collision pipeline buffers overflowed
-        wp.launch(
-            kernel=verify_narrow_phase_buffers,
-            dim=[1],
-            inputs=[
-                candidate_pair_count,
-                candidate_pair.shape[0],
-                self.gjk_candidate_pairs_count,
-                self.gjk_candidate_pairs.shape[0],
-                self.shape_pairs_mesh_count,
-                self.shape_pairs_mesh.shape[0] if self.shape_pairs_mesh is not None else 0,
-                self.triangle_pairs_count,
-                self.triangle_pairs.shape[0] if self.triangle_pairs is not None else 0,
-                self.shape_pairs_mesh_plane_count,
-                self.shape_pairs_mesh_plane.shape[0] if self.shape_pairs_mesh_plane is not None else 0,
-                self.shape_pairs_mesh_mesh_count,
-                self.shape_pairs_mesh_mesh.shape[0] if self.shape_pairs_mesh_mesh is not None else 0,
-                self.shape_pairs_sdf_sdf_count,
-                self.shape_pairs_sdf_sdf.shape[0] if self.shape_pairs_sdf_sdf is not None else 0,
-                writer_data.contact_count,
-                writer_data.contact_max,
-            ],
-            device=device,
-            record_tape=False,
-        )
+        if self.verify_buffers:
+            wp.launch(
+                kernel=verify_narrow_phase_buffers,
+                dim=[1],
+                inputs=[
+                    candidate_pair_count,
+                    candidate_pair.shape[0],
+                    self.gjk_candidate_pairs_count,
+                    self.gjk_candidate_pairs.shape[0],
+                    self.shape_pairs_mesh_count,
+                    self.shape_pairs_mesh.shape[0] if self.shape_pairs_mesh is not None else 0,
+                    self.triangle_pairs_count,
+                    self.triangle_pairs.shape[0] if self.triangle_pairs is not None else 0,
+                    self.shape_pairs_mesh_plane_count,
+                    self.shape_pairs_mesh_plane.shape[0] if self.shape_pairs_mesh_plane is not None else 0,
+                    self.shape_pairs_mesh_mesh_count,
+                    self.shape_pairs_mesh_mesh.shape[0] if self.shape_pairs_mesh_mesh is not None else 0,
+                    self.shape_pairs_sdf_sdf_count,
+                    self.shape_pairs_sdf_sdf.shape[0] if self.shape_pairs_sdf_sdf is not None else 0,
+                    writer_data.contact_count,
+                    writer_data.contact_max,
+                ],
+                device=device,
+                record_tape=False,
+            )
 
     def launch(
         self,
