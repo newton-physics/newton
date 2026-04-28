@@ -82,9 +82,12 @@ class RenderContext:
 
         Populates shape, triangle, and texture data from *model*. BVH
         acceleration structures for shapes and particles live on
-        :class:`~newton.Model` and must be refit via
-        :func:`~newton.geometry.refit_bvh_shape` and
-        :func:`~newton.geometry.refit_bvh_particle` before rendering.
+        :class:`~newton.Model` and must be built via
+        :func:`~newton.geometry.build_bvh_shape` and
+        :func:`~newton.geometry.build_bvh_particle` before first use, then
+        refit via :func:`~newton.geometry.refit_bvh_shape` and
+        :func:`~newton.geometry.refit_bvh_particle` before later frames that
+        change geometry.
 
         Args:
             model: Newton simulation model providing shapes and particles.
@@ -117,8 +120,10 @@ class RenderContext:
     def update(self, model: Model, state: State):
         """Synchronize triangle-mesh points from the current simulation state.
 
-        Shape and particle BVHs are refit separately via
-        :func:`~newton.geometry.refit_bvh_shape` and
+        Shape and particle BVHs are built and refit separately via
+        :func:`~newton.geometry.build_bvh_shape`,
+        :func:`~newton.geometry.build_bvh_particle`,
+        :func:`~newton.geometry.refit_bvh_shape`, and
         :func:`~newton.geometry.refit_bvh_particle`.
 
         Args:
@@ -148,8 +153,11 @@ class RenderContext:
         output arrays must have shape
         ``(world_count, camera_count, height, width)``.
 
-        Shape and particle BVHs on *model* must be refit for the current
-        *state* via :func:`~newton.geometry.refit_bvh_shape` and
+        Shape and particle BVHs on *model* must be built once via
+        :func:`~newton.geometry.build_bvh_shape` and
+        :func:`~newton.geometry.build_bvh_particle` before first use. Before
+        later frames that change geometry, refit them via
+        :func:`~newton.geometry.refit_bvh_shape` and
         :func:`~newton.geometry.refit_bvh_particle` before calling this
         method.
 
@@ -168,8 +176,22 @@ class RenderContext:
             clear_data: Values used to clear output images before
                 rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
         """
+        if model.shape_count > 0 and model.bvh_shape_enabled is None:
+            raise RuntimeError("build_bvh_shape() must be called before rendering shapes.")
+
         has_shapes = model.bvh_shape_count_enabled > 0
-        has_particles = self.__has_particles and state.particle_q is not None and state.particle_q.shape[0] > 0
+        if has_shapes and (model.bvh_shapes is None or model.bvh_shapes_group_roots is None):
+            raise RuntimeError("Shape BVH is incomplete; build it with build_bvh_shape().")
+
+        has_particles = (
+            self.config.enable_particles
+            and self.__has_particles
+            and state.particle_q is not None
+            and state.particle_q.shape[0] > 0
+        )
+        if has_particles and (model.bvh_particles is None or model.bvh_particles_group_roots is None):
+            raise RuntimeError("build_bvh_particle() must be called before rendering particles.")
+
         if has_shapes or has_particles or self.has_triangle_mesh or self.has_gaussians:
             if self.has_triangle_mesh:
                 if self.triangle_mesh is None:
