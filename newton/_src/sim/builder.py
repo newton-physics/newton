@@ -9945,6 +9945,7 @@ class ModelBuilder:
             # heightfield collision data
             hfield_count = sum(1 for t in self.shape_type if t == GeoType.HFIELD)
             has_heightfields = hfield_count > 0
+            m.has_heightfields = has_heightfields
             if hfield_count > 1:
                 warnings.warn(
                     "Heightfield-vs-heightfield collision is not supported; "
