@@ -3371,6 +3371,12 @@ def parse_usd(
     # when _init_actuators rebuilds the MuJoCo actuators. Tendon/site/body
     # targets and synthesized per-axis spherical DOF labels also stay
     # CTRL_DIRECT (they don't appear in path_to_dof).
+    #
+    # Note: per-axis prim paths from joints that were merged into a D6 (the
+    # cycle-detection fix from #2557) ARE in path_to_dof and map to single
+    # DOFs of the merged joint, so they convert just like single-DOF
+    # revolutes -- mirroring how the MJCF importer uses mjcf_joint_name_to_dof
+    # to target specific DOFs in combined joints (see import_mjcf.py).
     if "mujoco:actuator_target_label" in builder.custom_attributes:
         mjc_actuator_count = builder._custom_frequency_counts.get("mujoco:actuator", 0)
     else:
