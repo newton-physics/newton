@@ -23,7 +23,7 @@ class FastExampleCablePile:
             args = newton.examples.default_args()
         else:
             args = None
-        self.example = ExampleCablePile(ViewerNull(num_frames=self.num_frames), args)
+        self.example = ExampleCablePile(ViewerNull(num_frames=self.num_frames), args, layers=4, lanes_per_layer=10)
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)

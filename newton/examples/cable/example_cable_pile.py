@@ -5,7 +5,7 @@
 # Example Cable Pile
 #
 # Demonstrates complex cable-to-cable contact and settling behavior.
-# Creates a pile of 40 cables (10 per layer x 4 layers) with alternating
+# Creates a pile of cables with alternating
 # orientations (X/Y axis) and sinusoidal waviness. Tests multi-body contact
 # resolution, stacking stability, and friction in dense cable assemblies.
 #
@@ -28,6 +28,8 @@ class Example:
         slope_enabled: bool = False,
         slope_angle_deg: float = 20.0,
         slope_mu: float | None = None,
+        layers: int = 10,
+        lanes_per_layer: int = 10,
     ):
         self.viewer = viewer
         self.args = args
@@ -48,8 +50,8 @@ class Example:
         bend_stiffness = 2.0e1
 
         # Layers and lanes
-        layers = 10
-        lanes_per_layer = 10
+        self.layers = layers
+        self.lanes_per_layer = lanes_per_layer
         lane_spacing = max(8.0 * cable_radius, 0.15)
         layer_gap = cable_radius * 6.0
 
@@ -106,11 +108,11 @@ class Example:
             builder.add_ground_plane(cfg=ground_cfg)
 
         # Build layered lanes of cables with alternating orientations
-        for layer in range(layers):
+        for layer in range(self.layers):
             orient = "x" if (layer % 2 == 0) else "y"
             z0 = 0.3 + layer * layer_gap
-            for lane in range(lanes_per_layer):
-                offset = (lane - (lanes_per_layer - 1) * 0.5) * lane_spacing
+            for lane in range(self.lanes_per_layer):
+                offset = (lane - (self.lanes_per_layer - 1) * 0.5) * lane_spacing
                 if orient == "x":
                     start = wp.vec3(0.0, offset, z0)
                 else:
@@ -227,11 +229,10 @@ class Example:
         """Test cable pile simulation for stability and correctness (called after simulation)."""
         cable_radius = 0.012
         cable_diameter = 2.0 * cable_radius
-        layers = 10
 
         tolerance = 0.5
 
-        max_z_settled = layers * cable_diameter + tolerance
+        max_z_settled = self.layers * cable_diameter + tolerance
         ground_tolerance = tolerance
 
         if self.state_0.body_q is not None and self.state_0.body_qd is not None:
@@ -250,7 +251,7 @@ class Example:
             )
             assert max_z_actual < max_z_settled, (
                 f"Pile too high: max_z={max_z_actual:.3f} > expected {max_z_settled:.3f} "
-                f"({layers} layers x {cable_diameter:.3f}m diameter + tolerance)"
+                f"({self.layers} layers x {cable_diameter:.3f}m diameter + tolerance)"
             )
 
             assert (np.abs(body_velocities) < 5e2).all(), "Velocities too large"
