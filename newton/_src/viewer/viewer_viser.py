@@ -137,6 +137,8 @@ class ViewerViser(ViewerBase):
         self._plot_handles: dict[str, Any] = {}
         self._plot_folder: Any = None
         self._plot_history_size = plot_history_size
+        self._plane_meshes = {}
+        self._plane_handles = {}
 
         super().__init__()
 
@@ -147,8 +149,6 @@ class ViewerViser(ViewerBase):
         self._meshes = {}
         self._instances = {}
         self._scene_handles = {}  # Track viser scene node handles
-        self._plane_meshes = {}
-        self._plane_handles = {}
 
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
@@ -156,6 +156,10 @@ class ViewerViser(ViewerBase):
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
+
+        # Store configuration before any URL generation.
+        self._port = port
+        self.is_jupyter_notebook = is_jupyter_notebook()
 
         if share:
             self._share_url = self._server.request_share_url()
@@ -165,13 +169,7 @@ class ViewerViser(ViewerBase):
             self._share_url = None
 
         if verbose:
-            print(f"Viser server running at: http://localhost:{port}")
-
-        # Store configuration
-        self._port = port
-
-        # Track if running in Jupyter
-        self.is_jupyter_notebook = is_jupyter_notebook()
+            print(f"Viser server running at: {self.url}")
 
         # Recording state
         self._frame_dt = 0.0
@@ -187,6 +185,11 @@ class ViewerViser(ViewerBase):
     @override
     def clear_model(self):
         """Reset model-dependent state, including scalar plot buffers."""
+        for plane_name in list(self._plane_handles.keys()):
+            self._remove_plane_handles(plane_name)
+        self._plane_handles.clear()
+        self._plane_meshes.clear()
+
         # Remove plot handles from the GUI.
         for handle in self._plot_handles.values():
             try:
@@ -629,6 +632,7 @@ class ViewerViser(ViewerBase):
         name: str,
         plane_info: dict[str, float | bool],
         xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
         hidden: bool = False,
     ):
         """Render plane instances as finite line grids instead of opaque meshes."""
@@ -644,6 +648,9 @@ class ViewerViser(ViewerBase):
         xforms_np = np.asarray(xforms_np, dtype=np.float32)
         positions = xforms_np[:, :3]
         quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
+        scales_np = self._to_numpy(scales) if scales is not None else None
+        if scales_np is not None:
+            scales_np = np.asarray(scales_np, dtype=np.float32)
 
         width = float(plane_info["width"])
         length = float(plane_info["length"])
@@ -651,9 +658,13 @@ class ViewerViser(ViewerBase):
 
         handles = []
         for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
+            instance_points = grid_points
+            if scales_np is not None:
+                plane_scale = np.array([scales_np[idx][0], scales_np[idx][1], 1.0], dtype=np.float32)
+                instance_points = grid_points * plane_scale
             handle = self._server.scene.add_line_segments(
                 name=f"{name}/grid_{idx}",
-                points=grid_points,
+                points=instance_points,
                 colors=(150, 150, 150),
                 line_width=1.5,
                 wxyz=quat_wxyz,
@@ -690,7 +701,7 @@ class ViewerViser(ViewerBase):
             hidden: Whether the instances are hidden.
         """
         if mesh in self._plane_meshes:
-            self._log_plane_instances(name, self._plane_meshes[mesh], xforms, hidden=hidden)
+            self._log_plane_instances(name, self._plane_meshes[mesh], xforms, scales, hidden=hidden)
             return
 
         self._remove_plane_handles(name)

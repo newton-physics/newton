@@ -437,7 +437,13 @@ def _copy_viser_client_into_output_static(*, outdir: Path) -> None:
 
         import viser  # noqa: PLC0415
 
-        src_candidates.append(Path(inspect.getfile(viser)).resolve().parent / "client" / "build")
+        viser_package_dir = Path(inspect.getfile(viser)).resolve().parent
+        src_candidates.extend(
+            [
+                viser_package_dir / "client" / "build",
+                viser_package_dir / "static",
+            ]
+        )
     except Exception:
         pass
 
