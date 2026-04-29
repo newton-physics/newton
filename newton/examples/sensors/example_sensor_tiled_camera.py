@@ -235,6 +235,9 @@ class Example:
         )
         self.depth_range = wp.array([1.0, 100.0], dtype=wp.float32)
 
+        newton.geometry.build_bvh_shape(self.model, self.state)
+        newton.geometry.build_bvh_particle(self.model, self.state)
+
         if isinstance(self.viewer, ViewerGL):
             self.create_texture()
 
@@ -266,6 +269,8 @@ class Example:
         self.viewer.end_frame()
 
     def render_sensors(self):
+        newton.geometry.refit_bvh_shape(self.model, self.state)
+        newton.geometry.refit_bvh_particle(self.model, self.state)
         self.tiled_camera_sensor.update(
             self.state,
             self.get_camera_transforms(),
