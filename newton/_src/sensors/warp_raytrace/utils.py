@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
@@ -212,8 +212,10 @@ def unpack_shape_index_hash_to_batched_rgba_kernel(
     camera_count = image.shape[1]
     n = world * camera_count + camera
     idx = image[world, camera, y, x]
-    # Knuth multiplicative hash, masked to 24 bits.
-    h = (idx * wp.uint32(2654435761)) & wp.uint32(0xFFFFFF)
+    # Knuth multiplicative hash, masked to 24 bits. ``idx + 1`` keeps shape 0
+    # away from the all-zero hash that collides with the miss color; the
+    # miss sentinel ``0xFFFFFFFF`` wraps back to 0 and intentionally renders black.
+    h = ((idx + wp.uint32(1)) * wp.uint32(2654435761)) & wp.uint32(0xFFFFFF)
     out[n, y, x, 0] = wp.uint8((h >> wp.uint32(16)) & wp.uint32(0xFF))
     out[n, y, x, 1] = wp.uint8((h >> wp.uint32(8)) & wp.uint32(0xFF))
     out[n, y, x, 2] = wp.uint8(h & wp.uint32(0xFF))

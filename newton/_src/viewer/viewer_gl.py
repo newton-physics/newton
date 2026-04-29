@@ -500,6 +500,13 @@ class ViewerGL(ViewerBase):
         """
         super().set_model(model, max_worlds=max_worlds)
 
+        # ``ViewerBase.set_model`` may have switched ``self.device`` to the
+        # model's device. Rebind the image logger so its GPU path tests against
+        # — and registers PBO interop with — the correct CUDA context.
+        if self._image_logger is not None and self._image_logger.device != self.device:
+            self._image_logger.clear()
+            self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
+
         if self.model is not None:
             # For capsule batches, replace per-instance scales with (radius, radius, half_height)
             # so the capsule instancer path has the needed parameters.

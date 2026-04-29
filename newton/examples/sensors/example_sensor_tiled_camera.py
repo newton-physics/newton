@@ -183,6 +183,11 @@ class Example:
         )
 
         # Palette for the "semantic" debug view: looked up by shape index.
+        # Indices written into shape_index_image come from builder shape order,
+        # so the palette must be one entry per shape in that same order.
+        assert len(semantic_colors) == self.model.shape_count, (
+            f"semantic_colors out of sync with model: {len(semantic_colors)} vs {self.model.shape_count}"
+        )
         self.semantic_palette = wp.array(
             np.asarray(semantic_colors, dtype=np.uint8),
             dtype=wp.uint8,

@@ -181,7 +181,7 @@ class TestConvertToPackedRgbaNumpy(unittest.TestCase):
         np.testing.assert_array_equal(out[..., 3], np.full((2, 2), 77, dtype=np.uint8))
 
     def test_batched_4d_stacks_vertically(self):
-        # N=3, H=2, W=2, last=2 -> treated as (N=3,H=2,W=2) batch grayscale (last not in {1,3,4})
+        # 3D (3, 2, 2) -> (N=3, H=2, W=2) grayscale batch (last dim 2 not in {1,3,4}).
         src = np.zeros((3, 2, 2), dtype=np.uint8)
         src[0] = 10
         src[1] = 20

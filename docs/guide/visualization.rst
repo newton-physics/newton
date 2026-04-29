@@ -589,9 +589,9 @@ outside the range are clipped).
     rgba = sensor.utils.to_batched_rgba_from_color(color_image)
     viewer.log_image("tiled_camera", rgba)
 
-For a 3D input ``(H, W, C)``, a last-axis of 1, 3, or 4 is interpreted as
-channel count (single color image); any other value is interpreted as a
-batch of ``C`` grayscale images ``(N, H, W)``. Pass a 4D array if the
+For a 3D input, a last-axis of 1, 3, or 4 is interpreted as channel count
+for a single ``(H, W, C)`` image; otherwise the array is interpreted as a
+batch ``(N, H, W)`` of grayscale images. Pass a 4D array if the
 disambiguation matters.
 
 **Camera and world layout:**

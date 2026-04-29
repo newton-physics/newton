@@ -307,6 +307,11 @@ class ImageLogger:
         self._warned_device_mismatch: dict[str, wp.Device] = {}
         self._selected: str | None = None
 
+    @property
+    def device(self) -> wp.Device:
+        """The CUDA device this logger was bound to."""
+        return self._device
+
     def log(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
         """Validate, convert, and upload an image under *name*.
 

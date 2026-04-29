@@ -206,6 +206,32 @@ class TestToBatchedRgbaFromShapeIndex(unittest.TestCase):
             for x in range(2):
                 self.assertEqual(got[0, y, x, 3], 255)
 
+    def test_shape_index_hash_zero_is_not_black(self):
+        # Shape index 0 must hash to a non-black color so a real shape doesn't
+        # collide with the miss color. The miss sentinel ``0xFFFFFFFF`` must
+        # still render black (wraps to 0 after the +1 bias).
+        from newton._src.sensors.warp_raytrace.utils import (  # noqa: PLC0415
+            unpack_shape_index_hash_to_batched_rgba_kernel,
+        )
+
+        inp = np.array([[[[0, 0xFFFFFFFF]]]], dtype=np.uint32)
+        inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=wp.get_preferred_device())
+
+        out = wp.empty((1, 1, 2, 4), dtype=wp.uint8, device=inp_wp.device)
+        wp.launch(
+            unpack_shape_index_hash_to_batched_rgba_kernel,
+            dim=(1, 1, 1, 2),
+            inputs=[inp_wp],
+            outputs=[out],
+            device=inp_wp.device,
+        )
+        got = out.numpy()
+
+        zero_rgb = (int(got[0, 0, 0, 0]), int(got[0, 0, 0, 1]), int(got[0, 0, 0, 2]))
+        miss_rgb = (int(got[0, 0, 1, 0]), int(got[0, 0, 1, 1]), int(got[0, 0, 1, 2]))
+        self.assertNotEqual(zero_rgb, (0, 0, 0))
+        self.assertEqual(miss_rgb, (0, 0, 0))
+
     def test_shape_index_palette_lookup(self):
         from newton._src.sensors.warp_raytrace.utils import colorize_shape_index_with_palette_kernel  # noqa: PLC0415
 
