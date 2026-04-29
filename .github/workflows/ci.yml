@@ -24,6 +24,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            download-r2.pytorch.org:443
             download.pytorch.org:443
             files.pythonhosted.org:443
             github.com:443
