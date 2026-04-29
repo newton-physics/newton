@@ -53,14 +53,14 @@ def _ka_from_nu(tri_ke: float, nu: float) -> float:
 
 class Example:
     POISSON_RATIOS = (0.10, 0.20, 0.30, 0.40, 0.49)
-    STRETCH = 1.3
-    RAMP_FRAMES = 60  # ease the right edge from rest -> stretched over this many frames
+    STRETCH = 2.0
+    RAMP_FRAMES = 200  # ease the right edge from rest -> stretched over this many frames
     DIM = 20
     CELL = 0.05  # 1 m square sheet at rest
     SHEET_SPACING = 1.6  # along Y, between sheets
     PARTICLE_MASS = 1.0  # kg — heavy enough that ramped stretch is stable
     TRI_KE = 1.0e3
-    TRI_KD = 50.0
+    TRI_KD = 1e-4
     EDGE_KE = 0.0
 
     def __init__(self, viewer, args=None):
@@ -140,6 +140,9 @@ class Example:
             self.sheet_tri_ranges.append((int(indices.min()), int(indices.max()) + 1))
 
         self.viewer.set_model(self.model)
+        self.viewer.set_camera(pos=wp.vec3(8.44, 3.26, 4.23), pitch=-20.0, yaw=-180.0)
+        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+            self.viewer.camera.fov = 53.0
         self.capture()
 
     def capture(self):
