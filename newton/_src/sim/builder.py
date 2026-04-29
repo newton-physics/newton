@@ -7857,8 +7857,10 @@ class ModelBuilder:
             from ..utils.mesh import validate_triangle_mesh  # noqa: PLC0415
 
             verts_np = np.array(vertices, dtype=float) * scale
-            inds_np = np.array(indices, dtype=np.intp).reshape(-1, 3)
+            inds_np = np.asarray(indices, dtype=np.intp)
             validate_triangle_mesh(verts_np, inds_np, stacklevel=3)
+            if inds_np.size > 0 and inds_np.size % 3 != 0:
+                return
 
         num_verts = int(len(vertices))
         num_tris = int(len(indices) / 3)
@@ -8303,8 +8305,10 @@ class ModelBuilder:
             from ..utils.mesh import validate_tet_mesh  # noqa: PLC0415
 
             verts_np = np.array(vertices, dtype=float) * scale
-            inds_np = np.array(indices, dtype=np.intp).reshape(-1, 4)
+            inds_np = np.asarray(indices, dtype=np.intp)
             validate_tet_mesh(verts_np, inds_np, stacklevel=3)
+            if inds_np.size > 0 and inds_np.size % 4 != 0:
+                return
 
         if density is None:
             density = self.default_tet_density
