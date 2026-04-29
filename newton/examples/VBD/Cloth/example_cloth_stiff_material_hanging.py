@@ -138,6 +138,15 @@ class Example:
             lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
         )
 
+        # Non-explosion: velocities stay bounded. StVK at this stiffness
+        # has a non-PSD membrane Hessian under compression and VBD blows up
+        # to thousands of m/s; Neo-Hookean keeps residual swing under 20.
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particle velocities do not explode",
+            lambda q, qd: wp.length(qd) < 20.0,
+        )
+
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
