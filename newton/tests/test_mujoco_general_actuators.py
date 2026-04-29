@@ -3,6 +3,8 @@
 
 """Tests for MuJoCo actuator parsing and propagation."""
 
+import os
+import tempfile
 import unittest
 
 import numpy as np
@@ -61,6 +63,124 @@ MJCF_ACTUATORS = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+USD_MJC_ACTUATOR_TEMPLATE = """#usda 1.0
+(
+    defaultPrim = "Root"
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "Root" (
+    apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Cube "Base" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float physics:mass = 1
+        double size = 0.2
+    }
+
+    def Cube "Link" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float physics:mass = 1
+        double size = 0.2
+        double3 xformOp:translate = (0.5, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsRevoluteJoint "Hinge" (
+        apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        uniform token physics:axis = "Z"
+        rel physics:body0 = </Root/Base>
+        rel physics:body1 = </Root/Link>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+    }
+
+    def Scope "Physics"
+    {
+__ACTUATORS__
+    }
+}
+"""
+
+USD_MJC_POSITION_ACTUATOR = """        def MjcActuator "HingePosition"
+        {
+            uniform token mjc:biasType = "affine"
+            uniform double[] mjc:gainPrm = [12, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform double[] mjc:biasPrm = [0, -12, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform double mjc:forceRange:min = -5
+            uniform double mjc:forceRange:max = 5
+            rel mjc:target = </Root/Hinge>
+        }
+"""
+
+USD_MJC_DAMPED_POSITION_ACTUATOR = """        def MjcActuator "HingePosition"
+        {
+            uniform token mjc:biasType = "affine"
+            uniform double[] mjc:gainPrm = [12, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform double[] mjc:biasPrm = [0, -12, -3, 0, 0, 0, 0, 0, 0, 0]
+            uniform double mjc:forceRange:min = -5
+            uniform double mjc:forceRange:max = 5
+            rel mjc:target = </Root/Hinge>
+        }
+"""
+
+USD_MJC_VELOCITY_ACTUATOR = """        def MjcActuator "HingeVelocity"
+        {
+            uniform token mjc:biasType = "affine"
+            uniform double[] mjc:gainPrm = [4, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform double[] mjc:biasPrm = [0, 0, -4, 0, 0, 0, 0, 0, 0, 0]
+            rel mjc:target = </Root/Hinge>
+        }
+"""
+
+USD_MJC_DIRECT_ACTUATOR = """        def MjcActuator "HingeMotor"
+        {
+            uniform double[] mjc:gainPrm = [7, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            uniform double[] mjc:biasPrm = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            rel mjc:target = </Root/Hinge>
+        }
+"""
+
+
+def make_usd_mjc_actuator_stage(*actuator_defs: str) -> str:
+    return USD_MJC_ACTUATOR_TEMPLATE.replace("__ACTUATORS__", "\n\n".join(actuator_defs))
+
+
+def load_usd_mjc_actuator_builder(*actuator_defs: str) -> ModelBuilder:
+    with tempfile.NamedTemporaryFile("w", suffix=".usda", delete=False) as f:
+        f.write(make_usd_mjc_actuator_stage(*actuator_defs))
+        usd_path = f.name
+
+    try:
+        builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(usd_path)
+    finally:
+        os.unlink(usd_path)
+
+    return builder
+
+
+def assert_solver_actuator_mapping(test, model, expected_indices):
+    solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+    test.assertEqual(solver.mj_model.nu, len(expected_indices))
+    np.testing.assert_array_equal(
+        solver.mjc_actuator_ctrl_source.numpy(),
+        [SolverMuJoCo.CtrlSource.JOINT_TARGET] * len(expected_indices),
+    )
+    np.testing.assert_array_equal(solver.mjc_actuator_to_newton_idx.numpy(), expected_indices)
+
 
 def find_joint_by_name(builder, joint_name):
     """Find a joint index by matching the last segment of hierarchical labels."""
@@ -77,6 +197,83 @@ def get_qd_start(builder, joint_name):
 
 class TestMuJoCoActuators(unittest.TestCase):
     """Test MuJoCo actuator parsing through builder, Newton model, and MuJoCo model."""
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_mjc_position_actuator_sets_position_target(self):
+        """USD MjcActuator position shortcuts drive Newton position targets."""
+        builder = load_usd_mjc_actuator_builder(USD_MJC_POSITION_ACTUATOR)
+
+        dof = get_qd_start(builder, "Hinge")
+        self.assertEqual(builder.joint_target_mode[dof], int(JointTargetMode.POSITION))
+        self.assertEqual(builder.joint_target_ke[dof], 12.0)
+        self.assertEqual(builder.joint_target_kd[dof], 0.0)
+        self.assertEqual(builder.joint_effort_limit[dof], 5.0)
+
+        model = builder.finalize()
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        self.assertEqual(model.joint_target_mode.numpy()[dof], int(JointTargetMode.POSITION))
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.JOINT_TARGET])
+        np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy(), [[dof, 0]])
+
+        assert_solver_actuator_mapping(self, model, [dof])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_mjc_velocity_actuator_sets_velocity_target(self):
+        """USD MjcActuator velocity shortcuts drive Newton velocity targets."""
+        builder = load_usd_mjc_actuator_builder(USD_MJC_VELOCITY_ACTUATOR)
+
+        dof = get_qd_start(builder, "Hinge")
+        self.assertEqual(builder.joint_target_mode[dof], int(JointTargetMode.VELOCITY))
+        self.assertEqual(builder.joint_target_ke[dof], 0.0)
+        self.assertEqual(builder.joint_target_kd[dof], 4.0)
+
+        model = builder.finalize()
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        self.assertEqual(model.joint_target_mode.numpy()[dof], int(JointTargetMode.VELOCITY))
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.JOINT_TARGET])
+        np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy(), [[dof, 0]])
+
+        assert_solver_actuator_mapping(self, model, [-(dof + 2)])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_mjc_position_velocity_actuators_set_joint_targets(self):
+        """USD MjcActuator position and velocity shortcuts share a target DOF."""
+        builder = load_usd_mjc_actuator_builder(USD_MJC_DAMPED_POSITION_ACTUATOR, USD_MJC_VELOCITY_ACTUATOR)
+
+        dof = get_qd_start(builder, "Hinge")
+        self.assertEqual(builder.joint_target_mode[dof], int(JointTargetMode.POSITION_VELOCITY))
+        self.assertEqual(builder.joint_target_ke[dof], 12.0)
+        self.assertEqual(builder.joint_target_kd[dof], 4.0)
+        self.assertEqual(builder.joint_effort_limit[dof], 5.0)
+
+        model = builder.finalize()
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 2)
+        self.assertEqual(model.joint_target_mode.numpy()[dof], int(JointTargetMode.POSITION_VELOCITY))
+        np.testing.assert_array_equal(
+            model.mujoco.ctrl_source.numpy(),
+            [SolverMuJoCo.CtrlSource.JOINT_TARGET, SolverMuJoCo.CtrlSource.JOINT_TARGET],
+        )
+        np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy(), [[dof, 0], [dof, 0]])
+
+        assert_solver_actuator_mapping(self, model, [dof, -(dof + 2)])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_mjc_direct_actuator_stays_ctrl_direct(self):
+        """USD MjcActuator rows that are not position/velocity shortcuts stay direct."""
+        builder = load_usd_mjc_actuator_builder(USD_MJC_DIRECT_ACTUATOR)
+
+        dof = get_qd_start(builder, "Hinge")
+        self.assertEqual(builder.joint_target_mode[dof], int(JointTargetMode.NONE))
+
+        model = builder.finalize()
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        self.assertEqual(model.joint_target_mode.numpy()[dof], int(JointTargetMode.NONE))
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        self.assertEqual(solver.mj_model.nu, 1)
+        np.testing.assert_array_equal(solver.mjc_actuator_ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+        np.testing.assert_array_equal(solver.mjc_actuator_to_newton_idx.numpy(), [0])
 
     def test_parsing_ctrl_direct_false(self):
         """Test parsing with ctrl_direct=False."""

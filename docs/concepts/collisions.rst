@@ -1942,7 +1942,7 @@ You can replace or compose these stages independently.
 **Broad phase classes**
 
 All broad phase classes expose a ``launch`` method that writes candidate pairs
-(``wp.array(dtype=wp.vec2i)``) and a pair count:
+(``wp.array[wp.vec2i]``) and a pair count:
 
 .. list-table::
    :header-rows: 1
