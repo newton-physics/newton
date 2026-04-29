@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian
+from ...geometry.bvh import compute_ellipsoid_bounds
 from ...geometry.raycast import map_ray_to_local_scaled
 from ...math import safe_div
-from . import bvh
 from .types import GaussianRenderMode
 
 if TYPE_CHECKING:
@@ -30,7 +30,7 @@ def compute_gaussian_bounds(gaussians_data: Gaussian.Data, tid: wp.int32) -> tup
     ks = wp.sqrt(wp.log(min_response) / wp.float32(-0.5))
     scale = wp.vec3f(scale[0] * ks, scale[1] * ks, scale[2] * ks)
 
-    return bvh.compute_ellipsoid_bounds(transform, scale)
+    return compute_ellipsoid_bounds(transform, scale)
 
 
 @wp.kernel
