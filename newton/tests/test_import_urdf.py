@@ -1179,6 +1179,9 @@ class TestImportUrdfComposition(unittest.TestCase):
             )
 
         self.assertEqual(builder.articulation_start, [0, 13, 26])
+        self.assertEqual(builder.articulation_label, ["collapse_order", "collapse_order", "collapse_order"])
+        self.assertEqual(builder.articulation_world, [-1, -1, -1])
+        self.assertEqual(builder.joint_articulation, [0] * 13 + [1] * 13 + [2] * 13)
         model = builder.finalize()
         self.assertEqual(model.articulation_count, 3)
         self.assertEqual(model.joint_count, 39)

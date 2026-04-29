@@ -5172,6 +5172,17 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
+        def remap_articulation_reference(value: Any) -> Any:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, int):
+                return articulation_remap.get(value, -1) if value >= 0 else value
+            if isinstance(value, list):
+                return [remap_articulation_reference(v) for v in value]
+            if isinstance(value, tuple):
+                return tuple(remap_articulation_reference(v) for v in value)
+            return value
+
         for custom_attr in self.get_custom_attributes_by_frequency([Model.AttributeFrequency.ARTICULATION]):
             if isinstance(custom_attr.values, dict):
                 custom_attr.values = {
@@ -5179,6 +5190,16 @@ class ModelBuilder:
                     for old_idx, new_idx in articulation_remap.items()
                     if old_idx in custom_attr.values
                 }
+
+        for custom_attr in self.custom_attributes.values():
+            if custom_attr.references != "articulation" or custom_attr.values is None:
+                continue
+            if isinstance(custom_attr.values, dict):
+                custom_attr.values = {
+                    entity_idx: remap_articulation_reference(value) for entity_idx, value in custom_attr.values.items()
+                }
+            else:
+                custom_attr.values = [remap_articulation_reference(value) for value in custom_attr.values]
 
         # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
@@ -5356,6 +5377,7 @@ class ModelBuilder:
         return {
             "body_remap": body_remap,
             "joint_remap": joint_remap,
+            "articulation_remap": articulation_remap,
             "body_merged_parent": body_merged_parent,
             "body_merged_transform": body_merged_transform,
             # TODO clean up this data

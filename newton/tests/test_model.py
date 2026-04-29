@@ -569,14 +569,37 @@ class TestModelJoints(unittest.TestCase):
         builder.add_articulation(all_joints)
         assert builder.articulation_count == 3  # Three articulations total
 
-        builder.collapse_fixed_joints()
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="articulation_name",
+                dtype=str,
+                frequency=newton.Model.AttributeFrequency.ARTICULATION,
+                default="",
+                values={0: "fixed", 1: "revolute", 2: "free"},
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="articulation_ref",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.ONCE,
+                references="articulation",
+                default=-1,
+                values={0: [1, (2, -1)]},
+            )
+        )
+
+        collapse_results = builder.collapse_fixed_joints()
 
         assert builder.joint_count == 2
         assert builder.articulation_count == 2
+        assert collapse_results["articulation_remap"] == {1: 0, 2: 1}
         assert builder.articulation_start == [0, 1]
         assert builder.articulation_label == ["articulation_1", "articulation_2"]
         assert builder.articulation_world == [-1, -1]
         assert builder.joint_articulation == [0, 1]
+        assert builder.custom_attributes["articulation_name"].values == {0: "revolute", 1: "free"}
+        assert builder.custom_attributes["articulation_ref"].values == {0: [0, (1, -1)]}
         assert builder.joint_type == [newton.JointType.REVOLUTE, newton.JointType.FREE]
         assert builder.shape_count == 11
         assert builder.shape_body == [-1, -1, -1, -1, -1, -1, 0, 1, 1, 1, 1]
