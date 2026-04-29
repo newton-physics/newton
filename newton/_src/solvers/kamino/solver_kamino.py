@@ -23,7 +23,7 @@ from ...sim import (
     ModelBuilder,
     State,
 )
-from ..flags import SolverNotifyFlags
+from ..flags import SolverModelFlags, SolverStateFlags
 from ..solver import SolverBase
 
 if TYPE_CHECKING:
@@ -433,10 +433,14 @@ class SolverKamino(SolverBase):
             config=self._config,
         )
 
+    @override
     def reset(
         self,
-        state_out: State,
+        state: State | None = None,
         world_mask: wp.array | None = None,
+        flags: SolverStateFlags | None = None,
+        *,
+        state_out: State | None = None,
         actuator_q: wp.array | None = None,
         actuator_u: wp.array | None = None,
         joint_q: wp.array | None = None,
@@ -444,32 +448,49 @@ class SolverKamino(SolverBase):
         base_q: wp.array | None = None,
         base_u: wp.array | None = None,
     ):
-        """
+        """Reset the Kamino solver state.
+
         Resets the simulation state given a combination of desired base body
         and joint states, as well as an optional per-world mask array indicating
-        which worlds should be reset. The reset state is written to `state_out`.
+        which worlds should be reset. The state is modified in place.
 
-        For resets given absolute quantities like base body poses, the
-        `state_out` must initially contain the current state of the simulation.
+        For resets given absolute quantities like base body poses, *state*
+        must initially contain the current state of the simulation.
 
         Args:
-            state_out: The output state container to which the reset state data is written.
-            world_mask: Optional array of per-world masks indicating which worlds should be reset.\n
-                Shape of `(num_worlds,)` and type :class:`wp.int8 | wp.bool`
-            actuator_q: Optional array of target actuated joint coordinates.\n
-                Shape of `(num_actuated_joint_coords,)` and type :class:`wp.float32`
-            actuator_u: Optional array of target actuated joint DoF velocities.\n
-                Shape of `(num_actuated_joint_dofs,)` and type :class:`wp.float32`
-            joint_q: Optional array of target joint coordinates.\n
-                Shape of `(num_joint_coords,)` and type :class:`wp.float32`
-            joint_u: Optional array of target joint DoF velocities.\n
-                Shape of `(num_joint_dofs,)` and type :class:`wp.float32`
-            base_q: Optional array of target base body poses.\n
-                Shape of `(num_worlds,)` and type :class:`wp.transformf`
-            base_u: Optional array of target base body twists.\n
-                Shape of `(num_worlds,)` and type :class:`wp.spatial_vectorf`
+            state: The simulation state to reset (modified in place).
+            world_mask: Optional array of per-world masks indicating which
+                worlds should be reset.
+                Shape of ``(num_worlds,)`` and type :class:`wp.int8` | :class:`wp.bool`.
+            flags: Optional :class:`SolverStateFlags` bitmask controlling
+                which state attributes need to be reset.  If ``None``, all
+                state attributes are reset.
+            state_out: Deprecated alias for *state*. Use *state* instead.
+            actuator_q: Optional array of target actuated joint coordinates.
+                Shape of ``(num_actuated_joint_coords,)`` and type :class:`wp.float32`.
+            actuator_u: Optional array of target actuated joint DoF velocities.
+                Shape of ``(num_actuated_joint_dofs,)`` and type :class:`wp.float32`.
+            joint_q: Optional array of target joint coordinates.
+                Shape of ``(num_joint_coords,)`` and type :class:`wp.float32`.
+            joint_u: Optional array of target joint DoF velocities.
+                Shape of ``(num_joint_dofs,)`` and type :class:`wp.float32`.
+            base_q: Optional array of target base body poses.
+                Shape of ``(num_worlds,)`` and type :class:`wp.transformf`.
+            base_u: Optional array of target base body twists.
+                Shape of ``(num_worlds,)`` and type :class:`wp.spatial_vectorf`.
         """
-        # Convert base pose from body-origin to COM frame
+        if state_out is not None:
+            if state is not None:
+                raise ValueError("Cannot specify both 'state' and 'state_out'.")
+            warnings.warn(
+                "SolverKamino.reset(state_out=...) is deprecated, use reset(state=...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            state = state_out
+        if state is None:
+            raise ValueError("'state' argument is required.")
+
         if base_q is not None:
             base_q_com = wp.zeros_like(base_q)
             self._kamino.convert_base_origin_to_com(
@@ -481,12 +502,8 @@ class SolverKamino(SolverBase):
             base_q = base_q_com
 
         # TODO: fix brittle in-place update of arrays after conversion
-        # Create a zer-copy view of the input state_out as a StateKamino
-        # to interface with the Kamino solver's reset operation
-        state_out_kamino = self._kamino.StateKamino.from_newton(self._model_kamino.size, self.model, state_out)
+        state_out_kamino = self._kamino.StateKamino.from_newton(self._model_kamino.size, self.model, state)
 
-        # Execute the reset operation of the Kamino solver,
-        # to write the reset state to `state_out_kamino`
         self._solver_kamino.reset(
             state_out=state_out_kamino,
             world_mask=world_mask,
@@ -498,7 +515,6 @@ class SolverKamino(SolverBase):
             base_u=base_u,
         )
 
-        # Convert com-frame poses from Kamino reset to body-origin frame
         self._kamino.convert_body_com_to_origin(
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q_com=state_out_kamino.q_i,
@@ -583,41 +599,41 @@ class SolverKamino(SolverBase):
         """Propagate Newton model property changes to Kamino's internal ModelKamino.
 
         Args:
-            flags: Bitmask of :class:`SolverNotifyFlags` indicating which properties changed.
+            flags: Bitmask of :class:`SolverModelFlags` indicating which properties changed.
         """
-        if flags & SolverNotifyFlags.MODEL_PROPERTIES:
+        if flags & SolverModelFlags.MODEL_PROPERTIES:
             self._update_gravity()
 
-        if flags & SolverNotifyFlags.BODY_PROPERTIES:
+        if flags & SolverModelFlags.BODY_PROPERTIES:
             pass  # TODO: convert to CoM-frame if body_q_i_0 is changed at runtime?
 
-        if flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES:
+        if flags & SolverModelFlags.BODY_INERTIAL_PROPERTIES:
             # Kamino's RigidBodiesModel references Newton's arrays directly
             # (m_i, inv_m_i, i_I_i, inv_i_I_i, i_r_com_i), so no copy needed.
             pass
 
-        if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
+        if flags & SolverModelFlags.SHAPE_PROPERTIES:
             pass  # TODO: ???
 
-        if flags & SolverNotifyFlags.JOINT_PROPERTIES:
+        if flags & SolverModelFlags.JOINT_PROPERTIES:
             self._update_joint_transforms()
 
-        if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
+        if flags & SolverModelFlags.JOINT_DOF_PROPERTIES:
             # Joint limits (q_j_min, q_j_max, dq_j_max, tau_j_max) are direct
             # references to Newton's arrays, so no copy needed.
             pass
 
-        if flags & SolverNotifyFlags.ACTUATOR_PROPERTIES:
+        if flags & SolverModelFlags.ACTUATOR_PROPERTIES:
             pass  # TODO: ???
 
-        if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
+        if flags & SolverModelFlags.CONSTRAINT_PROPERTIES:
             pass  # TODO: ???
 
         unsupported = flags & ~(
-            SolverNotifyFlags.MODEL_PROPERTIES
-            | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES
-            | SolverNotifyFlags.JOINT_PROPERTIES
-            | SolverNotifyFlags.JOINT_DOF_PROPERTIES
+            SolverModelFlags.MODEL_PROPERTIES
+            | SolverModelFlags.BODY_INERTIAL_PROPERTIES
+            | SolverModelFlags.JOINT_PROPERTIES
+            | SolverModelFlags.JOINT_DOF_PROPERTIES
         )
         if unsupported:
             self._kamino.msg.warning(
@@ -795,7 +811,7 @@ class SolverKamino(SolverBase):
         """
         Updates Kamino's :class:`GravityModel` from Newton's model.gravity.
 
-        Called when :data:`SolverNotifyFlags.MODEL_PROPERTIES` is raised,
+        Called when :data:`SolverModelFlags.MODEL_PROPERTIES` is raised,
         indicating that ``model.gravity`` may have changed at runtime.
         """
         self._kamino.convert_model_gravity(self.model, self._model_kamino.gravity)
@@ -804,7 +820,7 @@ class SolverKamino(SolverBase):
         """
         Re-derive Kamino joint anchors and axes from Newton's joint_X_p / joint_X_c.
 
-        Called when :data:`SolverNotifyFlags.JOINT_PROPERTIES` is raised,
+        Called when :data:`SolverModelFlags.JOINT_PROPERTIES` is raised,
         indicating that ``model.joint_X_p`` or ``model.joint_X_c`` may have
         changed at runtime (e.g. animated root transforms).
         """

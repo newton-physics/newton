@@ -29,6 +29,9 @@
 - Add `ViewerViser.log_scalar()` for live scalar time-series plots via uPlot
 - Honor `UsdGeomImageable` visibility (including inherited `invisible`) on USD prims imported via `ModelBuilder.add_usd()`; visual shapes, gaussian splats, and collider shapes are imported with `ShapeFlags.VISIBLE` cleared when the prim is effectively invisible, while collision behavior is preserved
 - Add more solver options to implicit MPM: `gs-soa` (or `gauss-seidel-soa`) for improved memory coalescing, `gs-batched` (or `gauss-seidel-batched`) merging GS colors with Jacobi-style mass-split parallelism, plus `cr` (Conjugate Residual) and `gmres` linear solver options.
+- Add `SolverBase.reset()` method for in-place solver state resets with optional `world_mask` and `SolverStateFlags`; default implementation is a no-op
+- Add `SolverStateFlags` enum to control which state attributes are reset
+- Add `SolverModelFlags` as the canonical name for model-change notification flags
 
 ### Changed
 
@@ -58,9 +61,11 @@
 - Reduce default `stretch_stiffness` from `1.0e9` to `1.0e5` in `add_joint_cable()`, `add_rod()`, and `add_rod_graph()`
 - Treat `stretch_stiffness` and `bend_stiffness` in `add_rod()` and `add_rod_graph()` as direct per-joint stiffness values, matching `add_joint_cable()` and other joint stiffness APIs
 - VBD solver uses augmented-Lagrangian hard constraints for body-body contacts by default (`rigid_contact_hard=True`)
+- Change `SolverKamino.reset()` signature from `reset(state_out, ...)` to `reset(state, ...)` to match `SolverBase.reset()`; old positional usage remains compatible
 
 ### Deprecated
 
+- Deprecate `SolverNotifyFlags` in favor of `SolverModelFlags`
 - Deprecate and ignore `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
 
 ### Deprecated

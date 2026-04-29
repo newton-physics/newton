@@ -6,13 +6,12 @@
 from enum import IntEnum
 
 
-# model update flags - used for solver.notify_model_update()
-class SolverNotifyFlags(IntEnum):
-    """
-    Flags indicating which parts of the model have been updated and require the solver to be notified.
+class SolverModelFlags(IntEnum):
+    """Flags indicating which parts of the model have been updated.
 
-    These flags are used with `solver.notify_model_update()` to specify which properties have changed,
-    allowing the solver to efficiently update only the necessary components.
+    These flags are used with :meth:`~newton.solvers.SolverBase.notify_model_changed`
+    to specify which properties have changed, allowing the solver to efficiently
+    update only the necessary components.
     """
 
     JOINT_PROPERTIES = 1 << 0
@@ -56,6 +55,57 @@ class SolverNotifyFlags(IntEnum):
     """Indicates all property updates."""
 
 
+class SolverStateFlags(IntEnum):
+    """Flags indicating which state attributes should be reset.
+
+    These flags are used with :meth:`~newton.solvers.SolverBase.reset` to control
+    which parts of the simulation state are reset, allowing the solver to
+    efficiently update only the necessary components.
+    """
+
+    JOINT_Q = 1 << 0
+    """Indicates reduced joint position coordinates: ``State.joint_q``."""
+
+    JOINT_QD = 1 << 1
+    """Indicates reduced joint velocity coordinates: ``State.joint_qd``."""
+
+    BODY_Q = 1 << 2
+    """Indicates maximal body position coordinates: ``State.body_q``."""
+
+    BODY_QD = 1 << 3
+    """Indicates maximal body velocity coordinates: ``State.body_qd``."""
+
+    PARTICLE_Q = 1 << 4
+    """Indicates particle positions: ``State.particle_q``."""
+
+    PARTICLE_QD = 1 << 5
+    """Indicates particle velocities: ``State.particle_qd``."""
+
+    ALL = JOINT_Q | JOINT_QD | BODY_Q | BODY_QD | PARTICLE_Q | PARTICLE_QD
+    """Indicates all state attributes should be reset."""
+
+
+class SolverNotifyFlags(IntEnum):
+    """Deprecated alias for :class:`SolverModelFlags`.
+
+    .. deprecated::
+        Use :class:`SolverModelFlags` instead.
+    """
+
+    JOINT_PROPERTIES = SolverModelFlags.JOINT_PROPERTIES
+    JOINT_DOF_PROPERTIES = SolverModelFlags.JOINT_DOF_PROPERTIES
+    BODY_PROPERTIES = SolverModelFlags.BODY_PROPERTIES
+    BODY_INERTIAL_PROPERTIES = SolverModelFlags.BODY_INERTIAL_PROPERTIES
+    SHAPE_PROPERTIES = SolverModelFlags.SHAPE_PROPERTIES
+    MODEL_PROPERTIES = SolverModelFlags.MODEL_PROPERTIES
+    CONSTRAINT_PROPERTIES = SolverModelFlags.CONSTRAINT_PROPERTIES
+    TENDON_PROPERTIES = SolverModelFlags.TENDON_PROPERTIES
+    ACTUATOR_PROPERTIES = SolverModelFlags.ACTUATOR_PROPERTIES
+    ALL = SolverModelFlags.ALL
+
+
 __all__ = [
+    "SolverModelFlags",
     "SolverNotifyFlags",
+    "SolverStateFlags",
 ]
