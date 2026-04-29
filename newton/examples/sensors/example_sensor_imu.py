@@ -115,8 +115,7 @@ class Example:
         self.viewer.set_model(self.model)
 
         if isinstance(self.viewer, newton.viewer.ViewerGL):
-            self.viewer.camera.pos = type(self.viewer.camera.pos)(3.0, 0.0, 2.0)
-            self.viewer.camera.pitch = type(self.viewer.camera.pitch)(-20)
+            self.viewer.set_camera(wp.vec3(3.0, 0.0, 2.0), -20.0, self.viewer.camera.yaw)
 
         # Warm up: run one simulate() step before graph capture to ensure the collision
         # pipeline (and any D2H copies it needs) is initialized outside of capture.

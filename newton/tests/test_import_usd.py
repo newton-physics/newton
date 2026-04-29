@@ -787,6 +787,61 @@ class TestImportUsdJoints(unittest.TestCase):
         self.assertEqual(builder.joint_child[fixed_idx], root_idx)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_floating_override_replaces_authored_root_joint(self):
+        """Explicit floating overrides must not leave a duplicate USD root joint."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def create_stage():
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+            UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+            def define_body(path):
+                body = UsdGeom.Xform.Define(stage, path)
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                return body
+
+            root = define_body("/World/Articulation/Root")
+            link = define_body("/World/Articulation/Link")
+
+            root_joint = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/RootToWorld")
+            root_joint.CreateBody1Rel().SetTargets([root.GetPath()])
+            root_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            root_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            root_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            root_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+            child_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/RootToLink")
+            child_joint.CreateBody0Rel().SetTargets([root.GetPath()])
+            child_joint.CreateBody1Rel().SetTargets([link.GetPath()])
+            child_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            child_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            child_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            child_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            child_joint.CreateAxisAttr().Set("Z")
+
+            return stage
+
+        for floating, expected_type in ((False, newton.JointType.FIXED), (True, newton.JointType.FREE)):
+            with self.subTest(floating=floating):
+                builder = newton.ModelBuilder()
+                builder.add_usd(create_stage(), floating=floating)
+
+                root_idx = builder.body_label.index("/World/Articulation/Root")
+                root_joints = [
+                    joint_idx for joint_idx, child_idx in enumerate(builder.joint_child) if child_idx == root_idx
+                ]
+
+                self.assertEqual(len(root_joints), 1)
+                root_joint_idx = root_joints[0]
+                self.assertEqual(builder.joint_parent[root_joint_idx], -1)
+                self.assertEqual(builder.joint_type[root_joint_idx], expected_type)
+                self.assertNotIn("/World/Articulation/RootToWorld", builder.joint_label)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joint_unsupported_d6_raises(self):
         """Reversing a D6 joint should raise an error."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -1778,6 +1833,109 @@ def Xform "Articulation" (
 
         self.assertTrue(found_joint1, f"Expected solimplimit {expected_joint1} not found in model")
         self.assertTrue(found_joint2, f"Expected default solimplimit {expected_joint2} not found in model")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_solreflimit_parsing(self):
+        """Joint mjc:solreflimit on MjcJointAPI must populate joint_limit_ke / joint_limit_kd.
+
+        Uses prismatic joints so the authored solreflimit values flow straight through to
+        joint_limit_ke / joint_limit_kd without the revolute degree->radian rescaling that
+        import_usd.py applies to angular limits.
+        """
+        from pxr import Usd
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        # Joint1 authors mjc:solreflimit = [0.08, 1]; Joint2 omits it and should fall back to the
+        # ModelBuilder defaults (import_usd passes those as the resolver `default=`, which wins
+        # over resolver mapping defaults). Standard-mode solref → ke = 1/(t^2 * d^2), kd = 2/t.
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsPrismaticJoint "Joint1" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+
+        uniform double[] mjc:solreflimit = [0.08, 1]
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsPrismaticJoint "Joint2" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "Z"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        model = builder.finalize()
+
+        joint1_idx = model.joint_label.index("/Articulation/Joint1")
+        joint2_idx = model.joint_label.index("/Articulation/Joint2")
+        joint_qd_start = model.joint_qd_start.numpy()
+        limit_ke = model.joint_limit_ke.numpy()
+        limit_kd = model.joint_limit_kd.numpy()
+
+        # Joint1: solreflimit=[0.08, 1] -> ke=1/(0.08^2)=156.25, kd=2/0.08=25.0
+        dof1 = joint_qd_start[joint1_idx]
+        self.assertAlmostEqual(float(limit_ke[dof1]), 156.25, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof1]), 25.0, places=4)
+
+        # Joint2: no solreflimit authored -> ModelBuilder defaults
+        dof2 = joint_qd_start[joint2_idx]
+        self.assertAlmostEqual(float(limit_ke[dof2]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof2]), builder.default_joint_cfg.limit_kd, places=4)
 
     def test_limit_margin_parsing(self):
         """Test importing limit_margin from USD with mjc:margin on joint."""

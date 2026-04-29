@@ -1017,8 +1017,9 @@ def parse_mjcf(
                 if verbose:
                     print(f"MJCF parsing shape {geom_name} issue: geom type {geom_type} is unsupported")
 
-            # Handle explicit mass: compute inertia using existing functions, add to body
-            if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0 and not just_visual:
+            # Handle explicit mass: compute inertia using existing functions, add to body.
+            # Visual geoms can still contribute authored mass when parse_visuals=True.
+            if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
                 from ..geometry.inertia import (  # noqa: PLC0415
                     compute_inertia_box_from_mass,
                     compute_inertia_capsule,
@@ -1478,6 +1479,9 @@ def parse_mjcf(
             current_dof_index = 0
             # Track MJCF joint names and their DOF offsets within the combined Newton joint
             mjcf_joint_dof_offsets: list[tuple[str, int]] = []
+            # frictionloss for a native <joint type="ball"/>; captured in the ball branch
+            # and read by the add_joint_ball call. Default 0.0 matches MJCF.
+            ball_friction = 0.0
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_defaults = defaults
@@ -1503,6 +1507,26 @@ def parse_mjcf(
                     break
                 if joint_type_str == "fixed":
                     joint_type = JointType.FIXED
+                    break
+                if joint_type_str == "ball":
+                    joint_type = JointType.BALL
+                    dof_attr = parse_custom_attributes(
+                        joint_attrib,
+                        builder_custom_attr_dof,
+                        parsing_mode="mjcf",
+                        context={"use_degrees": use_degrees, "joint_type": joint_type_str},
+                    )
+                    # ball joint has 3 DOFs; replicate attribute value across all of them
+                    for key, value in dof_attr.items():
+                        if key not in dof_custom_attributes:
+                            dof_custom_attributes[key] = {}
+                        for dof_offset in range(3):
+                            dof_custom_attributes[key][current_dof_index + dof_offset] = value
+                    # Lift frictionloss into the builder's per-DOF friction array so it
+                    # reaches the MuJoCo spec (joint_friction[qd_start]) on export.
+                    ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
+                    mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
+                    current_dof_index += 3
                     break
                 is_angular = joint_type_str == "hinge"
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 1.0))
@@ -1681,6 +1705,27 @@ def parse_mjcf(
                 )
                 joint_indices.append(joint_idx)
                 # Map free joint names so actuators can target them
+                for jn in joint_name:
+                    joint_name_to_idx[jn] = joint_idx
+            elif joint_type == JointType.BALL and not angular_axes:
+                # MJCF <joint type="ball"/>: native ball joint with a single DOF entry.
+                # (The 3-hinge->ball conversion fills angular_axes and uses the generic path below.)
+                if parent == -1:
+                    parent_xform_for_joint = world_xform * wp.transform(joint_pos, wp.quat_identity())
+                else:
+                    rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
+                    parent_xform_for_joint = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
+                joint_idx = builder.add_joint_ball(
+                    parent=parent,
+                    child=link,
+                    parent_xform=parent_xform_for_joint,
+                    child_xform=wp.transform(joint_pos, wp.quat_identity()),
+                    armature=joint_armature[-1] if joint_armature else None,
+                    friction=ball_friction,
+                    label=joint_label,
+                    custom_attributes=joint_custom_attributes | dof_custom_attributes,
+                )
+                joint_indices.append(joint_idx)
                 for jn in joint_name:
                     joint_name_to_idx[jn] = joint_idx
             else:
@@ -2487,6 +2532,7 @@ def parse_mjcf(
             joint_name = merged_attrib.get("joint")
             body_name = merged_attrib.get("body")
             tendon_name = merged_attrib.get("tendon")
+            site_name = merged_attrib.get("site")
 
             # Sanitize names to match how they were stored in the builder
             if joint_name:
@@ -2495,6 +2541,8 @@ def parse_mjcf(
                 body_name = sanitize_name(body_name)
             if tendon_name:
                 tendon_name = sanitize_name(tendon_name)
+            if site_name:
+                site_name = sanitize_name(site_name)
 
             # Determine transmission type and target
             trntype = 0  # Default: joint
@@ -2544,9 +2592,19 @@ def parse_mjcf(
                 target_idx = tendon_idx
                 target_name_for_log = tendon_name
                 trntype = 2  # TrnType.TENDON
+            elif site_name:
+                # Site transmission (trntype=3)
+                site_idx = site_name_to_idx.get(site_name)
+                if site_idx is None:
+                    if verbose:
+                        print(f"Warning: {actuator_type} actuator references unknown site '{site_name}'")
+                    continue
+                target_idx = site_idx
+                target_name_for_log = site_name
+                trntype = 3  # TrnType.SITE
             else:
                 if verbose:
-                    print(f"Warning: {actuator_type} actuator has no joint, body, or tendon target, skipping")
+                    print(f"Warning: {actuator_type} actuator has no joint, body, site, or tendon target, skipping")
                 continue
 
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")

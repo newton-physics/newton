@@ -368,11 +368,14 @@ class ConstrainedDynamicsConfig(ConfigBase):
     Defaults to `True`.
     """
 
-    linear_solver_type: Literal["LLTB", "CR"] = "LLTB"
+    linear_solver_type: Literal["LLTB", "LLTBRCM", "CR"] = "LLTB"
     """
     The type of linear solver to use for the dynamics problem.\n
     See :class:`LinearSolverType` for available options.\n
-    Defaults to 'LLTB', which will use the :class:`LLTBlockedSolver`.
+    Defaults to 'LLTB' (:class:`LLTBlockedSolver`, dense blocked LLT). The
+    RCM-reordered semi-sparse variant is available as 'LLTBRCM'
+    (:class:`LLTBlockedRCMSolver`) and is currently opt-in pending further
+    performance optimization.
     """
 
     linear_solver_kwargs: dict[str, Any] = field(default_factory=dict)

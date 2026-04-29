@@ -55,7 +55,7 @@ available examples:
 
 .. code-block:: console
 
-    uv run -m newton.examples
+    uv run -m newton.examples --list
 
 See the :ref:`extra-dependencies` section of the installation guide for a
 description of all available extras.
@@ -659,7 +659,7 @@ New examples must also be registered in the examples ``README.md`` with a
         .. code-block:: console
 
             # list all available examples
-            uv run -m newton.examples
+            uv run -m newton.examples --list
 
             # run an example by short name
             uv run -m newton.examples basic_pendulum
@@ -673,7 +673,7 @@ New examples must also be registered in the examples ``README.md`` with a
         .. code-block:: console
 
             # list all available examples
-            python -m newton.examples
+            python -m newton.examples --list
 
             # run an example by short name
             python -m newton.examples basic_pendulum

@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import importlib.metadata as importlib_metadata
 import os
+import re
 import warnings
 from collections.abc import Iterable
 from enum import IntEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -90,6 +93,63 @@ else:
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
+
+
+def _warn_if_mujoco_versions_mismatch(mujoco: Any, mujoco_warp: Any) -> None:
+    try:
+        pyproject_text = (Path(__file__).resolve().parents[4] / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    mismatches = []
+    for package, module in (("mujoco", mujoco), ("mujoco-warp", mujoco_warp)):
+        match = re.search(rf'^\s*"{re.escape(package)}(?=[<>=!~])([^";]+)', pyproject_text, re.MULTILINE)
+        installed_version = _installed_version(package, module)
+        if match and installed_version and not _version_satisfies(installed_version, match.group(1)):
+            mismatches.append(f"{package}=={installed_version} (requires {match.group(1).replace(' ', '')})")
+
+    if mismatches:
+        warnings.warn(
+            "MuJoCo dependency version mismatch with pyproject.toml: "
+            + "; ".join(mismatches)
+            + '. Reinstall Newton dependencies, for example `uv pip install -e ".[examples]"`.',
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+
+def _installed_version(package: str, module: Any) -> str | None:
+    try:
+        return importlib_metadata.version(package)
+    except importlib_metadata.PackageNotFoundError:
+        module_version = getattr(module, "__version__", None)
+        return str(module_version) if module_version is not None else None
+
+
+def _version_satisfies(installed_version: str, specifier: str) -> bool:
+    installed = _release(installed_version)
+    if not installed:
+        return True
+
+    for required_version in re.findall(r">=\s*([0-9][^,;]*)", specifier):
+        if _version_lt(installed, _release(required_version)):
+            return False
+    for required_version in re.findall(r"~=\s*([0-9][^,;]*)", specifier):
+        required = _release(required_version)
+        prefix_width = max(len(required) - 1, 1)
+        if _version_lt(installed, required) or installed[:prefix_width] != required[:prefix_width]:
+            return False
+    return True
+
+
+def _release(version: str) -> tuple[int, ...]:
+    match = re.match(r"\d+(?:\.\d+)*", version)
+    return tuple(int(component) for component in match.group(0).split(".")) if match else ()
+
+
+def _version_lt(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
+    width = max(len(left), len(right))
+    return left + (0,) * (width - len(left)) < right + (0,) * (width - len(right))
 
 
 class SolverMuJoCo(SolverBase):
@@ -226,6 +286,10 @@ class SolverMuJoCo(SolverBase):
                 raise ImportError(
                     "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
                 ) from e
+        try:
+            _warn_if_mujoco_versions_mismatch(cls._mujoco, cls._mujoco_warp)
+        except Exception:
+            pass
         return cls._mujoco, cls._mujoco_warp
 
     @staticmethod
@@ -251,7 +315,7 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _parse_named_int(value: str | int, mapping: dict[str, int], fallback_on_unknown: int | None = None) -> int:
         """Parse string-valued enums to int, otherwise return int(value)."""
-        if isinstance(value, (int, np.integer)):
+        if isinstance(value, int | np.integer):
             return int(value)
         lower_value = str(value).lower().strip()
         if lower_value in mapping:
@@ -983,7 +1047,7 @@ class SolverMuJoCo(SolverBase):
             """Parse MJCF/USD boolean values to bool."""
             if isinstance(value, bool):
                 return value
-            if isinstance(value, (int, np.integer)):
+            if isinstance(value, int | np.integer):
                 return bool(value)
             s = str(value).strip().lower()
             if s == "auto":
@@ -1180,6 +1244,14 @@ class SolverMuJoCo(SolverBase):
                 return int(SolverMuJoCo.TrnType.TENDON), tendon_names.index(target_path), target_path
             except ValueError:
                 pass
+
+            # Check if the target matches a site shape label.  Sites are stored
+            # as shapes with the SITE flag in the builder.  We return a sentinel
+            # target_index of 0 here; the actual site name will be resolved by
+            # the SITE branch in ``_init_actuators`` via ``site_label_to_name``.
+            for i, label in enumerate(builder.shape_label):
+                if label == target_path and (builder.shape_flags[i] & ShapeFlags.SITE):
+                    return int(SolverMuJoCo.TrnType.SITE), 0, target_path
 
             return -1, -1, target_path
 
@@ -2492,6 +2564,7 @@ class SolverMuJoCo(SolverBase):
         selected_tendons: list[int],
         mjc_tendon_names: list[str],
         body_name_mapping: dict[int, str],
+        site_mapping: dict[int, str] | None = None,
     ) -> int:
         """Initialize MuJoCo general actuators from custom attributes.
 
@@ -2515,10 +2588,14 @@ class SolverMuJoCo(SolverBase):
                 Used to resolve CTRL_DIRECT joint actuators to their MuJoCo targets.
             mjc_joint_names: List of MuJoCo joint names indexed by MuJoCo joint index.
                 Used together with dof_to_mjc_joint to get the correct joint name.
-            body_name_mapping: Mapping from Newton body index to de-duplicated MuJoCo body name
+            body_name_mapping: Mapping from Newton body index to de-duplicated MuJoCo body name.
+            site_mapping: Mapping from Newton shape index (sites) to MuJoCo site name.
+                Used to resolve CTRL_DIRECT actuators targeting sites.
         Returns:
             int: Number of actuators added.
         """
+        if site_mapping is None:
+            site_mapping = {}
         mujoco = self._mujoco
 
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -2538,6 +2615,13 @@ class SolverMuJoCo(SolverBase):
         joint_dof_label_arr = getattr(mujoco_attrs, "joint_dof_label", None)
         tendon_label_arr = getattr(mujoco_attrs, "tendon_label", None)
 
+        # Build reverse lookup from shape label (prim path) to site name
+        # so we can resolve actuator target labels that reference sites.
+        site_label_to_name: dict[str, str] = {}
+        for shape_idx, site_name in site_mapping.items():
+            if shape_idx < len(model.shape_label):
+                site_label_to_name[model.shape_label[shape_idx]] = site_name
+
         def resolve_target_from_label(target_label: str) -> tuple[int, int]:
             if isinstance(joint_dof_label_arr, list):
                 try:
@@ -2549,6 +2633,11 @@ class SolverMuJoCo(SolverBase):
                     return int(SolverMuJoCo.TrnType.TENDON), tendon_label_arr.index(target_label)
                 except ValueError:
                     pass
+            # Check if the target label matches a site shape label.
+            # For site targets, return trntype=SITE with target_idx=0
+            # (the actual site name is resolved in the SITE branch below).
+            if target_label in site_label_to_name:
+                return int(SolverMuJoCo.TrnType.SITE), 0
             return -1, -1
 
         # Pre-fetch range/limited arrays to avoid per-element .numpy() calls
@@ -2655,8 +2744,25 @@ class SolverMuJoCo(SolverBase):
                             "not present in the MuJoCo export."
                         )
                     continue
+            elif trntype == int(SolverMuJoCo.TrnType.SITE):
+                # Resolve site target: prefer label when available (USD path),
+                # then fall back to index-based lookup (MJCF/direct trnid path).
+                # Label-first avoids sentinel target_idx=0 colliding with a real site.
+                site_name = None
+                if target_label:
+                    site_name = site_label_to_name.get(target_label)
+                if site_name is None:
+                    site_name = site_mapping.get(target_idx)
+                if site_name is None:
+                    if wp.config.verbose:
+                        print(
+                            f"Warning: MuJoCo actuator {mujoco_act_idx} site target "
+                            f"'{target_label}' not found in site mapping"
+                        )
+                    continue
+                target_name = site_name
             else:
-                # TODO: Support site, slidercrank, and jointinparent transmission types
+                # TODO: Support slidercrank and jointinparent transmission types
                 if wp.config.verbose:
                     print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
                 continue
@@ -4269,6 +4375,42 @@ class SolverMuJoCo(SolverBase):
                                 if ss >= 0:
                                     tendon_required_shapes.add(ss)
 
+        # Collect shapes required by actuators targeting sites so they are not
+        # skipped when include_sites=False.  USD actuators may still carry
+        # sentinel trnid/trntype at this point (resolved later from
+        # actuator_target_label), so check labels first.
+        actuator_required_shapes: set[int] = set()
+        if mujoco_attrs is not None:
+            _act_trntype = getattr(mujoco_attrs, "actuator_trntype", None)
+            _act_trnid = getattr(mujoco_attrs, "actuator_trnid", None)
+            _act_target_label = getattr(mujoco_attrs, "actuator_target_label", None)
+            _act_world = getattr(mujoco_attrs, "actuator_world", None)
+            site_shape_by_label = {
+                label: idx
+                for idx, label in enumerate(model.shape_label)
+                if (shape_flags[idx] & ShapeFlags.SITE) and idx in selected_shapes_set
+            }
+            if _act_trntype is not None and _act_trnid is not None:
+                act_trntype_np = _act_trntype.numpy()
+                act_trnid_np = _act_trnid.numpy()
+                act_world_np = _act_world.numpy() if _act_world is not None else None
+                for ai in range(len(act_trntype_np)):
+                    if act_world_np is not None:
+                        aw = int(act_world_np[ai])
+                        if aw != first_world and aw >= 0:
+                            continue
+                    # Try label-based resolution first (covers USD deferred targets)
+                    idx = -1
+                    if isinstance(_act_target_label, list) and ai < len(_act_target_label):
+                        idx = site_shape_by_label.get(_act_target_label[ai], -1)
+                    # Fall back to trnid for MJCF/direct site actuators
+                    if idx < 0 and int(act_trntype_np[ai]) == int(SolverMuJoCo.TrnType.SITE):
+                        idx = int(act_trnid_np[ai, 0])
+                    if idx >= 0:
+                        actuator_required_shapes.add(idx)
+
+        required_shapes = tendon_required_shapes | actuator_required_shapes
+
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
             shapes = model.body_shapes.get(newton_body_id)
@@ -4278,16 +4420,17 @@ class SolverMuJoCo(SolverBase):
                 if shape not in selected_shapes_set:
                     # skip shapes that are not selected for this world
                     continue
-                # Skip visual-only geoms, but don't skip sites or shapes needed by spatial tendons
+                # Skip visual-only geoms, but don't skip sites or shapes needed by
+                # spatial tendons or actuators.
                 is_site = shape_flags[shape] & ShapeFlags.SITE
                 if skip_visual_only_geoms and not is_site and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
-                    if shape not in tendon_required_shapes:
+                    if shape not in required_shapes:
                         continue
                 stype = shape_type[shape]
                 name = f"{model.shape_label[shape]}_{shape}"
 
                 if is_site:
-                    if not include_sites and shape not in tendon_required_shapes:
+                    if not include_sites and shape not in required_shapes:
                         continue
 
                     # Map unsupported site types to SPHERE
@@ -4571,16 +4714,20 @@ class SolverMuJoCo(SolverBase):
                 num_qpos += 7
                 num_mjc_joints += 1
             elif j_type == JointType.BALL:
-                body.add_joint(
-                    name=name,
-                    type=mujoco.mjtJoint.mjJNT_BALL,
-                    axis=wp.quat_rotate(joint_rot, wp.vec3(1.0, 0.0, 0.0)),
-                    pos=joint_pos,
-                    damping=0.0,
-                    limited=False,
-                    armature=self._KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start],
-                    frictionloss=joint_friction[qd_start],
-                )
+                ball_params = {
+                    "name": name,
+                    "type": mujoco.mjtJoint.mjJNT_BALL,
+                    "axis": wp.quat_rotate(joint_rot, wp.vec3(1.0, 0.0, 0.0)),
+                    "pos": joint_pos,
+                    "limited": False,
+                    "armature": self._KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start],
+                    "frictionloss": joint_friction[qd_start],
+                }
+                if joint_stiffness is not None:
+                    ball_params["stiffness"] = float(joint_stiffness[qd_start])
+                if joint_damping is not None:
+                    ball_params["damping"] = float(joint_damping[qd_start])
+                body.add_joint(**ball_params)
                 mjc_joint_names.append(name)
                 # For ball joints, all 3 DOFs map to the same MuJoCo joint
                 for i in range(3):
@@ -5081,6 +5228,7 @@ class SolverMuJoCo(SolverBase):
             selected_tendons,
             mjc_tendon_names,
             body_name_mapping,
+            site_mapping,
         )
 
         # Convert actuator mapping lists to warp arrays
