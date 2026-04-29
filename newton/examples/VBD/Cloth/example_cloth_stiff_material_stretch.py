@@ -223,12 +223,12 @@ class Example:
         )
 
         # Area-preservation regression: each sheet's measured area should be
-        # within 25% of the closed-form NH prediction.
+        # within 10% of the closed-form NH prediction.
         measured = self.measure_area_ratios()
         for nu, m in zip(self.POISSON_RATIOS, measured, strict=True):
             theory = _theoretical_area_ratio(self.STRETCH, nu)
-            if not (abs(m - theory) / theory < 0.25):
-                raise ValueError(f"area ratio for nu={nu:.2f}: measured {m:.3f}, theory {theory:.3f} (off by >25%)")
+            if not (abs(m - theory) / theory < 0.10):
+                raise ValueError(f"area ratio for nu={nu:.2f}: measured {m:.3f}, theory {theory:.3f} (off by >10%)")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
