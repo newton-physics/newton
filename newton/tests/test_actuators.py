@@ -7,7 +7,9 @@ import importlib.util
 import json
 import math
 import os
+import shutil
 import tempfile
+import types
 import unittest
 import warnings
 
@@ -17,6 +19,7 @@ import warp as wp
 import newton
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
+    Actuator,
     ActuatorParsed,
     ClampingDCMotor,
     ClampingMaxEffort,
@@ -1336,6 +1339,9 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.torch = _torch
         self._tmp_dir = tempfile.mkdtemp()
 
+    def tearDown(self):
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
     def _make_mlp_checkpoint(self, metadata: dict | None = None) -> str:
         """Create a minimal TorchScript MLP checkpoint with optional metadata."""
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True))
@@ -1369,7 +1375,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         applied, referencing *model_path* via the ``newton:modelPath``
         asset attribute.
         """
-        from pxr import Sdf, UsdPhysics
+        from pxr import Sdf
 
         stage = Usd.Stage.CreateInMemory()
         world = stage.DefinePrim("/World", "Xform")
@@ -1442,6 +1448,70 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed.controller_class, ControllerNeuralLSTM)
         self.assertEqual(parsed.controller_kwargs["model_path"], model_path)
+
+
+# ---------------------------------------------------------------------------
+# 9. target_pos_indices separation from pos_indices
+# ---------------------------------------------------------------------------
+
+
+class TestTargetPosIndicesSeparation(unittest.TestCase):
+    """Actuator must read joint_target_pos via target_pos_indices, not pos_indices."""
+
+    def test_target_pos_read_from_dof_index_not_coord_index(self):
+        device = wp.get_device()
+
+        def _a(vals, dtype=wp.float32):
+            return wp.array(vals, dtype=dtype, device=device)
+
+        kp = 100.0
+        actual_pos = 0.5
+        correct_target = 2.0
+        sentinel = 99.0  # placed at coord index 3 to catch wrong index usage
+
+        indices = _a([1], dtype=wp.uint32)  # DOF index 1
+        pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
+        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
+
+        ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
+        actuator = Actuator(
+            indices=indices,
+            controller=ctrl,
+            pos_indices=pos_indices,
+            target_pos_indices=target_pos_indices,
+        )
+
+        # joint_q is coord-shaped; actual position at coord index 3
+        joint_q = _a([0.0, 0.0, 0.0, actual_pos])
+        joint_qd = _a([0.0, 0.0])
+        # joint_target_pos padded to size 4 so both index 1 (correct) and
+        # index 3 (sentinel) are reachable — lets us distinguish the two code paths
+        joint_target_pos = _a([0.0, correct_target, 0.0, sentinel])
+        joint_target_vel = _a([0.0, 0.0, 0.0, 0.0])
+        joint_f = wp.zeros(4, dtype=wp.float32, device=device)
+
+        sim_state = types.SimpleNamespace(joint_q=joint_q, joint_qd=joint_qd)
+        sim_control = types.SimpleNamespace(
+            joint_target_pos=joint_target_pos,
+            joint_target_vel=joint_target_vel,
+            joint_act=None,
+            joint_f=joint_f,
+        )
+
+        actuator.step(sim_state, sim_control, None, None, dt=0.01)
+
+        expected = kp * (correct_target - actual_pos)  # 150.0
+        wrong = kp * (sentinel - actual_pos)  # 9850.0
+        got = joint_f.numpy()[1]
+        self.assertAlmostEqual(
+            got,
+            expected,
+            places=3,
+            msg=(
+                f"Force should be {expected} (target_pos_indices path); "
+                f"got {got}. If {wrong}, pos_indices was wrongly used for target lookup."
+            ),
+        )
 
 
 if __name__ == "__main__":

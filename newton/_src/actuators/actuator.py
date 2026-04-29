@@ -130,6 +130,10 @@ class Actuator:
         self.effort_indices = effort_indices if effort_indices is not None else indices
         if self.pos_indices.shape != indices.shape:
             raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")
+        if self.target_pos_indices.shape != indices.shape:
+            raise ValueError(
+                f"target_pos_indices shape {self.target_pos_indices.shape} must match indices shape {indices.shape}"
+            )
         if self.effort_indices.shape != indices.shape:
             raise ValueError(
                 f"effort_indices shape {self.effort_indices.shape} must match indices shape {indices.shape}"
