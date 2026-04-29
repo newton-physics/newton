@@ -6067,7 +6067,7 @@ class ModelBuilder:
         Args:
             xform: The transform of the heightfield in world frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
-            scale: The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
+            scale: Per-instance scale applied to the heightfield extents (``hx``, ``hy``, ``min_z``, ``max_z``). Lets the same :class:`Heightfield` asset be reused at different sizes across shapes. Defaults to ``None``, which is treated as ``(1.0, 1.0, 1.0)``.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: An optional label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
@@ -10151,6 +10151,7 @@ class ModelBuilder:
             # heightfield collision data
             hfield_count = sum(1 for t in self.shape_type if t == GeoType.HFIELD)
             has_heightfields = hfield_count > 0
+            m.has_heightfields = has_heightfields
             if hfield_count > 1:
                 warnings.warn(
                     "Heightfield-vs-heightfield collision is not supported; "
@@ -10171,10 +10172,17 @@ class ModelBuilder:
                         hd.data_offset = offset
                         hd.nrow = hf.nrow
                         hd.ncol = hf.ncol
-                        hd.hx = hf.hx
-                        hd.hy = hf.hy
-                        hd.min_z = hf.min_z
-                        hd.max_z = hf.max_z
+                        # Bake the per-instance scale into the extents so narrow-phase
+                        # collision and raycast (which read from HeightfieldData) apply
+                        # scale consistently. ``abs`` on hx/hy because the raycast DDA
+                        # and parallel-slab checks assume non-negative planar extents;
+                        # z uses raw multiplication so ``sz < 0`` inverts the surface
+                        # (``min_z > max_z`` already encodes an inverted heightfield).
+                        sx, sy, sz = self.shape_scale[i]
+                        hd.hx = abs(hf.hx * sx)
+                        hd.hy = abs(hf.hy * sy)
+                        hd.min_z = hf.min_z * sz
+                        hd.max_z = hf.max_z * sz
                         shape_heightfield_index[i] = len(compact_heightfield_data)
                         compact_heightfield_data.append(hd)
                         elevation_chunks.append(hf.data.flatten())

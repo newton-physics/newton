@@ -236,8 +236,11 @@ class Picking:
         else:
             world_offsets = wp.array([], dtype=wp.vec3, device=self.model.device)
 
+        # Pick the lean (no-HFIELD) kernel variant when the scene has no heightfields,
+        # so non-HFIELD scenes don't pay the per-thread HeightfieldData overhead.
+        kernel = raycast.raycast_kernel if self.model.has_heightfields else raycast.raycast_kernel_no_hfield
         wp.launch(
-            kernel=raycast.raycast_kernel,
+            kernel=kernel,
             dim=num_geoms,
             inputs=[
                 state.body_q,
@@ -246,6 +249,9 @@ class Picking:
                 self.model.shape_type,
                 self.model.shape_scale,
                 self.model.shape_source_ptr,
+                self.model.shape_heightfield_index,
+                self.model.heightfield_data,
+                self.model.heightfield_elevations,
                 p,
                 d,
                 self.lock,

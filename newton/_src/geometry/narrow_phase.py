@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import warp as wp
@@ -42,7 +43,6 @@ from ..geometry.contact_reduction_global import (
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import (
-    MESH_SDF_BLOCK_DIM,
     compute_block_counts_from_weights,
     compute_mesh_mesh_block_offsets_scan,
     create_narrow_phase_process_mesh_mesh_contacts_kernel,
@@ -1486,8 +1486,18 @@ class NarrowPhase:
         self.deterministic = deterministic
         self.verify_buffers = verify_buffers
 
-        # Contact reduction requires meshes
-        if reduce_contacts and not has_meshes:
+        # Warn when running on CPU with meshes: mesh-mesh SDF contacts require CUDA
+        is_gpu_device = wp.get_device(device).is_cuda
+        if has_meshes and not is_gpu_device:
+            warnings.warn(
+                "NarrowPhase running on CPU: mesh-mesh contacts will be skipped "
+                "(SDF-based mesh-mesh collision requires CUDA). "
+                "Use a CUDA device for full mesh-mesh contact support.",
+                stacklevel=2,
+            )
+
+        # Contact reduction requires GPU and meshes
+        if reduce_contacts and not (is_gpu_device and has_meshes):
             self.reduce_contacts = False
 
         # Determine if we're using external AABBs
@@ -1511,19 +1521,8 @@ class NarrowPhase:
             writer_func = contact_writer_warp_func
 
         self.tile_size_mesh_convex = 128
-        # Must match ``MESH_SDF_BLOCK_DIM`` in sdf_contact.py: the mesh-SDF
-        # kernels assume ``wp.block_dim()`` equals that constant so the
-        # tile-stack overflow margin (``STACK_CAPACITY = 2 *
-        # MESH_SDF_BLOCK_DIM``) is correctly sized. Re-use the constant
-        # rather than duplicating the value so the two can't drift.
-        self.tile_size_mesh_mesh = MESH_SDF_BLOCK_DIM
-        assert self.tile_size_mesh_mesh == MESH_SDF_BLOCK_DIM, (
-            "mesh-SDF tile launches must use block_dim == MESH_SDF_BLOCK_DIM"
-        )
+        self.tile_size_mesh_mesh = 256
         self.tile_size_mesh_plane = 512
-        # Generic block dim for non-tile-stack kernels (primitive /
-        # GJK-MPR / export). Not used for the mesh-SDF tile launches,
-        # which use ``self.tile_size_mesh_mesh`` above.
         self.block_dim = 128
 
         # Create the appropriate kernel variants
@@ -1561,17 +1560,21 @@ class NarrowPhase:
                 self.mesh_plane_contacts_kernel = create_narrow_phase_process_mesh_plane_contacts_kernel(
                     writer_func,
                 )
-            if self.reduce_contacts:
-                self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                    write_contact_to_reducer,
-                    enable_heightfields=has_heightfields,
-                    reduce_contacts=True,
-                )
+            # Only create mesh-mesh SDF kernel on CUDA (uses __shared__ memory via func_native)
+            if is_gpu_device:
+                if self.reduce_contacts:
+                    self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                        write_contact_to_reducer,
+                        enable_heightfields=has_heightfields,
+                        reduce_contacts=True,
+                    )
+                else:
+                    self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                        writer_func,
+                        enable_heightfields=has_heightfields,
+                    )
             else:
-                self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                    writer_func,
-                    enable_heightfields=has_heightfields,
-                )
+                self.mesh_mesh_contacts_kernel = None
         else:
             self.mesh_plane_contacts_kernel = None
             self.mesh_mesh_contacts_kernel = None
@@ -1677,13 +1680,9 @@ class NarrowPhase:
         self.total_num_threads = self.block_dim * num_blocks
         self.num_tile_blocks = num_blocks
 
-        # Dynamic block allocation for mesh-mesh and mesh-plane contacts.
-        # On CUDA we target ~4 blocks per SM for good occupancy; on CPU
-        # there is no SM notion so we pick 64 as a modest parallelism
-        # target that splits pair work across OpenMP threads without
-        # over-subscribing on small scenes.
-        if self.reduce_contacts:
-            target_blocks = device_obj.sm_count * 4 if device_obj.is_cuda else 64
+        # Dynamic block allocation for mesh-mesh and mesh-plane contacts
+        if device_obj.is_cuda and self.reduce_contacts:
+            target_blocks = device_obj.sm_count * 4
             n = max_candidate_pairs + 1
             # Mesh-mesh
             self.num_mesh_mesh_blocks = target_blocks
@@ -1987,7 +1986,7 @@ class NarrowPhase:
                     record_tape=False,
                 )
 
-            # Launch mesh-mesh contact processing kernel.
+            # Launch mesh-mesh contact processing kernel on CUDA.
             # The kernel uses texture SDF for fast sampling, with BVH fallback via shape_sdf_index,
             # as well as on-the-fly heightfield evaluation via heightfield_data.
             if texture_sdf_data is None:
@@ -1997,7 +1996,7 @@ class NarrowPhase:
             if shape_edge_range is None:
                 shape_edge_range = self._empty_edge_range
 
-            if self.mesh_mesh_contacts_kernel is not None:
+            if wp.get_device(device).is_cuda and self.mesh_mesh_contacts_kernel is not None:
                 if self.reduce_contacts and self.mesh_mesh_block_offsets is not None:
                     # Mesh-mesh contacts → buffer + inline hashtable registration
                     compute_mesh_mesh_block_offsets_scan(
