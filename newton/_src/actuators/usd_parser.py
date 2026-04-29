@@ -69,6 +69,8 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
         )
     schema_props = set(defn.GetPropertyNames())
 
+    from pxr import Sdf  # noqa: PLC0415
+
     kwargs: dict[str, Any] = {}
     for prop in prim.GetAuthoredPropertiesInNamespace("newton"):
         if prop.GetName() not in schema_props:
@@ -76,7 +78,10 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
         if not prop.IsValid() or not prop.HasAuthoredValue():
             continue
         camel = prop.GetName().removeprefix("newton:")
-        kwargs[_camel_to_snake(camel)] = prop.Get()
+        val = prop.Get()
+        if isinstance(val, Sdf.AssetPath):
+            val = val.resolvedPath or val.path
+        kwargs[_camel_to_snake(camel)] = val
     return kwargs
 
 

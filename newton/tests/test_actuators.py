@@ -1317,5 +1317,132 @@ class TestStateReset(unittest.TestCase):
         self.assertGreater(state_0.controller_state.integral.numpy()[1], 0.0, msg="env 1 integral should be untouched")
 
 
+# ---------------------------------------------------------------------------
+# 8. Neural controller via USD parsing (parse_actuator_prim)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(HAS_USD and _HAS_TORCH, "pxr or torch not installed")
+class TestNeuralActuatorUsdParsing(unittest.TestCase):
+    """Verify ``parse_actuator_prim`` correctly handles neural controller
+    prims with asset-typed ``newton:modelPath`` attributes.
+
+    This exercises the full USD parsing path — the same path that
+    ``ModelBuilder.add_usd`` uses — rather than constructing controllers
+    directly from a file path.
+    """
+
+    def setUp(self):
+        self.torch = _torch
+        self._tmp_dir = tempfile.mkdtemp()
+
+    def _make_mlp_checkpoint(self, metadata: dict | None = None) -> str:
+        """Create a minimal TorchScript MLP checkpoint with optional metadata."""
+        net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True))
+        with self.torch.no_grad():
+            net[0].weight.fill_(0.0)
+            net[0].bias.fill_(1.0)
+        path = os.path.join(self._tmp_dir, "mlp.pt")
+        scripted = self.torch.jit.script(net)
+        extra = {}
+        if metadata:
+            extra["metadata.json"] = json.dumps(metadata)
+        self.torch.jit.save(scripted, path, _extra_files=extra)
+        return path
+
+    def _make_lstm_checkpoint(self, metadata: dict | None = None) -> str:
+        """Create a minimal TorchScript LSTM checkpoint with optional metadata."""
+        net = _LSTMNet(hidden=8, layers=1)
+        path = os.path.join(self._tmp_dir, "lstm.pt")
+        scripted = self.torch.jit.script(net)
+        extra = {}
+        if metadata:
+            extra["metadata.json"] = json.dumps(metadata)
+        self.torch.jit.save(scripted, path, _extra_files=extra)
+        return path
+
+    def _build_neural_stage(self, model_path: str) -> "Usd.Stage":
+        """Create a minimal USD stage with a neural actuator prim.
+
+        The stage has a two-link articulation with a single revolute
+        joint and a ``NewtonActuator`` prim with ``NewtonNeuralControlAPI``
+        applied, referencing *model_path* via the ``newton:modelPath``
+        asset attribute.
+        """
+        from pxr import Sdf, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        world = stage.DefinePrim("/World", "Xform")
+        stage.SetDefaultPrim(world)
+
+        stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
+
+        robot = stage.DefinePrim("/World/Robot", "Xform")
+        schemas = Sdf.TokenListOp()
+        schemas.prependedItems = ["PhysicsArticulationRootAPI"]
+        robot.SetMetadata("apiSchemas", schemas)
+
+        base = stage.DefinePrim("/World/Robot/Base", "Xform")
+        base_schemas = Sdf.TokenListOp()
+        base_schemas.prependedItems = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        base.SetMetadata("apiSchemas", base_schemas)
+        base.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(1.0)
+        base.CreateAttribute("physics:kinematicEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+
+        link1 = stage.DefinePrim("/World/Robot/Link1", "Xform")
+        link1_schemas = Sdf.TokenListOp()
+        link1_schemas.prependedItems = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        link1.SetMetadata("apiSchemas", link1_schemas)
+        link1.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(0.5)
+
+        joint = stage.DefinePrim("/World/Robot/Joint1", "PhysicsRevoluteJoint")
+        joint_schemas = Sdf.TokenListOp()
+        joint_schemas.prependedItems = ["PhysicsDriveAPI:angular"]
+        joint.SetMetadata("apiSchemas", joint_schemas)
+        joint.CreateRelationship("physics:body0").SetTargets([Sdf.Path("/World/Robot/Base")])
+        joint.CreateRelationship("physics:body1").SetTargets([Sdf.Path("/World/Robot/Link1")])
+        joint.CreateAttribute("physics:axis", Sdf.ValueTypeNames.Token).Set("Z")
+
+        act_prim = stage.DefinePrim("/World/Robot/NeuralActuator", "NewtonActuator")
+        act_schemas = Sdf.TokenListOp()
+        act_schemas.prependedItems = ["NewtonNeuralControlAPI", "NewtonDCMotorClampingAPI"]
+        act_prim.SetMetadata("apiSchemas", act_schemas)
+        act_prim.CreateRelationship("newton:targets").SetTargets([Sdf.Path("/World/Robot/Joint1")])
+        act_prim.CreateAttribute("newton:modelPath", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(model_path))
+        act_prim.CreateAttribute("newton:saturationEffort", Sdf.ValueTypeNames.Float).Set(100.0)
+        act_prim.CreateAttribute("newton:velocityLimit", Sdf.ValueTypeNames.Float).Set(20.0)
+        act_prim.CreateAttribute("newton:maxMotorEffort", Sdf.ValueTypeNames.Float).Set(200.0)
+
+        return stage
+
+    def test_parse_mlp_from_usd(self):
+        """parse_actuator_prim resolves Sdf.AssetPath for MLP checkpoint."""
+        model_path = self._make_mlp_checkpoint(metadata={"model_type": "mlp"})
+        stage = self._build_neural_stage(model_path)
+        prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+
+        parsed = parse_actuator_prim(prim)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.controller_class, ControllerNeuralMLP)
+        self.assertEqual(parsed.controller_kwargs["model_path"], model_path)
+        self.assertEqual(parsed.target_path, "/World/Robot/Joint1")
+
+        self.assertEqual(len(parsed.component_specs), 1)
+        cls, kwargs = parsed.component_specs[0]
+        self.assertEqual(cls, ClampingDCMotor)
+        self.assertAlmostEqual(kwargs["saturation_effort"], 100.0)
+
+    def test_parse_lstm_from_usd(self):
+        """parse_actuator_prim resolves Sdf.AssetPath for LSTM checkpoint."""
+        model_path = self._make_lstm_checkpoint(metadata={"model_type": "lstm"})
+        stage = self._build_neural_stage(model_path)
+        prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+
+        parsed = parse_actuator_prim(prim)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.controller_class, ControllerNeuralLSTM)
+        self.assertEqual(parsed.controller_kwargs["model_path"], model_path)
+
+
 if __name__ == "__main__":
     unittest.main()
