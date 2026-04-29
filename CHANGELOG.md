@@ -30,7 +30,7 @@
 - Honor `UsdGeomImageable` visibility (including inherited `invisible`) on USD prims imported via `ModelBuilder.add_usd()`; visual shapes, gaussian splats, and collider shapes are imported with `ShapeFlags.VISIBLE` cleared when the prim is effectively invisible, while collision behavior is preserved
 - Add more solver options to implicit MPM: `gs-soa` (or `gauss-seidel-soa`) for improved memory coalescing, `gs-batched` (or `gauss-seidel-batched`) merging GS colors with Jacobi-style mass-split parallelism, plus `cr` (Conjugate Residual) and `gmres` linear solver options.
 - Add frame-by-frame step support to `ViewerGL`: press `.` while paused to advance one simulation frame
-- Add `ViewerBase.should_step()` — call once per frame to determine whether the simulation loop should advance; returns `True` when running and consumes a pending single-step request when paused.
+- Add ViewerBase.should_step() — call once per frame to determine whether the simulation loop should advance; returns True when not paused.
 
 
 ### Changed

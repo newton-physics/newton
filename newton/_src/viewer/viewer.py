@@ -66,10 +66,10 @@ class ViewerBase(ABC):
         return False
 
     def should_step(self) -> bool:
-        """Return True if the loop should advance one step.
+        """Report whether the loop should advance one step.
 
-        Subclasses that support single-stepping may consume a pending request
-        here, so callers should invoke this exactly once per frame.
+        Returns:
+            bool: True when the simulation should step forward.
         """
         return not self.is_paused()
 
