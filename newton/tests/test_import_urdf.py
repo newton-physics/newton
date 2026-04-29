@@ -1186,6 +1186,9 @@ class TestImportUrdfComposition(unittest.TestCase):
         self.assertEqual(model.articulation_count, 3)
         self.assertEqual(model.joint_count, 39)
         assert_np_equal(model.articulation_start.numpy(), np.array([0, 13, 26, 39], dtype=np.int32))
+        self.assertEqual(model.articulation_label, ["collapse_order", "collapse_order", "collapse_order"])
+        assert_np_equal(model.articulation_world.numpy(), np.array([-1, -1, -1], dtype=np.int32))
+        assert_np_equal(model.joint_articulation.numpy(), np.array([0] * 13 + [1] * 13 + [2] * 13, dtype=np.int32))
 
     def test_floating_true_with_parent_body_raises_error(self):
         """Test that floating=True with parent_body raises an error."""
