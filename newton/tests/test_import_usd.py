@@ -5086,6 +5086,10 @@ def Xform "Articulation" (
         joint2.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
         joint2.CreateAxisAttr().Set("Z")
 
+        joint1_prim = joint1.GetPrim()
+        joint1_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityJointAPI"]))
+        joint1_prim.CreateRelationship("mjc:target").SetTargets([joint2.GetPrim().GetPath()])
+
         joint2_prim = joint2.GetPrim()
         joint2_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityJointAPI"]))
         joint2_prim.CreateRelationship("mjc:target").SetTargets([joint1.GetPrim().GetPath()])
@@ -5102,20 +5106,31 @@ def Xform "Articulation" (
         result = builder.add_usd(stage)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 1)
+        self.assertEqual(model.equality_constraint_count, 2)
+        eq_by_label = {label: i for i, label in enumerate(model.equality_constraint_label)}
+        joint1_eq = eq_by_label["/World/Articulation/Joint1"]
+        joint2_eq = eq_by_label["/World/Articulation/Joint2"]
         joint1_idx = result["path_joint_map"]["/World/Articulation/Joint1"]
         joint2_idx = result["path_joint_map"]["/World/Articulation/Joint2"]
-        self.assertEqual(model.equality_constraint_joint1.numpy()[0], joint2_idx)
-        self.assertEqual(model.equality_constraint_joint2.numpy()[0], joint1_idx)
+        self.assertEqual(model.equality_constraint_joint1.numpy()[joint1_eq], joint1_idx)
+        self.assertEqual(model.equality_constraint_joint2.numpy()[joint1_eq], joint2_idx)
+        self.assertEqual(model.equality_constraint_joint1.numpy()[joint2_eq], joint2_idx)
+        self.assertEqual(model.equality_constraint_joint2.numpy()[joint2_eq], joint1_idx)
         np.testing.assert_allclose(
-            model.equality_constraint_polycoef.numpy()[0],
+            model.equality_constraint_polycoef.numpy()[joint1_eq],
+            np.array([0.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            model.equality_constraint_polycoef.numpy()[joint2_eq],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
         )
-        np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[0], np.array([0.03, 0.8], dtype=np.float32))
+        np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[joint2_eq], np.array([0.03, 0.8], dtype=np.float32))
         np.testing.assert_allclose(
-            model.mujoco.eq_solimp.numpy()[0],
+            model.mujoco.eq_solimp.numpy()[joint2_eq],
             np.array([0.8, 0.9, 0.002, 0.6, 3.0], dtype=np.float32),
         )
 
@@ -5161,6 +5176,16 @@ def Xform "Articulation" (
         connect_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityConnectAPI"]))
         connect_prim.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.04, 0.7])
 
+        connect_world = UsdPhysics.SphericalJoint.Define(stage, "/World/EqualityConnectBodyToWorld")
+        connect_world.CreateBody0Rel().SetTargets([body0.GetPath()])
+        connect_world.CreateLocalPos0Attr().Set(Gf.Vec3f(0.25, -0.1, 0.3))
+        connect_world.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        connect_world.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        connect_world.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        connect_world.CreateExcludeFromArticulationAttr().Set(True)
+        connect_world_prim = connect_world.GetPrim()
+        connect_world_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityConnectAPI"]))
+
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(stage, load_sites=False, schema_resolvers=[usd.SchemaResolverMjc()])
@@ -5172,6 +5197,7 @@ def Xform "Articulation" (
         model = builder.finalize()
 
         self.assertNotIn("/World/EqualityConnect", result["path_joint_map"])
+        self.assertNotIn("/World/EqualityConnectBodyToWorld", result["path_joint_map"])
         self.assertIn("/World/EqualityConnect", result["schema_attrs"]["mjc"])
         np.testing.assert_allclose(
             result["schema_attrs"]["mjc"]["/World/EqualityConnect"]["mjc:solref"],
@@ -5180,15 +5206,26 @@ def Xform "Articulation" (
         self.assertEqual(model.joint_count, 2)
         self.assertEqual(model.joint_dof_count, 12)
         self.assertEqual(model.joint_coord_count, 14)
-        self.assertEqual(model.equality_constraint_count, 1)
+        self.assertEqual(model.equality_constraint_count, 2)
+        eq_by_label = {label: i for i, label in enumerate(model.equality_constraint_label)}
+        site_eq = eq_by_label["/World/EqualityConnect"]
+        world_eq = eq_by_label["/World/EqualityConnectBodyToWorld"]
         body0_idx = result["path_body_map"]["/World/Body0"]
         body1_idx = result["path_body_map"]["/World/Body1"]
-        self.assertEqual(model.equality_constraint_body1.numpy()[0], body0_idx)
-        self.assertEqual(model.equality_constraint_body2.numpy()[0], body1_idx)
-        np.testing.assert_allclose(model.equality_constraint_anchor.numpy()[0], np.array([0.1, 0.0, 0.0]))
-        np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[0], np.array([0.04, 0.7], dtype=np.float32))
+        self.assertEqual(model.equality_constraint_body1.numpy()[site_eq], body0_idx)
+        self.assertEqual(model.equality_constraint_body2.numpy()[site_eq], body1_idx)
+        np.testing.assert_allclose(model.equality_constraint_anchor.numpy()[site_eq], np.array([0.1, 0.0, 0.0]))
+        self.assertEqual(model.equality_constraint_body1.numpy()[world_eq], body0_idx)
+        self.assertEqual(model.equality_constraint_body2.numpy()[world_eq], -1)
         np.testing.assert_allclose(
-            model.mujoco.eq_solimp.numpy()[0],
+            model.equality_constraint_anchor.numpy()[world_eq],
+            np.array([0.25, -0.1, 0.3], dtype=np.float32),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[site_eq], np.array([0.04, 0.7], dtype=np.float32))
+        np.testing.assert_allclose(
+            model.mujoco.eq_solimp.numpy()[site_eq],
             np.array([0.9, 0.95, 0.001, 0.5, 2.0], dtype=np.float32),
         )
 
@@ -5261,12 +5298,17 @@ def Xform "Articulation" (
         UsdPhysics.RigidBodyAPI.Apply(body1_prim)
         UsdPhysics.CollisionAPI.Apply(body1_prim)
 
+        site1 = UsdGeom.Xform.Define(stage, "/World/Body1/Site1")
+        site1.AddTranslateOp().Set(Gf.Vec3f(0.2, -0.1, 0.3))
+        site1.GetPrim().SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcSiteAPI"]))
+
+        sqrt_half = math.sqrt(0.5)
         weld = UsdPhysics.FixedJoint.Define(stage, "/World/EqualityWeld")
         weld.CreateBody0Rel().SetTargets([body0.GetPath()])
-        weld.CreateBody1Rel().SetTargets([body1.GetPath()])
-        weld.CreateLocalPos0Attr().Set(Gf.Vec3f(0.25, 0.0, 0.0))
-        weld.CreateLocalPos1Attr().Set(Gf.Vec3f(0.1, 0.0, 0.0))
-        weld.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        weld.CreateBody1Rel().SetTargets([site1.GetPath()])
+        weld.CreateLocalPos0Attr().Set(Gf.Vec3f(0.25, -0.2, 0.1))
+        weld.CreateLocalPos1Attr().Set(Gf.Vec3f(0.1, 0.3, -0.2))
+        weld.CreateLocalRot0Attr().Set(Gf.Quatf(sqrt_half, 0.0, 0.0, sqrt_half))
         weld.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
         weld.CreateExcludeFromArticulationAttr().Set(True)
         weld_prim = weld.GetPrim()
@@ -5275,7 +5317,7 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        result = builder.add_usd(stage)
+        result = builder.add_usd(stage, load_sites=False, schema_resolvers=[usd.SchemaResolverMjc()])
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.joint_count, 2)
         self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
@@ -5288,17 +5330,29 @@ def Xform "Articulation" (
         self.assertEqual(model.joint_dof_count, 12)
         self.assertEqual(model.joint_coord_count, 14)
         self.assertEqual(model.equality_constraint_count, 1)
+        weld_eq = model.equality_constraint_label.index("/World/EqualityWeld")
         body0_idx = result["path_body_map"]["/World/Body0"]
         body1_idx = result["path_body_map"]["/World/Body1"]
-        self.assertEqual(model.equality_constraint_body1.numpy()[0], body0_idx)
-        self.assertEqual(model.equality_constraint_body2.numpy()[0], body1_idx)
-        np.testing.assert_allclose(model.equality_constraint_anchor.numpy()[0], np.array([0.1, 0.0, 0.0]))
+        self.assertEqual(model.equality_constraint_body1.numpy()[weld_eq], body0_idx)
+        self.assertEqual(model.equality_constraint_body2.numpy()[weld_eq], body1_idx)
         np.testing.assert_allclose(
-            model.equality_constraint_torquescale.numpy()[0], np.array(2.5), rtol=1e-6, atol=1e-6
+            model.equality_constraint_anchor.numpy()[weld_eq],
+            np.array([0.2, -0.1, 0.3], dtype=np.float32),
+            rtol=1e-6,
+            atol=1e-6,
         )
-        np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[0], np.array([0.02, 1.0], dtype=np.float32))
         np.testing.assert_allclose(
-            model.mujoco.eq_solimp.numpy()[0],
+            model.equality_constraint_relpose.numpy()[weld_eq],
+            np.array([0.45, -0.5, 0.0, 0.0, 0.0, sqrt_half, sqrt_half], dtype=np.float32),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            model.equality_constraint_torquescale.numpy()[weld_eq], np.array(2.5), rtol=1e-6, atol=1e-6
+        )
+        np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[weld_eq], np.array([0.02, 1.0], dtype=np.float32))
+        np.testing.assert_allclose(
+            model.mujoco.eq_solimp.numpy()[weld_eq],
             np.array([0.9, 0.95, 0.001, 0.5, 2.0], dtype=np.float32),
         )
 
