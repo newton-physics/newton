@@ -8577,9 +8577,16 @@ class TestUsdActuatorTypeAttributes(unittest.TestCase):
 class TestUsdActuatorInheritrange(unittest.TestCase):
     """Verify inheritRange from USD scales ctrlrange around the joint-range midpoint.
 
-    Per the MjcActuator schema, a positive inheritRange X sets the actuator's
-    ctrlrange to [midpoint - half_width*X, midpoint + half_width*X] where
-    midpoint and half_width come from the transmission target's range.
+    Per the MjcActuator schema, a positive inheritRange X resolves the actuator's
+    ctrlrange to [midpoint - half_width*X, midpoint + half_width*X] where midpoint
+    and half_width come from the transmission target's joint range.
+
+    The asserted ctrlrange/ctrllimited values come from the parsed model row
+    (``model.mujoco.actuator_*``). USD MjcActuator position-shortcut rows are
+    promoted to ``CtrlSource.JOINT_TARGET`` (matching MJCF), so the compiled
+    MuJoCo actuator built by :class:`SolverMuJoCo` is rebuilt from
+    ``joint_target_*`` and intentionally does not carry the input ctrlrange.
+    Inputs are driven via ``Control.joint_target_pos`` instead.
     """
 
     JOINT_LO_DEG = -90.0
@@ -8587,7 +8594,7 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
 
     CASES = (0.8, 1.0, 1.2)
 
-    def _build_and_solve(self, inherit_range_value):
+    def _build_model(self, inherit_range_value):
         from pxr import Sdf, Vt
 
         lo, hi = self.JOINT_LO_DEG, self.JOINT_HI_DEG
@@ -8614,12 +8621,10 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        return model, solver
+        return builder.finalize()
 
     def test_inheritrange_ctrlrange(self):
-        """ctrlrange should scale around midpoint for each inheritRange value."""
+        """Parsed ctrlrange should scale around midpoint for each inheritRange value."""
         lo_rad = self.JOINT_LO_DEG * np.pi / 180.0
         hi_rad = self.JOINT_HI_DEG * np.pi / 180.0
         mean = (lo_rad + hi_rad) / 2.0
@@ -8627,13 +8632,13 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
 
         for ir in self.CASES:
             with self.subTest(inheritRange=ir):
-                _, solver = self._build_and_solve(ir)
+                model = self._build_model(ir)
 
                 radius = half_width * ir
-                cr = solver.mj_model.actuator_ctrlrange[0]
+                cr = model.mujoco.actuator_ctrlrange.numpy()[0]
                 np.testing.assert_allclose(cr, [mean - radius, mean + radius], atol=1e-4)
 
-                self.assertEqual(solver.mj_model.actuator_ctrllimited[0], 1)
+                self.assertEqual(int(model.mujoco.actuator_ctrllimited.numpy()[0]), 1)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

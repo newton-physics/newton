@@ -1486,8 +1486,10 @@ class NarrowPhase:
         self.deterministic = deterministic
         self.verify_buffers = verify_buffers
 
-        # Contact reduction requires meshes
-        if reduce_contacts and not has_meshes:
+        # Contact reduction requires either meshes or heightfields (the
+        # mesh/heightfield-triangle path feeds the global reducer, so
+        # heightfield-only scenes still benefit from reduction).
+        if reduce_contacts and not (has_meshes or has_heightfields):
             self.reduce_contacts = False
 
         # Determine if we're using external AABBs
@@ -1576,8 +1578,10 @@ class NarrowPhase:
             self.mesh_plane_contacts_kernel = None
             self.mesh_mesh_contacts_kernel = None
 
-        # Create global contact reduction kernels for mesh-triangle contacts (only if has_meshes and reduce_contacts)
-        if self.reduce_contacts and has_meshes:
+        # Create global contact reduction kernels for mesh/heightfield-triangle
+        # contacts (mirror the predicate used to gate ``self.reduce_contacts``
+        # above so heightfield-only scenes also get the reducer allocated).
+        if self.reduce_contacts and (has_meshes or has_heightfields):
             # Global contact reducer uses hardcoded BETA_THRESHOLD (0.1mm) same as shared-memory reduction
             # Slot layout: NUM_SPATIAL_DIRECTIONS spatial + 1 max-depth = VALUES_PER_KEY slots per key
             self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(writer_func)

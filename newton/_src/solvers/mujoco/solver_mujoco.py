@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import importlib.metadata as importlib_metadata
 import os
+import re
 import warnings
 from collections.abc import Iterable
 from enum import IntEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -90,6 +93,63 @@ else:
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
+
+
+def _warn_if_mujoco_versions_mismatch(mujoco: Any, mujoco_warp: Any) -> None:
+    try:
+        pyproject_text = (Path(__file__).resolve().parents[4] / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    mismatches = []
+    for package, module in (("mujoco", mujoco), ("mujoco-warp", mujoco_warp)):
+        match = re.search(rf'^\s*"{re.escape(package)}(?=[<>=!~])([^";]+)', pyproject_text, re.MULTILINE)
+        installed_version = _installed_version(package, module)
+        if match and installed_version and not _version_satisfies(installed_version, match.group(1)):
+            mismatches.append(f"{package}=={installed_version} (requires {match.group(1).replace(' ', '')})")
+
+    if mismatches:
+        warnings.warn(
+            "MuJoCo dependency version mismatch with pyproject.toml: "
+            + "; ".join(mismatches)
+            + '. Reinstall Newton dependencies, for example `uv pip install -e ".[examples]"`.',
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+
+def _installed_version(package: str, module: Any) -> str | None:
+    try:
+        return importlib_metadata.version(package)
+    except importlib_metadata.PackageNotFoundError:
+        module_version = getattr(module, "__version__", None)
+        return str(module_version) if module_version is not None else None
+
+
+def _version_satisfies(installed_version: str, specifier: str) -> bool:
+    installed = _release(installed_version)
+    if not installed:
+        return True
+
+    for required_version in re.findall(r">=\s*([0-9][^,;]*)", specifier):
+        if _version_lt(installed, _release(required_version)):
+            return False
+    for required_version in re.findall(r"~=\s*([0-9][^,;]*)", specifier):
+        required = _release(required_version)
+        prefix_width = max(len(required) - 1, 1)
+        if _version_lt(installed, required) or installed[:prefix_width] != required[:prefix_width]:
+            return False
+    return True
+
+
+def _release(version: str) -> tuple[int, ...]:
+    match = re.match(r"\d+(?:\.\d+)*", version)
+    return tuple(int(component) for component in match.group(0).split(".")) if match else ()
+
+
+def _version_lt(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
+    width = max(len(left), len(right))
+    return left + (0,) * (width - len(left)) < right + (0,) * (width - len(right))
 
 
 class SolverMuJoCo(SolverBase):
@@ -226,6 +286,10 @@ class SolverMuJoCo(SolverBase):
                 raise ImportError(
                     "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
                 ) from e
+        try:
+            _warn_if_mujoco_versions_mismatch(cls._mujoco, cls._mujoco_warp)
+        except Exception:
+            pass
         return cls._mujoco, cls._mujoco_warp
 
     @staticmethod
@@ -251,7 +315,7 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _parse_named_int(value: str | int, mapping: dict[str, int], fallback_on_unknown: int | None = None) -> int:
         """Parse string-valued enums to int, otherwise return int(value)."""
-        if isinstance(value, (int, np.integer)):
+        if isinstance(value, int | np.integer):
             return int(value)
         lower_value = str(value).lower().strip()
         if lower_value in mapping:
@@ -983,7 +1047,7 @@ class SolverMuJoCo(SolverBase):
             """Parse MJCF/USD boolean values to bool."""
             if isinstance(value, bool):
                 return value
-            if isinstance(value, (int, np.integer)):
+            if isinstance(value, int | np.integer):
                 return bool(value)
             s = str(value).strip().lower()
             if s == "auto":
