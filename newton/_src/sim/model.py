@@ -274,9 +274,27 @@ class Model:
         # Gaussians
         self.gaussians_count = 0
         """Number of gaussians."""
-
         self.gaussians_data = None
         """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
+
+        # Shape and particle BVH structures and related fields
+        self.bvh_shapes: wp.Bvh | None = None
+        """BVH over visible shapes, indexed by ``bvh_shape_enabled``. ``None`` until first refit."""
+        self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
+        """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
+        self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
+        """Shape indices included in the shape BVH, shape ``[bvh_shape_count_enabled]``."""
+        self.bvh_shape_count_enabled: int = 0
+        """Number of shapes included in the shape BVH."""
+        self.bvh_shape_bounds: wp.array2d[wp.vec3f] | None = None
+        """Local-space AABB per shape (min/max) for mesh and gaussian shapes, shape ``[shape_count, 2]`` [m]."""
+        self.bvh_shape_world_transforms: wp.array[wp.transformf] | None = None
+        """World-space shape transforms computed during shape BVH refit, shape ``[shape_count]`` [m, unitless quaternion]."""
+
+        self.bvh_particles: wp.Bvh | None = None
+        """BVH over particles. ``None`` until first refit."""
+        self.bvh_particles_group_roots: wp.array[wp.int32] | None = None
+        """Per-world BVH group roots for particles, shape ``[world_count + 1]`` (last slot is global)."""
 
         # Heightfield collision data (compact table + per-shape index indirection)
         self.has_heightfields: bool = False
