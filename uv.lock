@@ -2670,7 +2670,7 @@ wheels = [
 
 [[package]]
 name = "mujoco-warp"
-version = "3.8.0"
+version = "3.8.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "absl-py", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
@@ -2681,9 +2681,9 @@ dependencies = [
     { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "warp-lang", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/18/2b/6d4b784d0d2e6b06fcd25f6fb5e7b0c0e03abf6d1ad1da25ea5e464665f6/mujoco_warp-3.8.0.tar.gz", hash = "sha256:727131327dbb66c49d374f92692b418b868d38efb581bec9cba399fd616554e9", size = 1925818, upload-time = "2026-04-26T19:32:50.316Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c6/fa/5d97d91bf58a01de56cb321a61bdd48b4514399e2a1577de8cd11dcaaf5d/mujoco_warp-3.8.0.1.tar.gz", hash = "sha256:a3a21f499bddc020b7a360a420ddffe405f496e53c1abb91f374489fe1bfeef9", size = 1929078, upload-time = "2026-04-29T00:05:27.336Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/77/f7c1e2e2e206e6bad745914682d7a535733a63f27070ac82cc2c2697f4af/mujoco_warp-3.8.0-py3-none-any.whl", hash = "sha256:03ecb0695045bdcf41c6d4bd525a4157af02d0c51881dfa282d0e0c16fbb0dbe", size = 2005650, upload-time = "2026-04-26T19:32:48.717Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/fc/f3375bc4f6d08b73d157aa8c87adb93aed9652a37100eb1323c2c4aa09b3/mujoco_warp-3.8.0.1-py3-none-any.whl", hash = "sha256:7bb1e94b0cb5da2e5af8b6f4585eb14c758b1cab76facf50d18a40924bfb0304", size = 2007392, upload-time = "2026-04-29T00:05:25.602Z" },
 ]
 
 [[package]]
@@ -3070,7 +3070,7 @@ requires-dist = [
     { name = "jupyterlab", marker = "extra == 'notebook'", specifier = ">=4.4.10" },
     { name = "meshio", marker = "extra == 'importers'", specifier = ">=5.3.0" },
     { name = "mujoco", marker = "python_full_version < '3.14' and extra == 'sim'", specifier = "~=3.8.0" },
-    { name = "mujoco-warp", marker = "python_full_version < '3.14' and extra == 'sim'", specifier = "~=3.8.0" },
+    { name = "mujoco-warp", marker = "python_full_version < '3.14' and extra == 'sim'", specifier = "~=3.8.0,>=3.8.0.1" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.0" },
     { name = "newton", extras = ["examples"], marker = "extra == 'dev'" },
