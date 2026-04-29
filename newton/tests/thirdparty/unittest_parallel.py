@@ -176,11 +176,17 @@ def main(argv=None):
 
     import warp as wp  # noqa: PLC0415 NVIDIA Modification
 
-    # Clear the Warp cache (NVIDIA Modification)
+    # Clear the Warp cache (NVIDIA Modification).  Honor WARP_CACHE_ROOT
+    # before the clear so concurrent worktrees do not nuke each other's
+    # default cache.  Worker setup already keys on the same env var.
+    if "WARP_CACHE_ROOT" in os.environ:
+        wp.config.kernel_cache_dir = os.path.join(os.environ["WARP_CACHE_ROOT"], wp.config.version)
+        os.makedirs(wp.config.kernel_cache_dir, exist_ok=True)
+
     if not args.no_cache_clear:
         wp.clear_lto_cache()
         wp.clear_kernel_cache()
-        print("Cleared Warp kernel cache")
+        print(f"Cleared Warp kernel cache: {wp.config.kernel_cache_dir}")
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
