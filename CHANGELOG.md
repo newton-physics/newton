@@ -37,7 +37,7 @@
 
 ### Fixed
 
-- Fix repeated URDF imports with fixed-joint collapse preserving articulation order.
+- Fix repeated URDF imports with fixed-joint collapse preserving articulation order
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration
 - Fix viewer crash with `imgui_bundle>=1.92.6` when editing colors by normalizing `color_edit3` input/output in `_edit_color3`
 - Show prismatic joints in the GL viewer when "Show Joints" is enabled
