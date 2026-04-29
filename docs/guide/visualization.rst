@@ -128,21 +128,41 @@ The ``position`` parameter controls placement: ``"side"`` (default), ``"stats"``
 
     viewer.register_ui_callback(my_ui, position="side")
 
-Keyboard shortcuts when working with the OpenGL Viewer:
+Viewer controls:
 
-.. list-table:: Keyboard Shortcuts
+.. list-table:: ViewerGL Controls
     :header-rows: 1
 
     * - Key(s)
       - Description
-    * - ``W``, ``A``, ``S``, ``D`` (or arrow keys) + mouse drag
-      - Move the camera like in a FPS game
+    * - ``W``, ``A``, ``S``, ``D`` or arrow keys
+      - Move the camera in the ground plane
+    * - ``Q`` / ``E``
+      - Move the camera down or up
+    * - Left drag
+      - Look around
+    * - Middle drag
+      - Orbit around the current camera pivot
+    * - ``Shift`` + middle drag
+      - Pan the camera and pivot
+    * - ``Ctrl`` + middle drag
+      - Dolly toward or away from the pivot
+    * - Mouse wheel
+      - Dolly toward or away from the pivot
+    * - ``Ctrl`` + mouse wheel
+      - Adjust field of view
+    * - ``F``
+      - Frame the visible model and set the orbit pivot
     * - ``H``
-      - Toggle Sidebar
+      - Toggle the sidebar
     * - ``SPACE``
-      - Pause/continue the simulation
-    * - ``Right Click``
+      - Pause or continue the simulation
+    * - ``ESC``
+      - Close the viewer
+    * - Right click
       - Pick objects
+
+Orbit mode keeps the pivot fixed while the camera rotates around it. Use ``F`` to center the pivot on the model, ``Shift`` + middle drag to pan the pivot with the camera, and the mouse wheel to change the orbit distance.
 
 **Troubleshooting:**
 
@@ -516,8 +536,8 @@ Use :meth:`~newton.viewer.ViewerBase.log_lines` to draw line segments — useful
     # Draw force vectors at body positions
     viewer.log_lines(
         "/debug/forces",
-        starts=positions,       # wp.array(dtype=wp.vec3)
-        ends=positions + forces, # wp.array(dtype=wp.vec3)
+        starts=positions,        # wp.array[wp.vec3]
+        ends=positions + forces, # wp.array[wp.vec3]
         colors=(1.0, 0.0, 0.0), # red
         width=0.005,
     )
@@ -530,9 +550,9 @@ Use :meth:`~newton.viewer.ViewerBase.log_points` to draw a point cloud:
 
     viewer.log_points(
         "/debug/targets",
-        points=target_positions, # wp.array(dtype=wp.vec3)
-        radii=0.02,              # uniform radius, or wp.array(dtype=wp.float32)
-        colors=(0.0, 1.0, 0.0), # green
+        points=target_positions, # wp.array[wp.vec3]
+        radii=0.02,              # uniform radius, or wp.array[wp.float32]
+        colors=(0.0, 1.0, 0.0),  # green
     )
 
 **Visualizing contacts:**

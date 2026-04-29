@@ -1416,7 +1416,7 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
     def _assert_mesh_mesh_scaled_separated_positive_penetration(self, narrow_phase: NarrowPhase):
         """Run the scaled mesh-mesh separation scenario and verify positive contact distance."""
         if narrow_phase.mesh_mesh_contacts_kernel is None:
-            self.skipTest("Mesh-mesh NarrowPhase SDF contacts not available")
+            self.skipTest("Mesh-mesh NarrowPhase SDF contacts require CUDA")
 
         device = narrow_phase.device if narrow_phase.device is not None else wp.get_device()
         with wp.ScopedDevice(device):

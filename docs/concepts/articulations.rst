@@ -466,13 +466,13 @@ A robust pattern is:
 
     @wp.kernel
     def center_joint_q_from_limits(
-        joint_q_start: wp.array(dtype=wp.int32),
-        joint_qd_start: wp.array(dtype=wp.int32),
-        joint_dof_dim: wp.array2d(dtype=wp.int32),
-        joint_type: wp.array(dtype=wp.int32),
-        joint_limit_lower: wp.array(dtype=float),
-        joint_limit_upper: wp.array(dtype=float),
-        joint_q: wp.array(dtype=float),
+        joint_q_start: wp.array[wp.int32],
+        joint_qd_start: wp.array[wp.int32],
+        joint_dof_dim: wp.array2d[wp.int32],
+        joint_type: wp.array[wp.int32],
+        joint_limit_lower: wp.array[float],
+        joint_limit_upper: wp.array[float],
+        joint_q: wp.array[float],
     ):
         joint_id = wp.tid()
 
