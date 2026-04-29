@@ -146,11 +146,11 @@ def convert_ray_depth_to_forward_depth_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def unpack_normal_to_batched_rgba_kernel(
+def unpack_normal_to_rgba_kernel(
     image: wp.array4d[wp.vec3f],
     out: wp.array4d[wp.uint8],
 ):
-    """Unpack (world, camera, H, W) vec3 normals into batched (N, H, W, 4) uint8 RGB.
+    """Unpack (world, camera, H, W) vec3 normals into (N, H, W, 4) uint8 RGB.
 
     Maps each component from [-1, 1] to [0, 255]. Alpha = 255.
     """
@@ -168,13 +168,13 @@ def unpack_normal_to_batched_rgba_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def unpack_depth_to_batched_rgba_kernel(
+def unpack_depth_to_rgba_kernel(
     image: wp.array4d[wp.float32],
     near: float,
     far: float,
     out: wp.array4d[wp.uint8],
 ):
-    """Unpack (world, camera, H, W) depth into batched (N, H, W, 4) uint8 grayscale.
+    """Unpack (world, camera, H, W) depth into (N, H, W, 4) uint8 grayscale.
 
     Invert and normalize to ``[50, 255]`` (closer = brighter). Miss pixels
     (negative depth) render black. Alpha = 255.
@@ -203,7 +203,7 @@ def unpack_depth_to_batched_rgba_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def unpack_shape_index_hash_to_batched_rgba_kernel(
+def unpack_shape_index_hash_to_rgba_kernel(
     image: wp.array4d[wp.uint32],
     out: wp.array4d[wp.uint8],
 ):
@@ -250,7 +250,7 @@ def colorize_shape_index_with_palette_kernel(
     out[n, y, x, 3] = wp.uint8(255)
 
 
-def _validate_batched_rgba_out_buffer(
+def _validate_rgba_out_buffer(
     name: str,
     out_buffer: wp.array[Any],
     expected_shape: tuple[int, int, int, int],
@@ -457,24 +457,14 @@ class Utils:
         """Flatten rendered color image to a tiled RGBA buffer.
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
-
-        .. deprecated:: 1.2
-            Use :meth:`to_batched_rgba_from_color` with
-            :meth:`~newton.viewer.ViewerBase.log_image`. For a single
-            pre-tiled 2D image, reshape the batched output yourself
-            (``batched.reshape(rows, cols, H, W, 4).transpose(0, 2, 1, 3, 4).reshape(rows*H, cols*W, 4)``).
+        Useful for writing a single pre-tiled image to disk; use :meth:`to_rgba_from_color`
+        with :meth:`~newton.viewer.ViewerBase.log_image` for in-viewer display.
 
         Args:
             image: Color output from :meth:`~newton.sensors.SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
-        warnings.warn(
-            "SensorTiledCamera.utils.flatten_color_image_to_rgba is deprecated; "
-            "use to_batched_rgba_from_color with Viewer.log_image instead.",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
         camera_count = image.shape[1]
         height = image.shape[2]
         width = image.shape[3]
@@ -503,11 +493,11 @@ class Utils:
         )
         return out_buffer
 
-    def to_batched_rgba_from_color(
+    def to_rgba_from_color(
         self,
         image: wp.array4d[wp.uint32],
     ) -> wp.array4d[wp.uint8]:
-        """Reinterpret packed ``uint32`` RGBA color sensor output as batched ``uint8`` RGBA.
+        """Reinterpret packed ``uint32`` RGBA color sensor output as ``uint8`` RGBA.
 
         Returns a zero-copy view: each ``uint32``
         (``R | G<<8 | B<<16 | A<<24``) aliases 4 contiguous ``uint8``
@@ -533,12 +523,12 @@ class Utils:
         n = world_count * camera_count
         return image.view(wp.vec4ub).reshape((n, h, w)).view(wp.uint8)
 
-    def to_batched_rgba_from_normal(
+    def to_rgba_from_normal(
         self,
         image: wp.array4d[wp.vec3f],
         out_buffer: wp.array4d[wp.uint8] | None = None,
     ) -> wp.array4d[wp.uint8]:
-        """Convert vec3 normal sensor output to batched ``uint8`` RGBA.
+        """Convert vec3 normal sensor output to ``uint8`` RGBA.
 
         Args:
             image: Normal output, shape ``(world_count, camera_count, H, W)``,
@@ -559,10 +549,10 @@ class Utils:
         if out_buffer is None:
             out_buffer = wp.empty((n, h, w, 4), dtype=wp.uint8, device=self.__render_context.device)
         else:
-            _validate_batched_rgba_out_buffer("to_batched_rgba_from_normal", out_buffer, (n, h, w, 4), image.device)
+            _validate_rgba_out_buffer("to_rgba_from_normal", out_buffer, (n, h, w, 4), image.device)
 
         wp.launch(
-            unpack_normal_to_batched_rgba_kernel,
+            unpack_normal_to_rgba_kernel,
             dim=(world_count, camera_count, h, w),
             inputs=[image],
             outputs=[out_buffer],
@@ -570,13 +560,13 @@ class Utils:
         )
         return out_buffer
 
-    def to_batched_rgba_from_depth(
+    def to_rgba_from_depth(
         self,
         image: wp.array4d[wp.float32],
         depth_range: wp.array[wp.float32] | tuple[float, float] | None = None,
         out_buffer: wp.array4d[wp.uint8] | None = None,
     ) -> wp.array4d[wp.uint8]:
-        """Convert float32 depth sensor output to batched ``uint8`` grayscale RGBA.
+        """Convert float32 depth sensor output to ``uint8`` grayscale RGBA.
 
         Closer pixels render brighter; miss pixels (negative depth) render
         black. Alpha = 255.
@@ -608,17 +598,15 @@ class Utils:
         else:
             near, far = float(depth_range[0]), float(depth_range[1])
         if not (near < far):
-            raise ValueError(
-                f"to_batched_rgba_from_depth: depth_range must satisfy near < far, got near={near}, far={far}"
-            )
+            raise ValueError(f"to_rgba_from_depth: depth_range must satisfy near < far, got near={near}, far={far}")
 
         if out_buffer is None:
             out_buffer = wp.empty((n, h, w, 4), dtype=wp.uint8, device=self.__render_context.device)
         else:
-            _validate_batched_rgba_out_buffer("to_batched_rgba_from_depth", out_buffer, (n, h, w, 4), image.device)
+            _validate_rgba_out_buffer("to_rgba_from_depth", out_buffer, (n, h, w, 4), image.device)
 
         wp.launch(
-            unpack_depth_to_batched_rgba_kernel,
+            unpack_depth_to_rgba_kernel,
             dim=(world_count, camera_count, h, w),
             inputs=[image, near, far],
             outputs=[out_buffer],
@@ -626,13 +614,13 @@ class Utils:
         )
         return out_buffer
 
-    def to_batched_rgba_from_shape_index(
+    def to_rgba_from_shape_index(
         self,
         image: wp.array4d[wp.uint32],
         colors: wp.array2d[wp.uint8] | None = None,
         out_buffer: wp.array4d[wp.uint8] | None = None,
     ) -> wp.array4d[wp.uint8]:
-        """Convert uint32 shape-index sensor output to batched ``uint8`` RGBA.
+        """Convert uint32 shape-index sensor output to ``uint8`` RGBA.
 
         Args:
             image: Shape-index output, shape
@@ -659,13 +647,11 @@ class Utils:
         if out_buffer is None:
             out_buffer = wp.empty((n, h, w, 4), dtype=wp.uint8, device=self.__render_context.device)
         else:
-            _validate_batched_rgba_out_buffer(
-                "to_batched_rgba_from_shape_index", out_buffer, (n, h, w, 4), image.device
-            )
+            _validate_rgba_out_buffer("to_rgba_from_shape_index", out_buffer, (n, h, w, 4), image.device)
 
         if colors is None:
             wp.launch(
-                unpack_shape_index_hash_to_batched_rgba_kernel,
+                unpack_shape_index_hash_to_rgba_kernel,
                 dim=(world_count, camera_count, h, w),
                 inputs=[image],
                 outputs=[out_buffer],
@@ -690,22 +676,14 @@ class Utils:
         """Flatten rendered normal image to a tiled RGBA buffer.
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
-
-        .. deprecated:: 1.2
-            Use :meth:`to_batched_rgba_from_normal` with
-            :meth:`~newton.viewer.ViewerBase.log_image`.
+        Useful for writing a single pre-tiled image to disk; use :meth:`to_rgba_from_normal`
+        with :meth:`~newton.viewer.ViewerBase.log_image` for in-viewer display.
 
         Args:
             image: Normal output from :meth:`~newton.sensors.SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
-        warnings.warn(
-            "SensorTiledCamera.utils.flatten_normal_image_to_rgba is deprecated; "
-            "use to_batched_rgba_from_normal with Viewer.log_image instead.",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
         camera_count = image.shape[1]
         height = image.shape[2]
         width = image.shape[3]
@@ -744,11 +722,8 @@ class Utils:
         """Flatten rendered depth image to a tiled RGBA buffer.
 
         Encodes depth as grayscale: inverts values (closer = brighter) and normalizes to the ``[50, 255]``
-        range. Background pixels (no hit) remain black.
-
-        .. deprecated:: 1.2
-            Use :meth:`to_batched_rgba_from_depth` with
-            :meth:`~newton.viewer.ViewerBase.log_image`.
+        range. Background pixels (no hit) remain black. Useful for writing a single pre-tiled image to disk;
+        use :meth:`to_rgba_from_depth` with :meth:`~newton.viewer.ViewerBase.log_image` for in-viewer display.
 
         Args:
             image: Depth output from :meth:`~newton.sensors.SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
@@ -756,12 +731,6 @@ class Utils:
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
             depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.
         """
-        warnings.warn(
-            "SensorTiledCamera.utils.flatten_depth_image_to_rgba is deprecated; "
-            "use to_batched_rgba_from_depth with Viewer.log_image instead.",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
         camera_count = image.shape[1]
         height = image.shape[2]
         width = image.shape[3]

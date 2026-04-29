@@ -586,7 +586,7 @@ outside the range are clipped).
     W, H, camera_count = 16, 16, 1
     color_image = sensor.utils.create_color_image_output(W, H, camera_count)
     # ... in a real pipeline, sensor.update(...) fills color_image each frame.
-    rgba = sensor.utils.to_batched_rgba_from_color(color_image)
+    rgba = sensor.utils.to_rgba_from_color(color_image)
     viewer.log_image("tiled_camera", rgba)
 
 For a 3D input, a last-axis of 1, 3, or 4 is interpreted as channel count

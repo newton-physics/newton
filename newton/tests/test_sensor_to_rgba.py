@@ -24,8 +24,8 @@ def _make_utils(world_count: int = 1, device=None):
     return Utils(render_context)
 
 
-class TestToBatchedRgba(unittest.TestCase):
-    def test_unpacks_uint32_to_batched_uint8(self):
+class TestToRgba(unittest.TestCase):
+    def test_unpacks_uint32_to_uint8(self):
         # 4D uint32 input: (W=2 worlds, C=3 cams, H=2, Wpix=2).
         # Packed RGBA: R=10, G=20, B=30, A=40 -> 0x28_1E_14_0A
         packed = (10) | (20 << 8) | (30 << 16) | (40 << 24)
@@ -33,7 +33,7 @@ class TestToBatchedRgba(unittest.TestCase):
         utils = _make_utils(world_count=2)
         inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=utils._Utils__render_context.device)
 
-        out = utils.to_batched_rgba_from_color(inp_wp)
+        out = utils.to_rgba_from_color(inp_wp)
 
         got = out.numpy()
         self.assertEqual(got.shape, (6, 2, 2, 4))
@@ -56,7 +56,7 @@ class TestToBatchedRgba(unittest.TestCase):
 
         utils = _make_utils(world_count=world_count)
         inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=utils._Utils__render_context.device)
-        out = utils.to_batched_rgba_from_color(inp_wp)
+        out = utils.to_rgba_from_color(inp_wp)
         got = out.numpy()
 
         # Expected: tile i = w * camera_count + c; R = w, G = c
@@ -69,9 +69,9 @@ class TestToBatchedRgba(unittest.TestCase):
                 self.assertEqual(got[tile, 0, 0, 3], 255)
 
 
-class TestToBatchedRgbaFromNormal(unittest.TestCase):
+class TestToRgbaFromNormal(unittest.TestCase):
     def test_normal_maps_vec3_to_rgb(self):
-        from newton._src.sensors.warp_raytrace.utils import unpack_normal_to_batched_rgba_kernel  # noqa: PLC0415
+        from newton._src.sensors.warp_raytrace.utils import unpack_normal_to_rgba_kernel  # noqa: PLC0415
 
         # (1, 1, 2, 2) normal input.
         # Pixel (0,0): (1, 0, 0)     -> R=255, G=127 or 128, B=127 or 128
@@ -87,7 +87,7 @@ class TestToBatchedRgbaFromNormal(unittest.TestCase):
 
         out = wp.empty((1, 2, 2, 4), dtype=wp.uint8, device=inp_wp.device)
         wp.launch(
-            unpack_normal_to_batched_rgba_kernel,
+            unpack_normal_to_rgba_kernel,
             dim=(1, 1, 2, 2),
             inputs=[inp_wp],
             outputs=[out],
@@ -127,9 +127,9 @@ class TestToBatchedRgbaFromNormal(unittest.TestCase):
         self.assertGreater(got[0, 0, 0, 0], got[0, 0, 0, 2])
 
 
-class TestToBatchedRgbaFromDepth(unittest.TestCase):
+class TestToRgbaFromDepth(unittest.TestCase):
     def test_depth_normalizes_to_grayscale(self):
-        from newton._src.sensors.warp_raytrace.utils import unpack_depth_to_batched_rgba_kernel  # noqa: PLC0415
+        from newton._src.sensors.warp_raytrace.utils import unpack_depth_to_rgba_kernel  # noqa: PLC0415
 
         # (1, 1, 1, 3) depth input with near=0, far=10:
         # d=0.0 (near)  -> bright (255)
@@ -140,7 +140,7 @@ class TestToBatchedRgbaFromDepth(unittest.TestCase):
 
         out = wp.empty((1, 1, 3, 4), dtype=wp.uint8, device=inp_wp.device)
         wp.launch(
-            unpack_depth_to_batched_rgba_kernel,
+            unpack_depth_to_rgba_kernel,
             dim=(1, 1, 1, 3),
             inputs=[inp_wp, 0.0, 10.0],
             outputs=[out],
@@ -172,10 +172,10 @@ class TestToBatchedRgbaFromDepth(unittest.TestCase):
         self.assertGreater(got[0, 0, 0, 0], got[0, 0, 1, 0])
 
 
-class TestToBatchedRgbaFromShapeIndex(unittest.TestCase):
+class TestToRgbaFromShapeIndex(unittest.TestCase):
     def test_shape_index_hash_colors_differ_by_index(self):
         from newton._src.sensors.warp_raytrace.utils import (  # noqa: PLC0415
-            unpack_shape_index_hash_to_batched_rgba_kernel,
+            unpack_shape_index_hash_to_rgba_kernel,
         )
 
         # (1, 1, 2, 2) shape-index input with four distinct indices.
@@ -184,7 +184,7 @@ class TestToBatchedRgbaFromShapeIndex(unittest.TestCase):
 
         out = wp.empty((1, 2, 2, 4), dtype=wp.uint8, device=inp_wp.device)
         wp.launch(
-            unpack_shape_index_hash_to_batched_rgba_kernel,
+            unpack_shape_index_hash_to_rgba_kernel,
             dim=(1, 1, 2, 2),
             inputs=[inp_wp],
             outputs=[out],
@@ -211,7 +211,7 @@ class TestToBatchedRgbaFromShapeIndex(unittest.TestCase):
         # collide with the miss color. The miss sentinel ``0xFFFFFFFF`` must
         # still render black (wraps to 0 after the +1 bias).
         from newton._src.sensors.warp_raytrace.utils import (  # noqa: PLC0415
-            unpack_shape_index_hash_to_batched_rgba_kernel,
+            unpack_shape_index_hash_to_rgba_kernel,
         )
 
         inp = np.array([[[[0, 0xFFFFFFFF]]]], dtype=np.uint32)
@@ -219,7 +219,7 @@ class TestToBatchedRgbaFromShapeIndex(unittest.TestCase):
 
         out = wp.empty((1, 1, 2, 4), dtype=wp.uint8, device=inp_wp.device)
         wp.launch(
-            unpack_shape_index_hash_to_batched_rgba_kernel,
+            unpack_shape_index_hash_to_rgba_kernel,
             dim=(1, 1, 1, 2),
             inputs=[inp_wp],
             outputs=[out],
@@ -294,12 +294,12 @@ class TestToBatchedRgbaFromShapeIndex(unittest.TestCase):
 
 
 class TestUtilsPublicAdapterAPI(unittest.TestCase):
-    """Exercise the public Utils.to_batched_rgba_from_* wrappers (not just raw kernels)."""
+    """Exercise the public Utils.to_rgba_from_* wrappers (not just raw kernels)."""
 
     def test_color_returns_canonical_shape_and_dtype(self):
         utils = _make_utils(world_count=2)
         inp = wp.zeros((2, 3, 4, 4), dtype=wp.uint32, device=utils._Utils__render_context.device)
-        out = utils.to_batched_rgba_from_color(inp)
+        out = utils.to_rgba_from_color(inp)
         self.assertEqual(tuple(out.shape), (6, 4, 4, 4))
         self.assertEqual(out.dtype, wp.uint8)
 
@@ -311,7 +311,7 @@ class TestUtilsPublicAdapterAPI(unittest.TestCase):
             dtype=wp.float32,
             device=device,
         )
-        out = utils.to_batched_rgba_from_depth(inp, depth_range=(0.0, 10.0))
+        out = utils.to_rgba_from_depth(inp, depth_range=(0.0, 10.0))
         got = out.numpy()
         self.assertEqual(got[0, 0, 0, 0], 255)  # near -> bright
         self.assertEqual(got[0, 0, 1, 0], 50)  # far -> dim
@@ -321,7 +321,7 @@ class TestUtilsPublicAdapterAPI(unittest.TestCase):
         device = utils._Utils__render_context.device
         inp = wp.zeros((1, 1, 2, 2), dtype=wp.float32, device=device)
         with self.assertRaises(ValueError) as cm:
-            utils.to_batched_rgba_from_depth(inp, depth_range=(5.0, 3.0))
+            utils.to_rgba_from_depth(inp, depth_range=(5.0, 3.0))
         self.assertIn("near < far", str(cm.exception))
 
     def test_worlds_per_row_zero_raises(self):

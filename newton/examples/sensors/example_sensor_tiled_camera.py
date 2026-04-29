@@ -241,14 +241,14 @@ class Example:
             clear_data=SensorTiledCamera.GRAY_CLEAR_DATA,
         )
         utils = self.tiled_camera_sensor.utils
-        color_rgba = utils.to_batched_rgba_from_color(self.tiled_camera_sensor_color_image)
-        albedo_rgba = utils.to_batched_rgba_from_color(self.tiled_camera_sensor_albedo_image)
-        utils.to_batched_rgba_from_depth(
+        color_rgba = utils.to_rgba_from_color(self.tiled_camera_sensor_color_image)
+        albedo_rgba = utils.to_rgba_from_color(self.tiled_camera_sensor_albedo_image)
+        utils.to_rgba_from_depth(
             self.tiled_camera_sensor_depth_image, depth_range=(0.0, 10.0), out_buffer=self.depth_rgba
         )
-        utils.to_batched_rgba_from_normal(self.tiled_camera_sensor_normal_image, out_buffer=self.normal_rgba)
-        utils.to_batched_rgba_from_shape_index(self.tiled_camera_sensor_shape_index_image, out_buffer=self.shape_rgba)
-        utils.to_batched_rgba_from_shape_index(
+        utils.to_rgba_from_normal(self.tiled_camera_sensor_normal_image, out_buffer=self.normal_rgba)
+        utils.to_rgba_from_shape_index(self.tiled_camera_sensor_shape_index_image, out_buffer=self.shape_rgba)
+        utils.to_rgba_from_shape_index(
             self.tiled_camera_sensor_shape_index_image, colors=self.semantic_palette, out_buffer=self.semantic_rgba
         )
 
