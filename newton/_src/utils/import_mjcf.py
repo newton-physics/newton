@@ -1017,8 +1017,9 @@ def parse_mjcf(
                 if verbose:
                     print(f"MJCF parsing shape {geom_name} issue: geom type {geom_type} is unsupported")
 
-            # Handle explicit mass: compute inertia using existing functions, add to body
-            if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0 and not just_visual:
+            # Handle explicit mass: compute inertia using existing functions, add to body.
+            # Visual geoms can still contribute authored mass when parse_visuals=True.
+            if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
                 from ..geometry.inertia import (  # noqa: PLC0415
                     compute_inertia_box_from_mass,
                     compute_inertia_capsule,
