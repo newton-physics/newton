@@ -69,7 +69,7 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
         )
     schema_props = set(defn.GetPropertyNames())
 
-    from pxr import Sdf  # noqa: PLC0415
+    from pxr import Sdf
 
     kwargs: dict[str, Any] = {}
     for prop in prim.GetAuthoredPropertiesInNamespace("newton"):
