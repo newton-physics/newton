@@ -142,6 +142,13 @@ jobs:
           paths: "rspec.xml"
           show: "fail"
         if: always()
+      - name: Upload test timing results
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
+        with:
+          name: test-results-${{ matrix.os }}
+          path: rspec.xml
+          if-no-files-found: error
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
