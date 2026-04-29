@@ -638,7 +638,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
-                    contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_margin0,
                     contacts.rigid_contact_normal,
                     0.1,  # line length scale factor
                 ],

@@ -1254,25 +1254,20 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - ``rigid_contact_point0``, ``rigid_contact_point1``
      - Contact point on each shape (body frame). This is the narrow-phase contact
        location used by the solver for the normal constraint and lever-arm computation.
-   * - ``rigid_contact_offset0``, ``rigid_contact_offset1``
-     - Body-frame friction-anchor offset per shape, equal to the contact normal scaled
-       by ``effective_radius + margin``. Added to the contact point to form a shifted
-       friction anchor that accounts for rotational effects of finite contact thickness
-       in tangential friction calculations.
    * - ``rigid_contact_normal``
      - Contact normal, pointing from shape 0 toward shape 1 (world frame).
    * - ``rigid_contact_margin0``, ``rigid_contact_margin1``
      - Per-shape thickness: effective radius + margin (scalar).
-   * - ``rigid_contact_match_index``
+   * - ``rigid_match_index``
      - Per-contact frame-to-frame match result (int32). ``>= 0``: matched old
        index, ``-1``: new, ``-2``: broken.  Only allocated when
        ``contact_matching`` is not ``"disabled"``.
        See :ref:`Contact Matching`.
-   * - ``rigid_contact_new_indices``, ``rigid_contact_new_count``
+   * - ``rigid_new_indices``, ``rigid_new_count``
      - Compact index list of new contacts in the current sorted buffer (where
        ``match_index < 0``). Only allocated when ``contact_report=True``.
        See :ref:`Contact Reports`.
-   * - ``rigid_contact_broken_indices``, ``rigid_contact_broken_count``
+   * - ``rigid_broken_indices``, ``rigid_broken_count``
      - Compact index list of contacts from the previous frame that no current
        contact matched. Only allocated when ``contact_report=True``.
        See :ref:`Contact Reports`.
@@ -1703,7 +1698,7 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
 
 - ``"disabled"`` (default) — no matching, no extra buffers.
 - ``"latest"`` — match current contacts against the previous
-  frame and populate :attr:`Contacts.rigid_contact_match_index`, but keep the
+  frame and populate :attr:`Contacts.rigid_match_index`, but keep the
   current frame's freshly generated contact geometry in the returned
   :class:`Contacts` buffer.
 - ``"sticky"`` (experimental) — match like ``"latest"``, then overwrite
@@ -1751,7 +1746,7 @@ Any non-disabled mode implies ``deterministic=True``.
     #   >= 0 : index of the matched contact in the previous frame
     #     -1 : new contact (no match found)
     #     -2 : key matched but position/normal thresholds exceeded (broken)
-    match_idx = contacts.rigid_contact_match_index.numpy()
+    match_idx = contacts.rigid_match_index.numpy()
 
 Each frame, the matcher binary-searches the current contacts against the
 previous frame's sorted keys, then verifies candidates against a world-space
@@ -1807,21 +1802,21 @@ matching mode:
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
 
-    n_new = contacts.rigid_contact_new_count.numpy()[0]
-    new_indices = contacts.rigid_contact_new_indices.numpy()[:n_new]
+    n_new = contacts.rigid_new_count.numpy()[0]
+    new_indices = contacts.rigid_new_indices.numpy()[:n_new]
 
-    n_broken = contacts.rigid_contact_broken_count.numpy()[0]
-    broken_indices = contacts.rigid_contact_broken_indices.numpy()[:n_broken]
+    n_broken = contacts.rigid_broken_count.numpy()[0]
+    broken_indices = contacts.rigid_broken_indices.numpy()[:n_broken]
 
-``rigid_contact_new_indices`` holds indices into the current frame's sorted
+``rigid_new_indices`` holds indices into the current frame's sorted
 contact buffer for every contact with ``match_index < 0``.  This includes both
 genuinely new contacts (``MATCH_NOT_FOUND``, ``match_index == -1``) and
 threshold-broken contacts whose sort key matched a previous-frame contact but
 whose position or normal exceeded the configured thresholds
 (``MATCH_BROKEN``, ``match_index == -2``).  Inspect
-``contacts.rigid_contact_match_index`` to distinguish the two cases.
+``contacts.rigid_match_index`` to distinguish the two cases.
 
-``rigid_contact_broken_indices`` holds indices into the *previous* frame's
+``rigid_broken_indices`` holds indices into the *previous* frame's
 sorted buffer for contacts that no current contact matched.
 
 .. _Performance:

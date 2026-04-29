@@ -896,6 +896,7 @@ def _convert_contacts_kamino_to_newton(
     rigid_contact_point0: wp.array(dtype=vec3f),
     rigid_contact_point1: wp.array(dtype=vec3f),
     rigid_contact_normal: wp.array(dtype=vec3f),
+    rigid_contact_distance: wp.array(dtype=float32),
 ):
     """Converts Kamino's internal contact representation to Newton's Contacts format."""
     # Retrieve the contact index for this thread
@@ -940,6 +941,7 @@ def _convert_contacts_kamino_to_newton(
     rigid_contact_shape0[cid] = shape0
     rigid_contact_shape1[cid] = shape1
     rigid_contact_normal[cid] = vec3f(gapfunc[0], gapfunc[1], gapfunc[2])
+    rigid_contact_distance[cid] = gapfunc[3]
     rigid_contact_point0[cid] = wp.transform_point(X_inv_a, position_A)
     rigid_contact_point1[cid] = wp.transform_point(X_inv_b, position_B)
 
@@ -1047,6 +1049,7 @@ def convert_contacts_kamino_to_newton(
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_in.data.model_max_contacts_host == 0 or contacts_out.rigid_contact_max == 0:
+        contacts_out.clear()
         return
 
     # Issue warning to the user if the number of contacts to convert exceeds the capacity of the output contacts.
@@ -1080,6 +1083,7 @@ def convert_contacts_kamino_to_newton(
             contacts_out.rigid_contact_point0,
             contacts_out.rigid_contact_point1,
             contacts_out.rigid_contact_normal,
+            contacts_out.rigid_distance,
         ],
         device=model.device,
     )

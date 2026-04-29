@@ -473,9 +473,9 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
     and one averaging window. Each scenario is placed far apart on the X axis so
     contact pairs never mix between scenarios:
 
-    - small sphere on plane (Fz = -mg)
-    - heavy sphere on plane (Fz = -mg, mass-independent)
-    - box on plane (4 corner contacts; summed Fz = -mg, regression for the
+    - small sphere on plane (Fz = +mg)
+    - heavy sphere on plane (Fz = +mg, mass-independent)
+    - box on plane (4 corner contacts; summed Fz = +mg, regression for the
       ``rigid_contact_con_weighting`` N*mg inflation bug)
     - mini pyramid (two bottom cubes + one top cube; ground reaction on each
       bottom cube = own weight + half the top cube ≈ 1.5*mg)
@@ -572,9 +572,9 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
 
         box_step_count = 0
         for ci in range(nc):
-            # ``contacts.force`` is force on body0 by body1. Sum into a "force-on-ground"
-            # bucket regardless of which side ground was recorded as: flip sign when
-            # ground is shape1 so the final values consistently match -mg downward.
+            # ``contacts.force`` is the spatial force exerted BY shape0 ON shape1. We want the
+            # force on the non-ground body, so flip the sign whenever ground is shape0 — the
+            # accumulated ``f`` is then the upward ground reaction (+mg) in every case.
             if s0[ci] == ground_shape:
                 other_shape = s1[ci]
                 f = forces[ci]
@@ -594,9 +594,9 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
                 box_force += f
                 box_step_count += 1
             elif other_body == cube_left_body:
-                cube_left_fz_on_body += -f[2]
+                cube_left_fz_on_body += f[2]
             elif other_body == cube_right_body:
-                cube_right_fz_on_body += -f[2]
+                cube_right_fz_on_body += f[2]
 
         test.assertGreater(box_step_count, 1, "Box should generate multiple ground contact points")
 
@@ -608,9 +608,9 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
 
     np.testing.assert_allclose(
         sphere_force[2],
-        -sphere_mass * gravity,
+        sphere_mass * gravity,
         rtol=0.05,
-        err_msg="Sphere on plane: vertical contact force should match -mg",
+        err_msg="Sphere on plane: vertical contact force should match +mg",
     )
     np.testing.assert_allclose(
         sphere_force[0], 0.0, atol=0.5, err_msg="Sphere on plane: horizontal X force should be ~0"
@@ -621,9 +621,9 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
 
     np.testing.assert_allclose(
         heavy_force[2],
-        -heavy_mass * gravity,
+        heavy_mass * gravity,
         rtol=0.05,
-        err_msg="Heavy sphere on plane: vertical contact force should match -mg",
+        err_msg="Heavy sphere on plane: vertical contact force should match +mg",
     )
     np.testing.assert_allclose(
         heavy_force[0], 0.0, atol=0.5, err_msg="Heavy sphere on plane: horizontal X force should be ~0"
@@ -634,9 +634,9 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
 
     np.testing.assert_allclose(
         box_force[2],
-        -box_mass * gravity,
+        box_mass * gravity,
         rtol=0.10,
-        err_msg="Box on plane: total vertical contact force over multiple contacts should match -mg, not N*mg",
+        err_msg="Box on plane: total vertical contact force over multiple contacts should match +mg, not N*mg",
     )
     np.testing.assert_allclose(box_force[0], 0.0, atol=1.0, err_msg="Box on plane: horizontal X force should be ~0")
     np.testing.assert_allclose(box_force[1], 0.0, atol=1.0, err_msg="Box on plane: horizontal Y force should be ~0")

@@ -48,6 +48,7 @@ class ContactWriterData:
     out_offset0: wp.array[wp.vec3]
     out_offset1: wp.array[wp.vec3]
     out_normal: wp.array[wp.vec3]
+    out_distance: wp.array[float]
     out_margin0: wp.array[float]
     out_margin1: wp.array[float]
     out_tids: wp.array[int]
@@ -131,6 +132,7 @@ def write_contact(
     writer_data.out_offset1[index] = wp.transform_vector(X_bw_b, -offset_mag_b * contact_normal)
 
     writer_data.out_normal[index] = contact_normal
+    writer_data.out_distance[index] = d
     writer_data.out_margin0[index] = offset_mag_a
     writer_data.out_margin1[index] = offset_mag_b
     writer_data.out_tids[index] = 0  # tid not available in this context
@@ -173,8 +175,8 @@ def compute_shape_aabbs(
 ):
     """Compute AABBs, narrow-phase geometry data, and zero collision counters.
 
-    Fuses AABB computation, narrow-phase data preparation, contact counter
-    zeroing, and generation bumping into a single kernel launch.
+    Fuses AABB computation, narrow-phase data preparation, contact counter zeroing, and generation
+    bumping into a single kernel launch.
     """
     shape_id = wp.tid()
 
@@ -453,7 +455,7 @@ class CollisionPipeline:
     For most users, construct with ``CollisionPipeline(model, ...)``.
 
     .. note::
-        Differentiable rigid contacts (the ``rigid_contact_diff_*`` arrays when
+        Differentiable rigid contacts (the ``rigid_diff_*`` arrays when
         ``requires_grad`` is enabled) are **experimental**. The narrow phase stays
         frozen and gradients are a tangent approximation; validate accuracy and
         usefulness on your workflow before relying on them in optimization loops.
@@ -520,7 +522,7 @@ class CollisionPipeline:
             contact_matching: Frame-to-frame contact matching mode.  One of
                 ``"disabled"``, ``"latest"``, or ``"sticky"``.  Any
                 non-disabled mode implies ``deterministic=True`` and
-                populates :attr:`Contacts.rigid_contact_match_index`.
+                populates :attr:`Contacts.rigid_match_index`.
                 Defaults to ``"disabled"``.
             contact_matching_pos_threshold: World-space distance threshold [m]
                 between the previous and current contact midpoints
@@ -529,9 +531,9 @@ class CollisionPipeline:
                 to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.
-            contact_report: Allocate ``rigid_contact_new_indices`` /
-                ``rigid_contact_new_count`` / ``rigid_contact_broken_indices``
-                / ``rigid_contact_broken_count`` on the :class:`Contacts`
+            contact_report: Allocate ``rigid_new_indices`` /
+                ``rigid_new_count`` / ``rigid_broken_indices``
+                / ``rigid_broken_count`` on the :class:`Contacts`
                 container, populated each frame.  Requires a non-disabled
                 ``contact_matching`` mode.
             verify_buffers: Run a ``dim=[1]`` diagnostic kernel at the end of
@@ -544,7 +546,7 @@ class CollisionPipeline:
 
         .. note::
             When ``requires_grad`` is true (explicitly or via ``model.requires_grad``),
-            rigid-contact autodiff via ``rigid_contact_diff_*`` is **experimental**;
+            rigid-contact autodiff via ``rigid_diff_*`` is **experimental**;
             see :meth:`collide`.
         """
         if contact_matching not in ("disabled", "latest", "sticky"):
@@ -820,7 +822,7 @@ class CollisionPipeline:
             A newly allocated contacts buffer sized for this pipeline.
 
         .. note::
-            If ``requires_grad`` is true, ``rigid_contact_diff_*`` arrays may be
+            If ``requires_grad`` is true, ``rigid_diff_*`` arrays may be
             allocated; rigid-contact differentiability is **experimental** (see
             :meth:`collide`).
         """
@@ -870,7 +872,7 @@ class CollisionPipeline:
         ``state.particle_q``.
 
         When ``requires_grad=True``, the differentiable rigid-contact arrays
-        (``contacts.rigid_contact_diff_*``) are populated by a lightweight
+        (``contacts.rigid_diff_*``) are populated by a lightweight
         augmentation kernel that reconstructs world-space contact points from
         the frozen narrow-phase output through the body transforms.
 
@@ -920,7 +922,7 @@ class CollisionPipeline:
                 model.shape_collision_aabb_lower,
                 model.shape_collision_aabb_upper,
                 contacts.contact_counters,
-                contacts.contact_generation,
+                contacts.generation,
                 self.broad_phase_pair_count,
                 contacts.contact_counters.shape[0],
             ],
@@ -992,6 +994,7 @@ class CollisionPipeline:
         writer_data.out_offset0 = contacts.rigid_contact_offset0
         writer_data.out_offset1 = contacts.rigid_contact_offset1
         writer_data.out_normal = contacts.rigid_contact_normal
+        writer_data.out_distance = contacts.rigid_distance
         writer_data.out_margin0 = contacts.rigid_contact_margin0
         writer_data.out_margin1 = contacts.rigid_contact_margin1
         writer_data.out_tids = contacts.rigid_contact_tids
@@ -1036,7 +1039,7 @@ class CollisionPipeline:
 
         # Match contacts against previous frame before sorting.
         if self._contact_matcher is not None:
-            if contacts.rigid_contact_match_index is None:
+            if contacts.rigid_match_index is None:
                 raise ValueError(
                     "CollisionPipeline has contact_matching enabled but the "
                     "Contacts buffer was created without contact_matching. "
@@ -1052,7 +1055,7 @@ class CollisionPipeline:
                 normal=contacts.rigid_contact_normal,
                 body_q=state.body_q,
                 shape_body=model.shape_body,
-                match_index_out=contacts.rigid_contact_match_index,
+                match_index_out=contacts.rigid_match_index,
                 device=self.device,
             )
 
@@ -1067,13 +1070,14 @@ class CollisionPipeline:
                 offset0=contacts.rigid_contact_offset0,
                 offset1=contacts.rigid_contact_offset1,
                 normal=contacts.rigid_contact_normal,
+                distance=contacts.rigid_distance,
                 margin0=contacts.rigid_contact_margin0,
                 margin1=contacts.rigid_contact_margin1,
                 tids=contacts.rigid_contact_tids,
                 stiffness=contacts.rigid_contact_stiffness,
                 damping=contacts.rigid_contact_damping,
                 friction=contacts.rigid_contact_friction,
-                match_index=contacts.rigid_contact_match_index,
+                match_index=contacts.rigid_match_index,
                 device=self.device,
             )
 
@@ -1085,7 +1089,7 @@ class CollisionPipeline:
         if self._matching_sticky:
             self._contact_matcher.replay_matched(
                 contact_count=contacts.rigid_contact_count,
-                match_index=contacts.rigid_contact_match_index,
+                match_index=contacts.rigid_match_index,
                 point0=contacts.rigid_contact_point0,
                 point1=contacts.rigid_contact_point1,
                 offset0=contacts.rigid_contact_offset0,
@@ -1098,19 +1102,19 @@ class CollisionPipeline:
         # overwrites _prev_count and the report needs the old value.
         if self._contact_matcher is not None:
             if self._contact_matcher.has_report:
-                if contacts.rigid_contact_new_indices is None:
+                if contacts.rigid_new_indices is None:
                     raise ValueError(
                         "CollisionPipeline has contact_report enabled but the Contacts "
                         "buffer was created without contact_report=True. "
                         "Use pipeline.contacts() to create a compatible buffer."
                     )
                 self._contact_matcher.build_report(
-                    contacts.rigid_contact_match_index,
+                    contacts.rigid_match_index,
                     contacts.rigid_contact_count,
-                    contacts.rigid_contact_new_indices,
-                    contacts.rigid_contact_new_count,
-                    contacts.rigid_contact_broken_indices,
-                    contacts.rigid_contact_broken_count,
+                    contacts.rigid_new_indices,
+                    contacts.rigid_new_count,
+                    contacts.rigid_broken_indices,
+                    contacts.rigid_broken_count,
                     device=self.device,
                 )
             sticky_offsets: dict[str, wp.array] = (
@@ -1137,7 +1141,7 @@ class CollisionPipeline:
 
         # Differentiable contact augmentation: reconstruct world-space contact
         # quantities through body_q so that gradients flow via wp.Tape.
-        if self.requires_grad and contacts.rigid_contact_diff_distance is not None:
+        if self.requires_grad and contacts.rigid_diff_distance is not None:
             launch_differentiable_contact_augment(
                 contacts=contacts,
                 body_q=state.body_q,

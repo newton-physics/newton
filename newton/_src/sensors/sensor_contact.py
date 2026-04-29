@@ -81,11 +81,11 @@ def accumulate_contact_forces_kernel(
     if total_force:
         assert total_force_friction
         if row0 >= 0:
-            wp.atomic_add(total_force, row0, force)
-            wp.atomic_add(total_force_friction, row0, friction)
+            wp.atomic_add(total_force, row0, -force)
+            wp.atomic_add(total_force_friction, row0, -friction)
         if row1 >= 0:
-            wp.atomic_add(total_force, row1, -force)
-            wp.atomic_add(total_force_friction, row1, -friction)
+            wp.atomic_add(total_force, row1, force)
+            wp.atomic_add(total_force_friction, row1, friction)
 
     # per-counterpart forces and friction
     if force_matrix:
@@ -93,11 +93,11 @@ def accumulate_contact_forces_kernel(
         col0 = counterpart_shape_to_col[shape0]
         col1 = counterpart_shape_to_col[shape1]
         if row0 >= 0 and col1 >= 0:
-            wp.atomic_add(force_matrix, row0, col1, force)
-            wp.atomic_add(force_matrix_friction, row0, col1, friction)
+            wp.atomic_add(force_matrix, row0, col1, -force)
+            wp.atomic_add(force_matrix_friction, row0, col1, -friction)
         if row1 >= 0 and col0 >= 0:
-            wp.atomic_add(force_matrix, row1, col0, -force)
-            wp.atomic_add(force_matrix_friction, row1, col0, -friction)
+            wp.atomic_add(force_matrix, row1, col0, force)
+            wp.atomic_add(force_matrix_friction, row1, col0, friction)
 
 
 @wp.kernel(enable_backward=False)

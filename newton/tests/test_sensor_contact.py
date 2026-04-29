@@ -34,35 +34,29 @@ def _make_two_world_model(device=None, include_ground=False):
 
 
 def create_contacts(device, pairs, naconmax, normals=None, forces=None):
-    """Helper to create Contacts with specified contacts.
+    """Build a Contacts populated for a sensor test.
 
-    The force spatial vectors are computed as (magnitude * normal, 0, 0, 0) to match
-    the convention that contacts.force stores the force on shape0 from shape1.
+    ``forces`` are vec3 values written directly into the linear part of ``rigid_force`` (force exerted
+    BY shape 0 ON shape 1). Default normal is ``[0, 0, 1]``; default force is ``(0, 0, -0.1)``.
     """
-    contacts = newton.Contacts(naconmax, 0, device=device, requested_attributes={"force"})
+    contacts = newton.Contacts(naconmax, 0, device=device, requested_attributes={"rigid_force"})
     n_contacts = len(pairs)
 
     if normals is None:
         normals = [[0.0, 0.0, 1.0]] * n_contacts
     if forces is None:
-        forces = [0.1] * n_contacts
+        forces = [(0.0, 0.0, -0.1)] * n_contacts
 
     padding = naconmax - n_contacts
-    shapes0 = [p[0] for p in pairs] + [-1] * padding
-    shapes1 = [p[1] for p in pairs] + [-1] * padding
+    shapes_pairs = [(p[0], p[1]) for p in pairs] + [(-1, -1)] * padding
     normals_padded = normals + [[0.0, 0.0, 0.0]] * padding
-
-    # Build spatial force vectors: linear force = magnitude * normal, angular = 0
-    forces_spatial = [(f * n[0], f * n[1], f * n[2], 0.0, 0.0, 0.0) for f, n in zip(forces, normals, strict=True)] + [
-        (0.0,) * 6
-    ] * padding
+    forces_spatial = [(f[0], f[1], f[2], 0.0, 0.0, 0.0) for f in forces] + [(0.0,) * 6] * padding
 
     with wp.ScopedDevice(device):
-        contacts.rigid_contact_shape0 = wp.array(shapes0, dtype=wp.int32)
-        contacts.rigid_contact_shape1 = wp.array(shapes1, dtype=wp.int32)
-        contacts.rigid_contact_normal = wp.array(normals_padded, dtype=wp.vec3f)
-        contacts.rigid_contact_count = wp.array([n_contacts], dtype=wp.int32)
-        contacts.force = wp.array(forces_spatial, dtype=wp.spatial_vector)
+        contacts.rigid_shapes = wp.array(shapes_pairs, dtype=wp.vec2i)
+        contacts.rigid_normal = wp.array(normals_padded, dtype=wp.vec3f)
+        contacts.rigid_count_active.assign([n_contacts])
+        contacts.rigid_force = wp.array(forces_spatial, dtype=wp.spatial_vector)
 
     return contacts
 
@@ -84,11 +78,12 @@ class TestSensorContact(unittest.TestCase):
 
         contact_sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
 
+        # ``force`` is the linear part of ``rigid_force`` (force BY shape 0 ON shape 1).
         test_contacts = [
-            {"pair": (0, 2), "normal": [0.0, 0.0, -1.0], "force": 1.0},
-            {"pair": (1, 2), "normal": [-1.0, 0.0, 0.0], "force": 2.0},
-            {"pair": (2, 1), "normal": [0.0, -1.0, 0.0], "force": 1.5},
-            {"pair": (0, 3), "normal": [0.0, 0.0, 1.0], "force": 0.5},
+            {"pair": (0, 2), "normal": [0.0, 0.0, -1.0], "force": (0.0, 0.0, 1.0)},
+            {"pair": (1, 2), "normal": [-1.0, 0.0, 0.0], "force": (2.0, 0.0, 0.0)},
+            {"pair": (2, 1), "normal": [0.0, -1.0, 0.0], "force": (0.0, 1.5, 0.0)},
+            {"pair": (0, 3), "normal": [0.0, 0.0, 1.0], "force": (0.0, 0.0, -0.5)},
         ]
 
         pairs = [contact["pair"] for contact in test_contacts]
@@ -270,7 +265,7 @@ class TestSensorContact(unittest.TestCase):
 
         sensor = SensorContact(model, sensing_obj_bodies="*")
 
-        contacts = create_contacts(device, [(0, 1)], naconmax=4, forces=[3.0])
+        contacts = create_contacts(device, [(0, 1)], naconmax=4, forces=[(0.0, 0.0, -3.0)])
         sensor.update(None, contacts)
 
         self.assertIsNone(sensor.force_matrix)
@@ -300,7 +295,7 @@ class TestSensorContact(unittest.TestCase):
         sensor = SensorContact(model, sensing_obj_bodies=[1, 0])
         self.assertEqual(sensor.sensing_obj_idx, [1, 0])
 
-        contacts = create_contacts(model.device, [(0, 1)], naconmax=4, forces=[3.0])
+        contacts = create_contacts(model.device, [(0, 1)], naconmax=4, forces=[(0.0, 0.0, -3.0)])
         sensor.update(None, contacts)
         total = sensor.total_force.numpy()
         # Row 0 is body 1, row 1 is body 0
@@ -313,7 +308,7 @@ class TestSensorContact(unittest.TestCase):
         sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_shapes="*", measure_total=False)
         self.assertIsNone(sensor.total_force)
 
-        contacts = create_contacts(model.device, [(0, 2)], naconmax=4, forces=[5.0])
+        contacts = create_contacts(model.device, [(0, 2)], naconmax=4, forces=[(0.0, 0.0, -5.0)])
         sensor.update(None, contacts)
         self.assertIsNotNone(sensor.force_matrix)
         net = sensor.force_matrix.numpy()
@@ -366,28 +361,14 @@ class TestSensorContact(unittest.TestCase):
 
         sensor = SensorContact(model, sensing_obj_bodies="*")
 
-        # Force has normal component (z) and tangential component (x)
-        # Normal is [0,0,1], force spatial vector is (3, 0, 5, 0, 0, 0)
-        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
-        with wp.ScopedDevice(device):
-            contacts.rigid_contact_shape0 = wp.array([0, -1, -1, -1], dtype=wp.int32)
-            contacts.rigid_contact_shape1 = wp.array([1, -1, -1, -1], dtype=wp.int32)
-            contacts.rigid_contact_normal = wp.array(
-                [[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-                dtype=wp.vec3,
-            )
-            contacts.rigid_contact_count = wp.array([1], dtype=wp.int32)
-            contacts.force = wp.array(
-                [(3.0, 0.0, 5.0, 0.0, 0.0, 0.0), (0.0,) * 6, (0.0,) * 6, (0.0,) * 6],
-                dtype=wp.spatial_vector,
-            )
+        # Stored rigid_force linear = (-3, 0, -5); tangential part = (-3, 0, 0).
+        # Sensor reports +tangential on A's row and -tangential on B's row.
+        contacts = create_contacts(device, [(0, 1)], naconmax=4, normals=[[0.0, 0.0, 1.0]], forces=[(-3.0, 0.0, -5.0)])
 
         sensor.update(None, contacts)
 
         friction = sensor.total_force_friction.numpy()
-        # Friction on A should be (3, 0, 0) — the tangential part
         np.testing.assert_allclose(friction[0], [3.0, 0.0, 0.0], atol=1e-5)
-        # Friction on B should be (-3, 0, 0) — Newton's third law
         np.testing.assert_allclose(friction[1], [-3.0, 0.0, 0.0], atol=1e-5)
         # Verify orthogonality: dot(friction, normal) == 0
         normal = np.array([0.0, 0.0, 1.0])
@@ -407,35 +388,20 @@ class TestSensorContact(unittest.TestCase):
 
         sensor = SensorContact(model, sensing_obj_bodies="*")
 
-        # Contact 0: shape0=0(A), shape1=1(B), normal=[0,0,1], force=(1,2,3)
-        #   normal_comp = dot((1,2,3),(0,0,1))*(0,0,1) = (0,0,3)
-        #   friction = (1,2,3)-(0,0,3) = (1,2,0)
-        #   A gets +(1,2,0), B gets -(1,2,0)
-        #
-        # Contact 1: shape0=1(B), shape1=2(ground), normal=[0,1,0], force=(4,5,6)
-        #   normal_comp = dot((4,5,6),(0,1,0))*(0,1,0) = (0,5,0)
-        #   friction = (4,5,6)-(0,5,0) = (4,0,6)
-        #   B gets +(4,0,6), ground is not sensed
-        #
-        # Expected friction: A = (1,2,0), B = (-1,-2,0)+(4,0,6) = (3,-2,6)
-        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
-        with wp.ScopedDevice(device):
-            contacts.rigid_contact_shape0 = wp.array([0, 1, -1, -1], dtype=wp.int32)
-            contacts.rigid_contact_shape1 = wp.array([1, 2, -1, -1], dtype=wp.int32)
-            contacts.rigid_contact_normal = wp.array(
-                [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-                dtype=wp.vec3,
-            )
-            contacts.rigid_contact_count = wp.array([2], dtype=wp.int32)
-            contacts.force = wp.array(
-                [
-                    (1.0, 2.0, 3.0, 0.0, 0.0, 0.0),
-                    (4.0, 5.0, 6.0, 0.0, 0.0, 0.0),
-                    (0.0,) * 6,
-                    (0.0,) * 6,
-                ],
-                dtype=wp.spatial_vector,
-            )
+        # Contact 0: shapes=(0=A, 1=B), normal=[0,0,1], rigid_force linear=(-1,-2,-3).
+        #   friction = (-1,-2,-3) - dot(.,n)*n = (-1,-2,-3) - (0,0,-3) = (-1,-2,0).
+        #   Sensor: A row += -friction = (1,2,0); B row += friction = (-1,-2,0).
+        # Contact 1: shapes=(1=B, 2=ground), normal=[0,1,0], rigid_force linear=(-4,-5,-6).
+        #   friction = (-4,-5,-6) - (0,-5,0) = (-4,0,-6).
+        #   Sensor: B row += -friction = (4,0,6); ground is not sensed.
+        # Expected friction: A = (1,2,0); B = (-1,-2,0) + (4,0,6) = (3,-2,6).
+        contacts = create_contacts(
+            device,
+            [(0, 1), (1, 2)],
+            naconmax=4,
+            normals=[[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
+            forces=[(-1.0, -2.0, -3.0), (-4.0, -5.0, -6.0)],
+        )
 
         sensor.update(None, contacts)
 
@@ -456,29 +422,15 @@ class TestSensorContact(unittest.TestCase):
 
         sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
 
-        # Force with tangential component: normal=[0,0,1], force=(2, 3, 7, 0, 0, 0)
-        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
-        with wp.ScopedDevice(device):
-            contacts.rigid_contact_shape0 = wp.array([0, -1, -1, -1], dtype=wp.int32)
-            contacts.rigid_contact_shape1 = wp.array([1, -1, -1, -1], dtype=wp.int32)
-            contacts.rigid_contact_normal = wp.array(
-                [[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-                dtype=wp.vec3,
-            )
-            contacts.rigid_contact_count = wp.array([1], dtype=wp.int32)
-            contacts.force = wp.array(
-                [(2.0, 3.0, 7.0, 0.0, 0.0, 0.0), (0.0,) * 6, (0.0,) * 6, (0.0,) * 6],
-                dtype=wp.spatial_vector,
-            )
+        # Stored rigid_force linear = (-2, -3, -7); tangential part = (-2, -3, 0).
+        contacts = create_contacts(device, [(0, 1)], naconmax=4, normals=[[0.0, 0.0, 1.0]], forces=[(-2.0, -3.0, -7.0)])
 
         sensor.update(None, contacts)
 
         self.assertIsNotNone(sensor.force_matrix_friction)
         fmat = sensor.force_matrix_friction.numpy()
         self.assertEqual(fmat.shape, sensor.force_matrix.numpy().shape)
-        # A's friction from B: tangential part = (2, 3, 0)
         np.testing.assert_allclose(fmat[0, 1], [2.0, 3.0, 0.0], atol=1e-5)
-        # B's friction from A: (-2, -3, 0)
         np.testing.assert_allclose(fmat[1, 0], [-2.0, -3.0, 0.0], atol=1e-5)
 
     def test_friction_force_measure_total_false(self):
@@ -502,8 +454,7 @@ class TestSensorContact(unittest.TestCase):
 
         sensor = SensorContact(model, sensing_obj_bodies="*")
 
-        # create_contacts builds force = magnitude * normal, so purely normal
-        contacts = create_contacts(device, [(0, 1)], naconmax=4, forces=[5.0])
+        contacts = create_contacts(device, [(0, 1)], naconmax=4, forces=[(0.0, 0.0, -5.0)])
         sensor.update(None, contacts)
 
         friction = sensor.total_force_friction.numpy()
@@ -532,19 +483,9 @@ class TestSensorContact(unittest.TestCase):
         d = float(np.dot(force_vec, n))  # 1*0 + 2*(-0.5) + 3*(sqrt(3)/2) = -1 + 2.598 = 1.598
         expected_friction = force_vec - d * n
 
-        contacts = newton.Contacts(4, 0, device=device, requested_attributes={"force"})
-        with wp.ScopedDevice(device):
-            contacts.rigid_contact_shape0 = wp.array([0, -1, -1, -1], dtype=wp.int32)
-            contacts.rigid_contact_shape1 = wp.array([1, -1, -1, -1], dtype=wp.int32)
-            contacts.rigid_contact_normal = wp.array(
-                [n.tolist(), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-                dtype=wp.vec3,
-            )
-            contacts.rigid_contact_count = wp.array([1], dtype=wp.int32)
-            contacts.force = wp.array(
-                [(*force_vec.tolist(), 0.0, 0.0, 0.0), (0.0,) * 6, (0.0,) * 6, (0.0,) * 6],
-                dtype=wp.spatial_vector,
-            )
+        contacts = create_contacts(
+            device, [(0, 1)], naconmax=4, normals=[n.tolist()], forces=[tuple((-force_vec).tolist())]
+        )
 
         sensor.update(None, contacts)
 

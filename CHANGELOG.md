@@ -16,8 +16,9 @@
 - Add `Mesh.is_watertight` property (cached) that reports whether every geometric edge is shared by exactly two triangles
 - Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
 - Add fast parity-based SDF construction path for watertight meshes in `SDF.create_from_mesh`, using `wp.mesh_query_point_sign_parity` instead of winding numbers; selected via the new `sign_method` argument (`"auto"` — the default — picks parity when `Mesh.is_watertight` is true, or `"parity"` / `"winding"` to force either strategy)
+- Add `Contacts.rigid_distance` (signed contact gap) and the request-gated extended attributes `rigid_velocity` and `rigid_key`
 - Add `ViewerBase.log_arrows()` for arrow rendering (wide line + arrowhead) in the GL viewer with a dedicated geometry shader
-- Add frame-to-frame contact matching via `CollisionPipeline(contact_matching=...)` with modes `"latest"` (populates `contacts.rigid_contact_match_index`) and `"sticky"` (experimental; additionally replays previous-frame contact geometry on matched contacts — the sticky update strategy may change without warning). Optional `contact_report=True` exposes new/broken contact index lists on `Contacts`.
+- Add frame-to-frame contact matching via `CollisionPipeline(contact_matching=...)` with modes `"latest"` (populates `contacts.rigid_match_index`) and `"sticky"` (experimental; additionally replays previous-frame contact geometry on matched contacts — the sticky update strategy may change without warning). Optional `contact_report=True` exposes new/broken contact index lists on `Contacts`.
 - Add `enable_multiccd` parameter to `SolverMuJoCo` for multi-CCD contact generation (up to 4 contact points per geom pair)
 - Support `<joint type="ball"/>` in the MJCF importer, and preserve authored damping, stiffness, and frictionloss when exporting ball joints to MuJoCo specs (previously silently dropped)
 - Add `ViewerViser.log_scalar()` for live scalar time-series plots via uPlot
@@ -26,6 +27,8 @@
 ### Changed
 
 - Use pre-computed local AABB for `CONVEX_MESH` shapes in `compute_shape_aabbs`, avoiding a per-frame support-function AABB computation
+- Rename `Contacts` attributes to drop the `_contact_` infix and pack paired scalars into `vec2` buffers (e.g. `rigid_contact_normal` → `rigid_normal`, `rigid_contact_shape0/1` → `rigid_shapes` (`vec2i`), `soft_contact_*` → `soft_*`); old names kept as deprecated property aliases backed by views
+- Replace the `force` extended attribute with `Contacts.rigid_force`, sized `rigid_count_max` only (was rigid+soft) and flip its sign convention to the spatial force exerted **by body 0 on body 1**, codirectional with `rigid_normal` (previously anti-directional); `SolverMuJoCo`, `SolverXPBD.update_contacts`, and `SensorContact` are updated; `Model.request_contact_attributes("force")` is still accepted with a deprecation warning
 - Build mesh SDFs via the texture-based sparse path only; sample via `SDF.texture_data` instead of `SDF.sparse_volume` / `SDF.coarse_volume`.
 - Change GL viewer scroll to dolly toward the orbit pivot; use Ctrl+scroll for FOV zoom
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
@@ -39,6 +42,11 @@
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
 - Disable process reuse in the test runner on multi-GPU systems to prevent CUDA errors from cascading across test suites, keeping process reuse enabled on single-GPU systems for faster throughput
 - Default `python -m newton.examples` with no argument to launch `basic_pendulum`; use `--list` to print available examples
+
+### Deprecated
+
+- Deprecate `Contacts.rigid_contact_offset0` / `rigid_contact_offset1`: trivial to derive from `rigid_normal` and `rigid_margins`; `SolverXPBD` and `ViewerBase` (the only consumers) updated to derive them locally
+- Deprecate the always-allocated `Contacts.rigid_contact_force` (vec3): solver-internal, replaced by the request-gated `rigid_force` extended attribute
 
 ### Fixed
 

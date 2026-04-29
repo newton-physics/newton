@@ -2236,7 +2236,7 @@ def compute_rigid_contact_forces(
     out_body1: wp.array[wp.int32],
     out_point0_world: wp.array[wp.vec3],
     out_point1_world: wp.array[wp.vec3],
-    out_force_on_body1: wp.array[wp.vec3],
+    out_force_on_body1: wp.array[wp.spatial_vector],
 ):
     """Compute per-contact forces in world space, matching the AVBD rigid contact model.
 
@@ -2256,7 +2256,8 @@ def compute_rigid_contact_forces(
         out_body1[contact_idx] = wp.int32(-1)
         out_point0_world[contact_idx] = wp.vec3(0.0)
         out_point1_world[contact_idx] = wp.vec3(0.0)
-        out_force_on_body1[contact_idx] = wp.vec3(0.0)
+        if out_force_on_body1:
+            out_force_on_body1[contact_idx] = wp.spatial_vector()
         return
 
     s0 = rigid_contact_shape0[contact_idx]
@@ -2266,7 +2267,8 @@ def compute_rigid_contact_forces(
         out_body1[contact_idx] = wp.int32(-1)
         out_point0_world[contact_idx] = wp.vec3(0.0)
         out_point1_world[contact_idx] = wp.vec3(0.0)
-        out_force_on_body1[contact_idx] = wp.vec3(0.0)
+        if out_force_on_body1:
+            out_force_on_body1[contact_idx] = wp.spatial_vector()
         return
 
     b0 = shape_body[s0]
@@ -2291,7 +2293,8 @@ def compute_rigid_contact_forces(
     penetration = thickness - dist
 
     if penetration <= _SMALL_LENGTH_EPS:
-        out_force_on_body1[contact_idx] = wp.vec3(0.0)
+        if out_force_on_body1:
+            out_force_on_body1[contact_idx] = wp.spatial_vector()
         return
 
     contact_ke = contact_penalty_k[contact_idx]
@@ -2327,7 +2330,8 @@ def compute_rigid_contact_forces(
         dt,
     )
 
-    out_force_on_body1[contact_idx] = force_1
+    if out_force_on_body1:
+        out_force_on_body1[contact_idx] = wp.spatial_vector(force_1, wp.vec3(0.0))
 
 
 @wp.kernel

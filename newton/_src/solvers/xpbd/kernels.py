@@ -2052,6 +2052,51 @@ def compute_angular_correction(
 
 
 @wp.kernel
+def compute_rigid_offsets(
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_normal: wp.array[wp.vec3],
+    contact_thickness0: wp.array[float],
+    contact_thickness1: wp.array[float],
+    # outputs
+    contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+
+    count = contact_count[0]
+    if tid >= count:
+        return
+
+    shape_a = contact_shape0[tid]
+    shape_b = contact_shape1[tid]
+
+    body_a = -1
+    if shape_a >= 0:
+        body_a = shape_body[shape_a]
+    body_b = -1
+    if shape_b >= 0:
+        body_b = shape_body[shape_b]
+
+    n = contact_normal[tid]
+    thickness_a = contact_thickness0[tid]
+    thickness_b = contact_thickness1[tid]
+
+    X_bw_a = wp.transform_identity()
+    X_bw_b = wp.transform_identity()
+    if body_a >= 0:
+        X_bw_a = wp.transform_inverse(body_q[body_a])
+    if body_b >= 0:
+        X_bw_b = wp.transform_inverse(body_q[body_b])
+
+    contact_offset0[tid] = wp.transform_vector(X_bw_a, thickness_a * n)
+    contact_offset1[tid] = wp.transform_vector(X_bw_b, -thickness_b * n)
+
+
+@wp.kernel
 def solve_body_contact_positions(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -2382,7 +2427,10 @@ def convert_contact_impulse_to_force(
     impulse = contact_impulse[tid]
     f = wp.spatial_top(impulse) * inv_dt
     tau = wp.spatial_bottom(impulse) * inv_dt
-    contact_force[tid] = wp.spatial_vector(f, tau)
+    # XPBD accumulates impulse applied to body 0 (see accumulate_weighted_contact_impulse).
+    # ``contacts.force`` stores the spatial force exerted BY body 0 on body 1 (Newton's 3rd law
+    # flips the sign of the ON-body-0 impulse).
+    contact_force[tid] = -wp.spatial_vector(f, tau)
 
 
 @wp.kernel

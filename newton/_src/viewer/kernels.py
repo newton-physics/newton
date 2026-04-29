@@ -260,7 +260,7 @@ def compute_contact_lines(
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
     contact_point0: wp.array[wp.vec3],
-    contact_offset0: wp.array[wp.vec3],
+    contact_margin0: wp.array[float],
     contact_normal: wp.array[wp.vec3],
     line_scale: float,
     # outputs
@@ -300,7 +300,8 @@ def compute_contact_lines(
         X_wb_a = body_q[body_a]
 
     # Compute world space contact positions
-    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid] + contact_offset0[tid])
+    normal = contact_normal[tid]
+    world_pos0 = wp.transform_point(X_wb_a, contact_point0[tid]) + contact_margin0[tid] * normal
     # Anchor the debug normal at shape 0's contact point.
     contact_center = world_pos0
 
@@ -310,7 +311,6 @@ def compute_contact_lines(
 
     # Create line along normal direction
     # Normal points from shape0 to shape1, draw from center in normal direction
-    normal = contact_normal[tid]
     line_vector = normal * line_scale
 
     line_start[tid] = contact_center
