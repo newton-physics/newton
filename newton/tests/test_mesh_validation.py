@@ -373,6 +373,15 @@ class TestIndexValidation(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertIn("out of range", str(w[0].message))
 
+    def test_tet_negative_index(self):
+        verts, _ = _regular_tet(scale=0.1)
+        inds = np.array([[0, 1, 2, -1]])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_tet_mesh(verts, inds)
+        self.assertEqual(len(w), 1)
+        self.assertIn("out of range", str(w[0].message))
+
 
 class TestPublicExport(unittest.TestCase):
     def test_importable_from_newton_utils(self):
@@ -435,6 +444,23 @@ class TestBuilderIntegration(unittest.TestCase):
         quality_warnings = [wi for wi in w if "Mesh quality" in str(wi.message)]
         self.assertEqual(len(quality_warnings), 0)
 
+    def test_add_soft_mesh_default_no_warning(self):
+        builder = newton.ModelBuilder()
+        verts, inds = _regular_tet(scale=0.1)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.add_soft_mesh(
+                pos=wp.vec3(0, 0, 0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=wp.vec3(0, 0, 0),
+                vertices=verts.tolist(),
+                indices=inds.flatten().tolist(),
+                density=1000.0,
+            )
+        quality_warnings = [wi for wi in w if "Tet mesh quality" in str(wi.message)]
+        self.assertEqual(len(quality_warnings), 0)
+
     def test_add_soft_mesh_validate_bad_mesh(self):
         builder = newton.ModelBuilder()
         verts, inds = _regular_tet(scale=0.1)
@@ -453,6 +479,24 @@ class TestBuilderIntegration(unittest.TestCase):
             )
         quality_warnings = [wi for wi in w if "Tet mesh quality" in str(wi.message)]
         self.assertEqual(len(quality_warnings), 1)
+
+    def test_add_soft_mesh_validate_good_mesh(self):
+        builder = newton.ModelBuilder()
+        verts, inds = _regular_tet(scale=0.1)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.add_soft_mesh(
+                pos=wp.vec3(0, 0, 0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=wp.vec3(0, 0, 0),
+                vertices=verts.tolist(),
+                indices=inds.flatten().tolist(),
+                density=1000.0,
+                validate_mesh=True,
+            )
+        quality_warnings = [wi for wi in w if "Tet mesh quality" in str(wi.message)]
+        self.assertEqual(len(quality_warnings), 0)
 
 
 if __name__ == "__main__":
