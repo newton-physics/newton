@@ -4,6 +4,7 @@
 import importlib.util
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -15,6 +16,9 @@ _SPEC.loader.exec_module(check_test_durations)
 
 
 class TestChangedTestDurationCheck(unittest.TestCase):
+    def test_ci_duration_smoke_slow_test(self):
+        time.sleep(31.0)
+
     def test_parse_changed_ranges_uses_new_file_line_numbers(self):
         diff = textwrap.dedent(
             """\
