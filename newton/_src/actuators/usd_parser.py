@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from newton._src.usd.utils import _resolve_asset_path
+
 from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, ControllerPD, ControllerPID
 from .delay import Delay
@@ -80,7 +82,7 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
         camel = prop.GetName().removeprefix("newton:")
         val = prop.Get()
         if isinstance(val, Sdf.AssetPath):
-            val = val.resolvedPath or val.path
+            val = _resolve_asset_path(val, prim, prop)
         kwargs[_camel_to_snake(camel)] = val
     return kwargs
 
