@@ -9020,6 +9020,124 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         builder.add_articulation([joint])
         return builder.finalize()
 
+    def _build_solver_for_solref_case(
+        self,
+        *,
+        ke: float,
+        kd: float,
+        use_mujoco_cpu: bool,
+        inertia: float = 0.5,
+        solimp: tuple[float, float, float, float, float] | None = None,
+        solref: tuple[float, float] | None = None,
+    ):
+        model = self._build_pendulum_model(
+            mass=2.0,
+            ke=ke,
+            kd=kd,
+            inertia=inertia,
+            register_mujoco_attrs=solimp is not None or solref is not None,
+        )
+
+        if solimp is not None:
+            model.mujoco.solimplimit.assign(
+                wp.array(np.array([solimp], dtype=np.float32), dtype=vec5, device=model.device)
+            )
+        if solref is not None:
+            model.mujoco.solreflimit.assign(
+                wp.array(np.array([solref], dtype=np.float32), dtype=wp.vec2, device=model.device)
+            )
+
+        return SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+
+    def _expected_solref_from_solver(
+        self,
+        solver: SolverMuJoCo,
+        ke: float,
+        kd: float,
+        solref: tuple[float, float] | None,
+    ):
+        if solref is not None and np.any(np.asarray(solref) != 0.0):
+            return np.array(solref, dtype=np.float64)
+        if ke <= 0.0:
+            return np.array([0.02, 1.0], dtype=np.float64)
+
+        dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+        dmax = float(solver.mj_model.jnt_solimp[0, 1])
+        factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+        return np.array([-ke * factor, -kd * factor], dtype=np.float64)
+
+    def test_cpu_and_warp_joint_limit_solref_cases_match(self):
+        """CPU and Warp backends must agree for each joint-limit ``solref`` branch."""
+        cases = (
+            {
+                "name": "scale Newton force-space gains",
+                "ke": 12000.0,
+                "kd": 120.0,
+                "solimp": (0.9, 0.95, 0.001, 0.5, 2.0),
+                "solref": None,
+            },
+            {
+                "name": "preserve MuJoCo-native solreflimit",
+                "ke": 12000.0,
+                "kd": 120.0,
+                "solimp": None,
+                "solref": (0.03, 0.7),
+            },
+            {
+                "name": "restore default solref when Newton limit is disabled",
+                "ke": 0.0,
+                "kd": 0.0,
+                "solimp": None,
+                "solref": None,
+            },
+            {
+                "name": "fall back to unscaled gains when dmax is one",
+                "ke": 700.0,
+                "kd": 70.0,
+                "solimp": (0.8, 1.0, 0.001, 0.5, 2.0),
+                "solref": None,
+            },
+        )
+
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                solvers = (
+                    self._build_solver_for_solref_case(
+                        ke=case["ke"],
+                        kd=case["kd"],
+                        solimp=case["solimp"],
+                        solref=case["solref"],
+                        use_mujoco_cpu=False,
+                    ),
+                    self._build_solver_for_solref_case(
+                        ke=case["ke"],
+                        kd=case["kd"],
+                        solimp=case["solimp"],
+                        solref=case["solref"],
+                        use_mujoco_cpu=True,
+                    ),
+                )
+
+                expected = self._expected_solref_from_solver(
+                    solvers[0],
+                    case["ke"],
+                    case["kd"],
+                    case["solref"],
+                )
+                cpu_expected = self._expected_solref_from_solver(
+                    solvers[1],
+                    case["ke"],
+                    case["kd"],
+                    case["solref"],
+                )
+                np.testing.assert_allclose(cpu_expected, expected, rtol=1e-5, atol=1e-6)
+
+                for solver in solvers:
+                    mj_solref = np.array(solver.mj_model.jnt_solref[0], dtype=np.float64)
+                    mjw_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+                    np.testing.assert_allclose(mj_solref, expected, rtol=1e-5, atol=1e-6)
+                    np.testing.assert_allclose(mjw_solref, expected, rtol=1e-5, atol=1e-6)
+
     def test_joint_limit_solref_uses_dof_invweight0(self):
         """``jnt_solref`` for joint limits must be scaled by ``dof_invweight0 * (1 - dmax)``."""
         ke = 10000.0
