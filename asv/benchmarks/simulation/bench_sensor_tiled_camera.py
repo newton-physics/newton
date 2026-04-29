@@ -78,6 +78,8 @@ class SensorTiledCameraBenchmark:
         self.color_image = self.tiled_camera_sensor.utils.create_color_image_output(resolution, resolution)
         self.depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(resolution, resolution)
 
+        newton.geometry.build_bvh_shape(self.model, self.state)
+        newton.geometry.build_bvh_particle(self.model, self.state)
         self.tiled_camera_sensor.sync_transforms(self.state)
 
         # Warmup Kernels
@@ -87,7 +89,7 @@ class SensorTiledCameraBenchmark:
         for out_color, out_depth in [(True, True), (True, False), (False, True)]:
             for _ in range(iterations):
                 self.tiled_camera_sensor.update(
-                    None,
+                    self.state,
                     self.camera_transforms,
                     self.camera_rays,
                     color_image=self.color_image if out_color else None,
@@ -98,7 +100,7 @@ class SensorTiledCameraBenchmark:
         for out_color, out_depth in [(True, True), (True, False), (False, True)]:
             for _ in range(iterations):
                 self.tiled_camera_sensor.update(
-                    None,
+                    self.state,
                     self.camera_transforms,
                     self.camera_rays,
                     color_image=self.color_image if out_color else None,
@@ -111,12 +113,11 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 color_image=self.color_image,
                 depth_image=self.depth_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -126,11 +127,10 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 color_image=self.color_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -140,11 +140,10 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 depth_image=self.depth_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -156,12 +155,11 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.tile_height = 8
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 color_image=self.color_image,
                 depth_image=self.depth_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -173,11 +171,10 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.tile_height = 8
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 color_image=self.color_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -189,11 +186,10 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.tile_height = 8
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 depth_image=self.depth_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 

@@ -2065,6 +2065,11 @@ def parse_usd(
                                 parent_xform=parent_xform,
                             )
                             articulation_joint_indices.append(base_joint_id)
+                            group = merged_joint_groups.get(joint_names[i])
+                            if group is not None:
+                                processed_joints.update(group)
+                            else:
+                                processed_joints.add(joint_names[i])
                             continue  # Skip parsing the USD's root joint
                         # When body0 maps to world the physics API may resolve
                         # localPose0 into world space (baking the non-body prim's
