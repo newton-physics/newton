@@ -107,10 +107,7 @@ else:
     nbsphinx_execute = "never"
 
 if nbsphinx_execute not in {"always", "auto", "never"}:
-    raise ValueError(
-        "NEWTON_NBSPHINX_EXECUTE must be one of 'always', 'auto', or 'never' "
-        f"(got {nbsphinx_execute!r})"
-    )
+    raise ValueError(f"NEWTON_NBSPHINX_EXECUTE must be one of 'always', 'auto', or 'never' (got {nbsphinx_execute!r})")
 
 # Timeout for notebook execution (in seconds)
 nbsphinx_timeout = int(os.environ.get("NEWTON_NBSPHINX_TIMEOUT", "600"))
