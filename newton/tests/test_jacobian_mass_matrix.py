@@ -15,6 +15,14 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 def _build_translated_prismatic_chain(device):
+    """Build a two-link revolute/prismatic chain with translated joint frames.
+
+    Args:
+        device: Device on which to finalize the model.
+
+    Returns:
+        Tuple containing the finalized model, base body index, and slider body index.
+    """
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
 
     base = builder.add_link(mass=1.5)
@@ -46,6 +54,14 @@ def _build_translated_prismatic_chain(device):
 
 
 def _build_free_body_with_com(device):
+    """Build a single free body with a nonzero center-of-mass offset.
+
+    Args:
+        device: Device on which to finalize the model.
+
+    Returns:
+        Tuple containing the finalized model and body index.
+    """
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
 
     body = builder.add_body(
@@ -62,6 +78,14 @@ def _build_free_body_with_com(device):
 
 
 def _build_descendant_free_with_rotated_parent(device):
+    """Build a free child body under a rotated fixed parent.
+
+    Args:
+        device: Device on which to finalize the model.
+
+    Returns:
+        Tuple containing the finalized model, base body index, and child body index.
+    """
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
 
     base = builder.add_link(is_kinematic=True, mass=1.0)
@@ -141,6 +165,16 @@ def _floating_base_pendulum_mass_matrix(base_mass, child_mass, length, base_iner
 
 
 def _kinetic_energy_from_body_twists(model, state, bodies):
+    """Compute total body kinetic energy from world-space twists.
+
+    Args:
+        model: Model providing body masses and inertia tensors.
+        state: State providing body poses and velocities.
+        bodies: Body indices to include in the energy sum.
+
+    Returns:
+        Total kinetic energy for the selected bodies.
+    """
     body_q = state.body_q.numpy()
     body_qd = state.body_qd.numpy()
     body_inertia = model.body_inertia.numpy()
