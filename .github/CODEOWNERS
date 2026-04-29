@@ -14,21 +14,11 @@
 /.claude/                                @newton-physics/maintainers
 
 # Public API surface
-/newton/__init__.py                      @newton-physics/maintainers
-/newton/_version.py                      @newton-physics/maintainers
-/newton/actuators.py                     @newton-physics/maintainers
-/newton/geometry.py                      @newton-physics/maintainers
-/newton/ik.py                            @newton-physics/maintainers
+/newton/*                                @newton-physics/maintainers
+
+# Bundled license texts
 /newton/licenses/                        @newton-physics/maintainers
-/newton/math.py                          @newton-physics/maintainers
-/newton/py.typed                         @newton-physics/maintainers
-/newton/selection.py                     @newton-physics/maintainers
-/newton/sensors.py                       @newton-physics/maintainers
-/newton/solvers.py                       @newton-physics/maintainers
-/newton/usd.py                           @newton-physics/maintainers
-/newton/utils.py                         @newton-physics/maintainers
-/newton/viewer.py                        @newton-physics/maintainers
 
 # Solver-specific owners
 /newton/_src/solvers/kamino/             @newton-physics/disney-research
-/newton/_src/solvers/style3d/            @WenchaoHuang
+/newton/_src/solvers/style3d/            @newton-physics/style3d-research
