@@ -183,6 +183,7 @@ autodoc_type_aliases = {
     "UsdGeom.Mesh": "pxr.UsdGeom.Mesh",
     "UsdShade.Material": "pxr.UsdShade.Material",
     "UsdShade.Shader": "pxr.UsdShade.Shader",
+    "State": "newton.State",
 }
 
 
@@ -224,7 +225,7 @@ autodoc_default_options = {
     "member-order": "groupwise",
     "special-members": "__init__",
     "undoc-members": False,
-    "exclude-members": "__weakref__",
+    "exclude-members": "__weakref__, State",
     "imported-members": True,
     "autosummary": True,
 }

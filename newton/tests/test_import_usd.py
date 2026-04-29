@@ -787,6 +787,61 @@ class TestImportUsdJoints(unittest.TestCase):
         self.assertEqual(builder.joint_child[fixed_idx], root_idx)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_floating_override_replaces_authored_root_joint(self):
+        """Explicit floating overrides must not leave a duplicate USD root joint."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def create_stage():
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+            UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+            def define_body(path):
+                body = UsdGeom.Xform.Define(stage, path)
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                return body
+
+            root = define_body("/World/Articulation/Root")
+            link = define_body("/World/Articulation/Link")
+
+            root_joint = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/RootToWorld")
+            root_joint.CreateBody1Rel().SetTargets([root.GetPath()])
+            root_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            root_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            root_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            root_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+            child_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/RootToLink")
+            child_joint.CreateBody0Rel().SetTargets([root.GetPath()])
+            child_joint.CreateBody1Rel().SetTargets([link.GetPath()])
+            child_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            child_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            child_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            child_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            child_joint.CreateAxisAttr().Set("Z")
+
+            return stage
+
+        for floating, expected_type in ((False, newton.JointType.FIXED), (True, newton.JointType.FREE)):
+            with self.subTest(floating=floating):
+                builder = newton.ModelBuilder()
+                builder.add_usd(create_stage(), floating=floating)
+
+                root_idx = builder.body_label.index("/World/Articulation/Root")
+                root_joints = [
+                    joint_idx for joint_idx, child_idx in enumerate(builder.joint_child) if child_idx == root_idx
+                ]
+
+                self.assertEqual(len(root_joints), 1)
+                root_joint_idx = root_joints[0]
+                self.assertEqual(builder.joint_parent[root_joint_idx], -1)
+                self.assertEqual(builder.joint_type[root_joint_idx], expected_type)
+                self.assertNotIn("/World/Articulation/RootToWorld", builder.joint_label)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joint_unsupported_d6_raises(self):
         """Reversing a D6 joint should raise an error."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

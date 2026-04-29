@@ -68,7 +68,7 @@ def compute_inverse_ordering(ordering):
     return inv_ordering
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def reorder_rows_kernel(
     src: wp.array3d(dtype=float),
     dst: wp.array3d(dtype=float),
@@ -86,7 +86,7 @@ def reorder_rows_kernel(
         dst[batch_id, i, j] = src[batch_id, src_row, src_col]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def reorder_rows_kernel_col_vector(
     src: wp.array3d(dtype=float),
     dst: wp.array3d(dtype=float),
@@ -165,7 +165,7 @@ def symbolic_cholesky_dense(M, tile_size):
 
 @cache
 def create_blocked_cholesky_kernel(block_size: int):
-    @wp.kernel
+    @wp.kernel(enable_backward=False)
     def blocked_cholesky_kernel(
         A_batched: wp.array(dtype=float, ndim=3),
         L_batched: wp.array(dtype=float, ndim=3),
@@ -292,7 +292,7 @@ def create_blocked_cholesky_kernel(block_size: int):
 
 @cache
 def create_blocked_cholesky_solve_kernel(block_size: int):
-    @wp.kernel
+    @wp.kernel(enable_backward=False)
     def blocked_cholesky_solve_kernel(
         L_batched: wp.array(dtype=float, ndim=3),
         L_tile_pattern_batched: wp.array(dtype=int, ndim=3),

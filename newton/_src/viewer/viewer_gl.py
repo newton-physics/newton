@@ -263,6 +263,9 @@ class ViewerGL(ViewerBase):
 
         # Camera movement settings
         self._camera_speed = 0.04
+        self._camera_orbit_sensitivity = 0.1
+        self._camera_dolly_scroll_sensitivity = 0.15
+        self._camera_dolly_drag_sensitivity = 0.01
         self._cam_vel = np.zeros(3, dtype=np.float32)
         self._cam_speed = 4.0  # m/s
         self._cam_damp_tau = 0.083  # s
@@ -685,9 +688,10 @@ class ViewerGL(ViewerBase):
             pitch: The camera pitch.
             yaw: The camera yaw.
         """
-        self.camera.pos = pos
+        self.camera.pos = self.camera._as_vec3(pos)
         self.camera.pitch = max(min(pitch, 89.0), -89.0)
         self.camera.yaw = (yaw + 180.0) % 360.0 - 180.0
+        self.camera.sync_pivot_to_view()
 
     @override
     def log_mesh(
@@ -1727,7 +1731,7 @@ class ViewerGL(ViewerBase):
 
     def on_mouse_scroll(self, x: float, y: float, scroll_x: float, scroll_y: float):
         """
-        Handle mouse scroll for zooming (FOV adjustment).
+        Handle mouse scroll for dolly and FOV adjustment.
 
         Args:
             x: Mouse X position in window coordinates.
@@ -1738,9 +1742,31 @@ class ViewerGL(ViewerBase):
         if self._ui_is_capturing_mouse():
             return
 
-        fov_delta = scroll_y * 2.0
-        self.camera.fov -= fov_delta
-        self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+        if self._is_ctrl_down():
+            fov_delta = scroll_y * 2.0
+            self.camera.fov -= fov_delta
+            self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+        else:
+            self.camera.dolly(scroll_y * self._camera_dolly_scroll_sensitivity)
+
+    def _is_ctrl_down(self) -> bool:
+        """Return True when either Ctrl key is currently held."""
+        try:
+            import pyglet
+        except Exception:
+            return False
+
+        return self.renderer.is_key_down(pyglet.window.key.LCTRL) or self.renderer.is_key_down(pyglet.window.key.RCTRL)
+
+    def _camera_pan_scale(self) -> float:
+        """World-space meters per window pixel for screen-plane camera panning."""
+        height = max(float(self.camera.height), 1.0)
+        if hasattr(self.renderer, "window"):
+            _, window_height = self.renderer.window.get_size()
+            height = max(float(window_height), 1.0)
+        distance = max(self.camera.pivot_distance, self.camera.MIN_PIVOT_DISTANCE)
+        visible_height = 2.0 * distance * np.tan(np.radians(self.camera.fov) * 0.5)
+        return visible_height / height
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
         """Convert window coordinates to framebuffer coordinates."""
@@ -1812,6 +1838,17 @@ class ViewerGL(ViewerBase):
 
         import pyglet
 
+        if buttons & pyglet.window.mouse.MIDDLE:
+            if modifiers & pyglet.window.key.MOD_CTRL:
+                self.camera.dolly(dy * self._camera_dolly_drag_sensitivity)
+            elif modifiers & pyglet.window.key.MOD_SHIFT:
+                pan_scale = self._camera_pan_scale()
+                self.camera.pan(-dx * pan_scale, -dy * pan_scale)
+            else:
+                sensitivity = self._camera_orbit_sensitivity
+                self.camera.orbit(delta_yaw=-dx * sensitivity, delta_pitch=dy * sensitivity)
+            return
+
         if buttons & pyglet.window.mouse.LEFT:
             sensitivity = 0.1
             dx *= sensitivity
@@ -1821,6 +1858,7 @@ class ViewerGL(ViewerBase):
             # independent of world up-axis convention.
             self.camera.yaw = (self.camera.yaw - dx + 180.0) % 360.0 - 180.0
             self.camera.pitch = max(min(self.camera.pitch + dy, 89.0), -89.0)
+            self.camera.sync_pivot_to_view()
 
         if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
@@ -1959,6 +1997,7 @@ class ViewerGL(ViewerBase):
             center[2] - front.z * distance,
         )
         self.camera.pos = new_pos
+        self.camera.set_pivot(center)
 
     def _update_camera(self, dt: float):
         """
@@ -2013,7 +2052,7 @@ class ViewerGL(ViewerBase):
 
         # integrate position
         dv = type(self.camera.pos)(*self._cam_vel)
-        self.camera.pos += dv * dt
+        self.camera.translate(dv * dt)
 
     def on_resize(self, width: int, height: int):
         """
@@ -2368,7 +2407,11 @@ class ViewerGL(ViewerBase):
                 imgui.text("QE - Pan up/down")
                 imgui.text("Left Click - Look around")
                 imgui.text("Right Click - Pick objects")
-                imgui.text("Scroll - Zoom")
+                imgui.text("Middle Click - Orbit")
+                imgui.text("Shift + Middle Click - Pan")
+                imgui.text("Ctrl + Middle Click - Dolly")
+                imgui.text("Scroll - Dolly")
+                imgui.text("Ctrl + Scroll - FOV zoom")
                 imgui.text("Space - Pause/Resume")
                 imgui.text("H - Toggle UI")
                 imgui.text("F - Frame camera around model")

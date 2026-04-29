@@ -41,6 +41,7 @@ sys.path.insert(0, str(REPO_ROOT))
 # Modules for which we want API pages.  Feel free to modify.
 MODULES: list[str] = [
     "newton",
+    "newton.actuators",
     "newton.geometry",
     "newton.ik",
     "newton.math",

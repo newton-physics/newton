@@ -927,12 +927,8 @@ def mesh_vs_convex_midphase(
         # Query mesh BVH for overlapping triangles in mesh local space using tiled version
         query = wp.tile_mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
 
-        result_tile = wp.tile_mesh_query_aabb_next(query)
-
-        # Continue querying while we have results
-        # Each iteration, each thread in the block gets one result (or -1)
-        while wp.tile_max(result_tile)[0] >= 0:
-            # Each thread processes its result from the tile
+        while wp.tile_query_valid(query):
+            result_tile = wp.tile_mesh_query_aabb_next(query)
             tri_index = wp.untile(result_tile)
 
             # Add this triangle pair to the output buffer if valid
@@ -949,12 +945,9 @@ def mesh_vs_convex_midphase(
             offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
 
             if tri_index >= 0:
-                # out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
                 out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
                 if out_idx < triangle_pairs.shape[0]:
                     triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
-
-            result_tile = wp.tile_mesh_query_aabb_next(query)
     else:
         query = wp.mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
         tri_index = wp.int32(0)
