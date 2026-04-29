@@ -29,8 +29,8 @@ Key Features
 .. admonition:: Learn More
    :class: tip
 
-   Start with the :doc:`introduction tutorial </tutorials/00_introduction>` for a
-   hands-on walkthrough. For a deeper conceptual introduction, see the
+   Start with the :doc:`tutorials page <tutorials>` for hands-on walkthroughs.
+   For a deeper conceptual introduction, see the
    `DeepWiki Newton Physics page <https://deepwiki.com/newton-physics/newton>`__.
 
 
@@ -133,7 +133,6 @@ Quick Links
 
 - :doc:`installation` — Setup Newton and run a first example in a couple of minutes
 - :doc:`tutorials` — Browse the guide's tutorial landing page
-- :doc:`Introduction tutorial </tutorials/00_introduction>` — Walk through a first hands-on tutorial
 - :doc:`../faq` — Frequently asked questions
 - :doc:`development` — For developers and code contributors
 - :doc:`../api/newton` — Full API reference

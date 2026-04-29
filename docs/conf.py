@@ -93,13 +93,27 @@ extensions = [
     "autodoc_wpfunc",
 ]
 
+_sphinx_tags = globals().get("tags")
+build_notebooks = os.environ.get("NEWTON_BUILD_NOTEBOOKS", "") == "1" or (
+    _sphinx_tags is not None and _sphinx_tags.has("notebooks")
+)
+
 # -- nbsphinx configuration ---------------------------------------------------
 
 # Configure notebook execution mode for nbsphinx
-nbsphinx_execute = "auto"
+if build_notebooks:
+    nbsphinx_execute = os.environ.get("NEWTON_NBSPHINX_EXECUTE", "always")
+else:
+    nbsphinx_execute = "never"
+
+if nbsphinx_execute not in {"always", "auto", "never"}:
+    raise ValueError(
+        "NEWTON_NBSPHINX_EXECUTE must be one of 'always', 'auto', or 'never' "
+        f"(got {nbsphinx_execute!r})"
+    )
 
 # Timeout for notebook execution (in seconds)
-nbsphinx_timeout = 600
+nbsphinx_timeout = int(os.environ.get("NEWTON_NBSPHINX_TIMEOUT", "600"))
 
 # Allow errors in notebook execution (useful for development)
 nbsphinx_allow_errors = False
@@ -115,6 +129,14 @@ exclude_patterns = [
     "**/site-packages/**",
     "**/lib/**",
 ]
+
+if not build_notebooks:
+    exclude_patterns.extend(
+        [
+            "tutorials/*.ipynb",
+            "tutorials/**/*.ipynb",
+        ]
+    )
 
 
 def _ensure_pandoc_on_path() -> str | None:
@@ -141,27 +163,28 @@ def _ensure_pandoc_on_path() -> str | None:
     return shutil.which("pandoc")
 
 
-# nbsphinx requires pandoc to convert Jupyter notebooks.  When pandoc is not
-# installed we exclude the notebook tutorials so the rest of the docs can still
-# be built locally without a hard error.  CI workflows install pandoc explicitly
-# so published docs always include the tutorials.  Prefer the bundled
-# ``pypandoc_binary`` executable when available so local docs builds work out of
-# the box in the docs environment.
+# nbsphinx requires pandoc to convert Jupyter notebooks.  Notebook conversion is
+# opt-in because executing tutorial notebooks requires CUDA and can be expensive.
+# Prefer the bundled ``pypandoc_binary`` executable when available so opt-in
+# local docs builds work out of the box in the docs environment.
 #
 # Set NEWTON_REQUIRE_PANDOC=1 to turn the missing-pandoc warning into an error
-# (used in CI to guarantee tutorials are never silently skipped).
-pandoc_path = _ensure_pandoc_on_path()
-if pandoc_path is None:
-    if os.environ.get("NEWTON_REQUIRE_PANDOC", "") == "1":
+# (used in CI to guarantee opt-in notebook builds never silently skip notebooks).
+if build_notebooks or os.environ.get("NEWTON_REQUIRE_PANDOC", "") == "1":
+    pandoc_path = _ensure_pandoc_on_path()
+    if pandoc_path is None:
         raise RuntimeError(
-            "pandoc is required but not found. Install pandoc "
-            "(https://pandoc.org/installing.html) or unset NEWTON_REQUIRE_PANDOC."
+            "pandoc is required for notebook documentation builds but was not found. "
+            "Install pandoc (https://pandoc.org/installing.html) or unset "
+            "NEWTON_BUILD_NOTEBOOKS/NEWTON_REQUIRE_PANDOC."
         )
-    exclude_patterns.append("tutorials/**")
+else:
+    pandoc_path = None
+
+if not build_notebooks:
     print(
-        "WARNING: pandoc not found - Jupyter notebook tutorials will be "
-        "skipped.  Install pandoc (https://pandoc.org/installing.html) to "
-        "build the complete documentation."
+        "Notebook tutorials are skipped. Set NEWTON_BUILD_NOTEBOOKS=1 or pass "
+        "'-t notebooks' to sphinx-build to include and execute them."
     )
 
 intersphinx_mapping = {
@@ -247,6 +270,7 @@ html_title = "Newton Physics"
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
+html_js_files = ["mermaid-nbsphinx.js"]
 html_show_sourcelink = False
 
 # PyData theme configuration
@@ -466,6 +490,27 @@ def _on_builder_inited(_app: Any) -> None:
     _copy_viser_client_into_output_static(outdir=outdir)
 
 
+def _on_source_read(app: Any, docname: str, source: list[str]) -> None:
+    """Add tutorial notebooks to the tutorials page only for opt-in builds."""
+    if not build_notebooks or docname != "guide/tutorials":
+        return
+
+    notebook_paths = sorted((Path(app.srcdir) / "tutorials").glob("*.ipynb"))
+    if not notebook_paths:
+        return
+
+    entries = "\n".join(f"   /tutorials/{path.stem}" for path in notebook_paths)
+    source[0] += (
+        "\n\n"
+        "Local Notebook Build\n"
+        "--------------------\n\n"
+        ".. toctree::\n"
+        "   :maxdepth: 2\n"
+        "   :caption: Tutorial Notebooks\n\n"
+        f"{entries}\n"
+    )
+
+
 def setup(app: Any) -> None:
     # Regenerate API .rst files so builds always reflect the current public API.
     from generate_api import generate_all  # noqa: PLC0415
@@ -473,3 +518,4 @@ def setup(app: Any) -> None:
     generate_all()
 
     app.connect("builder-inited", _on_builder_inited)
+    app.connect("source-read", _on_source_read)
