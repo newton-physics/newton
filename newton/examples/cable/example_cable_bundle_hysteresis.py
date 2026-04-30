@@ -162,7 +162,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.sim_iterations = 10
+        self.sim_iterations = 5
         self.update_step_interval = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -172,22 +172,22 @@ class Example:
         self.cable_length = 4.0
         self.cable_radius = 0.02
         self.cable_gap_multiplier = 1.1
-        bend_stiffness = 1.0e1
+        bend_stiffness = 1.0e2
         bend_damping = 5.0e-2
-        stretch_stiffness = 1.0e6
-        stretch_damping = 0.0
 
         builder = newton.ModelBuilder()
         builder.rigid_gap = 0.05
 
-        # Register solver-specific custom attributes (Dahl plasticity parameters live on the Model)
-        newton.solvers.SolverVBD.register_custom_attributes(builder)
+        # Register solver-specific custom attributes (Dahl plasticity parameters live on the Model).
+        # SolverVBD auto-detects these and enables Dahl friction when present.
+        if with_dahl:
+            newton.solvers.SolverVBD.register_custom_attributes(builder)
         builder.gravity = -9.81
 
         # Set default material properties for cables (cable-to-cable contact)
-        builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
-        builder.default_shape_cfg.kd = 1.0e-2  # Contact damping
-        builder.default_shape_cfg.mu = 2.0  # Friction coefficient
+        builder.default_shape_cfg.ke = 1.0e5  # Contact stiffness
+        builder.default_shape_cfg.kd = 0.0
+        builder.default_shape_cfg.mu = 1.0e0  # Friction coefficient
 
         # Bundle layout: align cable center with obstacle center
         # Obstacles span x in [0.5, 2.5], center at x=1.5
@@ -219,16 +219,12 @@ class Example:
                 radius=self.cable_radius,
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
-                stretch_stiffness=stretch_stiffness,
-                stretch_damping=stretch_damping,
                 label=f"bundle_cable_{i}",
             )
 
         # Create moving obstacles (capsules arranged along X axis)
         obstacle_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,
-            ke=1.0e6,
-            kd=1.0e-2,
             kf=builder.default_shape_cfg.kf,
             ka=builder.default_shape_cfg.ka,
             mu=0.0,  # Frictionless obstacles
@@ -270,8 +266,6 @@ class Example:
         # Add ground plane
         ground_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,
-            ke=1.0e4,
-            kd=1.0e-1,
             kf=builder.default_shape_cfg.kf,
             ka=builder.default_shape_cfg.ka,
             mu=2.5,
@@ -286,17 +280,14 @@ class Example:
         self.model = builder.finalize()
 
         # Author Dahl friction parameters (per-joint) via custom model attributes.
-        # These are read by SolverVBD when rigid_enable_dahl_friction=True.
-        if hasattr(self.model, "vbd"):
+        # SolverVBD auto-detects these and enables Dahl friction when present.
+        if with_dahl and hasattr(self.model, "vbd"):
             self.model.vbd.dahl_eps_max.fill_(float(eps_max))
             self.model.vbd.dahl_tau.fill_(float(tau))
 
-        # Create VBD solver with Dahl friction (cable bending hysteresis)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            friction_epsilon=0.1,
-            rigid_enable_dahl_friction=with_dahl,
         )
 
         # Initialize states and contacts
@@ -378,15 +369,12 @@ class Example:
                 device=self.solver.device,
             )
 
-            # Decide whether to refresh rigid solver history (anchors used for long-range joint damping)
-            # and recompute contacts on this substep, using a configurable cadence.
-            update_step_history = (substep % self.update_step_interval) == 0
-
-            # Collide for contact detection
-            if update_step_history:
+            # Collision detection and contact refresh cadence.
+            refresh_contacts = (substep % self.update_step_interval) == 0
+            if refresh_contacts:
                 self.model.collide(self.state_0, self.contacts)
 
-            self.solver.set_rigid_history_update(update_step_history)
+            self.solver.set_rigid_history_update(refresh_contacts)
             self.solver.step(
                 self.state_0,
                 self.state_1,

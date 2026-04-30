@@ -388,9 +388,9 @@ class Example:
         parser.add_argument(
             "--solver",
             "-s",
-            type=str,
-            default="cg+gauss-seidel",
-            choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+            nargs="+",
+            default=("cg", "gauss-seidel"),
+            help="Rheology solver sequence, e.g. --solver cg gauss-seidel",
         )
 
         parser.add_argument("--strain-basis", "-sb", type=str, default="P0")

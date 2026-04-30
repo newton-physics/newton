@@ -7,7 +7,11 @@ import warnings
 import numpy as np
 import warp as wp
 
-from ..geometry.raycast import sensor_raycast_kernel, sensor_raycast_particles_kernel
+from ..geometry.raycast import (
+    sensor_raycast_kernel,
+    sensor_raycast_kernel_no_hfield,
+    sensor_raycast_particles_kernel,
+)
 from ..sim import Model, State
 
 
@@ -176,8 +180,12 @@ class SensorRaycast:
         # Launch raycast kernel for each pixel-shape combination
         # We use 3D launch with dimensions (width, height, num_shapes)
         if num_shapes > 0:
+            # Pick the lean (no-HFIELD) kernel variant when the scene has no
+            # heightfields, so non-HFIELD scenes don't pay the per-thread
+            # HeightfieldData overhead in the kernel body.
+            kernel = sensor_raycast_kernel if self.model.has_heightfields else sensor_raycast_kernel_no_hfield
             wp.launch(
-                kernel=sensor_raycast_kernel,
+                kernel=kernel,
                 dim=(self.width, self.height, num_shapes),
                 inputs=[
                     # Model data
@@ -187,6 +195,9 @@ class SensorRaycast:
                     self.model.shape_type,
                     self.model.shape_scale,
                     self.model.shape_source_ptr,
+                    self.model.shape_heightfield_index,
+                    self.model.heightfield_data,
+                    self.model.heightfield_elevations,
                     # Camera parameters
                     camera_position,
                     camera_direction,

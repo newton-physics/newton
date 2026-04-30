@@ -887,6 +887,18 @@ full contact detection range. Pass ``scale`` when the shape will be added with n
 to bake it into the SDF grid. ``shape_margin`` is mainly useful for hydroelastic collision
 where a compliant-layer offset is desired.
 
+**On-disk SDF cache.** Pass ``cache_dir`` to persist the cooked SDF and skip the cook on
+subsequent runs:
+
+.. code-block:: python
+
+    mesh.build_sdf(max_resolution=64, cache_dir="./sdf_cache")
+
+Entries are content-addressed by mesh data and build parameters; changing any of them
+produces a fresh entry automatically. ``shape_margin`` is applied at sample time and is
+not part of the cache key. The on-disk format is internal and may change between Newton
+versions — caches are invalidated and re-cooked transparently.
+
 .. note::
    **Watertight meshes are preferred.** An SDF works best on a closed
    surface, so meshes whose every edge is shared by exactly two triangles give the most
@@ -1942,7 +1954,7 @@ You can replace or compose these stages independently.
 **Broad phase classes**
 
 All broad phase classes expose a ``launch`` method that writes candidate pairs
-(``wp.array(dtype=wp.vec2i)``) and a pair count:
+(``wp.array[wp.vec2i]``) and a pair count:
 
 .. list-table::
    :header-rows: 1
