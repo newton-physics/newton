@@ -753,6 +753,8 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertIsInstance(parsed, ActuatorParsed)
         self.assertEqual(parsed.controller_class, ControllerPD)
+        self.assertAlmostEqual(parsed.controller_kwargs["kp"], 100.0)
+        self.assertAlmostEqual(parsed.controller_kwargs["kd"], 10.0)
 
     def test_programmatic(self):
         """Mixed controller types, clamping, and delays via add_actuator.
