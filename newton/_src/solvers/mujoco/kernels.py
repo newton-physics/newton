@@ -251,6 +251,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    shape_ke: wp.array[float],
+    shape_kd: wp.array[float],
     # Newton contacts
     rigid_contact_count: wp.array[wp.int32],
     rigid_contact_shape0: wp.array[wp.int32],
@@ -399,6 +401,29 @@ def convert_newton_contacts_to_mjwarp_kernel(
             geoms,
             worldid,
         )
+
+        # Newton-authored contacts are already in force units, so keep the
+        # pre-existing unscaled material conversion here. The geom solrefs in
+        # mjw_model are q0-scaled for MuJoCo's native collision pipeline.
+        solref_a = convert_solref(shape_ke[shape_a], shape_kd[shape_a], 1.0, 1.0)
+        solref_b = convert_solref(shape_ke[shape_b], shape_kd[shape_b], 1.0, 1.0)
+        priority_a = geom_priority[geom_a]
+        priority_b = geom_priority[geom_b]
+        if priority_a > priority_b:
+            mix = 1.0
+        elif priority_b > priority_a:
+            mix = 0.0
+        else:
+            solmix_a = geom_solmix[worldid, geom_a]
+            solmix_b = geom_solmix[worldid, geom_b]
+            mix = safe_div(solmix_a, solmix_a + solmix_b)
+            mix = wp.where((solmix_a < MJ_MINVAL) and (solmix_b < MJ_MINVAL), 0.5, mix)
+            mix = wp.where((solmix_a < MJ_MINVAL) and (solmix_b >= MJ_MINVAL), 0.0, mix)
+            mix = wp.where((solmix_a >= MJ_MINVAL) and (solmix_b < MJ_MINVAL), 1.0, mix)
+        if solref_a.x > 0.0 and solref_b.x > 0.0:
+            solref = mix * solref_a + (1.0 - mix) * solref_b
+        else:
+            solref = wp.min(solref_a, solref_b)
 
         # Convert Newton per-contact stiffness/damping to MuJoCo solref
         # (timeconst, dampratio).  solimp is set to approximate a linear
@@ -2263,6 +2288,7 @@ def update_geom_properties_kernel(
     mjc_geom_to_newton_shape: wp.array2d[wp.int32],
     geom_bodyid: wp.array[int],
     body_invweight0: wp.array2d[wp.vec2],
+    shape_geom_solref: wp.array[wp.vec2],
     geom_type: wp.array[int],
     GEOM_TYPE_MESH: int,
     geom_dataid: wp.array2d[int],
@@ -2320,23 +2346,29 @@ def update_geom_properties_kernel(
         geom_solimp[world, geom_idx] = shape_geom_solimp[shape_idx]
         dmax = shape_geom_solimp[shape_idx][1]
 
-    # update geom_solref (timeconst, dampratio) using stiffness and damping
-    # we don't use the negative convention to support controlling the mixing of
-    # shapes' stiffnesses via solmix. MuJoCo's force-space conversion depends on
-    # the frozen q0 invweight0 factor and the geom's dmax impedance.
-    solref_scale = geom_solref_scale_factor(
-        world,
-        geom_idx,
-        geom_bodyid,
-        body_invweight0,
-        dmax,
-    )
-    geom_solref[world, geom_idx] = convert_solref(
-        shape_ke[shape_idx],
-        shape_kd[shape_idx],
-        solref_scale,
-        solref_scale,
-    )
+    # update geom_solref (timeconst, dampratio) using either authored MuJoCo
+    # solref or Newton stiffness and damping. Raw MuJoCo solrefs already live
+    # in MuJoCo solver units, while Newton materials need q0 invweight scaling.
+    if shape_geom_solref and (shape_geom_solref[shape_idx][0] != 0.0 or shape_geom_solref[shape_idx][1] != 0.0):
+        geom_solref[world, geom_idx] = shape_geom_solref[shape_idx]
+    else:
+        # We don't use the negative convention to support controlling the
+        # mixing of shapes' stiffnesses via solmix. MuJoCo's force-space
+        # conversion depends on the frozen q0 invweight0 factor and the geom's
+        # dmax impedance.
+        solref_scale = geom_solref_scale_factor(
+            world,
+            geom_idx,
+            geom_bodyid,
+            body_invweight0,
+            dmax,
+        )
+        geom_solref[world, geom_idx] = convert_solref(
+            shape_ke[shape_idx],
+            shape_kd[shape_idx],
+            solref_scale,
+            solref_scale,
+        )
 
     # update geom_solmix from custom attribute
     if shape_geom_solmix:

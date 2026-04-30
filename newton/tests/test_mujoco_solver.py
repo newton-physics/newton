@@ -2124,6 +2124,33 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         dampratio = kd / 2.0 * np.sqrt(factor / ke)
         return timeconst, dampratio
 
+    def test_mjcf_geom_solref_round_trips_without_material_scaling(self):
+        """Verify MJCF-authored geom solref stays in MuJoCo solver units."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+                <worldbody>
+                    <body name="body">
+                        <freejoint/>
+                        <geom name="geom" type="sphere" size="0.1" solref="0.04 1.25"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            """,
+            up_axis="Z",
+        )
+
+        model = builder.finalize()
+        self.assertTrue(hasattr(model.mujoco, "geom_solref"))
+        np.testing.assert_allclose(model.mujoco.geom_solref.numpy()[0], [0.04, 1.25], rtol=0.0, atol=1e-6)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        to_newton_shape = solver.mjc_geom_to_newton_shape.numpy()[0]
+        geom_idx = int(np.where(to_newton_shape == 0)[0][0])
+
+        np.testing.assert_allclose(solver.mjw_model.geom_solref.numpy()[0, geom_idx], [0.04, 1.25], rtol=0.0, atol=1e-6)
+
     def test_geom_solref_scaling_uses_geom_body_invweight_for_welded_child(self):
         """Verify welded child geoms use their own body invweight for solref scaling."""
         builder = newton.ModelBuilder()
