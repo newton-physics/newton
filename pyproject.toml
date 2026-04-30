@@ -36,8 +36,8 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp>=3.7.0.1,~=3.7.0; python_version < '3.14'",  # MuJoCo, warp-accelerated (3.7.0 was broken; depends on mujoco which has no 3.14 wheels yet)
-    "mujoco~=3.7.0; python_version < '3.14'",        # MuJoCo physics engine (no 3.14 wheels yet)
+    "mujoco-warp>=3.8.0.1,~=3.8.0; python_version < '3.14'",  # MuJoCo, warp-accelerated (3.8.0 was broken; depends on mujoco which has no 3.14 wheels yet)
+    "mujoco~=3.8.0; python_version < '3.14'",        # MuJoCo physics engine (no 3.14 wheels yet)
     "newton-actuators>=0.1.0",  # deprecated — kept for backward compat, will be removed
 ]
 
