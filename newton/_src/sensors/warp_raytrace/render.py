@@ -20,7 +20,7 @@ def create_kernel(
 ) -> wp.kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state)
 
-    if state.render_color or state.render_normal:
+    if state.render_color or state.render_normal or (state.render_albedo and config.enable_textures):
         raytrace_closest_hit = raytrace.create_closest_hit_function(config, state)
     else:
         raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
