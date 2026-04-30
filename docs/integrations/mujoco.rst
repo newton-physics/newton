@@ -509,7 +509,7 @@ by joint type:
 - **World-attached shapes that are not part of an articulation**
   remain ordinary static MuJoCo geometry rather than mocap bodies.
 
-If you edit :attr:`newton.Model.joint_X_p` or :attr:`newton.Model.joint_X_c`
+If you edit :attr:`~newton.Model.joint_X_p` or :attr:`~newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
 :meth:`~newton.solvers.SolverBase.notify_model_changed` with the
 :attr:`~newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES` flag to
