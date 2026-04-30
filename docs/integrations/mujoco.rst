@@ -363,5 +363,5 @@ their joint type:
 
 If you edit :attr:`newton.Model.joint_X_p` or :attr:`newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
-``solver.notify_model_changed(newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES)``
+``solver.notify_model_changed(newton.solvers.SolverModelFlags.JOINT_PROPERTIES)``
 to synchronize the updated fixed-root poses into MuJoCo.

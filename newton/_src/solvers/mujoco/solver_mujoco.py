@@ -33,7 +33,7 @@ from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
-from ..flags import SolverNotifyFlags
+from ..flags import SolverModelFlags
 from ..solver import SolverBase
 from .kernels import (
     _snapshot_nacon_count,
@@ -3285,48 +3285,48 @@ class SolverMuJoCo(SolverBase):
         need_const_0 = False
         need_length_range = False
 
-        if flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES:
+        if flags & SolverModelFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
             need_const_fixed = True
             need_const_0 = True
-        if flags & SolverNotifyFlags.JOINT_PROPERTIES:
+        if flags & SolverModelFlags.JOINT_PROPERTIES:
             self._update_joint_properties()
-        if flags & SolverNotifyFlags.BODY_PROPERTIES:
+        if flags & SolverModelFlags.BODY_PROPERTIES:
             self._update_body_properties()
             self._invalidate_contact_fast_path()
             need_const_0 = True
-        if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
+        if flags & SolverModelFlags.JOINT_DOF_PROPERTIES:
             self._update_joint_dof_properties()
             need_const_0 = True
             need_length_range = True
-        if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
+        if flags & SolverModelFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
             self._update_pair_properties()
             self._invalidate_contact_fast_path()
-        if flags & SolverNotifyFlags.MODEL_PROPERTIES:
+        if flags & SolverModelFlags.MODEL_PROPERTIES:
             self._update_model_properties()
-        if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
+        if flags & SolverModelFlags.CONSTRAINT_PROPERTIES:
             self._update_eq_properties()
             self._update_mimic_eq_properties()
-        if flags & SolverNotifyFlags.TENDON_PROPERTIES:
+        if flags & SolverModelFlags.TENDON_PROPERTIES:
             self._update_tendon_properties()
             need_const_0 = True
             need_length_range = True
-        if flags & SolverNotifyFlags.ACTUATOR_PROPERTIES:
+        if flags & SolverModelFlags.ACTUATOR_PROPERTIES:
             self._update_actuator_properties()
             need_const_0 = True
             need_length_range = True
 
         has_any_connect = self.has_connect_constraints or self.has_jnt_connect_constraints
         update_connect_constraint_anchor_rel_xform_at_ref_pose = has_any_connect and bool(
-            flags & (SolverNotifyFlags.JOINT_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+            flags & (SolverModelFlags.JOINT_PROPERTIES | SolverModelFlags.JOINT_DOF_PROPERTIES)
         )
         update_connect_constraint_anchors = self.has_connect_constraints and bool(
-            flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES
+            flags & SolverModelFlags.CONSTRAINT_PROPERTIES
         )
 
         if self.use_mujoco_cpu:
-            if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
+            if flags & (SolverModelFlags.BODY_PROPERTIES | SolverModelFlags.JOINT_DOF_PROPERTIES):
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
                 self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
                 self.mj_model.dof_damping[:] = self.mjw_model.dof_damping.numpy()[0]
@@ -5588,7 +5588,7 @@ class SolverMuJoCo(SolverBase):
 
             # so far we have only defined the first world,
             # now complete the data from the Newton model
-            self.notify_model_changed(SolverNotifyFlags.ALL)
+            self.notify_model_changed(SolverModelFlags.ALL)
 
     def _expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:

@@ -3,16 +3,16 @@
 
 """Solver flags."""
 
-from enum import IntEnum
+import warnings
+from enum import EnumType, IntFlag
 
 
-# model update flags - used for solver.notify_model_update()
-class SolverNotifyFlags(IntEnum):
-    """
-    Flags indicating which parts of the model have been updated and require the solver to be notified.
+class SolverModelFlags(IntFlag):
+    """Flags indicating which parts of the model have been updated.
 
-    These flags are used with `solver.notify_model_update()` to specify which properties have changed,
-    allowing the solver to efficiently update only the necessary components.
+    These flags are used with :meth:`~newton.solvers.SolverBase.notify_model_changed`
+    to specify which properties have changed, allowing the solver to efficiently
+    update only the necessary components.
     """
 
     JOINT_PROPERTIES = 1 << 0
@@ -56,6 +56,79 @@ class SolverNotifyFlags(IntEnum):
     """Indicates all property updates."""
 
 
+class SolverStateFlags(IntFlag):
+    """Flags indicating which state attributes should be reset.
+
+    These flags are used with :meth:`~newton.solvers.SolverBase.reset` to control
+    which parts of the simulation state are reset, allowing the solver to
+    efficiently update only the necessary components.
+    """
+
+    JOINT_Q = 1 << 0
+    """Indicates reduced joint position coordinates: ``State.joint_q``."""
+
+    JOINT_QD = 1 << 1
+    """Indicates reduced joint velocity coordinates: ``State.joint_qd``."""
+
+    BODY_Q = 1 << 2
+    """Indicates maximal body position coordinates: ``State.body_q``."""
+
+    BODY_QD = 1 << 3
+    """Indicates maximal body velocity coordinates: ``State.body_qd``."""
+
+    PARTICLE_Q = 1 << 4
+    """Indicates particle positions: ``State.particle_q``."""
+
+    PARTICLE_QD = 1 << 5
+    """Indicates particle velocities: ``State.particle_qd``."""
+
+    ALL = JOINT_Q | JOINT_QD | BODY_Q | BODY_QD | PARTICLE_Q | PARTICLE_QD
+    """Indicates all state attributes should be reset."""
+
+
+class _DeprecatedSolverNotifyFlagsMeta(EnumType):
+    def __getattribute__(cls, name: str):
+        value = super().__getattribute__(name)
+        if not name.startswith("_"):
+            member_map = super().__getattribute__("_member_map_")
+            if name in member_map:
+                _warn_solver_notify_flags_deprecated()
+        return value
+
+    def __call__(cls, *args, **kwargs):
+        _warn_solver_notify_flags_deprecated()
+        return super().__call__(*args, **kwargs)
+
+
+def _warn_solver_notify_flags_deprecated() -> None:
+    warnings.warn(
+        "SolverNotifyFlags is deprecated, use SolverModelFlags instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
+class SolverNotifyFlags(IntFlag, metaclass=_DeprecatedSolverNotifyFlagsMeta):
+    """Deprecated alias for :class:`SolverModelFlags`.
+
+    .. deprecated::
+        Use :class:`SolverModelFlags` instead.
+    """
+
+    JOINT_PROPERTIES = SolverModelFlags.JOINT_PROPERTIES.value
+    JOINT_DOF_PROPERTIES = SolverModelFlags.JOINT_DOF_PROPERTIES.value
+    BODY_PROPERTIES = SolverModelFlags.BODY_PROPERTIES.value
+    BODY_INERTIAL_PROPERTIES = SolverModelFlags.BODY_INERTIAL_PROPERTIES.value
+    SHAPE_PROPERTIES = SolverModelFlags.SHAPE_PROPERTIES.value
+    MODEL_PROPERTIES = SolverModelFlags.MODEL_PROPERTIES.value
+    CONSTRAINT_PROPERTIES = SolverModelFlags.CONSTRAINT_PROPERTIES.value
+    TENDON_PROPERTIES = SolverModelFlags.TENDON_PROPERTIES.value
+    ACTUATOR_PROPERTIES = SolverModelFlags.ACTUATOR_PROPERTIES.value
+    ALL = SolverModelFlags.ALL.value
+
+
 __all__ = [
+    "SolverModelFlags",
     "SolverNotifyFlags",
+    "SolverStateFlags",
 ]

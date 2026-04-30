@@ -414,16 +414,18 @@ from ._src.solvers import (
 )
 
 # solver flags
-from ._src.solvers.flags import SolverNotifyFlags
+from ._src.solvers.flags import SolverModelFlags, SolverNotifyFlags, SolverStateFlags
 
 __all__ = [
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",
     "SolverKamino",
+    "SolverModelFlags",
     "SolverMuJoCo",
     "SolverNotifyFlags",
     "SolverSemiImplicit",
+    "SolverStateFlags",
     "SolverStyle3D",
     "SolverVBD",
     "SolverXPBD",
