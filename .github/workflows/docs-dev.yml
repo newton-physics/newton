@@ -1,15 +1,5 @@
 name: Deploy dev documentation
 
-env:
-  AWS_REGION: us-east-2
-  AWS_INSTANCE_TYPE: g7e.2xlarge
-  AWS_VOLUME_SIZE: 92
-  AWS_VOLUME_TYPE: gp3
-  AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
-  AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
-  AWS_ROLE_DURATION: 3600
-  HOME: /actions-runner
-
 on:
   push:
     branches:
@@ -22,83 +12,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  start-runner:
-    name: Start self-hosted EC2 runner
-    if: github.repository == 'newton-physics/newton'
+  build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
-      contents: read
-    outputs:
-      label: ${{ steps.start-ec2-runner.outputs.label }}
-      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
-        with:
-          egress-policy: audit
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
-        with:
-          aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
-
-      - name: Get the latest AWS Deep Learning Base GPU AMI
-        id: get-ami
-        run: |
-          echo "Finding the latest AWS Deep Learning Base GPU AMI..."
-          LATEST_AMI_ID=$(aws ec2 describe-images --region ${{ env.AWS_REGION }} \
-            --owners amazon \
-            --filters 'Name=name,Values=Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) ????????' 'Name=state,Values=available' \
-            --query 'reverse(sort_by(Images, &CreationDate))[:1].ImageId' \
-            --output text)
-          if [[ -z "$LATEST_AMI_ID" ]]; then
-            echo "::error::No AMI ID found. Exiting."
-            exit 1
-          fi
-          echo "Latest AMI ID found: $LATEST_AMI_ID"
-          echo "ami-id=$LATEST_AMI_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Start EC2 runner
-        id: start-ec2-runner
-        uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
-        with:
-          mode: start
-          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
-          ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
-          ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
-          availability-zones-config: >
-            [
-              {"imageId": "${{ steps.get-ami.outputs.ami-id }}", "subnetId": "subnet-051b9d2e71acf8047", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"},
-              {"imageId": "${{ steps.get-ami.outputs.ami-id }}", "subnetId": "subnet-0c98bd06abe8ee5eb", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"}
-            ]
-          pre-runner-script: |
-            if [ -d /opt/dlami/nvme ]; then
-              mkdir -p /opt/dlami/nvme/actions-runner/_work
-              mkdir -p /opt/dlami/nvme/actions-runner/.local
-              mkdir -p /opt/dlami/nvme/actions-runner/.cache
-              ln -s /opt/dlami/nvme/actions-runner/_work /actions-runner/_work
-              ln -s /opt/dlami/nvme/actions-runner/.local /actions-runner/.local
-              ln -s /opt/dlami/nvme/actions-runner/.cache /actions-runner/.cache
-            fi
-          aws-resource-tags: >
-            [
-              {"Key": "Name", "Value": "ec2-github-runner"},
-              {"Key": "created-by", "Value": "github-actions-newton-role"},
-              {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"}
-            ]
-
-  build-docs:
-    name: Build Sphinx documentation
-    needs: start-runner
-    if: ${{ !cancelled() && needs.start-runner.result == 'success' }}
-    runs-on: ${{ needs.start-runner.outputs.label }}
-    timeout-minutes: 180
-    permissions:
-      contents: read
+      contents: write
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
@@ -120,75 +37,13 @@ jobs:
         with:
           python-version-file: ".python-version"
 
+      - name: Install pandoc
+        uses: pandoc/actions/setup@86321b6dd4675f5014c611e05088e10d4939e09e  # v1.1.1
+
       - name: Build Sphinx documentation
+        run: uv run --extra docs --extra sim sphinx-build -j auto -b html docs docs/_build/html
         env:
-          NEWTON_BUILD_NOTEBOOKS: "1"
-          NEWTON_NBSPHINX_TIMEOUT: "3600"
-        run: uv run --extra docs --extra notebook --extra sim sphinx-build -j auto -b html docs docs/_build/html
-
-      - name: Upload documentation artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
-        with:
-          name: docs-html
-          path: docs/_build/html
-          if-no-files-found: error
-
-  stop-runner:
-    name: Stop self-hosted EC2 runner
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    needs:
-      - start-runner
-      - build-docs
-    if: always() && needs.start-runner.result != 'skipped' && github.repository == 'newton-physics/newton'
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
-        with:
-          egress-policy: audit
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
-        with:
-          aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
-
-      - name: Stop EC2 runner
-        uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
-        with:
-          mode: stop
-          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          label: ${{ needs.start-runner.outputs.label }}
-          ec2-instance-id: ${{ needs.start-runner.outputs.ec2-instance-id }}
-
-  deploy:
-    name: Deploy to gh-pages /latest/
-    needs:
-      - build-docs
-      - stop-runner
-    if: ${{ !cancelled() && needs.build-docs.result == 'success' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-        with:
-          fetch-depth: 1
-
-      - name: Download documentation artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
-        with:
-          name: docs-html
-          path: /tmp/docs-latest
+          NEWTON_REQUIRE_PANDOC: "1"
 
       - name: Deploy to gh-pages /latest/
         run: |
@@ -197,7 +52,8 @@ jobs:
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
 
-          # Save 404 template outside the repo before switching branches
+          # Save built docs and 404 template outside the repo before switching branches
+          mv docs/_build/html /tmp/docs-latest
           cp docs/_static/gh-pages-404.html /tmp/gh-pages-404.html
 
           # Switch to gh-pages branch (check existence first to avoid masking other fetch errors)
