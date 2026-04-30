@@ -57,15 +57,20 @@ Joint types
      -
    * - :attr:`~newton.JointType.D6`
      - Up to 3 × ``mjJNT_SLIDE`` + 3 × ``mjJNT_HINGE``
-     - Each active linear/angular DOF becomes a separate MuJoCo joint
-       (``_lin``/``_ang`` suffixes, with numeric indices when multiple axes
-       are active).
+     - Each active linear/angular DOF becomes a separate MuJoCo joint with
+       a ``_lin`` or ``_ang`` suffix; a numeric index is appended when more
+       than one axis is active in the same group (e.g. ``_lin0``,
+       ``_lin1``).
    * - :attr:`~newton.JointType.FIXED`
      - *(no joint)*
      - The child body is nested directly under its parent. A fixed joint
        connecting to the world produces a **mocap** body, driven via
        ``mjData.mocap_pos`` / ``mjData.mocap_quat``.
-   * - :attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.CABLE`
+   * - :attr:`~newton.JointType.DISTANCE`
+     - *(no joint)*
+     - The distance constraint is dropped, but the body bookkeeping is
+       handled like a free body (counted in MuJoCo's free-body slots).
+   * - :attr:`~newton.JointType.CABLE`
      - *unsupported*
      - Not forwarded to MuJoCo.
 
@@ -97,26 +102,32 @@ Geometry types
      -
    * - :attr:`~newton.GeoType.PLANE`
      - ``mjGEOM_PLANE``
-     - Must be a static shape (``body=-1``); attaching a plane to a body
-       raises ``ValueError`` at conversion time. Rendered size defaults
-       to ``5 × 5 × 5`` when ``shape_size`` is unset.
+     - Must be attached to a static body (``body=-1``); attaching to a
+       non-static body raises ``ValueError`` at conversion time. Planes
+       are infinite for collision in MuJoCo regardless of size; the
+       configured ``shape_size`` only affects rendering, defaulting to
+       ``5 × 5 × 5`` when unset.
    * - :attr:`~newton.GeoType.HFIELD`
      - ``mjGEOM_HFIELD``
-     - Heightfield data is normalized to ``[0, 1]``; the geom origin is
-       shifted by ``min_z`` so the lowest point is at the correct world
-       height.
+     - Heightfield data is stored normalized to ``[0, 1]`` on the Newton
+       :class:`~newton.Heightfield` source and forwarded as-is. The geom
+       origin is shifted by ``min_z`` so the lowest point is at the
+       correct world height.
    * - :attr:`~newton.GeoType.MESH` / :attr:`~newton.GeoType.CONVEX_MESH`
      - ``mjGEOM_MESH``
-     - MuJoCo only supports **convex** collision meshes. Non-convex meshes
-       are convex-hulled automatically, which changes the collision
-       boundary. The mesh source's ``maxhullvert`` is forwarded.
+     - MuJoCo only supports **convex** collision meshes. Non-convex
+       meshes are convex-hulled by MuJoCo's compiler (not by Newton),
+       which changes the collision boundary. The mesh source's
+       ``maxhullvert`` is forwarded.
    * - :attr:`~newton.GeoType.CONE`, :attr:`~newton.GeoType.GAUSSIAN`
      - *unsupported*
      - Not present in the MuJoCo geom-type map.
 
 **Sites** (shapes with the ``SITE`` flag) are converted to MuJoCo sites —
 non-colliding reference frames used for sensor attachment and spatial
-tendon wrap anchors.
+tendon wrap anchors. Only ``SPHERE``, ``CAPSULE``, ``CYLINDER``, and
+``BOX`` are MuJoCo-native site geom types; other types silently fall
+back to ``SPHERE``.
 
 Several Newton collision features — for example non-convex trimesh,
 SDF-based contacts, and hydroelastic contacts — are not part of the
@@ -391,9 +402,11 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **User data and arbitrary custom elements** (``<custom>``, ``<numeric>``,
   ``<text>``) — not imported. Newton-specific user data should use the
   Newton custom-attribute system instead.
-- **Actuator transmissions** — not all MuJoCo transmission types are
-  supported. See :class:`~newton.solvers.SolverMuJoCo.TrnType` for the
-  full list.
+- **Actuator transmissions** — only ``joint``, ``tendon``, ``site``, and
+  ``body`` transmissions are supported (see
+  :class:`~newton.solvers.SolverMuJoCo.TrnType` for the enum). MuJoCo's
+  ``jointinparent`` and ``slidercrank`` transmissions are not converted;
+  actuators using them are skipped at construction with a warning.
 
 Smaller limitations are documented inline where they are most relevant —
 see `Caveats`_ below for ``gap``, collision-radius, convex-hull fallback,
