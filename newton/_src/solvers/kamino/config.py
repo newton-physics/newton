@@ -837,6 +837,30 @@ class ForwardKinematicsSolverConfig:
     Defaults to `True`.
     """
 
+    use_incremental_solve: bool = True
+    """
+    Whether to automatically split large steps in actuator coordinates into smaller steps
+    in the FK solve, to improve the solver's robustness for a mild added cost.
+    Changes to this setting after the solver's initialization lead to undefined behavior.
+    Defaults to `True`.
+    """
+
+    max_linear_incremental_step_meters: float = 0.05
+    """
+    If incremental solve is enabled, maximal allowed step in linear actuator coordinates
+    per solver iteration, in meters. A lower value results in more incremental steps.
+    Changes to this setting after the solver's initialization will have no effect.
+    Defaults to `0.1`.
+    """
+
+    max_angular_incremental_step_degrees: float = 10.0
+    """
+    If incremental solve is enabled, maximal allowed step in angular actuator coordinates
+    per solver iteration, in degrees. A lower value results in more incremental steps.
+    Changes to this setting after the solver's initialization will have no effect.
+    Defaults to `10.0`.
+    """
+
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
@@ -889,6 +913,10 @@ class ForwardKinematicsSolverConfig:
             raise ValueError("`max_line_search_iterations` must be positive.")
         if self.tolerance <= 0.0:
             raise ValueError("`tolerance` must be positive.")
+        if self.max_linear_incremental_step_meters <= 0.0:
+            raise ValueError("`max_linear_incremental_step_meters` must be positive.")
+        if self.max_angular_incremental_step_degrees <= 0.0:
+            raise ValueError("`max_angular_incremental_step_degrees` must be positive.")
 
     @override
     def __post_init__(self):
