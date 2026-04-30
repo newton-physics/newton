@@ -2108,19 +2108,14 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
             return 0.02, 1.0
 
         geom_bodyid = np.asarray(solver.mjw_model.geom_bodyid.numpy())
-        body_weldid = np.asarray(solver.mjw_model.body_weldid.numpy())
-
         if geom_bodyid.ndim > 1:
             geom_bodyid = geom_bodyid[world_idx]
-        if body_weldid.ndim > 1:
-            body_weldid = body_weldid[world_idx]
 
         body_id = int(geom_bodyid[geom_idx])
         factor = 1.0
         if body_id >= 0:
-            effective_body = int(body_weldid[body_id])
             dmax = float(solver.mjw_model.geom_solimp.numpy()[world_idx, geom_idx][1])
-            invweight0 = float(solver.mjw_model.body_invweight0.numpy()[world_idx, effective_body][0])
+            invweight0 = float(solver.mjw_model.body_invweight0.numpy()[world_idx, body_id][0])
             scaled_factor = invweight0 * (1.0 - dmax)
             if scaled_factor > 0.0:
                 factor = scaled_factor
@@ -2128,6 +2123,61 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         timeconst = 2.0 / (kd * factor)
         dampratio = kd / 2.0 * np.sqrt(factor / ke)
         return timeconst, dampratio
+
+    def test_geom_solref_scaling_uses_geom_body_invweight_for_welded_child(self):
+        """Verify welded child geoms use their own body invweight for solref scaling."""
+        builder = newton.ModelBuilder()
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=1000.0, kd=10.0)
+
+        root = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+        child = builder.add_link(
+            mass=5.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3) * 2.0),
+            lock_inertia=True,
+        )
+        builder.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+        builder.add_shape_sphere(child, radius=0.1, cfg=shape_cfg)
+
+        root_joint = builder.add_joint_free(child=root)
+        child_joint = builder.add_joint_fixed(
+            parent=root,
+            child=child,
+            parent_xform=wp.transform(wp.vec3(0.75, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(),
+            collision_filter_parent=False,
+        )
+        builder.add_articulation([root_joint, child_joint])
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        to_newton_shape = solver.mjc_geom_to_newton_shape.numpy()[0]
+        child_shape = int(np.where(model.shape_body.numpy() == child)[0][0])
+        child_geom = int(np.where(to_newton_shape == child_shape)[0][0])
+        child_body = int(solver.mjw_model.geom_bodyid.numpy()[child_geom])
+        weld_root_body = int(solver.mjw_model.body_weldid.numpy()[child_body])
+
+        self.assertNotEqual(child_body, weld_root_body)
+
+        dmax = float(solver.mjw_model.geom_solimp.numpy()[0, child_geom][1])
+        body_invweight0 = solver.mjw_model.body_invweight0.numpy()[0]
+        child_scale = float(body_invweight0[child_body][0]) * (1.0 - dmax)
+        weld_root_scale = float(body_invweight0[weld_root_body][0]) * (1.0 - dmax)
+        self.assertNotAlmostEqual(child_scale, weld_root_scale, places=6)
+
+        new_ke = model.shape_material_ke.numpy().copy()
+        new_kd = model.shape_material_kd.numpy().copy()
+        new_ke[child_shape] = 2000.0
+        new_kd[child_shape] = 20.0
+        model.shape_material_ke.assign(new_ke)
+        model.shape_material_kd.assign(new_kd)
+
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+
+        actual_solref = solver.mjw_model.geom_solref.numpy()[0, child_geom]
+        expected_solref = self._expected_geom_solref(solver, 0, child_geom, new_ke[child_shape], new_kd[child_shape])
+        np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
 
     def test_geom_property_conversion(self):
         """

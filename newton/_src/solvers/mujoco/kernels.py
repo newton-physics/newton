@@ -204,7 +204,6 @@ def geom_solref_scale_factor(
     world: int,
     geom_idx: int,
     geom_bodyid: wp.array[int],
-    body_weldid: wp.array[int],
     body_invweight0: wp.array2d[wp.vec2],
     dmax: float,
 ) -> float:
@@ -213,8 +212,7 @@ def geom_solref_scale_factor(
     if body_idx < 0:
         return 1.0
 
-    effective_body_idx = body_weldid[body_idx]
-    factor = body_invweight0[world, effective_body_idx][0] * (1.0 - dmax)
+    factor = body_invweight0[world, body_idx][0] * (1.0 - dmax)
     if factor > 0.0:
         return factor
     return 1.0
@@ -2264,7 +2262,6 @@ def update_geom_properties_kernel(
     shape_transform: wp.array[wp.transform],
     mjc_geom_to_newton_shape: wp.array2d[wp.int32],
     geom_bodyid: wp.array[int],
-    body_weldid: wp.array[int],
     body_invweight0: wp.array2d[wp.vec2],
     geom_type: wp.array[int],
     GEOM_TYPE_MESH: int,
@@ -2331,7 +2328,6 @@ def update_geom_properties_kernel(
         world,
         geom_idx,
         geom_bodyid,
-        body_weldid,
         body_invweight0,
         dmax,
     )

@@ -6398,7 +6398,6 @@ class SolverMuJoCo(SolverBase):
                 self.model.shape_transform,
                 self.mjc_geom_to_newton_shape,
                 self.mjw_model.geom_bodyid,
-                self.mjw_model.body_weldid,
                 self.mjw_model.body_invweight0,
                 self.mjw_model.geom_type,
                 self._mujoco.mjtGeom.mjGEOM_MESH,
