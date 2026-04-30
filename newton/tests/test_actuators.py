@@ -12,6 +12,7 @@ import tempfile
 import types
 import unittest
 import warnings
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -737,8 +738,6 @@ class TestActuatorBuilder(unittest.TestCase):
         the Newton schema plugin failed to load, but the raw apiSchemas metadata
         is still present on the prim.
         """
-        from unittest.mock import patch
-
         test_dir = os.path.dirname(__file__)
         usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
         if not os.path.exists(usd_path):
