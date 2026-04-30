@@ -493,6 +493,9 @@ class ViewerGL(ViewerBase):
             model: The Newton model instance.
             max_worlds: Maximum number of worlds to render (None = all).
         """
+        prev_camera = self.camera
+        prev_wind = self.wind
+
         super().set_model(model, max_worlds=max_worlds)
 
         if self.model is not None:
@@ -550,6 +553,19 @@ class ViewerGL(ViewerBase):
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
+
+        if prev_camera is not None and model is not None and prev_camera.up_axis == self.camera.up_axis:
+            self.camera.pos = self.camera._as_vec3(prev_camera.pos)
+            self.camera.yaw = prev_camera.yaw
+            self.camera.pitch = prev_camera.pitch
+            self.camera.set_pivot(prev_camera.pivot)
+
+        if prev_wind is not None:
+            self.wind.time = prev_wind.time
+            self.wind.period = prev_wind.period
+            self.wind.amplitude = prev_wind.amplitude
+            self.wind.frequency = prev_wind.frequency
+            self.wind.direction = prev_wind.direction
 
     def _build_packed_vbo_arrays(self):
         """Build write-index + output arrays for batched shape transform computation.
