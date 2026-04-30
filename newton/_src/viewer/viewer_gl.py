@@ -529,7 +529,16 @@ class ViewerGL(ViewerBase):
 
         Args:
             model: The Newton model instance.
+
+        Note:
+            Switching between models with the same up-axis preserves the
+            existing camera state. Wind settings are preserved across
+            non-``None`` model switches because they are independent of the
+            model up-axis.
         """
+        prev_camera = self.camera
+        prev_wind = self.wind
+
         super().set_model(model)
 
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the
@@ -598,6 +607,19 @@ class ViewerGL(ViewerBase):
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
+
+        if prev_camera is not None and model is not None and prev_camera.up_axis == self.camera.up_axis:
+            # Reuse the compatible camera so future Camera fields survive model switches too.
+            prev_camera.update_screen_size(fb_w, fb_h)
+            self.camera = prev_camera
+
+        if prev_wind is not None and model is not None:
+            # Wind parameters are model-agnostic, so keep them across model swaps.
+            self.wind.time = prev_wind.time
+            self.wind.period = prev_wind.period
+            self.wind.amplitude = prev_wind.amplitude
+            self.wind.frequency = prev_wind.frequency
+            self.wind.direction = prev_wind.direction
 
     def _build_packed_vbo_arrays(self):
         """Build write-index + output arrays for batched shape transform computation.
