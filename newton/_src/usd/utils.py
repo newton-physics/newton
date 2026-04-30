@@ -95,6 +95,18 @@ def has_attribute(prim: Usd.Prim, name: str) -> bool:
     return attr and attr.HasAuthoredValue()
 
 
+def _get_raw_api_schemas(prim: Usd.Prim) -> list[str]:
+    """Return API schema tokens from raw ``apiSchemas`` list-op metadata."""
+    listop = prim.GetMetadata("apiSchemas")
+    if listop is None:
+        return []
+    return (
+        list(getattr(listop, "prependedItems", []))
+        + list(getattr(listop, "appendedItems", []))
+        + list(getattr(listop, "explicitItems", []))
+    )
+
+
 def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
     """Return the API schema tokens applied to *prim*.
 
@@ -108,16 +120,7 @@ def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
         Applied API schema tokens (e.g. ``["NewtonPDControlAPI"]``).
     """
     schemas = list(prim.GetAppliedSchemas())
-    if schemas:
-        return schemas
-    listop = prim.GetMetadata("apiSchemas")
-    if listop is None:
-        return []
-    return (
-        list(getattr(listop, "prependedItems", []))
-        + list(getattr(listop, "appendedItems", []))
-        + list(getattr(listop, "explicitItems", []))
-    )
+    return schemas if schemas else _get_raw_api_schemas(prim)
 
 
 def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
@@ -138,7 +141,7 @@ def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
     Returns:
         True if the schema is applied to the prim, False otherwise.
     """
-    return schema_name in get_applied_api_schemas(prim)
+    return prim.HasAPI(schema_name) or schema_name in _get_raw_api_schemas(prim)
 
 
 @overload
