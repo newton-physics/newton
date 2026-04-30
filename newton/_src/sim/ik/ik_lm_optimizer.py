@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 import numpy as np
 import warp as wp
 
+from ..enums import JointType
 from ..model import Model
 from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
 from .ik_objectives import IKObjective
@@ -828,17 +829,30 @@ class IKOptimizerLM:
 
             S_s_out = joint_S_s[row]
 
-            jcalc_motion_subspace(
-                type,
-                joint_axis,
-                lin_axis_count,
-                ang_axis_count,
-                X_wpj,
-                body_q[row, child],
-                body_com[child],
-                qd_start,
-                S_s_out,
-            )
+            if type == JointType.FREE or type == JointType.DISTANCE:
+                jcalc_motion_subspace(
+                    type,
+                    joint_axis,
+                    lin_axis_count,
+                    ang_axis_count,
+                    X_wpj,
+                    body_q[row, child],
+                    body_com[child],
+                    qd_start,
+                    S_s_out,
+                )
+            else:
+                jcalc_motion_subspace(
+                    type,
+                    joint_axis,
+                    lin_axis_count,
+                    ang_axis_count,
+                    X_wpj,
+                    wp.transform_identity(),
+                    wp.vec3(),
+                    qd_start,
+                    S_s_out,
+                )
 
         @wp.kernel(module="unique")
         def _fk_local(
