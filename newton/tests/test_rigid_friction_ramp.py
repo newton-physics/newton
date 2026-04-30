@@ -1,14 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Friction-on-ramp grid test.
+"""Canonical Coulomb-friction tests.
 
-Builds a grid of static ramps (one per (mu, theta) cell) with a box on each
-and asserts each box matches the expected behavior given its critical
-friction angle theta_crit = atan(mu):
+Two complementary tests share this file as the canonical friction benchmark:
 
-  * theta < crit - margin: box is at rest (no displacement, ~zero velocity).
-  * theta > crit + margin: box slides with a = g (sin theta - mu cos theta).
+  * ``test_friction_ramp`` — (mu, theta) grid of static ramps with a box on
+    each. Each cell's expected behavior follows from its critical friction
+    angle theta_crit = atan(mu):
+
+      * theta < crit - margin: box at rest (~zero velocity, no displacement).
+      * theta > crit + margin: box slides at least ``min_slide`` metres.
+
+  * ``test_friction_stopping_distance`` — sliding boxes on flat ground decelerate
+    under kinetic Coulomb friction and stop at d = v0^2 / (2 mu g). Provides
+    the precise kinetic-friction oracle that the ramp grid does not exercise.
 """
 
 import math
@@ -47,39 +53,52 @@ BOX_GAP = 0.001  # initial offset above the ramp surface to avoid penalty pop-ou
 SIM_DT = 1.0 / 60.0
 SIM_SUBSTEPS = 30
 SETTLE_FRAMES = 30  # 0.5 s, lets the contact-stiffness transient decay
-MEASURE_FRAMES = 15  # 0.25 s window — short so fast cells don't slide off the ramp before t_end
+MEASURE_FRAMES = 15  # 0.25 s window for sliding cells to accumulate a measurable displacement
 VIEWER_FRAMES = 600
 
 # Sweeps. Non-VBD solvers cover a wide mu range; VBD's penalty friction
 # saturates above mu ~ 0.30, so it gets a narrower sweep with looser
 # thresholds (see _VBD_THRESHOLDS). Angles are capped at 40 deg because
 # constraint-solver friction enforcement on a steep slope from rest is
-# noisy near 50 deg (we observed flaky a_measured on mujoco_warp in
-# particular). mu=1.00 therefore exercises only the static side.
+# noisy near 50 deg. mu=1.00 therefore exercises only the static side.
+# Quantitative kinetic-friction validation lives in
+# test_friction_stopping_distance, which is unaffected by these caps.
 _DEFAULT_MUS = (0.10, 0.30, 0.50, 0.70, 1.00)
 _DEFAULT_ANGLES_DEG = (3.0, 10.0, 20.0, 30.0, 40.0)
 _VBD_MUS = (0.10, 0.15, 0.20, 0.25, 0.30)
 _VBD_ANGLES_DEG = (5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0)
 
 
-# Thresholds. For above-crit cells the test checks ONE of:
-#   * kinetic friction:   |a_measured - a_expected| <= a_rel_tol*|a_expected| + a_abs_tol
-#   * minimum slide:      down-slope displacement >= min_slide  (loose fallback)
-#
-# Coulomb-friction solvers (XPBD, MuJoCo) get the kinetic check. VBD gets the
-# minimum-slide check because AVBD's penalty friction can saturate and lock
-# borderline cells at zero velocity even within mu <= 0.30 (the cap).
+# Thresholds. Below-crit cells: |v| < v_rest AND post-settle disp < eps_pos.
+# Above-crit cells: post-settle disp >= min_slide (a sanity bound — the precise
+# kinetic-friction oracle is in test_friction_stopping_distance). VBD gets a
+# wider deadband and looser static thresholds because AVBD's penalty friction
+# is fuzzy near the static/kinetic boundary.
 class _Thresholds(NamedTuple):
     margin_deg: float
     v_rest: float
     eps_pos: float
-    a_rel_tol: float = 0.0
-    a_abs_tol: float = 0.0
-    min_slide: float = 0.0  # if > 0, replaces the kinetic-friction check
+    min_slide: float
 
 
-_DEFAULT_THRESHOLDS = _Thresholds(margin_deg=2.0, v_rest=0.10, eps_pos=0.02, a_rel_tol=0.50, a_abs_tol=0.50)
-_VBD_THRESHOLDS = _Thresholds(margin_deg=5.0, v_rest=0.12, eps_pos=0.10, min_slide=0.02)
+_DEFAULT_THRESHOLDS = _Thresholds(margin_deg=2.0, v_rest=0.10, eps_pos=0.02, min_slide=0.02)
+# VBD's min_slide is loose: AVBD penalty-friction creeps borderline cells a few mm
+# in 0.25 s rather than sliding fully. The tighter kinetic-friction oracle on these
+# solvers is in test_friction_stopping_distance.
+_VBD_THRESHOLDS = _Thresholds(margin_deg=5.0, v_rest=0.12, eps_pos=0.10, min_slide=0.005)
+
+# --- Stopping-distance config ---
+
+# Each box slides on its own static ground patch with matching mu (Newton averages
+# mu at contact, so a shared ground would dilute the per-box mu).
+STOPPING_V0 = 2.0
+STOPPING_MUS = (0.20, 0.40, 0.70)
+STOPPING_BOX_HALF = 0.25
+STOPPING_PATCH_HX = 5.0  # comfortably exceeds d_stop(mu_min) ~ 1.02 m
+STOPPING_PATCH_HY = 0.6
+STOPPING_PATCH_HZ = 0.05
+STOPPING_BOX_PITCH_Y = 5.0
+STOPPING_V_FINAL_MAX = 0.05  # m/s — sanity bound: box must have come to rest
 
 _ROW_COLORS = (
     (0.90, 0.30, 0.30),
@@ -144,17 +163,13 @@ def simulate(solver, model, state_0, state_1, control, contacts, num_frames):
     return state_0, state_1
 
 
-def assert_grid_behavior(test, settle_q, settle_qd, final_q, final_qd, mus, angles_deg, box_ids, thresholds):
-    measure_dt = MEASURE_FRAMES * SIM_DT
-    g = abs(GRAVITY)
+def assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box_ids, thresholds):
     failures = []
 
     for row, mu in enumerate(mus):
         crit_deg = math.degrees(math.atan(mu))
         for col, theta_deg in enumerate(angles_deg):
             bid = box_ids[row][col]
-            theta = math.radians(theta_deg)
-            v_settle = float(np.linalg.norm(settle_qd[bid, :3]))
             v_final = float(np.linalg.norm(final_qd[bid, :3]))
             disp = float(np.linalg.norm(final_q[bid, :3] - settle_q[bid, :3]))
             tag = f"(mu={mu:.2f}, theta={theta_deg:.1f}deg, crit={crit_deg:.1f}deg)"
@@ -165,18 +180,8 @@ def assert_grid_behavior(test, settle_q, settle_qd, final_q, final_qd, mus, angl
                 if disp >= thresholds.eps_pos:
                     failures.append(f"{tag}: expected static but disp={disp:.4f} >= {thresholds.eps_pos}")
             elif theta_deg > crit_deg + thresholds.margin_deg:
-                if thresholds.min_slide > 0.0:
-                    if disp < thresholds.min_slide:
-                        failures.append(f"{tag}: expected sliding but disp={disp:.4f} < {thresholds.min_slide}")
-                else:
-                    a_expected = g * (math.sin(theta) - mu * math.cos(theta))
-                    a_measured = (v_final - v_settle) / measure_dt
-                    tol = thresholds.a_rel_tol * abs(a_expected) + thresholds.a_abs_tol
-                    if abs(a_measured - a_expected) > tol:
-                        failures.append(
-                            f"{tag}: a_measured={a_measured:.3f} m/s^2 vs "
-                            f"a_expected={a_expected:.3f} m/s^2 (tol={tol:.3f})"
-                        )
+                if disp < thresholds.min_slide:
+                    failures.append(f"{tag}: expected sliding but disp={disp:.4f} < {thresholds.min_slide}")
 
     if failures:
         test.fail("\n  ".join([f"{len(failures)} friction-ramp cell(s) failed:", *failures]))
@@ -193,7 +198,6 @@ def test_friction_ramp(test, device, solver_fn, mus, angles_deg, thresholds):
 
     state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, SETTLE_FRAMES)
     settle_q = state_0.body_q.numpy().copy()
-    settle_qd = state_0.body_qd.numpy().copy()
 
     state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, MEASURE_FRAMES)
     final_q = state_0.body_q.numpy()
@@ -202,7 +206,120 @@ def test_friction_ramp(test, device, solver_fn, mus, angles_deg, thresholds):
     if np.any(np.isnan(final_q)) or np.any(np.isnan(final_qd)):
         test.fail("Simulation produced NaN values (numerical instability)")
 
-    assert_grid_behavior(test, settle_q, settle_qd, final_q, final_qd, mus, angles_deg, box_ids, thresholds)
+    assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box_ids, thresholds)
+
+
+def build_stopping_distance_scene(device):
+    """Boxes on per-box static ground patches with matching mu.
+
+    Newton averages mu across the two contact shapes, so a shared ground would
+    give effective mu = (mu_box + mu_patch) / 2. Per-box patches keep the
+    effective mu equal to the per-box value.
+    """
+    builder = newton.ModelBuilder(gravity=GRAVITY, up_axis=UP_AXIS)
+
+    box_ids = []
+    for i, mu in enumerate(STOPPING_MUS):
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.mu = mu
+        cfg.ke = 1.0e5
+        cfg.kd = 1.0e3
+        cfg.kf = 0.0
+        cfg.color = _ROW_COLORS[i % len(_ROW_COLORS)]
+
+        patch_y = float(i * STOPPING_BOX_PITCH_Y)
+        # Shift the patch forward so the box (starting at x=0) has the full
+        # patch length ahead of it for stopping room.
+        patch_x = STOPPING_PATCH_HX - 0.5
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform(p=wp.vec3(patch_x, patch_y, -STOPPING_PATCH_HZ), q=wp.quat_identity()),
+            hx=STOPPING_PATCH_HX,
+            hy=STOPPING_PATCH_HY,
+            hz=STOPPING_PATCH_HZ,
+            cfg=cfg,
+        )
+        box_id = builder.add_body(
+            xform=wp.transform(p=wp.vec3(0.0, patch_y, STOPPING_BOX_HALF + BOX_GAP), q=wp.quat_identity()),
+            label=f"box_mu{mu:.2f}",
+        )
+        builder.add_shape_box(
+            body=box_id,
+            hx=STOPPING_BOX_HALF,
+            hy=STOPPING_BOX_HALF,
+            hz=STOPPING_BOX_HALF,
+            cfg=cfg,
+        )
+        box_ids.append(box_id)
+
+    builder.color()  # required for VBD
+    return builder.finalize(device=device), box_ids
+
+
+def test_friction_stopping_distance(test, device, solver_fn, rel_tol):
+    """Kinetic-friction oracle: a sliding box stops at d = v0^2 / (2 mu g).
+
+    Three boxes at mu in STOPPING_MUS each start with v0 along world-X on a
+    matching ground patch. Run for 1.5 * t_stop(mu_min) so every box has come
+    to rest, then compare measured stopping distance against the analytical
+    value with a per-solver relative tolerance.
+    """
+    model, box_ids = build_stopping_distance_scene(device)
+    solver = solver_fn(model)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    is_mujoco = isinstance(solver, newton.solvers.SolverMuJoCo)
+    contacts = model.contacts() if not is_mujoco else None
+
+    initial_q = state_0.body_q.numpy().copy()
+
+    qd = state_0.body_qd.numpy()
+    for bid in box_ids:
+        qd[bid, 0] = STOPPING_V0  # body_qd: [v_lin (0:3), omega (3:6)]
+    state_0.body_qd.assign(qd)
+
+    # MuJoCo integrates in generalized coordinates; sync joint state from body state
+    # so the imposed body_qd takes effect.
+    if is_mujoco:
+        q_ik = wp.zeros_like(model.joint_q, device=device)
+        qd_ik = wp.zeros_like(model.joint_qd, device=device)
+        newton.eval_ik(model, state_0, q_ik, qd_ik)
+        state_0.joint_q.assign(q_ik)
+        state_0.joint_qd.assign(qd_ik)
+
+    g = abs(GRAVITY)
+    t_stop_max = STOPPING_V0 / (min(STOPPING_MUS) * g)
+    num_frames = int(math.ceil(1.5 * t_stop_max / SIM_DT))
+
+    state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, num_frames)
+
+    final_q = state_0.body_q.numpy()
+    final_qd = state_0.body_qd.numpy()
+
+    if np.any(np.isnan(final_q)) or np.any(np.isnan(final_qd)):
+        test.fail("Simulation produced NaN values (numerical instability)")
+
+    failures = []
+    for bid, mu in zip(box_ids, STOPPING_MUS, strict=True):
+        d_expected = STOPPING_V0 * STOPPING_V0 / (2.0 * mu * g)
+        dx = final_q[bid, 0] - initial_q[bid, 0]
+        dy = final_q[bid, 1] - initial_q[bid, 1]
+        d_measured = float(math.sqrt(dx * dx + dy * dy))
+        rel_err = (d_measured - d_expected) / d_expected
+        v_final = float(np.linalg.norm(final_qd[bid, :3]))
+        tag = f"(mu={mu:.2f})"
+        if abs(rel_err) > rel_tol:
+            failures.append(
+                f"{tag}: d_measured={d_measured:.4f} m vs d_expected={d_expected:.4f} m "
+                f"(rel_err={rel_err:+.2%}, tol={rel_tol:.0%})"
+            )
+        if v_final >= STOPPING_V_FINAL_MAX:
+            failures.append(f"{tag}: |v_final|={v_final:.4f} m/s >= {STOPPING_V_FINAL_MAX} (box did not stop)")
+
+    if failures:
+        test.fail("\n  ".join([f"{len(failures)} stopping-distance failure(s):", *failures]))
 
 
 # --- Solver matrix ---
@@ -212,12 +329,17 @@ cuda_devices = get_selected_cuda_test_devices()
 
 # Featherstone and SemiImplicit use viscous (kf) friction rather than Coulomb,
 # so the critical-angle criterion does not apply; excluded here.
+# stopping_distance_rel_tol: per-solver tolerance on d_measured/d_expected. Coulomb-cone
+# solvers (XPBD, MuJoCo) hit ~0.05-0.2% in practice; VBD systematically overshoots
+# 13-18% because AVBD's low-velocity friction regularization lets the box coast past
+# the Coulomb stopping point.
 _SOLVERS = {
     "xpbd": {
         "factory": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
         "mus": _DEFAULT_MUS,
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,
+        "stopping_distance_rel_tol": 0.01,
     },
     "mujoco_warp": {
         "factory": lambda model: newton.solvers.SolverMuJoCo(
@@ -233,6 +355,7 @@ _SOLVERS = {
         "mus": _DEFAULT_MUS,
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,
+        "stopping_distance_rel_tol": 0.01,
     },
     "mujoco_cpu": {
         "factory": lambda model: newton.solvers.SolverMuJoCo(
@@ -246,12 +369,14 @@ _SOLVERS = {
         "mus": _DEFAULT_MUS,
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,
+        "stopping_distance_rel_tol": 0.01,
     },
     "vbd": {
         "factory": lambda model: newton.solvers.SolverVBD(model, iterations=40, rigid_contact_k_start=1.0e5),
         "mus": _VBD_MUS,
         "angles_deg": _VBD_ANGLES_DEG,
         "thresholds": _VBD_THRESHOLDS,
+        "stopping_distance_rel_tol": 0.25,
     },
 }
 
@@ -323,6 +448,15 @@ for device in devices:
             mus=cfg["mus"],
             angles_deg=cfg["angles_deg"],
             thresholds=cfg["thresholds"],
+        )
+        add_function_test(
+            TestRigidFrictionRamp,
+            f"test_friction_stopping_distance_{solver_name}",
+            test_friction_stopping_distance,
+            devices=[device],
+            check_output=False,
+            solver_fn=cfg["factory"],
+            rel_tol=cfg["stopping_distance_rel_tol"],
         )
 
 
