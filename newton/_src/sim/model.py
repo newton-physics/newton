@@ -187,6 +187,15 @@ class Model:
             num_global_particles = particle_world_start[-1] - particle_world_start[-2] + particle_world_start[0]
         """
 
+        self.deformable_label: list[str] = []
+        """Labels for each deformable (cloth or soft body) added via
+        :meth:`ModelBuilder.add_cloth_mesh`, :meth:`ModelBuilder.add_cloth_grid`,
+        :meth:`ModelBuilder.add_soft_mesh`, or :meth:`ModelBuilder.add_soft_grid`,
+        shape [deformable_count], str."""
+        self.deformable_offset: wp.array[wp.int32] | None = None
+        """Particle index offsets for each deformable, shape [deformable_count + 1], int.
+        Deformable ``i`` covers particles ``[deformable_offset[i], deformable_offset[i + 1])``."""
+
         self.shape_label: list[str] = []
         """List of labels for each shape."""
         self.shape_transform: wp.array[wp.transform] | None = None

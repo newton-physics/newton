@@ -666,6 +666,16 @@ class TestDeformableRegistry(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertNotIn("[", str(w[0].message))
 
+    def test_finalize_propagates_label_and_offset_to_model(self):
+        builder = newton.ModelBuilder()
+        self._add_cloth(builder)
+        self._add_soft(builder)
+        model = builder.finalize()
+        self.assertEqual(model.deformable_label, ["cloth_mesh_0", "soft_mesh_1"])
+        self.assertIsNotNone(model.deformable_offset)
+        self.assertEqual(model.deformable_offset.dtype, wp.int32)
+        self.assertEqual(list(model.deformable_offset.numpy()), builder.deformable_offset)
+
     def test_failed_validation_does_not_register_deformable(self):
         # Malformed indices early-return; no deformable should be recorded.
         builder = newton.ModelBuilder()
