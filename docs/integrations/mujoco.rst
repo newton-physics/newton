@@ -223,8 +223,10 @@ Newton's core API does not currently expose tendons (fixed or spatial)
 as first-class concepts. They are implemented through the MuJoCo
 :ref:`custom-attribute namespace <mujoco-custom-attributes>`: populated
 on import from MJCF/USD and parsed into MuJoCo's tendon structures by
-``SolverMuJoCo._init_tendons``. Unsupported wrap types and degenerate
-tendon definitions produce warnings rather than hard errors.
+``SolverMuJoCo._init_tendons``. Spatial tendons support ``site``,
+``geom``, and ``pulley`` wrap elements; any other wrap type and any
+degenerate tendon definition produces a warning and is skipped rather
+than raising.
 
 
 Collision pipeline
@@ -328,6 +330,11 @@ MuJoCo solver parameters follow a three-level resolution priority:
    used, with one Newton-opinionated exception: ``integrator`` defaults
    to ``implicitfast`` (MuJoCo's default is ``euler``) for better
    stability on stiff systems.
+
+These values are read once during :class:`~newton.solvers.SolverMuJoCo`
+construction. Editing ``model.mujoco.<option>`` afterwards has no
+effect — the resolved value is already baked into the underlying
+MuJoCo model.
 
 See MuJoCo's `solver documentation
 <https://mujoco.readthedocs.io/en/stable/computation/index.html>`_ and
@@ -446,6 +453,13 @@ Caveats
   Newton's :attr:`~newton.Model.joint_velocity_limit` has no MuJoCo equivalent and is
   ignored.
 
+**Kinematic-root armature override.**
+  DOFs of kinematic articulation roots have their
+  :attr:`~newton.Model.joint_armature` replaced with a very large
+  internal value (``1e10``) so MuJoCo treats them as effectively
+  prescribed. The user-supplied armature on those DOFs is silently
+  discarded. See `Kinematic links and fixed roots`_.
+
 **Collision filtering bitmask fallback.**
   Newton's :attr:`~newton.Model.shape_collision_group` (see
   :ref:`Collision Groups`) is translated to MuJoCo's ``contype`` /
@@ -521,9 +535,16 @@ API and subject to change.
   ``State``) → MuJoCo ``mjModel`` / ``mjData`` (orchestrator).
 - ``SolverMuJoCo._init_pairs`` / ``_init_actuators`` / ``_init_tendons`` —
   category-specific parsers that consume the MuJoCo custom attributes.
-- ``SolverMuJoCo._apply_mjc_control`` and
-  ``SolverMuJoCo._update_newton_state`` — per-step control and state sync
-  between Newton and MuJoCo.
+- ``SolverMuJoCo._apply_mjc_control``,
+  ``SolverMuJoCo._update_mjc_data``, and
+  ``SolverMuJoCo._update_newton_state`` — per-step control, data, and
+  state sync between Newton and MuJoCo.
+- :meth:`~newton.solvers.SolverMuJoCo.update_contacts` — explicit pull
+  of MuJoCo's resolved contacts into a Newton ``Contacts`` object
+  (default per-step path does not pull contacts back).
+- :meth:`~newton.solvers.SolverBase.notify_model_changed` —
+  re-synchronize MuJoCo state after editing the Newton ``Model`` (e.g.
+  fixed-root pose changes via ``joint_X_p`` / ``joint_X_c``).
 - :github:`newton/_src/solvers/mujoco/kernels.py` — Warp kernels for
   coordinate, contact, and state conversion (``quat_wxyz_to_xyzw``,
   ``convert_mj_coords_to_warp_kernel``,
