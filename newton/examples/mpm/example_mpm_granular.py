@@ -260,14 +260,13 @@ class Example:
             "--solver",
             "-s",
             type=str,
-            default="gauss-seidel",
-            choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+            default="auto",
         )
         parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
         parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])
 
         parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
-        parser.add_argument("--collider-basis", "-cb", type=str, default="Q1")
+        parser.add_argument("--collider-basis", "-cb", type=str, default="S2")
         parser.add_argument("--velocity-basis", "-vb", type=str, default="Q1")
 
         parser.add_argument("--max-iterations", "-it", type=int, default=250)
