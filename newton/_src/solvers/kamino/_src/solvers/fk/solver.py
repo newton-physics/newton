@@ -915,8 +915,10 @@ class ForwardKinematicsSolver:
             inputs=[
                 self.base_joint_id,
                 base_q,
+                self.joints_bid_F,
                 self.joints_X_j,
                 self.joints_B_r_Bj,
+                self.joints_F_r_Fj,
                 self.model.info.num_bodies,
                 self.first_body_id,
                 self.model.bodies.q_i_0,
@@ -1732,16 +1734,6 @@ class ForwardKinematicsSolver:
                 "run_fk_solve: actuators_u must be provided to solve for velocities (i.e. if bodies_u is provided)."
             )
 
-        # Use default base state if not provided
-        if base_q is None:
-            base_q = self.base_q_default
-        if bodies_u is not None and base_u is None:
-            base_u = self.base_u_default
-
-        # Compute target actuator coordinates and corresponding transforms
-        self._eval_target_actuators_q(base_q, actuators_q, self.actuators_q_next)
-        self._eval_position_control_transformations(self.actuators_q_next, self.pos_control_transforms)
-
         # Reset iteration count and success/continuation flags
         self.newton_iteration.fill_(-1)  # The initial Newton convergence check will increment this to zero
         self.newton_success.zero_()
@@ -1757,6 +1749,16 @@ class ForwardKinematicsSolver:
                 self._reset_state(bodies_q, self.newton_mask)
             else:
                 self._reset_state_base_q(bodies_q, base_q, self.newton_mask)
+
+        # Use default base state if not provided
+        if base_q is None:
+            base_q = self.base_q_default
+        if bodies_u is not None and base_u is None:
+            base_u = self.base_u_default
+
+        # Compute target actuator coordinates and corresponding transforms
+        self._eval_target_actuators_q(base_q, actuators_q, self.actuators_q_next)
+        self._eval_position_control_transformations(self.actuators_q_next, self.pos_control_transforms)
 
         # Evaluate constraints, and initialize loop condition (might not even need to loop)
         self._eval_kinematic_constraints(bodies_q, self.pos_control_transforms, self.newton_mask, self.constraints)

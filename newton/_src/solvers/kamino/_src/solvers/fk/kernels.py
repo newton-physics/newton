@@ -129,8 +129,10 @@ def _reset_state_base_q(
     # Inputs
     base_joint_id: wp.array[wp.int32],
     base_q: wp.array[wp.transformf],
+    joints_bid_F: wp.array[wp.int32],
     joints_X: wp.array[wp.mat33f],
     joints_B_r_B: wp.array[wp.vec3f],
+    joints_F_r_F: wp.array[wp.vec3f],
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q_0: wp.array[wp.transformf],
@@ -145,8 +147,10 @@ def _reset_state_base_q(
     Inputs:
         base_joint_id: Base joint id per world (-1 = None)
         base_q: Base body pose per world, in base joint coordinates
+        joints_bid_F: Joint follower body id
         joints_X: Joint frame (local axes, valid both on base and follower)
         joints_B_r_B: Joint local position on base body
+        joints_F_r_F: Joint local position on follower body
         num_bodies: Num bodies per world
         first_body_id: First body id per world
         bodies_q_0: Reference body poses
@@ -166,20 +170,27 @@ def _reset_state_base_q(
 
         # Read memory
         base_q_wd = base_q[wd_id]
+        bid_F = joints_bid_F[base_jt_id]
         X = joints_X[base_jt_id]
-        x = joints_B_r_B[base_jt_id]
+        x_B = joints_B_r_B[base_jt_id]
+        x_F = joints_F_r_F[base_jt_id]
+        body_q_F_0 = bodies_q_0[bid_F]
 
-        # Compute transformation that maps the reference pose of the base body (follower of the base joint)
-        # to the pose corresponding by base_q. Note: we make use of the fact that initial body orientations
-        # are the identity (a more complex formula would needed otherwise)
+        # Compute pose of the base body (follower of the base joint) given current joint coordinates
+        # Note: the relative transform from base to follower can be written
+        # t_jt = X^T * R_B^T * (c_F + R_F * x_F - c_B - R_B * x_B)
+        # q_jt = X^T * R_B^T * R_F * X
+        # We invert these equations, using R_B = I and c_B = 0 (base body = world)
         t_jt = wp.transform_get_translation(base_q_wd)
         q_jt = wp.transform_get_rotation(base_q_wd)
         q_X = wp.quat_from_matrix(X)
-        q_tot = q_X * q_jt * wp.quat_inverse(q_X)
-        t_tot = x - wp.quat_rotate(q_tot, x) + wp.quat_rotate(q_X, t_jt)
-        transform_tot = wp.transformf(t_tot, q_tot)
+        q_F = q_X * q_jt * wp.quat_inverse(q_X)
+        c_F = wp.quat_rotate(q_X, t_jt) - wp.quat_rotate(q_F, x_F) + x_B
+        body_q_F = wp.transformf(c_F, q_F)
 
-        # Apply to body pose
+        # Compute the transform that was applied to the base body relative to the base pose,
+        # and apply that transform to all rigid bodies
+        transform_tot = wp.transform_multiply(body_q_F, wp.transform_inverse(body_q_F_0))
         bodies_q[rb_id_tot] = wp.transform_multiply(transform_tot, body_q_0)
 
 
