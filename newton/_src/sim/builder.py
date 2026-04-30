@@ -4383,7 +4383,7 @@ class ModelBuilder:
                 translation is the attachment point.
             child_xform: The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point.
-            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e9.
+            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
             stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
                 this is a dimensionless (Rayleigh-style) coefficient. If None,
                 defaults to 0.0.
@@ -4403,7 +4403,7 @@ class ModelBuilder:
 
         """
         # Linear DOF (stretch)
-        se_ke = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        se_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         se_kd = 0.0 if stretch_damping is None else stretch_damping
         ax_lin = ModelBuilder.JointDofConfig(target_ke=se_ke, target_kd=se_kd)
 
@@ -6584,16 +6584,12 @@ class ModelBuilder:
                 orientations are computed automatically to align +Z with each segment direction.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Stretch stiffness for the cable joints. For rods, this is treated as a
-                material-like axial/shear stiffness (commonly interpreted as EA)
-                with units [N] and is internally converted to an effective point stiffness [N/m] by dividing by
-                segment length. If None, defaults to 1.0e9.
+            stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
+                If None, defaults to 1.0e5.
             stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
-            bend_stiffness: Bend/twist stiffness for the cable joints. For rods, this is treated as a
-                material-like bending/twist stiffness (e.g., EI) with units [N*m^2] and is internally converted to
-                an effective per-joint stiffness [N*m] (torque per radian) by dividing by segment length. If None,
-                defaults to 0.0.
+            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m]
+                (torque per radian). If None, defaults to 0.0.
             bend_damping: Bend/twist damping for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
@@ -6618,11 +6614,9 @@ class ModelBuilder:
             ValueError: If the rod has fewer than 2 segments.
 
         Note:
-            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to a high
-              stiffness (1.0e9), which keeps neighboring capsules closely coupled (approximately inextensible).
-            - Internally, stretch and bend stiffnesses are pre-scaled by dividing by segment length so solver kernels
-              do not need per-segment length normalization.
-            - Damping values are passed through as provided (per joint) and are not length-normalized.
+            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
+              pass a larger value when neighboring capsules should remain nearly inextensible.
+            - Stretch, bend, and damping values are passed through as provided per joint.
             - Each segment is implemented as a capsule primitive. The segment's body transform is
               placed at the start point ``positions[i]`` with a local center-of-mass offset of
               ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
@@ -6632,8 +6626,8 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
 
-        # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
-        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
+        stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)
@@ -6718,19 +6712,15 @@ class ModelBuilder:
                 parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
                 child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
-                # Normalize stiffness by segment length, consistent with add_rod_graph().
-                stretch_ke_eff = stretch_stiffness / L_last
-                bend_ke_eff = bend_stiffness / L_last
-
                 loop_joint_label = f"{label}_cable_{len(link_joints) + 1}" if label else None
                 j_loop = self.add_joint_cable(
                     parent=last_body,
                     child=first_body,
                     parent_xform=parent_xform,
                     child_xform=child_xform,
-                    bend_stiffness=bend_ke_eff,
+                    bend_stiffness=bend_stiffness,
                     bend_damping=bend_damping,
-                    stretch_stiffness=stretch_ke_eff,
+                    stretch_stiffness=stretch_stiffness,
                     stretch_damping=stretch_damping,
                     label=loop_joint_label,
                     collision_filter_parent=True,
@@ -6785,11 +6775,11 @@ class ModelBuilder:
                 capsule body oriented so its local +Z points from node ``u`` to node ``v``.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Material-like axial stiffness (EA) [N], normalized by edge length
-                into an effective joint stiffness [N/m]. Defaults to 1.0e9.
+            stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
+                Defaults to 1.0e5.
             stretch_damping: Stretch damping (per joint). Defaults to 0.0.
-            bend_stiffness: Material-like bend/twist stiffness (EI) [N*m^2], normalized by edge
-                length into an effective joint stiffness [N*m]. Defaults to 0.0.
+            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m].
+                Defaults to 0.0.
             bend_damping: Bend/twist damping (per joint). Defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
@@ -6810,8 +6800,8 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
 
-        # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
-        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
+        stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)
@@ -6833,7 +6823,7 @@ class ModelBuilder:
                 f"got {len(quaternions)} quaternions"
             )
 
-        # Guard against near-zero lengths: edge length is used to normalize stiffness (EA/L, EI/L).
+        # Guard against near-zero lengths: edge length is used for capsule geometry and joint anchors.
         min_segment_length = 1.0e-9
 
         # Coerce all input node positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
@@ -6963,14 +6953,6 @@ class ModelBuilder:
 
                     child_xform = _edge_anchor_xform(child_edge, node_idx)
 
-                    # Normalize stiffness by segment length, consistent with add_rod().
-                    # Use a symmetric length so stiffness is traversal/order invariant.
-                    L_parent = edge_len[parent_edge]
-                    L_child = edge_len[child_edge]
-                    L_sym = 0.5 * (L_parent + L_child)
-                    stretch_ke_eff = stretch_stiffness / L_sym
-                    bend_ke_eff = bend_stiffness / L_sym
-
                     joint_counter += 1
                     joint_label = f"{label}_cable_{joint_counter}" if label else None
 
@@ -6979,9 +6961,9 @@ class ModelBuilder:
                         child=child_body,
                         parent_xform=parent_xform,
                         child_xform=child_xform,
-                        bend_stiffness=bend_ke_eff,
+                        bend_stiffness=bend_stiffness,
                         bend_damping=bend_damping,
-                        stretch_stiffness=stretch_ke_eff,
+                        stretch_stiffness=stretch_stiffness,
                         stretch_damping=stretch_damping,
                         label=joint_label,
                         collision_filter_parent=True,
@@ -7026,14 +7008,6 @@ class ModelBuilder:
                             parent_xform = _edge_anchor_xform(parent_edge, shared_node)
                             child_xform = _edge_anchor_xform(child_edge, shared_node)
 
-                            # Normalize stiffness by segment length, consistent with add_rod().
-                            # Use a symmetric length so stiffness is traversal/order invariant.
-                            L_parent = edge_len[parent_edge]
-                            L_child = edge_len[child_edge]
-                            L_sym = 0.5 * (L_parent + L_child)
-                            stretch_ke_eff = stretch_stiffness / L_sym
-                            bend_ke_eff = bend_stiffness / L_sym
-
                             joint_counter += 1
                             joint_label = f"{label}_cable_{joint_counter}" if label else None
 
@@ -7042,9 +7016,9 @@ class ModelBuilder:
                                 child=child_body,
                                 parent_xform=parent_xform,
                                 child_xform=child_xform,
-                                bend_stiffness=bend_ke_eff,
+                                bend_stiffness=bend_stiffness,
                                 bend_damping=bend_damping,
-                                stretch_stiffness=stretch_ke_eff,
+                                stretch_stiffness=stretch_stiffness,
                                 stretch_damping=stretch_damping,
                                 label=joint_label,
                                 collision_filter_parent=True,

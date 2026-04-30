@@ -140,6 +140,19 @@ in a serial manner with ``--serial-fallback``.
 
 Pass ``--help`` to either run method below to see all available flags.
 
+.. note::
+
+    If a test run aborts with ``concurrent.futures.process.BrokenProcessPool``,
+    a worker process crashed (out-of-memory, segfault, or similar). The runner
+    parallelizes across ``min(cpu_count, 8)`` workers by default; on
+    memory-constrained machines this can saturate RAM and kill a worker.
+    Retry with fewer workers via ``--jobs`` (or ``--serial-fallback`` for a
+    single process):
+
+    .. code-block:: console
+
+        python -m newton.tests --jobs 4
+
 .. tab-set::
     :sync-group: env
 

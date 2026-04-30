@@ -10,6 +10,9 @@
 #
 ###########################################################################
 
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import trimesh
 import warp as wp
@@ -36,6 +39,9 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
 )
 MESH_SDF_MAX_RESOLUTION = 512
 MESH_SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
+# Persist cooked SDFs across runs so the (slow) cook only happens once.
+# Entries are content-addressed, so leftovers from older runs are harmless.
+MESH_SDF_CACHE_DIR = Path(tempfile.gettempdir()) / "newton_sdf_cache"
 
 
 def add_mesh_object(
@@ -78,6 +84,7 @@ def load_mesh_with_sdf(
         max_resolution=MESH_SDF_MAX_RESOLUTION,
         narrow_band_range=MESH_SDF_NARROW_BAND_RANGE,
         margin=shape_cfg.gap if shape_cfg and shape_cfg.gap is not None else 0.05,
+        cache_dir=MESH_SDF_CACHE_DIR,
     )
     return mesh, center_vec
 
