@@ -7,12 +7,20 @@ import numpy as np
 import warp as wp
 
 from newton._src.viewer.gl.image_logger import (
+    _atlas_layout,
     _convert_to_packed_rgba_numpy,
     _pack_rgba_warp,
     _to_canonical_4d_numpy,
     _validate,
     compute_grid_layout,
 )
+
+
+def _pack(src: np.ndarray) -> np.ndarray:
+    """Pack via the NumPy reference using the production atlas layout."""
+    _, n, _, _, _ = _to_canonical_4d_numpy(src)
+    cols, _ = _atlas_layout(n)
+    return _convert_to_packed_rgba_numpy(src, cols)
 
 
 class TestComputeGridLayout(unittest.TestCase):
@@ -152,11 +160,39 @@ class TestValidate(unittest.TestCase):
         self.assertEqual(kind, (1, 8, 8, 1))
 
 
+class TestAtlasLayout(unittest.TestCase):
+    """``_atlas_layout`` picks square-ish ``(cols, rows)`` keeping cols >= rows."""
+
+    def test_zero(self):
+        self.assertEqual(_atlas_layout(0), (0, 0))
+
+    def test_one(self):
+        self.assertEqual(_atlas_layout(1), (1, 1))
+
+    def test_perfect_square(self):
+        self.assertEqual(_atlas_layout(9), (3, 3))
+        self.assertEqual(_atlas_layout(16), (4, 4))
+
+    def test_non_square_packs_remainder(self):
+        # 7 -> ceil(sqrt(7))=3 cols, 3 rows (last row has 1 tile, 2 empty slots).
+        self.assertEqual(_atlas_layout(7), (3, 3))
+        # 5 -> 3 cols, 2 rows.
+        self.assertEqual(_atlas_layout(5), (3, 2))
+
+    def test_avoids_strip_for_moderate_batches(self):
+        # Eric's case: 65 tiles must NOT pack as a (1, 65) strip, which would
+        # blow past GL_MAX_TEXTURE_SIZE for moderate tile sizes.
+        cols, rows = _atlas_layout(65)
+        self.assertGreater(cols, 1)
+        self.assertGreater(rows, 1)
+        self.assertGreaterEqual(cols * rows, 65)
+
+
 class TestConvertToPackedRgbaNumpy(unittest.TestCase):
     def test_grayscale_2d_uint8_replicates_to_rgb_full_alpha(self):
         src = np.array([[10, 20], [30, 40]], dtype=np.uint8)  # (H=2, W=2)
-        out = _convert_to_packed_rgba_numpy(src)
-        # Canonical shape (1,2,2,1) -> output (N*H=2, W=2, 4)
+        out = _pack(src)
+        # Canonical shape (1,2,2,1), N=1 -> 1x1 atlas: (H=2, W=2, 4).
         self.assertEqual(out.shape, (2, 2, 4))
         self.assertEqual(out.dtype, np.uint8)
         np.testing.assert_array_equal(out[..., 0], [[10, 20], [30, 40]])
@@ -169,7 +205,7 @@ class TestConvertToPackedRgbaNumpy(unittest.TestCase):
         src[..., 0] = 10
         src[..., 1] = 20
         src[..., 2] = 30
-        out = _convert_to_packed_rgba_numpy(src)
+        out = _pack(src)
         self.assertEqual(out.shape, (2, 2, 4))
         np.testing.assert_array_equal(out[..., 0], np.full((2, 2), 10, dtype=np.uint8))
         np.testing.assert_array_equal(out[..., 3], np.full((2, 2), 255, dtype=np.uint8))
@@ -177,24 +213,30 @@ class TestConvertToPackedRgbaNumpy(unittest.TestCase):
     def test_rgba_3d_uint8_preserves_alpha(self):
         src = np.zeros((2, 2, 4), dtype=np.uint8)
         src[..., 3] = 77
-        out = _convert_to_packed_rgba_numpy(src)
+        out = _pack(src)
         np.testing.assert_array_equal(out[..., 3], np.full((2, 2), 77, dtype=np.uint8))
 
-    def test_batched_4d_stacks_vertically(self):
+    def test_batched_4d_packs_into_atlas(self):
         # 3D (3, 2, 2) -> (N=3, H=2, W=2) grayscale batch (last dim 2 not in {1,3,4}).
+        # N=3 -> atlas cols=2, rows=2 -> (4, 4, 4); slot (1,1) is empty (zeroed).
         src = np.zeros((3, 2, 2), dtype=np.uint8)
         src[0] = 10
         src[1] = 20
         src[2] = 30
-        out = _convert_to_packed_rgba_numpy(src)
-        self.assertEqual(out.shape, (6, 2, 4))
-        np.testing.assert_array_equal(out[0:2, :, 0], np.full((2, 2), 10, dtype=np.uint8))
-        np.testing.assert_array_equal(out[2:4, :, 0], np.full((2, 2), 20, dtype=np.uint8))
-        np.testing.assert_array_equal(out[4:6, :, 0], np.full((2, 2), 30, dtype=np.uint8))
+        out = _pack(src)
+        self.assertEqual(out.shape, (4, 4, 4))
+        # Tile 0 -> (row 0, col 0)
+        np.testing.assert_array_equal(out[0:2, 0:2, 0], np.full((2, 2), 10, dtype=np.uint8))
+        # Tile 1 -> (row 0, col 1)
+        np.testing.assert_array_equal(out[0:2, 2:4, 0], np.full((2, 2), 20, dtype=np.uint8))
+        # Tile 2 -> (row 1, col 0)
+        np.testing.assert_array_equal(out[2:4, 0:2, 0], np.full((2, 2), 30, dtype=np.uint8))
+        # Empty slot -> zeros (RGBA all zero, including alpha).
+        np.testing.assert_array_equal(out[2:4, 2:4], np.zeros((2, 2, 4), dtype=np.uint8))
 
     def test_float32_clips_and_scales(self):
         src = np.array([[-0.5, 0.0, 0.5, 1.5]], dtype=np.float32).reshape(1, 4)
-        out = _convert_to_packed_rgba_numpy(src)
+        out = _pack(src)
         expected_luma = np.array([0, 0, 127, 255], dtype=np.uint8).reshape(1, 4)
         np.testing.assert_array_equal(out[..., 0], expected_luma)
         np.testing.assert_array_equal(out[..., 3], np.full((1, 4), 255, dtype=np.uint8))
@@ -202,7 +244,7 @@ class TestConvertToPackedRgbaNumpy(unittest.TestCase):
     def test_float32_rgba_preserves_alpha(self):
         src = np.zeros((1, 1, 4), dtype=np.float32)
         src[0, 0] = [0.0, 0.5, 1.0, 0.25]
-        out = _convert_to_packed_rgba_numpy(src)
+        out = _pack(src)
         self.assertIn(int(out[0, 0, 3]), (63, 64))
 
 
@@ -212,38 +254,40 @@ class TestPackRgbaWarp(unittest.TestCase):
     def _run(self, src_np: np.ndarray) -> np.ndarray:
         device = wp.get_preferred_device()
         arr_np, n, h, w, c = _to_canonical_4d_numpy(src_np)
+        cols, rows = _atlas_layout(n)
         dtype = wp.uint8 if src_np.dtype == np.uint8 else wp.float32
         src_4d = wp.from_numpy(arr_np, dtype=dtype, device=device)
-        out_wp = wp.zeros((n * h, w, 4), dtype=wp.uint8, device=device)
-        _pack_rgba_warp(src_4d, c, out_wp)
+        out_wp = wp.zeros((rows * h, cols * w, 4), dtype=wp.uint8, device=device)
+        _pack_rgba_warp(src_4d, c, cols, out_wp)
         return out_wp.numpy()
 
     def test_uint8_grayscale_matches_numpy(self):
         src = (np.arange(16, dtype=np.uint8)).reshape(4, 4)
         got = self._run(src)
-        want = _convert_to_packed_rgba_numpy(src)
+        want = _pack(src)
         np.testing.assert_array_equal(got, want)
 
     def test_uint8_rgb_matches_numpy(self):
         src = np.random.default_rng(0).integers(0, 256, size=(3, 4, 3), dtype=np.uint8)
         got = self._run(src)
-        want = _convert_to_packed_rgba_numpy(src)
+        want = _pack(src)
         np.testing.assert_array_equal(got, want)
 
     def test_uint8_rgba_batched_matches_numpy(self):
         src = np.random.default_rng(1).integers(0, 256, size=(5, 4, 4, 4), dtype=np.uint8)
         got = self._run(src)
-        want = _convert_to_packed_rgba_numpy(src)
+        want = _pack(src)
         np.testing.assert_array_equal(got, want)
 
     def test_float32_grayscale_matches_numpy_within_1(self):
         src = np.random.default_rng(2).random((4, 4), dtype=np.float32)
         got = self._run(src)
-        want = _convert_to_packed_rgba_numpy(src)
+        want = _pack(src)
         self.assertTrue(np.all(np.abs(got.astype(int) - want.astype(int)) <= 1))
 
     def test_float32_rgba_batched_clips_out_of_range(self):
-        src = np.full((2, 2, 2, 4), 1.5, dtype=np.float32)
+        # All 4 tiles fully populate the 2x2 atlas, so every pixel is touched.
+        src = np.full((4, 2, 2, 4), 1.5, dtype=np.float32)
         got = self._run(src)
         self.assertTrue(np.all(got == 255))
 

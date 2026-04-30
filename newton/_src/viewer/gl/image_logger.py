@@ -30,6 +30,20 @@ _INITIAL_WINDOW_PAD_X: int = 20
 _INITIAL_WINDOW_PAD_Y: int = 40
 
 
+def _atlas_layout(n: int) -> tuple[int, int]:
+    """Pick a square-ish ``(cols, rows)`` for an N-tile texture atlas.
+
+    Packing tiles as a 2D atlas instead of a vertical strip keeps both
+    texture dimensions close to ``sqrt(N) * tile_dim``, which avoids
+    blowing past ``GL_MAX_TEXTURE_SIZE`` for moderate batch counts.
+    """
+    if n <= 0:
+        return 0, 0
+    cols = max(1, math.ceil(math.sqrt(n)))
+    rows = math.ceil(n / cols)
+    return cols, rows
+
+
 def compute_grid_layout(
     n: int,
     tile_aspect: float,
@@ -169,62 +183,73 @@ def _to_canonical_4d_wp(image: wp.array[Any], n: int, h: int, w: int, c: int) ->
 def _pack_rgba_u8_kernel(
     src: wp.array4d[wp.uint8],
     c_count: int,
+    atlas_cols: int,
     out: wp.array3d[wp.uint8],
 ):
     n, h, w = wp.tid()
     H = src.shape[1]
-    dst_row = n * H + h
+    W = src.shape[2]
+    dst_row = (n // atlas_cols) * H + h
+    dst_col = (n % atlas_cols) * W + w
     if c_count == 1:
         v = src[n, h, w, 0]
-        out[dst_row, w, 0] = v
-        out[dst_row, w, 1] = v
-        out[dst_row, w, 2] = v
-        out[dst_row, w, 3] = wp.uint8(255)
+        out[dst_row, dst_col, 0] = v
+        out[dst_row, dst_col, 1] = v
+        out[dst_row, dst_col, 2] = v
+        out[dst_row, dst_col, 3] = wp.uint8(255)
     elif c_count == 3:
-        out[dst_row, w, 0] = src[n, h, w, 0]
-        out[dst_row, w, 1] = src[n, h, w, 1]
-        out[dst_row, w, 2] = src[n, h, w, 2]
-        out[dst_row, w, 3] = wp.uint8(255)
+        out[dst_row, dst_col, 0] = src[n, h, w, 0]
+        out[dst_row, dst_col, 1] = src[n, h, w, 1]
+        out[dst_row, dst_col, 2] = src[n, h, w, 2]
+        out[dst_row, dst_col, 3] = wp.uint8(255)
     else:  # c_count == 4
-        out[dst_row, w, 0] = src[n, h, w, 0]
-        out[dst_row, w, 1] = src[n, h, w, 1]
-        out[dst_row, w, 2] = src[n, h, w, 2]
-        out[dst_row, w, 3] = src[n, h, w, 3]
+        out[dst_row, dst_col, 0] = src[n, h, w, 0]
+        out[dst_row, dst_col, 1] = src[n, h, w, 1]
+        out[dst_row, dst_col, 2] = src[n, h, w, 2]
+        out[dst_row, dst_col, 3] = src[n, h, w, 3]
 
 
 @wp.kernel
 def _pack_rgba_f32_kernel(
     src: wp.array4d[wp.float32],
     c_count: int,
+    atlas_cols: int,
     out: wp.array3d[wp.uint8],
 ):
     # Truncation (matches CPU reference). Do NOT use +0.5 rounding.
     n, h, w = wp.tid()
     H = src.shape[1]
-    dst_row = n * H + h
+    W = src.shape[2]
+    dst_row = (n // atlas_cols) * H + h
+    dst_col = (n % atlas_cols) * W + w
     if c_count == 1:
         v = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 0], 0.0, 1.0) * 255.0))
-        out[dst_row, w, 0] = v
-        out[dst_row, w, 1] = v
-        out[dst_row, w, 2] = v
-        out[dst_row, w, 3] = wp.uint8(255)
+        out[dst_row, dst_col, 0] = v
+        out[dst_row, dst_col, 1] = v
+        out[dst_row, dst_col, 2] = v
+        out[dst_row, dst_col, 3] = wp.uint8(255)
     elif c_count == 3:
-        out[dst_row, w, 0] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 0], 0.0, 1.0) * 255.0))
-        out[dst_row, w, 1] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 1], 0.0, 1.0) * 255.0))
-        out[dst_row, w, 2] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 2], 0.0, 1.0) * 255.0))
-        out[dst_row, w, 3] = wp.uint8(255)
+        out[dst_row, dst_col, 0] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 0], 0.0, 1.0) * 255.0))
+        out[dst_row, dst_col, 1] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 1], 0.0, 1.0) * 255.0))
+        out[dst_row, dst_col, 2] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 2], 0.0, 1.0) * 255.0))
+        out[dst_row, dst_col, 3] = wp.uint8(255)
     else:  # c_count == 4
-        out[dst_row, w, 0] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 0], 0.0, 1.0) * 255.0))
-        out[dst_row, w, 1] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 1], 0.0, 1.0) * 255.0))
-        out[dst_row, w, 2] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 2], 0.0, 1.0) * 255.0))
-        out[dst_row, w, 3] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 3], 0.0, 1.0) * 255.0))
+        out[dst_row, dst_col, 0] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 0], 0.0, 1.0) * 255.0))
+        out[dst_row, dst_col, 1] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 1], 0.0, 1.0) * 255.0))
+        out[dst_row, dst_col, 2] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 2], 0.0, 1.0) * 255.0))
+        out[dst_row, dst_col, 3] = wp.uint8(wp.int32(wp.clamp(src[n, h, w, 3], 0.0, 1.0) * 255.0))
 
 
-def _pack_rgba_warp(src: wp.array[Any], c_count: int, out: wp.array[Any]) -> None:
+def _pack_rgba_warp(src: wp.array[Any], c_count: int, atlas_cols: int, out: wp.array[Any]) -> None:
     """Dispatch to the correct pack kernel for *src*'s dtype.
 
     *src* must be ``wp.array4d`` of ``wp.uint8`` or ``wp.float32``.
-    *out* must be ``wp.array3d[wp.uint8]`` with shape ``(N*H, W, 4)``.
+    *out* must be ``wp.array3d[wp.uint8]`` with shape
+    ``(rows*H, cols*W, 4)`` where ``cols == atlas_cols`` and
+    ``rows == ceil(N / cols)``. Tile ``i`` lands at row-major slot
+    ``(i // cols, i % cols)``; trailing slots in the last row are
+    untouched, so callers should clear ``out`` before launch if those
+    pixels matter (the texture realloc path does this implicitly).
     """
     n, h, w, _ = src.shape
     if src.dtype == wp.uint8:
@@ -233,34 +258,48 @@ def _pack_rgba_warp(src: wp.array[Any], c_count: int, out: wp.array[Any]) -> Non
         kernel = _pack_rgba_f32_kernel
     else:
         raise TypeError(f"_pack_rgba_warp: unsupported dtype {src.dtype}")
-    wp.launch(kernel, dim=(n, h, w), inputs=[src, int(c_count)], outputs=[out], device=src.device)
+    wp.launch(
+        kernel,
+        dim=(n, h, w),
+        inputs=[src, int(c_count), int(atlas_cols)],
+        outputs=[out],
+        device=src.device,
+    )
 
 
-def _convert_to_packed_rgba_numpy(image: np.ndarray) -> np.ndarray:
-    """Convert any validated image to packed ``(N*H, W, 4) uint8``.
+def _convert_to_packed_rgba_numpy(image: np.ndarray, atlas_cols: int) -> np.ndarray:
+    """Convert any validated image to a packed atlas of ``(rows*H, cols*W, 4) uint8``.
 
     Grayscale replicates luma to RGB, alpha defaults to 255, RGB expands to
-    RGBA with A=255, float32 is clipped to [0,1] and scaled by 255.
+    RGBA with A=255, float32 is clipped to [0,1] and scaled by 255. Tile
+    ``i`` lands at row-major slot ``(i // atlas_cols, i % atlas_cols)``;
+    trailing unused slots in the last row are zero-filled.
     """
     arr, n, h, w, c = _to_canonical_4d_numpy(image)
+    cols = max(1, int(atlas_cols))
+    rows = math.ceil(n / cols)
 
     if arr.dtype == np.float32:
         arr = np.clip(arr, 0.0, 1.0)
         arr = (arr * 255.0).astype(np.uint8)  # truncate toward zero
 
-    out = np.empty((n * h, w, 4), dtype=np.uint8)
-    packed_source = arr.reshape(n * h, w, c)
-
+    # Per-tile RGBA expansion first, then scatter into the atlas grid.
+    tiles = np.empty((n, h, w, 4), dtype=np.uint8)
     if c == 1:
-        out[..., 0] = packed_source[..., 0]
-        out[..., 1] = packed_source[..., 0]
-        out[..., 2] = packed_source[..., 0]
-        out[..., 3] = 255
+        tiles[..., 0] = arr[..., 0]
+        tiles[..., 1] = arr[..., 0]
+        tiles[..., 2] = arr[..., 0]
+        tiles[..., 3] = 255
     elif c == 3:
-        out[..., :3] = packed_source
-        out[..., 3] = 255
+        tiles[..., :3] = arr
+        tiles[..., 3] = 255
     else:  # c == 4
-        out[...] = packed_source
+        tiles[...] = arr
+
+    out = np.zeros((rows * h, cols * w, 4), dtype=np.uint8)
+    for i in range(n):
+        r, ccol = divmod(i, cols)
+        out[r * h : (r + 1) * h, ccol * w : (ccol + 1) * w] = tiles[i]
     return out
 
 
@@ -278,6 +317,10 @@ class LoggedImage:
     h: int = 0
     w: int = 0
     c: int = 0
+    # Atlas grid the texture is packed as: cols*W = tex_w, rows*H = tex_h.
+    # ``atlas_cols * atlas_rows`` may exceed ``n``; trailing slots are zero.
+    atlas_cols: int = 0
+    atlas_rows: int = 0
     tile_aspect: float = 1.0
     window_initialized: bool = False
 
@@ -329,18 +372,22 @@ class ImageLogger:
 
         needs_realloc = (entry.n, entry.h, entry.w, entry.c) != (n, h, w, c)
 
-        tex_w = w
-        tex_h = n * h
+        # Pack as a square-ish atlas instead of a single (1, N) strip so we
+        # don't blow past GL_MAX_TEXTURE_SIZE for moderate batches.
+        atlas_cols, atlas_rows = _atlas_layout(n)
+        tex_w = atlas_cols * w
+        tex_h = atlas_rows * h
 
         if self._can_use_gpu_path(image):
             src_4d = _to_canonical_4d_wp(image, n, h, w, c)
-            self._upload_gpu(entry, src_4d, n, h, w, c, tex_w, tex_h, needs_realloc)
+            self._upload_gpu(entry, src_4d, n, h, w, c, atlas_cols, tex_w, tex_h, needs_realloc)
         else:
             self._maybe_warn_cross_device(name, image)
-            self._upload_cpu(entry, image, n, h, w, c, tex_w, tex_h, needs_realloc)
+            self._upload_cpu(entry, image, n, h, w, c, atlas_cols, tex_w, tex_h, needs_realloc)
 
         # Only commit metadata after upload succeeds.
         entry.n, entry.h, entry.w, entry.c = n, h, w, c
+        entry.atlas_cols, entry.atlas_rows = atlas_cols, atlas_rows
         entry.tile_aspect = h / w
 
     def draw(self) -> None:
@@ -400,11 +447,17 @@ class ImageLogger:
                     spacing_x=_TILE_SPACING_PX,
                     spacing_y=_TILE_SPACING_PX,
                 )
+                # UVs sample tile ``i`` from atlas slot
+                # ``(i // atlas_cols, i % atlas_cols)``. The display grid
+                # ``cols`` (above) is independent of ``atlas_cols``.
+                u_step = entry.w / float(entry.tex_w) if entry.tex_w > 0 else 0.0
+                v_step = entry.h / float(entry.tex_h) if entry.tex_h > 0 else 0.0
                 for i in range(entry.n):
                     if i > 0 and (i % cols) != 0:
                         imgui.same_line()
-                    uv0 = imgui.ImVec2(0.0, i / entry.n)
-                    uv1 = imgui.ImVec2(1.0, (i + 1) / entry.n)
+                    a_row, a_col = divmod(i, entry.atlas_cols)
+                    uv0 = imgui.ImVec2(a_col * u_step, a_row * v_step)
+                    uv1 = imgui.ImVec2((a_col + 1) * u_step, (a_row + 1) * v_step)
                     imgui.image(
                         imgui.ImTextureRef(entry.tex_id),
                         imgui.ImVec2(cell_w, cell_h),
@@ -561,6 +614,7 @@ class ImageLogger:
         h: int,
         w: int,
         c: int,
+        atlas_cols: int,
         tex_w: int,
         tex_h: int,
         realloc: bool,
@@ -568,6 +622,12 @@ class ImageLogger:
         from pyglet import gl
 
         byte_size = tex_w * tex_h * 4
+        # ``glTexImage2D(..., None)`` on realloc clears the texture, but the
+        # PBO (and thus the kernel's output buffer) carries stale bytes
+        # across frames. Trailing atlas slots aren't written by the pack
+        # kernel, so any tile-shape change must zero the buffer to avoid
+        # showing leftover pixels in the unused last-row slots.
+        atlas_changed = realloc or entry.tex_w != tex_w or entry.tex_h != tex_h
         self._ensure_texture(entry, tex_w, tex_h, realloc)
         self._ensure_pbo(entry, byte_size, realloc)
 
@@ -575,8 +635,10 @@ class ImageLogger:
             raise RuntimeError(f"log_image('{entry.name}'): PBO-CUDA registration failed to initialize")
         mapped = None
         try:
-            mapped = entry.wp_pbo.map(dtype=wp.uint8, shape=(n * h, w, 4))
-            _pack_rgba_warp(image, c, mapped)
+            mapped = entry.wp_pbo.map(dtype=wp.uint8, shape=(tex_h, tex_w, 4))
+            if atlas_changed:
+                mapped.zero_()
+            _pack_rgba_warp(image, c, atlas_cols, mapped)
         finally:
             if mapped is not None:
                 entry.wp_pbo.unmap()
@@ -604,6 +666,7 @@ class ImageLogger:
         h: int,
         w: int,
         c: int,
+        atlas_cols: int,
         tex_w: int,
         tex_h: int,
         realloc: bool,
@@ -615,7 +678,7 @@ class ImageLogger:
             host = image.numpy()
         else:
             host = image
-        packed = _convert_to_packed_rgba_numpy(host)  # (tex_h, tex_w, 4) uint8
+        packed = _convert_to_packed_rgba_numpy(host, atlas_cols)  # (tex_h, tex_w, 4) uint8
         gl.glBindTexture(gl.GL_TEXTURE_2D, entry.tex_id)
         gl.glTexSubImage2D(
             gl.GL_TEXTURE_2D,
