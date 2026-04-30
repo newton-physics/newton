@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from newton._src.usd.utils import _resolve_asset_path
+
 from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, ControllerPD, ControllerPID
 from .delay import Delay
@@ -69,6 +71,8 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
         )
     schema_props = set(defn.GetPropertyNames())
 
+    from pxr import Sdf
+
     kwargs: dict[str, Any] = {}
     for prop in prim.GetAuthoredPropertiesInNamespace("newton"):
         if prop.GetName() not in schema_props:
@@ -76,7 +80,10 @@ def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
         if not prop.IsValid() or not prop.HasAuthoredValue():
             continue
         camel = prop.GetName().removeprefix("newton:")
-        kwargs[_camel_to_snake(camel)] = prop.Get()
+        val = prop.Get()
+        if isinstance(val, Sdf.AssetPath):
+            val = _resolve_asset_path(val, prim, prop)
+        kwargs[_camel_to_snake(camel)] = val
     return kwargs
 
 

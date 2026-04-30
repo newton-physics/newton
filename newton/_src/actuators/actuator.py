@@ -84,6 +84,7 @@ class Actuator:
         delay: Delay | None = None,
         clamping: list[Clamping] | None = None,
         pos_indices: wp.array[wp.uint32] | None = None,
+        target_pos_indices: wp.array[wp.uint32] | None = None,
         effort_indices: wp.array[wp.uint32] | None = None,
         state_pos_attr: str = "joint_q",
         state_vel_attr: str = "joint_qd",
@@ -102,10 +103,13 @@ class Actuator:
             controller: Controller that computes raw effort.
             delay: Optional Delay instance for input delay.
             clamping: List of Clamping objects (post-controller effort bounds).
-            pos_indices: DOF indices into position-shaped arrays (positions,
-                position targets). Defaults to *indices*. Differs from
+            pos_indices: Indices into coordinate-shaped arrays (positions =
+                ``state.joint_q``). Defaults to *indices*. Differs from
                 *indices* when position and velocity arrays have different
                 layouts (e.g. floating-base or ball-joint articulations).
+            target_pos_indices: Indices into ``control.joint_target_pos``
+                (DOF-shaped). Defaults to *indices*. Typically equal to
+                *indices* since ``joint_target_pos`` uses DOF layout.
             effort_indices: DOF indices into effort output arrays. Defaults to
                 *indices*. Differs from *indices* for coupled transmissions
                 or tendon-driven joints.
@@ -122,9 +126,14 @@ class Actuator:
         """
         self.indices = indices
         self.pos_indices = pos_indices if pos_indices is not None else indices
+        self.target_pos_indices = target_pos_indices if target_pos_indices is not None else indices
         self.effort_indices = effort_indices if effort_indices is not None else indices
         if self.pos_indices.shape != indices.shape:
             raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")
+        if self.target_pos_indices.shape != indices.shape:
+            raise ValueError(
+                f"target_pos_indices shape {self.target_pos_indices.shape} must match indices shape {indices.shape}"
+            )
         if self.effort_indices.shape != indices.shape:
             raise ValueError(
                 f"effort_indices shape {self.effort_indices.shape} must match indices shape {indices.shape}"
@@ -224,7 +233,7 @@ class Actuator:
         target_pos = orig_target_pos
         target_vel = orig_target_vel
         feedforward = orig_feedforward
-        target_pos_indices = self.pos_indices
+        target_pos_indices = self.target_pos_indices
         target_vel_indices = self.indices
 
         # --- 1. Delay read (from current_state) ---
@@ -233,7 +242,7 @@ class Actuator:
                 orig_target_pos,
                 orig_target_vel,
                 orig_feedforward,
-                self.pos_indices,
+                self.target_pos_indices,
                 self.indices,
                 current_act_state.delay_state,
             )
@@ -303,7 +312,7 @@ class Actuator:
                 orig_target_pos,
                 orig_target_vel,
                 orig_feedforward,
-                self.pos_indices,
+                self.target_pos_indices,
                 self.indices,
                 current_act_state.delay_state,
                 next_act_state.delay_state,

@@ -329,7 +329,9 @@ def test_kinematic_free_base_prescribed_motion(
             joint_qd[qd_start : qd_start + 6] = np.array([vx, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
             state_0.joint_q.assign(joint_q)
             state_0.joint_qd.assign(joint_qd)
-            newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+            newton.eval_fk(
+                model, state_0.joint_q, state_0.joint_qd, state_0, body_flag_filter=newton.BodyFlags.KINEMATIC
+            )
 
             state_0.clear_forces()
             if apply_force:

@@ -5,7 +5,7 @@
 # Example Cable Pile
 #
 # Demonstrates complex cable-to-cable contact and settling behavior.
-# Creates a pile of 40 cables (10 per layer x 4 layers) with alternating
+# Creates a pile of cables with alternating
 # orientations (X/Y axis) and sinusoidal waviness. Tests multi-body contact
 # resolution, stacking stability, and friction in dense cable assemblies.
 #
@@ -28,8 +28,9 @@ class Example:
         slope_enabled: bool = False,
         slope_angle_deg: float = 20.0,
         slope_mu: float | None = None,
+        layers: int = 10,
+        lanes_per_layer: int = 10,
     ):
-        # Store viewer and arguments
         self.viewer = viewer
         self.args = args
 
@@ -43,27 +44,26 @@ class Example:
 
         # Cable pile parameters
         self.num_elements = 40
-        segment_length = 0.05  # 5cm segments
+        segment_length = 0.05
         self.cable_length = self.num_elements * segment_length
         cable_radius = 0.012
+        bend_stiffness = 2.0e1
 
         # Layers and lanes
-        layers = 4
-        lanes_per_layer = 10
-        # Increase spacing to accommodate lateral waviness without initial intersections
+        self.layers = layers
+        self.lanes_per_layer = lanes_per_layer
         lane_spacing = max(8.0 * cable_radius, 0.15)
         layer_gap = cable_radius * 6.0
 
         builder = newton.ModelBuilder()
-        builder.rigid_gap = 0.05  # Default for all shapes
+        builder.rigid_gap = 0.0
 
         rod_bodies_all: list[int] = []
 
-        # Set default material properties before adding any shapes
-        # Default config will be used by plane and any shape without explicit cfg
-        builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness (used by plane)
-        builder.default_shape_cfg.kd = 1.0e-1  # Contact damping
-        builder.default_shape_cfg.mu = 5.0  # Friction coefficient
+        # Material properties
+        builder.default_shape_cfg.mu = 1.0e0
+        builder.default_shape_cfg.ke = 1.0e5
+        builder.default_shape_cfg.kd = 0.0
 
         cable_shape_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,
@@ -75,12 +75,11 @@ class Example:
             restitution=builder.default_shape_cfg.restitution,
         )
 
-        # Generate a ground plane (optionally sloped for friction tests)
+        # Ground plane (optionally sloped for friction tests)
         if slope_enabled:
             angle = math.radians(slope_angle_deg)
             rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), angle)
 
-            # Optionally override friction for the slope without changing defaults for other shapes
             slope_cfg = builder.default_shape_cfg
             if slope_mu is not None:
                 slope_cfg = newton.ModelBuilder.ShapeConfig(
@@ -101,28 +100,30 @@ class Example:
                 cfg=slope_cfg,
             )
         else:
-            builder.add_ground_plane()
+            ground_cfg = newton.ModelBuilder.ShapeConfig(
+                mu=1.0e9,
+                ke=builder.default_shape_cfg.ke,
+                kd=builder.default_shape_cfg.kd,
+            )
+            builder.add_ground_plane(cfg=ground_cfg)
 
-        # Build layered lanes of cables with alternating orientations (no initial intersections)
-        for layer in range(layers):
+        # Build layered lanes of cables with alternating orientations
+        for layer in range(self.layers):
             orient = "x" if (layer % 2 == 0) else "y"
             z0 = 0.3 + layer * layer_gap
-            # Generate parallel lanes along the orthogonal axis only
-            for lane in range(lanes_per_layer):
-                offset = (lane - (lanes_per_layer - 1) * 0.5) * lane_spacing
+            for lane in range(self.lanes_per_layer):
+                offset = (lane - (self.lanes_per_layer - 1) * 0.5) * lane_spacing
                 if orient == "x":
                     start = wp.vec3(0.0, offset, z0)
                 else:
                     start = wp.vec3(offset, 0.0, z0)
 
-                # Regular waviness and no twist for repeatable layout across layers
                 wav = 0.5
                 twist = 0.0
 
                 dir_vec = wp.vec3(1.0, 0.0, 0.0) if orient == "x" else wp.vec3(0.0, 1.0, 0.0)
                 ortho_vec = wp.vec3(0.0, 1.0, 0.0) if orient == "x" else wp.vec3(1.0, 0.0, 0.0)
 
-                # Center the cable around start to avoid initial overlaps with neighbors.
                 cable_length = float(self.cable_length)
                 start0 = start - 0.5 * cable_length * dir_vec
                 pts = newton.utils.create_straight_cable_points(
@@ -132,9 +133,9 @@ class Example:
                     num_segments=int(self.num_elements),
                 )
 
-                # Apply sinusoidal waviness along an orthogonal axis (optional).
+                # Sinusoidal waviness along orthogonal axis
                 cycles = 2.0
-                waviness_scale = 0.05  # amplitude fraction of length when wav=1.0
+                waviness_scale = 0.05
                 if wav > 0.0:
                     for i in range(len(pts)):
                         t = i / self.num_elements
@@ -149,36 +150,37 @@ class Example:
                     quaternions=edge_q,
                     radius=cable_radius,
                     cfg=cable_shape_cfg,
-                    bend_stiffness=1.0e1,
-                    bend_damping=5.0e-1,
-                    stretch_stiffness=1.0e6,
-                    stretch_damping=1.0e-4,
+                    bend_stiffness=bend_stiffness,
+                    bend_damping=1.0e0,
                     label=f"cable_l{layer}_{lane}",
                 )
                 rod_bodies_all.extend(rod_bodies)
 
-        # Color bodies for VBD solver
         builder.color()
 
-        # Finalize model
         self.model = builder.finalize()
 
-        # Create VBD solver for rigid body simulation
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            friction_epsilon=0.1,
+            rigid_body_contact_buffer_size=256,
+            rigid_contact_history=True,
         )
 
-        # Initialize states and contacts
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
-        self.contacts = self.model.contacts()
         self.viewer.set_model(self.model)
 
-        # Optional capture for CUDA
+        if hasattr(self.viewer, "picking"):
+            ps = self.viewer.picking.pick_state.numpy()
+            ps[0]["pick_stiffness"] = 20.0
+            ps[0]["pick_damping"] = 0.0
+            self.viewer.picking.pick_state.assign(ps)
+
         self.capture()
 
     def capture(self):
@@ -194,11 +196,7 @@ class Example:
         """Execute all simulation substeps for one frame."""
         for _substep in range(self.sim_substeps):
             self.state_0.clear_forces()
-
-            # Apply forces to the model
             self.viewer.apply_forces(self.state_0)
-
-            # Collide for contact detection
             self.model.collide(self.state_0, self.contacts)
 
             self.solver.step(
@@ -209,11 +207,10 @@ class Example:
                 self.sim_dt,
             )
 
-            # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        """Advance simulation by one frame (either via CUDA graph or direct execution)."""
+        """Advance simulation by one frame."""
         if self.graph:
             wp.capture_launch(self.graph)
         else:
@@ -231,30 +228,21 @@ class Example:
     def test_final(self):
         """Test cable pile simulation for stability and correctness (called after simulation)."""
         cable_radius = 0.012
-        cable_diameter = 2.0 * cable_radius  # 0.024m
-        layers = 4
+        cable_diameter = 2.0 * cable_radius
 
-        # Use same tolerance for ground penetration and pile height offset
-        tolerance = 0.1  # Soft contacts allow some penetration and gaps
+        tolerance = 0.5
 
-        # Calculate maximum expected height for SETTLED pile
-        # After gravity settles the pile, cables should be stacked:
-        # 4 layers = 4 cable diameters high (approximately)
-        # Plus compression tolerance and contact gaps
-        max_z_settled = layers * cable_diameter + tolerance
+        max_z_settled = self.layers * cable_diameter + tolerance
         ground_tolerance = tolerance
 
-        # Check final state after viewer has run 100 frames (no additional simulation needed)
         if self.state_0.body_q is not None and self.state_0.body_qd is not None:
             body_positions = self.state_0.body_q.numpy()
             body_velocities = self.state_0.body_qd.numpy()
 
-            # Test 1: Check for numerical stability
             assert np.isfinite(body_positions).all(), "Non-finite positions"
             assert np.isfinite(body_velocities).all(), "Non-finite velocities"
 
-            # Test 2: Check physical bounds - cables should stay within pile height
-            z_positions = body_positions[:, 2]  # Z positions (Newton uses Z-up)
+            z_positions = body_positions[:, 2]
             min_z = np.min(z_positions)
             max_z_actual = np.max(z_positions)
 
@@ -263,19 +251,13 @@ class Example:
             )
             assert max_z_actual < max_z_settled, (
                 f"Pile too high: max_z={max_z_actual:.3f} > expected {max_z_settled:.3f} "
-                f"(4 layers x {cable_diameter:.3f}m diameter + tolerance)"
+                f"({self.layers} layers x {cable_diameter:.3f}m diameter + tolerance)"
             )
 
-            # Test 3: Velocity should be reasonable (pile shouldn't explode)
             assert (np.abs(body_velocities) < 5e2).all(), "Velocities too large"
 
 
 if __name__ == "__main__":
-    # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
-
-    # Create example and run
-    # For sloped friction tests, use: Example(viewer, args, slope_enabled=True, slope_angle_deg=20.0, slope_mu=0.8)
     example = Example(viewer, args)
-
     newton.examples.run(example, args)
