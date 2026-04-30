@@ -110,12 +110,15 @@ def add_example_test(
         # a known third-party or asset issue that still needs follow-up.
         allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
 
-        # Find the current Warp cache
+        # Share the worker's Warp kernel cache with the example subprocess.
+        # init_kernel_cache() (in Warp >= 1.13) appends wp.config.version to
+        # WARP_CACHE_PATH, so pass the parent of the resolved cache dir; the
+        # subprocess re-appends the version and lands on the same directory.
         warp_cache_path = wp.config.kernel_cache_dir
 
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
-            env_vars["WARP_CACHE_PATH"] = warp_cache_path
+            env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
         if not allow_deprecation_warnings:
             env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
         else:
