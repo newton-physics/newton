@@ -131,23 +131,27 @@ class TestToRgbaFromDepth(unittest.TestCase):
     def test_depth_normalizes_to_grayscale(self):
         from newton._src.sensors.warp_raytrace.utils import unpack_depth_to_rgba_kernel  # noqa: PLC0415
 
-        # (1, 1, 1, 3) depth input with near=0, far=10:
-        # d=0.0 (near)  -> bright (255)
-        # d=10.0 (far)  -> dim (50)
-        # d=-1.0 (miss) -> black (0, 0, 0, 255)
-        inp = np.array([[[[0.0, 10.0, -1.0]]]], dtype=np.float32)
+        # (1, 1, 1, 4) depth input with near=1, far=10:
+        # d=1.0   (near)        -> bright (255)
+        # d=10.0  (far)         -> dim (50)
+        # d=-1.0  (miss)        -> black (0, 0, 0, 255)
+        # d=0.0   (clear-depth) -> black (matches the legacy
+        #                         flatten_depth_image kernel and the default
+        #                         ClearData.clear_depth = 0.0 sentinel)
+        inp = np.array([[[[1.0, 10.0, -1.0, 0.0]]]], dtype=np.float32)
         inp_wp = wp.from_numpy(inp, dtype=wp.float32, device=wp.get_preferred_device())
+        depth_range = wp.array([1.0, 10.0], dtype=wp.float32, device=inp_wp.device)
 
-        out = wp.empty((1, 1, 3, 4), dtype=wp.uint8, device=inp_wp.device)
+        out = wp.empty((1, 1, 4, 4), dtype=wp.uint8, device=inp_wp.device)
         wp.launch(
             unpack_depth_to_rgba_kernel,
-            dim=(1, 1, 1, 3),
-            inputs=[inp_wp, 0.0, 10.0],
+            dim=(1, 1, 1, 4),
+            inputs=[inp_wp, depth_range],
             outputs=[out],
             device=inp_wp.device,
         )
         got = out.numpy()
-        self.assertEqual(got.shape, (1, 1, 3, 4))
+        self.assertEqual(got.shape, (1, 1, 4, 4))
 
         # Near pixel: bright.
         self.assertEqual(got[0, 0, 0, 0], 255)
@@ -162,11 +166,18 @@ class TestToRgbaFromDepth(unittest.TestCase):
         self.assertEqual(got[0, 0, 1, 1], got[0, 0, 1, 2])
         self.assertEqual(got[0, 0, 1, 3], 255)
 
-        # Miss pixel: (0, 0, 0, 255).
+        # Negative-depth miss pixel: (0, 0, 0, 255).
         self.assertEqual(got[0, 0, 2, 0], 0)
         self.assertEqual(got[0, 0, 2, 1], 0)
         self.assertEqual(got[0, 0, 2, 2], 0)
         self.assertEqual(got[0, 0, 2, 3], 255)
+
+        # clear_depth=0.0 also renders as miss (regression guard for the
+        # ClearData sentinel; was bright in earlier revisions of this PR).
+        self.assertEqual(got[0, 0, 3, 0], 0)
+        self.assertEqual(got[0, 0, 3, 1], 0)
+        self.assertEqual(got[0, 0, 3, 2], 0)
+        self.assertEqual(got[0, 0, 3, 3], 255)
 
         # Near pixel brighter than far pixel (closer = brighter).
         self.assertGreater(got[0, 0, 0, 0], got[0, 0, 1, 0])
@@ -306,12 +317,13 @@ class TestUtilsPublicAdapterAPI(unittest.TestCase):
     def test_depth_accepts_tuple_range(self):
         utils = _make_utils(world_count=1)
         device = utils._Utils__render_context.device
+        # Use d=1.0 (not 0.0) for the "near" pixel: d<=0 is the miss sentinel.
         inp = wp.from_numpy(
-            np.array([[[[0.0, 10.0]]]], dtype=np.float32),
+            np.array([[[[1.0, 10.0]]]], dtype=np.float32),
             dtype=wp.float32,
             device=device,
         )
-        out = utils.to_rgba_from_depth(inp, depth_range=(0.0, 10.0))
+        out = utils.to_rgba_from_depth(inp, depth_range=(1.0, 10.0))
         got = out.numpy()
         self.assertEqual(got[0, 0, 0, 0], 255)  # near -> bright
         self.assertEqual(got[0, 0, 1, 0], 50)  # far -> dim
@@ -324,14 +336,31 @@ class TestUtilsPublicAdapterAPI(unittest.TestCase):
             utils.to_rgba_from_depth(inp, depth_range=(5.0, 3.0))
         self.assertIn("near < far", str(cm.exception))
 
-    def test_worlds_per_row_zero_raises(self):
+    def test_worlds_per_row_zero_warns_and_auto_layouts(self):
+        # Legacy callers passed worlds_per_row=0 to mean "auto layout"
+        # because the original gate was a falsy check. Behavior preserved
+        # behind a DeprecationWarning; outcome must match worlds_per_row=None.
+        utils = _make_utils(world_count=4)
+        device = utils._Utils__render_context.device
+        inp = wp.zeros((4, 1, 3, 5), dtype=wp.uint32, device=device)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            out_zero = utils.flatten_color_image_to_rgba(inp, worlds_per_row=0)
+        self.assertTrue(
+            any(issubclass(w.category, DeprecationWarning) for w in caught),
+            "expected DeprecationWarning for worlds_per_row=0",
+        )
+
+        out_auto = utils.flatten_color_image_to_rgba(inp, worlds_per_row=None)
+        self.assertEqual(tuple(out_zero.shape), tuple(out_auto.shape))
+
+    def test_worlds_per_row_negative_raises(self):
         utils = _make_utils(world_count=1)
         device = utils._Utils__render_context.device
         inp = wp.zeros((1, 1, 2, 2), dtype=wp.uint32, device=device)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            with self.assertRaises(ValueError):
-                utils.flatten_color_image_to_rgba(inp, worlds_per_row=0)
+        with self.assertRaises(ValueError):
+            utils.flatten_color_image_to_rgba(inp, worlds_per_row=-1)
 
 
 if __name__ == "__main__":

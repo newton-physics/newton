@@ -154,6 +154,11 @@ def unpack_normal_to_rgba_kernel(
 
     Maps each component from [-1, 1] to [0, 255]. Alpha = 255.
     """
+    # NOTE(reviewers): The legacy `flatten_normal_image` kernel does
+    # `wp.uint8(normal * 0.5 + 0.5) * 255` with no clamp, which wraps for
+    # un-normalized inputs. We clamp here to saturate instead. Identical for
+    # normalized normals; different (saturate vs. wrap) for out-of-range
+    # inputs. Keep the clamp, or match the old wrap-on-overflow behavior?
     world, camera, y, x = wp.tid()
     camera_count = image.shape[1]
     n = world * camera_count + camera
@@ -170,31 +175,32 @@ def unpack_normal_to_rgba_kernel(
 @wp.kernel(enable_backward=False)
 def unpack_depth_to_rgba_kernel(
     image: wp.array4d[wp.float32],
-    near: float,
-    far: float,
+    depth_range: wp.array[wp.float32],
     out: wp.array4d[wp.uint8],
 ):
     """Unpack (world, camera, H, W) depth into (N, H, W, 4) uint8 grayscale.
 
     Invert and normalize to ``[50, 255]`` (closer = brighter). Miss pixels
-    (negative depth) render black. Alpha = 255.
+    (depth <= 0; matches the default ``ClearData.clear_depth = 0.0`` sentinel)
+    render black. Alpha = 255. ``depth_range`` is a 2-element array
+    ``[near, far]`` consumed on device so the kernel composes with the
+    GPU-side ``find_depth_range`` reduction without a host sync.
     """
     world, camera, y, x = wp.tid()
     camera_count = image.shape[1]
     n = world * camera_count + camera
     d = image[world, camera, y, x]
-    if d < 0.0:
+    if d <= 0.0:
         out[n, y, x, 0] = wp.uint8(0)
         out[n, y, x, 1] = wp.uint8(0)
         out[n, y, x, 2] = wp.uint8(0)
         out[n, y, x, 3] = wp.uint8(255)
         return
-    denom = far - near
-    if denom <= 0.0:
-        t = wp.float32(0.0)
-    else:
-        t = wp.clamp((d - near) / denom, 0.0, 1.0)
-    # Closer -> brighter: near=255, far=50
+    near = depth_range[0]
+    far = depth_range[1]
+    denom = wp.max(far - near, 1e-6)
+    t = wp.clamp((d - near) / denom, 0.0, 1.0)
+    # Closer -> brighter: near=255, far=50.
     v = wp.uint8(wp.int32((1.0 - t) * 205.0 + 50.0))
     out[n, y, x, 0] = v
     out[n, y, x, 1] = v
@@ -568,15 +574,18 @@ class Utils:
     ) -> wp.array4d[wp.uint8]:
         """Convert float32 depth sensor output to ``uint8`` grayscale RGBA.
 
-        Closer pixels render brighter; miss pixels (negative depth) render
-        black. Alpha = 255.
+        Closer pixels render brighter; miss pixels (depth <= 0; matches the
+        default ``ClearData.clear_depth = 0.0`` sentinel) render black.
+        Alpha = 255.
 
         Args:
             image: Depth output, shape ``(world_count, camera_count, H, W)``,
-                dtype ``float32``. Negative values denote ray misses.
+                dtype ``float32``. Non-positive values denote ray misses.
             depth_range: Optional ``(near, far)`` [m] for normalization.
                 Accepts a 2-element ``wp.array[wp.float32]`` or a Python
-                ``(near, far)`` tuple. If ``None``, defaults to ``(0.0, 10.0)``.
+                ``(near, far)`` tuple. If ``None``, the per-frame range is
+                computed on device by :func:`find_depth_range` (matches
+                :meth:`flatten_depth_image_to_rgba`).
             out_buffer: Optional pre-allocated output of shape
                 ``(world_count * camera_count, H, W, 4)``, dtype ``uint8``.
 
@@ -589,28 +598,30 @@ class Utils:
         h = image.shape[2]
         w = image.shape[3]
         n = world_count * camera_count
+        device = self.__render_context.device
 
         if depth_range is None:
-            near, far = 0.0, 10.0
+            depth_range_arr = wp.array([MAXVAL, 0.0], dtype=wp.float32, device=device)
+            wp.launch(find_depth_range, image.shape, [image, depth_range_arr], device=device)
         elif isinstance(depth_range, wp.array):
-            dr = depth_range.numpy()
-            near, far = float(dr[0]), float(dr[1])
+            depth_range_arr = depth_range
         else:
             near, far = float(depth_range[0]), float(depth_range[1])
-        if not (near < far):
-            raise ValueError(f"to_rgba_from_depth: depth_range must satisfy near < far, got near={near}, far={far}")
+            if not (near < far):
+                raise ValueError(f"to_rgba_from_depth: depth_range must satisfy near < far, got near={near}, far={far}")
+            depth_range_arr = wp.array([near, far], dtype=wp.float32, device=device)
 
         if out_buffer is None:
-            out_buffer = wp.empty((n, h, w, 4), dtype=wp.uint8, device=self.__render_context.device)
+            out_buffer = wp.empty((n, h, w, 4), dtype=wp.uint8, device=device)
         else:
             _validate_rgba_out_buffer("to_rgba_from_depth", out_buffer, (n, h, w, 4), image.device)
 
         wp.launch(
             unpack_depth_to_rgba_kernel,
             dim=(world_count, camera_count, h, w),
-            inputs=[image, near, far],
+            inputs=[image, depth_range_arr],
             outputs=[out_buffer],
-            device=self.__render_context.device,
+            device=device,
         )
         return out_buffer
 
@@ -877,6 +888,16 @@ class Utils:
     ) -> wp.array():
         world_and_camera_count = self.__render_context.world_count * camera_count
         if worlds_per_row is None:
+            worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
+        elif worlds_per_row == 0:
+            # Older callers passed 0 to mean "auto layout" because the original
+            # check was a falsy test. Preserve that behavior with a deprecation
+            # warning so we can require >=1 in a future release.
+            warnings.warn(
+                "worlds_per_row=0 is deprecated; pass None for auto layout.",
+                category=DeprecationWarning,
+                stacklevel=3,
+            )
             worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
         elif worlds_per_row < 1:
             raise ValueError(f"worlds_per_row must be >= 1, got {worlds_per_row}")
