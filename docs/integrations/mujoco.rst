@@ -8,7 +8,7 @@ MuJoCo Integration
 
 :class:`~newton.solvers.SolverMuJoCo` wraps `mujoco_warp
 <https://github.com/google-deepmind/mujoco_warp>`_ behind Newton's standard
-solver interface. Newton compatible-release-pins (``~=``) both ``mujoco``
+solver interface. Newton uses compatible-release pins (``~=``) on both ``mujoco``
 and ``mujoco-warp`` to keep the two version-aligned; see
 :github:`pyproject.toml` for the current pins.
 
@@ -403,7 +403,7 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **Composite and flex** (``<composite>``, ``<flex>``) — MuJoCo's built-in
   deformables and soft bodies. Newton has dedicated solvers for cloth,
   MPM, and FEM; they are not part of the MuJoCo integration.
-- **Skinned meshes** (``<skin>``) — visualisation-only, not imported.
+- **Skinned meshes** (``<skin>``) — visualization-only, not imported.
 - **User plugins** (``<plugin>``) — MuJoCo's plugin mechanism for custom
   passive forces or dynamics is not supported.
 - **User data and arbitrary custom elements** (``<custom>``, ``<numeric>``,
