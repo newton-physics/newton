@@ -176,11 +176,8 @@ def main(argv=None):
 
     import warp as wp  # noqa: PLC0415 NVIDIA Modification
 
-    # Honor WARP_CACHE_ROOT before the clear so concurrent worktrees pinned
-    # to the same Warp version do not wipe each other's default cache.
-    # Worker setup keys on the same env var.  init_kernel_cache() (called
-    # from wp.init() during the cache clear) appends wp.config.version, so
-    # hand it the base path.
+    # Honor WARP_CACHE_ROOT so concurrent worktrees do not wipe each other's
+    # default cache.  init_kernel_cache appends the version segment.
     if "WARP_CACHE_ROOT" in os.environ:
         wp.config.kernel_cache_dir = os.environ["WARP_CACHE_ROOT"]
 
@@ -587,8 +584,7 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
         if args.no_shared_cache:
             from warp._src.thirdparty import appdirs  # noqa: PLC0415
 
-            # init_kernel_cache() appends wp.config.version, so the worker
-            # suffix lives one level up from the version segment.
+            # init_kernel_cache appends the version below the worker suffix.
             if "WARP_CACHE_ROOT" in os.environ:
                 cache_root_dir = os.path.join(os.getenv("WARP_CACHE_ROOT"), f"worker-{worker_index:03d}")
             else:

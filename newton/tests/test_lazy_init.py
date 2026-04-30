@@ -1,20 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Guard against eager Warp initialization on ``import newton``.
-
-Warp resolves its kernel cache directory inside ``Runtime.__init__`` from
-``warp.config.kernel_cache_dir``.  Once Runtime exists, later assignments
-to ``warp.config.kernel_cache_dir`` cannot trigger another resolution, so
-test runners and tools that reconfigure the cache rely on being able to
-do so before Warp initializes.
-
-A module-scope ``wp.<builtin>(...)`` call (e.g. ``wp.sin``) inside Newton
-forces ``wp.init()`` during import via Warp's builtin resolver.  This
-test runs ``import newton`` in a fresh subprocess and fails if Warp's
-Runtime has been created — pointing the regressing change toward
-``math.<fn>`` substitutes that ``wp.static`` can fold to a literal.
-"""
+"""Assert that ``import newton`` does not trigger ``wp.init()``."""
 
 import subprocess
 import sys
@@ -36,15 +23,7 @@ class TestLazyInit(unittest.TestCase):
         self.assertEqual(
             result.returncode,
             0,
-            msg=(
-                "import newton triggered wp.init() (Warp runtime is non-None "
-                "after import). This typically means a module-scope "
-                "wp.<builtin>(...) call (e.g. wp.sin, wp.cos) is forcing "
-                "eager initialization via Warp's builtin resolver. Replace "
-                "it with the equivalent math.* function so wp.static folds "
-                "to a literal.\n\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-            ),
+            msg=f"import newton triggered wp.init().\nstderr:\n{result.stderr}",
         )
 
 

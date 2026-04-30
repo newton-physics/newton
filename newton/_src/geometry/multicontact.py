@@ -27,8 +27,7 @@ from .mpr import create_support_map_function
 # Constants
 EPS = 0.00001
 # The tilt angle defines how much the search direction gets tilted while searching for
-# points on the contact manifold.  Computed via Python's math module rather
-# than wp.sin/wp.cos so that importing this module does not force wp.init().
+# points on the contact manifold.
 TILT_ANGLE_RAD = wp.static(2.0 * math.pi / 180.0)
 SIN_TILT_ANGLE = wp.static(math.sin(TILT_ANGLE_RAD))
 COS_TILT_ANGLE = wp.static(math.cos(TILT_ANGLE_RAD))
