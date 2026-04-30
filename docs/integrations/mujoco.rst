@@ -486,7 +486,7 @@ At runtime, :class:`~newton.solvers.SolverMuJoCo` keeps kinematic roots
 user-prescribed rather than dynamically integrated:
 
 - When converting MuJoCo state back to Newton, the previous Newton
-  :attr:`newton.State.joint_q` and :attr:`newton.State.joint_qd` values
+  :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd` values
   are passed through for kinematic roots instead of being overwritten
   from MuJoCo's integrated ``qpos`` and ``qvel``.
 - Applied body wrenches and joint forces targeting kinematic bodies
