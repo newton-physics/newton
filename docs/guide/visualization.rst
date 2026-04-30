@@ -158,6 +158,8 @@ Viewer controls:
       - Toggle the sidebar
     * - ``SPACE``
       - Pause or continue the simulation
+    * - ``.``
+      - Step the simulation by one frame while paused
     * - ``ESC``
       - Close the viewer
     * - Right click
