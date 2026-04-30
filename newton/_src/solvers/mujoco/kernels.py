@@ -2289,6 +2289,7 @@ def update_geom_properties_kernel(
     geom_bodyid: wp.array[int],
     body_invweight0: wp.array2d[wp.vec2],
     shape_geom_solref: wp.array[wp.vec2],
+    scale_material_solref: bool,
     geom_type: wp.array[int],
     GEOM_TYPE_MESH: int,
     geom_dataid: wp.array2d[int],
@@ -2356,13 +2357,15 @@ def update_geom_properties_kernel(
         # mixing of shapes' stiffnesses via solmix. MuJoCo's force-space
         # conversion depends on the frozen q0 invweight0 factor and the geom's
         # dmax impedance.
-        solref_scale = geom_solref_scale_factor(
-            world,
-            geom_idx,
-            geom_bodyid,
-            body_invweight0,
-            dmax,
-        )
+        solref_scale = 1.0
+        if scale_material_solref:
+            solref_scale = geom_solref_scale_factor(
+                world,
+                geom_idx,
+                geom_bodyid,
+                body_invweight0,
+                dmax,
+            )
         geom_solref[world, geom_idx] = convert_solref(
             shape_ke[shape_idx],
             shape_kd[shape_idx],

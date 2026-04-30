@@ -2102,6 +2102,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         geom_idx: int,
         ke: float,
         kd: float,
+        *,
+        scale: bool = True,
     ) -> tuple[float, float]:
         """Compute the expected MuJoCo solref for a Newton shape material."""
         if ke <= 0.0 or kd <= 0.0:
@@ -2113,7 +2115,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         body_id = int(geom_bodyid[geom_idx])
         factor = 1.0
-        if body_id >= 0:
+        if scale and body_id >= 0:
             dmax = float(solver.mjw_model.geom_solimp.numpy()[world_idx, geom_idx][1])
             invweight0 = float(solver.mjw_model.body_invweight0.numpy()[world_idx, body_id][0])
             scaled_factor = invweight0 * (1.0 - dmax)
@@ -2284,7 +2286,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 # Compute expected solref based on Newton's conversion logic
                 ke = shape_ke[shape_idx]
                 kd = shape_kd[shape_idx]
-                expected_solref = self._expected_geom_solref(solver, world_idx, geom_idx, ke, kd)
+                expected_solref = self._expected_geom_solref(solver, world_idx, geom_idx, ke, kd, scale=False)
 
                 self.assertAlmostEqual(
                     float(actual_solref[0]),

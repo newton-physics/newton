@@ -3025,6 +3025,7 @@ class SolverMuJoCo(SolverBase):
         self._last_contact_generation: wp.array[wp.int32] | None = None
         self._last_nacon_count: wp.array[wp.int32] | None = None
         self._last_contacts_id: int | None = None
+        self._initializing_mujoco_model = False
 
         with wp.ScopedTimer("convert_model_to_mujoco", active=False):
             self._convert_to_mjc(
@@ -5545,7 +5546,11 @@ class SolverMuJoCo(SolverBase):
 
             # so far we have only defined the first world,
             # now complete the data from the Newton model
-            self.notify_model_changed(SolverNotifyFlags.ALL)
+            self._initializing_mujoco_model = True
+            try:
+                self.notify_model_changed(SolverNotifyFlags.ALL)
+            finally:
+                self._initializing_mujoco_model = False
 
     def _expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
@@ -6406,6 +6411,7 @@ class SolverMuJoCo(SolverBase):
         shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
         shape_geom_solmix = getattr(mujoco_attrs, "geom_solmix", None) if mujoco_attrs is not None else None
         shape_geom_solref = getattr(mujoco_attrs, "geom_solref", None) if mujoco_attrs is not None else None
+        scale_material_solref = not self._initializing_mujoco_model
         wp.launch(
             update_geom_properties_kernel,
             dim=(world_count, num_geoms),
@@ -6419,6 +6425,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_bodyid,
                 self.mjw_model.body_invweight0,
                 shape_geom_solref,
+                scale_material_solref,
                 self.mjw_model.geom_type,
                 self._mujoco.mjtGeom.mjGEOM_MESH,
                 self.mjw_model.geom_dataid,
