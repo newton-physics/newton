@@ -76,7 +76,7 @@ examples = [
     "newton[sim]",          # include simulation dependencies
     "newton[importers]",    # include import dependencies
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
-    "GitPython>=3.1.44",    # for downloading assets via newton.utils.download_asset()
+    "GitPython>=3.1.47",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0, <6",     # for binary recording format (.bin files) - more efficient than JSON
