@@ -12,14 +12,25 @@ solver interface. Newton compatible-release-pins (``~=``) both ``mujoco``
 and ``mujoco-warp`` to keep the two version-aligned; see
 :github:`pyproject.toml` for the current pins.
 
-Because MuJoCo has its own modelling conventions, many Newton properties
+Because MuJoCo has its own modeling conventions, many Newton properties
 are mapped differently or not at all. The sections below describe which
 Newton concepts the solver supports, how each is mapped to MuJoCo, how
 state is exchanged at every step, and where each piece of the conversion
-lives in the source. MuJoCo-specific behaviour that has no Newton-core
+lives in the source. MuJoCo-specific behavior that has no Newton-core
 equivalent is exposed through the :ref:`custom-attribute namespace
 <mujoco-custom-attributes>`. A :ref:`code pointers <mujoco-code-pointers>`
 section at the bottom collects the most useful anchor points.
+
+.. note::
+
+   References to ``mjModel`` / ``mjData`` fields below (e.g.
+   ``mjData.contact``, ``mjData.mocap_pos``) use the canonical names
+   from MuJoCo's `mjModel
+   <https://mujoco.readthedocs.io/en/stable/APIreference/APItypes.html#mjmodel>`_
+   and `mjData
+   <https://mujoco.readthedocs.io/en/stable/APIreference/APItypes.html#mjdata>`_
+   reference. ``mujoco_warp`` exposes the same fields on its
+   GPU-resident analogues.
 
 
 Joint types
@@ -116,7 +127,7 @@ collision pipeline (see `Collision pipeline`_ below).
 Actuators
 ---------
 
-Newton's per-DOF ``joint_target_mode`` creates MuJoCo general actuators:
+Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general actuators:
 
 .. list-table::
    :header-rows: 1
@@ -124,29 +135,34 @@ Newton's per-DOF ``joint_target_mode`` creates MuJoCo general actuators:
 
    * - Mode
      - MuJoCo actuator(s)
-   * - ``POSITION``
+   * - :attr:`~newton.JointTargetMode.POSITION`
      - One actuator: ``gainprm = [kp]``, ``biasprm = [0, -kp, -kd]``.
-   * - ``VELOCITY``
+   * - :attr:`~newton.JointTargetMode.VELOCITY`
      - One actuator: ``gainprm = [kd]``, ``biasprm = [0, 0, -kd]``.
-   * - ``POSITION_VELOCITY``
+   * - :attr:`~newton.JointTargetMode.POSITION_VELOCITY`
      - Two actuators — a position actuator (``gainprm = [kp]``,
        ``biasprm = [0, -kp, 0]``) and a velocity actuator
        (``gainprm = [kd]``, ``biasprm = [0, 0, -kd]``).
-   * - ``NONE``
-     - No actuator created for this DOF.
+   * - :attr:`~newton.JointTargetMode.NONE`,
+       :attr:`~newton.JointTargetMode.EFFORT`
+     - No MuJoCo actuator created.
 
-``joint_effort_limit`` is forwarded as ``actfrcrange`` on the joint
+:attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
 (prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
 
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is
-only reachable through the :ref:`mujoco-custom-attributes` namespace.
+only reachable through the ``mujoco`` :ref:`custom-attribute namespace <mujoco-custom-attributes>`.
 Additional actuators declared this way are appended after the joint-target
 actuators — see ``SolverMuJoCo._init_actuators``.
 
 
 Equality constraints
 --------------------
+
+Each row's ``data[...]`` reference below points into MuJoCo's
+`equality.data <https://mujoco.readthedocs.io/en/stable/XMLreference.html#equality>`_
+array; slot layout depends on the constraint type.
 
 .. list-table::
    :header-rows: 1
@@ -167,7 +183,8 @@ Equality constraints
      - Polynomial coefficients forwarded in ``data[0:5]``.
    * - Mimic
      - ``mjEQ_JOINT``
-     - ``coef0`` / ``coef1`` mapped to polynomial coefficients. Only
+     - Added via :meth:`~newton.ModelBuilder.add_constraint_mimic`. Maps
+       ``coef0`` / ``coef1`` to polynomial coefficients. Only
        :attr:`~newton.JointType.REVOLUTE` and
        :attr:`~newton.JointType.PRISMATIC` joints are supported.
 
@@ -188,79 +205,67 @@ warning. Loop-joint DOFs and coordinates are excluded from MuJoCo's
 ``nq`` / ``nv``.
 
 
-Tendons and contact pairs
--------------------------
+Tendons
+-------
 
-Newton's core API does not currently expose tendons or explicit MuJoCo-style
-``<pair>`` contact overrides as first-class concepts. Both are implemented
-through the MuJoCo :ref:`custom-attribute namespace <mujoco-custom-attributes>`:
-
-- **Tendons** (fixed and spatial) — populated on import from MJCF/USD and
-  parsed into MuJoCo's tendon structures by ``SolverMuJoCo._init_tendons``.
-  Unsupported wrap types and degenerate tendon definitions produce warnings
-  rather than hard errors.
-- **Contact pairs** — explicit geom-pair contact overrides are parsed by
-  ``SolverMuJoCo._init_pairs``.
-
-
-Collision filtering
--------------------
-
-Newton uses integer ``shape_collision_group`` labels to control which shapes
-can collide. MuJoCo uses ``contype``/``conaffinity`` bitmasks with different
-semantics: two geoms collide when
-``(contype_A & conaffinity_B) || (contype_B & conaffinity_A)`` is non-zero.
-
-The solver bridges the two systems with **graph coloring**. Shapes that must
-*not* collide are assigned the same color; each color maps to one bit in
-``contype``. ``conaffinity`` is set to the complement so same-color geoms
-never match. Up to 32 colors are supported (one per ``contype`` bit). If the
-graph requires more than 32 colors, shapes with color index ≥ 32 fall back
-to MuJoCo defaults (``contype=1``, ``conaffinity=1``) and will collide with
-all other shapes, silently bypassing the intended filtering.
-
-Non-colliding shapes (no ``COLLIDE_SHAPES`` flag, or
-``collision_group == 0``) get ``contype = conaffinity = 0``. Body pairs for
-which all shape-shape combinations are filtered are emitted as
-``<exclude>`` elements.
+Newton's core API does not currently expose tendons (fixed or spatial)
+as first-class concepts. They are implemented through the MuJoCo
+:ref:`custom-attribute namespace <mujoco-custom-attributes>`: populated
+on import from MJCF/USD and parsed into MuJoCo's tendon structures by
+``SolverMuJoCo._init_tendons``. Unsupported wrap types and degenerate
+tendon definitions produce warnings rather than hard errors.
 
 
 Collision pipeline
 ------------------
 
-By default :class:`~newton.solvers.SolverMuJoCo` uses MuJoCo's built-in
-collision detection (``use_mujoco_contacts=True``). Alternatively, you can
-set ``use_mujoco_contacts=False`` and pass contacts computed by Newton's
-own collision pipeline into :meth:`~newton.solvers.SolverMuJoCo.step`.
+:class:`~newton.solvers.SolverMuJoCo` uses MuJoCo's built-in collision
+detection by default. Construct it with ``use_mujoco_contacts=False``
+to feed contacts computed by Newton's own collision pipeline into
+:meth:`~newton.solvers.SolverMuJoCo.step` instead.
 Newton's pipeline supports non-convex meshes, SDF-based contacts, and
 hydroelastic contacts, which are not available through MuJoCo's collision
 detection.
 
-**Multi-contact CCD.** With ``enable_multiccd=True`` the solver allows
-up to four contact points per geom pair instead of one. Pairs where
-either geom has ``margin > 0`` still fall back to a single contact
-regardless of the flag.
+**Multi-contact CCD.** Constructing
+:class:`~newton.solvers.SolverMuJoCo` with ``enable_multiccd=True``
+allows up to four contact points per geom pair instead of one. Pairs
+where either geom has non-zero MuJoCo ``geom_margin`` still fall back
+to a single contact regardless of the flag (see *Margin zeroing*
+below for how Newton's :attr:`~newton.Model.shape_margin` is forwarded
+to it).
 
 **Margin zeroing.** ``mujoco_warp`` rejects non-zero geom margins on
 box-box pairs (its default NATIVECCD path) and on any box/mesh pair
-when ``enable_multiccd=True``. To stay compatible the solver zeroes
+when ``enable_multiccd=True``. To stay compatible :class:`~newton.solvers.SolverMuJoCo` zeroes
 ``geom_margin`` model-wide at compile time whenever a box geom exists,
 or whenever ``enable_multiccd=True`` is combined with mesh geoms; geoms
 with non-zero authored margins emit a warning when
-``use_mujoco_contacts=True``. The Newton model's ``shape_margin`` array
+``use_mujoco_contacts=True``. The Newton model's :attr:`~newton.Model.shape_margin` array
 is left untouched, and when ``use_mujoco_contacts=False`` the authored
 margins are restored at runtime through ``update_geom_properties_kernel``.
+
+
+Contact pairs
+-------------
+
+Newton's core API does not expose explicit MuJoCo-style ``<pair>``
+contact overrides. They are implemented through the MuJoCo
+:ref:`custom-attribute namespace <mujoco-custom-attributes>` and
+parsed into MuJoCo's geom-pair contact structures by
+``SolverMuJoCo._init_pairs``.
 
 
 Multi-world support
 -------------------
 
-When ``separate_worlds=True`` (the default for GPU mode with multiple
-worlds), the solver builds a MuJoCo model from the **first world** only and
-replicates it across all worlds via ``mujoco_warp``. This requires all
-Newton worlds to be structurally identical (same bodies, joints, and
-shapes); the solver validates this at construction and raises
-``ValueError`` on a mismatch.
+Constructing :class:`~newton.solvers.SolverMuJoCo` with
+``separate_worlds=True`` (the default for GPU mode with multiple
+worlds) builds a MuJoCo model from the **first world** only and
+replicates it across all worlds via ``mujoco_warp``. This requires
+all Newton worlds to be structurally identical (same bodies, joints,
+and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
+construction and raises ``ValueError`` on a mismatch.
 
 Bodies, joints, equality constraints, and mimic constraints cannot have
 a negative world index — assigning any of them to the global world
@@ -268,31 +273,23 @@ raises ``ValueError``. Only shapes may live in the global world (-1);
 they are shared across all worlds without replication.
 
 
-Runtime state synchronisation
+Runtime state synchronization
 -----------------------------
 
 Each call to :meth:`~newton.solvers.SolverMuJoCo.step` goes through the
 same three-phase cycle:
 
-1. **Push Newton → MuJoCo.** Joint positions and velocities
-   (``state_in.joint_q`` / ``joint_qd``) are copied into MuJoCo's
-   ``qpos`` / ``qvel`` with quaternion reordering. Control is applied via
-   ``control.joint_target_pos`` / ``joint_target_vel`` (→ MuJoCo
-   ``ctrl``), ``control.joint_f`` (→ ``qfrc_applied``), and
-   ``state_in.body_f`` (→ ``xfrc_applied``). Direct MuJoCo actuator
-   control is exposed through ``control.mujoco.ctrl``. When
-   ``use_mujoco_contacts=False``, Newton-side contacts are converted into
-   ``mjData.contact`` before the integrator runs. The state sync
-   (``joint_q`` / ``joint_qd`` → ``qpos`` / ``qvel``) is gated by the
-   ``update_data_interval`` kwarg, which defaults to ``1`` (sync every
-   step); larger values amortise the sync, and ``0`` disables it after
-   construction so MuJoCo simulates from its own internal state.
-2. **Integrate.** ``mujoco_warp`` (or the CPU MuJoCo backend when
-   ``use_mujoco_cpu=True``) steps the MuJoCo model forward by ``dt``.
-3. **Pull MuJoCo → Newton.** Integrated ``qpos`` / ``qvel`` are copied
-   back into ``state_out.joint_q`` / ``joint_qd``, with quaternion
-   reordering; ``body_q`` / ``body_qd`` are recomputed from the new joint
-   state. Kinematic roots pass through unchanged (see
+1. **Push Newton → MuJoCo.** ``SolverMuJoCo._apply_mjc_control`` and
+   ``SolverMuJoCo._update_mjc_data`` transfer the Newton ``State``
+   and ``Control`` inputs to MuJoCo's working data. When
+   ``use_mujoco_contacts=False``, Newton-side contacts are also
+   converted before the integrator runs. The joint-state re-sync
+   frequency can be controlled via the ``update_data_interval``
+   kwarg for substepping schemes.
+2. **Integrate.** ``mujoco_warp`` steps the MuJoCo model forward by ``dt``.
+3. **Pull MuJoCo → Newton.** ``SolverMuJoCo._update_newton_state``
+   populates the output ``State`` from the integrated MuJoCo data.
+   Kinematic roots pass through unchanged from ``state_in`` (see
    `Kinematic links and fixed roots`_).
 
 Contacts are **not** pulled back into a Newton ``Contacts`` object
@@ -330,48 +327,51 @@ what each parameter does and when to tune it.
 
 .. _mujoco-custom-attributes:
 
-Custom attributes
------------------
+MuJoCo-specific parameters in USD and MJCF
+------------------------------------------
 
-Many MuJoCo-specific parameters have no counterpart in Newton's core API.
-The solver exposes them through a dedicated ``mujoco`` custom-attribute
-namespace (``model.mujoco.<name>``), populated from MJCF elements and from
-attributes in the OpenUSD MuJoCo schema (``mjc:*``). To enable the
-namespace, call
+MuJoCo has parameters with no counterpart in Newton's core API.
+:class:`~newton.ModelBuilder` handles them during MJCF / USD import
+via two mechanisms.
+
+**Custom-attribute namespace.** A dedicated ``mujoco`` custom-attribute
+namespace (``model.mujoco.<name>``) is populated from MJCF elements
+and from attributes in the OpenUSD MuJoCo schema (``mjc:*``). To
+enable the namespace, call
 :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` on the
-:class:`~newton.ModelBuilder` **before** loading any asset or adding
-joints/shapes manually::
+:class:`~newton.ModelBuilder` **before** adding anything to it::
 
     import newton
     from newton.solvers import SolverMuJoCo
 
     builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(builder)
-    # ...then import MJCF / USD or add bodies/joints/shapes manually...
+    # ...then add anything (e.g. import MJCF / USD, add joints, ...)
     model = builder.finalize()
 
-The authoritative list of registered attributes — names, defaults, dtypes,
-MJCF / USD source names, and the category each belongs to — is the body
-of :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes` itself.
-See :doc:`/concepts/custom_attributes` for how Newton's custom-attribute
-system works in general.
+The authoritative list of registered attributes — names, defaults,
+dtypes, MJCF / USD source names, and the category each belongs to —
+is the body of
+:meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes`
+itself. See :doc:`/concepts/custom_attributes` for how Newton's
+custom-attribute system works in general.
 
-A subset of ``mjc:*`` USD attributes is additionally mapped onto Newton's
-built-in properties during USD import by
-:class:`~newton.usd.SchemaResolverMjc` (:github:`newton/_src/usd/schemas.py`) —
-for example, joint-limit stiffness/damping from ``mjc:solreflimit``, and
-torsional/rolling friction from ``mjc:torsionalfriction`` /
-``mjc:rollingfriction``. Attributes not handled by the schema resolver
-land in the ``mujoco`` namespace unchanged.
+**Direct mapping to Newton built-ins.** Some MuJoCo-specific
+attributes are mapped onto Newton's built-in properties during import
+(rather than the ``mujoco`` namespace) — for example, joint-limit
+stiffness and damping derived from ``solreflimit``. The MJCF parser
+handles this inline (:github:`newton/_src/utils/import_mjcf.py`); USD
+goes through :class:`~newton.usd.SchemaResolverMjc`
+(:github:`newton/_src/usd/schemas.py`).
 
 
 Unsupported MuJoCo features
 ---------------------------
 
 The sections above describe what Newton forwards *into* MuJoCo. In the
-other direction, MuJoCo has several modelling concepts that are not
+other direction, MuJoCo has several modeling concepts that are not
 imported when loading an MJCF or USD asset into Newton, and that
-:class:`~newton.solvers.SolverMuJoCo` does not reconstruct at export time:
+:class:`~newton.solvers.SolverMuJoCo` does not reconstruct during conversion:
 
 - **Sensors** (``<sensor>`` — force/torque, IMU, gyro, accelerometer,
   rangefinder, touch, camera-based, …). Newton has its own sensor
@@ -421,7 +421,7 @@ Caveats
 
 **shape_collision_radius is ignored.**
   MuJoCo computes bounding-sphere radii (``geom_rbound``) internally from
-  the geometry definition. Newton's ``shape_collision_radius`` is not
+  the geometry definition. Newton's :attr:`~newton.Model.shape_collision_radius` is not
   forwarded.
 
 **Non-convex meshes are convex-hulled.**
@@ -430,8 +430,19 @@ Caveats
   effective collision boundary.
 
 **Velocity limits are not forwarded.**
-  Newton's ``joint_velocity_limit`` has no MuJoCo equivalent and is
+  Newton's :attr:`~newton.Model.joint_velocity_limit` has no MuJoCo equivalent and is
   ignored.
+
+**Collision filtering bitmask fallback.**
+  Newton's :attr:`~newton.Model.shape_collision_group` (see
+  :ref:`Collision Groups`) is translated to MuJoCo's ``contype`` /
+  ``conaffinity`` via graph coloring
+  (:github:`newton/_src/sim/graph_coloring.py`). Up to 32 colors are
+  supported (one per ``contype`` bit). If the filtering graph requires
+  more, shapes with color index ≥ 32 fall back to ``contype=1`` /
+  ``conaffinity=1`` and silently collide with every other shape,
+  bypassing the intended filtering and adding extra contact pairs to
+  the broadphase.
 
 
 .. _mujoco-kinematic-links-and-fixed-roots:
@@ -439,41 +450,43 @@ Caveats
 Kinematic links and fixed roots
 -------------------------------
 
-Newton only allows ``is_kinematic=True`` on articulation roots, so in the
-MuJoCo exporter a "kinematic link" always means a kinematic root body. Any
-descendants of that root can still be dynamic and are exported normally.
+Newton only allows ``is_kinematic=True`` on articulation roots, so a
+"kinematic link" in this section always means a kinematic root body.
+Any descendants of that root can still be dynamic and are converted
+normally.
 
 At runtime, :class:`~newton.solvers.SolverMuJoCo` keeps kinematic roots
 user-prescribed rather than dynamically integrated:
 
 - When converting MuJoCo state back to Newton, the previous Newton
-  :attr:`newton.State.joint_q` and :attr:`newton.State.joint_qd` values are
-  passed through for kinematic roots instead of being overwritten from
-  MuJoCo's integrated ``qpos`` and ``qvel``.
-- Applied body wrenches and joint forces targeting kinematic bodies are
-  ignored on the MuJoCo side.
+  :attr:`newton.State.joint_q` and :attr:`newton.State.joint_qd` values
+  are passed through for kinematic roots instead of being overwritten
+  from MuJoCo's integrated ``qpos`` and ``qvel``.
+- Applied body wrenches and joint forces targeting kinematic bodies
+  are ignored on the MuJoCo side.
 - Kinematic bodies still participate in contacts, so they can act as
   moving or fixed obstacles for dynamic bodies.
 
-During export, :class:`~newton.solvers.SolverMuJoCo` maps roots according
-to their joint type:
+During Newton-to-MuJoCo conversion (at
+:class:`~newton.solvers.SolverMuJoCo` construction), roots are mapped
+by joint type:
 
-- **Kinematic roots with non-fixed joints** are exported as ordinary MuJoCo
-  joints with the same Newton joint type and DOFs. The solver assigns a
-  very large internal armature to those DOFs so MuJoCo treats them like
-  prescribed, effectively infinite-mass coordinates.
-- **Roots attached to world with a fixed joint** are exported as MuJoCo
-  mocap bodies. This applies to both kinematic and non-kinematic Newton
-  roots attached to world by :attr:`~newton.JointType.FIXED`. MuJoCo has
-  no joint coordinates for a fixed root, so Newton drives the pose through
+- **Kinematic roots with non-fixed joints** become ordinary MuJoCo
+  joints with the same Newton joint type and DOFs. A very large
+  internal armature is assigned to those DOFs so MuJoCo treats them
+  as prescribed, effectively infinite-mass coordinates.
+- **Roots attached to world with a fixed joint** become MuJoCo mocap
+  bodies (whether kinematic or not). MuJoCo has no joint coordinates
+  for a fixed root, so Newton drives the pose through
   ``mjData.mocap_pos`` and ``mjData.mocap_quat`` instead.
-- **World-attached shapes that are not part of an articulation** remain
-  ordinary static MuJoCo geometry rather than mocap bodies.
+- **World-attached shapes that are not part of an articulation**
+  remain ordinary static MuJoCo geometry rather than mocap bodies.
 
 If you edit :attr:`newton.Model.joint_X_p` or :attr:`newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
-``solver.notify_model_changed(newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES)``
-to synchronise the updated fixed-root poses into MuJoCo.
+:meth:`~newton.solvers.SolverBase.notify_model_changed` with the
+:attr:`~newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES` flag to
+synchronize the updated fixed-root poses into MuJoCo.
 
 
 .. _mujoco-code-pointers:
