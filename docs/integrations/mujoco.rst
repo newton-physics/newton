@@ -544,7 +544,7 @@ API and subject to change.
   (default per-step path does not pull contacts back).
 - :meth:`~newton.solvers.SolverBase.notify_model_changed` —
   re-synchronize MuJoCo state after editing the Newton ``Model`` (e.g.
-  fixed-root pose changes via ``joint_X_p`` / ``joint_X_c``).
+  fixed-root pose changes via :attr:`~newton.Model.joint_X_p` / :attr:`~newton.Model.joint_X_c`).
 - :github:`newton/_src/solvers/mujoco/kernels.py` — Warp kernels for
   coordinate, contact, and state conversion (``quat_wxyz_to_xyzw``,
   ``convert_mj_coords_to_warp_kernel``,
