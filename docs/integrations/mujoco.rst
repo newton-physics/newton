@@ -105,7 +105,7 @@ Geometry types
      - Must be attached to a static body (``body=-1``); attaching to a
        non-static body raises ``ValueError`` at conversion time. Planes
        are infinite for collision in MuJoCo regardless of size; the
-       configured ``shape_size`` only affects rendering, defaulting to
+       configured :attr:`~newton.Model.shape_scale` only affects rendering, defaulting to
        ``5 × 5 × 5`` when unset.
    * - :attr:`~newton.GeoType.HFIELD`
      - ``mjGEOM_HFIELD``
