@@ -13,11 +13,14 @@ import warnings
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 import warp as wp
 
+from ..actuators.clamping.clamping_max_effort import ClampingMaxEffort
+from ..actuators.controllers.controller_pd import ControllerPD
+from ..actuators.controllers.controller_pid import ControllerPID
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -65,10 +68,16 @@ from .graph_coloring import (
 )
 from .model import Model
 
+try:
+    from newton_actuators import Actuator as _LegacyActuator
+except ImportError:
+    _LegacyActuator = None
+
 if TYPE_CHECKING:
-    from newton_actuators import Actuator
     from pxr import Usd
 
+    from ..actuators.clamping.base import Clamping
+    from ..actuators.controllers.base import Controller
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -199,16 +208,24 @@ class ModelBuilder:
 
     @dataclass
     class ActuatorEntry:
-        """Stores accumulated indices and arguments for one actuator type + scalar params combo.
+        """Stores accumulated specs for one group of compatible composed actuators.
 
-        Each element in input_indices/output_indices represents one actuator.
-        For single-input actuators: [[idx1], [idx2], ...] → flattened to 1D array
-        For multi-input actuators: [[idx1, idx2], [idx3, idx4], ...] → 2D array
+        Each element in ``indices`` is a single DOF index.  The entry key is
+        ``(controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)``
+        where shared params (e.g. ``model_path``, lookup tables) must
+        be identical across all actuators in a group.  Delay step values
+        are per-DOF; the buffer is sized to ``max(delay_step_values) + 1``.
         """
 
-        input_indices: list[list[int]]  # Per-actuator input indices
-        output_indices: list[list[int]]  # Per-actuator output indices
-        args: list[dict[str, Any]]  # Per-actuator array params (scalar params in dict key)
+        controller_class: type  # Controller subclass (e.g. ControllerPD)
+        clamping_classes: tuple  # Tuple of Clamping subclass types (in order)
+        clamping_shared_kwargs: tuple  # Tuple of dicts: shared kwargs per clamping class
+        controller_shared_kwargs: dict  # Shared controller kwargs (e.g. model_path)
+        indices: list[int]  # Per-actuator DOF indices (joint_qd layout)
+        pos_indices: list[int]  # Per-actuator position indices (joint_q layout)
+        controller_args: list[dict[str, Any]]  # Per-actuator controller array params
+        delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
+        clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
     @dataclass
     class ShapeConfig:
@@ -1223,9 +1240,9 @@ class ModelBuilder:
         """Running counts for custom string frequencies used to size custom attribute arrays."""
 
         # Actuator entries (accumulated during add_actuator calls)
-        # Key is (actuator_class, scalar_params_tuple) to separate instances with different scalar params
-        self.actuator_entries: dict[tuple[type[Actuator], tuple[Any, ...]], ModelBuilder.ActuatorEntry] = {}
-        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by class and scalar parameters."""
+        # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
+        self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
+        """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
@@ -1680,75 +1697,228 @@ class ModelBuilder:
                     f"Custom attribute '{attr_key}' has unsupported frequency {custom_attr.frequency} for joints"
                 )
 
-    def add_actuator(
+    # Maps legacy newton_actuators class names to (newton.actuators controller class name, has_delay).
+    _LEGACY_ACTUATOR_CLASS_MAP: ClassVar[dict[str, tuple[str, bool]]] = {
+        "ActuatorPD": ("ControllerPD", False),
+        "ActuatorPID": ("ControllerPID", False),
+        "ActuatorDelayedPD": ("ControllerPD", True),
+    }
+
+    def _add_actuator_legacy(
         self,
-        actuator_class: type[Actuator],
-        input_indices: list[int],
-        output_indices: list[int] | None = None,
+        actuator_class: type,
+        input_indices: list[int] | None,
+        output_indices: list[int] | None,
         **kwargs: Any,
     ) -> None:
-        """Add an external actuator, independent of any ``UsdPhysics`` joint drives.
+        """Translate a legacy ``newton_actuators``-style call to the new API.
 
-        External actuators (e.g. :class:`newton_actuators.ActuatorPD`) apply
-        forces computed outside the physics engine. Multiple calls with the same
-        *actuator_class* and identical scalar parameters are accumulated into one
-        entry; the actuator instance is created during :meth:`finalize <ModelBuilder.finalize>`.
+        Mirrors the old ``main``-branch signature::
+
+            add_actuator(actuator_class, input_indices, output_indices=None, **kwargs)
+
+        *input_indices* / *output_indices* may arrive either as explicit
+        arguments or inside *kwargs* (keyword style).  All old per-DOF
+        params (``kp``, ``kd``, ``delay``, ``max_effort``, ``gear``, …)
+        are expected in *kwargs*.
+        """
+        if input_indices is None:
+            raise TypeError("Legacy add_actuator() requires 'input_indices'")
+
+        # --- Map old class name → new controller class ---
+        class_name = actuator_class.__name__
+        mapping = self._LEGACY_ACTUATOR_CLASS_MAP.get(class_name)
+        if mapping is None:
+            raise TypeError(
+                f"Unknown legacy actuator class '{class_name}'. "
+                f"Supported: {', '.join(self._LEGACY_ACTUATOR_CLASS_MAP)}."
+            )
+
+        ctrl_name, class_has_delay = mapping
+        controller_class: type = {"ControllerPD": ControllerPD, "ControllerPID": ControllerPID}[ctrl_name]
+
+        delay_val: int | None = kwargs.pop("delay_steps", kwargs.pop("delay", None))
+        if class_has_delay and delay_val is None:
+            raise ValueError(f"{class_name} requires a 'delay_steps' argument")
+
+        max_effort_val = kwargs.pop("max_force", None)
+        gear_val = kwargs.pop("gear", None)
+
+        if gear_val is not None and gear_val != 1.0:
+            warnings.warn(
+                f"'gear={gear_val}' is not supported in the new actuator API and will be "
+                f"ignored. Fold the gear ratio into kp/kd/const_effort manually.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+        clamping: list[tuple[type, dict[str, Any]]] | None = None
+        if max_effort_val is not None and max_effort_val != math.inf:
+            clamping = [(ClampingMaxEffort, {"max_effort": max_effort_val})]
+
+        if output_indices is not None and output_indices != input_indices:
+            warnings.warn(
+                "'output_indices' is not supported in the new actuator API and will be "
+                "ignored. Forces are written to the same DOF index by default.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+        for dof_idx in input_indices:
+            self.add_actuator(
+                controller_class,
+                index=dof_idx,
+                clamping=clamping,
+                delay_steps=delay_val,
+                **kwargs,
+            )
+
+    def add_actuator(
+        self,
+        controller_class: type[Controller] | None = None,
+        index: int | None = None,
+        clamping: list[tuple[type[Clamping], dict[str, Any]]] | None = None,
+        delay_steps: int | None = None,
+        pos_index: int | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Add an external actuator for a single DOF.
+
+        External actuators apply forces computed outside the physics engine.
+        Multiple calls with the same *controller_class*, *clamping*
+        types, and identical shared parameters are accumulated into one
+        :class:`~newton.actuators.Actuator` instance during
+        :meth:`finalize <ModelBuilder.finalize>`.  Different delay
+        values are supported within the same group; the buffer is
+        sized to ``max(delay_step_values)``.
+
+        .. deprecated::
+            The legacy ``newton_actuators`` signature is still accepted::
+
+                add_actuator(ActuatorPD, input_indices=[dof], kp=50.0)
+                add_actuator(ActuatorPD, [dof], kp=50.0)
+                add_actuator(actuator_class=ActuatorPD, input_indices=[dof], kp=50.0)
+
+            It will be removed in a future release.  Use the new per-DOF
+            signature instead.
 
         Args:
-            actuator_class: The actuator class (must derive from
-                :class:`newton_actuators.Actuator`).
-            input_indices: DOF indices this actuator reads from. Length 1 for single-input,
-                length > 1 for multi-input actuators.
-            output_indices: DOF indices for writing output. Defaults to *input_indices*.
-            **kwargs: Actuator parameters (e.g., ``kp``, ``kd``, ``max_force``).
+            controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
+                The deprecated keyword ``actuator_class`` is also accepted.
+            index: DOF index into ``joint_qd``-shaped arrays (velocities,
+                velocity targets, feedforward, forces).
+            clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
+                post-controller. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
+            delay_steps: Optional number of timesteps [timesteps] to delay inputs.
+            pos_index: DOF index into ``joint_q``-shaped arrays (positions,
+                position targets). Defaults to *index*. Differs from
+                *index* for floating-base or ball-joint articulations
+                where ``joint_q`` and ``joint_qd`` have different layouts.
+            **kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
         """
-        if output_indices is None:
-            output_indices = input_indices.copy()
+        legacy_cls = kwargs.pop("actuator_class", None)
+        if (
+            legacy_cls is None
+            and _LegacyActuator is not None
+            and isinstance(controller_class, type)
+            and issubclass(controller_class, _LegacyActuator)
+        ):
+            legacy_cls = controller_class
 
-        resolved = actuator_class.resolve_arguments(kwargs)
+        if legacy_cls is not None:
+            warnings.warn(
+                "add_actuator() with a newton_actuators class is deprecated. "
+                "Use newton.actuators controller classes instead "
+                "(e.g. ControllerPD, ControllerPID).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            input_indices = kwargs.pop("input_indices", index)
+            output_indices = kwargs.pop("output_indices", clamping)
+            if delay_steps is not None:
+                kwargs["delay_steps"] = delay_steps
+            self._add_actuator_legacy(legacy_cls, input_indices, output_indices, **kwargs)
+            return
 
-        # Extract scalar params to form the entry key
-        scalar_param_names = getattr(actuator_class, "SCALAR_PARAMS", set())
-        scalar_key = tuple(sorted((k, resolved[k]) for k in scalar_param_names if k in resolved))
+        if controller_class is None:
+            raise TypeError("add_actuator() requires 'controller_class'")
 
-        # Key is (class, scalar_params) so different scalar values create separate entries
-        entry_key = (actuator_class, scalar_key)
+        if index is None:
+            raise TypeError("add_actuator() missing required argument: 'index'")
+
+        clamping = clamping or []
+
+        # --- Resolve controller kwargs and separate shared from per-DOF ---
+        resolved_ctrl = controller_class.resolve_arguments(kwargs)
+        unrecognized = set(kwargs) - set(resolved_ctrl)
+        if unrecognized:
+            warnings.warn(
+                f"add_actuator: {controller_class.__name__} ignoring "
+                f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
+                stacklevel=2,
+            )
+        ctrl_shared_names = getattr(controller_class, "SHARED_PARAMS", set())
+        ctrl_shared = {k: resolved_ctrl[k] for k in ctrl_shared_names if k in resolved_ctrl}
+        ctrl_array_params = {k: v for k, v in resolved_ctrl.items() if k not in ctrl_shared_names}
+
+        # --- Resolve per-clamping kwargs and separate shared from per-DOF ---
+        clamping_classes = tuple(cc for cc, _ in clamping)
+        clamping_shared_list = []
+        clamping_array_params_list = []
+        for comp_class, comp_kwargs in clamping:
+            resolved_comp = comp_class.resolve_arguments(comp_kwargs)
+            comp_shared_names = getattr(comp_class, "SHARED_PARAMS", set())
+            comp_shared = {k: resolved_comp[k] for k in comp_shared_names if k in resolved_comp}
+            comp_array = {k: v for k, v in resolved_comp.items() if k not in comp_shared_names}
+            clamping_shared_list.append(comp_shared)
+            clamping_array_params_list.append(comp_array)
+
+        clamping_shared_kwargs = tuple(clamping_shared_list)
+
+        # --- Build entry key: identifies a group of compatible actuators ---
+        # Groups differ when controller class, presence of delay, clamping
+        # types/shared-params, or controller shared params differ.
+        # Delay values are per-DOF; the buffer is sized to max(delays).
+        def _make_hashable(v: Any) -> Any:
+            if isinstance(v, list):
+                return tuple(v)
+            return v
+
+        ctrl_shared_key = tuple(sorted((k, _make_hashable(v)) for k, v in ctrl_shared.items()))
+        clamping_key = tuple(
+            (cc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
+            for cc, shared in zip(clamping_classes, clamping_shared_list, strict=True)
+        )
+        entry_key = (controller_class, delay_steps is not None, clamping_key, ctrl_shared_key)
+
         entry = self.actuator_entries.setdefault(
             entry_key,
-            ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+            ModelBuilder.ActuatorEntry(
+                controller_class=controller_class,
+                clamping_classes=clamping_classes,
+                clamping_shared_kwargs=clamping_shared_kwargs,
+                controller_shared_kwargs=ctrl_shared,
+                indices=[],
+                pos_indices=[],
+                controller_args=[],
+                delay_args=[],
+                clamping_args=[],
+            ),
         )
 
-        # Filter out scalar params from args (they're already in the key)
-        array_params = {k: v for k, v in resolved.items() if k not in scalar_param_names}
-
-        # Validate dimension consistency before appending
-        if entry.input_indices:
-            expected_input_dim = len(entry.input_indices[0])
-            if len(input_indices) != expected_input_dim:
-                raise ValueError(
-                    f"Input indices dimension mismatch for {actuator_class.__name__}: "
-                    f"expected {expected_input_dim}, got {len(input_indices)}. "
-                    f"All actuators of the same type must have the same number of inputs."
-                )
-        if entry.output_indices:
-            expected_output_dim = len(entry.output_indices[0])
-            if len(output_indices) != expected_output_dim:
-                raise ValueError(
-                    f"Output indices dimension mismatch for {actuator_class.__name__}: "
-                    f"expected {expected_output_dim}, got {len(output_indices)}. "
-                    f"All actuators of the same type must have the same number of outputs."
-                )
-
-        # Each call adds one actuator with its input/output indices
-        entry.input_indices.append(input_indices)
-        entry.output_indices.append(output_indices)
-        entry.args.append(array_params)
+        entry.indices.append(index)
+        entry.pos_indices.append(pos_index if pos_index is not None else index)
+        entry.controller_args.append(ctrl_array_params)
+        if delay_steps is not None:
+            entry.delay_args.append({"delay_steps": delay_steps})
+        entry.clamping_args.append(clamping_array_params_list)
 
     def _stack_args_to_arrays(
         self,
         args_list: list[dict[str, Any]],
         device: Devicelike | None = None,
         requires_grad: bool = False,
+        default_dtype: type = wp.float32,
     ) -> dict[str, wp.array]:
         """Convert list of per-index arg dicts into dict of warp arrays.
 
@@ -1756,6 +1926,11 @@ class ModelBuilder:
             args_list: List of dicts, one per index. Each dict has same keys.
             device: Device for warp arrays.
             requires_grad: Whether the arrays require gradients.
+            default_dtype: Warp dtype used for columns where all values are
+                numeric.  Defaults to ``wp.float32`` so that Python ``int``
+                gains (e.g. ``kp=100``) produce float arrays as controllers
+                expect.  Pass ``wp.int32`` when integer semantics are needed
+                (e.g. delay steps).
 
         Returns:
             Mapping from parameter names to warp arrays.
@@ -1766,44 +1941,35 @@ class ModelBuilder:
         result = {}
         for key in args_list[0].keys():
             values = [args[key] for args in args_list]
-            result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            for v in values:
+                if not isinstance(v, int | float):
+                    raise TypeError(
+                        f"add_actuator expects scalar per-DOF params, but "
+                        f"parameter '{key}' got {type(v).__name__}; pass one "
+                        f"scalar per add_actuator call"
+                    )
+            if default_dtype == wp.int32 and all(isinstance(v, int) for v in values):
+                result[key] = wp.array(values, dtype=wp.int32, device=device)
+            else:
+                rg = requires_grad and default_dtype != wp.int32
+                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=rg)
 
         return result
 
     @staticmethod
-    def _build_index_array(indices: list[list[int]], device: Devicelike) -> wp.array:
-        """Build a warp array from nested index lists.
-
-        If all inner lists have length 1, creates a 1D array (N,).
-        Otherwise, creates a 2D array (N, M) where M is the inner list length.
+    def _build_index_array(indices: list[int], device: Devicelike) -> wp.array:
+        """Build a 1-D warp index array from a flat list of DOF indices.
 
         Args:
-            indices: Nested list of indices, one inner list per actuator.
+            indices: Flat list of DOF indices, one per actuator.
             device: Device for the warp array.
 
         Returns:
-            Array with shape ``(N,)`` or ``(N, M)``.
-
-        Raises:
-            ValueError: If inner lists have inconsistent lengths (for 2D case).
+            Array with shape ``(N,)``.
         """
         if not indices:
             return wp.array([], dtype=wp.uint32, device=device)
-
-        inner_lengths = [len(idx_list) for idx_list in indices]
-        max_len = max(inner_lengths)
-
-        if max_len == 1:
-            # All single-input: flatten to 1D
-            flat = [idx_list[0] for idx_list in indices]
-            return wp.array(flat, dtype=wp.uint32, device=device)
-        else:
-            # Multi-input: create 2D array
-            if not all(length == max_len for length in inner_lengths):
-                raise ValueError(
-                    f"All actuators must have the same number of inputs for 2D indexing. Got lengths: {inner_lengths}"
-                )
-            return wp.array(indices, dtype=wp.uint32, device=device)
+        return wp.array(indices, dtype=wp.uint32, device=device)
 
     @property
     def default_site_cfg(self) -> ShapeConfig:
@@ -1954,6 +2120,13 @@ class ModelBuilder:
             For visual separation of worlds, it is recommended to use the viewer's
             `set_world_offsets()` method instead of physical spacing. This improves numerical
             stability by keeping all worlds at the origin in the physics simulation.
+
+        .. important::
+            To approximate mesh shapes, call
+            :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
+            passing it here. Replication copies mesh references, so approximating
+            first yields a single simplified copy shared across all worlds;
+            approximating afterwards allocates one copy per replicated shape.
 
         Args:
             builder: The builder to replicate. All entities from this builder will be copied.
@@ -3272,14 +3445,25 @@ class ModelBuilder:
         for entry_key, sub_entry in builder.actuator_entries.items():
             entry = self.actuator_entries.setdefault(
                 entry_key,
-                ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+                ModelBuilder.ActuatorEntry(
+                    controller_class=sub_entry.controller_class,
+                    clamping_classes=sub_entry.clamping_classes,
+                    clamping_shared_kwargs=sub_entry.clamping_shared_kwargs,
+                    controller_shared_kwargs=sub_entry.controller_shared_kwargs,
+                    indices=[],
+                    pos_indices=[],
+                    controller_args=[],
+                    delay_args=[],
+                    clamping_args=[],
+                ),
             )
-            # Offset indices by start_joint_dof_idx (each actuator's indices are a list)
-            for idx_list in sub_entry.input_indices:
-                entry.input_indices.append([idx + start_joint_dof_idx for idx in idx_list])
-            for idx_list in sub_entry.output_indices:
-                entry.output_indices.append([idx + start_joint_dof_idx for idx in idx_list])
-            entry.args.extend(sub_entry.args)
+            for idx in sub_entry.indices:
+                entry.indices.append(idx + start_joint_dof_idx)
+            for idx in sub_entry.pos_indices:
+                entry.pos_indices.append(idx + start_joint_coord_idx)
+            entry.controller_args.extend(sub_entry.controller_args)
+            entry.delay_args.extend(sub_entry.delay_args)
+            entry.clamping_args.extend(sub_entry.clamping_args)
 
     @staticmethod
     def _coerce_mat33(value: Any) -> wp.mat33:
@@ -4199,7 +4383,7 @@ class ModelBuilder:
                 translation is the attachment point.
             child_xform: The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point.
-            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e9.
+            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
             stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
                 this is a dimensionless (Rayleigh-style) coefficient. If None,
                 defaults to 0.0.
@@ -4219,7 +4403,7 @@ class ModelBuilder:
 
         """
         # Linear DOF (stretch)
-        se_ke = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        se_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         se_kd = 0.0 if stretch_damping is None else stretch_damping
         ax_lin = ModelBuilder.JointDofConfig(target_ke=se_ke, target_kd=se_kd)
 
@@ -5883,7 +6067,7 @@ class ModelBuilder:
         Args:
             xform: The transform of the heightfield in world frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
-            scale: The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
+            scale: Per-instance scale applied to the heightfield extents (``hx``, ``hy``, ``min_z``, ``max_z``). Lets the same :class:`Heightfield` asset be reused at different sizes across shapes. Defaults to ``None``, which is treated as ``(1.0, 1.0, 1.0)``.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
             label: An optional label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
@@ -6105,6 +6289,28 @@ class ModelBuilder:
             - If `False`, a warning is logged, and the method falls back to the next available method in the order of preference:
                 - If convex decomposition via CoACD or V-HACD fails or dependencies are not available, the method will fall back to using the ``convex_hull`` method.
                 - If convex hull approximation fails, it will fall back to the ``bounding_box`` method.
+
+        .. important::
+
+            Apply this method to a builder **before** passing it to
+            :meth:`~newton.ModelBuilder.replicate` or
+            :meth:`~newton.ModelBuilder.add_world`, not to the parent builder
+            afterwards. Replication copies mesh *references*, not mesh data, so
+            ``N`` worlds share one :class:`~newton.Mesh` object. Approximating
+            first produces a single simplified copy that is shared across all
+            replicated worlds; approximating afterwards allocates one copy per
+            replicated shape — up to ``N`` times the memory for identical data.
+
+            Recommended:
+
+            .. code-block:: python
+
+                arm = newton.ModelBuilder()
+                # ... populate arm ...
+                arm.approximate_meshes(method="convex_hull")
+
+                scene = newton.ModelBuilder()
+                scene.replicate(arm, world_count=N)
 
         Args:
             method: The method to use for approximating the mesh shapes.
@@ -6378,16 +6584,12 @@ class ModelBuilder:
                 orientations are computed automatically to align +Z with each segment direction.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Stretch stiffness for the cable joints. For rods, this is treated as a
-                material-like axial/shear stiffness (commonly interpreted as EA)
-                with units [N] and is internally converted to an effective point stiffness [N/m] by dividing by
-                segment length. If None, defaults to 1.0e9.
+            stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
+                If None, defaults to 1.0e5.
             stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
-            bend_stiffness: Bend/twist stiffness for the cable joints. For rods, this is treated as a
-                material-like bending/twist stiffness (e.g., EI) with units [N*m^2] and is internally converted to
-                an effective per-joint stiffness [N*m] (torque per radian) by dividing by segment length. If None,
-                defaults to 0.0.
+            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m]
+                (torque per radian). If None, defaults to 0.0.
             bend_damping: Bend/twist damping for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
@@ -6412,11 +6614,9 @@ class ModelBuilder:
             ValueError: If the rod has fewer than 2 segments.
 
         Note:
-            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to a high
-              stiffness (1.0e9), which keeps neighboring capsules closely coupled (approximately inextensible).
-            - Internally, stretch and bend stiffnesses are pre-scaled by dividing by segment length so solver kernels
-              do not need per-segment length normalization.
-            - Damping values are passed through as provided (per joint) and are not length-normalized.
+            - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
+              pass a larger value when neighboring capsules should remain nearly inextensible.
+            - Stretch, bend, and damping values are passed through as provided per joint.
             - Each segment is implemented as a capsule primitive. The segment's body transform is
               placed at the start point ``positions[i]`` with a local center-of-mass offset of
               ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
@@ -6426,8 +6626,8 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
 
-        # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
-        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
+        stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)
@@ -6512,19 +6712,15 @@ class ModelBuilder:
                 parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
                 child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
-                # Normalize stiffness by segment length, consistent with add_rod_graph().
-                stretch_ke_eff = stretch_stiffness / L_last
-                bend_ke_eff = bend_stiffness / L_last
-
                 loop_joint_label = f"{label}_cable_{len(link_joints) + 1}" if label else None
                 j_loop = self.add_joint_cable(
                     parent=last_body,
                     child=first_body,
                     parent_xform=parent_xform,
                     child_xform=child_xform,
-                    bend_stiffness=bend_ke_eff,
+                    bend_stiffness=bend_stiffness,
                     bend_damping=bend_damping,
-                    stretch_stiffness=stretch_ke_eff,
+                    stretch_stiffness=stretch_stiffness,
                     stretch_damping=stretch_damping,
                     label=loop_joint_label,
                     collision_filter_parent=True,
@@ -6579,11 +6775,11 @@ class ModelBuilder:
                 capsule body oriented so its local +Z points from node ``u`` to node ``v``.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Material-like axial stiffness (EA) [N], normalized by edge length
-                into an effective joint stiffness [N/m]. Defaults to 1.0e9.
+            stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
+                Defaults to 1.0e5.
             stretch_damping: Stretch damping (per joint). Defaults to 0.0.
-            bend_stiffness: Material-like bend/twist stiffness (EI) [N*m^2], normalized by edge
-                length into an effective joint stiffness [N*m]. Defaults to 0.0.
+            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m].
+                Defaults to 0.0.
             bend_damping: Bend/twist damping (per joint). Defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
@@ -6604,8 +6800,8 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
 
-        # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
-        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
+        stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)
@@ -6627,7 +6823,7 @@ class ModelBuilder:
                 f"got {len(quaternions)} quaternions"
             )
 
-        # Guard against near-zero lengths: edge length is used to normalize stiffness (EA/L, EI/L).
+        # Guard against near-zero lengths: edge length is used for capsule geometry and joint anchors.
         min_segment_length = 1.0e-9
 
         # Coerce all input node positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
@@ -6757,14 +6953,6 @@ class ModelBuilder:
 
                     child_xform = _edge_anchor_xform(child_edge, node_idx)
 
-                    # Normalize stiffness by segment length, consistent with add_rod().
-                    # Use a symmetric length so stiffness is traversal/order invariant.
-                    L_parent = edge_len[parent_edge]
-                    L_child = edge_len[child_edge]
-                    L_sym = 0.5 * (L_parent + L_child)
-                    stretch_ke_eff = stretch_stiffness / L_sym
-                    bend_ke_eff = bend_stiffness / L_sym
-
                     joint_counter += 1
                     joint_label = f"{label}_cable_{joint_counter}" if label else None
 
@@ -6773,9 +6961,9 @@ class ModelBuilder:
                         child=child_body,
                         parent_xform=parent_xform,
                         child_xform=child_xform,
-                        bend_stiffness=bend_ke_eff,
+                        bend_stiffness=bend_stiffness,
                         bend_damping=bend_damping,
-                        stretch_stiffness=stretch_ke_eff,
+                        stretch_stiffness=stretch_stiffness,
                         stretch_damping=stretch_damping,
                         label=joint_label,
                         collision_filter_parent=True,
@@ -6820,14 +7008,6 @@ class ModelBuilder:
                             parent_xform = _edge_anchor_xform(parent_edge, shared_node)
                             child_xform = _edge_anchor_xform(child_edge, shared_node)
 
-                            # Normalize stiffness by segment length, consistent with add_rod().
-                            # Use a symmetric length so stiffness is traversal/order invariant.
-                            L_parent = edge_len[parent_edge]
-                            L_child = edge_len[child_edge]
-                            L_sym = 0.5 * (L_parent + L_child)
-                            stretch_ke_eff = stretch_stiffness / L_sym
-                            bend_ke_eff = bend_stiffness / L_sym
-
                             joint_counter += 1
                             joint_label = f"{label}_cable_{joint_counter}" if label else None
 
@@ -6836,9 +7016,9 @@ class ModelBuilder:
                                 child=child_body,
                                 parent_xform=parent_xform,
                                 child_xform=child_xform,
-                                bend_stiffness=bend_ke_eff,
+                                bend_stiffness=bend_stiffness,
                                 bend_damping=bend_damping,
-                                stretch_stiffness=stretch_ke_eff,
+                                stretch_stiffness=stretch_stiffness,
                                 stretch_damping=stretch_damping,
                                 label=joint_label,
                                 collision_filter_parent=True,
@@ -9945,6 +10125,7 @@ class ModelBuilder:
             # heightfield collision data
             hfield_count = sum(1 for t in self.shape_type if t == GeoType.HFIELD)
             has_heightfields = hfield_count > 0
+            m.has_heightfields = has_heightfields
             if hfield_count > 1:
                 warnings.warn(
                     "Heightfield-vs-heightfield collision is not supported; "
@@ -9965,10 +10146,17 @@ class ModelBuilder:
                         hd.data_offset = offset
                         hd.nrow = hf.nrow
                         hd.ncol = hf.ncol
-                        hd.hx = hf.hx
-                        hd.hy = hf.hy
-                        hd.min_z = hf.min_z
-                        hd.max_z = hf.max_z
+                        # Bake the per-instance scale into the extents so narrow-phase
+                        # collision and raycast (which read from HeightfieldData) apply
+                        # scale consistently. ``abs`` on hx/hy because the raycast DDA
+                        # and parallel-slab checks assume non-negative planar extents;
+                        # z uses raw multiplication so ``sz < 0`` inverts the surface
+                        # (``min_z > max_z`` already encodes an inverted heightfield).
+                        sx, sy, sz = self.shape_scale[i]
+                        hd.hx = abs(hf.hx * sx)
+                        hd.hy = abs(hf.hy * sy)
+                        hd.min_z = hf.min_z * sz
+                        hd.max_z = hf.max_z * sz
                         shape_heightfield_index[i] = len(compact_heightfield_data)
                         compact_heightfield_data.append(hd)
                         elevation_chunks.append(hf.data.flatten())
@@ -10345,18 +10533,49 @@ class ModelBuilder:
             )
 
             # Create actuators from accumulated entries
+            from ..actuators.actuator import Actuator  # noqa: PLC0415
+            from ..actuators.delay import Delay  # noqa: PLC0415
+
             m.actuators = []
-            for (actuator_class, scalar_key), entry in self.actuator_entries.items():
-                input_indices = self._build_index_array(entry.input_indices, device)
-                output_indices = self._build_index_array(entry.output_indices, device)
-                param_arrays = self._stack_args_to_arrays(entry.args, device=device, requires_grad=requires_grad)
-                scalar_params = dict(scalar_key)
-                actuator = actuator_class(
-                    input_indices=input_indices,
-                    output_indices=output_indices,
-                    **param_arrays,
-                    **scalar_params,
+            for entry in self.actuator_entries.values():
+                indices = self._build_index_array(entry.indices, device)
+
+                pos_indices_arg = None
+                if entry.pos_indices != entry.indices:
+                    pos_indices_arg = self._build_index_array(entry.pos_indices, device)
+
+                # Build controller from stacked per-DOF arrays + shared kwargs
+                ctrl_arrays = self._stack_args_to_arrays(
+                    entry.controller_args, device=device, requires_grad=requires_grad
                 )
+                controller = entry.controller_class(**ctrl_arrays, **entry.controller_shared_kwargs)
+
+                delay_obj = None
+                if entry.delay_args:
+                    delay_arrays = self._stack_args_to_arrays(entry.delay_args, device=device, default_dtype=wp.int32)
+                    max_delay = max(d["delay_steps"] for d in entry.delay_args)
+                    delay_obj = Delay(**delay_arrays, max_delay=max_delay)
+
+                # Build clamping objects from per-DOF arrays + shared kwargs
+                clamping_objs = []
+                for i, (comp_class, shared_kw) in enumerate(
+                    zip(entry.clamping_classes, entry.clamping_shared_kwargs, strict=True)
+                ):
+                    comp_args_per_actuator = [per_act[i] for per_act in entry.clamping_args]
+                    comp_arrays = self._stack_args_to_arrays(
+                        comp_args_per_actuator, device=device, requires_grad=requires_grad
+                    )
+                    clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
+
+                actuator = Actuator(
+                    indices=indices,
+                    controller=controller,
+                    delay=delay_obj,
+                    clamping=clamping_objs if clamping_objs else None,
+                    pos_indices=pos_indices_arg,
+                    requires_grad=requires_grad,
+                )
+
                 m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)

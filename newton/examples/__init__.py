@@ -407,6 +407,12 @@ def get_examples() -> dict[str, str]:
     return example_map
 
 
+def _print_examples(examples: dict[str, str]) -> None:
+    print("Available examples:")
+    for name in examples:
+        print(f"  {name}")
+
+
 def create_parser():
     """Create a base argument parser with common parameters for Newton examples.
 
@@ -708,20 +714,27 @@ def main():
 
     examples = get_examples()
 
-    if len(sys.argv) < 2:
-        print("Usage: python -m newton.examples <example_name>")
-        print("\nAvailable examples:")
-        for name in examples:
-            print(f"  {name}")
-        sys.exit(1)
+    if len(sys.argv) >= 2 and sys.argv[1] in ("-h", "--help"):
+        print("Usage: python -m newton.examples <example_name> [options]")
+        print("       python -m newton.examples          # run default basic_pendulum")
+        print("       python -m newton.examples --list   # print available examples")
+        print()
+        print("Run 'python -m newton.examples <example_name> --help' to see the")
+        print("options supported by a given example.")
+        sys.exit(0)
 
-    example_name = sys.argv[1]
+    if len(sys.argv) >= 2 and sys.argv[1] == "--list":
+        _print_examples(examples)
+        sys.exit(0)
+
+    if len(sys.argv) < 2:
+        example_name = "basic_pendulum"
+    else:
+        example_name = sys.argv[1]
 
     if example_name not in examples:
-        print(f"Error: Unknown example '{example_name}'")
-        print("\nAvailable examples:")
-        for name in examples:
-            print(f"  {name}")
+        print(f"Error: Unknown example '{example_name}'\n")
+        _print_examples(examples)
         sys.exit(1)
 
     # Set up sys.argv for the target script

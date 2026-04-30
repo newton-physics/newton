@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import numpy as np
 import warp as wp
 
@@ -131,7 +133,7 @@ class Example:
         self.graph = None
         if wp.get_device().is_cuda and self.solver.grid_type == "fixed":
             if self.sim_substeps % 2 != 0:
-                wp.utils.warn("Sim substeps must be even for graph capture of MPM step")
+                warnings.warn("Sim substeps must be even for graph capture of MPM step", stacklevel=2)
             else:
                 with wp.ScopedCapture() as capture:
                     self.simulate()
@@ -273,13 +275,11 @@ class Example:
             "--solver",
             "-s",
             type=str,
-            default="cg",
-            choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+            default="cr",
         )
         parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])
 
         parser.add_argument("--strain-basis", "-sb", type=str, default="P1d")
-        parser.add_argument("--collider-basis", "-cb", type=str, default="Q1")
         parser.add_argument("--velocity-basis", "-vb", type=str, default="Q1")
 
         parser.add_argument("--max-iterations", "-it", type=int, default=250)

@@ -55,7 +55,7 @@ available examples:
 
 .. code-block:: console
 
-    uv run -m newton.examples
+    uv run -m newton.examples --list
 
 See the :ref:`extra-dependencies` section of the installation guide for a
 description of all available extras.
@@ -139,6 +139,19 @@ and by default runs in up to eight parallel processes. The tests can be run
 in a serial manner with ``--serial-fallback``.
 
 Pass ``--help`` to either run method below to see all available flags.
+
+.. note::
+
+    If a test run aborts with ``concurrent.futures.process.BrokenProcessPool``,
+    a worker process crashed (out-of-memory, segfault, or similar). The runner
+    parallelizes across ``min(cpu_count, 8)`` workers by default; on
+    memory-constrained machines this can saturate RAM and kill a worker.
+    Retry with fewer workers via ``--jobs`` (or ``--serial-fallback`` for a
+    single process):
+
+    .. code-block:: console
+
+        python -m newton.tests --jobs 4
 
 .. tab-set::
     :sync-group: env
@@ -659,7 +672,7 @@ New examples must also be registered in the examples ``README.md`` with a
         .. code-block:: console
 
             # list all available examples
-            uv run -m newton.examples
+            uv run -m newton.examples --list
 
             # run an example by short name
             uv run -m newton.examples basic_pendulum
@@ -673,7 +686,7 @@ New examples must also be registered in the examples ``README.md`` with a
         .. code-block:: console
 
             # list all available examples
-            python -m newton.examples
+            python -m newton.examples --list
 
             # run an example by short name
             python -m newton.examples basic_pendulum

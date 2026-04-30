@@ -208,8 +208,51 @@ def step_response_control_kernel(
     newton_ctrl[i] = val
 
 
+@wp.kernel
+def step_response_joint_target_kernel(
+    joint_target_pos: wp.array[wp.float32],  # type: ignore[valid-type]
+    joint_target_vel: wp.array[wp.float32],  # type: ignore[valid-type]
+    mjc_actuator_ctrl_source: wp.array[wp.int32],  # type: ignore[valid-type]
+    mjc_actuator_to_newton_idx: wp.array[wp.int32],  # type: ignore[valid-type]
+    target: wp.float32,
+    num_actuators: int,
+    dofs_per_world: int,
+):
+    """Mirror step_response_control_kernel into joint_target_{pos,vel}.
+
+    Newton's SolverMuJoCo routes actuator inputs from the array each
+    actuator's ctrl_source points to (mujoco.ctrl for CTRL_DIRECT,
+    joint_target_{pos,vel} for JOINT_TARGET). USD-imported MjcActuator rows
+    on joints land in JOINT_TARGET, so writing to mujoco.ctrl alone leaves
+    them at zero. This kernel mirrors the per-world target into the right
+    joint_target slot for JOINT_TARGET actuators using the same sign
+    encoding as apply_mjc_control_kernel.
+    """
+    i = wp.tid()
+    world_i = i // num_actuators
+    act_i = i % num_actuators  # type: ignore[operator]
+    if mjc_actuator_ctrl_source[act_i] != 0:  # not JOINT_TARGET
+        return
+    val = float(0.0)
+    if world_i % num_actuators == act_i:
+        val = target
+    idx = mjc_actuator_to_newton_idx[act_i]
+    if idx >= 0:
+        joint_target_pos[world_i * dofs_per_world + idx] = val
+    elif idx <= -2:
+        joint_target_vel[world_i * dofs_per_world + (-(idx + 2))] = val
+
+
 class StepResponseControlStrategy(ControlStrategy):
-    """Each world commands one actuator to a target position, others stay at zero."""
+    """Each world commands one actuator to a target position, others stay at zero.
+
+    Writes both ``Control.mujoco.ctrl`` and ``Control.joint_target_{pos,vel}`` so
+    SolverMuJoCo's actuator-routing kernel finds the target wherever each actuator's
+    ``ctrl_source`` looks. Required because USD-imported MjcActuator rows on joints
+    are JOINT_TARGET (see ``parse_usd`` for the contract); an MJCF-only test could
+    skip the joint-target writes, but writing both is harmless and keeps the
+    strategy uniform across import paths.
+    """
 
     def __init__(self, target: float = 0.3, seed: int = 42):
         super().__init__(seed)
@@ -218,13 +261,39 @@ class StepResponseControlStrategy(ControlStrategy):
         self._newton_ctrl: wp.array | None = None
         self._n: int = 0
         self._num_actuators: int = 0
+        self._joint_target_pos: wp.array | None = None
+        self._joint_target_vel: wp.array | None = None
+        self._mjc_actuator_ctrl_source: wp.array | None = None
+        self._mjc_actuator_to_newton_idx: wp.array | None = None
+        self._dofs_per_world: int = 0
 
-    def init(self, native_ctrl: wp.array, newton_ctrl: wp.array):
+    def init(
+        self,
+        native_ctrl: wp.array,
+        newton_ctrl: wp.array,
+        *,
+        newton_control: Any | None = None,
+        newton_solver: Any | None = None,
+    ):
         num_worlds, num_actuators = native_ctrl.shape
         self._native_ctrl = native_ctrl.flatten()
         self._newton_ctrl = newton_ctrl
         self._n = num_worlds * num_actuators
         self._num_actuators = num_actuators
+
+        # Set up joint-target routing when both objects are provided and the
+        # solver actually has any JOINT_TARGET actuators.
+        if (
+            newton_control is not None
+            and newton_solver is not None
+            and getattr(newton_solver, "mjc_actuator_ctrl_source", None) is not None
+            and getattr(newton_solver, "mjc_actuator_to_newton_idx", None) is not None
+        ):
+            self._joint_target_pos = newton_control.joint_target_pos
+            self._joint_target_vel = newton_control.joint_target_vel
+            self._mjc_actuator_ctrl_source = newton_solver.mjc_actuator_ctrl_source
+            self._mjc_actuator_to_newton_idx = newton_solver.mjc_actuator_to_newton_idx
+            self._dofs_per_world = self._joint_target_pos.shape[0] // num_worlds
 
     def fill_control(self, t: float):
         if self._native_ctrl is None:
@@ -239,6 +308,20 @@ class StepResponseControlStrategy(ControlStrategy):
                 self._num_actuators,
             ],
         )
+        if self._joint_target_pos is not None:
+            wp.launch(
+                step_response_joint_target_kernel,
+                dim=self._n,
+                inputs=[
+                    self._joint_target_pos,
+                    self._joint_target_vel,
+                    self._mjc_actuator_ctrl_source,
+                    self._mjc_actuator_to_newton_idx,
+                    self.target,
+                    self._num_actuators,
+                    self._dofs_per_world,
+                ],
+            )
 
 
 # =============================================================================
@@ -349,6 +432,10 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
     # re-diagonalization. Backfilled instead.
     "actuator_acc0",
+    # Position actuators with `dampratio` encode -kd = -2*dampratio*sqrt(kp*M_eff) in
+    # biasprm[2]; M_eff is joint-space inertia which differs when inertia representation
+    # differs. Backfilled instead.
+    "actuator_biasprm",
     "actuator_lengthrange",  # Derived from joint ranges, computed by set_length_range
     "stat",  # meaninertia derived from invweight0
     # Meshes: Newton / trimesh may create a different number of meshes (nmesh differs),
@@ -390,7 +477,10 @@ def compare_compiled_model_fields(
         fields = MODEL_BACKFILL_FIELDS
 
     # Validated by compare_inertia_tensors() with physics-equivalence check
-    skip_fields = {"body_inertia", "body_iquat"}
+    # eq_data for CONNECT constraints is body-frame dependent: when body_quat differs
+    # due to inertia re-diagonalization, the body2-frame anchor differs structurally
+    # but remains physically equivalent (validated by dynamics after backfill).
+    skip_fields = {"body_inertia", "body_iquat", "eq_data"}
 
     for field in fields:
         if field in skip_fields:
@@ -1101,19 +1191,24 @@ def _expand_batched_fields(target_obj: Any, reference_obj: Any, field_names: lis
 
 
 # Model fields to backfill from native MuJoCo to eliminate compilation differences:
-# - body_inertia, body_iquat: Newton re-diagonalizes inertia (different eig3 ordering)
-# - body_invweight0: Derived from inertia, used in make_constraint for efc_D scaling
+# - body_inertia, body_ipos, body_iquat: Newton re-diagonalizes inertia differently
+# - body_mass, body_subtreemass: Newton computes EXACT mesh volume, native uses LEGACY
+# - body_invweight0, dof_invweight0, actuator_acc0: derived from inertia/mass
 # - body_pos, body_quat: Newton recomputes from joint transforms (~3e-8 float diff)
+# - actuator_biasprm: derived from joint-space inertia for position actuators with
+#   `dampratio` (kd = 2*dampratio*sqrt(kp*M_eff)); tiny diffs propagate from inertia.
 MODEL_BACKFILL_FIELDS: list[str] = [
     "body_inertia",
     "body_ipos",
     "body_iquat",
     "body_invweight0",
     "dof_invweight0",
+    "body_mass",
     "body_pos",
     "body_quat",
     "body_subtreemass",
     "actuator_acc0",
+    "actuator_biasprm",
 ]
 
 
@@ -1718,9 +1813,16 @@ class TestMenagerieBase(unittest.TestCase):
         native_saved = _disable_collisions(native_mjw_model)
 
         try:
-            # Initialize step-response control
+            # Initialize step-response control. Pass the solver/control so the
+            # strategy can also write joint_target_{pos,vel} for JOINT_TARGET
+            # actuators (e.g. USD-imported MjcActuator rows on joints).
             strategy = StepResponseControlStrategy(target=self.dynamics_target)
-            strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)
+            strategy.init(
+                native_mjw_data.ctrl,
+                newton_control.mujoco.ctrl,
+                newton_control=newton_control,
+                newton_solver=newton_solver,
+            )
             strategy.fill_control(0.0)
 
             # Step loop — both sides run full mujoco_warp.step() independently.
@@ -1847,7 +1949,7 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-    # Dynamics disabled: qpos drift 3.5e-3 from body_ipos diff (#2170)
+    # Dynamics disabled: qvel diverges ~5x at step 0 even with ctrl=0 (#2491)
     num_steps = 0
     fk_enabled = True
     fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
@@ -2025,12 +2127,11 @@ class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
 
     robot_folder = "wonik_allegro"
     robot_xml = "scene_right.xml"
-    # Dynamics disabled: body_mass diff causes qpos divergence 3.4e-3 (#2170)
-    num_steps = 0
+    num_steps = 20
     fk_enabled = True
-    # TODO(#2170): body_mass differs — Newton computes different masses for visual geoms
+    backfill_model = True  # needs body_mass backfill (visual geom mesh volume diff)
+    # TODO(#2494): body_mass differs (Newton computes different masses for visual geoms)
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
-    # Step response disabled: body_mass diffs cause constraint mismatch
 
 
 class TestMenagerie_IitSoftfoot(TestMenagerieMJCF):
@@ -2050,10 +2151,10 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-    # Dynamics disabled: multiple import issues — dof_damping, eq_, ngeom (#2170)
+    # Dynamics and FK disabled: multiple MJCF import issues (#2492)
     num_steps = 0
-    fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2170)
-    # TODO(#2170): dof_damping, jnt_range, eq_, ngeom differ
+    fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2492)
+    # TODO(#2492): dof_damping, jnt_range, eq_, ngeom differ
     # jnt_ is broad but needed: compare_jnt_range runs outside model_skip_fields
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
 
@@ -2153,7 +2254,7 @@ class TestMenagerie_BoosterT1(TestMenagerieMJCF):
 
     robot_folder = "booster_t1"
     num_steps = 20
-    dynamics_tolerance = 2e-5  # float32 noise varies when running in batch
+    dynamics_tolerance = 1e-4  # GPU atomic-reduction non-determinism: qvel diff up to 4.8e-5 observed on CI (#2526)
     fk_enabled = True
     backfill_model = True
 
@@ -2210,11 +2311,10 @@ class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
-    # Dynamics disabled: actuator_biasprm diff causes qvel divergence 3.3e-6 (#2170)
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 1e-4  # GPU non-determinism: qvel diff up to 1.2e-5 across runs
     fk_enabled = True
-    # TODO(#2170): actuator_biasprm has tiny fp diffs (1.7e-5) — likely precision issue
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"actuator_biasprm"}
+    backfill_model = True
 
 
 class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
@@ -2235,7 +2335,36 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     """Agility Robotics Cassie biped."""
 
     robot_folder = "agility_cassie"
-    skip_reason = "Closed-loop kinematic chains cause different DOF layout"
+    num_steps = 20
+    # On CPU the Newton-vs-native qvel diff is effectively bit-exact after
+    # backfill (~5e-7 float accumulation over 20 steps). On AWS EC2 GPU the
+    # mjwarp constraint solver's atomic reductions are non-deterministic for
+    # Cassie's closed-loop chain (verified: two native-vs-native runs on
+    # identical inputs peaked at 5e-6 on some runs, 5e-5 on others). The
+    # Newton-vs-native diff rides on top of this noise. Tolerance set above
+    # the observed native-vs-native variance with safety margin.
+    dynamics_tolerance = 1e-4
+    backfill_model = True
+    # Cassie's MJCF doesn't specify <option integrator=...>, so native uses
+    # MuJoCo's default (Euler). Pin Newton's integrator to match.
+    solver_integrator = "euler"
+    # eq_data: compilation-dependent for CONNECT constraints; body2 anchor is
+    # derived from body_quat, which differs due to inertia re-diagonalization.
+    # jnt_actfrclimited: Newton unconditionally sets True with effort_limit=1e6,
+    # while native keeps False when no actuatorfrcrange is specified. Flagged as
+    # "no effect" in DEFAULT_MODEL_SKIP_FIELDS, but Cassie's closed-loop dynamics
+    # show a measurable divergence without this backfill (qvel step 0 diff ~2e-5).
+    # jnt_solref: Newton's solref standard->direct conversion omits the dmax
+    # (solimp[0]) factor, so its stored direct-mode values are ~11% lower
+    # stiffness/damping than native's internal values for the same MJCF input
+    # (tracked in #2515). Cassie's closed-loop limit constraints amplify this
+    # into measurable qvel divergence; backfill until the conversion is fixed.
+    backfill_fields = MODEL_BACKFILL_FIELDS + [  # noqa: RUF005
+        "eq_data",
+        "jnt_actfrclimited",
+        "jnt_solref",
+    ]
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_data"}
 
 
 # -----------------------------------------------------------------------------
@@ -2307,8 +2436,8 @@ class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
-    # Dynamics disabled: qvel drift 1.2e-5 (model compilation diffs amplified by free joint)
-    num_steps = 0
+    num_steps = 20
+    dynamics_tolerance = 5e-4  # qvel drifts over steps; exact cause unclear
     fk_enabled = True
 
 
@@ -2363,10 +2492,10 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
-    # Dynamics disabled: body_mass diff causes qpos divergence 3.4e-5 (#2170)
-    num_steps = 0
+    num_steps = 20
     fk_enabled = True
-    # TODO(#2170): body_mass differs for some bodies
+    backfill_model = True  # needs body_mass backfill (visual geom mesh volume diff)
+    # TODO(#2494): body_mass differs for some bodies
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"body_mass"}
 
 

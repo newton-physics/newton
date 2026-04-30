@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import numpy as np
 import warp as wp
 
@@ -297,7 +299,7 @@ class Example:
         self.graph = None
         if wp.get_device().is_cuda and self.solver.grid_type == "fixed":
             if self.sim_substeps % 2 != 0:
-                wp.utils.warn("Sim substeps must be even for graph capture of MPM step")
+                warnings.warn("Sim substeps must be even for graph capture of MPM step", stacklevel=2)
             else:
                 with wp.ScopedCapture() as capture:
                     self.simulate()
@@ -386,9 +388,9 @@ class Example:
         parser.add_argument(
             "--solver",
             "-s",
-            type=str,
-            default="cg+gauss-seidel",
-            choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+            nargs="+",
+            default=("cg", "gauss-seidel"),
+            help="Rheology solver sequence, e.g. --solver cg gauss-seidel",
         )
 
         parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
