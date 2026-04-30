@@ -1407,6 +1407,7 @@ def validate_triangle_mesh(
     min_area: float = 1e-6,
     max_aspect_ratio: float = 10.0,
     min_angle_deg: float = 5.0,
+    label: str | None = None,
     stacklevel: int = 2,
 ) -> None:
     """Check a triangle mesh for quality issues and emit warnings.
@@ -1422,6 +1423,9 @@ def validate_triangle_mesh(
         max_aspect_ratio: Maximum longest-edge / shortest-altitude ratio.
             Default ``10.0``.
         min_angle_deg: Minimum interior angle [deg]. Default ``5.0``.
+        label: Optional name included in the warning message so callers
+            can identify which mesh tripped the warning when validating
+            many meshes.
         stacklevel: Passed to :func:`warnings.warn` so the warning points at
             the caller's frame.
     """
@@ -1503,8 +1507,11 @@ def validate_triangle_mesh(
     if not issues:
         return
 
+    prefix = "Mesh quality warning"
+    if label is not None:
+        prefix += f" [{label}]"
     msg = (
-        f"Mesh quality warning ({n_verts} vertices, {n_faces} triangles):\n"
+        f"{prefix} ({n_verts} vertices, {n_faces} triangles):\n"
         + "\n".join(f"  - {issue}" for issue in issues)
         + "\nConsider remeshing the input geometry."
     )
@@ -1517,6 +1524,7 @@ def validate_tet_mesh(
     *,
     min_volume: float = 1e-9,
     min_eta: float = 0.01,
+    label: str | None = None,
     stacklevel: int = 2,
 ) -> None:
     """Check a tetrahedral mesh for quality issues and emit warnings.
@@ -1541,6 +1549,9 @@ def validate_tet_mesh(
         min_volume: Minimum absolute tet volume [m³]. Default ``1e-9``
             (1 mm³).
         min_eta: Minimum shape quality eta. Default ``0.01``.
+        label: Optional name included in the warning message so callers
+            can identify which mesh tripped the warning when validating
+            many meshes.
         stacklevel: Passed to :func:`warnings.warn`.
     """
     vertices = np.asarray(vertices, dtype=float)
@@ -1617,7 +1628,8 @@ def validate_tet_mesh(
     if not issues:
         return
 
-    msg = f"Tet mesh quality warning ({len(vertices)} vertices, {n_tets} tetrahedra):\n" + "\n".join(
-        f"  - {issue}" for issue in issues
-    )
+    prefix = "Tet mesh quality warning"
+    if label is not None:
+        prefix += f" [{label}]"
+    msg = f"{prefix} ({len(vertices)} vertices, {n_tets} tetrahedra):\n" + "\n".join(f"  - {issue}" for issue in issues)
     warnings.warn(msg, stacklevel=stacklevel)
