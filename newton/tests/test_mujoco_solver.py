@@ -5777,41 +5777,48 @@ class TestMuJoCoAttributes(unittest.TestCase):
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        base = UsdGeom.Xform.Define(stage, "/World/base").GetPrim()
-        link = UsdGeom.Xform.Define(stage, "/World/link").GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(base)
-        UsdPhysics.RigidBodyAPI.Apply(link)
-        base_mass = UsdPhysics.MassAPI.Apply(base)
-        base_mass.CreateMassAttr().Set(1.0)
-        base_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
-        link_mass = UsdPhysics.MassAPI.Apply(link)
-        link_mass.CreateMassAttr().Set(1.0)
-        link_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
-        UsdPhysics.ArticulationRootAPI.Apply(base)
+        def add_robot(root_path, *, add_actuator=False):
+            base = UsdGeom.Xform.Define(stage, f"{root_path}/base").GetPrim()
+            link = UsdGeom.Xform.Define(stage, f"{root_path}/link").GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(base)
+            UsdPhysics.RigidBodyAPI.Apply(link)
+            base_mass = UsdPhysics.MassAPI.Apply(base)
+            base_mass.CreateMassAttr().Set(1.0)
+            base_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
+            link_mass = UsdPhysics.MassAPI.Apply(link)
+            link_mass.CreateMassAttr().Set(1.0)
+            link_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
+            UsdPhysics.ArticulationRootAPI.Apply(base)
 
-        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint")
-        joint.CreateAxisAttr().Set("Z")
-        joint.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
-        joint.CreateBody1Rel().SetTargets([Sdf.Path("/World/link")])
+            joint_path = f"{root_path}/joint"
+            joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
+            joint.CreateAxisAttr().Set("Z")
+            joint.CreateBody0Rel().SetTargets([Sdf.Path(f"{root_path}/base")])
+            joint.CreateBody1Rel().SetTargets([Sdf.Path(f"{root_path}/link")])
 
-        # Author actuator before tendon to exercise deferred target resolution.
-        actuator_prim = stage.DefinePrim("/World/a_tendon_actuator", "MjcActuator")
-        actuator_prim.CreateRelationship("mjc:target", True).SetTargets([Sdf.Path("/World/z_fixed_tendon")])
+            tendon_path = f"{root_path}/fixed_tendon"
+            if add_actuator:
+                # Author actuator before tendon to exercise deferred target resolution.
+                actuator_prim = stage.DefinePrim(f"{root_path}/a_tendon_actuator", "MjcActuator")
+                actuator_prim.CreateRelationship("mjc:target", True).SetTargets([Sdf.Path(tendon_path)])
 
-        tendon_prim = stage.DefinePrim("/World/z_fixed_tendon", "MjcTendon")
-        tendon_prim.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
-        tendon_prim.CreateRelationship("mjc:path", True).SetTargets([Sdf.Path("/World/joint")])
-        tendon_prim.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([0]))
-        tendon_prim.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(Vt.DoubleArray([1.0]))
+            tendon = stage.DefinePrim(tendon_path, "MjcTendon")
+            tendon.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
+            tendon.CreateRelationship("mjc:path", True).SetTargets([Sdf.Path(joint_path)])
+            tendon.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([0]))
+            tendon.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(Vt.DoubleArray([1.0]))
+
+        add_robot("/World/RobotA", add_actuator=True)
+        add_robot("/World/RobotB")
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
+        builder.add_usd(stage, root_path="/World/RobotA")
         model = builder.finalize()
 
-        self.assertEqual(model.custom_frequency_counts["mujoco:actuator"], 1)
         self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 1)
-        self.assertEqual(model.mujoco.actuator_target_label[0], "/World/z_fixed_tendon")
+        self.assertEqual(model.custom_frequency_counts["mujoco:tendon_joint"], 1)
+        self.assertEqual(model.mujoco.actuator_target_label[0], "/World/RobotA/fixed_tendon")
 
         solver = SolverMuJoCo(model, separate_worlds=False)
         mujoco = SolverMuJoCo._mujoco
@@ -5819,7 +5826,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         self.assertEqual(int(solver.mj_model.actuator_trntype[0]), int(mujoco.mjtTrn.mjTRN_TENDON))
         self.assertEqual(int(solver.mj_model.actuator_trnid[0, 0]), 0)
         tendon_name = mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_TENDON, 0)
-        self.assertEqual(tendon_name, "/World/z_fixed_tendon")
+        self.assertEqual(tendon_name, "/World/RobotA/fixed_tendon")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_actuator_auto_limits_and_partial_ranges(self):

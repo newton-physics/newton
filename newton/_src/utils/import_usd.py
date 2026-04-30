@@ -3298,7 +3298,7 @@ def parse_usd(
     }
 
     # Process custom frequencies with USD prim filters
-    # Collect frequencies with filters and their attributes, then traverse stage once
+    # Collect frequencies with filters and their attributes, then traverse the imported subtree once
     frequencies_with_filters = []
     for freq_key, freq_obj in builder.custom_frequencies.items():
         if freq_obj.usd_prim_filter is None:
@@ -3308,10 +3308,10 @@ def parse_usd(
             continue
         frequencies_with_filters.append((freq_key, freq_obj, freq_attrs))
 
-    # Traverse stage once and check all filters for each prim
+    # Traverse the requested root subtree once and check all filters for each prim
     # Use TraverseInstanceProxies to include prims under instanceable prims
     if frequencies_with_filters:
-        for prim in stage.Traverse(Usd.TraverseInstanceProxies()):
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()):
             for freq_key, freq_obj, freq_attrs in frequencies_with_filters:
                 # Build per-frequency callback context and pass the same object to
                 # usd_prim_filter and usd_entry_expander.
