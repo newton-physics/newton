@@ -422,9 +422,11 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
    SolverFeatherstone
    SolverImplicitMPM
    SolverKamino
+   SolverModelFlags
    SolverMuJoCo
    SolverNotifyFlags
    SolverSemiImplicit
+   SolverStateFlags
    SolverStyle3D
    SolverVBD
    SolverXPBD

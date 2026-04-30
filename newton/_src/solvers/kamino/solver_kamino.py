@@ -439,7 +439,7 @@ class SolverKamino(SolverBase):
         state: State | None = None,
         world_mask: wp.array | None = None,
         flags: SolverStateFlags | None = None,
-        *,
+        *legacy_targets: wp.array | None,
         state_out: State | None = None,
         actuator_q: wp.array | None = None,
         actuator_u: wp.array | None = None,
@@ -479,6 +479,41 @@ class SolverKamino(SolverBase):
             base_u: Optional array of target base body twists.
                 Shape of ``(num_worlds,)`` and type :class:`wp.spatial_vectorf`.
         """
+        legacy_target_names = ("actuator_q", "actuator_u", "joint_q", "joint_u", "base_q", "base_u")
+        target_values = {
+            "actuator_q": actuator_q,
+            "actuator_u": actuator_u,
+            "joint_q": joint_q,
+            "joint_u": joint_u,
+            "base_q": base_q,
+            "base_u": base_u,
+        }
+
+        if legacy_targets:
+            positional_targets = (flags, *legacy_targets)
+            if len(positional_targets) > len(legacy_target_names):
+                raise TypeError(
+                    f"reset() takes at most {2 + len(legacy_target_names)} positional arguments "
+                    f"after 'self' ({2 + len(positional_targets)} given)"
+                )
+            for name, value in zip(legacy_target_names, positional_targets, strict=False):
+                if target_values[name] is not None:
+                    raise TypeError(f"reset() got multiple values for argument '{name}'")
+                target_values[name] = value
+            flags = None
+        elif flags is not None and not isinstance(flags, int):
+            if actuator_q is not None:
+                raise TypeError("reset() got multiple values for argument 'actuator_q'")
+            target_values["actuator_q"] = flags
+            flags = None
+
+        actuator_q = target_values["actuator_q"]
+        actuator_u = target_values["actuator_u"]
+        joint_q = target_values["joint_q"]
+        joint_u = target_values["joint_u"]
+        base_q = target_values["base_q"]
+        base_u = target_values["base_u"]
+
         if state_out is not None:
             if state is not None:
                 raise ValueError("Cannot specify both 'state' and 'state_out'.")
@@ -490,6 +525,8 @@ class SolverKamino(SolverBase):
             state = state_out
         if state is None:
             raise ValueError("'state' argument is required.")
+
+        state_flags = SolverStateFlags.ALL if flags is None else SolverStateFlags(flags)
 
         if base_q is not None:
             base_q_com = wp.zeros_like(base_q)
@@ -503,6 +540,17 @@ class SolverKamino(SolverBase):
 
         # TODO: fix brittle in-place update of arrays after conversion
         state_out_kamino = self._kamino.StateKamino.from_newton(self._model_kamino.size, self.model, state)
+        restore_after_reset: list[tuple[wp.array, wp.array]] = []
+
+        def _preserve_if_unset(array: wp.array | None, flag: SolverStateFlags) -> None:
+            if array is not None and not (state_flags & flag):
+                restore_after_reset.append((array, wp.clone(array)))
+
+        _preserve_if_unset(state_out_kamino.q_j, SolverStateFlags.JOINT_Q)
+        _preserve_if_unset(state_out_kamino.q_j_p, SolverStateFlags.JOINT_Q)
+        _preserve_if_unset(state_out_kamino.dq_j, SolverStateFlags.JOINT_QD)
+        _preserve_if_unset(state_out_kamino.q_i, SolverStateFlags.BODY_Q)
+        _preserve_if_unset(state_out_kamino.u_i, SolverStateFlags.BODY_QD)
 
         self._solver_kamino.reset(
             state_out=state_out_kamino,
@@ -522,6 +570,8 @@ class SolverKamino(SolverBase):
             world_mask=world_mask,
             body_wid=self._model_kamino.bodies.wid,
         )
+        for array, snapshot in restore_after_reset:
+            wp.copy(array, snapshot)
 
     @override
     def step(self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float):

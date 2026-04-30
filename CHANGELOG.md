@@ -65,10 +65,8 @@
 
 ### Deprecated
 
-- Deprecate `SolverNotifyFlags` in favor of `SolverModelFlags`
+- Deprecate `SolverNotifyFlags` in favor of `SolverModelFlags`; migrate calls such as `SolverNotifyFlags.MODEL_PROPERTIES` to `SolverModelFlags.MODEL_PROPERTIES`
 - Deprecate and ignore `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
-
-### Deprecated
 
 - Deprecate `newton-actuators` package dependency; all actuator functionality is now built into `newton.actuators`. The dependency is kept for backward compatibility and will be removed in a future release; migrate imports from `newton_actuators` to `newton.actuators`
 
