@@ -18,7 +18,7 @@ from ...sim import (
     ModelBuilder,
     State,
 )
-from ..flags import SolverNotifyFlags
+from ..flags import SolverModelFlags
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
@@ -737,7 +737,7 @@ class SolverVBD(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
+        if flags & (SolverModelFlags.BODY_PROPERTIES | SolverModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
     # =====================================================
