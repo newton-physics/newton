@@ -407,10 +407,8 @@ def evaluate_angular_constraint_force_hessian(
     kappa_stab = kappa_now_vec - alpha * C0_ang
     kappa_perp = P * kappa_stab
 
-    # P_ang is constant for joint angular residuals, so lambda_ang should already
-    # be in-basis. Project here too so stale or externally edited state cannot
-    # apply force along a free angular DOF.
-    f_local = penalty_k * kappa_perp + sigma0 + P * lambda_ang
+    # P_ang constant -> lambda_ang in-basis by construction (see build_joint_projectors).
+    f_local = penalty_k * kappa_perp + sigma0 + lambda_ang
 
     H_local = penalty_k * P + wp.mat33(
         C_fric[0],
@@ -1982,8 +1980,7 @@ def step_joint_C0_lambda(
     joint_constraint_start: wp.array[wp.int32],
     joint_constraint_dim: wp.array[wp.int32],
     joint_is_hard: wp.array[wp.int32],
-    lambda_decay: float,
-    penalty_decay: float,
+    gamma: float,
     joint_penalty_k_min: wp.array[float],
     joint_penalty_k_max: wp.array[float],
     joint_penalty_k: wp.array[float],
@@ -2004,7 +2001,7 @@ def step_joint_C0_lambda(
     for s in range(c_dim):
         idx = c_start + s
         joint_penalty_k[idx] = wp.clamp(
-            penalty_decay * joint_penalty_k[idx], joint_penalty_k_min[idx], joint_penalty_k_max[idx]
+            gamma * joint_penalty_k[idx], joint_penalty_k_min[idx], joint_penalty_k_max[idx]
         )
 
     child = joint_child[j]
@@ -2032,7 +2029,7 @@ def step_joint_C0_lambda(
             x_p = wp.transform_get_translation(X_wp)
             x_c = wp.transform_get_translation(X_wc)
             joint_C0_lin[j] = x_c - x_p
-            joint_lambda_lin[j] = joint_lambda_lin[j] * lambda_decay
+            joint_lambda_lin[j] = joint_lambda_lin[j] * gamma
         else:
             joint_C0_lin[j] = wp.vec3(0.0)
             joint_lambda_lin[j] = wp.vec3(0.0)
@@ -2048,7 +2045,7 @@ def step_joint_C0_lambda(
             q_wp_rest = wp.transform_get_rotation(X_wp_rest)
             q_wc_rest = wp.transform_get_rotation(X_wc_rest)
             joint_C0_ang[j] = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
-            joint_lambda_ang[j] = joint_lambda_ang[j] * lambda_decay
+            joint_lambda_ang[j] = joint_lambda_ang[j] * gamma
         else:
             joint_C0_ang[j] = wp.vec3(0.0)
             joint_lambda_ang[j] = wp.vec3(0.0)
@@ -2236,8 +2233,8 @@ def step_body_body_contact_C0_lambda(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     hard_contacts: int,
-    lambda_decay: float,
-    penalty_decay: float,
+    gamma_lambda: float,
+    gamma_k: float,
     contact_material_ke: wp.array[float],
     k_start: float,
     # In/out
@@ -2248,7 +2245,7 @@ def step_body_body_contact_C0_lambda(
     """Per-step k decay + lambda decay + C0 snapshot.
 
     Runs every step. K decay is unconditional (hard and soft). Lambda decay
-    uses lambda_decay (0 when contact history is off or contacts are soft).
+    uses gamma_lambda (0 when contact history is off or contacts are soft).
     C0 is always recomputed for hard contacts.
     """
     i = wp.tid()
@@ -2257,9 +2254,9 @@ def step_body_body_contact_C0_lambda(
 
     ke = contact_material_ke[i]
     k_min = ke if k_start < 0.0 else wp.min(k_start, ke)
-    contact_penalty_k[i] = wp.clamp(penalty_decay * contact_penalty_k[i], k_min, ke)
+    contact_penalty_k[i] = wp.clamp(gamma_k * contact_penalty_k[i], k_min, ke)
 
-    contact_lambda[i] = contact_lambda[i] * lambda_decay
+    contact_lambda[i] = contact_lambda[i] * gamma_lambda
 
     if hard_contacts == 1:
         s0 = rigid_contact_shape0[i]
@@ -3361,13 +3358,12 @@ def update_duals_joint(
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
         kappa = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
         kappa_perp = P_ang * kappa
-        lam_old = P_ang * joint_lambda_ang[j]
         lam_new = _update_dual_vec3(
             kappa_perp,
             P_ang * joint_C0_ang[j],
             avbd_alpha,
             joint_penalty_k[i_ang],
-            lam_old,
+            joint_lambda_ang[j],
             joint_is_hard[i_ang],
         )
         joint_lambda_ang[j] = lam_new
@@ -3500,13 +3496,12 @@ def update_duals_joint(
         kappa = compute_kappa(q_wp_rot, q_wc, q_wp_rest, q_wc_rest)
         if ang_count < 3:
             kappa_perp = P_ang * kappa
-            lam_old = P_ang * joint_lambda_ang[j]
             lam_new = _update_dual_vec3(
                 kappa_perp,
                 P_ang * joint_C0_ang[j],
                 avbd_alpha,
                 joint_penalty_k[i_ang],
-                lam_old,
+                joint_lambda_ang[j],
                 joint_is_hard[i_ang],
             )
             joint_lambda_ang[j] = lam_new

@@ -6576,8 +6576,8 @@ class ModelBuilder:
 
         Args:
             positions: Centerline node positions (segment endpoints) in world space. These are the
-                tip/end points of the capsules, with one extra point so that for ``N`` segments there
-                are ``N+1`` positions.
+                cylindrical centerline endpoints of the capsules, with one extra point so that for
+                ``N`` segments there are ``N+1`` positions.
             quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
                 must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
                 local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
@@ -6617,9 +6617,13 @@ class ModelBuilder:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
               pass a larger value when neighboring capsules should remain nearly inextensible.
             - Stretch, bend, and damping values are passed through as provided per joint.
-            - Each segment is implemented as a capsule primitive. The segment's body transform is
-              placed at the segment midpoint, so the body origin and COM coincide. The start and end
-              endpoints are at local ``(0, 0, -half_height)`` and ``(0, 0, half_height)``.
+            - Each generated capsule body frame is placed at the segment midpoint so the body origin
+              and COM coincide.
+            - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
+              the cylindrical centerline, excluding the hemispherical caps. Centerline endpoints are
+              at local ``(0, 0, -half_height)`` and ``(0, 0, half_height)``, and the actual capsule
+              surface tips lie at local ``(0, 0, -(half_height + radius))`` and
+              ``(0, 0, half_height + radius)``.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -6754,8 +6758,8 @@ class ModelBuilder:
         Representation:
 
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
-          ``node_positions[v]`` (body frame is placed at the edge midpoint and local +Z points
-          toward ``v``).
+          ``node_positions[v]`` (local +Z points toward ``v``). The body frame is placed at the
+          edge midpoint/COM.
         - Cable joints are created between edge-bodies that share a node, using a spanning-tree
           traversal so that each body has a single parent when wrapped into an articulation.
 
@@ -6883,6 +6887,7 @@ class ModelBuilder:
             center = p0 + seg_vec * 0.5
             body_q = wp.transform(center, q)
             com_offset = wp.vec3(0.0)
+            capsule_xform = wp.transform()
 
             body_label = f"{label}_edge_body_{e_idx}" if label else None
             shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
@@ -6891,7 +6896,7 @@ class ModelBuilder:
 
             self.add_shape_capsule(
                 body_id,
-                xform=wp.transform(),
+                xform=capsule_xform,
                 radius=radius,
                 half_height=half_height,
                 cfg=cfg,
@@ -6907,7 +6912,6 @@ class ModelBuilder:
             node_incidence[v].append(e_idx)
 
         def _edge_anchor_xform(e_idx: int, node_idx: int) -> wp.transform:
-            # Body frame is at the segment midpoint; endpoints are +/- half-length along local Z.
             if node_idx == edge_u[e_idx]:
                 z = -0.5 * edge_len[e_idx]
             elif node_idx == edge_v[e_idx]:
