@@ -81,6 +81,15 @@ class RenderConfig:
     gaussians_max_num_hits: int = 20
     """Maximum Gaussian hits accumulated per ray."""
 
+    block_dim: int = 0
+    """``block_dim`` to forward to ``wp.launch`` for the render megakernel.
+    ``0`` keeps Warp's default."""
+
+    launch_bounds: tuple[int, int] | None = None
+    """Optional ``(threads_per_block, min_blocks_per_mp)`` forwarded to
+    ``@wp.kernel(launch_bounds=...)``. ``None`` keeps the kernel
+    unconstrained (Warp default)."""
+
 
 @dataclass(unsafe_hash=True)
 class ClearData:

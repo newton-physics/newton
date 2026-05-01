@@ -269,6 +269,10 @@ class RenderContext:
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
 
+            launch_kwargs = {}
+            if self.config.block_dim > 0:
+                launch_kwargs["block_dim"] = self.config.block_dim
+
             wp.launch(
                 kernel=render_kernel,
                 dim=(self.world_count * camera_count * width * height),
@@ -324,6 +328,7 @@ class RenderContext:
                     albedo_image,
                 ],
                 device=self.device,
+                **launch_kwargs,
             )
 
     @property

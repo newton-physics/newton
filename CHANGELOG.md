@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add `block_dim` and `launch_bounds` fields to `RenderConfig` so callers can override the launch shape of the Warp ray-tracer's `render_megakernel`. `block_dim` is forwarded to `wp.launch`; `launch_bounds=(threads_per_block, min_blocks_per_mp)` is forwarded to `@wp.kernel(launch_bounds=...)`. Both default to existing behavior and participate in the kernel cache key.
 - Add composable actuator subsystem with pluggable `Controller` (`ControllerPD`, `ControllerPID`, `ControllerNeuralMLP`, `ControllerNeuralLSTM`), `Clamping` (`ClampingMaxEffort`, `ClampingDCMotor`, `ClampingPositionBased`), and `Delay` components; supports per-DOF delays, CUDA graph capture, and masked environment reset
 - Add heatmap rendering for scalar arrays logged through `ViewerGL.log_array()`
 - Add Blender-style orbit, pan, and dolly controls to the GL viewer using middle-mouse drag combinations
