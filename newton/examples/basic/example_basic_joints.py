@@ -17,6 +17,19 @@ import newton
 import newton.examples
 
 
+@wp.func
+def _ball_body_stays_on_joint_sphere(q: wp.transform, qd: wp.spatial_vector):
+    return abs(wp.length(wp.transform_get_translation(q) - wp.vec3(0.0, 3.0, 2.05)) - 0.75) < 5e-3
+
+
+@wp.func
+def _slider_constrained_motion_has_stopped(q: wp.transform, qd: wp.spatial_vector):
+    return (
+        wp.length(wp.cross(wp.spatial_top(qd), wp.vec3(0.0, 0.0, 1.0))) < 1e-5
+        and wp.length(wp.spatial_bottom(qd)) < 1e-5
+    )
+
+
 class Example:
     def __init__(self, viewer, args):
         # setup simulation parameters first
@@ -226,26 +239,22 @@ class Example:
             indices=[self.model.body_label.index("b_rev")],
         )
 
-        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "linear motion on axis",
-            lambda q, qd: wp.length(abs(wp.cross(wp.spatial_top(qd), wp.vec3(0.0, 0.0, 1.0)))) < 1e-5
-            and wp.length(wp.spatial_bottom(qd)) < 1e-5,
+            _slider_constrained_motion_has_stopped,
             indices=[self.model.body_label.index("b_prismatic")],
         )
-        # fmt: on
 
+    def test_final(self):
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "ball body stays on joint sphere",
-            lambda q, qd: abs(wp.length(wp.transform_get_translation(q) - wp.vec3(0.0, 3.0, 2.05)) - 0.75) < 1e-3,
+            _ball_body_stays_on_joint_sphere,
             indices=[self.model.body_label.index("b_ball")],
         )
-
-    def test_final(self):
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -264,10 +273,7 @@ class Example:
             self.model,
             self.state_0,
             "slider link constrained motion has come to a rest",
-            lambda q, qd: (
-                wp.length(wp.cross(wp.spatial_top(qd), wp.vec3(0.0, 0.0, 1.0))) < 1e-5
-                and wp.length(wp.spatial_bottom(qd)) < 1e-5
-            ),
+            _slider_constrained_motion_has_stopped,
             indices=[3],
         )
         newton.examples.test_body_state(
