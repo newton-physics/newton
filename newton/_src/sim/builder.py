@@ -6061,7 +6061,7 @@ class ModelBuilder:
         """Adds a heightfield (2D elevation grid) collision shape to the model.
 
         Heightfields are efficient representations of terrain using a 2D grid of elevation values.
-        They are always static (attached to the world body) and more memory-efficient than
+        They are always static (``body=-1``) and more memory-efficient than
         equivalent triangle meshes.
 
         Args:

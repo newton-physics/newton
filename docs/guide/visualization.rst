@@ -21,6 +21,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
+- :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
 
 **Camera and layout:**
@@ -35,6 +36,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
 - :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
+- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image as a dockable window in :class:`~newton.viewer.ViewerGL` (no-op on other backends)
 
 **Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
 All viewers support the ``max_worlds`` parameter to limit visualization to a subset of environments:
@@ -76,9 +78,9 @@ Constructor parameters:
     viewer.log_state(state)
     viewer.end_frame()
 
-    # check if the simulation is paused (toggled with SPACE key):
-    if viewer.is_paused():
-        pass  # simulation stepping is paused
+    # advance the simulation each frame, or step once when paused:
+    if viewer.should_step():
+        pass  # call solver.step(), example.step(), etc.
 
 **Interactive forces and input:**
 
@@ -157,6 +159,8 @@ Viewer controls:
       - Toggle the sidebar
     * - ``SPACE``
       - Pause or continue the simulation
+    * - ``.``
+      - Step the simulation by one frame while paused
     * - ``ESC``
       - Close the viewer
     * - Right click
@@ -571,6 +575,47 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 .. code-block:: python
 
     viewer.log_gizmo("/debug/target_frame", wp.transform(pos, rot))
+
+**Logging images:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
+outputs from :class:`~newton.sensors.SensorTiledCamera`) as dockable windows in
+:class:`~newton.viewer.ViewerGL`. Accepted shapes are ``(H, W)``, ``(H, W, C)``,
+``(N, H, W)``, and ``(N, H, W, C)`` with ``C in (1, 3, 4)``. Accepted dtypes are
+``uint8`` (values in ``[0, 255]``) and ``float32`` (values in ``[0, 1]``; values
+outside the range are clipped).
+
+.. testcode:: viewer-log-image
+
+    from newton.sensors import SensorTiledCamera
+
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0)
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerNull()
+    viewer.set_model(model)
+
+    # Grayscale heatmap: normalize to [0, 1] before logging so float32
+    # values land in the accepted range.
+    depth_image = np.full((16, 16), 2.0, dtype=np.float32)
+    heatmap = depth_image / max(depth_image.max(), 1e-6)
+    viewer.log_image("heatmap", heatmap)
+
+    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
+    # output once and reuse it every frame; the RGBA conversion is a
+    # zero-copy view.
+    sensor = SensorTiledCamera(model=model)
+    W, H, camera_count = 16, 16, 1
+    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
+    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
+    rgba = sensor.utils.to_rgba_from_color(color_image)
+    viewer.log_image("tiled_camera", rgba)
+
+For a 3D input, a last-axis of 1, 3, or 4 is interpreted as channel count
+for a single ``(H, W, C)`` image; otherwise the array is interpreted as a
+batch ``(N, H, W)`` of grayscale images. Pass a 4D array if the
+disambiguation matters.
 
 **Camera and world layout:**
 

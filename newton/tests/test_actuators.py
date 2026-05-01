@@ -12,6 +12,7 @@ import tempfile
 import types
 import unittest
 import warnings
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -728,6 +729,32 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertIsInstance(parsed, ActuatorParsed)
         self.assertEqual(parsed.controller_class, ControllerPD)
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_from_usd_schema_plugin_not_loaded(self):
+        """parse_actuator_prim works when the USD schema plugin is not registered.
+
+        Simulates the headless case where GetAppliedSchemas() returns [] because
+        the Newton schema plugin failed to load, but the raw apiSchemas metadata
+        is still present on the prim.
+        """
+        test_dir = os.path.dirname(__file__)
+        usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
+        if not os.path.exists(usd_path):
+            self.skipTest(f"Test USD file not found: {usd_path}")
+
+        stage = Usd.Stage.Open(usd_path)
+        prim = stage.GetPrimAtPath("/World/Robot/Joint1Actuator")
+
+        with patch.object(type(prim), "GetAppliedSchemas", return_value=[]):
+            self.assertEqual(prim.GetAppliedSchemas(), [], "patch must be active for this test to be meaningful")
+            parsed = parse_actuator_prim(prim)
+
+        self.assertIsNotNone(parsed)
+        self.assertIsInstance(parsed, ActuatorParsed)
+        self.assertEqual(parsed.controller_class, ControllerPD)
+        self.assertAlmostEqual(parsed.controller_kwargs["kp"], 100.0)
+        self.assertAlmostEqual(parsed.controller_kwargs["kd"], 10.0)
 
     def test_programmatic(self):
         """Mixed controller types, clamping, and delays via add_actuator.
