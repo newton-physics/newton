@@ -299,8 +299,9 @@ class SolverVBD(SolverBase):
                 ``None`` (default) uses ``rigid_avbd_beta``.
             rigid_avbd_angular_beta: Angular beta override for angular constraints (radians).
                 ``None`` (default) uses ``rigid_avbd_beta``.
-            rigid_avbd_gamma: Per-step decay factor for penalty k and persisted hard-mode lambda. Lower values
-                decay faster, improving stability at the cost of slower convergence.
+            rigid_avbd_gamma: Per-step decay factor for penalty k and persisted hard-mode lambda. Hard joint/contact
+                lambda is additionally scaled by the corresponding alpha during warm-starting, following the AVBD
+                reference scheme. Lower values decay faster, improving stability at the cost of slower convergence.
             rigid_contact_hard: Whether body-body rigid contacts use hard mode (augmented Lagrangian with
                 persistent lambda and C0 stabilization) or soft mode (penalty only).
             rigid_contact_history: Whether to persist body-body contact state across steps using
@@ -986,18 +987,20 @@ class SolverVBD(SolverBase):
                     dof0 = int(jdofs[j])
                     lc = int(jdof_dim[j, 0])
                     ac = int(jdof_dim[j, 1])
-                    joint_k_max_np[c0 + 0] = structural_linear_ke
-                    joint_k_init_np[c0 + 0] = (
-                        structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
-                    )
-                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
-                    is_hard_np[c0 + 0] = int(j_is_hard[j])
-                    joint_k_max_np[c0 + 1] = structural_angular_ke
-                    joint_k_init_np[c0 + 1] = (
-                        structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
-                    )
-                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
-                    is_hard_np[c0 + 1] = int(j_is_hard[j])
+                    if lc < 3:
+                        joint_k_max_np[c0 + 0] = structural_linear_ke
+                        joint_k_init_np[c0 + 0] = (
+                            structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                        )
+                        joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
+                        is_hard_np[c0 + 0] = int(j_is_hard[j])
+                    if ac < 3:
+                        joint_k_max_np[c0 + 1] = structural_angular_ke
+                        joint_k_init_np[c0 + 1] = (
+                            structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                        )
+                        joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+                        is_hard_np[c0 + 1] = int(j_is_hard[j])
                     for li in range(lc):
                         dof_idx = dof0 + li
                         slot = c0 + 2 + li
@@ -1855,8 +1858,10 @@ class SolverVBD(SolverBase):
             # Per-step k decay + lambda decay + C0 (body_q is still collide frame here).
             if contacts is not None and contacts.rigid_contact_max > 0:
                 contact_launch_dim = contacts.rigid_contact_max
-                gamma_lambda = (
-                    self.rigid_avbd_gamma if (self.rigid_contact_history and self.rigid_contact_hard) else 0.0
+                contact_lambda_decay = (
+                    self.rigid_contact_alpha * self.rigid_avbd_gamma
+                    if (self.rigid_contact_history and self.rigid_contact_hard)
+                    else 0.0
                 )
                 wp.launch(
                     kernel=step_body_body_contact_C0_lambda,
@@ -1873,7 +1878,7 @@ class SolverVBD(SolverBase):
                         model.shape_body,
                         state_in.body_q,
                         self.rigid_contact_hard,
-                        gamma_lambda,
+                        contact_lambda_decay,
                         self.rigid_avbd_gamma,
                         self.body_body_contact_material_ke,
                         self.rigid_contact_k_start_value,
@@ -1938,6 +1943,9 @@ class SolverVBD(SolverBase):
             )
 
             if model.joint_count > 0:
+                # Reference AVBD warm-starting decays lambda by alpha * gamma, while
+                # penalty k uses gamma only.
+                joint_lambda_decay = self.rigid_joint_alpha * self.rigid_avbd_gamma
                 wp.launch(
                     kernel=step_joint_C0_lambda,
                     dim=model.joint_count,
@@ -1952,6 +1960,7 @@ class SolverVBD(SolverBase):
                         self.joint_constraint_start,
                         self.joint_constraint_dim,
                         self.joint_is_hard,
+                        joint_lambda_decay,
                         self.rigid_avbd_gamma,
                         self.joint_penalty_k_min,
                         self.joint_penalty_k_max,

@@ -6618,10 +6618,8 @@ class ModelBuilder:
               pass a larger value when neighboring capsules should remain nearly inextensible.
             - Stretch, bend, and damping values are passed through as provided per joint.
             - Each segment is implemented as a capsule primitive. The segment's body transform is
-              placed at the start point ``positions[i]`` with a local center-of-mass offset of
-              ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
-              is added with a local transform of ``(0, 0, half_height)`` so it spans from the start to
-              the end along local +Z.
+              placed at the segment midpoint, so the body origin and COM coincide. The start and end
+              endpoints are at local ``(0, 0, -half_height)`` and ``(0, 0, half_height)``.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -6709,8 +6707,12 @@ class ModelBuilder:
                 if L_last <= min_segment_length:
                     L_last = min_segment_length
 
-                parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
-                child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+                L_first = float(wp.length(positions_wp[1] - positions_wp[0]))
+                if L_first <= min_segment_length:
+                    L_first = min_segment_length
+
+                parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
+                child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
 
                 loop_joint_label = f"{label}_cable_{len(link_joints) + 1}" if label else None
                 j_loop = self.add_joint_cable(
@@ -6752,7 +6754,7 @@ class ModelBuilder:
         Representation:
 
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
-          ``node_positions[v]`` (body frame is placed at the start node ``u`` and local +Z points
+          ``node_positions[v]`` (body frame is placed at the edge midpoint and local +Z points
           toward ``v``).
         - Cable joints are created between edge-bodies that share a node, using a spanning-tree
           traversal so that each body has a single parent when wrapped into an articulation.
@@ -6877,21 +6879,19 @@ class ModelBuilder:
                     )
             half_height = 0.5 * seg_length
 
-            # Position body at start node, with COM offset to segment center
-            body_q = wp.transform(p0, q)
-            com_offset = wp.vec3(0.0, 0.0, half_height)
+            # Position body at the segment center so the body origin and COM coincide.
+            center = p0 + seg_vec * 0.5
+            body_q = wp.transform(center, q)
+            com_offset = wp.vec3(0.0)
 
             body_label = f"{label}_edge_body_{e_idx}" if label else None
             shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
 
             body_id = self.add_link(xform=body_q, com=com_offset, label=body_label)
 
-            # Place capsule so it spans from start to end along +Z
-            capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
-
             self.add_shape_capsule(
                 body_id,
-                xform=capsule_xform,
+                xform=wp.transform(),
                 radius=radius,
                 half_height=half_height,
                 cfg=cfg,
@@ -6907,11 +6907,11 @@ class ModelBuilder:
             node_incidence[v].append(e_idx)
 
         def _edge_anchor_xform(e_idx: int, node_idx: int) -> wp.transform:
-            # Body frame is at start node u; end node v is at local z = edge_len.
+            # Body frame is at the segment midpoint; endpoints are +/- half-length along local Z.
             if node_idx == edge_u[e_idx]:
-                z = 0.0
+                z = -0.5 * edge_len[e_idx]
             elif node_idx == edge_v[e_idx]:
-                z = edge_len[e_idx]
+                z = 0.5 * edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
             return wp.transform(wp.vec3(0.0, 0.0, float(z)), wp.quat_identity())
