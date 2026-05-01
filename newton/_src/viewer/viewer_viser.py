@@ -982,23 +982,28 @@ class ViewerViser(ViewerBase):
             width: Line width.
             hidden: Whether the lines are hidden.
         """
-        # Remove existing lines if present
-        if name in self._scene_handles:
-            try:
-                self._scene_handles[name].remove()
-            except Exception:
-                pass
+
+        def remove_existing_line():
+            handle = self._scene_handles.pop(name, None)
+            if handle is not None:
+                try:
+                    handle.remove()
+                except Exception:
+                    pass
 
         if hidden:
+            remove_existing_line()
             return
 
         if starts is None or ends is None:
+            remove_existing_line()
             return
 
         starts_np = self._to_numpy(starts)
         ends_np = self._to_numpy(ends)
 
         if starts_np is None or ends_np is None or len(starts_np) == 0:
+            remove_existing_line()
             return
 
         starts_np = np.asarray(starts_np, dtype=np.float32)
@@ -1032,12 +1037,22 @@ class ViewerViser(ViewerBase):
                     # Already per-point-per-segment colors.
                     color_rgb = _rgb_to_uint8_array(colors_np)
 
-        # Add line segments to viser
+        line_width = width * 100  # Scale for visibility
+        if name in self._scene_handles:
+            handle = self._scene_handles[name]
+            try:
+                handle.points = line_points
+                handle.colors = color_rgb
+                handle.line_width = line_width
+                return
+            except Exception:
+                remove_existing_line()
+
         handle = self._server.scene.add_line_segments(
             name=name,
             points=line_points,
             colors=color_rgb,
-            line_width=width * 100,  # Scale for visibility
+            line_width=line_width,
         )
         self._scene_handles[name] = handle
 

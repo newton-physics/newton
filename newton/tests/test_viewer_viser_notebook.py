@@ -18,6 +18,9 @@ import numpy as np
 class _DummyHandle:
     def __init__(self):
         self.remove = Mock()
+        self.points = None
+        self.colors = None
+        self.line_width = None
 
 
 class _DummyScene:
@@ -32,6 +35,9 @@ class _DummyScene:
 
     def add_line_segments(self, **kwargs):
         handle = _DummyHandle()
+        handle.points = kwargs["points"]
+        handle.colors = kwargs["colors"]
+        handle.line_width = kwargs["line_width"]
         self.line_segments.append({**kwargs, "handle": handle})
         return handle
 
@@ -197,6 +203,26 @@ class TestViewerViserNotebookUrls(unittest.TestCase):
         self.assertEqual(len(line_segments), 1)
         expected_points = ViewerViser._build_plane_grid_points(2.0, 4.0) * np.array([2.0, 3.0, 1.0], dtype=np.float32)
         np.testing.assert_allclose(line_segments[0]["points"], expected_points)
+
+    def test_log_lines_updates_existing_handle_when_segment_count_changes(self):
+        viewer = self._make_viewer()
+        starts = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
+        ends = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+        viewer.log_lines("/trace", starts, ends, colors=(0.1, 0.8, 1.0), width=0.03)
+        line_segments = _DummyServer.last_instance.scene.line_segments
+        self.assertEqual(len(line_segments), 1)
+        handle = line_segments[0]["handle"]
+
+        starts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
+        ends = np.array([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]], dtype=np.float32)
+        viewer.log_lines("/trace", starts, ends, colors=(0.1, 0.8, 1.0), width=0.03)
+
+        self.assertEqual(len(line_segments), 1)
+        handle.remove.assert_not_called()
+        np.testing.assert_allclose(handle.points, np.stack((starts, ends), axis=1))
+        self.assertEqual(handle.colors, (25, 204, 255))
+        self.assertEqual(handle.line_width, 3.0)
 
 
 if __name__ == "__main__":
