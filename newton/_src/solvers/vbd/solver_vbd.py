@@ -1943,8 +1943,7 @@ class SolverVBD(SolverBase):
             )
 
             if model.joint_count > 0:
-                # Reference AVBD warm-starting decays lambda by alpha * gamma, while
-                # penalty k uses gamma only.
+                # Warm-started lambda decays by alpha * gamma, while penalty k uses gamma only.
                 joint_lambda_decay = self.rigid_joint_alpha * self.rigid_avbd_gamma
                 wp.launch(
                     kernel=step_joint_C0_lambda,
