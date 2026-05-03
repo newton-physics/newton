@@ -222,9 +222,9 @@ class SolverVBD(SolverBase):
         # Rigid body - contacts
         rigid_contact_hard: bool = True,  # Body-body contacts: hard=AL duals+C0, soft=penalty only
         rigid_contact_history: bool = False,  # Body-body contact warm-start (hard: k+duals+anchors; soft: k)
-        rigid_contact_stick_motion_eps: float = 1.0e-4,  # Contact-space sticky anchor threshold [m]
-        rigid_contact_stick_freeze_translation_eps: float = 1.0e-4,  # Body snap translation deadzone [m]
-        rigid_contact_stick_freeze_angular_eps: float = 1.0e-4,  # Body snap angular deadzone [rad]
+        rigid_contact_stick_motion_eps: float = 1.0e-4,  # Sticky contact residual threshold; 0 disables point replay
+        rigid_contact_stick_freeze_translation_eps: float = 1.0e-4,  # Deadzone snap translation threshold; 0 disables snap
+        rigid_contact_stick_freeze_angular_eps: float = 1.0e-4,  # Deadzone snap angular threshold; 0 disables snap
         rigid_contact_k_start: float = 1.0e2,  # Body-body/body-particle penalty seed when ramping is enabled
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
         rigid_body_particle_contact_buffer_size: int = 256,  # Per-body particle-contact list capacity
@@ -1892,7 +1892,7 @@ class SolverVBD(SolverBase):
                 contact_launch_dim = contacts.rigid_contact_max
                 contact_lambda_decay = (
                     self.rigid_contact_alpha * self.rigid_avbd_gamma
-                    if (self.rigid_contact_history and self.rigid_contact_hard)
+                    if (self.rigid_contact_hard and (self.rigid_contact_history or not refresh))
                     else 0.0
                 )
                 wp.launch(

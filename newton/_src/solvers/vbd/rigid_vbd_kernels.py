@@ -2248,8 +2248,8 @@ def step_body_body_contact_C0_lambda(
     """Per-step k decay + lambda decay + C0 snapshot.
 
     Runs every step. K decay is unconditional (hard and soft). Lambda decay
-    uses lambda_decay (0 when contact history is off or contacts are soft).
-    C0 is always recomputed for hard contacts.
+    uses lambda_decay when retaining hard-contact lambda across steps or reused
+    contact rows. C0 is always recomputed for hard contacts.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
