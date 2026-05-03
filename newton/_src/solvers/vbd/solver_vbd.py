@@ -222,6 +222,9 @@ class SolverVBD(SolverBase):
         # Rigid body - contacts
         rigid_contact_hard: bool = True,  # Body-body contacts: hard=AL duals+C0, soft=penalty only
         rigid_contact_history: bool = False,  # Body-body contact warm-start (hard: k+duals+anchors; soft: k)
+        rigid_contact_stick_motion_eps: float = 1.0e-4,  # Contact-space sticky anchor threshold [m]
+        rigid_contact_stick_freeze_translation_eps: float = 1.0e-4,  # Body snap translation deadzone [m]
+        rigid_contact_stick_freeze_angular_eps: float = 1.0e-4,  # Body snap angular deadzone [rad]
         rigid_contact_k_start: float = 1.0e2,  # Body-body/body-particle penalty seed when ramping is enabled
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
         rigid_body_particle_contact_buffer_size: int = 256,  # Per-body particle-contact list capacity
@@ -312,6 +315,17 @@ class SolverVBD(SolverBase):
                 Requires contacts with ``rigid_contact_match_index`` populated; use
                 ``CollisionPipeline(contact_matching="latest")`` for VBD warm-starting. Ignored
                 when ``integrate_with_external_rigid_solver=True`` or ``model.body_count == 0``.
+            rigid_contact_stick_motion_eps: Tangential contact residual threshold for marking hard
+                body-body contacts as sticking. Sticking contacts may replay contact points when
+                ``rigid_contact_history=True``; dynamic-dynamic sticking contacts may also use the
+                body-level deadzone snap. Set to ``0.0`` to disable sticky flags while preserving
+                lambda and penalty warm-starting.
+            rigid_contact_stick_freeze_translation_eps: World-space translation threshold for the
+                body-level deadzone snap on dynamic-dynamic sticking contacts. Set to ``0.0`` to
+                disable translation snapping.
+            rigid_contact_stick_freeze_angular_eps: Angular threshold [rad] for the body-level
+                deadzone snap on dynamic-dynamic sticking contacts. Set to ``0.0`` to disable
+                angular snapping.
             rigid_contact_k_start: Body-body and body-particle contact penalty seed for AVBD ramping. Used when
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the contact stiffness regardless of this value.
@@ -402,6 +416,9 @@ class SolverVBD(SolverBase):
             rigid_avbd_contact_alpha,
             rigid_contact_hard,
             rigid_contact_history,
+            rigid_contact_stick_motion_eps,
+            rigid_contact_stick_freeze_translation_eps,
+            rigid_contact_stick_freeze_angular_eps,
             rigid_contact_k_start,
             rigid_body_contact_buffer_size,
             rigid_body_particle_contact_buffer_size,
@@ -530,6 +547,9 @@ class SolverVBD(SolverBase):
         rigid_avbd_contact_alpha: float | None,
         rigid_contact_hard: bool,
         rigid_contact_history: bool,
+        rigid_contact_stick_motion_eps: float,
+        rigid_contact_stick_freeze_translation_eps: float,
+        rigid_contact_stick_freeze_angular_eps: float,
         rigid_contact_k_start: float,
         rigid_body_contact_buffer_size: int,
         rigid_body_particle_contact_buffer_size: int,
@@ -561,6 +581,17 @@ class SolverVBD(SolverBase):
             raise ValueError(f"rigid_avbd_gamma must be in [0, 1], got {rigid_avbd_gamma}")
         if rigid_contact_k_start < 0:
             raise ValueError(f"rigid_contact_k_start must be >= 0, got {rigid_contact_k_start}")
+        if rigid_contact_stick_motion_eps < 0:
+            raise ValueError(f"rigid_contact_stick_motion_eps must be >= 0, got {rigid_contact_stick_motion_eps}")
+        if rigid_contact_stick_freeze_translation_eps < 0:
+            raise ValueError(
+                "rigid_contact_stick_freeze_translation_eps must be >= 0, "
+                f"got {rigid_contact_stick_freeze_translation_eps}"
+            )
+        if rigid_contact_stick_freeze_angular_eps < 0:
+            raise ValueError(
+                f"rigid_contact_stick_freeze_angular_eps must be >= 0, got {rigid_contact_stick_freeze_angular_eps}"
+            )
         if rigid_joint_linear_k_start < 0:
             raise ValueError(f"rigid_joint_linear_k_start must be >= 0, got {rigid_joint_linear_k_start}")
         if rigid_joint_angular_k_start < 0:
@@ -584,9 +615,10 @@ class SolverVBD(SolverBase):
         else:
             self.rigid_contact_alpha = rigid_avbd_alpha
 
+        self.rigid_contact_stick_motion_eps = rigid_contact_stick_motion_eps
         # DEADZONE body-snap thresholds; suppressed by _STICK_FLAG_ANCHOR.
-        self.rigid_contact_stick_freeze_translation_eps = 1.0e-4
-        self.rigid_contact_stick_freeze_angular_eps = 1.0e-4
+        self.rigid_contact_stick_freeze_translation_eps = rigid_contact_stick_freeze_translation_eps
+        self.rigid_contact_stick_freeze_angular_eps = rigid_contact_stick_freeze_angular_eps
 
         # Joint constraint stiffness and damping for non-cable structural joints
         self.rigid_joint_linear_ke = rigid_joint_linear_ke
@@ -2474,6 +2506,7 @@ class SolverVBD(SolverBase):
                     self.body_body_contact_material_mu,
                     self.body_body_contact_C0,
                     self.rigid_contact_alpha,
+                    self.rigid_contact_stick_motion_eps,
                     self.rigid_contact_hard,
                     self.body_inv_mass_effective,
                     self.body_body_contact_material_ke,

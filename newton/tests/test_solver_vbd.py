@@ -16,6 +16,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     evaluate_linear_constraint_force_hessian,
     init_body_body_contacts_avbd,
     snapshot_body_body_contact_history,
+    update_duals_body_body_contacts,
     update_duals_joint,
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -199,7 +200,7 @@ def _rigid_contact_history_restore_from_match_index(test, device):
         match_index = wp.array([2, -1, 0, -2], dtype=wp.int32, device=device)
 
         history = RigidContactHistory()
-        history.lambda_ = wp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [0.0, 0.0, 7.0]], dtype=wp.vec3, device=device)
+        history.lambda_ = wp.array([[0.5, 0.0, 1.0], [4.0, 5.0, 6.0], [0.0, 0.0, 7.0]], dtype=wp.vec3, device=device)
         history.stick_flag = wp.array([0, 1, 2], dtype=wp.int32, device=device)
         history.penalty_k = wp.array([20.0, 30.0, 40.0], dtype=float, device=device)
         history.point0 = wp.array([[20.0, 0.0, 0.0], [21.0, 0.0, 0.0], [22.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
@@ -241,13 +242,11 @@ def _rigid_contact_history_restore_from_match_index(test, device):
         )
 
         np.testing.assert_allclose(penalty_k.numpy(), [40.0, 10.0, 20.0, 10.0])
-        np.testing.assert_allclose(lam.numpy(), [[0.0, 0.0, 7.0], [0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [0.0, 0.0, 0.0]])
+        np.testing.assert_allclose(lam.numpy(), [[0.0, 0.0, 7.0], [0.0, 0.0, 0.0], [0.5, 0.0, 1.0], [0.0, 0.0, 0.0]])
         np.testing.assert_allclose(material_ke.numpy(), [150.0] * 4)
         np.testing.assert_allclose(material_kd.numpy(), [2.0] * 4)
         np.testing.assert_allclose(material_mu.numpy(), [0.5] * 4)
 
-        # slot 2 had DEADZONE, so contact 0 replays saved points. slot 0 was not sticky,
-        # so contact 2 keeps the fresh narrow-phase points.
         point0_out = point0.numpy()
         point1_out = point1.numpy()
         np.testing.assert_allclose(point0_out[0], [22.0, 0.0, 0.0])
@@ -472,6 +471,114 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
         test.assertEqual(prev_penalty.numpy()[2], 0.0)
 
 
+def _rigid_contact_stick_flags_require_cone_and_small_residual(test, device):
+    """Contact stick flags require normal load, cone feasibility, and small tangential residual."""
+    with wp.ScopedDevice(device):
+        contact_count = wp.array([4], dtype=int, device=device)
+        shape0 = wp.array([0, 0, 0, 0], dtype=int, device=device)
+        shape1 = wp.array([1, 2, 3, 4], dtype=int, device=device)
+        point0 = wp.zeros(4, dtype=wp.vec3, device=device)
+        point1 = wp.zeros(4, dtype=wp.vec3, device=device)
+        normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
+        margin0 = wp.array([0.05, 0.05, 0.05, 0.05], dtype=float, device=device)
+        margin1 = wp.array([0.05, 0.05, 0.05, 0.05], dtype=float, device=device)
+        shape_body = wp.array([0, 1, 2, 3, 4], dtype=int, device=device)
+
+        q = wp.quat_identity()
+        body_q = wp.array(
+            [
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), q),
+                wp.transform(wp.vec3(1.0, 0.0, 0.0), q),
+                wp.transform(wp.vec3(0.03, 0.0, 0.0), q),
+                wp.transform(wp.vec3(0.01, 0.0, 0.0), q),
+                wp.transform(wp.vec3(0.01, 0.0, 0.0), q),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+        body_q_prev = wp.array([wp.transform_identity()] * 5, dtype=wp.transform, device=device)
+        contact_mu = wp.array([0.5, 0.5, 0.5, 0.5], dtype=float, device=device)
+        contact_c0 = wp.zeros(4, dtype=wp.vec3, device=device)
+        body_inv_mass = wp.array([1.0, 0.0, 0.0, 0.0, 1.0], dtype=float, device=device)
+        contact_ke = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+        penalty_k = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+        contact_lambda = wp.zeros(4, dtype=wp.vec3, device=device)
+        stick_flag = wp.zeros(4, dtype=wp.int32, device=device)
+
+        wp.launch(
+            update_duals_body_body_contacts,
+            dim=4,
+            inputs=[
+                contact_count,
+                shape0,
+                shape1,
+                point0,
+                point1,
+                normal,
+                margin0,
+                margin1,
+                shape_body,
+                body_q,
+                body_q_prev,
+                contact_mu,
+                contact_c0,
+                0.0,
+                0.02,
+                1,
+                body_inv_mass,
+                contact_ke,
+                0.0,
+            ],
+            outputs=[penalty_k, contact_lambda, stick_flag],
+            device=device,
+        )
+
+        np.testing.assert_allclose(
+            contact_lambda.numpy(),
+            [
+                [-0.5, 0.0, 1.0],
+                [-0.3, 0.0, 1.0],
+                [-0.1, 0.0, 1.0],
+                [-0.1, 0.0, 1.0],
+            ],
+        )
+        np.testing.assert_array_equal(stick_flag.numpy(), [0, 0, 1, 2])
+
+        contact_lambda.zero_()
+        stick_flag.zero_()
+        penalty_k = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+
+        wp.launch(
+            update_duals_body_body_contacts,
+            dim=4,
+            inputs=[
+                contact_count,
+                shape0,
+                shape1,
+                point0,
+                point1,
+                normal,
+                margin0,
+                margin1,
+                shape_body,
+                body_q,
+                body_q_prev,
+                contact_mu,
+                contact_c0,
+                0.0,
+                0.0,
+                1,
+                body_inv_mass,
+                contact_ke,
+                0.0,
+            ],
+            outputs=[penalty_k, contact_lambda, stick_flag],
+            device=device,
+        )
+
+        np.testing.assert_array_equal(stick_flag.numpy(), [0, 0, 0, 0])
+
+
 class TestSolverVBD(unittest.TestCase):
     pass
 
@@ -516,6 +623,12 @@ add_function_test(
     TestSolverVBD,
     "test_rigid_contact_history_snapshot_copies_active_rows",
     _rigid_contact_history_snapshot_copies_active_rows,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_rigid_contact_stick_flags_require_cone_and_small_residual",
+    _rigid_contact_stick_flags_require_cone_and_small_residual,
     devices=devices,
 )
 

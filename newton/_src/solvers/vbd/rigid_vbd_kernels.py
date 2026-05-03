@@ -51,10 +51,10 @@ _NUM_CONTACT_THREADS_PER_BODY = wp.constant(4)
 """Threads per body for contact accumulation using strided iteration"""
 
 _STICK_FLAG_ANCHOR = wp.constant(1)
-"""contact_stick_flag value: frozen anchor (kinematic-dynamic contacts)"""
+"""contact_stick_flag value: frozen anchor (sticking kinematic/static contacts)"""
 
 _STICK_FLAG_DEADZONE = wp.constant(2)
-"""contact_stick_flag value: anti-creep deadzone (dynamic-dynamic contacts)"""
+"""contact_stick_flag value: anti-creep deadzone (sticking dynamic-dynamic contacts)"""
 
 # ---------------------------------
 # Helper classes and device functions
@@ -3576,6 +3576,7 @@ def update_duals_body_body_contacts(
     contact_material_mu: wp.array[float],
     contact_C0: wp.array[wp.vec3],
     avbd_alpha: float,
+    stick_motion_eps: float,
     hard_contacts: int,
     body_inv_mass: wp.array[float],
     contact_material_ke: wp.array[float],
@@ -3647,7 +3648,8 @@ def update_duals_body_body_contacts(
         tangential_disp = rel_disp - n * wp.dot(n, rel_disp)
         C0_t_vec = C0_vec - n * C0_n
         lam_t_old = lam_vec - n * lam_n_old
-        lam_t_new = lam_t_old + k * (tangential_disp + (1.0 - avbd_alpha) * C0_t_vec)
+        tangent_residual = tangential_disp + (1.0 - avbd_alpha) * C0_t_vec
+        lam_t_new = lam_t_old + k * tangent_residual
         lam_t_len = wp.length(lam_t_new)
         cone_limit = mu * lam_n_new
         if lam_t_len > cone_limit and lam_t_len > 0.0:
@@ -3663,10 +3665,10 @@ def update_duals_body_body_contacts(
             has_kinematic = int(1)
 
         flag = int(0)
-        if lam_n_new > 0.0:
+        if lam_n_new > 0.0 and lam_t_len <= cone_limit and wp.length(tangent_residual) < stick_motion_eps:
             if has_kinematic == 1:
                 flag = _STICK_FLAG_ANCHOR
-            elif lam_t_len <= cone_limit:
+            else:
                 flag = _STICK_FLAG_DEADZONE
         contact_stick_flag[idx] = flag
     else:
@@ -3763,7 +3765,8 @@ def update_body_velocity(
         body_contact_buffer_pre_alloc: Per-body contact-list capacity.
         body_contact_counts: Number of body-body contacts adjacent to each body.
         body_contact_indices: Flat per-body contact index lists.
-        contact_stick_flag: Per-contact flag (0=none, ANCHOR=kinematic, DEADZONE=dynamic-dynamic).
+        contact_stick_flag: Per-contact flag (0=none, ANCHOR=sticking kinematic/static,
+            DEADZONE=sticking dynamic-dynamic).
         apply_stick_deadzone: If nonzero, enable anti-creep deadzone for bodies whose
             contacts carry DEADZONE but not ANCHOR.
         stick_freeze_translation_eps: Translation deadzone [m] for anti-creep snapping.
