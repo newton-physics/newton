@@ -282,14 +282,11 @@ class SolverVBD(SolverBase):
             Rigid body parameters:
 
             rigid_avbd_alpha: C0 stabilization strength (C_stab = C - alpha * C0). Range: [0, 1].
-                Used as the default joint alpha. Also used as the default body-body contact alpha
-                when both ``rigid_contact_hard`` and ``rigid_contact_history`` are enabled; otherwise
-                body-body contacts default to zero alpha.
+                Used as the default alpha for joints and body-body contacts.
             rigid_avbd_joint_alpha: Joint-specific alpha override. ``None`` (default)
                 uses ``rigid_avbd_alpha``.
             rigid_avbd_contact_alpha: Body-body contact alpha override. ``None`` (default)
-                uses ``rigid_avbd_alpha`` when both ``rigid_contact_hard`` and
-                ``rigid_contact_history`` are enabled, ``0.0`` otherwise.
+                uses ``rigid_avbd_alpha``.
             rigid_avbd_beta: Penalty ramp rate per AVBD iteration. ``0`` (default) disables
                 ramping (fixed-k). Set to e.g. ``1e5`` for ramping. Used for both linear and
                 angular constraints unless overridden. Note: linear (meters) and angular
@@ -581,8 +578,7 @@ class SolverVBD(SolverBase):
         if rigid_avbd_contact_alpha is not None:
             self.rigid_contact_alpha = rigid_avbd_contact_alpha
         else:
-            # Zero alpha works better without contact history: no warm duals to stabilize.
-            self.rigid_contact_alpha = rigid_avbd_alpha if (rigid_contact_history and rigid_contact_hard) else 0.0
+            self.rigid_contact_alpha = rigid_avbd_alpha
 
         # DEADZONE body-snap thresholds; suppressed by _STICK_FLAG_ANCHOR.
         self.rigid_contact_stick_freeze_translation_eps = 1.0e-4
