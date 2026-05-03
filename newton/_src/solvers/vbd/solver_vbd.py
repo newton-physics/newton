@@ -287,6 +287,10 @@ class SolverVBD(SolverBase):
                 uses ``rigid_avbd_alpha``.
             rigid_avbd_contact_alpha: Body-body contact alpha override. ``None`` (default)
                 uses ``rigid_avbd_alpha``.
+                For hard contacts, lower values (e.g., ``0.0``) correct more current penetration each step and can
+                give stronger repulsion when iteration count is low or contact history is disabled.
+                Larger values can improve stability with enough iterations or contact history, but
+                may feel weak with few iterations and no history.
             rigid_avbd_beta: Penalty ramp rate per AVBD iteration. ``0`` (default) disables
                 ramping (fixed-k). Set to e.g. ``1e5`` for ramping. Used for both linear and
                 angular constraints unless overridden. Note: linear (meters) and angular

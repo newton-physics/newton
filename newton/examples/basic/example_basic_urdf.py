@@ -90,7 +90,9 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=1,
-                # Example-specific AVBD history decay for this one-iteration demo; prefer more iterations and damping.
+                # One-iteration VBD demo tuning: use full hard-contact correction and mild penalty decay.
+                # Prefer more iterations and contact damping for general use.
+                rigid_avbd_contact_alpha=0.0,
                 rigid_avbd_gamma=0.9,
             )
         else:

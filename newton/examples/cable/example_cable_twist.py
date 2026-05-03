@@ -198,7 +198,8 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
+        # Low iteration counts need stronger contact repulsion in this twist demo.
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_avbd_contact_alpha=0.0)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
