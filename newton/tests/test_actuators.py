@@ -1403,7 +1403,10 @@ class TestDelayGraphCapture(unittest.TestCase):
         builder.add_articulation([joint])
         dof = builder.joint_qd_start[joint]
         builder.add_actuator(
-            ControllerPD, index=dof, kp=200.0, kd=10.0,
+            ControllerPD,
+            index=dof,
+            kp=200.0,
+            kd=10.0,
             delay_steps=max_delay,
             clamping=[(ClampingMaxEffort, {"max_effort": 500.0})],
         )
@@ -1446,9 +1449,7 @@ class TestDelayGraphCapture(unittest.TestCase):
         # --- Graph ---
         solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g = _setup()
         wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
-        s0_g, s1_g, act_a_g, act_b_g = _loop(
-            solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay
-        )
+        s0_g, s1_g, act_a_g, act_b_g = _loop(solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay)
         sub_dt = dt / K
         with wp.ScopedCapture(device=device) as capture:
             for _ in range(N):
@@ -1469,7 +1470,9 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         for ci in range(len(cycle_targets)):
             np.testing.assert_allclose(
-                graph_results[ci], eager_results[ci], rtol=1e-4,
+                graph_results[ci],
+                eager_results[ci],
+                rtol=1e-4,
                 err_msg=f"Cycle {ci}: graph should match eager with device-side write_idx",
             )
 
