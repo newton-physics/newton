@@ -1412,9 +1412,12 @@ def validate_triangle_mesh(
 ) -> None:
     """Check a triangle mesh for quality issues and emit warnings.
 
-    Inspects the input triangle mesh for degenerate or sliver triangles,
-    extreme angles, and non-manifold topology. Each detected problem is
-    reported via :func:`warnings.warn`.
+    Inspects the input triangle mesh for degenerate or sliver triangles
+    and extreme interior angles. Non-manifold-edge detection is delegated
+    to :class:`MeshAdjacency`, which emits its own warning during
+    construction; this function builds one as a side-effect so standalone
+    callers see the same warning. Each detected problem is reported via
+    :func:`warnings.warn`.
 
     Args:
         vertices: Vertex positions [m], shape ``(N, 3)``.
@@ -1497,25 +1500,22 @@ def validate_triangle_mesh(
             f" (smallest: {float(min_angle_arr.min()):.1f}\u00b0)"
         )
 
-    edges_all = np.concatenate([indices[:, [0, 1]], indices[:, [1, 2]], indices[:, [2, 0]]])
-    edges_sorted = np.sort(edges_all, axis=1)
-    _, counts = np.unique(edges_sorted, axis=0, return_counts=True)
-    n_nonmanifold = int(np.sum(counts > 2))
-    if n_nonmanifold > 0:
-        issues.append(f"{n_nonmanifold} non-manifold edge(s) shared by more than 2 triangles")
+    if issues:
+        prefix = "Mesh quality warning"
+        if label is not None:
+            prefix += f" [{label}]"
+        msg = (
+            f"{prefix} ({n_verts} vertices, {n_faces} triangles):\n"
+            + "\n".join(f"  - {issue}" for issue in issues)
+            + "\nConsider remeshing the input geometry."
+        )
+        warnings.warn(msg, stacklevel=stacklevel)
 
-    if not issues:
-        return
-
-    prefix = "Mesh quality warning"
-    if label is not None:
-        prefix += f" [{label}]"
-    msg = (
-        f"{prefix} ({n_verts} vertices, {n_faces} triangles):\n"
-        + "\n".join(f"  - {issue}" for issue in issues)
-        + "\nConsider remeshing the input geometry."
-    )
-    warnings.warn(msg, stacklevel=stacklevel)
+    # Non-manifold edge detection is delegated to MeshAdjacency, which emits
+    # its own warning during construction. Builder paths construct one anyway
+    # for the bending-edge pipeline; standalone callers see the same warning
+    # without us reimplementing the edge-pair count here.
+    MeshAdjacency(indices)
 
 
 def validate_tet_mesh(
