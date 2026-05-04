@@ -15,6 +15,14 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 def _build_translated_prismatic_chain(device):
+    """Build a two-link revolute/prismatic chain with translated joint frames.
+
+    Args:
+        device: Device on which to finalize the model.
+
+    Returns:
+        Tuple containing the finalized model, base body index, and slider body index.
+    """
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
 
     base = builder.add_link(mass=1.5)
@@ -46,6 +54,14 @@ def _build_translated_prismatic_chain(device):
 
 
 def _build_free_body_with_com(device):
+    """Build a single free body with a nonzero center-of-mass offset.
+
+    Args:
+        device: Device on which to finalize the model.
+
+    Returns:
+        Tuple containing the finalized model and body index.
+    """
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
 
     body = builder.add_body(
@@ -62,6 +78,14 @@ def _build_free_body_with_com(device):
 
 
 def _build_descendant_free_with_rotated_parent(device):
+    """Build a free child body under a rotated fixed parent.
+
+    Args:
+        device: Device on which to finalize the model.
+
+    Returns:
+        Tuple containing the finalized model, base body index, and child body index.
+    """
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
 
     base = builder.add_link(is_kinematic=True, mass=1.0)
@@ -93,7 +117,64 @@ def _build_descendant_free_with_rotated_parent(device):
     return builder.finalize(device=device), base, child
 
 
+def _diagonal_inertia(ix, iy, iz):
+    """Return a diagonal inertia tensor in the body COM frame."""
+    return wp.matrix_from_rows(
+        wp.vec3(ix, 0.0, 0.0),
+        wp.vec3(0.0, iy, 0.0),
+        wp.vec3(0.0, 0.0, iz),
+    )
+
+
+def _floating_base_pendulum_mass_matrix(base_mass, child_mass, length, base_inertia, child_inertia):
+    """Analytical mass matrix for a free base with one revolute pendulum child.
+
+    The configuration is evaluated at identity base pose and zero revolute angle.
+    The generalized velocity order is the public Newton order:
+    free translation, free angular velocity, then the revolute velocity.
+    """
+    child_twist_from_qd = np.zeros((6, 7), dtype=np.float64)
+
+    # Child COM linear velocity from free-base translation.
+    child_twist_from_qd[0, 0] = 1.0
+    child_twist_from_qd[1, 1] = 1.0
+    child_twist_from_qd[2, 2] = 1.0
+
+    # Child COM linear velocity from angular velocity crossed with r=(length, 0, 0).
+    child_twist_from_qd[2, 4] = -length
+    child_twist_from_qd[1, 5] = length
+    child_twist_from_qd[1, 6] = length
+
+    # Child angular velocity is base angular velocity plus the revolute z velocity.
+    child_twist_from_qd[3, 3] = 1.0
+    child_twist_from_qd[4, 4] = 1.0
+    child_twist_from_qd[5, 5] = 1.0
+    child_twist_from_qd[5, 6] = 1.0
+
+    child_spatial_inertia = np.diag([child_mass, child_mass, child_mass, *child_inertia])
+    expected = child_twist_from_qd.T @ child_spatial_inertia @ child_twist_from_qd
+
+    expected[0, 0] += base_mass
+    expected[1, 1] += base_mass
+    expected[2, 2] += base_mass
+    expected[3, 3] += base_inertia[0]
+    expected[4, 4] += base_inertia[1]
+    expected[5, 5] += base_inertia[2]
+
+    return expected
+
+
 def _kinetic_energy_from_body_twists(model, state, bodies):
+    """Compute total body kinetic energy from world-space twists.
+
+    Args:
+        model: Model providing body masses and inertia tensors.
+        state: State providing body poses and velocities.
+        bodies: Body indices to include in the energy sum.
+
+    Returns:
+        Total kinetic energy for the selected bodies.
+    """
     body_q = state.body_q.numpy()
     body_qd = state.body_qd.numpy()
     body_inertia = model.body_inertia.numpy()
@@ -305,6 +386,65 @@ def test_mass_matrix_positive_definite(test, device):
 
     # For a single DOF, the mass matrix should be a positive scalar
     test.assertGreater(H_np[0, 0, 0], 0.0)
+
+
+def test_fixed_base_simple_pendulum_mass_matrix_matches_analytical(test, device):
+    """Test a fixed-base simple pendulum mass matrix against the closed-form scalar inertia."""
+    mass = 2.0
+    length = 0.75
+    inertia_zz = 0.2
+
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    body = builder.add_link(mass=mass, inertia=_diagonal_inertia(0.1, 0.15, inertia_zz))
+    joint = builder.add_joint_revolute(
+        parent=-1,
+        child=body,
+        axis=newton.Axis.Z,
+        child_xform=wp.transform(wp.vec3(-length, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([joint], label="fixed_base_pendulum")
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    H = newton.eval_mass_matrix(model, state).numpy()
+    expected = inertia_zz + mass * length**2
+
+    test.assertEqual(H.shape, (1, 1, 1))
+    np.testing.assert_allclose(H[0, 0, 0], expected, rtol=1.0e-6, atol=1.0e-6)
+
+
+def test_floating_base_simple_pendulum_mass_matrix_matches_analytical(test, device):
+    """Test a free-base pendulum mass matrix against its closed-form 7-DOF inertia."""
+    base_mass = 3.0
+    child_mass = 2.0
+    length = 0.6
+    base_inertia = (0.4, 0.5, 0.6)
+    child_inertia = (0.2, 0.25, 0.3)
+
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    base = builder.add_link(mass=base_mass, inertia=_diagonal_inertia(*base_inertia))
+    child = builder.add_link(mass=child_mass, inertia=_diagonal_inertia(*child_inertia))
+
+    free_joint = builder.add_joint_free(child=base)
+    revolute_joint = builder.add_joint_revolute(
+        parent=base,
+        child=child,
+        axis=newton.Axis.Z,
+        child_xform=wp.transform(wp.vec3(-length, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([free_joint, revolute_joint], label="floating_base_pendulum")
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    H = newton.eval_mass_matrix(model, state).numpy()[0, : model.joint_dof_count, : model.joint_dof_count]
+    expected = _floating_base_pendulum_mass_matrix(base_mass, child_mass, length, base_inertia, child_inertia)
+
+    test.assertEqual(H.shape, (7, 7))
+    np.testing.assert_allclose(H, expected, rtol=1.0e-6, atol=1.0e-6)
 
 
 def test_jacobian_multiple_articulations(test, device):
@@ -780,6 +920,18 @@ add_function_test(
 add_function_test(TestJacobianMassMatrix, "test_mass_matrix_symmetry", test_mass_matrix_symmetry, devices=devices)
 add_function_test(
     TestJacobianMassMatrix, "test_mass_matrix_positive_definite", test_mass_matrix_positive_definite, devices=devices
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_fixed_base_simple_pendulum_mass_matrix_matches_analytical",
+    test_fixed_base_simple_pendulum_mass_matrix_matches_analytical,
+    devices=devices,
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_floating_base_simple_pendulum_mass_matrix_matches_analytical",
+    test_floating_base_simple_pendulum_mass_matrix_matches_analytical,
+    devices=devices,
 )
 add_function_test(
     TestJacobianMassMatrix,
