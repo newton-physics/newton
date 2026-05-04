@@ -32,7 +32,6 @@ from newton import (
     Axis,
     JointTargetMode,
     ModelBuilder,
-    inertia,
 )
 
 ###
@@ -118,6 +117,8 @@ def build_box_on_plane(
     Returns:
         ModelBuilder: The populated model builder.
     """
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
     # Create a new builder if none is provided
     if builder is None:
         _builder = ModelBuilder()
@@ -199,6 +200,8 @@ def build_box_pendulum(
     Returns:
         ModelBuilder: The populated model builder.
     """
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
     # Create a new builder if none is provided
     if builder is None:
         _builder = ModelBuilder()
@@ -308,6 +311,8 @@ def build_box_pendulum_vertical(
     Returns:
         ModelBuilder: The populated model builder.
     """
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
     # Create a new builder if none is provided
     if builder is None:
         _builder = ModelBuilder()
@@ -406,6 +411,8 @@ def build_cartpole(
     Returns:
         ModelBuilder: The populated model builder.
     """
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
     # Create a new builder if none is provided
     if builder is None:
         _builder = ModelBuilder()
@@ -584,6 +591,8 @@ def build_boxes_hinged(
     Returns:
         ModelBuilder: The populated model builder.
     """
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
     # Create a new builder if none is provided
     if builder is None:
         _builder = ModelBuilder()
@@ -725,6 +734,8 @@ def build_boxes_nunchaku(
     Returns:
         ModelBuilder: The populated model builder.
     """
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
     # Create a new builder if none is provided
     if builder is None:
         _builder = ModelBuilder()
@@ -879,6 +890,8 @@ def build_boxes_nunchaku_vertical(
     Returns:
         ModelBuilder: The populated model builder.
     """
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
     # Create a new builder if none is provided
     if builder is None:
         _builder = ModelBuilder()
@@ -1059,6 +1072,8 @@ def build_boxes_fourbar(
     Returns:
         ModelBuilder: A model builder containing the four-bar linkage.
     """
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
     # Create a new builder if none is provided
     if builder is None:
         _builder = ModelBuilder()
