@@ -186,7 +186,7 @@ Quick Start
 -----------
 
 A minimal end-to-end example that creates shapes, runs collision detection, and steps the
-solver (see also the :doc:`Introduction tutorial </tutorials/00_introduction>` and
+solver (see also the :doc:`tutorials page </guide/tutorials>` and
 ``example_basic_shapes.py`` — :github:`newton/examples/basic/example_basic_shapes.py`):
 
 .. testcode:: quickstart
