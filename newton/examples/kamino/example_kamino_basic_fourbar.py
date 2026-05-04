@@ -11,15 +11,14 @@
 ###########################################################################
 
 import argparse
-import os
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
-from newton._src.solvers.kamino._src.models.builders import basics_newton
+from newton.tests import get_kamino_basic_asset
+from newton.tests.builders import basics
 
 
 class Example:
@@ -44,7 +43,7 @@ class Example:
         # with the builder API, depending on the command-line argument `--from-usd`
         if args.from_usd:
             # Load the basic four-bar USD and add it to the builder
-            asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_fourbar.usda")
+            asset_file = get_kamino_basic_asset("boxes_fourbar.usda")
             robot_builder.add_usd(
                 asset_file,
                 joint_ordering=None,
@@ -55,7 +54,7 @@ class Example:
             )
         else:
             # Manually build the basic four-bar mechanism using the builder API
-            basics_newton.build_boxes_fourbar(builder=robot_builder)
+            basics.build_boxes_fourbar(builder=robot_builder)
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
@@ -187,7 +186,7 @@ class Example:
             "--from-usd",
             action=argparse.BooleanOptionalAction,
             default=True,
-            help="Load the basic four-bar mechanism from USD.",
+            help="Load the basic four-bar mechanism from USD (otherwise build it manually).",
         )
         return parser
 

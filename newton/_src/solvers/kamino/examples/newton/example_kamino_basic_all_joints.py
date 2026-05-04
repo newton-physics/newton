@@ -14,8 +14,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.kamino._src.models.builders import testing_newton
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton.tests.builders import testing
 
 
 class Example:
@@ -30,17 +29,15 @@ class Example:
         self.device = wp.get_device()
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
-        msg.notif("Creating and configuring the model builder for Kamino...")
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(builder)
         builder.default_shape_cfg.margin = 0.0
         builder.default_shape_cfg.gap = 0.0
 
         # Build one world per supported joint type on the shared builder.
-        testing_newton.build_all_joints_test(builder=builder)
+        testing.build_all_joints_test(builder=builder)
 
         # Create the model from the builder
-        msg.notif("Creating the model from the builder...")
         self.model = builder.finalize()
 
         # Create and configure settings for SolverKamino and the collision detector
@@ -53,7 +50,6 @@ class Example:
         solver_config.padmm.rho_0 = 0.1
 
         # Create the Kamino solver for the given model
-        msg.notif("Creating the Kamino solver for the given model...")
         self.solver = newton.solvers.SolverKamino(model=self.model, config=solver_config)
 
         # Create state, control, and contacts data containers
@@ -147,5 +143,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
-    msg.notif("Starting the simulation...")
     newton.examples.run(example, args)
