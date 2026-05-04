@@ -15,6 +15,23 @@ import newton
 # typical collision meshes used with SDF-based contact (YCB, nut-bolt, gears).
 _SPHERE_SUBDIVISIONS = 4
 
+# Number of SDFs built per timing sample, keyed by ``max_resolution``.
+# Measuring a batch rather than a single build amortizes GPU boost-clock and
+# thermal transients that otherwise make this benchmark bimodal across AWS CI
+# runs (see #2534).  Counts decrease with resolution so each sample takes
+# roughly the same wall time (~0.5 s); each SDF is released immediately after
+# construction so peak GPU memory stays bounded to one SDF at a time.
+_BUILDS_PER_SAMPLE = {
+    32: 20,
+    64: 20,
+    128: 10,
+    256: 5,
+}
+
+# Number of untimed warm-up builds in ``setup`` to push the GPU into a stable
+# boost-clock state before any timed iterations run.
+_WARMUP_BUILDS = 3
+
 
 def _create_icosphere(radius: float, subdivisions: int) -> tuple[np.ndarray, np.ndarray]:
     """Build an icosphere by subdividing an icosahedron.
@@ -109,27 +126,37 @@ class FastBuildSdf:
     params = ([32, 64, 128, 256],)
     param_names = ["max_resolution"]
 
-    rounds = 1
-    repeat = 3
+    rounds = 2
+    repeat = 5
     number = 1
     min_run_count = 1
     timeout = 600
 
     def setup(self, max_resolution):
         wp.init()
+        if wp.get_cuda_device_count() == 0:
+            # Matches the ``skip_benchmark_if`` guard on ``time_build_sdf``.
+            return
+
         self._vertices, self._indices = _create_icosphere(radius=0.5, subdivisions=_SPHERE_SUBDIVISIONS)
 
-        if wp.get_cuda_device_count() > 0:
+        # Extended warmup: multiple builds push the GPU into a sustained
+        # boost-clock state, not just compile kernels.
+        for _ in range(_WARMUP_BUILDS):
             warm_mesh = newton.Mesh(self._vertices, self._indices, compute_inertia=False)
-            warm_mesh.build_sdf(max_resolution=max_resolution)
-            wp.synchronize_device()
+            warm_sdf = warm_mesh.build_sdf(max_resolution=max_resolution)
+            del warm_sdf
             del warm_mesh
+        wp.synchronize_device()
 
-    # Disabled, see #2534.
-    @skip_benchmark_if(True)
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_build_sdf(self, max_resolution):
-        mesh = newton.Mesh(self._vertices, self._indices, compute_inertia=False)
-        mesh.build_sdf(max_resolution=max_resolution)
+        for _ in range(_BUILDS_PER_SAMPLE[max_resolution]):
+            mesh = newton.Mesh(self._vertices, self._indices, compute_inertia=False)
+            sdf = mesh.build_sdf(max_resolution=max_resolution)
+            # Release immediately so peak GPU memory stays bounded.
+            del sdf
+            del mesh
         wp.synchronize_device()
 
 
