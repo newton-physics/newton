@@ -1534,6 +1534,93 @@ class TestImportUsdPhysics(unittest.TestCase):
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_planar_mesh_collider_imported_as_plane(self):
+        """A coplanar Mesh with PhysicsCollisionAPI and ``physics:approximation = "none"``
+        is the standard Isaac Sim / PhysX way to author a static ground plane. It must be
+        imported as ``GeoType.PLANE`` so volumetric solvers (e.g. MuJoCo, which would build
+        a degenerate convex hull) can consume the asset. Coplanar meshes attached to a
+        rigid body or oriented along non-Z axes are still handled correctly.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def add_quad(path, points, scale=(1.0, 1.0, 1.0)):
+            mesh = UsdGeom.Mesh.Define(stage, path)
+            mesh.CreateFaceVertexCountsAttr().Set([4])
+            mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 3, 2])
+            mesh.CreatePointsAttr().Set([Gf.Vec3f(*p) for p in points])
+            UsdGeom.Xformable(mesh).AddScaleOp().Set(Gf.Vec3f(*scale))
+            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+            mesh_api = UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim())
+            mesh_api.CreateApproximationAttr().Set(UsdPhysics.Tokens.none)
+            return mesh.GetPrim()
+
+        # Static Z-coplanar quad (the H1-style ground plane).
+        add_quad(
+            "/World/PlaneZ",
+            [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (-0.5, 0.5, 0.0), (0.5, 0.5, 0.0)],
+            scale=(10.0, 10.0, 1.0),
+        )
+
+        # Static Y-coplanar quad (plane normal along local +Y).
+        add_quad(
+            "/World/PlaneY",
+            [(-0.5, 0.0, -0.5), (0.5, 0.0, -0.5), (-0.5, 0.0, 0.5), (0.5, 0.0, 0.5)],
+        )
+
+        # A coplanar quad attached to a rigid body must NOT be reinterpreted as a plane:
+        # the user authored a thin mesh collider and finite-plane semantics would change
+        # both collision behaviour and inertia accumulation.
+        body_xform = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body_xform.GetPrim())
+        mass_api = UsdPhysics.MassAPI.Apply(body_xform.GetPrim())
+        mass_api.CreateMassAttr().Set(1.0)
+        add_quad(
+            "/World/Body/AttachedQuad",
+            [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (-0.5, 0.5, 0.0), (0.5, 0.5, 0.0)],
+        )
+
+        # A volumetric mesh with approximation="none" must remain a MESH (sanity check
+        # that planarity detection has not regressed standard triangle-mesh imports).
+        cube_mesh = newton.Mesh.create_box(
+            0.5, 0.5, 0.5, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        cube_prim = UsdGeom.Mesh.Define(stage, "/World/CubeMesh")
+        cube_prim.CreateFaceVertexCountsAttr().Set([3] * (len(cube_mesh.indices) // 3))
+        cube_prim.CreateFaceVertexIndicesAttr().Set(cube_mesh.indices.tolist())
+        cube_prim.CreatePointsAttr().Set([Gf.Vec3f(*p) for p in cube_mesh.vertices.tolist()])
+        UsdPhysics.CollisionAPI.Apply(cube_prim.GetPrim())
+        UsdPhysics.MeshCollisionAPI.Apply(cube_prim.GetPrim()).CreateApproximationAttr().Set(UsdPhysics.Tokens.none)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        shape_by_label = {builder.shape_label[i]: i for i in range(builder.shape_count)}
+
+        idx_z = shape_by_label["/World/PlaneZ"]
+        self.assertEqual(builder.shape_type[idx_z], newton.GeoType.PLANE)
+        self.assertEqual(builder.shape_body[idx_z], -1)
+
+        idx_y = shape_by_label["/World/PlaneY"]
+        self.assertEqual(builder.shape_type[idx_y], newton.GeoType.PLANE)
+        self.assertEqual(builder.shape_body[idx_y], -1)
+        # The axis correction must rotate the shape's local +Z onto the mesh-plane normal
+        # (local +Y for /World/PlaneY).
+        local_z = wp.quat_rotate(builder.shape_transform[idx_y].q, wp.vec3(0.0, 0.0, 1.0))
+        np.testing.assert_allclose(np.array(local_z), [0.0, 1.0, 0.0], atol=1e-6)
+
+        idx_attached = shape_by_label["/World/Body/AttachedQuad"]
+        self.assertEqual(builder.shape_type[idx_attached], newton.GeoType.MESH)
+        self.assertGreaterEqual(builder.shape_body[idx_attached], 0)
+
+        idx_cube = shape_by_label["/World/CubeMesh"]
+        self.assertEqual(builder.shape_type[idx_cube], newton.GeoType.MESH)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_match_collision_shapes(self):
         builder = newton.ModelBuilder()
         builder.add_usd(newton.examples.get_asset("humanoid.usda"))

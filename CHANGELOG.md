@@ -86,6 +86,7 @@
 - Fix `State.assign` not copying namespaced extended and custom state attributes 
 - Fix mesh-convex back-face contacts generating inverted normals that trap shapes inside meshes and cause solver divergence (NaN)
 - Fix finite plane geometry 2x too large in collision, bounding sphere, and raytrace sensor
+- Fix `ModelBuilder.add_usd` failing to load static ground planes authored as a coplanar `UsdGeomMesh` with `PhysicsCollisionAPI` (the common Isaac Sim / PhysX `physics:approximation = "none"` ground-plane pattern). Such meshes are now imported as `GeoType.PLANE`, so volumetric solvers like `SolverMuJoCo` no longer fail with a Qhull error when building a degenerate convex hull. Coplanar meshes attached to a rigid body are unaffected and remain `GeoType.MESH`
 - Fix MPR convergence failure on large and extreme-aspect-ratio mesh triangles by projecting the starting point onto the triangle nearest the convex center
 - Fix O(W²·S²) memory explosion in `CollisionPipeline` shape-pair buffer allocation for NXN and SAP broad phase modes by computing per-world pair counts instead of a global N²
 - Fix `SensorRaycast` ignoring `PLANE` geometry

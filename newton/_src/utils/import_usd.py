@@ -291,8 +291,10 @@ def parse_usd(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
-    # mapping from physics:approximation attribute (lower case) to remeshing method
+    # mapping from physics:approximation attribute (lower case) to remeshing method.
+    # ``"none"`` is recognised as a no-op (PhysX semantics: use the raw triangle mesh).
     approximation_to_remeshing_method = {
+        "none": None,
         "convexdecomposition": "coacd",
         "convexhull": "convex_hull",
         "boundingsphere": "bounding_sphere",
@@ -408,6 +410,32 @@ def parse_usd(
         mesh = usd.get_mesh(prim, load_uvs=load_uvs, load_normals=load_normals)
         mesh_cache[key] = mesh
         return mesh
+
+    def _detect_planar_mesh_axis(mesh: Mesh, scale: wp.vec3) -> Axis | None:
+        """Detect a coplanar mesh that should be treated as a plane collider.
+
+        Returns the local axis (in the mesh's frame) that is normal to the plane,
+        or ``None`` if the mesh is not coplanar along any local axis. Detection is
+        deliberately conservative: the mesh must lie in an axis-aligned plane in
+        its local frame, and the test is performed after applying ``scale``.
+        Common Isaac Sim / PhysX authoring uses a 4-vertex quad in the XY plane
+        with ``physics:approximation = "none"`` to express a static ground.
+        """
+        verts = np.asarray(mesh.vertices, dtype=np.float64)
+        if verts.size == 0:
+            return None
+        scaled = verts * np.array([float(scale[0]), float(scale[1]), float(scale[2])], dtype=np.float64)
+        extents = scaled.max(axis=0) - scaled.min(axis=0)
+        max_extent = float(extents.max())
+        if max_extent <= 0.0:
+            return None
+        # Relative tolerance against the largest extent; 1e-6 catches numerical
+        # noise while staying well below any author-relevant thickness.
+        flat_eps = max(1e-6 * max_extent, 1e-9)
+        flat_axes = [i for i in range(3) if extents[i] <= flat_eps]
+        if len(flat_axes) != 1:
+            return None
+        return (Axis.X, Axis.Y, Axis.Z)[flat_axes[0]]
 
     def _has_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
         return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
@@ -2747,24 +2775,48 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    shape_id = builder.add_shape_mesh(
-                        scale=wp.vec3(*shape_spec.meshScale),
-                        mesh=mesh,
-                        **shape_params,
-                    )
-                    if not skip_mesh_approximation:
-                        approximation = usd.get_attribute(prim, "physics:approximation", None)
-                        if approximation is not None:
-                            remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
-                            if remeshing_method is None:
-                                if verbose:
-                                    print(
-                                        f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
-                                    )
-                            else:
-                                if remeshing_method not in remeshing_queue:
-                                    remeshing_queue[remeshing_method] = []
-                                remeshing_queue[remeshing_method].append(shape_id)
+                    mesh_scale = wp.vec3(*shape_spec.meshScale)
+                    # Static, axis-aligned coplanar Mesh colliders (e.g. a 4-vertex quad with
+                    # ``physics:approximation = "none"``) are a common Isaac Sim / PhysX way
+                    # to author a ground plane. Triangle-mesh collision degenerates to a
+                    # zero-volume convex hull in solvers like MuJoCo, so route it through
+                    # ``add_shape_plane`` instead.
+                    planar_axis = None
+                    if body_id == -1:
+                        planar_axis = _detect_planar_mesh_axis(mesh, mesh_scale)
+                    if planar_axis is not None:
+                        plane_params = dict(shape_params)
+                        if planar_axis != Axis.Z:
+                            xform = plane_params["xform"]
+                            plane_params["xform"] = wp.transform(
+                                xform.p, xform.q * quat_between_axes(Axis.Z, planar_axis)
+                            )
+                        shape_id = builder.add_shape_plane(
+                            **plane_params,
+                            width=0.0,
+                            length=0.0,
+                        )
+                    else:
+                        shape_id = builder.add_shape_mesh(
+                            scale=mesh_scale,
+                            mesh=mesh,
+                            **shape_params,
+                        )
+                        if not skip_mesh_approximation:
+                            approximation = usd.get_attribute(prim, "physics:approximation", None)
+                            if approximation is not None:
+                                approx_key = approximation.lower()
+                                if approx_key not in approximation_to_remeshing_method:
+                                    if verbose:
+                                        print(
+                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
+                                        )
+                                else:
+                                    remeshing_method = approximation_to_remeshing_method[approx_key]
+                                    if remeshing_method is not None:
+                                        if remeshing_method not in remeshing_queue:
+                                            remeshing_queue[remeshing_method] = []
+                                        remeshing_queue[remeshing_method].append(shape_id)
 
                 elif key == UsdPhysics.ObjectType.PlaneShape:
                     # Warp uses +Z convention for planes
