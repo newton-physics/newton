@@ -5,6 +5,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
+from .._fixed_joint_merger import compute_fixed_joint_merge
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
@@ -95,6 +96,8 @@ class SolverXPBD(SolverBase):
     def __init__(
         self,
         model: Model,
+        collapse_fixed_joints: bool = True,
+        joints_to_keep: list[str] | None = None,
         iterations: int = 2,
         soft_body_relaxation: float = 0.9,
         soft_contact_relaxation: float = 0.9,
@@ -127,7 +130,15 @@ class SolverXPBD(SolverBase):
 
         self.compute_body_velocity_from_position_delta = False
 
+        self._joints_to_keep = joints_to_keep
         self._init_kinematic_state()
+
+        merge_info = (
+            compute_fixed_joint_merge(model, joints_to_keep=joints_to_keep)
+            if collapse_fixed_joints and model.body_count and model.joint_count
+            else None
+        )
+        self._init_fixed_joint_merge(merge_info)
 
         # helper variables to track constraint resolution vars
         self._particle_delta_counter = 0
@@ -141,7 +152,10 @@ class SolverXPBD(SolverBase):
     @override
     def notify_model_changed(self, flags: int) -> None:
         if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
-            self._refresh_kinematic_state()
+            if getattr(self, "_merge_info", None) is not None and (flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
+                self._recompute_merged_inertial_properties()
+            else:
+                self._refresh_kinematic_state()
 
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):
         if model.body_count == 0:
@@ -339,7 +353,7 @@ class SolverXPBD(SolverBase):
                             state_in.body_q,
                             model.body_com,
                             model.joint_type,
-                            model.joint_enabled,
+                            self.joint_enabled_effective,
                             model.joint_parent,
                             model.joint_child,
                             model.joint_X_p,
@@ -353,12 +367,24 @@ class SolverXPBD(SolverBase):
                         device=model.device,
                     )
 
+                _mi = getattr(self, "_merge_info", None)
+                _int_kwargs = (
+                    {
+                        "body_com": _mi.merged_body_com_gpu,
+                        "body_mass": _mi.merged_body_mass_gpu,
+                        "body_inertia": _mi.merged_body_inertia_gpu,
+                        "body_inv_mass": _mi.merged_body_inv_mass_gpu,
+                        "body_inv_inertia": _mi.merged_body_inv_inertia_gpu,
+                    }
+                    if _mi is not None
+                    else {}
+                )
                 if body_f_tmp is state_in.body_f:
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, **_int_kwargs)
                 else:
                     body_f_prev = state_in.body_f
                     state_in.body_f = body_f_tmp
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, **_int_kwargs)
                     state_in.body_f = body_f_prev
 
             spring_constraint_lambdas = None
@@ -593,17 +619,18 @@ class SolverXPBD(SolverBase):
                         else:
                             body_deltas.zero_()
 
+                        _mi = getattr(self, "_merge_info", None)
                         wp.launch(
                             kernel=solve_body_joints,
                             dim=model.joint_count,
                             inputs=[
                                 body_q,
                                 body_qd,
-                                model.body_com,
+                                _mi.merged_body_com_gpu if _mi is not None else model.body_com,
                                 self.body_inv_mass_effective,
                                 self.body_inv_inertia_effective,
                                 model.joint_type,
-                                model.joint_enabled,
+                                self.joint_enabled_effective,
                                 model.joint_parent,
                                 model.joint_child,
                                 model.joint_X_p,
@@ -762,6 +789,7 @@ class SolverXPBD(SolverBase):
 
             if model.body_count:
                 self.copy_kinematic_body_state(model, state_in, state_out)
+                self._propagate_merged_body_poses_and_velocities(state_out)
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:

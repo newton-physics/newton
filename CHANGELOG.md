@@ -41,6 +41,8 @@
 - Add Kamino-specific simulation examples in `newton/examples/kamino`
 - Add per-mesh `color` override to `ViewerBase.log_mesh()` for tinting individual meshes without authoring per-vertex colors
 - Add per-mesh `roughness` and `metallic` PBR overrides to `ViewerBase.log_mesh()`
+- Add solver-level fixed-joint merging to ``SolverXPBD`` and ``SolverSemiImplicit`` via ``collapse_fixed_joints=True`` (the default); the original ``Model`` body hierarchy is preserved so USD-path-to-body-index mappings remain valid, while merged-child inertia is accumulated into survivor bodies for improved numerical stability
+
 
 ### Changed
 

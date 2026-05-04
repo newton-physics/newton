@@ -501,7 +501,13 @@ def eval_body_joints(
 
 
 def eval_body_joint_forces(
-    model: Model, state: State, control: Control, body_f: wp.array, joint_attach_ke: float, joint_attach_kd: float
+    model: Model,
+    state: State,
+    control: Control,
+    body_f: wp.array,
+    joint_attach_ke: float,
+    joint_attach_kd: float,
+    joint_enabled_override: wp.array | None = None,
 ):
     if model.joint_count:
         wp.launch(
@@ -513,7 +519,7 @@ def eval_body_joint_forces(
                 model.body_com,
                 model.joint_qd_start,
                 model.joint_type,
-                model.joint_enabled,
+                joint_enabled_override if joint_enabled_override is not None else model.joint_enabled,
                 model.joint_child,
                 model.joint_parent,
                 model.joint_X_p,

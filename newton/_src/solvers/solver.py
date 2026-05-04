@@ -5,6 +5,13 @@ import warp as wp
 
 from ..geometry import ParticleFlags
 from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, State
+from ._fixed_joint_merger import (
+    FixedJointMergeInfo,
+    _propagate_merged_body_poses,
+    _propagate_merged_body_velocities,
+    _update_effective_inv_mass_inertia_merged,
+    compute_fixed_joint_merge,
+)
 
 
 @wp.kernel
@@ -205,9 +212,26 @@ class SolverBase:
             self._refresh_kinematic_state()
 
     def _refresh_kinematic_state(self):
-        """Update effective arrays from model, zeroing kinematic bodies."""
+        """Update effective arrays from model, zeroing kinematic and merged-child bodies."""
         model = self.model
-        if model.body_count:
+        if not model.body_count:
+            return
+        merge_info: FixedJointMergeInfo | None = getattr(self, "_merge_info", None)
+        if merge_info is not None:
+            wp.launch(
+                kernel=_update_effective_inv_mass_inertia_merged,
+                dim=model.body_count,
+                inputs=[
+                    model.body_flags,
+                    merge_info.survivor_indices_gpu,
+                    merge_info.merged_body_inv_mass_gpu,
+                    merge_info.merged_body_inv_inertia_gpu,
+                    self.body_inv_mass_effective,
+                    self.body_inv_inertia_effective,
+                ],
+                device=model.device,
+            )
+        else:
             wp.launch(
                 kernel=_update_effective_inv_mass_inertia,
                 dim=model.body_count,
@@ -221,6 +245,86 @@ class SolverBase:
                 device=model.device,
             )
 
+    def _init_fixed_joint_merge(self, merge_info: FixedJointMergeInfo | None) -> None:
+        """Initialise shadow arrays for solver-level fixed-joint merging.
+
+        Must be called after :meth:`_init_kinematic_state` when merging is
+        requested.  Sets :attr:`joint_enabled_effective` either to a shadow
+        GPU array (with collapsed FIXED joints disabled) or to the model's own
+        :attr:`~newton.Model.joint_enabled` array when there is nothing to merge.
+
+        Args:
+            merge_info: Merge metadata from
+                :func:`~newton.solvers._fixed_joint_merger.compute_fixed_joint_merge`,
+                or ``None`` when no FIXED joints were collapsed.
+        """
+        model = self.model
+        if merge_info is None or not merge_info.has_merges:
+            self._merge_info = None
+            self.joint_enabled_effective = model.joint_enabled
+            return
+        self._merge_info = merge_info
+        self.joint_enabled_effective = wp.array(merge_info.joint_enabled_effective, dtype=wp.bool, device=model.device)
+        # Refresh effective arrays now that merge_info is set.
+        if model.body_count and hasattr(self, "body_inv_mass_effective"):
+            self._refresh_kinematic_state()
+
+    def _recompute_merged_inertial_properties(self) -> None:
+        """Re-run the merge analysis and refresh GPU shadow arrays.
+
+        Called from :meth:`notify_model_changed` when
+        ``SolverNotifyFlags.BODY_INERTIAL_PROPERTIES`` is set and fixed-joint
+        merging is active.  Re-reads ``model.body_inv_mass`` etc. (which the
+        user has updated), recomputes accumulated values, and writes them into
+        the existing GPU arrays without reallocating.
+        """
+        joints_to_keep = getattr(self, "_joints_to_keep", None)
+        new_info = compute_fixed_joint_merge(self.model, joints_to_keep=joints_to_keep)
+        if new_info is not None and self._merge_info is not None:
+            self._merge_info.merged_body_inv_mass_gpu.assign(new_info.merged_body_inv_mass_gpu)
+            self._merge_info.merged_body_inv_inertia_gpu.assign(new_info.merged_body_inv_inertia_gpu)
+            self._merge_info.merged_body_mass_gpu.assign(new_info.merged_body_mass_gpu)
+            self._merge_info.merged_body_inertia_gpu.assign(new_info.merged_body_inertia_gpu)
+            self._merge_info.merged_body_com_gpu.assign(new_info.merged_body_com_gpu)
+        self._refresh_kinematic_state()
+
+    def _propagate_merged_body_poses_and_velocities(self, state_out: State) -> None:
+        """Scatter survivor pose and velocity into each merged child's slots.
+
+        Must be called at the very end of :meth:`step`, after all constraint
+        iterations and after :meth:`copy_kinematic_body_state`, so the
+        survivor's final corrected pose is propagated to merged children.
+
+        Args:
+            state_out: The output state whose ``body_q`` and ``body_qd``
+                arrays are updated in-place.
+        """
+        merge_info: FixedJointMergeInfo | None = getattr(self, "_merge_info", None)
+        if merge_info is None:
+            return
+        model = self.model
+        wp.launch(
+            kernel=_propagate_merged_body_poses,
+            dim=model.body_count,
+            inputs=[
+                merge_info.survivor_indices_gpu,
+                merge_info.relative_xforms_gpu,
+                state_out.body_q,
+            ],
+            device=model.device,
+        )
+        wp.launch(
+            kernel=_propagate_merged_body_velocities,
+            dim=model.body_count,
+            inputs=[
+                merge_info.survivor_indices_gpu,
+                state_out.body_q,
+                merge_info.relative_xforms_gpu,
+                state_out.body_qd,
+            ],
+            device=model.device,
+        )
+
     def integrate_bodies(
         self,
         model: Model,
@@ -228,17 +332,26 @@ class SolverBase:
         state_out: State,
         dt: float,
         angular_damping: float = 0.0,
+        body_com: wp.array | None = None,
+        body_mass: wp.array | None = None,
+        body_inertia: wp.array | None = None,
+        body_inv_mass: wp.array | None = None,
+        body_inv_inertia: wp.array | None = None,
     ) -> None:
-        """
-        Integrate the rigid bodies of the model.
+        """Integrate the rigid bodies of the model.
 
         Args:
-            model (Model): The model to integrate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
-            angular_damping (float, optional): The angular damping factor.
-                Defaults to 0.0.
+            model: The model to integrate.
+            state_in: The input state.
+            state_out: The output state.
+            dt: The time step (typically in seconds).
+            angular_damping: Angular damping factor. Defaults to 0.0.
+            body_com: Override for ``model.body_com`` [m]. Pass the solver's
+                merged COM array when fixed-joint collapsing is active.
+            body_mass: Override for ``model.body_mass`` [kg].
+            body_inertia: Override for ``model.body_inertia`` [kg·m²].
+            body_inv_mass: Override for ``model.body_inv_mass`` [1/kg].
+            body_inv_inertia: Override for ``model.body_inv_inertia`` [1/(kg·m²)].
         """
         if model.body_count:
             wp.launch(
@@ -248,11 +361,11 @@ class SolverBase:
                     state_in.body_q,
                     state_in.body_qd,
                     state_in.body_f,
-                    model.body_com,
-                    model.body_mass,
-                    model.body_inertia,
-                    model.body_inv_mass,
-                    model.body_inv_inertia,
+                    body_com if body_com is not None else model.body_com,
+                    body_mass if body_mass is not None else model.body_mass,
+                    body_inertia if body_inertia is not None else model.body_inertia,
+                    body_inv_mass if body_inv_mass is not None else model.body_inv_mass,
+                    body_inv_inertia if body_inv_inertia is not None else model.body_inv_inertia,
                     model.body_flags,
                     model.body_world,
                     model.gravity,
