@@ -588,6 +588,16 @@ class TestModelJoints(unittest.TestCase):
                 values={0: [1, (2, -1)]},
             )
         )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="articulation_ref_wp",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.ONCE,
+                references="articulation",
+                default=wp.int32(-1),
+                values={0: [wp.int32(1), (wp.int32(2), wp.int32(-1))]},
+            )
+        )
 
         collapse_results = builder.collapse_fixed_joints()
 
@@ -600,6 +610,7 @@ class TestModelJoints(unittest.TestCase):
         assert builder.joint_articulation == [0, 1]
         assert builder.custom_attributes["articulation_name"].values == {0: "revolute", 1: "free"}
         assert builder.custom_attributes["articulation_ref"].values == {0: [0, (1, -1)]}
+        assert builder.custom_attributes["articulation_ref_wp"].values == {0: [0, (1, -1)]}
         assert builder.joint_type == [newton.JointType.REVOLUTE, newton.JointType.FREE]
         assert builder.shape_count == 11
         assert builder.shape_body == [-1, -1, -1, -1, -1, -1, 0, 1, 1, 1, 1]

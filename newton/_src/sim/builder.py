@@ -5175,13 +5175,17 @@ class ModelBuilder:
         def remap_articulation_reference(value: Any) -> Any:
             if isinstance(value, bool):
                 return value
-            if isinstance(value, int):
-                return articulation_remap.get(value, -1) if value >= 0 else value
             if isinstance(value, list):
                 return [remap_articulation_reference(v) for v in value]
             if isinstance(value, tuple):
                 return tuple(remap_articulation_reference(v) for v in value)
-            return value
+            # Covers Python int as well as Warp scalar integer types (wp.int32 etc.),
+            # whose default `dtype(0)` instances are not Python ints.
+            try:
+                idx = int(value)
+            except (TypeError, ValueError):
+                return value
+            return articulation_remap.get(idx, -1) if idx >= 0 else value
 
         # ARTICULATION-frequency attributes use dict storage by construction
         # (see CustomAttribute._create_empty_values_container).
