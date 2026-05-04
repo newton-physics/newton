@@ -265,6 +265,9 @@ def run(example, args):
     viewer = example.viewer
     example_class = type(example)
 
+    if hasattr(viewer, "hide_loading_splash"):
+        viewer.hide_loading_splash()
+
     perform_test = args is not None and args.test
     test_post_step = perform_test and hasattr(example, "test_post_step")
     test_final = perform_test and hasattr(example, "test_final")
@@ -663,6 +666,7 @@ def init(parser=None):
         _raise_benchmark_priority(realtime=args.realtime)
 
     # Create viewer based on type
+    visible_gl = args.viewer == "gl" and not args.headless
     if args.viewer == "gl":
         viewer = newton.viewer.ViewerGL(headless=args.headless)
     elif args.viewer == "usd":
@@ -681,6 +685,17 @@ def init(parser=None):
         viewer = newton.viewer.ViewerViser()
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
+
+    if visible_gl:
+        viewer.show_loading_splash("Loading...")
+        # Pump a few frames so the OS maps the GL surface before kernel
+        # compilation blocks the main thread.  No portable "window is on
+        # screen" signal exists across X11/Wayland/macOS; three frames is
+        # a best-effort heuristic that may still come up blank on slow
+        # compositors (silently absent, not wrong).
+        for _ in range(3):
+            viewer.begin_frame(0.0)
+            viewer.end_frame()
 
     return viewer, args
 
