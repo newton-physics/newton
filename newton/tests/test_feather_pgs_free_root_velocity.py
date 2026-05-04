@@ -126,13 +126,17 @@ devices = get_test_devices()
 for device in devices:
     add_function_test(
         TestFeatherPGSFreeRootVelocity,
-        f"test_free_root_velocity_roundtrip_{device}",
+        "test_free_root_velocity_roundtrip",
         run_free_root_velocity_roundtrip,
         devices=[device],
     )
     add_function_test(
         TestFeatherPGSFreeRootVelocity,
-        f"test_free_root_integration_uses_origin_velocity_{device}",
+        "test_free_root_integration_uses_origin_velocity",
         run_free_root_integration_uses_origin_velocity,
         devices=[device],
     )
+
+
+if __name__ == "__main__":
+    unittest.main()

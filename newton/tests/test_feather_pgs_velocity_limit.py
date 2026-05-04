@@ -15,19 +15,10 @@
 
 """Regression tests for the FeatherPGS joint velocity-limit constraint.
 
-These tests cover the feature introduced in issue #23:
-
-1. **Parameter plumbing and guards** — the new ``enable_joint_velocity_limits``
-   kwarg is accepted, stored, and bound to the supported PGS mode.
-2. **Allocation kernel** — the Warp kernel ``allocate_joint_velocity_limit_slots``
-   reserves a slot only when ``|qdot_i| > qdot_max_i`` and encodes the side of
-   the bilateral ``[-qdot_max, +qdot_max]`` box via the sign of the row.
-3. **Populator kernel** — the Warp kernel
-   ``populate_joint_velocity_limit_J_for_size`` writes a signed ±1 selector row
-   into the grouped Jacobian and sets the correct constraint metadata
-   (row type, zero Baumgarte bias, ``target_vel = -qdot_max``).
-4. **Flag-off is a strict no-op** — constructing the solver without the flag
-   matches the baseline behaviour over the full per-step velocity trace.
+Velocity-limit rows are always enabled for finite positive
+``model.joint_velocity_limit`` values. The direct kernel tests cover row
+allocation and Jacobian population; the end-to-end tests exercise the fused
+matrix-free Warp solve on CUDA.
 """
 
 from __future__ import annotations
@@ -47,8 +38,10 @@ from newton._src.solvers.feather_pgs.kernels import (
 )
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
+VELOCITY_LIMIT_OVERSHOOT_TOLERANCE = 1.25
 
-def _build_two_dof_pendulum_model(device: str, velocity_limit: float = 2.0) -> newton.Model:
+
+def _build_two_dof_pendulum_model(device, velocity_limit: float = 2.0) -> newton.Model:
     """Build a 2-DOF revolute chain with a finite per-axis velocity limit.
 
     The chain has two serial revolute joints with a known velocity limit on
@@ -76,28 +69,15 @@ def _build_two_dof_pendulum_model(device: str, velocity_limit: float = 2.0) -> n
     return model
 
 
-class TestFeatherPGSVelocityLimitFlag(unittest.TestCase):
-    """Constructor-level plumbing for ``enable_joint_velocity_limits``."""
+class TestFeatherPGSVelocityLimitConstructor(unittest.TestCase):
+    """Constructor-level plumbing for always-on velocity limits."""
 
 
-def run_default_is_flag_off(test: TestFeatherPGSVelocityLimitFlag, device):
-    """With no kwarg, velocity limits stay off (regression baseline)."""
+def run_default_allocates_buffers(test: TestFeatherPGSVelocityLimitConstructor, device):
+    """Velocity-limit buffers allocate by default for articulated models."""
     model = _build_two_dof_pendulum_model(device)
     solver = SolverFeatherPGS(model)
-    test.assertFalse(solver.enable_joint_velocity_limits)
-    # The per-DOF buffers only allocate when the flag is on.
-    test.assertIsNone(solver.velocity_limit_slot)
-    test.assertIsNone(solver.velocity_limit_sign)
-
-
-def run_flag_on_allocates_buffers(test: TestFeatherPGSVelocityLimitFlag, device):
-    """Passing the flag allocates per-DOF buffers sized to ``joint_dof_count``."""
-    model = _build_two_dof_pendulum_model(device)
-    solver = SolverFeatherPGS(
-        model,
-        enable_joint_velocity_limits=True,
-    )
-    test.assertTrue(solver.enable_joint_velocity_limits)
+    test.assertFalse(hasattr(solver, "enable_joint_velocity_limits"))
     test.assertIsNotNone(solver.velocity_limit_slot)
     test.assertIsNotNone(solver.velocity_limit_sign)
     test.assertEqual(solver.velocity_limit_slot.shape, (model.joint_dof_count,))
@@ -390,16 +370,13 @@ def run_populator_writes_signed_selector_row_and_metadata(test: TestFeatherPGSVe
 class TestFeatherPGSVelocityLimitEndToEnd(unittest.TestCase):
     """End-to-end integration tests that drive a real solver step.
 
-    The matrix-free PGS sweep kernel (``get_pgs_solve_mf_gs_kernel``) is a
-    CUDA-native snippet guarded by ``#if defined(__CUDA_ARCH__)`` — it is a
-    no-op on CPU. These tests therefore require a CUDA device. Kernel-level
-    correctness (allocation + populator + row-type dispatch) is covered on
-    CPU by the classes above.
+    The fused matrix-free Warp PGS sweep is CUDA-only. Kernel-level correctness
+    for allocation and row population is covered on CPU by the classes above.
     """
 
 
 def _build_driven_pendulum(
-    device: str, velocity_limit: float, target_ke: float, target_kd: float
+    device, velocity_limit: float, target_ke: float, target_kd: float
 ) -> tuple[newton.Model, newton.State, newton.State, newton.Control]:
     """Build a 1-DOF revolute pendulum with a stiff implicit PD drive.
 
@@ -456,116 +433,50 @@ def _step_and_read_qdot(
     return peak
 
 
-def _step_and_read_qdot_history(
-    model: newton.Model,
-    solver: SolverFeatherPGS,
-    state_0: newton.State,
-    state_1: newton.State,
-    control: newton.Control,
-    dt: float,
-    n_steps: int,
-) -> np.ndarray:
-    """Run ``n_steps`` and return the per-step ``joint_qd`` trace."""
-    history: list[np.ndarray] = []
-    for _ in range(n_steps):
-        state_0.clear_forces()
-        solver.step(state_0, state_1, control, None, dt)
-        state_0, state_1 = state_1, state_0
-        history.append(state_0.joint_qd.numpy().copy())
-    return np.asarray(history, dtype=np.float32)
-
-
-def run_end_to_end_flag_on_clamps_peak_qdot(test: TestFeatherPGSVelocityLimitEndToEnd, device):
-    """With the flag on, peak ``|qdot|`` stays near the velocity limit.
+def run_end_to_end_clamps_peak_qdot(test: TestFeatherPGSVelocityLimitEndToEnd, device):
+    """Peak ``|qdot|`` stays near the velocity limit.
 
     Drives a stiff-PD pendulum with a far position target — the baseline
-    solver produces a huge ``qdot`` spike over a few steps; with
-    ``enable_joint_velocity_limits=True`` the PGS clamp pulls ``|qdot|``
-    back toward ``qdot_max``. We accept a small tolerance above the strict
-    limit because the clamp is applied *after* the predictor: the
-    pre-solve velocity can be above the limit, and the solver's iteration
-    count / articulated-body response determine the residual.
+    unlimited model produces a huge ``qdot`` spike over a few steps; with
+    finite positive ``joint_velocity_limit`` entries the PGS clamp pulls
+    ``|qdot|`` back toward ``qdot_max``.
     """
     velocity_limit = 1.5
     model, state_0, state_1, control = _build_driven_pendulum(
         device, velocity_limit=velocity_limit, target_ke=2000.0, target_kd=40.0
     )
-    solver = SolverFeatherPGS(
-        model,
-        enable_joint_velocity_limits=True,
-        pgs_iterations=32,
-    )
+    solver = SolverFeatherPGS(model, pgs_iterations=32)
     peak = _step_and_read_qdot(model, solver, state_0, state_1, control, dt=1.0 / 120.0, n_steps=40)
 
-    # The clamp must be doing *something* meaningful: peak stays within a
-    # generous 1.5x multiple of the limit (mirrors the issue's 1.25x
-    # threshold with extra headroom for PGS residual). The reference
-    # baseline without the flag blows past 6x; see the companion test.
-    test.assertLess(peak, velocity_limit * 1.5)
+    # The clamp is applied after prediction, so the PGS residual can overshoot
+    # the strict limit. Keep the tolerance tight enough to catch regressions.
+    test.assertLess(peak, velocity_limit * VELOCITY_LIMIT_OVERSHOOT_TOLERANCE)
 
 
-def run_end_to_end_flag_on_is_tighter_than_flag_off(test: TestFeatherPGSVelocityLimitEndToEnd, device):
-    """Constrained FPGS has a smaller ``|qdot|`` peak than baseline FPGS.
+def run_end_to_end_finite_limit_is_tighter_than_unlimited(test: TestFeatherPGSVelocityLimitEndToEnd, device):
+    """A finite limit has a smaller ``|qdot|`` peak than an unlimited model.
 
     This is the direct smoke-scenario signal at Newton-library level
-    (no Isaac Sim required): driven by the same stiff-PD far target and
-    the same matrix-free pipeline, the flag-on solver clamps and the
-    flag-off solver does not.
+    (no Isaac Sim required): driven by the same stiff-PD far target, a
+    non-positive limit remains unlimited while a finite positive limit clamps.
     """
     velocity_limit = 1.5
 
-    # Baseline (flag off).
-    model_b, s0_b, s1_b, ctl_b = _build_driven_pendulum(
-        device, velocity_limit=velocity_limit, target_ke=2000.0, target_kd=40.0
-    )
+    # Baseline: non-positive limits are treated as unlimited.
+    model_b, s0_b, s1_b, ctl_b = _build_driven_pendulum(device, velocity_limit=0.0, target_ke=2000.0, target_kd=40.0)
     solver_b = SolverFeatherPGS(model_b, pgs_iterations=32)
     peak_baseline = _step_and_read_qdot(model_b, solver_b, s0_b, s1_b, ctl_b, dt=1.0 / 120.0, n_steps=40)
 
-    # Constrained (flag on).
+    # Constrained: finite positive limits are always active.
     model_c, s0_c, s1_c, ctl_c = _build_driven_pendulum(
         device, velocity_limit=velocity_limit, target_ke=2000.0, target_kd=40.0
     )
-    solver_c = SolverFeatherPGS(
-        model_c,
-        enable_joint_velocity_limits=True,
-        pgs_iterations=32,
-    )
+    solver_c = SolverFeatherPGS(model_c, pgs_iterations=32)
     peak_constrained = _step_and_read_qdot(model_c, solver_c, s0_c, s1_c, ctl_c, dt=1.0 / 120.0, n_steps=40)
 
-    # Baseline must overshoot meaningfully (otherwise the scenario itself
-    # isn't a valid witness).
-    test.assertGreater(peak_baseline, velocity_limit * 1.5)
-    # Constrained must be tighter than baseline.
+    test.assertGreater(peak_baseline, velocity_limit * VELOCITY_LIMIT_OVERSHOOT_TOLERANCE)
     test.assertLess(peak_constrained, peak_baseline)
-    # And preferably near the limit.
-    test.assertLess(peak_constrained, velocity_limit * 1.5)
-
-
-def run_end_to_end_flag_off_is_strict_noop(test: TestFeatherPGSVelocityLimitEndToEnd, device):
-    """Flag off: per-step velocity outputs match the pre-issue baseline.
-
-    Same stiff-PD driven pendulum, same matrix-free pipeline, same seed
-    (deterministic), the flag toggles to ``False`` must produce the same
-    ``joint_qd`` trajectory as a solver constructed without the kwarg.
-    """
-    velocity_limit = 1.5
-
-    # Solver A: constructed without the kwarg (pre-issue baseline).
-    model_a, s0_a, s1_a, ctl_a = _build_driven_pendulum(
-        device, velocity_limit=velocity_limit, target_ke=2000.0, target_kd=40.0
-    )
-    solver_a = SolverFeatherPGS(model_a)
-    history_a = _step_and_read_qdot_history(model_a, solver_a, s0_a, s1_a, ctl_a, dt=1.0 / 120.0, n_steps=20)
-
-    # Solver B: constructed with enable_joint_velocity_limits=False (explicit).
-    model_b, s0_b, s1_b, ctl_b = _build_driven_pendulum(
-        device, velocity_limit=velocity_limit, target_ke=2000.0, target_kd=40.0
-    )
-    solver_b = SolverFeatherPGS(model_b, enable_joint_velocity_limits=False)
-    history_b = _step_and_read_qdot_history(model_b, solver_b, s0_b, s1_b, ctl_b, dt=1.0 / 120.0, n_steps=20)
-
-    # Full-trace match: flag-off is a strict no-op.
-    np.testing.assert_allclose(history_a, history_b, rtol=0.0, atol=1e-6)
+    test.assertLess(peak_constrained, velocity_limit * VELOCITY_LIMIT_OVERSHOOT_TOLERANCE)
 
 
 devices = get_test_devices()
@@ -573,62 +484,48 @@ constructor_devices = get_cuda_test_devices(mode="basic")
 
 for device in constructor_devices:
     add_function_test(
-        TestFeatherPGSVelocityLimitFlag,
-        f"test_default_is_flag_off_{device}",
-        run_default_is_flag_off,
-        devices=[device],
-    )
-    add_function_test(
-        TestFeatherPGSVelocityLimitFlag,
-        f"test_flag_on_allocates_buffers_{device}",
-        run_flag_on_allocates_buffers,
+        TestFeatherPGSVelocityLimitConstructor,
+        "test_default_allocates_buffers",
+        run_default_allocates_buffers,
         devices=[device],
     )
 
 for device in devices:
     add_function_test(
         TestFeatherPGSVelocityLimitAllocationKernel,
-        f"test_allocation_activates_only_over_limit_{device}",
+        "test_allocation_activates_only_over_limit",
         run_allocation_activates_only_over_limit,
         devices=[device],
     )
     add_function_test(
         TestFeatherPGSVelocityLimitAllocationKernel,
-        f"test_allocation_lower_vs_upper_sides_{device}",
+        "test_allocation_lower_vs_upper_sides",
         run_allocation_lower_vs_upper_sides,
         devices=[device],
     )
     add_function_test(
         TestFeatherPGSVelocityLimitAllocationKernel,
-        f"test_allocation_nonpositive_limit_is_unlimited_{device}",
+        "test_allocation_nonpositive_limit_is_unlimited",
         run_allocation_nonpositive_limit_is_unlimited,
         devices=[device],
     )
     add_function_test(
         TestFeatherPGSVelocityLimitPopulatorKernel,
-        f"test_populator_writes_signed_selector_row_and_metadata_{device}",
+        "test_populator_writes_signed_selector_row_and_metadata",
         run_populator_writes_signed_selector_row_and_metadata,
         devices=[device],
     )
-    # End-to-end tests require the CUDA-native matrix-free PGS sweep
-    # kernel. The kernel is a no-op on CPU (see class docstring).
-    if str(device).startswith("cuda"):
+    if device.is_cuda:
         add_function_test(
             TestFeatherPGSVelocityLimitEndToEnd,
-            f"test_end_to_end_flag_on_clamps_peak_qdot_{device}",
-            run_end_to_end_flag_on_clamps_peak_qdot,
+            "test_end_to_end_clamps_peak_qdot",
+            run_end_to_end_clamps_peak_qdot,
             devices=[device],
         )
         add_function_test(
             TestFeatherPGSVelocityLimitEndToEnd,
-            f"test_end_to_end_flag_on_is_tighter_than_flag_off_{device}",
-            run_end_to_end_flag_on_is_tighter_than_flag_off,
-            devices=[device],
-        )
-        add_function_test(
-            TestFeatherPGSVelocityLimitEndToEnd,
-            f"test_end_to_end_flag_off_is_strict_noop_{device}",
-            run_end_to_end_flag_off_is_strict_noop,
+            "test_end_to_end_finite_limit_is_tighter_than_unlimited",
+            run_end_to_end_finite_limit_is_tighter_than_unlimited,
             devices=[device],
         )
 
