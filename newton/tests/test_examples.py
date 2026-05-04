@@ -781,55 +781,6 @@ class TestKaminoExamples(unittest.TestCase):
 
 add_example_test(
     TestKaminoExamples,
-    name="kamino.example_kamino_basic_all_geoms",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 120},
-    use_viewer=True,
-)
-add_example_test(
-    TestKaminoExamples,
-    name="kamino.example_kamino_basic_all_joints",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 120},
-    use_viewer=True,
-)
-add_example_test(
-    TestKaminoExamples,
-    name="kamino.example_kamino_basic_box_on_plane",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 120},
-    use_viewer=True,
-)
-add_example_test(
-    TestKaminoExamples,
-    name="kamino.example_kamino_basic_box_pendulum",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 120},
-    use_viewer=True,
-)
-add_example_test(
-    TestKaminoExamples,
-    name="kamino.example_kamino_basic_boxes_hinged",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 120},
-    use_viewer=True,
-)
-add_example_test(
-    TestKaminoExamples,
-    name="kamino.example_kamino_basic_boxes_nunchaku",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 120},
-    use_viewer=True,
-)
-add_example_test(
-    TestKaminoExamples,
-    name="kamino.example_kamino_basic_cartpole",
-    devices=cuda_test_devices,
-    test_options={"num-frames": 120},
-    use_viewer=True,
-)
-add_example_test(
-    TestKaminoExamples,
     name="kamino.example_kamino_basic_fourbar",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
@@ -837,7 +788,7 @@ add_example_test(
 )
 add_example_test(
     TestKaminoExamples,
-    name="kamino.example_kamino_basic_dr_heterogeneous",
+    name="kamino.example_kamino_basic_heterogeneous",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
