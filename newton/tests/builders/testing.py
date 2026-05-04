@@ -1510,7 +1510,7 @@ _SHAPE_EXPECTED_LEN: dict[GeoType, int] = {
 }
 
 
-def make_shape_initial_position(type: GeoType, dims: tuple, is_top: bool = True) -> wp.vec3:
+def make_shape_initial_position(shape_type: GeoType, dims: tuple, is_top: bool = True) -> wp.vec3:
     """
     Computes the initial position along the z-axis for a given shape.
 
@@ -1518,7 +1518,7 @@ def make_shape_initial_position(type: GeoType, dims: tuple, is_top: bool = True)
     (or below) the origin along the z-axis, based on its type and dimensions.
 
     Args:
-        type: The :class:`GeoType` of the shape (e.g. ``GeoType.SPHERE``,
+        shape_type: The :class:`GeoType` of the shape (e.g. ``GeoType.SPHERE``,
             ``GeoType.BOX``, ``GeoType.CAPSULE``, etc.).
         dims: The dimensions of the shape. The expected format depends on the
             shape type; see :data:`shape_default_dims` for the Newton convention
@@ -1531,32 +1531,34 @@ def make_shape_initial_position(type: GeoType, dims: tuple, is_top: bool = True)
         The computed position vector along the z-axis.
     """
     # Check that the shape type is a known GeoType
-    if type not in _SHAPE_EXPECTED_LEN:
-        raise ValueError(f"Unsupported shape type: {type}")
+    if shape_type not in _SHAPE_EXPECTED_LEN:
+        raise ValueError(f"Unsupported shape type: {shape_type}")
 
     # Validate the dimension count against the expected length for this type
-    expected_len = _SHAPE_EXPECTED_LEN[type]
+    expected_len = _SHAPE_EXPECTED_LEN[shape_type]
     if len(dims) != expected_len:
-        raise ValueError(f"Invalid dimensions for shape '{type}': expected {expected_len} values, got {len(dims)}")
+        raise ValueError(
+            f"Invalid dimensions for shape '{shape_type}': expected {expected_len} values, got {len(dims)}"
+        )
 
     # Compute the initial position along z-axis that places the shape just above.
     # Dimensions use Newton convention (half-extents, half-heights).
-    if type == GeoType.SPHERE:
+    if shape_type == GeoType.SPHERE:
         r = wp.vec3(0.0, 0.0, dims[0])
-    elif type == GeoType.BOX:
+    elif shape_type == GeoType.BOX:
         r = wp.vec3(0.0, 0.0, dims[2])
-    elif type == GeoType.CAPSULE:
+    elif shape_type == GeoType.CAPSULE:
         r = wp.vec3(0.0, 0.0, dims[1] + dims[0])
-    elif type == GeoType.CYLINDER:
+    elif shape_type == GeoType.CYLINDER:
         r = wp.vec3(0.0, 0.0, dims[1])
-    elif type == GeoType.CONE:
+    elif shape_type == GeoType.CONE:
         r = wp.vec3(0.0, 0.0, dims[1])
-    elif type == GeoType.ELLIPSOID:
+    elif shape_type == GeoType.ELLIPSOID:
         r = wp.vec3(0.0, 0.0, dims[2])
-    elif type == GeoType.PLANE:
+    elif shape_type == GeoType.PLANE:
         r = wp.vec3(0.0, 0.0, dims[3])
     else:
-        raise ValueError(f"Unsupported shape type: {type}")
+        raise ValueError(f"Unsupported shape type: {shape_type}")
 
     # Invert the position if it's the bottom shape
     if not is_top:
@@ -1566,13 +1568,13 @@ def make_shape_initial_position(type: GeoType, dims: tuple, is_top: bool = True)
     return r
 
 
-def get_shape_bottom_position(center: wp.vec3, type: GeoType, dims: tuple) -> wp.vec3:
+def get_shape_bottom_position(center: wp.vec3, shape_type: GeoType, dims: tuple) -> wp.vec3:
     """
     Computes the position of the bottom along the z-axis for a given shape.
 
     Args:
         center: The center position of the shape [m].
-        type: The :class:`GeoType` of the shape (e.g. ``GeoType.SPHERE``,
+        shape_type: The :class:`GeoType` of the shape (e.g. ``GeoType.SPHERE``,
             ``GeoType.BOX``, ``GeoType.CAPSULE``, etc.).
         dims: The dimensions of the shape; same convention as
             :data:`shape_default_dims` (half-extents / half-heights).
@@ -1582,21 +1584,21 @@ def get_shape_bottom_position(center: wp.vec3, type: GeoType, dims: tuple) -> wp
     """
     # Compute and return the bottom position along z-axis.
     # Dimensions use Newton convention (half-extents, half-heights).
-    if type == GeoType.SPHERE:
+    if shape_type == GeoType.SPHERE:
         return center - wp.vec3(0.0, 0.0, dims[0])
-    if type == GeoType.BOX:
+    if shape_type == GeoType.BOX:
         return center - wp.vec3(0.0, 0.0, dims[2])
-    if type == GeoType.CAPSULE:
+    if shape_type == GeoType.CAPSULE:
         return center - wp.vec3(0.0, 0.0, dims[1] + dims[0])
-    if type == GeoType.CYLINDER:
+    if shape_type == GeoType.CYLINDER:
         return center - wp.vec3(0.0, 0.0, dims[1])
-    if type == GeoType.CONE:
+    if shape_type == GeoType.CONE:
         return center - wp.vec3(0.0, 0.0, dims[1])
-    if type == GeoType.ELLIPSOID:
+    if shape_type == GeoType.ELLIPSOID:
         return center - wp.vec3(0.0, 0.0, dims[2])
-    if type == GeoType.PLANE:
+    if shape_type == GeoType.PLANE:
         return center - wp.vec3(0.0, 0.0, dims[3])
-    raise ValueError(f"Unsupported shape type: {type}")
+    raise ValueError(f"Unsupported shape type: {shape_type}")
 
 
 def _add_shape_to_body(
