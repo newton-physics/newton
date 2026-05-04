@@ -261,9 +261,12 @@ def add_cloth_mesh(
         custom_attributes_particles: Extra custom attributes for particles.
         custom_attributes_springs: Extra custom attributes for springs.
         validate_mesh: If True, run quality checks on the input mesh and
-            emit warnings for degenerate or sliver triangles, extreme
-            angles, and non-manifold topology. See
-            :func:`newton.utils.validate_triangle_mesh`.
+            emit warnings for degenerate or sliver triangles and extreme
+            interior angles. See
+            :func:`newton.utils.validate_triangle_mesh`. (Non-manifold
+            edges are reported separately by :class:`MeshAdjacency`,
+            which is built unconditionally for the bending-edge
+            pipeline.)
         label: Optional name registered in
             :attr:`newton.ModelBuilder.deformable_label` so the cloth can
             be identified in diagnostics. Defaults to

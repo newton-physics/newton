@@ -1413,10 +1413,13 @@ def validate_triangle_mesh(
     """Check a triangle mesh for quality issues and emit warnings.
 
     Inspects the input triangle mesh for degenerate or sliver triangles
-    and extreme interior angles. Non-manifold-edge detection is delegated
-    to :class:`MeshAdjacency`, which emits its own warning during
-    construction; this function builds one as a side-effect so standalone
-    callers see the same warning. Each detected problem is reported via
+    and extreme interior angles. Non-manifold-edge detection is *not*
+    performed here; :class:`MeshAdjacency` emits its own warning during
+    construction and is built by every builder path that accepts a
+    triangle mesh, so going through ``add_cloth_mesh`` /
+    ``add_soft_mesh`` already covers it. Standalone callers who need a
+    non-manifold check should construct ``MeshAdjacency(indices)``
+    themselves. Each detected problem is reported via
     :func:`warnings.warn`.
 
     Args:
@@ -1500,22 +1503,18 @@ def validate_triangle_mesh(
             f" (smallest: {float(min_angle_arr.min()):.1f}\u00b0)"
         )
 
-    if issues:
-        prefix = "Mesh quality warning"
-        if label is not None:
-            prefix += f" [{label}]"
-        msg = (
-            f"{prefix} ({n_verts} vertices, {n_faces} triangles):\n"
-            + "\n".join(f"  - {issue}" for issue in issues)
-            + "\nConsider remeshing the input geometry."
-        )
-        warnings.warn(msg, stacklevel=stacklevel)
+    if not issues:
+        return
 
-    # Non-manifold edge detection is delegated to MeshAdjacency, which emits
-    # its own warning during construction. Builder paths construct one anyway
-    # for the bending-edge pipeline; standalone callers see the same warning
-    # without us reimplementing the edge-pair count here.
-    MeshAdjacency(indices)
+    prefix = "Mesh quality warning"
+    if label is not None:
+        prefix += f" [{label}]"
+    msg = (
+        f"{prefix} ({n_verts} vertices, {n_faces} triangles):\n"
+        + "\n".join(f"  - {issue}" for issue in issues)
+        + "\nConsider remeshing the input geometry."
+    )
+    warnings.warn(msg, stacklevel=stacklevel)
 
 
 def validate_tet_mesh(

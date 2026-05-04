@@ -7963,9 +7963,12 @@ class ModelBuilder:
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
             custom_attributes_springs: Dictionary of custom attribute names to values for the springs.
             validate_mesh: If True, run quality checks on the input mesh and
-                emit warnings for degenerate or sliver triangles, extreme
-                angles, and non-manifold topology. See
-                :func:`newton.utils.validate_triangle_mesh`.
+                emit warnings for degenerate or sliver triangles and
+                extreme interior angles. See
+                :func:`newton.utils.validate_triangle_mesh`. (Non-manifold
+                edges are reported separately by :class:`MeshAdjacency`,
+                which is built unconditionally for the bending-edge
+                pipeline.)
             label: Optional name registered in :attr:`deformable_label` so the
                 cloth can be identified in diagnostics. Defaults to
                 ``"cloth_mesh_<deformable_count>"``.

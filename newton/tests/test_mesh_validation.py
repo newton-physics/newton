@@ -103,29 +103,6 @@ class TestValidateTriangleMesh(unittest.TestCase):
         msgs = " ".join(str(wi.message) for wi in w)
         self.assertIn("minimum angle < 5", msgs)
 
-    def test_non_manifold_edge(self):
-        verts = np.array(
-            [
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.5, 1.0, 0.0],
-                [0.5, -1.0, 0.0],
-                [0.5, 0.0, 1.0],
-            ]
-        )
-        inds = np.array(
-            [
-                [0, 1, 2],
-                [0, 1, 3],
-                [0, 1, 4],
-            ]
-        )
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            validate_triangle_mesh(verts, inds)
-        msgs = " ".join(str(wi.message) for wi in w)
-        self.assertIn("non-manifold", msgs)
-
     def test_borderline_pass(self):
         area_target = 2e-6
         h = 2 * area_target / 0.01
