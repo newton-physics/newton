@@ -149,6 +149,8 @@ class ViewerViser(ViewerBase):
         self._meshes = {}
         self._instances = {}
         self._scene_handles = {}  # Track viser scene node handles
+        self._line_segment_counts = {}
+        self._line_versions = {}
 
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
@@ -983,13 +985,16 @@ class ViewerViser(ViewerBase):
             hidden: Whether the lines are hidden.
         """
 
-        def remove_existing_line():
+        def remove_existing_line(reset_version: bool = True):
             handle = self._scene_handles.pop(name, None)
             if handle is not None:
                 try:
                     handle.remove()
                 except Exception:
                     pass
+            self._line_segment_counts.pop(name, None)
+            if reset_version:
+                self._line_versions.pop(name, None)
 
         if hidden:
             remove_existing_line()
@@ -1020,15 +1025,17 @@ class ViewerViser(ViewerBase):
                 rgb = rgb * 255.0
             return np.clip(rgb, 0, 255).astype(np.uint8)
 
-        # Process colors
-        color_rgb: tuple[int, int, int] | np.ndarray = (0, 255, 0)
+        # Process colors. Keep this as a NumPy array because Viser handle
+        # property updates require the normalized array form, even though
+        # add_line_segments() also accepts RGB tuples on initial creation.
+        color_rgb: np.ndarray = np.array((0, 255, 0), dtype=np.uint8)
         if colors is not None:
             colors_np = self._to_numpy(colors)
             if colors_np is not None:
                 colors_np = np.asarray(colors_np)
                 if colors_np.ndim == 1 and colors_np.shape[0] == 3:
                     # Single color for all lines.
-                    color_rgb = tuple(_rgb_to_uint8_array(colors_np).tolist())
+                    color_rgb = _rgb_to_uint8_array(colors_np)
                 elif colors_np.ndim == 2 and colors_np.shape == (num_lines, 3):
                     # Per-line colors: repeat each line color for [start, end].
                     line_colors = _rgb_to_uint8_array(colors_np)
@@ -1040,21 +1047,29 @@ class ViewerViser(ViewerBase):
         line_width = width * 100  # Scale for visibility
         if name in self._scene_handles:
             handle = self._scene_handles[name]
-            try:
-                handle.points = line_points
-                handle.colors = color_rgb
-                handle.line_width = line_width
-                return
-            except Exception:
-                remove_existing_line()
+            if self._line_segment_counts.get(name) == num_lines:
+                try:
+                    handle.points = line_points
+                    handle.colors = color_rgb
+                    handle.line_width = line_width
+                    return
+                except Exception:
+                    remove_existing_line()
+            else:
+                self._line_versions[name] = self._line_versions.get(name, 0) + 1
+                remove_existing_line(reset_version=False)
+
+        version = self._line_versions.get(name, 0)
+        scene_name = name if version == 0 else f"{name}__line_{version}"
 
         handle = self._server.scene.add_line_segments(
-            name=name,
+            name=scene_name,
             points=line_points,
             colors=color_rgb,
             line_width=line_width,
         )
         self._scene_handles[name] = handle
+        self._line_segment_counts[name] = num_lines
 
     @override
     def log_geo(
