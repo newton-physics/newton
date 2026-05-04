@@ -3076,7 +3076,13 @@ class SolverMuJoCo(SolverBase):
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
         self._last_contact_generation: wp.array[wp.int32] | None = None
         self._last_nacon_count: wp.array[wp.int32] | None = None
+        # Track the Contacts instance and its capacity, plus the MJWarp
+        # naconmax used during the last full pass.  Any change to these
+        # invariants invalidates the cached tid_to_cid mapping because the
+        # cached cid values would index into a different output buffer.
         self._last_contacts_id: int | None = None
+        self._last_rigid_contact_max: int | None = None
+        self._last_naconmax: int | None = None
 
         with wp.ScopedTimer("convert_model_to_mujoco", active=False):
             self._convert_to_mjc(
@@ -3164,7 +3170,9 @@ class SolverMuJoCo(SolverBase):
 
         Called when cached MJWarp contact fields (friction, solref, solimp,
         etc.) may be stale — e.g. after :meth:`notify_model_changed` updates
-        geom properties.
+        geom or body properties, or when the bound Contacts instance / MJWarp
+        ``naconmax`` changes (which would make cached ``cid`` values index
+        into a different output buffer).
         """
         if self._last_contact_generation is not None:
             self._last_contact_generation.fill_(_GENERATION_SENTINEL)
@@ -3178,23 +3186,41 @@ class SolverMuJoCo(SolverBase):
         # The kernel only produces valid output for tid < naconmax (the full
         # path clamps count and rejects cid >= naconmax).  Launching more
         # threads than naconmax wastes GPU resources, so cap the grid size.
-        launch_dim = min(contacts.rigid_contact_max, self.mjw_data.naconmax)
+        naconmax = self.mjw_data.naconmax
+        launch_dim = min(contacts.rigid_contact_max, naconmax)
 
         # Lazy-allocate fast-path buffers; reallocate if launch_dim grew
         # (e.g. a different Contacts object with a larger rigid_contact_max).
-        # Also invalidate when the Contacts instance changes — a different
-        # object's contact_generation could coincidentally match our cached
-        # last_contact_generation while containing entirely different data.
-        contacts_id = id(contacts.contact_generation)
+        # Invalidate the cached tid_to_cid mapping whenever any of the
+        # invariants it depends on change:
+        #
+        #  - Contacts instance: a different object's contact_generation
+        #    could coincidentally match our cached last_contact_generation
+        #    while containing entirely different data.
+        #  - rigid_contact_max: changes the meaning of tid indices.
+        #  - mjw_data.naconmax: changes the meaning of cid indices; if the
+        #    underlying contact buffers were reallocated, cached cid values
+        #    could index into freed memory or out-of-bounds.
+        contacts_id = id(contacts)
         needs_realloc = self._contact_tid_to_cid is None or self._contact_tid_to_cid.shape[0] < launch_dim
-        contacts_changed = self._last_contacts_id != contacts_id
+        contacts_changed = (
+            self._last_contacts_id != contacts_id
+            or self._last_rigid_contact_max != contacts.rigid_contact_max
+            or self._last_naconmax != naconmax
+        )
 
         if needs_realloc or contacts_changed:
             if needs_realloc:
                 self._contact_tid_to_cid = wp.full(launch_dim, -1, dtype=wp.int32, device=model.device)
-            self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=model.device)
-            self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=model.device)
+            if self._last_contact_generation is None:
+                self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=model.device)
+                self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=model.device)
+            else:
+                # Reuse existing device buffers; just reset their contents.
+                self._invalidate_contact_fast_path()
             self._last_contacts_id = contacts_id
+            self._last_rigid_contact_max = contacts.rigid_contact_max
+            self._last_naconmax = naconmax
 
         # Zero nacon before the kernel — the full path uses atomic_add to count
         # contacts; the fast path restores the count from last_nacon_count.
@@ -3287,6 +3313,12 @@ class SolverMuJoCo(SolverBase):
 
         if flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES:
             self._update_model_inertial_properties()
+            # set_const_fixed / set_const_0 (called below) recompute MuJoCo
+            # constants that feed into contact solver parameters (invweight0,
+            # subtreemass, etc.).  Cached MJWarp contact fields written by
+            # the fast path are derived from those constants, so invalidate
+            # to force a full re-pack on the next contact conversion.
+            self._invalidate_contact_fast_path()
             need_const_fixed = True
             need_const_0 = True
         if flags & SolverNotifyFlags.JOINT_PROPERTIES:
@@ -3297,6 +3329,7 @@ class SolverMuJoCo(SolverBase):
             need_const_0 = True
         if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
             self._update_joint_dof_properties()
+            self._invalidate_contact_fast_path()
             need_const_0 = True
             need_length_range = True
         if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
@@ -3305,6 +3338,7 @@ class SolverMuJoCo(SolverBase):
             self._invalidate_contact_fast_path()
         if flags & SolverNotifyFlags.MODEL_PROPERTIES:
             self._update_model_properties()
+            self._invalidate_contact_fast_path()
         if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
             self._update_eq_properties()
             self._update_mimic_eq_properties()

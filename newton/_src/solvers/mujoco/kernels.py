@@ -460,11 +460,16 @@ def convert_newton_contacts_to_mjwarp_kernel(
             nacon_out[0] = last_nacon_count[0]
 
         cid = tid_to_cid[tid]
-        if cid < 0:
+        # Defensive bounds check: a stale tid_to_cid (e.g. cached from a
+        # previous mjw_data with larger naconmax) could otherwise produce
+        # out-of-bounds writes that corrupt the GPU allocator state.
+        if cid < 0 or cid >= naconmax:
             return
 
         shape_a = rigid_contact_shape0[tid]
         shape_b = rigid_contact_shape1[tid]
+        if shape_a < 0 or shape_b < 0:
+            return
         body_a = shape_body[shape_a]
         body_b = shape_body[shape_b]
 

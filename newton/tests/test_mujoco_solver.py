@@ -3972,6 +3972,104 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         n_stale = int((efc_address[inactive] >= 0).sum())
         self.assertEqual(n_stale, 0, f"{n_stale}/{inactive.sum()} inactive contacts have stale efc_address")
 
+    def test_notify_body_inertial_invalidates_contact_fast_path(self):
+        """notify_model_changed(BODY_INERTIAL_PROPERTIES) must invalidate the
+        cached contact conversion fast path.
+
+        Regression: ``set_const_fixed`` recomputes MuJoCo constants that feed
+        into the cached MJWarp contact fields written by the fast path.  If the
+        fast path is not invalidated, subsequent substeps reuse stale ``cid``
+        and field values, which previously produced an illegal-memory-access
+        when the underlying ``mjw_data`` contact arrays had been reallocated
+        (observed in IsaacLab dexsuite training).
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.18), wp.quat_identity()))
+        builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        contacts = model.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        # Run one full substep so the fast path becomes "armed" (i.e. the next
+        # substep would normally take the fast path).
+        state_in.clear_forces()
+        model.collide(state_in, contacts)
+        solver.step(state_in, state_out, control, contacts, 0.002)
+        state_in, state_out = state_out, state_in
+
+        last_gen_before = int(solver._last_contact_generation.numpy()[0])
+        self.assertNotEqual(
+            last_gen_before,
+            -1,
+            "Fast path should be armed after one full substep (last_contact_generation != sentinel).",
+        )
+
+        # Notify body inertial properties — this must invalidate the fast path.
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        last_gen_after = int(solver._last_contact_generation.numpy()[0])
+        self.assertEqual(
+            last_gen_after,
+            -1,
+            "BODY_INERTIAL_PROPERTIES notify must invalidate the contact fast path.",
+        )
+
+        # Verify the next step still runs cleanly through the full path.
+        state_in.clear_forces()
+        model.collide(state_in, contacts)
+        solver.step(state_in, state_out, control, contacts, 0.002)
+        wp.synchronize()  # force surfacing any async device errors
+
+    def test_contacts_instance_swap_invalidates_fast_path(self):
+        """Swapping the bound :class:`Contacts` instance must invalidate the
+        cached fast path even if the new instance's ``contact_generation``
+        coincidentally matches the cached value.
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.18), wp.quat_identity()))
+        builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        contacts_a = model.contacts()
+        contacts_b = model.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        state_in.clear_forces()
+        model.collide(state_in, contacts_a)
+        solver.step(state_in, state_out, control, contacts_a, 0.002)
+        state_in, state_out = state_out, state_in
+
+        cached_id = solver._last_contacts_id
+
+        # Swap to a different Contacts instance — solver must notice and rebuild
+        # the fast-path cache rather than reusing stale tid_to_cid mappings.
+        state_in.clear_forces()
+        model.collide(state_in, contacts_b)
+        solver.step(state_in, state_out, control, contacts_b, 0.002)
+        wp.synchronize()
+
+        self.assertEqual(solver._last_contacts_id, id(contacts_b))
+        self.assertNotEqual(cached_id, id(contacts_b), "_last_contacts_id should track the bound Contacts object")
+
 
 class TestFrictionPriority(unittest.TestCase):
     """Verify that contact friction respects geom priority.
