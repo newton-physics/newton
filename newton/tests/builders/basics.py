@@ -125,7 +125,7 @@ def build_box_on_plane(
         _builder.begin_world(label="box_on_plane")
 
     # Add first body
-    i_I = inertia.solid_cuboid_body_moment_of_inertia(1.0, 0.2, 0.2, 0.2)
+    i_I = inertia.compute_inertia_box_from_mass(mass=1.0, hx=0.2, hy=0.2, hz=0.2)
     xform = wp.transformf(0.0, 0.0, 0.1 + z_offset, 0.0, 0.0, 0.0, 1.0)
     bid0 = _builder.add_body(
         label="box",
@@ -213,7 +213,7 @@ def build_box_pendulum(
     z_0 = z_offset  # Initial z offset for the body
 
     # Add box pendulum body
-    i_I = inertia.solid_cuboid_body_moment_of_inertia(m, d, w, h)
+    i_I = inertia.compute_inertia_box_from_mass(mass=m, hx=0.5 * d, hy=0.5 * w, hz=0.5 * h)
     q_i = wp.transformf(0.5 * d, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0)
     bid0 = _builder.add_link(
         label="pendulum",
@@ -322,7 +322,7 @@ def build_box_pendulum_vertical(
     z_0 = z_offset  # Initial z offset for the body
 
     # Add box pendulum body
-    i_I = inertia.solid_cuboid_body_moment_of_inertia(m, d, w, h)
+    i_I = inertia.compute_inertia_box_from_mass(mass=m, hx=0.5 * d, hy=0.5 * w, hz=0.5 * h)
     q_i = wp.transformf(0.0, 0.0, -0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0)
     bid0 = _builder.add_link(
         label="pendulum",
@@ -426,7 +426,9 @@ def build_cartpole(
     bid0 = _builder.add_link(
         label="cart",
         mass=m_cart,
-        inertia=inertia.solid_cuboid_body_moment_of_inertia(m_cart, *dims_cart),
+        inertia=inertia.compute_inertia_box_from_mass(
+            mass=m_cart, hx=half_dims_cart[0], hy=half_dims_cart[1], hz=half_dims_cart[2]
+        ),
         xform=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
@@ -437,7 +439,9 @@ def build_cartpole(
     bid1 = _builder.add_link(
         label="pole",
         mass=m_pole,
-        inertia=inertia.solid_cuboid_body_moment_of_inertia(m_pole, *dims_pole),
+        inertia=inertia.compute_inertia_box_from_mass(
+            mass=m_pole, hx=half_dims_pole[0], hy=half_dims_pole[1], hz=half_dims_pole[2]
+        ),
         xform=wp.transformf(x_0_pole, 0.0, z_0_pole, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
@@ -598,7 +602,7 @@ def build_boxes_hinged(
     bid0 = _builder.add_link(
         label="base",
         mass=m_0,
-        inertia=inertia.solid_cuboid_body_moment_of_inertia(m_0, d, w, h),
+        inertia=inertia.compute_inertia_box_from_mass(mass=m_0, hx=0.5 * d, hy=0.5 * w, hz=0.5 * h),
         xform=wp.transformf(0.25, -0.05, 0.05 + z0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
@@ -607,7 +611,7 @@ def build_boxes_hinged(
     bid1 = _builder.add_link(
         label="follower",
         mass=m_1,
-        inertia=inertia.solid_cuboid_body_moment_of_inertia(m_1, d, w, h),
+        inertia=inertia.compute_inertia_box_from_mass(mass=m_1, hx=0.5 * d, hy=0.5 * w, hz=0.5 * h),
         xform=wp.transformf(0.75, 0.05, 0.05 + z0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
@@ -744,7 +748,7 @@ def build_boxes_nunchaku(
     bid0 = _builder.add_link(
         label="box_bottom",
         mass=m_0,
-        inertia=inertia.solid_cuboid_body_moment_of_inertia(m_0, d, w, h),
+        inertia=inertia.compute_inertia_box_from_mass(mass=m_0, hx=0.5 * d, hy=0.5 * w, hz=0.5 * h),
         xform=wp.transformf(0.5 * d, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
@@ -753,7 +757,7 @@ def build_boxes_nunchaku(
     bid1 = _builder.add_link(
         label="sphere_middle",
         mass=m_1,
-        inertia=inertia.solid_sphere_body_moment_of_inertia(m_1, r),
+        inertia=inertia.compute_inertia_sphere_from_mass(mass=m_1, radius=r),
         xform=wp.transformf(r + d, 0.0, r + z_0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
@@ -762,7 +766,7 @@ def build_boxes_nunchaku(
     bid2 = _builder.add_link(
         label="box_top",
         mass=m_2,
-        inertia=inertia.solid_cuboid_body_moment_of_inertia(m_2, d, w, h),
+        inertia=inertia.compute_inertia_box_from_mass(mass=m_2, hx=0.5 * d, hy=0.5 * w, hz=0.5 * h),
         xform=wp.transformf(1.5 * d + 2.0 * r, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
@@ -898,7 +902,7 @@ def build_boxes_nunchaku_vertical(
     bid0 = _builder.add_link(
         label="box_bottom",
         mass=m_0,
-        inertia=inertia.solid_cuboid_body_moment_of_inertia(m_0, d, w, h),
+        inertia=inertia.compute_inertia_box_from_mass(mass=m_0, hx=0.5 * d, hy=0.5 * w, hz=0.5 * h),
         xform=wp.transformf(0.0, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
@@ -907,7 +911,7 @@ def build_boxes_nunchaku_vertical(
     bid1 = _builder.add_link(
         label="sphere_middle",
         mass=m_1,
-        inertia=inertia.solid_sphere_body_moment_of_inertia(m_1, r),
+        inertia=inertia.compute_inertia_sphere_from_mass(mass=m_1, radius=r),
         xform=wp.transformf(0.0, 0.0, h + r + z_0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
@@ -916,7 +920,7 @@ def build_boxes_nunchaku_vertical(
     bid2 = _builder.add_link(
         label="box_top",
         mass=m_2,
-        inertia=inertia.solid_cuboid_body_moment_of_inertia(m_2, d, w, h),
+        inertia=inertia.compute_inertia_box_from_mass(mass=m_2, hx=0.5 * d, hy=0.5 * w, hz=0.5 * h),
         xform=wp.transformf(0.0, 0.0, 1.5 * h + 2.0 * r + z_0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
@@ -1104,10 +1108,10 @@ def build_boxes_fourbar(
 
     # Inertial properties
     m_i = 1.0
-    i_I_i_1 = inertia.solid_cuboid_body_moment_of_inertia(m_i, d_1, w_1, h_1)
-    i_I_i_2 = inertia.solid_cuboid_body_moment_of_inertia(m_i, d_2, w_2, h_2)
-    i_I_i_3 = inertia.solid_cuboid_body_moment_of_inertia(m_i, d_3, w_3, h_3)
-    i_I_i_4 = inertia.solid_cuboid_body_moment_of_inertia(m_i, d_4, w_4, h_4)
+    i_I_i_1 = inertia.compute_inertia_box_from_mass(mass=m_i, hx=0.5 * d_1, hy=0.5 * w_1, hz=0.5 * h_1)
+    i_I_i_2 = inertia.compute_inertia_box_from_mass(mass=m_i, hx=0.5 * d_2, hy=0.5 * w_2, hz=0.5 * h_2)
+    i_I_i_3 = inertia.compute_inertia_box_from_mass(mass=m_i, hx=0.5 * d_3, hy=0.5 * w_3, hz=0.5 * h_3)
+    i_I_i_4 = inertia.compute_inertia_box_from_mass(mass=m_i, hx=0.5 * d_4, hy=0.5 * w_4, hz=0.5 * h_4)
     if verbose:
         print(f"i_I_i_1:\n{i_I_i_1}")
         print(f"i_I_i_2:\n{i_I_i_2}")
