@@ -60,11 +60,6 @@ class Example:
         # Create the model from the builder
         self.model = builder.finalize(skip_validation_joints=True)
 
-        # TODO @nvtw: This is a temporary fix because `robot_builder.default_shape_cfg`
-        # is not correctly applied to the shapes when using `add_usd()`,
-        self.model.shape_margin.fill_(1e-6)
-        self.model.shape_gap.fill_(0.01)
-
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
         self.config.use_fk_solver = True
