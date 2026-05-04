@@ -113,8 +113,8 @@ MATCH_BROKEN = wp.constant(wp.int32(-2))
 
 
 # Sentinel value for unclaimed slots in ``_prev_claim``.  Larger than
-# any packed (flipped_dist << 32 | tid) any kernel will ever produce,
-# so the first ``atomic_min`` always wins.
+# any packed (flipped_dist << 32 | key_low32) any kernel will ever
+# produce, so the first ``atomic_min`` always wins.
 _CLAIM_SENTINEL = wp.constant(wp.int64(0x7FFFFFFFFFFFFFFF))
 
 
@@ -157,14 +157,41 @@ def _float_flip(f: float) -> wp.uint32:
 
 
 @wp.func
-def _pack_claim(dist_sq: float, tid: int) -> wp.int64:
-    """Pack ``(dist_sq, tid)`` into a single int64 for ``atomic_min``.
+def _pack_claim(dist_sq: float, key_low32: wp.int64) -> wp.int64:
+    """Pack ``(dist_sq, sort_key_low32)`` into a single int64 for ``atomic_min``.
 
     High 32 bits: ``float_flip(dist_sq)`` — ascending by distance.
-    Low 32 bits:  ``tid`` — deterministic tie-break (smallest wins).
+    Low 32 bits:  the low 32 bits of the contact's sort key — deterministic
+        tie-break (smallest wins).  Using the sort key (rather than the
+        unsorted thread id) keeps the resolution invariant under
+        non-deterministic narrow-phase slot assignment: two new contacts
+        racing for the same prev contact get the same packed claim
+        regardless of which unsorted slot the narrow phase happened to
+        hand them this run.
+
+    Within a single shape pair the upper 40 bits of every contact's sort
+    key are identical, so the low 32 bits hold the (shape_b LSBs +
+    sort_sub_key) which uniquely identifies each contact in the pair as
+    long as ``sort_sub_key`` is unique per contact within the pair.
+
+    Note this is a *shared* assumption with the deterministic radix sort
+    upstream, not a hard guarantee enforced by it.  The multi-contact
+    and mesh/SDF paths build ``sort_sub_key`` from per-contact identifiers
+    (clip-vertex slot, triangle/edge/vertex index) that are unique per
+    pair by construction, but the reduced-contact path
+    (``contact_reduction_global.export_reduced_contacts_kernel``)
+    re-uses the original contact's fingerprint as ``sort_sub_key`` and
+    only deduplicates by ``contact_id``, so two reduced contacts in the
+    same pair can in principle land in different reduction slots and
+    still share a fingerprint.  When that happens the deterministic
+    sort and this tiebreak degrade together: the contacts are
+    indistinguishable to either, and frame-to-frame matching becomes
+    order-sensitive only to the same extent the sort itself does.  In
+    other words, this scheme is no worse than what the upstream sort
+    already provides.
     """
     flipped = wp.int64(_float_flip(dist_sq))
-    return (flipped << wp.int64(32)) | wp.int64(tid)
+    return (flipped << wp.int64(32)) | (key_low32 & wp.int64(0xFFFFFFFF))
 
 
 # ------------------------------------------------------------------
@@ -281,8 +308,11 @@ def _match_contacts_kernel(data: _MatchData):
     if best_idx >= 0:
         data.match_index[tid] = wp.int32(best_idx)
         # Race for ownership of prev[best_idx] with a single atomic_min.
-        # Closest distance wins; ties resolved by lowest tid.
-        wp.atomic_min(data.prev_claim, best_idx, _pack_claim(best_dist_sq, tid))
+        # Closest distance wins; ties resolved by smallest sort_key low
+        # 32 bits.  Using the sort key (instead of ``tid``) keeps the
+        # winner invariant under the non-deterministic unsorted slot
+        # assignment that the narrow phase gives us via ``wp.atomic_add``.
+        wp.atomic_min(data.prev_claim, best_idx, _pack_claim(best_dist_sq, target_key))
     else:
         # Pair range exists but no contact within thresholds.
         data.match_index[tid] = MATCH_BROKEN
@@ -309,6 +339,7 @@ def _clear_prev_claim_kernel(
 @wp.kernel(enable_backward=False)
 def _resolve_claims_kernel(
     match_index: wp.array[wp.int32],
+    sort_keys: wp.array[wp.int64],
     prev_claim: wp.array[wp.int64],
     prev_was_matched: wp.array[wp.int32],
     new_count: wp.array[wp.int32],
@@ -317,8 +348,10 @@ def _resolve_claims_kernel(
     """Pass 2: keep winners, demote losers to :data:`MATCH_BROKEN`.
 
     The low 32 bits of ``prev_claim[cand]`` identify the winning
-    ``tid``; everyone else who staked a claim on the same ``cand``
-    becomes :data:`MATCH_BROKEN` (no second-closest fallback).
+    contact by the low 32 bits of its sort key (deterministic per
+    contact, invariant under unsorted slot reordering); everyone else
+    who staked a claim on the same ``cand`` becomes :data:`MATCH_BROKEN`
+    (no second-closest fallback).
     """
     tid = wp.tid()
     if tid >= new_count[0]:
@@ -328,8 +361,9 @@ def _resolve_claims_kernel(
     if cand < wp.int32(0):
         return  # already MATCH_NOT_FOUND or MATCH_BROKEN
 
-    winner_tid = wp.int32(prev_claim[cand] & wp.int64(0xFFFFFFFF))
-    if winner_tid == wp.int32(tid):
+    winner_key_low = prev_claim[cand] & wp.int64(0xFFFFFFFF)
+    my_key_low = sort_keys[tid] & wp.int64(0xFFFFFFFF)
+    if winner_key_low == my_key_low:
         if has_report != 0:
             prev_was_matched[cand] = wp.int32(1)
     else:
@@ -745,6 +779,7 @@ class ContactMatcher:
             dim=self._capacity,
             inputs=[
                 match_index_out,
+                sort_keys,
                 self._prev_claim,
                 self._prev_was_matched,
                 contact_count,
