@@ -122,7 +122,7 @@ docs = [
 notebook = [
     "newton[examples]",
     "rerun-sdk[notebook]>=0.27.1; python_version < '3.14'",
-    "jupyterlab>=4.4.10",
+    "jupyterlab>=4.5.7",
     "jupyter-server-proxy>=4.5.0",
     "viser==1.0.26",
 ]
