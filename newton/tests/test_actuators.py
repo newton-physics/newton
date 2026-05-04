@@ -1418,40 +1418,43 @@ class TestDelayGraphCapture(unittest.TestCase):
             ctrl = model.control()
             newton.eval_fk(model, s0.joint_q, s0.joint_qd, s0)
             act = model.actuators[0]
-            return solver, s0, s1, ctrl, act, [act.state(), act.state()]
+            act_a, act_b = act.state(), act.state()
+            return solver, s0, s1, ctrl, act, act_a, act_b
 
-        def _loop(solver, s0, s1, ctrl, act, astates, n, offset):
+        def _loop(solver, s0, s1, ctrl, act, act_a, act_b, n):
             sub_dt = dt / K
-            for i in range(n):
-                idx = offset + i
+            for _ in range(n):
                 ctrl.joint_f.zero_()
-                act.step(s0, ctrl, astates[idx % 2], astates[(idx + 1) % 2], dt=dt)
+                act.step(s0, ctrl, act_a, act_b, dt=dt)
+                act_a, act_b = act_b, act_a
                 for _ in range(K):
                     s0.clear_forces()
                     solver.step(s0, s1, ctrl, None, sub_dt)
                     s0, s1 = s1, s0
-            return s0, s1
+            return s0, s1, act_a, act_b
 
         # --- Eager ---
-        solver, s0, s1, ctrl, act, astates = _setup()
+        solver, s0, s1, ctrl, act, act_a, act_b = _setup()
         wp.copy(ctrl.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
-        s0, s1 = _loop(solver, s0, s1, ctrl, act, astates, max_delay, 0)
+        s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, max_delay)
         eager_results = []
-        for ci, tgt in enumerate(cycle_targets):
+        for tgt in cycle_targets:
             wp.copy(ctrl.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
-            s0, s1 = _loop(solver, s0, s1, ctrl, act, astates, N, max_delay + ci * N)
+            s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, N)
             eager_results.append(s0.joint_q.numpy().copy())
 
         # --- Graph ---
-        solver_g, s0_g, s1_g, ctrl_g, act_g, ast_g = _setup()
+        solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g = _setup()
         wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
-        s0_g, s1_g = _loop(solver_g, s0_g, s1_g, ctrl_g, act_g, ast_g, max_delay, 0)
+        s0_g, s1_g, act_a_g, act_b_g = _loop(
+            solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay
+        )
         sub_dt = dt / K
         with wp.ScopedCapture(device=device) as capture:
-            for i in range(N):
-                idx = max_delay + i
+            for _ in range(N):
                 ctrl_g.joint_f.zero_()
-                act_g.step(s0_g, ctrl_g, ast_g[idx % 2], ast_g[(idx + 1) % 2], dt=dt)
+                act_g.step(s0_g, ctrl_g, act_a_g, act_b_g, dt=dt)
+                act_a_g, act_b_g = act_b_g, act_a_g
                 for _ in range(K):
                     s0_g.clear_forces()
                     solver_g.step(s0_g, s1_g, ctrl_g, None, sub_dt)
