@@ -387,7 +387,10 @@ e.g. when running ``python -m newton.examples basic_pendulum``.
 Building the documentation
 --------------------------
 
-To build the documentation locally, ensure you have the documentation dependencies installed.
+The default local documentation build is CPU-friendly and skips Jupyter
+notebooks. The CI and deployment documentation builds enable notebooks on GPU
+runners so tutorial pages and generated recordings are part of the normal
+versioned documentation.
 
 .. tab-set::
     :sync-group: env
@@ -410,23 +413,12 @@ To build the documentation locally, ensure you have the documentation dependenci
 
 The built documentation will be available in ``docs/_build/html``.
 
-.. note::
+Building the full documentation with notebooks
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-    The documentation build requires `pandoc <https://pandoc.org/>`_ for converting Jupyter notebooks.
-    The ``[docs]`` dependencies include ``pypandoc_binary``, and ``docs/conf.py`` will
-    automatically use that bundled executable when it is available. If your environment
-    still cannot locate pandoc, install it separately:
-
-    - **Ubuntu/Debian:** ``sudo apt-get install pandoc``
-    - **macOS:** ``brew install pandoc``
-    - **Windows:** Download from https://pandoc.org/installing.html or ``choco install pandoc``
-
-Serving the documentation locally
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-After building the documentation, you can serve it locally using the ``docs/serve.py`` script.
-This is particularly useful for testing interactive features like the Viser 3D visualizations
-in the tutorial notebooks, which require proper MIME types for WebAssembly and JavaScript modules.
+Notebook conversion and execution are opt-in. Use this only on a machine with the
+required GPU/runtime support. This command builds the complete Sphinx
+documentation and executes the tutorial notebooks in the same build:
 
 .. tab-set::
     :sync-group: env
@@ -436,14 +428,63 @@ in the tutorial notebooks, which require proper MIME types for WebAssembly and J
 
         .. code-block:: console
 
-            uv run docs/serve.py
+            rm -rf docs/_build
+            uv run --extra docs --extra notebook --extra sim sphinx-build -j auto -W -t notebooks -b html docs docs/_build/html
 
     .. tab-item:: venv
         :sync: venv
 
         .. code-block:: console
 
-            python docs/serve.py
+            python -m pip install -e ".[docs,notebook]"
+            rm -rf docs/_build
+            sphinx-build -j auto -W -t notebooks -b html docs docs/_build/html
+
+You can also set ``NEWTON_BUILD_NOTEBOOKS=1`` instead of passing
+``-t notebooks``; CI uses this environment variable for notebook-enabled
+documentation builds. For a conversion-only smoke test that does not execute
+notebook cells, set ``NEWTON_NBSPHINX_EXECUTE=never``.
+
+.. note::
+
+    Notebook builds require `pandoc <https://pandoc.org/>`_ for converting
+    Jupyter notebooks. The ``[docs]`` dependencies include ``pypandoc_binary``,
+    and ``docs/conf.py`` will automatically use that bundled executable when it
+    is available. If your environment still cannot locate pandoc, install it
+    separately:
+
+    - **Ubuntu/Debian:** ``sudo apt-get install pandoc``
+    - **macOS:** ``brew install pandoc``
+    - **Windows:** Download from https://pandoc.org/installing.html or ``choco install pandoc``
+
+Notebook builds store generated assets, including Viser recordings, under the
+normal Sphinx output tree so they are deployed with the corresponding
+documentation version.
+
+Serving the documentation locally
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+After building the documentation, serve the generated HTML with ``docs/serve.py``.
+This script is a small wrapper around Python's ``http.server`` that adds the
+MIME types and CORS headers required by Viser notebook recordings and the Viser
+WebAssembly/JavaScript assets:
+
+.. tab-set::
+    :sync-group: env
+
+    .. tab-item:: uv
+        :sync: uv
+
+        .. code-block:: console
+
+            uv run python docs/serve.py --directory docs/_build/html
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code-block:: console
+
+            python docs/serve.py --directory docs/_build/html
 
 Then open http://localhost:8000 in your browser. You can specify a custom port with ``--port``:
 
@@ -455,20 +496,20 @@ Then open http://localhost:8000 in your browser. You can specify a custom port w
 
         .. code-block:: console
 
-            uv run docs/serve.py --port 8080
+            uv run python docs/serve.py --directory docs/_build/html --port 8080
 
     .. tab-item:: venv
         :sync: venv
 
         .. code-block:: console
 
-            python docs/serve.py --port 8080
+            python docs/serve.py --directory docs/_build/html --port 8080
 
 .. note::
 
-    Using Python's built-in ``http.server`` or simply opening the HTML files directly
-    will not work correctly for the interactive Viser visualizations, as they require
-    specific CORS headers and MIME types that ``serve.py`` provides.
+    Opening the HTML files directly, or serving them with plain
+    ``python -m http.server``, may not work correctly for interactive Viser
+    visualizations because they require specific CORS headers and MIME types.
 
 Documentation Versioning
 ------------------------
