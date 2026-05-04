@@ -21,6 +21,7 @@ from ..core.types import Axis, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
+from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
@@ -42,6 +43,8 @@ def _imgui_uses_imvec4_color_edit3() -> bool:
 
 
 _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
+# Width of the main Newton Viewer sidebar [px].
+_SIDEBAR_WIDTH_PX: float = 300.0
 
 
 @wp.kernel
@@ -228,15 +231,22 @@ class ViewerGL(ViewerBase):
         self._heatmap_color_lut = self._build_heatmap_color_lut()
         self._plot_history_size = plot_history_size
 
+        # Initialized below once self.device is available; declared here so
+        # close() can safely run if __init__ raises before that point.
+        self._image_logger: ImageLogger | None = None
+
         super().__init__()
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
+        self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
         self._paused = False
+        self._step_requested = False
+        self._reset_callback: Callable[[], None] | None = None
 
         # Selection panel state
         self._selection_ui_state = {
@@ -494,6 +504,13 @@ class ViewerGL(ViewerBase):
             max_worlds: Maximum number of worlds to render (None = all).
         """
         super().set_model(model, max_worlds=max_worlds)
+
+        # ``ViewerBase.set_model`` may have switched ``self.device`` to the
+        # model's device. Rebind the image logger so its GPU path tests against
+        # — and registers PBO interop with — the correct CUDA context.
+        if self._image_logger is not None and self._image_logger.device != self.device:
+            self._image_logger.clear()
+            self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
 
         if self.model is not None:
             # For capsule batches, replace per-instance scales with (radius, radius, half_height)
@@ -1286,6 +1303,11 @@ class ViewerGL(ViewerBase):
         self._array_dirty.add(name)
 
     @override
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+        """See :meth:`~newton.viewer.ViewerBase.log_image`."""
+        self._image_logger.log(name, image)
+
+    @override
     def log_scalar(
         self,
         name: str,
@@ -1641,12 +1663,37 @@ class ViewerGL(ViewerBase):
         return self._paused
 
     @override
+    def should_step(self) -> bool:
+        """
+        Return True if the loop should advance one step.
+
+        Consumes a pending single-step request, so call exactly once per frame.
+        """
+        if not self._paused:
+            self._step_requested = False
+            return True
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
+    def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register a callback invoked when the user clicks the Reset button.
+
+        Args:
+            callback: Called with no arguments on reset, or ``None`` to remove.
+        """
+        self._reset_callback = callback
+
+    @override
     def close(self):
         """
         Close the viewer and clean up resources.
         """
         self._clear_array_textures()
         self._invalidate_pbo()
+        if self._image_logger is not None:
+            self._image_logger.clear()
         self.renderer.close()
 
     @property
@@ -1926,6 +1973,8 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.SPACE:
             # Toggle pause with space key
             self._paused = not self._paused
+        elif symbol == pyglet.window.key.PERIOD and self._paused:
+            self._step_requested = True
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
@@ -2235,7 +2284,7 @@ class ViewerGL(ViewerBase):
         # Position the window on the left side
         io = self.ui.io
         imgui.set_next_window_pos(imgui.ImVec2(10, 10))
-        imgui.set_next_window_size(imgui.ImVec2(300, io.display_size[1] - 20))
+        imgui.set_next_window_size(imgui.ImVec2(_SIDEBAR_WIDTH_PX, io.display_size[1] - 20))
 
         # Main control panel window - use safe flag values
         flags = imgui.WindowFlags_.no_resize.value
@@ -2245,6 +2294,20 @@ class ViewerGL(ViewerBase):
 
             # Collapsing headers default-open handling (first frame only)
             header_flags = 0
+
+            # Run controls — shown once a model is loaded
+            if self.model is not None:
+                changed, self._paused = imgui.checkbox("Pause", self._paused)
+                imgui.same_line()
+                imgui.begin_disabled(not self._paused)
+                if imgui.button("Step"):
+                    self._step_requested = True
+                imgui.end_disabled()
+                if self._reset_callback is not None:
+                    imgui.same_line()
+                    if imgui.button("Reset"):
+                        self._reset_callback()
+                imgui.separator()
 
             # Panel callbacks (e.g. example browser) - top-level collapsing headers
             for callback in self._ui_callbacks["panel"]:
@@ -2260,9 +2323,6 @@ class ViewerGL(ViewerBase):
                     gravity = self.model.gravity.numpy()[0]
                     gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
                     imgui.text(gravity_text)
-
-                    # Pause simulation checkbox
-                    changed, self._paused = imgui.checkbox("Pause", self._paused)
 
                 # Visualization Controls section
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
@@ -2363,6 +2423,8 @@ class ViewerGL(ViewerBase):
                 # Ground color
                 changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
 
+            self._image_logger.draw_controls()
+
             # Wind Effects section
             if self.wind is not None:
                 imgui.set_next_item_open(False, imgui.Cond_.once)
@@ -2413,6 +2475,7 @@ class ViewerGL(ViewerBase):
                 imgui.text("Scroll - Dolly")
                 imgui.text("Ctrl + Scroll - FOV zoom")
                 imgui.text("Space - Pause/Resume")
+                imgui.text(". - Step one frame (when paused)")
                 imgui.text("H - Toggle UI")
                 imgui.text("F - Frame camera around model")
 
@@ -2420,6 +2483,9 @@ class ViewerGL(ViewerBase):
             self._render_selection_panel()
 
         imgui.end()
+
+        # Draw image-logger windows. Must be outside the sidebar begin/end block.
+        self._image_logger.draw()
 
     @staticmethod
     def _build_heatmap_color_lut() -> np.ndarray:

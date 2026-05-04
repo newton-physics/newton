@@ -22,9 +22,8 @@ These include:
     - supported joint types,e.g. revolute, prismatic, spherical, etc.
 """
 
-import os
-
 from .builders import basics, basics_newton, testing, utils
+from .builders.utils import get_basics_usd_assets_path, get_testing_usd_assets_path
 
 __all__ = [
     "basics",
@@ -35,27 +34,3 @@ __all__ = [
     "testing",
     "utils",
 ]
-
-###
-# Asset path utilities
-###
-
-
-def get_basics_usd_assets_path() -> str:
-    """
-    Returns the path to the USD assets for basic models.
-    """
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "assets/basics")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"The USD assets path for basic models does not exist: {path}")
-    return path
-
-
-def get_testing_usd_assets_path() -> str:
-    """
-    Returns the path to the USD assets for testing models.
-    """
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "assets/testing")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"The USD assets path for testing models does not exist: {path}")
-    return path

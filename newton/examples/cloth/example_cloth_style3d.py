@@ -124,9 +124,6 @@ class Example:
             model=self.model,
             iterations=self.iterations,
         )
-        self.solver._precompute(
-            builder,
-        )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()

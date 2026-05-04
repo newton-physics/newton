@@ -20,10 +20,11 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 class Example:
     def __init__(self, viewer, num_worlds=8, args=None):
         # Set simulation run-time configurations
-        self.fps = 60
-        self.sim_dt = 0.01
+        self.fps = 50
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
+        self.sim_substeps = max(1, round(self.frame_dt / 0.01))
+        self.sim_dt = self.frame_dt / self.sim_substeps
+        msg.info(f"Using sim_dt = {self.sim_dt} ({self.sim_substeps} substeps per frame)")
         self.sim_time = 0.0
         self.num_worlds = num_worlds
         self.viewer = viewer
@@ -145,15 +146,14 @@ class Example:
         # Only check velocities on CUDA where we run 500 frames (enough time to settle)
         # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
         if self.device.is_cuda:
-            # fmt: off
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
                 "body velocities are small",
-                lambda q, qd: max(abs(qd))
-                < 0.25,  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
+                lambda q, qd: (
+                    max(abs(qd)) < 0.25
+                ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
             )
-            # fmt: on
 
 
 if __name__ == "__main__":

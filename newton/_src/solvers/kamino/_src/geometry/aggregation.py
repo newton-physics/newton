@@ -41,16 +41,16 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _aggregate_contact_force_per_body(
     # Inputs:
-    model_info_bodies_start: wp.array(dtype=int32),  # Per-world bodies start index
-    model_active_contacts: wp.array(dtype=int32),  # contacts over all worlds
-    contact_wid: wp.array(dtype=int32),  # world index per contact
-    contact_bid_AB: wp.array(dtype=vec2i),  # body pair per contact (global body indices)
-    contact_reaction: wp.array(dtype=vec3f),  # force in local contact frame
-    contact_frame: wp.array(dtype=quatf),  # contact frame (rotation quaternion)
-    contact_mode: wp.array(dtype=int32),  # contact mode
+    model_info_bodies_start: wp.array[int32],  # Per-world bodies start index
+    model_active_contacts: wp.array[int32],  # contacts over all worlds
+    contact_wid: wp.array[int32],  # world index per contact
+    contact_bid_AB: wp.array[vec2i],  # body pair per contact (global body indices)
+    contact_reaction: wp.array[vec3f],  # force in local contact frame
+    contact_frame: wp.array[quatf],  # contact frame (rotation quaternion)
+    contact_mode: wp.array[int32],  # contact mode
     # Outputs:
-    body_net_force: wp.array3d(dtype=wp.float32),  # [num_worlds, max_bodies, 3]
-    body_contact_flag: wp.array2d(dtype=int32),  # [num_worlds, max_bodies]
+    body_net_force: wp.array3d[wp.float32],  # [num_worlds, max_bodies, 3]
+    body_contact_flag: wp.array2d[int32],  # [num_worlds, max_bodies]
 ):
     """
     Aggregate contact force and flags per body across all contacts.
@@ -115,13 +115,13 @@ def _aggregate_contact_force_per_body(
 @wp.kernel
 def _aggregate_static_contact_flag_per_body(
     # Inputs:
-    model_info_bodies_start: wp.array(dtype=int32),  # Per-world bodies start index
-    model_active_contacts: wp.array(dtype=int32),  # contacts over all worlds
-    contact_wid: wp.array(dtype=int32),  # world index per contact
-    contact_bid_AB: wp.array(dtype=vec2i),  # body pair per contact (global body indices)
-    contact_mode: wp.array(dtype=int32),  # contact mode
+    model_info_bodies_start: wp.array[int32],  # Per-world bodies start index
+    model_active_contacts: wp.array[int32],  # contacts over all worlds
+    contact_wid: wp.array[int32],  # world index per contact
+    contact_bid_AB: wp.array[vec2i],  # body pair per contact (global body indices)
+    contact_mode: wp.array[int32],  # contact mode
     # Outputs:
-    static_contact_flag: wp.array2d(dtype=int32),  # [num_worlds, max_bodies]
+    static_contact_flag: wp.array2d[int32],  # [num_worlds, max_bodies]
 ):
     """
     Identify which bodies are in contact with static geometries.
@@ -174,17 +174,17 @@ def _aggregate_static_contact_flag_per_body(
 @wp.kernel
 def _aggregate_contact_force_per_body_geom(
     # Inputs:
-    model_info_geoms_start: wp.array(dtype=int32),  # Offset to convert global geom ID to per-world index
-    model_active_contacts: wp.array(dtype=int32),  # contacts over all worlds
-    contact_wid: wp.array(dtype=int32),  # world index per contact
-    contact_gid_AB: wp.array(dtype=vec2i),  # geometry pair per contact
-    contact_bid_AB: wp.array(dtype=vec2i),  # geometry pair per contact
-    contact_reaction: wp.array(dtype=vec3f),  # force in local contact frame
-    contact_frame: wp.array(dtype=quatf),  # contact frame (rotation quaternion)
-    contact_mode: wp.array(dtype=int32),  # contact mode
+    model_info_geoms_start: wp.array[int32],  # Offset to convert global geom ID to per-world index
+    model_active_contacts: wp.array[int32],  # contacts over all worlds
+    contact_wid: wp.array[int32],  # world index per contact
+    contact_gid_AB: wp.array[vec2i],  # geometry pair per contact
+    contact_bid_AB: wp.array[vec2i],  # geometry pair per contact
+    contact_reaction: wp.array[vec3f],  # force in local contact frame
+    contact_frame: wp.array[quatf],  # contact frame (rotation quaternion)
+    contact_mode: wp.array[int32],  # contact mode
     # Outputs:
-    geom_net_force: wp.array3d(dtype=wp.float32),  # [num_worlds, max_geoms, 3]
-    geom_contact_flag: wp.array2d(dtype=int32),  # [num_worlds, max_geoms]
+    geom_net_force: wp.array3d[wp.float32],  # [num_worlds, max_geoms, 3]
+    geom_contact_flag: wp.array2d[int32],  # [num_worlds, max_geoms]
 ):
     """
     Aggregate contact force and flags per geometry across all contacts.
@@ -248,18 +248,18 @@ def _aggregate_contact_force_per_body_geom(
 @wp.kernel
 def _aggregate_body_pair_contact_flag_per_world(
     # Input: Kamino ContactsData
-    wid: wp.array(dtype=int32),  # world index per contact
-    bid_AB: wp.array(dtype=vec2i),  # body pair per contact (global body indices)
-    mode: wp.array(dtype=int32),  # contact mode
-    world_active_contacts: wp.array(dtype=int32),  # contacts per world
+    wid: wp.array[int32],  # world index per contact
+    bid_AB: wp.array[vec2i],  # body pair per contact (global body indices)
+    mode: wp.array[int32],  # contact mode
+    world_active_contacts: wp.array[int32],  # contacts per world
     # Model data for global to per-world body ID conversion
-    model_body_bid: wp.array(dtype=int32),  # Per-world body ID for each global body
+    model_body_bid: wp.array[int32],  # Per-world body ID for each global body
     num_worlds: int,
     # Target body pair (per-world body indices)
     target_body_a: int,
     target_body_b: int,
     # Output
-    body_pair_contact_flag: wp.array(dtype=int32),  # [num_worlds]
+    body_pair_contact_flag: wp.array[int32],  # [num_worlds]
 ):
     """
     Detect contact between a specific pair of bodies across all worlds.
@@ -416,7 +416,6 @@ class ContactAggregation:
         model: ModelKamino | None = None,
         contacts: ContactsKamino | None = None,
         enable_positions_normals: bool = False,
-        device: wp.DeviceLike = None,
     ):
         """Initialize contact aggregation.
 
@@ -427,13 +426,11 @@ class ContactAggregation:
             contacts (ContactsKamino | None):
                 The contacts container with per-contact data.
                 If None, call ``finalize()`` later.
-            device: Device for computation.
-                If None, uses model's device.
             enable_positions_normals:
                 Whether to compute average contact positions and normals per body.
         """
-        # Cache the device
-        self._device: wp.DeviceLike | None = device
+        # Declare the device cache
+        self._device: wp.DeviceLike = None
 
         # Forward declarations
         self._model: ModelKamino | None = None
@@ -447,9 +444,7 @@ class ContactAggregation:
 
         # Proceed with memory allocations if model and contacts are provided
         if model is not None and contacts is not None:
-            self.finalize(
-                model=model, contacts=contacts, enable_positions_normals=enable_positions_normals, device=device
-            )
+            self.finalize(model=model, contacts=contacts, enable_positions_normals=enable_positions_normals)
 
     ###
     # Properties
@@ -494,20 +489,15 @@ class ContactAggregation:
         model: ModelKamino,
         contacts: ContactsKamino,
         enable_positions_normals: bool = False,
-        device: wp.DeviceLike = None,
     ) -> None:
         """Finalizes memory allocations for the contact aggregation data.
 
         Args:
             model (ModelKamino): The model container describing the system to be simulated.
             contacts (ContactsKamino): The contacts container with per-contact data.
-            device (wp.DeviceLike | None): Device for computation. If None, uses model's device.
         """
-        # Override the device if specified
-        if device is not None:
-            self._device = device
-        if self._device is None:
-            self._device = model.device
+        # Use the model's device
+        self._device = model.device
 
         # Override the positions/normals flag if different from current setting
         if enable_positions_normals != self._enable_positions_normals:

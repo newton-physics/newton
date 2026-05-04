@@ -36,10 +36,10 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.kernel
 def _pd_control_callback(
-    state_t: wp.array(dtype=float32),
-    control_q_j_ref: wp.array(dtype=float32),
-    control_dq_j_ref: wp.array(dtype=float32),
-    control_tau_j_ref: wp.array(dtype=float32),
+    state_t: wp.array[float32],
+    control_q_j_ref: wp.array[float32],
+    control_dq_j_ref: wp.array[float32],
+    control_tau_j_ref: wp.array[float32],
 ):
     """
     An example control callback kernel.
@@ -94,8 +94,8 @@ def _pd_control_callback(
 
 @wp.kernel
 def _torque_control_callback(
-    state_t: wp.array(dtype=float32),
-    control_tau_j: wp.array(dtype=float32),
+    state_t: wp.array[float32],
+    control_tau_j: wp.array[float32],
 ):
     """
     An example control callback kernel.
@@ -136,6 +136,7 @@ def pd_control_callback(sim: Simulator):
             sim.control.dq_j_ref,
             sim.control.tau_j_ref,
         ],
+        device=sim._device,
     )
 
 
@@ -150,6 +151,7 @@ def torque_control_callback(sim: Simulator):
             sim.solver.data.time.time,
             sim.control.tau_j,
         ],
+        device=sim._device,
     )
 
 
@@ -175,10 +177,12 @@ class Example:
         async_save: bool = False,
     ):
         # Initialize target frames per second and corresponding time-steps
-        self.fps = 60
-        self.sim_dt = 0.01 if implicit_pd else 0.001
+        self.fps = 50
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
+        target_sim_dt = 0.01 if implicit_pd else 0.001
+        self.sim_substeps = max(1, round(self.frame_dt / target_sim_dt))
+        self.sim_dt = self.frame_dt / self.sim_substeps
+        msg.info(f"Using sim_dt = {self.sim_dt} ({self.sim_substeps} substeps per frame)")
         self.max_steps = max_steps
 
         # Cache the device and other internal flags
@@ -202,7 +206,7 @@ class Example:
             # Set joint armature and damping because the purely
             # UsdPhysics schema does not support these properties yet
             if implicit_pd:
-                for joint in self.builder.joints:
+                for joint in self.builder.all_joints:
                     if joint.is_dynamic or joint.is_implicit_pd:
                         joint.a_j = [0.1]
                         joint.b_j = [0.001]
@@ -288,14 +292,14 @@ class Example:
         self.step_graph = None
         self.simulate_graph = None
 
-        # Capture CUDA graph if requested and available
-        self.capture()
-
         # Warm-start the simulator before rendering
         # NOTE: This compiles and loads the warp kernels prior to execution
         msg.notif("Warming up simulator...")
         self.step_once()
         self.reset()
+
+        # Capture CUDA graph if requested and available
+        self.capture()
 
     def capture(self):
         """Capture CUDA graph if requested and available."""

@@ -280,7 +280,7 @@ def build_boxes_fourbar(
             parent=-1,
             child=bid1,
             parent_xform=wp.transform_identity(dtype=wp.float32),
-            child_xform=wp.transform_identity(dtype=wp.float32),
+            child_xform=wp.transformf(-r_b1, wp.quat_identity(dtype=wp.float32)),
         )
 
     passive_joint_dof_config = ModelBuilder.JointDofConfig(

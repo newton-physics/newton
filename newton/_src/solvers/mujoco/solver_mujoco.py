@@ -3061,9 +3061,9 @@ class SolverMuJoCo(SolverBase):
         """True when the NATIVECCD/MULTICCD margin workaround applies (#2106)."""
 
         enableflags = 0
-        if enable_multiccd:
-            enableflags |= mujoco.mjtEnableBit.mjENBL_MULTICCD
         disableflags = 0
+        if not enable_multiccd:
+            disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
         if disable_contacts:
             disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
         self.use_mujoco_cpu = use_mujoco_cpu

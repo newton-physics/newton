@@ -195,7 +195,7 @@ class SolverKaminoImpl(SolverBase):
         self._data = self._model.data()
 
         # Allocate a joint-limits interface
-        self._limits = LimitsKamino(model=self._model, device=self._model.device)
+        self._limits = LimitsKamino(model=self._model)
 
         # Construct the unilateral constraints members in the model info
         make_unilateral_constraints_info(model=self._model, data=self._data, limits=self._limits, contacts=contacts)
@@ -206,14 +206,12 @@ class SolverKaminoImpl(SolverBase):
                 model=self._model,
                 limits=self._limits,
                 contacts=contacts,
-                device=self._model.device,
             )
         else:
             self._jacobians = DenseSystemJacobians(
                 model=self._model,
                 limits=self._limits,
                 contacts=contacts,
-                device=self._model.device,
             )
 
         # Allocate the dual problem data on the device
@@ -222,11 +220,11 @@ class SolverKaminoImpl(SolverBase):
             data=self._data,
             limits=self._limits,
             contacts=contacts,
+            jacobians=self._jacobians,
             config=problem_fd_config,
             solver=linear_solver_type,
             solver_kwargs=linear_solver_kwargs,
             sparse=self._config.sparse_dynamics,
-            device=self._model.device,
         )
 
         # Allocate the forward dynamics solver on the device
@@ -237,7 +235,6 @@ class SolverKaminoImpl(SolverBase):
             use_acceleration=self._config.padmm.use_acceleration,
             use_graph_conditionals=self._config.padmm.use_graph_conditionals,
             collect_info=self._config.collect_solver_info,
-            device=self._model.device,
         )
 
         # Allocate the forward kinematics solver on the device
@@ -656,6 +653,11 @@ class SolverKaminoImpl(SolverBase):
     def _read_step_inputs(self, state_in: StateKamino, control_in: ControlKamino):
         """
         Updates the internal solver data from the input state and control.
+
+        Control inputs (tau_j, q_j_ref, dq_j_ref, tau_j_ref) are aliased
+        directly to avoid redundant device-to-device copies since they are
+        only read during a step. State arrays must still be copied because
+        the solver modifies them in-place.
         """
         # TODO: Remove corresponding data copies
         # by directly using the input containers
@@ -667,10 +669,11 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(self._data.joints.q_j_p, state_in.q_j_p)
         wp.copy(self._data.joints.dq_j, state_in.dq_j)
         wp.copy(self._data.joints.lambda_j, state_in.lambda_j)
-        wp.copy(self._data.joints.tau_j, control_in.tau_j)
-        wp.copy(self._data.joints.q_j_ref, control_in.q_j_ref)
-        wp.copy(self._data.joints.dq_j_ref, control_in.dq_j_ref)
-        wp.copy(self._data.joints.tau_j_ref, control_in.tau_j_ref)
+        # Alias read-only control inputs
+        self._data.joints.tau_j = control_in.tau_j
+        self._data.joints.q_j_ref = control_in.q_j_ref
+        self._data.joints.dq_j_ref = control_in.dq_j_ref
+        self._data.joints.tau_j_ref = control_in.tau_j_ref
 
     def _write_step_output(self, state_out: StateKamino):
         """

@@ -177,7 +177,6 @@ class Example:
             model=self.model,
             iterations=self.iterations,
         )
-        self.cloth_solver._precompute(h1)
         self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()
 
