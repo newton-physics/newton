@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 import numpy as np
 import warp as wp
 
+from ..enums import JointType
 from ..model import Model
 from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
 from .ik_objectives import IKObjective
@@ -33,7 +34,6 @@ class BatchCtx:
     # ANALYTIC and MIXED
     jacobian_out: wp.array3d[wp.float32] | None = None
     motion_subspace: wp.array2d[wp.spatial_vector] | None = None
-    fk_qd_zero: wp.array2d[wp.float32] | None = None
     fk_X_local: wp.array2d[wp.transform] | None = None
 
 
@@ -285,7 +285,6 @@ class IKOptimizerLM:
             joint_qd=self.qd_zero,
             jacobian_out=jacobian if jacobian is not None else self.jacobian,
             motion_subspace=getattr(self, "joint_S_s", None),
-            fk_qd_zero=self.qd_zero,
             fk_X_local=self.X_local,
         )
         self._validate_ctx_for_mode(ctx)
@@ -308,7 +307,7 @@ class IKOptimizerLM:
             mode == IKJacobianType.MIXED and self.has_analytic_objective
         )
         if needs_analytic:
-            for name in ("jacobian_out", "motion_subspace", "fk_qd_zero"):
+            for name in ("jacobian_out", "motion_subspace"):
                 if getattr(ctx, name) is None:
                     missing.append(name)
             if ctx.fk_X_local is None:
@@ -423,11 +422,9 @@ class IKOptimizerLM:
         if not accumulate:
             ctx.jacobian_out.zero_()
 
-        ctx.fk_qd_zero.zero_()
         self._compute_motion_subspace(
             body_q=ctx.fk_body_q,
             joint_S_s_out=ctx.motion_subspace,
-            joint_qd_in=ctx.fk_qd_zero,
         )
 
         def _emit(obj, off, body_q_view, joint_q_view, model, jac_view, motion_subspace_view):
@@ -497,7 +494,6 @@ class IKOptimizerLM:
         *,
         body_q: wp.array2d[wp.transform],
         joint_S_s_out: wp.array2d[wp.spatial_vector],
-        joint_qd_in: wp.array2d[wp.float32],
     ) -> None:
         n_joints = self.model.joint_count
         batch = body_q.shape[0]
@@ -507,11 +503,12 @@ class IKOptimizerLM:
             inputs=[
                 self.model.joint_type,
                 self.model.joint_parent,
+                self.model.joint_child,
                 self.model.joint_qd_start,
-                joint_qd_in,
                 self.model.joint_axis,
                 self.model.joint_dof_dim,
                 body_q,
+                self.model.body_com,
                 self.model.joint_X_p,
             ],
             outputs=[
@@ -725,10 +722,10 @@ class IKOptimizerLM:
         _template.__qualname__ = f"_lm_solve_tiled_{C}_{R}"
         _lm_solve_tiled = wp.kernel(enable_backward=False, module="unique")(_template)
 
-        # late-import jcalc_motion, jcalc_transform to avoid circular import error
+        # late-import jcalc_* helpers to avoid circular import error
+        from ...sim.articulation import jcalc_motion_subspace  # noqa: PLC0415
         from ...solvers.featherstone.kernels import (  # noqa: PLC0415
             jcalc_integrate,
-            jcalc_motion,
             jcalc_transform,
         )
 
@@ -805,11 +802,12 @@ class IKOptimizerLM:
         def _compute_motion_subspace_2d(
             joint_type: wp.array[wp.int32],  # (n_joints)
             joint_parent: wp.array[wp.int32],  # (n_joints)
+            joint_child: wp.array[wp.int32],  # (n_joints)
             joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
-            joint_qd: wp.array2d[wp.float32],  # (n_batch, n_joint_dof_count)
             joint_axis: wp.array[wp.vec3],  # (n_joint_dof_count)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)
             body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
+            body_com: wp.array[wp.vec3],  # (n_bodies)
             joint_X_p: wp.array[wp.transform],  # (n_joints)
             # outputs
             joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_joint_dof_count)
@@ -818,6 +816,7 @@ class IKOptimizerLM:
 
             type = joint_type[joint_idx]
             parent = joint_parent[joint_idx]
+            child = joint_child[joint_idx]
             qd_start = joint_qd_start[joint_idx]
 
             X_pj = joint_X_p[joint_idx]
@@ -828,19 +827,32 @@ class IKOptimizerLM:
             lin_axis_count = joint_dof_dim[joint_idx, 0]
             ang_axis_count = joint_dof_dim[joint_idx, 1]
 
-            joint_qd_1d = joint_qd[row]
             S_s_out = joint_S_s[row]
 
-            jcalc_motion(
-                type,
-                joint_axis,
-                lin_axis_count,
-                ang_axis_count,
-                X_wpj,
-                joint_qd_1d,
-                qd_start,
-                S_s_out,
-            )
+            if type == JointType.FREE or type == JointType.DISTANCE:
+                jcalc_motion_subspace(
+                    type,
+                    joint_axis,
+                    lin_axis_count,
+                    ang_axis_count,
+                    X_wpj,
+                    body_q[row, child],
+                    body_com[child],
+                    qd_start,
+                    S_s_out,
+                )
+            else:
+                jcalc_motion_subspace(
+                    type,
+                    joint_axis,
+                    lin_axis_count,
+                    ang_axis_count,
+                    X_wpj,
+                    wp.transform_identity(),
+                    wp.vec3(),
+                    qd_start,
+                    S_s_out,
+                )
 
         @wp.kernel(module="unique")
         def _fk_local(

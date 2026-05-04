@@ -9,11 +9,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.featherstone.kernels import (
-    convert_free_distance_joint_qd_internal_to_public,
-    convert_free_distance_joint_qd_public_to_internal,
-    eval_fk_with_velocity_conversion,
-)
 from newton._src.solvers.mujoco import kernels as mujoco_kernels
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
@@ -387,6 +382,149 @@ def test_ik_prismatic_descendant_recovers_joint_state(test, device):
     assert_np_equal(recovered_qd.numpy(), qd, tol=1.0e-6)
 
 
+def test_fk_free_distance_root_descendant_linear_velocity_matches_finite_difference(test, device, joint_type):
+    """FK finite-difference regression for a FREE/DISTANCE-rooted chain with an offset-COM descendant.
+
+    This pins the public ``newton.eval_fk`` (and the duplicated MuJoCo
+    ``eval_articulation_fk`` kernel) against a forward finite difference for
+    a FREE/DISTANCE-rooted articulation whose root carries a non-zero
+    ``body_com`` and whose descendant body has a non-zero ``body_com`` and a
+    non-trivial child joint anchor -- the exact boundary the PR reworked.
+
+    A regression in the FREE/DISTANCE velocity transport (e.g. dropping the
+    ``omega x com_offset`` term, or mishandling the public
+    ``(v_com_world, omega_world)`` convention) shows up as a mismatch
+    between the origin velocity recovered from ``body_qd`` and the
+    forward-difference of ``body_q`` for either the root or the descendant.
+    Looping over both FK entry points guards both code paths against
+    divergence on the FREE/DISTANCE root.
+    """
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+    base = builder.add_link()
+    child = builder.add_link()
+
+    # Non-zero body COMs for both links so COM-aware velocity transport is
+    # exercised at the FK boundary for the root and the descendant.
+    builder.body_com[base] = wp.vec3(0.15, -0.1, 0.05)
+    builder.body_com[child] = wp.vec3(0.3, 0.1, -0.15)
+
+    # Identity parent/child anchors on the FREE/DISTANCE root so integrating
+    # the seven root-joint coordinates corresponds directly to integrating
+    # the base body pose; this keeps the finite-difference reference math
+    # self-contained while still exercising the FK boundary.
+    j0 = _add_free_distance_joint(
+        builder=builder,
+        joint_type=joint_type,
+        parent=-1,
+        child=base,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    # Non-trivial anchors on the revolute descendant exercise the transport
+    # from the child joint anchor to the descendant body origin under a
+    # moving parent.
+    j1 = builder.add_joint_revolute(
+        parent=base,
+        child=child,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(0.75, 0.25, -0.1), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.2, -0.05, 0.15), wp.quat_identity()),
+    )
+    builder.add_articulation([j0, j1])
+
+    model = builder.finalize(device=device)
+
+    q_start = model.joint_q_start.numpy()
+    qd_start = model.joint_qd_start.numpy()
+
+    q = model.joint_q.numpy()
+    qd = model.joint_qd.numpy()
+
+    # Root pose: translated origin plus a non-axis-aligned rotation so the
+    # COM offset is rotated into all three world axes.
+    q[q_start[0] : q_start[0] + 3] = np.array([0.2, -0.1, 0.15], dtype=np.float32)
+    root_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 1.0, -0.2)), 0.55)
+    q[q_start[0] + 3 : q_start[0] + 7] = np.array(
+        [float(root_rot[0]), float(root_rot[1]), float(root_rot[2]), float(root_rot[3])],
+        dtype=np.float32,
+    )
+
+    # Root joint_qd uses Newton's public (v_com_world, omega_world) convention.
+    v_com_world = np.array([0.6, -0.3, 0.2], dtype=np.float32)
+    omega_world = np.array([0.4, 0.25, -0.5], dtype=np.float32)
+    qd[qd_start[0] : qd_start[0] + 3] = v_com_world
+    qd[qd_start[0] + 3 : qd_start[0] + 6] = omega_world
+
+    # Descendant revolute with non-zero angle and angular velocity.
+    q[q_start[1]] = 0.35
+    qd[qd_start[1]] = -0.7
+
+    dt = 1.0e-4
+
+    # Integrate the FREE/DISTANCE root coordinates under the public
+    # (v_com_world, omega_world) convention:
+    #   - advance the root orientation by omega * dt in world frame;
+    #   - advance the root COM by v_com * dt;
+    #   - back out the new root origin from the new orientation and COM.
+    base_com_local = model.body_com.numpy()[base]
+    base_com_local_wp = wp.vec3(
+        float(base_com_local[0]),
+        float(base_com_local[1]),
+        float(base_com_local[2]),
+    )
+    omega_mag = float(np.linalg.norm(omega_world))
+    if omega_mag > 0.0:
+        omega_axis = wp.vec3(
+            float(omega_world[0]) / omega_mag,
+            float(omega_world[1]) / omega_mag,
+            float(omega_world[2]) / omega_mag,
+        )
+        delta_r = wp.quat_from_axis_angle(omega_axis, float(omega_mag * dt))
+    else:
+        delta_r = wp.quat_identity()
+    root_rot_next = delta_r * root_rot
+
+    p = q[q_start[0] : q_start[0] + 3].astype(np.float32)
+    com_world_initial = p + np.array(wp.quat_rotate(root_rot, base_com_local_wp), dtype=np.float32)
+    com_world_next = com_world_initial + v_com_world * dt
+    p_next = com_world_next - np.array(wp.quat_rotate(root_rot_next, base_com_local_wp), dtype=np.float32)
+
+    q_next = q.copy()
+    q_next[q_start[0] : q_start[0] + 3] = p_next
+    q_next[q_start[0] + 3 : q_start[0] + 7] = np.array(
+        [float(root_rot_next[0]), float(root_rot_next[1]), float(root_rot_next[2]), float(root_rot_next[3])],
+        dtype=np.float32,
+    )
+    q_next[q_start[1]] = q[q_start[1]] + qd[qd_start[1]] * dt
+
+    for eval_fk_fn in (newton.eval_fk, eval_fk_mujoco_kernel):
+        state = model.state()
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        eval_fk_fn(model, state.joint_q, state.joint_qd, state)
+
+        state_next = model.state()
+        state_next.joint_q.assign(q_next)
+        state_next.joint_qd.assign(qd)
+        eval_fk_fn(model, state_next.joint_q, state_next.joint_qd, state_next)
+
+        body_q = state.body_q.numpy().reshape(-1, 7)
+        body_q_next = state_next.body_q.numpy().reshape(-1, 7)
+        body_qd = state.body_qd.numpy().reshape(-1, 6)
+
+        # Root body origin FD check -- pins the FREE/DISTANCE COM-velocity contract.
+        root_origin_vel_fd = (body_q_next[base, :3] - body_q[base, :3]) / dt
+        root_origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, base)
+        assert_np_equal(root_origin_vel_fd, root_origin_vel_from_body_qd, tol=5.0e-3)
+
+        # Descendant body origin FD check -- covers the FREE/DISTANCE-rooted
+        # chain coverage that the removed Featherstone-specific oracle used to pin.
+        child_origin_vel_fd = (body_q_next[child, :3] - body_q[child, :3]) / dt
+        child_origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, child)
+        assert_np_equal(child_origin_vel_fd, child_origin_vel_from_body_qd, tol=5.0e-3)
+
+
 def test_ik_free_distance_descendant_recovers_joint_state(test, device, joint_type):
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
 
@@ -445,86 +583,6 @@ def test_ik_free_distance_descendant_recovers_joint_state(test, device, joint_ty
     assert_np_equal(recovered_qd.numpy(), qd, tol=1.0e-5)
 
 
-def test_featherstone_free_distance_joint_qd_boundary_round_trip_uses_parent_frame(test, device, joint_type):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
-
-    base = builder.add_link()
-    child = builder.add_link()
-
-    builder.body_com[child] = wp.vec3(0.35, -0.15, 0.1)
-
-    j0 = builder.add_joint_revolute(
-        parent=-1,
-        child=base,
-        axis=newton.Axis.Z,
-        parent_xform=wp.transform(wp.vec3(), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(), wp.quat_identity()),
-    )
-    j1 = _add_free_distance_joint(
-        builder=builder,
-        joint_type=joint_type,
-        parent=base,
-        child=child,
-        parent_xform=wp.transform(wp.vec3(1.0, 0.25, 0.0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.1, 0.0, -0.2), wp.quat_identity()),
-    )
-    builder.add_articulation([j0, j1])
-
-    model = builder.finalize(device=device)
-    state = model.state()
-
-    q = model.joint_q.numpy().copy()
-    qd_public = model.joint_qd.numpy().copy()
-    q_start = model.joint_q_start.numpy()
-    qd_start = model.joint_qd_start.numpy()
-
-    q[q_start[0]] = 0.65
-    qd_public[qd_start[1] : qd_start[1] + 6] = np.array([0.7, -0.3, 0.2, 0.4, -0.5, 0.6], dtype=np.float32)
-
-    state.joint_q.assign(q)
-    state.joint_qd.assign(qd_public)
-    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-
-    qd_public_wp = wp.array(qd_public, dtype=float, device=device)
-    qd_internal_wp = wp.zeros_like(model.joint_qd, device=device)
-    qd_round_trip_wp = wp.zeros_like(model.joint_qd, device=device)
-
-    wp.launch(
-        convert_free_distance_joint_qd_public_to_internal,
-        dim=model.joint_count,
-        inputs=[
-            model.joint_type,
-            model.joint_parent,
-            model.joint_child,
-            model.joint_qd_start,
-            model.joint_X_p,
-            state.body_q,
-            model.body_com,
-            qd_public_wp,
-        ],
-        outputs=[qd_internal_wp],
-        device=device,
-    )
-    wp.launch(
-        convert_free_distance_joint_qd_internal_to_public,
-        dim=model.joint_count,
-        inputs=[
-            model.joint_type,
-            model.joint_parent,
-            model.joint_child,
-            model.joint_qd_start,
-            model.joint_X_p,
-            state.body_q,
-            model.body_com,
-            qd_internal_wp,
-        ],
-        outputs=[qd_round_trip_wp],
-        device=device,
-    )
-
-    assert_np_equal(qd_round_trip_wp.numpy(), qd_public, tol=1.0e-6)
-
-
 def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test, device):
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
 
@@ -566,7 +624,7 @@ def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_differenc
     q_next[q_start[0]] += qd[qd_start[0]] * dt
     q_next[q_start[1]] += qd[qd_start[1]] * dt
 
-    for eval_fk_fn in (eval_fk_with_velocity_conversion, eval_fk_mujoco_kernel):
+    for eval_fk_fn in (newton.eval_fk, eval_fk_mujoco_kernel):
         state = model.state()
         state.joint_q.assign(q)
         state.joint_qd.assign(qd)
@@ -585,80 +643,6 @@ def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_differenc
         origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, slider)
 
         assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
-
-
-def test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite_difference(test, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
-
-    base = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
-    child = builder.add_link()
-
-    builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
-    builder.add_shape_box(child, hx=0.1, hy=0.1, hz=0.1)
-    builder.body_com[base] = wp.vec3(0.3, 0.0, 0.0)
-    builder.body_com[child] = wp.vec3(0.1, 0.0, 0.0)
-
-    j = builder.add_joint_revolute(
-        parent=base,
-        child=child,
-        axis=newton.Axis.Z,
-        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()),
-    )
-    builder.add_articulation([j])
-
-    model = builder.finalize(device=device)
-
-    state = model.state()
-    state_next = model.state()
-
-    # Exercise a FREE-root parent so Featherstone's legacy FREE/DISTANCE output
-    # conversion cannot leak back into descendant transport during recursion.
-    q = model.joint_q.numpy().copy()
-    qd = model.joint_qd.numpy().copy()
-    q[:3] = np.array([0.2, -0.1, 0.15], dtype=np.float32)
-    qd[:6] = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.2], dtype=np.float32)
-    qd[6] = 0.5
-    dt = 1.0e-4
-
-    q_next = q.copy()
-    q_next[:3] += (qd[:3] + np.cross(qd[3:6], q[:3])) * dt
-    q_root = wp.quat(float(q[3]), float(q[4]), float(q[5]), float(q[6]))
-    q_root_next = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(qd[5] * dt)) * q_root
-    q_next[3:7] = np.array([q_root_next[0], q_root_next[1], q_root_next[2], q_root_next[3]], dtype=np.float32)
-    q_next[7] += qd[6] * dt
-
-    state.joint_q.assign(q)
-    state.joint_qd.assign(qd)
-    eval_fk_with_velocity_conversion(model, state.joint_q, state.joint_qd, state)
-
-    state_next.joint_q.assign(q_next)
-    state_next.joint_qd.assign(qd)
-    eval_fk_with_velocity_conversion(model, state_next.joint_q, state_next.joint_qd, state_next)
-
-    body_q = state.body_q.numpy().reshape(-1, 7)
-    body_q_next = state_next.body_q.numpy().reshape(-1, 7)
-    body_qd = state.body_qd.numpy().reshape(-1, 6)
-
-    base_com_local = wp.vec3(0.3, 0.0, 0.0)
-    base_rot = wp.quat(float(body_q[base, 3]), float(body_q[base, 4]), float(body_q[base, 5]), float(body_q[base, 6]))
-    base_rot_next = wp.quat(
-        float(body_q_next[base, 3]),
-        float(body_q_next[base, 4]),
-        float(body_q_next[base, 5]),
-        float(body_q_next[base, 6]),
-    )
-    base_com = body_q[base, :3] + np.array(wp.quat_rotate(base_rot, base_com_local))
-    base_com_next = body_q_next[base, :3] + np.array(wp.quat_rotate(base_rot_next, base_com_local))
-    base_com_fd = (base_com_next - base_com) / dt
-    base_com_from_body_qd = body_qd[base, :3]
-
-    assert_np_equal(base_com_fd, base_com_from_body_qd, tol=5.0e-3)
-
-    origin_vel_fd = (body_q_next[child, :3] - body_q[child, :3]) / dt
-    origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, child)
-
-    assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
 
 
 def test_fk_with_indices(test, device):
@@ -1103,6 +1087,20 @@ add_function_test(
 )
 add_function_test(
     TestSimKinematics,
+    "test_fk_free_root_descendant_linear_velocity_matches_finite_difference",
+    test_fk_free_distance_root_descendant_linear_velocity_matches_finite_difference,
+    devices=devices,
+    joint_type=newton.JointType.FREE,
+)
+add_function_test(
+    TestSimKinematics,
+    "test_fk_distance_root_descendant_linear_velocity_matches_finite_difference",
+    test_fk_free_distance_root_descendant_linear_velocity_matches_finite_difference,
+    devices=devices,
+    joint_type=newton.JointType.DISTANCE,
+)
+add_function_test(
+    TestSimKinematics,
     "test_ik_prismatic_descendant_recovers_joint_state",
     test_ik_prismatic_descendant_recovers_joint_state,
     devices=devices,
@@ -1123,28 +1121,8 @@ add_function_test(
 )
 add_function_test(
     TestSimKinematics,
-    "test_featherstone_free_joint_qd_boundary_round_trip_uses_parent_frame",
-    test_featherstone_free_distance_joint_qd_boundary_round_trip_uses_parent_frame,
-    devices=devices,
-    joint_type=newton.JointType.FREE,
-)
-add_function_test(
-    TestSimKinematics,
-    "test_featherstone_distance_joint_qd_boundary_round_trip_uses_parent_frame",
-    test_featherstone_free_distance_joint_qd_boundary_round_trip_uses_parent_frame,
-    devices=devices,
-    joint_type=newton.JointType.DISTANCE,
-)
-add_function_test(
-    TestSimKinematics,
     "test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_difference",
     test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_difference,
-    devices=devices,
-)
-add_function_test(
-    TestSimKinematics,
-    "test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite_difference",
-    test_featherstone_fk_floating_base_descendant_linear_velocity_matches_finite_difference,
     devices=devices,
 )
 add_function_test(TestSimKinematics, "test_fk_with_indices", test_fk_with_indices, devices=devices)

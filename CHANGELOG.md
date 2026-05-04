@@ -47,6 +47,7 @@
 - Replace `ModelBuilder.add_actuator(actuator_class, input_indices=..., output_indices=..., **kwargs)` with `ModelBuilder.add_actuator(controller_class, index=..., clamping=[...], delay_steps=..., pos_index=..., **ctrl_kwargs)` where each call registers a single DOF
 - Change `ArticulationView.get_actuator_parameter(actuator, name)` and `set_actuator_parameter(actuator, name, values)` to require a `component` argument identifying the owning `Controller`, `Clamping`, or `Delay` instance: `get_actuator_parameter(actuator, actuator.controller, "kp")`
 - Pin `mujoco` and `mujoco-warp` dependencies to `~=3.6.0`
+- Make `SolverFeatherstone` consume the public Newton FREE/DISTANCE `joint_qd` convention directly; callers should pass six values per FREE/DISTANCE joint as child-COM linear velocity followed by angular velocity, both expressed in the joint parent frame
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
 - Inline a `wp.vec3`-specialized point-to-triangle squared-distance helper in the implicit-MPM rasterized collider, removing the dependency on Warp's internal `warp.fem.geometry.closest_point`
 - Replace the StVK VBD triangle membrane material with the stable Neo-Hookean form (Smith et al. 2018, adapted to 2D shells). The upstream two-constraint Rayleigh damping model is preserved unchanged
