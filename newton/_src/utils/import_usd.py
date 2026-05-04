@@ -521,11 +521,14 @@ def parse_usd(
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
             warnings.warn(
-                f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
+                f"Mesh {path_name} has a texture but no UVs; texture will use projected UVs.",
                 stacklevel=2,
             )
-            mesh.texture = None
-        if material_props.get("color") is not None and mesh.texture is None:
+        if mesh.texture is not None:
+            # Texture provides albedo; use white so it renders at full brightness.
+            # (diffuse_color_constant is the untextured fallback, not a multiplier.)
+            mesh.color = (1.0, 1.0, 1.0)
+        elif material_props.get("color") is not None:
             mesh.color = material_props["color"]
         if material_props.get("roughness") is not None:
             mesh.roughness = material_props["roughness"]
