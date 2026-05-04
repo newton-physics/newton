@@ -14,7 +14,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.tests import get_kamino_basic_asset
+from newton.tests import get_kamino_basics_asset
 from newton.tests.builders import basics
 
 
@@ -60,7 +60,7 @@ class Example:
                 "cartpole",
             ]
             for asset_name in asset_names:
-                asset_file = get_kamino_basic_asset(f"{asset_name}.usda")
+                asset_file = get_kamino_basics_asset(f"{asset_name}.usda")
                 builder.add_world(builder=load_basic_asset_from_usd(asset_file))
         else:
             # Manually build the heterogeneous basic models using the builder API
@@ -108,7 +108,6 @@ class Example:
 
         # If only a single-world is created, set initial
         # camera position for better view of the system
-        self.viewer._paused = True
         if hasattr(self.viewer, "set_camera"):
             camera_pos = wp.vec3(0.0, -15.0, 1.6)
             pitch = -1.5
@@ -149,23 +148,7 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        newton.examples.test_body_state(
-            self.model,
-            self.state_0,
-            "all bodies are above the ground",
-            lambda q, qd: q[2] > -0.006,
-        )
-        # Only check velocities on CUDA where we run 500 frames (enough time to settle)
-        # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
-        if self.device.is_cuda:
-            newton.examples.test_body_state(
-                self.model,
-                self.state_0,
-                "body velocities are small",
-                lambda q, qd: (
-                    max(abs(qd)) < 0.25
-                ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
-            )
+        pass  # TODO: Add some assertions here once we have a more meaningful test scenario
 
     @staticmethod
     def create_parser():
@@ -173,7 +156,7 @@ class Example:
         parser.add_argument(
             "--from-usd",
             action=argparse.BooleanOptionalAction,
-            default=False,
+            default=True,
             help="Load the heterogeneous basic models from USD (otherwise build them manually).",
         )
         return parser

@@ -48,15 +48,6 @@ class Example:
             hide_collision_shapes=True,
         )
 
-        # # TODO: FIX THIS
-        # # Set joint PD targets and gains for the robot
-        # for i in range(7, robot_builder.joint_dof_count):
-        #     robot_builder.joint_target_mode[i] = int(newton.JointTargetMode.POSITION)
-        #     robot_builder.joint_target_ke[i] = 150
-        #     robot_builder.joint_target_kd[i] = 5
-        #     robot_builder.joint_armature[i] = 0.1
-        #     robot_builder.joint_friction[i] = 0.001
-
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -71,7 +62,6 @@ class Example:
 
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
-        self.config.use_fk_solver = True
         self.config.use_collision_detector = self.use_kamino_contacts
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
@@ -148,7 +138,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_1)
         self.viewer.end_frame()
 
     def test_final(self):

@@ -16,7 +16,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.tests import get_kamino_basic_asset
+from newton.tests import get_kamino_basics_asset
 from newton.tests.builders import basics
 
 
@@ -42,7 +42,7 @@ class Example:
         # with the builder API, depending on the command-line argument `--from-usd`
         if args.from_usd:
             # Load the basic boxes hinged USD and add it to the builder
-            asset_file = get_kamino_basic_asset("boxes_hinged.usda")
+            asset_file = get_kamino_basics_asset("boxes_hinged.usda")
             robot_builder.add_usd(
                 asset_file,
                 joint_ordering=None,

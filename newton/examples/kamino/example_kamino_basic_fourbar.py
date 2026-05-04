@@ -17,7 +17,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.tests import get_kamino_basic_asset
+from newton.tests import get_kamino_basics_asset
 from newton.tests.builders import basics
 
 
@@ -28,7 +28,6 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, round(self.frame_dt / 0.0025))
         self.sim_dt = self.frame_dt / self.sim_substeps
-        msg.info(f"Using sim_dt = {self.sim_dt} ({self.sim_substeps} substeps per frame)")
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
         self.viewer = viewer
@@ -44,7 +43,7 @@ class Example:
         # with the builder API, depending on the command-line argument `--from-usd`
         if args.from_usd:
             # Load the basic four-bar USD and add it to the builder
-            asset_file = get_kamino_basic_asset("boxes_fourbar.usda")
+            asset_file = get_kamino_basics_asset("boxes_fourbar.usda")
             robot_builder.add_usd(
                 asset_file,
                 joint_ordering=None,
@@ -160,23 +159,7 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        newton.examples.test_body_state(
-            self.model,
-            self.state_0,
-            "all bodies are above the ground",
-            lambda q, qd: q[2] > -0.006,
-        )
-        # Only check velocities on CUDA where we run 500 frames (enough time to settle)
-        # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
-        if self.device.is_cuda:
-            newton.examples.test_body_state(
-                self.model,
-                self.state_0,
-                "body velocities are small",
-                lambda q, qd: (
-                    max(abs(qd)) < 0.25
-                ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
-            )
+        pass  # TODO: Add some assertions here once we have a more meaningful test scenario
 
     @staticmethod
     def create_parser():

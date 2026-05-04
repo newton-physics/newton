@@ -20,7 +20,7 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton._src.solvers.kamino.tests.utils.checks import assert_builders_equal
-from newton.tests import get_kamino_basic_asset, get_kamino_testing_asset
+from newton.tests import get_kamino_basics_asset, get_kamino_testing_asset
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 ###
@@ -948,7 +948,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic box_on_plane model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = get_kamino_basic_asset("box_on_plane.usda")
+        usd_asset_filename = get_kamino_basics_asset("box_on_plane.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -964,7 +964,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic box_pendulum model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = get_kamino_basic_asset("box_pendulum.usda")
+        usd_asset_filename = get_kamino_basics_asset("box_pendulum.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -980,7 +980,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic boxes_hinged model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = get_kamino_basic_asset("boxes_hinged.usda")
+        usd_asset_filename = get_kamino_basics_asset("boxes_hinged.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -996,7 +996,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic boxes_nunchaku model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = get_kamino_basic_asset("boxes_nunchaku.usda")
+        usd_asset_filename = get_kamino_basics_asset("boxes_nunchaku.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -1012,7 +1012,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic boxes_fourbar model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = get_kamino_basic_asset("boxes_fourbar.usda")
+        usd_asset_filename = get_kamino_basics_asset("boxes_fourbar.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -1028,7 +1028,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic cartpole model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = get_kamino_basic_asset("cartpole.usda")
+        usd_asset_filename = get_kamino_basics_asset("cartpole.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=True, load_materials=False

@@ -20,7 +20,7 @@ def get_kamino_assets_directory() -> str:
     return os.path.join(get_asset_directory(), "kamino")
 
 
-def get_kamino_basic_asset(filename: str) -> str:
+def get_kamino_basics_asset(filename: str) -> str:
     return os.path.join(get_kamino_assets_directory(), "basics", filename)
 
 

@@ -11,13 +11,13 @@ import newton
 import newton.examples
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.types import float32
-from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_hinged
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino._src.utils.sim import SimulationLogger, Simulator, ViewerKamino
 from newton._src.solvers.kamino.examples import get_examples_output_path, run_headless
+from newton.tests import get_kamino_basics_asset
 
 ###
 # Module configs
@@ -113,7 +113,7 @@ class Example:
         # Construct model builder
         if load_from_usd:
             msg.notif("Constructing builder from imported USD ...")
-            USD_MODEL_PATH = os.path.join(get_basics_usd_assets_path(), "boxes_hinged.usda")
+            USD_MODEL_PATH = get_kamino_basics_asset("boxes_hinged.usda")
             importer = USDImporter()
             self.builder: ModelBuilderKamino = make_homogeneous_builder(
                 num_worlds=num_worlds,

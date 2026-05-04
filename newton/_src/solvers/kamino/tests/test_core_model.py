@@ -27,7 +27,7 @@ from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton._src.solvers.kamino.tests.utils import print as print_utils
-from newton.tests import get_kamino_basic_asset
+from newton.tests import get_kamino_basics_asset
 from newton.tests.builders import basics as basics_newton
 
 ###
@@ -239,7 +239,7 @@ class TestModelConversions(unittest.TestCase):
         on a simple fourbar model loaded from USD.
         """
         # Define the path to the USD file for the fourbar model
-        asset_file = get_kamino_basic_asset("boxes_fourbar.usda")
+        asset_file = get_kamino_basics_asset("boxes_fourbar.usda")
 
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
@@ -941,7 +941,7 @@ class TestModelConversions(unittest.TestCase):
         on a simple box on plane model loaded from USD, containing different materials.
         """
         # Define the path to the USD file for the fourbar model
-        asset_file = get_kamino_basic_asset("box_on_plane.usda")
+        asset_file = get_kamino_basics_asset("box_on_plane.usda")
 
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
