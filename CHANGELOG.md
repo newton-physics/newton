@@ -51,7 +51,7 @@
 - Replace `ModelBuilder.add_actuator(actuator_class, input_indices=..., output_indices=..., **kwargs)` with `ModelBuilder.add_actuator(controller_class, index=..., clamping=[...], delay_steps=..., pos_index=..., **ctrl_kwargs)` where each call registers a single DOF
 - Change `ArticulationView.get_actuator_parameter(actuator, name)` and `set_actuator_parameter(actuator, name, values)` to require a `component` argument identifying the owning `Controller`, `Clamping`, or `Delay` instance: `get_actuator_parameter(actuator, actuator.controller, "kp")`
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
-- Inline a point-to-triangle squared-distance helper in the implicit-MPM rasterized collider, removing the dependency on Warp's `warp.fem` module
+- Remove the implicit-MPM rasterized collider's reliance on Warp's `warp.fem` module (behavior unchanged)
 - Replace the StVK VBD triangle membrane material with the stable Neo-Hookean form (Smith et al. 2018, adapted to 2D shells). The upstream two-constraint Rayleigh damping model is preserved unchanged
 - Bump `mujoco` and `mujoco-warp` dependencies to `~=3.8.0` (`mujoco-warp` requires `>=3.8.0.1`)
 - Bump `GitPython` lower bound to `>=3.1.47` to pick up the fix for GHSA-x2qx-6953-8485 (`multi_options` argument injection in `Repo.clone_from`)
@@ -65,7 +65,7 @@
 - Reduce default `stretch_stiffness` from `1.0e9` to `1.0e5` in `add_joint_cable()`, `add_rod()`, and `add_rod_graph()`
 - Treat `stretch_stiffness` and `bend_stiffness` in `add_rod()` and `add_rod_graph()` as direct per-joint stiffness values, matching `add_joint_cable()` and other joint stiffness APIs
 - VBD solver uses augmented-Lagrangian hard constraints for body-body contacts by default (`rigid_contact_hard=True`)
-- Reduce collision-pipeline overhead in `SolverMuJoCo`: fast-path contact conversion (skip constant fields when contact set is unchanged via a generation counter on `Contacts`), fused AABB + narrow-phase geom-data kernel, and capped conversion launch dim. ~6× collision-pipeline speedup on `example_robot_anymal_d` (4096 worlds)
+- Reduce collision-pipeline overhead in `SolverMuJoCo` via incremental contact conversion when the contact set is unchanged (~6× speedup on `example_robot_anymal_d` with 4096 worlds)
 
 ### Deprecated
 
@@ -80,7 +80,7 @@
 - Fix `SolverStyle3D` initialization to precompute its fixed PD matrix from the finalized model
 - Fix connect constraint anchor computation to account for joint reference positions when `SolverMuJoCo` is the chosen solver.
 - Fix joint-synthesized CONNECT constraint anchors not updating when `dof_ref` or `joint_X_p` changes at runtime via `notify_model_changed()`
-- Fix WELD constraint data corruption when a model contains both FIXED and revolute/ball loop joints, caused by CONNECT anchor kernels overwriting WELD `eq_data`
+- Fix WELD constraint data corruption when a model contains both FIXED and revolute/ball loop joints
 - Fix `SolverMuJoCo` passing non-zero geom/pair margins to `mujoco_warp.put_model()`, which fails when NATIVECCD is enabled. Margins are forced to zero when MuJoCo handles collisions (`use_mujoco_contacts=True`); the Newton collision pipeline (`use_mujoco_contacts=False`) is unchanged
 - Fix `State.assign` not copying namespaced extended and custom state attributes 
 - Fix mesh-convex back-face contacts generating inverted normals that trap shapes inside meshes and cause solver divergence (NaN)
@@ -111,7 +111,7 @@
 - Fix `target_voxel_size` being silently ignored on the texture-SDF path of `SDF.create_from_mesh()` and on the primitive-mesh path in `ModelBuilder`; the requested voxel resolution is now honored end-to-end and matches the sparse-SDF path
 - Fix material-combination inconsistency in the Newton-to-`mujoco-warp` contact converter so combined friction / solref / solimp values match native MuJoCo
 - Fix `eq_objtype` mismatch for joint equality and mimic constraints in `SolverMuJoCo` so compiled models match native MuJoCo XML behavior
-- Fix `_tiled_sum_kernel` launch-dim handling in the implicit-MPM rheology solver under `warp-lang` 1.13's templated `launch_bounds` (formerly produced out-of-bounds reads)
+- Fix implicit-MPM rheology solver launch-dim handling under `warp-lang` 1.13's templated `launch_bounds` (formerly produced out-of-bounds reads)
 
 ## [1.1.0] - 2026-04-13
 
