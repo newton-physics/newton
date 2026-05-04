@@ -1,0 +1,6 @@
+﻿newton.actuators.register\_actuator\_component
+==============================================
+
+.. currentmodule:: newton.actuators
+
+.. autofunction:: register_actuator_component
