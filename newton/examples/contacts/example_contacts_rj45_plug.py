@@ -143,12 +143,12 @@ def _align_cable_orientations(
     body_q: wp.array[wp.transform],
     cable_body_idx: wp.array[int],
     cable_next_idx: wp.array[int],
+    cable_next_start_local: wp.array[wp.vec3],
 ):
     """Swing-correct each dynamic cable capsule to its deformed segment direction.
 
-    Keeps the body origin (capsule start point) fixed and only updates
-    the rotation so the capsule's +Z axis points toward the next body's
-    origin.  This preserves chain connectivity at the start-point side.
+    Keeps the body origin (capsule midpoint/COM) fixed and only updates
+    the rotation so +Z points toward the next capsule's start endpoint.
     """
     tid = wp.tid()
     bi = cable_body_idx[tid]
@@ -158,8 +158,10 @@ def _align_cable_orientations(
     pos = wp.transform_get_translation(tf)
     rot = wp.transform_get_rotation(tf)
 
-    next_pos = wp.transform_get_translation(body_q[bi_next])
-    seg = next_pos - pos
+    next_tf = body_q[bi_next]
+    next_pos = wp.transform_get_translation(next_tf)
+    next_rot = wp.transform_get_rotation(next_tf)
+    seg = next_pos + wp.quat_rotate(next_rot, cable_next_start_local[tid]) - pos
     seg_len = wp.length(seg)
     if seg_len < 1.0e-10:
         return
@@ -342,7 +344,9 @@ class Example:
             builder.body_inv_inertia[idx] = wp.mat33(0.0)
 
         anchor_body_ids = tuple(rod_bodies[:CABLE_KINEMATIC_COUNT])
-        anchor_offsets = tuple(cable_points[i] - plug_pos for i in range(CABLE_KINEMATIC_COUNT))
+        anchor_offsets = tuple(
+            0.5 * (cable_points[i] + cable_points[i + 1]) - plug_pos for i in range(CABLE_KINEMATIC_COUNT)
+        )
         anchor_rots = tuple(cable_quats[i] for i in range(CABLE_KINEMATIC_COUNT))
 
         builder.color()
@@ -352,15 +356,20 @@ class Example:
         self._cable_anchor_offsets = wp.array(anchor_offsets, dtype=wp.vec3, device=self.model.device)
         self._cable_anchor_rotations = wp.array(anchor_rots, dtype=wp.quat, device=self.model.device)
 
-        # Chord alignment: include the last kinematic body so it visually
-        # aims toward the first dynamic body after deformation.  The solver
-        # always sees the rest-relative rotation (set by _sync_cable_anchors
-        # before each step); this post-solve correction is purely cosmetic.
+        # Endpoint alignment: include the last kinematic body so it aims toward
+        # the first dynamic body's start endpoint after deformation. The
+        # kinematic prefix is reset by _sync_cable_anchors before each solve;
+        # dynamic body rotations carry into the next collision pass.
         align_start = max(CABLE_KINEMATIC_COUNT - 1, 0)
         align_bodies = tuple(rod_bodies[align_start:-1])
         align_next = tuple(rod_bodies[align_start + 1 :])
+        align_next_start_local = tuple(
+            wp.vec3(0.0, 0.0, -0.5 * float(wp.length(cable_points[i + 2] - cable_points[i + 1])))
+            for i in range(align_start, len(rod_bodies) - 1)
+        )
         self._cable_align_indices = wp.array(align_bodies, dtype=int, device=self.model.device)
         self._cable_align_next = wp.array(align_next, dtype=int, device=self.model.device)
+        self._cable_align_next_start_local = wp.array(align_next_start_local, dtype=wp.vec3, device=self.model.device)
         self._cable_align_count = len(align_bodies)
 
         self.viewer.set_model(self.model)
@@ -448,10 +457,8 @@ class Example:
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
-            # Snap each capsule's +Z to the chord toward the next node so the
-            # rendered chain follows the deformed centerline.  Purely cosmetic;
-            # the solver doesn't see these rotations until _sync_cable_anchors
-            # resets the kinematic prefix on the next substep.
+            # Snap each capsule's +Z to the next capsule's start endpoint so
+            # collision/render geometry follows the deformed centerline.
             wp.launch(
                 kernel=_align_cable_orientations,
                 dim=self._cable_align_count,
@@ -459,6 +466,7 @@ class Example:
                     self.state_0.body_q,
                     self._cable_align_indices,
                     self._cable_align_next,
+                    self._cable_align_next_start_local,
                 ),
                 device=self.model.device,
             )
