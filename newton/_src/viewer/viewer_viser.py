@@ -1129,6 +1129,29 @@ class ViewerViser(ViewerBase):
         self.show_notebook()
 
     @staticmethod
+    def _viser_client_dir() -> Path:
+        """Return a compatible viser browser client directory for notebook playback."""
+        bundled_client_dir = Path(__file__).parent / "viser" / "static"
+
+        try:
+            viser = ViewerViser._get_viser()
+        except ImportError:
+            viser = None
+
+        if viser is not None:
+            installed_client_dir = Path(viser.__file__).resolve().parent / "client" / "build"
+            if (installed_client_dir / "index.html").exists():
+                return installed_client_dir
+
+        if (bundled_client_dir / "index.html").exists():
+            return bundled_client_dir
+
+        raise FileNotFoundError(
+            f"Viser client files not found at {bundled_client_dir}. "
+            "The notebook playback feature requires the viser client assets."
+        )
+
+    @staticmethod
     def _serve_viser_recording(
         recording_path: str, camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     ) -> str:
@@ -1144,33 +1167,18 @@ class ViewerViser(ViewerBase):
         Returns:
             URL of the player.
         """
-        import socket  # noqa: PLC0415
         import threading  # noqa: PLC0415
         from http.server import HTTPServer, SimpleHTTPRequestHandler  # noqa: PLC0415
 
-        # Get viser client directory (bundled with package at newton/_src/viewer/static/viser)
+        # Prefer the installed viser client so the player matches the recording format.
         recording_path = Path(recording_path).resolve()
         if not recording_path.exists():
             raise FileNotFoundError(f"Recording file not found: {recording_path}")
 
-        viser_client_dir = Path(__file__).parent / "viser" / "static"
-
-        if not viser_client_dir.exists():
-            raise FileNotFoundError(
-                f"Viser client files not found at {viser_client_dir}. "
-                "The notebook playback feature requires the viser client assets."
-            )
+        viser_client_dir = ViewerViser._viser_client_dir()
 
         # Read the recording file content
         recording_bytes = recording_path.read_bytes()
-
-        # Find an available port
-        def find_free_port():
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("", 0))
-                return s.getsockname()[1]
-
-        port = find_free_port()
 
         # Create a custom HTTP handler factory that serves both viser client and the recording
         def make_handler(recording_data: bytes, client_dir: str):
@@ -1221,8 +1229,8 @@ class ViewerViser(ViewerBase):
             return RecordingHandler
 
         handler_class = make_handler(recording_bytes, str(viser_client_dir))
-        # Bind to all interfaces so IFrame can access it
-        server = HTTPServer(("", port), handler_class)
+        server = HTTPServer(("127.0.0.1", 0), handler_class)
+        port = server.server_address[1]
 
         # Start server in background thread
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
