@@ -27,10 +27,9 @@ import math
 
 import warp as wp
 
-from ......core import Axis
-from ......sim import JointTargetMode, ModelBuilder
-from ...core import inertia
-from ...core.joints import JOINT_QMAX, JOINT_QMIN
+from ..._src.core import MAXVAL, Axis
+from ..._src.geometry import inertia
+from ..._src.sim import JointTargetMode, ModelBuilder
 
 ###
 # Module interface
@@ -447,7 +446,7 @@ def build_cartpole(
     if limits:
         p_lo, p_hi = -4.0, 4.0
     else:
-        p_lo, p_hi = float(JOINT_QMIN), float(JOINT_QMAX)
+        p_lo, p_hi = float(-MAXVAL), float(MAXVAL)
 
     # Add a prismatic joint for the cart
     prism_axis = ModelBuilder.JointDofConfig(
@@ -1237,8 +1236,8 @@ def build_boxes_fourbar(
         qmin = -0.25 * math.pi
         qmax = 0.25 * math.pi
     else:
-        qmin = float(JOINT_QMIN)
-        qmax = float(JOINT_QMAX)
+        qmin = float(-MAXVAL)
+        qmax = float(MAXVAL)
 
     # Optional fixed base: attach link_1 rigidly to the world
     if fixedbase:
