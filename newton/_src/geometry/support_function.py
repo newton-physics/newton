@@ -96,11 +96,18 @@ class GenericShapeData:
       - PLANE: half-width in x, half-length in y (lies in XY plane at z=0, normal along +Z)
       - TRIANGLE: vertex B-A stored in scale, vertex C-A stored in auxiliary
       - TRIANGLE_PRISM: same as TRIANGLE; support function extrudes 1 m along -Z
+    - local_center: a guaranteed-interior point in the shape's local frame, used
+      by MPR/GJK as the initial v0.  For origin-centered primitives this is
+      ``(0, 0, 0)``; for ``CONVEX_MESH`` it is the AABB center, which is robust
+      against off-origin authoring frames.  For TRIANGLE / TRIANGLE_PRISM this
+      field is unused (those shapes have a dedicated v0 path in
+      ``geometric_center``).
     """
 
     shape_type: int
     scale: wp.vec3
     auxiliary: wp.vec3
+    local_center: wp.vec3
 
 
 @wp.func
@@ -354,6 +361,8 @@ def extract_shape_data(
     shape_types: wp.array[int],
     shape_data: wp.array[wp.vec4],  # scale (xyz), margin_offset (w) or other data
     shape_source: wp.array[wp.uint64],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
 ):
     """
     Extract shape data from the narrow phase API arrays.
@@ -364,6 +373,8 @@ def extract_shape_data(
         shape_types: Shape types
         shape_data: Shape data (vec4 - scale xyz, margin_offset w)
         shape_source: Source pointers (mesh IDs etc.)
+        shape_collision_aabb_lower: Per-shape local AABB lower bounds (scale baked in).
+        shape_collision_aabb_upper: Per-shape local AABB upper bounds (scale baked in).
 
     Returns:
         tuple: (position, orientation, shape_data, scale, margin_offset)
@@ -385,6 +396,14 @@ def extract_shape_data(
     result.shape_type = shape_types[shape_idx]
     result.scale = scale
     result.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+
+    # Precompute the local AABB center for use as MPR/GJK's initial v0.
+    # For origin-centered primitives this is (0, 0, 0); for off-origin
+    # CONVEX_MESH hulls this is the actual hull interior, which avoids the
+    # MPR portal degeneracy described in mpr.geometric_center.
+    aabb_lo = shape_collision_aabb_lower[shape_idx]
+    aabb_hi = shape_collision_aabb_upper[shape_idx]
+    result.local_center = 0.5 * (aabb_lo + aabb_hi)
 
     # For CONVEX_MESH, pack the mesh pointer into auxiliary
     if shape_types[shape_idx] == GeoType.CONVEX_MESH:

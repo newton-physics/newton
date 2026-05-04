@@ -160,25 +160,46 @@ def create_support_map_function(support_func: Any):
         """
         Compute geometric center of Minkowski difference.
 
-        For generic shapes both centers are at their local origins.  For
-        triangles (and triangle prisms) the "center" on shape A is replaced
-        by the closest point on the triangle to the convex center
-        (``position_b``), giving MPR and GJK a much better starting point
-        when the triangle is large relative to the convex.
+        Used by MPR and GJK as the initial interior point ``v0`` of the
+        Minkowski difference.  A poor ``v0`` — far outside one of the
+        shapes — is a known cause of MPR portal degeneracy when the
+        partner is a thin/flat primitive (e.g. a single mesh triangle),
+        because the chosen ray direction can produce supports that all
+        collapse onto a single vertex of the partner.
+
+        Each shape's interior point is read from
+        :attr:`GenericShapeData.local_center`, which is the local AABB
+        center precomputed by :func:`extract_shape_data`.  For
+        origin-centered primitives this is ``(0, 0, 0)``; for
+        ``CONVEX_MESH`` shapes whose authoring origin lies outside the
+        hull (common for imported collision assets) it is the AABB
+        interior, which avoids the portal degeneracy.
+
+        For triangles (and triangle prisms) on shape A the center on
+        shape A is replaced by the closest point on the triangle to
+        shape B's center (in A-local space), giving MPR and GJK a much
+        better starting point when the triangle is large relative to
+        the convex.
 
         Args:
             geom_a: Shape A geometry data
             geom_b: Shape B geometry data
-            orientation_b: Orientation of shape B
-            position_b: Position of shape B
+            orientation_b: Orientation of shape B (in A's local frame)
+            position_b: Position of shape B (in A's local frame)
             data_provider: Support mapping data provider
 
         Returns:
-            Vert containing geometric centers of both shapes
+            Vert containing geometric centers of both shapes.  Both
+            ``B`` and ``BtoA`` are expressed in shape A's local frame,
+            matching the convention used by the ``solve_mpr_core`` /
+            ``solve_gjk_core`` callers.
         """
         center = Vert()
 
-        center_a = wp.vec3(0.0, 0.0, 0.0)
+        center_a = geom_a.local_center
+
+        # Express shape B's interior point in A's local frame.
+        center_b = position_b + wp.quat_rotate(orientation_b, geom_b.local_center)
 
         if geom_a.shape_type == int(GeoTypeEx.TRIANGLE) or geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
             # Project shape B's center onto the triangle for a starting
@@ -200,12 +221,12 @@ def create_support_map_function(support_func: Any):
             tri_a = wp.vec3(0.0, 0.0, 0.0)
             tri_b = geom_a.scale
             tri_c = geom_a.auxiliary
-            proj = closest_point_on_triangle(position_b, tri_a, tri_b, tri_c)
+            proj = closest_point_on_triangle(center_b, tri_a, tri_b, tri_c)
             centroid = (tri_a + tri_b + tri_c) / 3.0
             center_a = proj + 0.01 * (centroid - proj)
 
-        center.B = position_b
-        center.BtoA = center_a - position_b
+        center.B = center_b
+        center.BtoA = center_a - center_b
 
         return center
 

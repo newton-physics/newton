@@ -1482,6 +1482,8 @@ def mesh_triangle_contacts_to_reducer_kernel(
     shape_transform: wp.array[wp.transform],
     shape_source: wp.array[wp.uint64],
     shape_gap: wp.array[float],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
     heightfield_elevations: wp.array[wp.float32],
@@ -1533,6 +1535,8 @@ def mesh_triangle_contacts_to_reducer_kernel(
             shape_types,
             shape_data,
             shape_source,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
         )
 
         # Triangle position is vertex A in world space.
