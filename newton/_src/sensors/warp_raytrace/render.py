@@ -25,7 +25,13 @@ def create_kernel(
     else:
         raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
 
-    @wp.kernel(enable_backward=False)
+    _kernel_decorator = (
+        wp.kernel(enable_backward=False, launch_bounds=config.launch_bounds)
+        if config.launch_bounds is not None
+        else wp.kernel(enable_backward=False)
+    )
+
+    @_kernel_decorator
     def render_megakernel(
         # Model and Config
         world_count: wp.int32,
