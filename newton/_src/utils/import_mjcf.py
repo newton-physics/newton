@@ -690,6 +690,8 @@ def parse_mjcf(
                 shape_cfg.gap = mj_gap
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
+            if "mujoco:geom_solref" in builder.custom_attributes and "mujoco:geom_solref" not in custom_attributes:
+                custom_attributes["mujoco:geom_solref"] = parse_vec(geom_attrib, "solref", (0.02, 1.0))
             shape_label = f"{label_prefix}/{geom_name}" if label_prefix else geom_name
             shape_kwargs = {
                 "label": shape_label,

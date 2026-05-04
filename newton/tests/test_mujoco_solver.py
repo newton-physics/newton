@@ -2095,6 +2095,119 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
+    @staticmethod
+    def _expected_geom_solref(
+        solver: SolverMuJoCo,
+        world_idx: int,
+        geom_idx: int,
+        ke: float,
+        kd: float,
+        *,
+        scale: bool = True,
+    ) -> tuple[float, float]:
+        """Compute the expected MuJoCo solref for a Newton shape material."""
+        if ke <= 0.0 or kd <= 0.0:
+            return 0.02, 1.0
+
+        geom_bodyid = np.asarray(solver.mjw_model.geom_bodyid.numpy())
+        if geom_bodyid.ndim > 1:
+            geom_bodyid = geom_bodyid[world_idx]
+
+        body_id = int(geom_bodyid[geom_idx])
+        factor = 1.0
+        if scale and body_id >= 0:
+            dmax = float(solver.mjw_model.geom_solimp.numpy()[world_idx, geom_idx][1])
+            invweight0 = float(solver.mjw_model.body_invweight0.numpy()[world_idx, body_id][0])
+            scaled_factor = invweight0 * (1.0 - dmax)
+            if scaled_factor > 0.0:
+                factor = scaled_factor
+
+        timeconst = 2.0 / (kd * factor)
+        dampratio = kd / 2.0 * np.sqrt(factor / ke)
+        return timeconst, dampratio
+
+    def test_mjcf_geom_solref_round_trips_without_material_scaling(self):
+        """Verify MJCF-authored geom solref stays in MuJoCo solver units."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+                <worldbody>
+                    <body name="body">
+                        <freejoint/>
+                        <geom name="geom" type="sphere" size="0.1" solref="0.04 1.25"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            """,
+            up_axis="Z",
+        )
+
+        model = builder.finalize()
+        self.assertTrue(hasattr(model.mujoco, "geom_solref"))
+        np.testing.assert_allclose(model.mujoco.geom_solref.numpy()[0], [0.04, 1.25], rtol=0.0, atol=1e-6)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        to_newton_shape = solver.mjc_geom_to_newton_shape.numpy()[0]
+        geom_idx = int(np.where(to_newton_shape == 0)[0][0])
+
+        np.testing.assert_allclose(solver.mjw_model.geom_solref.numpy()[0, geom_idx], [0.04, 1.25], rtol=0.0, atol=1e-6)
+
+    def test_geom_solref_scaling_uses_geom_body_invweight_for_welded_child(self):
+        """Verify welded child geoms use their own body invweight for solref scaling."""
+        builder = newton.ModelBuilder()
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, ke=1000.0, kd=10.0)
+
+        root = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+        child = builder.add_link(
+            mass=5.0,
+            com=wp.vec3(0.0),
+            inertia=wp.mat33(np.eye(3) * 2.0),
+            lock_inertia=True,
+        )
+        builder.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+        builder.add_shape_sphere(child, radius=0.1, cfg=shape_cfg)
+
+        root_joint = builder.add_joint_free(child=root)
+        child_joint = builder.add_joint_fixed(
+            parent=root,
+            child=child,
+            parent_xform=wp.transform(wp.vec3(0.75, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(),
+            collision_filter_parent=False,
+        )
+        builder.add_articulation([root_joint, child_joint])
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        to_newton_shape = solver.mjc_geom_to_newton_shape.numpy()[0]
+        child_shape = int(np.where(model.shape_body.numpy() == child)[0][0])
+        child_geom = int(np.where(to_newton_shape == child_shape)[0][0])
+        child_body = int(solver.mjw_model.geom_bodyid.numpy()[child_geom])
+        weld_root_body = int(solver.mjw_model.body_weldid.numpy()[child_body])
+
+        self.assertNotEqual(child_body, weld_root_body)
+
+        dmax = float(solver.mjw_model.geom_solimp.numpy()[0, child_geom][1])
+        body_invweight0 = solver.mjw_model.body_invweight0.numpy()[0]
+        child_scale = float(body_invweight0[child_body][0]) * (1.0 - dmax)
+        weld_root_scale = float(body_invweight0[weld_root_body][0]) * (1.0 - dmax)
+        self.assertNotAlmostEqual(child_scale, weld_root_scale, places=6)
+
+        new_ke = model.shape_material_ke.numpy().copy()
+        new_kd = model.shape_material_kd.numpy().copy()
+        new_ke[child_shape] = 2000.0
+        new_kd[child_shape] = 20.0
+        model.shape_material_ke.assign(new_ke)
+        model.shape_material_kd.assign(new_kd)
+
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+
+        actual_solref = solver.mjw_model.geom_solref.numpy()[0, child_geom]
+        expected_solref = self._expected_geom_solref(solver, 0, child_geom, new_ke[child_shape], new_kd[child_shape])
+        np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
+
     def test_geom_property_conversion(self):
         """
         Test that ALL Newton shape properties are correctly converted to MuJoCo geom properties.
@@ -2173,13 +2286,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 # Compute expected solref based on Newton's conversion logic
                 ke = shape_ke[shape_idx]
                 kd = shape_kd[shape_idx]
-
-                if ke > 0.0 and kd > 0.0:
-                    timeconst = 2.0 / kd
-                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * ke))
-                    expected_solref = (timeconst, dampratio)
-                else:
-                    expected_solref = (0.02, 1.0)
+                expected_solref = self._expected_geom_solref(solver, world_idx, geom_idx, ke, kd, scale=False)
 
                 self.assertAlmostEqual(
                     float(actual_solref[0]),
@@ -2375,13 +2482,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 # Compute expected values based on new ke/kd using timeconst/dampratio conversion
                 ke = new_ke[shape_idx]
                 kd = new_kd[shape_idx]
-
-                if ke > 0.0 and kd > 0.0:
-                    timeconst = 2.0 / kd
-                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * ke))
-                    expected_solref = (timeconst, dampratio)
-                else:
-                    expected_solref = (0.02, 1.0)
+                expected_solref = self._expected_geom_solref(solver, world_idx, geom_idx, ke, kd)
 
                 self.assertAlmostEqual(
                     float(updated_solref[world_idx, geom_idx][0]),
