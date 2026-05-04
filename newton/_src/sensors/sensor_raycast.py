@@ -47,8 +47,10 @@ class SensorRaycast:
 
             # Build camera-to-world transform from position / direction / up.
             # SensorTiledCamera uses -Z as the camera forward axis.
-            d = np.asarray(camera_direction, np.float32); d /= np.linalg.norm(d)
-            r = np.cross(d, np.asarray(camera_up, np.float32)); r /= np.linalg.norm(r)
+            d = np.asarray(camera_direction, np.float32)
+            d /= np.linalg.norm(d)
+            r = np.cross(d, np.asarray(camera_up, np.float32))
+            r /= np.linalg.norm(r)
             u = np.cross(r, d)
             R = np.column_stack([r, u, -d]).astype(np.float32)
             t = wp.transformf(wp.vec3f(*camera_position), wp.quat_from_matrix(wp.mat33f(R)))
