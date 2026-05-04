@@ -5777,41 +5777,48 @@ class TestMuJoCoAttributes(unittest.TestCase):
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        base = UsdGeom.Xform.Define(stage, "/World/base").GetPrim()
-        link = UsdGeom.Xform.Define(stage, "/World/link").GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(base)
-        UsdPhysics.RigidBodyAPI.Apply(link)
-        base_mass = UsdPhysics.MassAPI.Apply(base)
-        base_mass.CreateMassAttr().Set(1.0)
-        base_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
-        link_mass = UsdPhysics.MassAPI.Apply(link)
-        link_mass.CreateMassAttr().Set(1.0)
-        link_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
-        UsdPhysics.ArticulationRootAPI.Apply(base)
+        def add_robot(root_path, *, add_actuator=False):
+            base = UsdGeom.Xform.Define(stage, f"{root_path}/base").GetPrim()
+            link = UsdGeom.Xform.Define(stage, f"{root_path}/link").GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(base)
+            UsdPhysics.RigidBodyAPI.Apply(link)
+            base_mass = UsdPhysics.MassAPI.Apply(base)
+            base_mass.CreateMassAttr().Set(1.0)
+            base_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
+            link_mass = UsdPhysics.MassAPI.Apply(link)
+            link_mass.CreateMassAttr().Set(1.0)
+            link_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
+            UsdPhysics.ArticulationRootAPI.Apply(base)
 
-        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint")
-        joint.CreateAxisAttr().Set("Z")
-        joint.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
-        joint.CreateBody1Rel().SetTargets([Sdf.Path("/World/link")])
+            joint_path = f"{root_path}/joint"
+            joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
+            joint.CreateAxisAttr().Set("Z")
+            joint.CreateBody0Rel().SetTargets([Sdf.Path(f"{root_path}/base")])
+            joint.CreateBody1Rel().SetTargets([Sdf.Path(f"{root_path}/link")])
 
-        # Author actuator before tendon to exercise deferred target resolution.
-        actuator_prim = stage.DefinePrim("/World/a_tendon_actuator", "MjcActuator")
-        actuator_prim.CreateRelationship("mjc:target", True).SetTargets([Sdf.Path("/World/z_fixed_tendon")])
+            tendon_path = f"{root_path}/fixed_tendon"
+            if add_actuator:
+                # Author actuator before tendon to exercise deferred target resolution.
+                actuator_prim = stage.DefinePrim(f"{root_path}/a_tendon_actuator", "MjcActuator")
+                actuator_prim.CreateRelationship("mjc:target", True).SetTargets([Sdf.Path(tendon_path)])
 
-        tendon_prim = stage.DefinePrim("/World/z_fixed_tendon", "MjcTendon")
-        tendon_prim.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
-        tendon_prim.CreateRelationship("mjc:path", True).SetTargets([Sdf.Path("/World/joint")])
-        tendon_prim.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([0]))
-        tendon_prim.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(Vt.DoubleArray([1.0]))
+            tendon = stage.DefinePrim(tendon_path, "MjcTendon")
+            tendon.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
+            tendon.CreateRelationship("mjc:path", True).SetTargets([Sdf.Path(joint_path)])
+            tendon.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([0]))
+            tendon.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(Vt.DoubleArray([1.0]))
+
+        add_robot("/World/RobotA", add_actuator=True)
+        add_robot("/World/RobotB")
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
+        builder.add_usd(stage, root_path="/World/RobotA")
         model = builder.finalize()
 
-        self.assertEqual(model.custom_frequency_counts["mujoco:actuator"], 1)
         self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 1)
-        self.assertEqual(model.mujoco.actuator_target_label[0], "/World/z_fixed_tendon")
+        self.assertEqual(model.custom_frequency_counts["mujoco:tendon_joint"], 1)
+        self.assertEqual(model.mujoco.actuator_target_label[0], "/World/RobotA/fixed_tendon")
 
         solver = SolverMuJoCo(model, separate_worlds=False)
         mujoco = SolverMuJoCo._mujoco
@@ -5819,7 +5826,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         self.assertEqual(int(solver.mj_model.actuator_trntype[0]), int(mujoco.mjtTrn.mjTRN_TENDON))
         self.assertEqual(int(solver.mj_model.actuator_trnid[0, 0]), 0)
         tendon_name = mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_TENDON, 0)
-        self.assertEqual(tendon_name, "/World/z_fixed_tendon")
+        self.assertEqual(tendon_name, "/World/RobotA/fixed_tendon")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_actuator_auto_limits_and_partial_ranges(self):
@@ -6467,23 +6474,23 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
 
     def test_enable_multiccd_default_off(self):
-        """Verify that mjENBL_MULTICCD is not set by default."""
+        """Verify that multi-CCD is disabled by default (Newton default differs from MuJoCo 3.8+)."""
         model = self._create_multiworld_model(world_count=1)
         solver = SolverMuJoCo(model)
         mujoco = SolverMuJoCo._mujoco
-        self.assertFalse(
-            solver.mj_model.opt.enableflags & mujoco.mjtEnableBit.mjENBL_MULTICCD,
-            "mjENBL_MULTICCD should not be set when enable_multiccd is not specified",
+        self.assertTrue(
+            solver.mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_MULTICCD,
+            "mjDSBL_MULTICCD should be set when enable_multiccd is not specified",
         )
 
     def test_enable_multiccd_passed_to_mujoco(self):
-        """Verify that enable_multiccd sets mjENBL_MULTICCD on the MuJoCo model."""
+        """Verify that enable_multiccd clears mjDSBL_MULTICCD on the MuJoCo model."""
         model = self._create_multiworld_model(world_count=1)
         solver = SolverMuJoCo(model, enable_multiccd=True)
         mujoco = SolverMuJoCo._mujoco
-        self.assertTrue(
-            solver.mj_model.opt.enableflags & mujoco.mjtEnableBit.mjENBL_MULTICCD,
-            "mjENBL_MULTICCD should be set on mj_model.opt.enableflags",
+        self.assertFalse(
+            solver.mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_MULTICCD,
+            "mjDSBL_MULTICCD should not be set when enable_multiccd=True",
         )
 
 
@@ -8577,9 +8584,16 @@ class TestUsdActuatorTypeAttributes(unittest.TestCase):
 class TestUsdActuatorInheritrange(unittest.TestCase):
     """Verify inheritRange from USD scales ctrlrange around the joint-range midpoint.
 
-    Per the MjcActuator schema, a positive inheritRange X sets the actuator's
-    ctrlrange to [midpoint - half_width*X, midpoint + half_width*X] where
-    midpoint and half_width come from the transmission target's range.
+    Per the MjcActuator schema, a positive inheritRange X resolves the actuator's
+    ctrlrange to [midpoint - half_width*X, midpoint + half_width*X] where midpoint
+    and half_width come from the transmission target's joint range.
+
+    The asserted ctrlrange/ctrllimited values come from the parsed model row
+    (``model.mujoco.actuator_*``). USD MjcActuator position-shortcut rows are
+    promoted to ``CtrlSource.JOINT_TARGET`` (matching MJCF), so the compiled
+    MuJoCo actuator built by :class:`SolverMuJoCo` is rebuilt from
+    ``joint_target_*`` and intentionally does not carry the input ctrlrange.
+    Inputs are driven via ``Control.joint_target_pos`` instead.
     """
 
     JOINT_LO_DEG = -90.0
@@ -8587,7 +8601,7 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
 
     CASES = (0.8, 1.0, 1.2)
 
-    def _build_and_solve(self, inherit_range_value):
+    def _build_model(self, inherit_range_value):
         from pxr import Sdf, Vt
 
         lo, hi = self.JOINT_LO_DEG, self.JOINT_HI_DEG
@@ -8614,12 +8628,10 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        return model, solver
+        return builder.finalize()
 
     def test_inheritrange_ctrlrange(self):
-        """ctrlrange should scale around midpoint for each inheritRange value."""
+        """Parsed ctrlrange should scale around midpoint for each inheritRange value."""
         lo_rad = self.JOINT_LO_DEG * np.pi / 180.0
         hi_rad = self.JOINT_HI_DEG * np.pi / 180.0
         mean = (lo_rad + hi_rad) / 2.0
@@ -8627,13 +8639,13 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
 
         for ir in self.CASES:
             with self.subTest(inheritRange=ir):
-                _, solver = self._build_and_solve(ir)
+                model = self._build_model(ir)
 
                 radius = half_width * ir
-                cr = solver.mj_model.actuator_ctrlrange[0]
+                cr = model.mujoco.actuator_ctrlrange.numpy()[0]
                 np.testing.assert_allclose(cr, [mean - radius, mean + radius], atol=1e-4)
 
-                self.assertEqual(solver.mj_model.actuator_ctrllimited[0], 1)
+                self.assertEqual(int(model.mujoco.actuator_ctrllimited.numpy()[0]), 1)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

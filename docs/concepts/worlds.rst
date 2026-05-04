@@ -320,8 +320,8 @@ For example:
 
    @wp.kernel
    def world_body_2d_kernel(
-       body_world_start: wp.array(dtype=wp.int32),
-       body_qd: wp.array(dtype=wp.spatial_vectorf),
+       body_world_start: wp.array[wp.int32],
+       body_qd: wp.array[wp.spatial_vectorf],
    ):
        world_id, body_world_id = wp.tid()
        world_start = body_world_start[world_id]

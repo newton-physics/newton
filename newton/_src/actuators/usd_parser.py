@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
+
 from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, ControllerPD, ControllerPID
 from .delay import Delay
@@ -49,34 +51,32 @@ def _camel_to_snake(name: str) -> str:
 
 
 def _read_schema_attrs(prim, schema_name: str) -> dict[str, Any]:
-    """Read all authored ``newton:`` attributes for *schema_name* from *prim*.
+    """Return authored ``newton:`` attributes for *schema_name* as snake_case kwargs.
 
-    Uses :meth:`pxr.Usd.Prim.GetPropertiesInNamespace` scoped to the
-    schema's property list so that only attributes belonging to
-    *schema_name* are returned (not attributes from other applied schemas
-    that share the ``newton:`` namespace).
+    Filters to properties defined by *schema_name* when the schema is registered.
+    Falls back to all authored ``newton:`` attributes when the plugin is not loaded.
 
     Returns:
-        Mapping of snake_case kwarg names to their authored values.
-        Attributes without an authored value are omitted.
+        Authored attribute values keyed by snake_case name; unset attributes omitted.
     """
-    from pxr import Usd
+    from pxr import Sdf, Usd
 
     defn = Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema_name)
-    if defn is None:
-        raise RuntimeError(
-            f"Schema {schema_name!r} not found in Usd.SchemaRegistry; is newton-usd-schemas >= 0.2.0rc1 installed?"
-        )
-    schema_props = set(defn.GetPropertyNames())
+    schema_props = set(defn.GetPropertyNames()) if defn is not None else None
 
     kwargs: dict[str, Any] = {}
     for prop in prim.GetAuthoredPropertiesInNamespace("newton"):
-        if prop.GetName() not in schema_props:
+        if not isinstance(prop, Usd.Attribute):
+            continue
+        if schema_props is not None and prop.GetName() not in schema_props:
             continue
         if not prop.IsValid() or not prop.HasAuthoredValue():
             continue
         camel = prop.GetName().removeprefix("newton:")
-        kwargs[_camel_to_snake(camel)] = prop.Get()
+        val = prop.Get()
+        if isinstance(val, Sdf.AssetPath):
+            val = _resolve_asset_path(val, prim, prop)
+        kwargs[_camel_to_snake(camel)] = val
     return kwargs
 
 
@@ -256,7 +256,7 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
     component_specs: list[tuple[type, dict[str, Any]]] = []
     detected: list[str] = []
 
-    for schema_name in prim.GetAppliedSchemas():
+    for schema_name in get_applied_api_schemas(prim):
         entry = _SCHEMA_REGISTRY.get(schema_name)
         if entry is None:
             continue

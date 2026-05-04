@@ -132,8 +132,35 @@ def _symmetric_part_transposed_op(b: wp.vec3, sig: vec6):
 
 
 @wp.kernel
+def compute_vel_node_multiplicity(
+    transposed_strain_mat_offsets: wp.array[int],
+    transposed_strain_mat_columns: wp.array[int],
+    strain_batch: wp.array[int],
+    n_batches: int,
+    multiplicity: wp.array2d[float],
+):
+    """Compute per-velocity-node per-batch multiplicity.
+
+    For each velocity node ``u_i``, walks the transposed strain matrix to
+    count how many strain nodes in each batch are connected.  Output
+    ``multiplicity[bi, u_i]`` is the mass-splitting factor for batch
+    ``bi`` at velocity node ``u_i``.
+
+    For Jacobi (``n_batches=1``), all strain nodes map to batch 0 and
+    the result is the total per-node multiplicity.
+    """
+    u_i = wp.tid()
+    beg = transposed_strain_mat_offsets[u_i]
+    end = transposed_strain_mat_offsets[u_i + 1]
+    for b in range(beg, end):
+        tau_i = transposed_strain_mat_columns[b]
+        bi = strain_batch[tau_i]
+        if bi >= 0 and bi < n_batches:
+            multiplicity[bi, u_i] += 1.0
+
+
+@wp.kernel
 def compute_delassus_diagonal(
-    split_mass: wp.bool,
     strain_mat_offsets: wp.array[int],
     strain_mat_columns: wp.array[int],
     strain_mat_values: wp.array[mat13],
@@ -141,26 +168,27 @@ def compute_delassus_diagonal(
     compliance_mat_offsets: wp.array[int],
     compliance_mat_columns: wp.array[int],
     compliance_mat_values: wp.array[mat66],
-    transposed_strain_mat_offsets: wp.array[int],
+    strain_batch: wp.array[int],
+    mass_multiplicity: wp.array2d[float],
     delassus_rotation: wp.array[mat55],
     delassus_diagonal: wp.array[vec6],
 ):
-    """Computes the diagonal blocks of the Delassus operator and performs
-    an eigendecomposition to decouple stress components.
+    """Compute the diagonal blocks of the Delassus operator with eigendecomposition.
 
-    For each constraint (tau_i) this kernel:
+    For each strain node:
 
-    1. Assembles the diagonal block of the Delassus operator by summing
-       contributions from connected velocity nodes.
-    2. If mass splitting is enabled, scales contributions by the number
-       of constraints each velocity node participates in.
-    3. Zeros the shear-divergence coupling so the normal and deviatoric
-       components are decoupled.
-    4. Performs an eigendecomposition (``symmetric_eigenvalues_qr``) of
-       the deviatoric sub-block, falling back to the diagonal when the
-       decomposition is numerically unreliable.
-    5. Stores the eigenvalues (``delassus_diagonal``) and the transpose
-       of the deviatoric eigenvectors (``delassus_rotation``).
+    1. Assembles the 6x6 diagonal block by summing velocity-node contributions,
+       each scaled by ``inv_volume[u_i] * mass_multiplicity[bi, u_i]`` where
+       ``bi = strain_batch[tau_i]``.
+    2. Zeros the shear-divergence coupling.
+    3. Performs an eigendecomposition of the deviatoric sub-block.
+    4. Stores eigenvalues in ``delassus_diagonal`` and the transpose of the
+       deviatoric eigenvectors in ``delassus_rotation``.
+
+    If ``mass_multiplicity`` is empty (shape ``(0, 0)``), a multiplicity of 1
+    is used for all velocity nodes (Gauss-Seidel mode).  Otherwise, the
+    per-batch multiplicity is looked up from ``mass_multiplicity``
+    (Jacobi or batched mass-splitting mode).
     """
     tau_i = wp.tid()
     block_beg = strain_mat_offsets[tau_i]
@@ -172,12 +200,17 @@ def compute_delassus_diagonal(
     else:
         diag_block = compliance_mat_values[compliance_diag_index]
 
-    mass_ratio = float(1.0)
+    has_multiplicity = mass_multiplicity.shape[0] > 0
+    bi = int(0)
+    if has_multiplicity:
+        bi = strain_batch[tau_i]
+
     for b in range(block_beg, block_end):
         u_i = strain_mat_columns[b]
 
-        if split_mass:
-            mass_ratio = float(transposed_strain_mat_offsets[u_i + 1] - transposed_strain_mat_offsets[u_i])
+        mass_ratio = float(1.0)
+        if has_multiplicity:
+            mass_ratio = mass_multiplicity[bi, u_i]
 
         b_val = strain_mat_values[b]
         inv_frac = inv_volume[u_i] * mass_ratio
@@ -191,16 +224,12 @@ def compute_delassus_diagonal(
 
     diag_block += _DELASSUS_PROXIMAL_REG * wp.identity(n=6, dtype=float)
 
-    # Remove shear-divergence coupling
-    # (current implementation of solve_coulomb_aniso normal and tangential responses are independent)
-    # Ensures that only the tangential part is rotated
     for k in range(1, 6):
         diag_block[0, k] = 0.0
         diag_block[k, 0] = 0.0
 
     diag, ev = symmetric_eigenvalues_qr(diag_block, _DELASSUS_PROXIMAL_REG * 0.1)
 
-    # symmetric_eigenvalues_qr may return nans for small coefficients
     if not (wp.ddot(ev, ev) < 1.0e16 and wp.length_sq(diag) < 1.0e16):
         diag = wp.get_diag(diag_block)
         ev = wp.identity(n=6, dtype=float)
@@ -1020,6 +1049,398 @@ def make_gs_solve_kernel(
                 )
 
     return gs_solve_kernel_impl
+
+
+# ── Reordered (SoA) GS solver ───────────────────────────────────────────────
+#
+# Entry-major SoA reordering of the BSR strain matrix for coalesced memory
+# access.  The flat ordering expands color blocks into individual constraint
+# indices, and the strain matrix values are transposed into separate
+# per-component arrays indexed as [entry_k, flat_constraint_idx].
+
+
+@wp.kernel
+def build_flat_offsets(
+    color_blocks: wp.array2d[int],
+    color_offsets: wp.array[int],
+    out: wp.array[int],
+):
+    """Single-threaded prefix sum over color-block sizes.
+
+    Reads the valid block count from ``color_offsets[-1]`` on device
+    to avoid host synchronization.
+    """
+    num_blocks = color_offsets[color_offsets.shape[0] - 1]
+    cumsum = int(0)
+    out[0] = 0
+    for co in range(num_blocks):
+        cumsum += color_blocks[1, co] - color_blocks[0, co]
+        out[co + 1] = cumsum
+
+
+@wp.kernel
+def build_flat_color_offsets(
+    color_offsets: wp.array[int],
+    block_flat_offsets: wp.array[int],
+    flat_color_offsets: wp.array[int],
+):
+    c = wp.tid()
+    flat_color_offsets[c] = block_flat_offsets[color_offsets[c]]
+
+
+@wp.kernel
+def expand_flat_ids(
+    color_blocks: wp.array2d[int],
+    color_offsets: wp.array[int],
+    block_flat_offsets: wp.array[int],
+    flat_constraint_ids: wp.array[int],
+):
+    co = wp.tid()
+    if co >= color_offsets[color_offsets.shape[0] - 1]:
+        return
+    beg = color_blocks[0, co]
+    end = color_blocks[1, co]
+    start = block_flat_offsets[co]
+    for j in range(end - beg):
+        flat_constraint_ids[start + j] = beg + j
+
+
+@wp.kernel
+def reorder_strain_mat(
+    flat_constraint_ids: wp.array[int],
+    strain_mat_offsets: wp.array[int],
+    strain_mat_columns: wp.array[int],
+    strain_mat_values: wp.array[mat13],
+    reordered_cols: wp.array2d[int],
+    reordered_vals_x: wp.array2d[float],
+    reordered_vals_y: wp.array2d[float],
+    reordered_vals_z: wp.array2d[float],
+    reordered_n_entries: wp.array[int],
+):
+    """Reorder strain_mat into entry-major SoA layout for coalesced access."""
+    fi = wp.tid()
+    tau_i = flat_constraint_ids[fi]
+    beg = strain_mat_offsets[tau_i]
+    n = strain_mat_offsets[tau_i + 1] - beg
+    reordered_n_entries[fi] = n
+    for k in range(n):
+        b = beg + k
+        v = strain_mat_values[b]
+        reordered_cols[k, fi] = strain_mat_columns[b]
+        reordered_vals_x[k, fi] = v[0]
+        reordered_vals_y[k, fi] = v[1]
+        reordered_vals_z[k, fi] = v[2]
+
+
+def make_reordered_gs_solve_kernel(
+    has_viscosity: bool,
+    has_dilatancy: bool,
+    has_compliance_mat: bool,
+    max_entries: int,
+    strain_velocity_node_count: int = -1,
+    has_rotation: bool = not _ISOTROPIC_LOCAL_LHS,
+):
+    """Return a GS solve kernel using entry-major SoA strain matrix layout.
+
+    The kernel processes strain nodes in color order (one launch per color),
+    with a statically unrolled gather loop over the reordered SoA arrays for
+    coalesced memory access.  Gather, local solve, and velocity scatter are
+    fused into a single kernel launch per color.
+    """
+    key = (has_viscosity, has_dilatancy, has_compliance_mat, has_rotation, max_entries)
+
+    @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
+    def reordered_gs_solve_kernel_impl(
+        color: int,
+        launch_dim: int,
+        flat_color_offsets: wp.array[int],
+        flat_constraint_ids: wp.array[int],
+        reordered_n_entries: wp.array[int],
+        reordered_cols: wp.array2d[int],
+        reordered_vals_x: wp.array2d[float],
+        reordered_vals_y: wp.array2d[float],
+        reordered_vals_z: wp.array2d[float],
+        yield_params: wp.array[YieldParamVec],
+        strain_node_volume: wp.array[float],
+        compliance_mat_offsets: wp.array[int],
+        compliance_mat_columns: wp.array[int],
+        compliance_mat_values: wp.array[mat66],
+        delassus_diagonal: wp.array[vec6],
+        delassus_rotation: wp.array[mat55],
+        inv_mass_matrix: wp.array[float],
+        local_strain_rhs: wp.array[vec6],
+        velocities: wp.array[wp.vec3],
+        local_stress: wp.array[vec6],
+        delta_correction: wp.array[vec6],
+    ):
+        i = wp.tid()
+        for fi in range(flat_color_offsets[color] + i, flat_color_offsets[color + 1], launch_dim):
+            tau_i = flat_constraint_ids[fi]
+            n = reordered_n_entries[fi]
+
+            # Gather (statically unrolled; zero-padded entries contribute nothing)
+            tau = local_strain_rhs[tau_i]
+            for k in range(wp.static(max_entries)):
+                col = reordered_cols[k, fi]
+                val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
+                tau += _symmetric_part_op(val, velocities[col])
+
+            if wp.static(has_compliance_mat):
+                for b in range(compliance_mat_offsets[tau_i], compliance_mat_offsets[tau_i + 1]):
+                    tau += compliance_mat_values[b] @ local_stress[compliance_mat_columns[b]]
+
+            ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
+                tau_i,
+                tau,
+                yield_params,
+                strain_node_volume,
+                delassus_diagonal,
+                delassus_rotation,
+                local_stress,
+            )
+            local_stress[tau_i] += ds
+            delta_correction[tau_i] = ds
+
+            # Scatter
+            for k in range(n):
+                col = reordered_cols[k, fi]
+                val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
+                velocities[col] += inv_mass_matrix[col] * _symmetric_part_transposed_op(val, ds)
+
+    return reordered_gs_solve_kernel_impl
+
+
+# ── Batched GS-Jacobi solver ─────────────────────────────────────────────────
+#
+# Merges original colors into fewer batches.  Within each batch,
+# constraints are solved in parallel (Jacobi-like, 2-phase solve + scatter)
+# with a mass-split Delassus diagonal.  Between batches, GS ordering.
+
+
+@wp.kernel
+def build_strain_to_batch(
+    flat_color_offsets: wp.array[int],
+    flat_constraint_ids: wp.array[int],
+    colors_per_batch: int,
+    n_batches: int,
+    strain_batch: wp.array[int],
+):
+    """Assign each strain node to its batch based on the flat ordering."""
+    fi = wp.tid()
+    for bi in range(n_batches):
+        batch_beg = flat_color_offsets[bi * colors_per_batch]
+        batch_end_idx = wp.min((bi + 1) * colors_per_batch, flat_color_offsets.shape[0] - 1)
+        batch_end = flat_color_offsets[batch_end_idx]
+        if fi >= batch_beg and fi < batch_end:
+            strain_batch[flat_constraint_ids[fi]] = bi
+            return
+
+
+def make_batched_solve_kernel(
+    has_viscosity: bool,
+    has_dilatancy: bool,
+    has_compliance_mat: bool,
+    max_entries: int,
+    has_rotation: bool = not _ISOTROPIC_LOCAL_LHS,
+):
+    """Return the Phase-1 kernel for the batched solver (solve only, no scatter).
+
+    Processes one batch per launch.  Reads stale velocities, computes
+    delta_stress via SoA gather + local solve, and updates stress inline.
+    The velocity scatter is done by a separate Phase-2 kernel.
+    """
+    key = ("batched_solve", has_viscosity, has_dilatancy, has_compliance_mat, has_rotation, max_entries)
+
+    @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
+    def batched_solve_impl(
+        batch_index: int,
+        launch_dim: int,
+        flat_color_offsets: wp.array[int],
+        colors_per_batch: int,
+        flat_constraint_ids: wp.array[int],
+        reordered_cols: wp.array2d[int],
+        reordered_vals_x: wp.array2d[float],
+        reordered_vals_y: wp.array2d[float],
+        reordered_vals_z: wp.array2d[float],
+        yield_params: wp.array[YieldParamVec],
+        strain_node_volume: wp.array[float],
+        compliance_mat_offsets: wp.array[int],
+        compliance_mat_columns: wp.array[int],
+        compliance_mat_values: wp.array[mat66],
+        delassus_diagonal: wp.array[vec6],
+        delassus_rotation: wp.array[mat55],
+        local_strain_rhs: wp.array[vec6],
+        velocities: wp.array[wp.vec3],
+        local_stress: wp.array[vec6],
+        delta_correction: wp.array[vec6],
+    ):
+        i = wp.tid()
+        batch_beg = flat_color_offsets[batch_index * colors_per_batch]
+        batch_end = flat_color_offsets[
+            wp.min(
+                (batch_index + 1) * colors_per_batch,
+                flat_color_offsets.shape[0] - 1,
+            )
+        ]
+
+        for fi in range(batch_beg + i, batch_end, launch_dim):
+            tau_i = flat_constraint_ids[fi]
+
+            # Gather (statically unrolled)
+            tau = local_strain_rhs[tau_i]
+            for k in range(wp.static(max_entries)):
+                col = reordered_cols[k, fi]
+                val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
+                tau += _symmetric_part_op(val, velocities[col])
+
+            if wp.static(has_compliance_mat):
+                for b in range(compliance_mat_offsets[tau_i], compliance_mat_offsets[tau_i + 1]):
+                    tau += compliance_mat_values[b] @ local_stress[compliance_mat_columns[b]]
+
+            ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
+                tau_i,
+                tau,
+                yield_params,
+                strain_node_volume,
+                delassus_diagonal,
+                delassus_rotation,
+                local_stress,
+            )
+            local_stress[tau_i] += ds
+            delta_correction[tau_i] = ds
+
+    return batched_solve_impl
+
+
+@wp.kernel
+def build_batch_transpose_offsets(
+    transposed_strain_mat_offsets: wp.array[int],
+    transposed_strain_mat_columns: wp.array[int],
+    strain_batch: wp.array[int],
+    n_batches: int,
+    batch_transpose_offsets: wp.array2d[int],
+):
+    """Count per-velocity-node per-batch entries for the filtered transpose.
+
+    ``batch_transpose_offsets[bi, u_i]`` = number of strain nodes in batch
+    ``bi`` connected to velocity node ``u_i``.  After a prefix-sum pass, these
+    become the CSR offsets for the per-batch transposed matrices.
+    """
+    u_i = wp.tid()
+    beg = transposed_strain_mat_offsets[u_i]
+    end = transposed_strain_mat_offsets[u_i + 1]
+    for b in range(beg, end):
+        tau_i = transposed_strain_mat_columns[b]
+        bi = strain_batch[tau_i]
+        if bi >= 0 and bi < n_batches:
+            batch_transpose_offsets[bi, u_i] += 1
+
+
+@wp.kernel
+def compute_batch_base_offsets(
+    batch_counts: wp.array2d[int],
+    batch_local_offsets: wp.array2d[int],
+    batch_bases: wp.array[int],
+):
+    """Compute per-batch totals and base offsets (single-threaded).
+
+    After per-row exclusive prefix scans have been computed in
+    ``batch_local_offsets[bi, 0..n_vel-1]``, this kernel computes:
+
+    - ``batch_bases[bi]`` = exclusive prefix sum of per-batch totals
+    - Total for batch ``bi`` = ``batch_local_offsets[bi, n_vel-1] + batch_counts[bi, n_vel-1]``
+
+    Must be launched with ``dim=1``.
+    """
+    n_batches = batch_counts.shape[0]
+    n_vel = batch_counts.shape[1]
+    cumsum = int(0)
+    for bi in range(n_batches):
+        batch_bases[bi] = cumsum
+        cumsum += batch_local_offsets[bi, n_vel - 1] + batch_counts[bi, n_vel - 1]
+
+
+@wp.kernel
+def globalize_batch_offsets(
+    batch_counts: wp.array2d[int],
+    batch_local_offsets: wp.array2d[int],
+    batch_bases: wp.array[int],
+    batch_global_offsets: wp.array2d[int],
+):
+    """Convert local per-batch prefix sums to global offsets into a flat array.
+
+    ``batch_global_offsets[bi, u_i] = batch_local_offsets[bi, u_i] + batch_bases[bi]``
+    ``batch_global_offsets[bi, n_vel] = batch_bases[bi] + total_batch``  (end sentinel)
+
+    ``batch_global_offsets`` has shape ``(n_batches, n_vel + 1)``.
+    """
+    u_i = wp.tid()
+    n_batches = batch_counts.shape[0]
+    n_vel = batch_counts.shape[1]
+    for bi in range(n_batches):
+        base = batch_bases[bi]
+        batch_global_offsets[bi, u_i] = batch_local_offsets[bi, u_i] + base
+        if u_i == n_vel - 1:
+            batch_global_offsets[bi, n_vel] = batch_local_offsets[bi, n_vel - 1] + batch_counts[bi, n_vel - 1] + base
+
+
+@wp.kernel
+def fill_batch_transpose(
+    transposed_strain_mat_offsets: wp.array[int],
+    transposed_strain_mat_columns: wp.array[int],
+    transposed_strain_mat_values: wp.array[mat13],
+    strain_batch: wp.array[int],
+    batch_write_cursors: wp.array2d[int],
+    batch_columns: wp.array[int],
+    batch_values: wp.array[mat13],
+):
+    """Fill all per-batch transposed matrices in a single pass.
+
+    For each velocity node, walks its connected strain nodes and writes
+    each entry into the flat ``batch_columns``/``batch_values`` arrays.  Uses
+    ``batch_write_cursors[bi, u_i]`` (initialized as a copy of the global
+    offsets) as per-batch per-node write positions, incrementing after each write.
+    """
+    u_i = wp.tid()
+    beg = transposed_strain_mat_offsets[u_i]
+    end = transposed_strain_mat_offsets[u_i + 1]
+
+    for b in range(beg, end):
+        tau_i = transposed_strain_mat_columns[b]
+        bi = strain_batch[tau_i]
+        out = batch_write_cursors[bi, u_i]
+        batch_columns[out] = tau_i
+        batch_values[out] = transposed_strain_mat_values[b]
+        batch_write_cursors[bi, u_i] = out + 1
+
+
+@wp.kernel
+def batched_scatter(
+    batch_offsets: wp.array[int],
+    batch_columns: wp.array[int],
+    batch_values: wp.array[mat13],
+    inv_mass_matrix: wp.array[float],
+    delta_stress: wp.array[vec6],
+    velocities: wp.array[wp.vec3],
+):
+    """Phase 2: Apply B^T @ delta_stress to velocities for one batch.
+
+    Uses a precomputed per-batch transposed matrix (filtered at init
+    time) so every entry is relevant — no wasted reads, no atomics.
+    """
+    u_i = wp.tid()
+
+    inv_mass = inv_mass_matrix[u_i]
+
+    block_beg = batch_offsets[u_i]
+    block_end = batch_offsets[u_i + 1]
+
+    delta_u = wp.vec3(0.0)
+    for b in range(block_beg, block_end):
+        tau_i = batch_columns[b]
+        delta_u += _symmetric_part_transposed_op(batch_values[b], delta_stress[tau_i])
+
+    velocities[u_i] += inv_mass * delta_u
 
 
 @wp.kernel

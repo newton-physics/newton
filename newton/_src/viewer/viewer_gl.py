@@ -21,6 +21,7 @@ from ..core.types import Axis, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
+from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
@@ -42,6 +43,8 @@ def _imgui_uses_imvec4_color_edit3() -> bool:
 
 
 _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
+# Width of the main Newton Viewer sidebar [px].
+_SIDEBAR_WIDTH_PX: float = 300.0
 
 
 @wp.kernel
@@ -228,15 +231,22 @@ class ViewerGL(ViewerBase):
         self._heatmap_color_lut = self._build_heatmap_color_lut()
         self._plot_history_size = plot_history_size
 
+        # Initialized below once self.device is available; declared here so
+        # close() can safely run if __init__ raises before that point.
+        self._image_logger: ImageLogger | None = None
+
         super().__init__()
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
+        self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
         self._paused = False
+        self._step_requested = False
+        self._reset_callback: Callable[[], None] | None = None
 
         # Selection panel state
         self._selection_ui_state = {
@@ -263,6 +273,9 @@ class ViewerGL(ViewerBase):
 
         # Camera movement settings
         self._camera_speed = 0.04
+        self._camera_orbit_sensitivity = 0.1
+        self._camera_dolly_scroll_sensitivity = 0.15
+        self._camera_dolly_drag_sensitivity = 0.01
         self._cam_vel = np.zeros(3, dtype=np.float32)
         self._cam_speed = 4.0  # m/s
         self._cam_damp_tau = 0.083  # s
@@ -492,6 +505,13 @@ class ViewerGL(ViewerBase):
         """
         super().set_model(model, max_worlds=max_worlds)
 
+        # ``ViewerBase.set_model`` may have switched ``self.device`` to the
+        # model's device. Rebind the image logger so its GPU path tests against
+        # — and registers PBO interop with — the correct CUDA context.
+        if self._image_logger is not None and self._image_logger.device != self.device:
+            self._image_logger.clear()
+            self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
+
         if self.model is not None:
             # For capsule batches, replace per-instance scales with (radius, radius, half_height)
             # so the capsule instancer path has the needed parameters.
@@ -685,9 +705,10 @@ class ViewerGL(ViewerBase):
             pitch: The camera pitch.
             yaw: The camera yaw.
         """
-        self.camera.pos = pos
+        self.camera.pos = self.camera._as_vec3(pos)
         self.camera.pitch = max(min(pitch, 89.0), -89.0)
         self.camera.yaw = (yaw + 180.0) % 360.0 - 180.0
+        self.camera.sync_pivot_to_view()
 
     @override
     def log_mesh(
@@ -1282,6 +1303,11 @@ class ViewerGL(ViewerBase):
         self._array_dirty.add(name)
 
     @override
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+        """See :meth:`~newton.viewer.ViewerBase.log_image`."""
+        self._image_logger.log(name, image)
+
+    @override
     def log_scalar(
         self,
         name: str,
@@ -1637,12 +1663,37 @@ class ViewerGL(ViewerBase):
         return self._paused
 
     @override
+    def should_step(self) -> bool:
+        """
+        Return True if the loop should advance one step.
+
+        Consumes a pending single-step request, so call exactly once per frame.
+        """
+        if not self._paused:
+            self._step_requested = False
+            return True
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
+    def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register a callback invoked when the user clicks the Reset button.
+
+        Args:
+            callback: Called with no arguments on reset, or ``None`` to remove.
+        """
+        self._reset_callback = callback
+
+    @override
     def close(self):
         """
         Close the viewer and clean up resources.
         """
         self._clear_array_textures()
         self._invalidate_pbo()
+        if self._image_logger is not None:
+            self._image_logger.clear()
         self.renderer.close()
 
     @property
@@ -1727,7 +1778,7 @@ class ViewerGL(ViewerBase):
 
     def on_mouse_scroll(self, x: float, y: float, scroll_x: float, scroll_y: float):
         """
-        Handle mouse scroll for zooming (FOV adjustment).
+        Handle mouse scroll for dolly and FOV adjustment.
 
         Args:
             x: Mouse X position in window coordinates.
@@ -1738,9 +1789,31 @@ class ViewerGL(ViewerBase):
         if self._ui_is_capturing_mouse():
             return
 
-        fov_delta = scroll_y * 2.0
-        self.camera.fov -= fov_delta
-        self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+        if self._is_ctrl_down():
+            fov_delta = scroll_y * 2.0
+            self.camera.fov -= fov_delta
+            self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+        else:
+            self.camera.dolly(scroll_y * self._camera_dolly_scroll_sensitivity)
+
+    def _is_ctrl_down(self) -> bool:
+        """Return True when either Ctrl key is currently held."""
+        try:
+            import pyglet
+        except Exception:
+            return False
+
+        return self.renderer.is_key_down(pyglet.window.key.LCTRL) or self.renderer.is_key_down(pyglet.window.key.RCTRL)
+
+    def _camera_pan_scale(self) -> float:
+        """World-space meters per window pixel for screen-plane camera panning."""
+        height = max(float(self.camera.height), 1.0)
+        if hasattr(self.renderer, "window"):
+            _, window_height = self.renderer.window.get_size()
+            height = max(float(window_height), 1.0)
+        distance = max(self.camera.pivot_distance, self.camera.MIN_PIVOT_DISTANCE)
+        visible_height = 2.0 * distance * np.tan(np.radians(self.camera.fov) * 0.5)
+        return visible_height / height
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
         """Convert window coordinates to framebuffer coordinates."""
@@ -1812,6 +1885,17 @@ class ViewerGL(ViewerBase):
 
         import pyglet
 
+        if buttons & pyglet.window.mouse.MIDDLE:
+            if modifiers & pyglet.window.key.MOD_CTRL:
+                self.camera.dolly(dy * self._camera_dolly_drag_sensitivity)
+            elif modifiers & pyglet.window.key.MOD_SHIFT:
+                pan_scale = self._camera_pan_scale()
+                self.camera.pan(-dx * pan_scale, -dy * pan_scale)
+            else:
+                sensitivity = self._camera_orbit_sensitivity
+                self.camera.orbit(delta_yaw=-dx * sensitivity, delta_pitch=dy * sensitivity)
+            return
+
         if buttons & pyglet.window.mouse.LEFT:
             sensitivity = 0.1
             dx *= sensitivity
@@ -1821,6 +1905,7 @@ class ViewerGL(ViewerBase):
             # independent of world up-axis convention.
             self.camera.yaw = (self.camera.yaw - dx + 180.0) % 360.0 - 180.0
             self.camera.pitch = max(min(self.camera.pitch + dy, 89.0), -89.0)
+            self.camera.sync_pivot_to_view()
 
         if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
@@ -1888,6 +1973,8 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.SPACE:
             # Toggle pause with space key
             self._paused = not self._paused
+        elif symbol == pyglet.window.key.PERIOD and self._paused:
+            self._step_requested = True
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
@@ -1959,6 +2046,7 @@ class ViewerGL(ViewerBase):
             center[2] - front.z * distance,
         )
         self.camera.pos = new_pos
+        self.camera.set_pivot(center)
 
     def _update_camera(self, dt: float):
         """
@@ -2013,7 +2101,7 @@ class ViewerGL(ViewerBase):
 
         # integrate position
         dv = type(self.camera.pos)(*self._cam_vel)
-        self.camera.pos += dv * dt
+        self.camera.translate(dv * dt)
 
     def on_resize(self, width: int, height: int):
         """
@@ -2196,7 +2284,7 @@ class ViewerGL(ViewerBase):
         # Position the window on the left side
         io = self.ui.io
         imgui.set_next_window_pos(imgui.ImVec2(10, 10))
-        imgui.set_next_window_size(imgui.ImVec2(300, io.display_size[1] - 20))
+        imgui.set_next_window_size(imgui.ImVec2(_SIDEBAR_WIDTH_PX, io.display_size[1] - 20))
 
         # Main control panel window - use safe flag values
         flags = imgui.WindowFlags_.no_resize.value
@@ -2206,6 +2294,20 @@ class ViewerGL(ViewerBase):
 
             # Collapsing headers default-open handling (first frame only)
             header_flags = 0
+
+            # Run controls — shown once a model is loaded
+            if self.model is not None:
+                changed, self._paused = imgui.checkbox("Pause", self._paused)
+                imgui.same_line()
+                imgui.begin_disabled(not self._paused)
+                if imgui.button("Step"):
+                    self._step_requested = True
+                imgui.end_disabled()
+                if self._reset_callback is not None:
+                    imgui.same_line()
+                    if imgui.button("Reset"):
+                        self._reset_callback()
+                imgui.separator()
 
             # Panel callbacks (e.g. example browser) - top-level collapsing headers
             for callback in self._ui_callbacks["panel"]:
@@ -2221,9 +2323,6 @@ class ViewerGL(ViewerBase):
                     gravity = self.model.gravity.numpy()[0]
                     gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
                     imgui.text(gravity_text)
-
-                    # Pause simulation checkbox
-                    changed, self._paused = imgui.checkbox("Pause", self._paused)
 
                 # Visualization Controls section
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
@@ -2324,6 +2423,8 @@ class ViewerGL(ViewerBase):
                 # Ground color
                 changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
 
+            self._image_logger.draw_controls()
+
             # Wind Effects section
             if self.wind is not None:
                 imgui.set_next_item_open(False, imgui.Cond_.once)
@@ -2368,8 +2469,13 @@ class ViewerGL(ViewerBase):
                 imgui.text("QE - Pan up/down")
                 imgui.text("Left Click - Look around")
                 imgui.text("Right Click - Pick objects")
-                imgui.text("Scroll - Zoom")
+                imgui.text("Middle Click - Orbit")
+                imgui.text("Shift + Middle Click - Pan")
+                imgui.text("Ctrl + Middle Click - Dolly")
+                imgui.text("Scroll - Dolly")
+                imgui.text("Ctrl + Scroll - FOV zoom")
                 imgui.text("Space - Pause/Resume")
+                imgui.text(". - Step one frame (when paused)")
                 imgui.text("H - Toggle UI")
                 imgui.text("F - Frame camera around model")
 
@@ -2377,6 +2483,9 @@ class ViewerGL(ViewerBase):
             self._render_selection_panel()
 
         imgui.end()
+
+        # Draw image-logger windows. Must be outside the sidebar begin/end block.
+        self._image_logger.draw()
 
     @staticmethod
     def _build_heatmap_color_lut() -> np.ndarray:

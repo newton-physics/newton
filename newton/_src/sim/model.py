@@ -274,11 +274,31 @@ class Model:
         # Gaussians
         self.gaussians_count = 0
         """Number of gaussians."""
-
         self.gaussians_data = None
         """Data for Gaussian Splats, shape [gaussians_count], Gaussian.Data."""
 
+        # Shape and particle BVH structures and related fields
+        self.bvh_shapes: wp.Bvh | None = None
+        """BVH over visible shapes, indexed by ``bvh_shape_enabled``. ``None`` until first refit."""
+        self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
+        """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
+        self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
+        """Shape indices included in the shape BVH, shape ``[bvh_shape_count_enabled]``."""
+        self.bvh_shape_count_enabled: int = 0
+        """Number of shapes included in the shape BVH."""
+        self.bvh_shape_bounds: wp.array2d[wp.vec3f] | None = None
+        """Local-space AABB per shape (min/max) for mesh and gaussian shapes, shape ``[shape_count, 2]`` [m]."""
+        self.bvh_shape_world_transforms: wp.array[wp.transformf] | None = None
+        """World-space shape transforms computed during shape BVH refit, shape ``[shape_count]`` [m, unitless quaternion]."""
+
+        self.bvh_particles: wp.Bvh | None = None
+        """BVH over particles. ``None`` until first refit."""
+        self.bvh_particles_group_roots: wp.array[wp.int32] | None = None
+        """Per-world BVH group roots for particles, shape ``[world_count + 1]`` (last slot is global)."""
+
         # Heightfield collision data (compact table + per-shape index indirection)
+        self.has_heightfields: bool = False
+        """True iff the model contains at least one ``GeoType.HFIELD`` shape. Lets launch sites pick lean kernel variants."""
         self.shape_heightfield_index: wp.array[wp.int32] | None = None
         """Per-shape heightfield index, shape [shape_count]. -1 means shape has no heightfield."""
         self.heightfield_data: wp.array[HeightfieldData] | None = None
@@ -474,9 +494,9 @@ class Model:
         self.joint_enabled: wp.array[wp.bool] | None = None
         """Controls which joint is simulated (bodies become disconnected if False, supported by :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
         self.joint_limit_lower: wp.array[wp.float32] | None = None
-        """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
+        """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float. Values must be finite; use ``-newton.MAXVAL`` to indicate no lower limit."""
         self.joint_limit_upper: wp.array[wp.float32] | None = None
-        """Joint upper position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
+        """Joint upper position limits [m or rad, depending on joint type], shape [joint_dof_count], float. Values must be finite; use ``newton.MAXVAL`` to indicate no upper limit."""
         self.joint_limit_ke: wp.array[wp.float32] | None = None
         """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd: wp.array[wp.float32] | None = None

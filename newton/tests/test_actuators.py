@@ -7,9 +7,12 @@ import importlib.util
 import json
 import math
 import os
+import shutil
 import tempfile
+import types
 import unittest
 import warnings
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -17,6 +20,7 @@ import warp as wp
 import newton
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
+    Actuator,
     ActuatorParsed,
     ClampingDCMotor,
     ClampingMaxEffort,
@@ -726,6 +730,32 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertIsInstance(parsed, ActuatorParsed)
         self.assertEqual(parsed.controller_class, ControllerPD)
 
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_from_usd_schema_plugin_not_loaded(self):
+        """parse_actuator_prim works when the USD schema plugin is not registered.
+
+        Simulates the headless case where GetAppliedSchemas() returns [] because
+        the Newton schema plugin failed to load, but the raw apiSchemas metadata
+        is still present on the prim.
+        """
+        test_dir = os.path.dirname(__file__)
+        usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
+        if not os.path.exists(usd_path):
+            self.skipTest(f"Test USD file not found: {usd_path}")
+
+        stage = Usd.Stage.Open(usd_path)
+        prim = stage.GetPrimAtPath("/World/Robot/Joint1Actuator")
+
+        with patch.object(type(prim), "GetAppliedSchemas", return_value=[]):
+            self.assertEqual(prim.GetAppliedSchemas(), [], "patch must be active for this test to be meaningful")
+            parsed = parse_actuator_prim(prim)
+
+        self.assertIsNotNone(parsed)
+        self.assertIsInstance(parsed, ActuatorParsed)
+        self.assertEqual(parsed.controller_class, ControllerPD)
+        self.assertAlmostEqual(parsed.controller_kwargs["kp"], 100.0)
+        self.assertAlmostEqual(parsed.controller_kwargs["kd"], 10.0)
+
     def test_programmatic(self):
         """Mixed controller types, clamping, and delays via add_actuator.
 
@@ -1315,6 +1345,200 @@ class TestStateReset(unittest.TestCase):
             state_0.controller_state.integral.numpy()[0], 0.0, places=6, msg="env 0 integral should be reset"
         )
         self.assertGreater(state_0.controller_state.integral.numpy()[1], 0.0, msg="env 1 integral should be untouched")
+
+
+# ---------------------------------------------------------------------------
+# 8. Neural controller via USD parsing (parse_actuator_prim)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(HAS_USD and _HAS_TORCH, "pxr or torch not installed")
+class TestNeuralActuatorUsdParsing(unittest.TestCase):
+    """Verify ``parse_actuator_prim`` correctly handles neural controller
+    prims with asset-typed ``newton:modelPath`` attributes.
+
+    This exercises the full USD parsing path — the same path that
+    ``ModelBuilder.add_usd`` uses — rather than constructing controllers
+    directly from a file path.
+    """
+
+    def setUp(self):
+        self.torch = _torch
+        self._tmp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def _make_mlp_checkpoint(self, metadata: dict | None = None) -> str:
+        """Create a minimal TorchScript MLP checkpoint with optional metadata."""
+        net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True))
+        with self.torch.no_grad():
+            net[0].weight.fill_(0.0)
+            net[0].bias.fill_(1.0)
+        path = os.path.join(self._tmp_dir, "mlp.pt")
+        scripted = self.torch.jit.script(net)
+        extra = {}
+        if metadata:
+            extra["metadata.json"] = json.dumps(metadata)
+        self.torch.jit.save(scripted, path, _extra_files=extra)
+        return path
+
+    def _make_lstm_checkpoint(self, metadata: dict | None = None) -> str:
+        """Create a minimal TorchScript LSTM checkpoint with optional metadata."""
+        net = _LSTMNet(hidden=8, layers=1)
+        path = os.path.join(self._tmp_dir, "lstm.pt")
+        scripted = self.torch.jit.script(net)
+        extra = {}
+        if metadata:
+            extra["metadata.json"] = json.dumps(metadata)
+        self.torch.jit.save(scripted, path, _extra_files=extra)
+        return path
+
+    def _build_neural_stage(self, model_path: str) -> "Usd.Stage":
+        """Create a minimal USD stage with a neural actuator prim.
+
+        The stage has a two-link articulation with a single revolute
+        joint and a ``NewtonActuator`` prim with ``NewtonNeuralControlAPI``
+        applied, referencing *model_path* via the ``newton:modelPath``
+        asset attribute.
+        """
+        from pxr import Sdf
+
+        stage = Usd.Stage.CreateInMemory()
+        world = stage.DefinePrim("/World", "Xform")
+        stage.SetDefaultPrim(world)
+
+        stage.DefinePrim("/World/PhysicsScene", "PhysicsScene")
+
+        robot = stage.DefinePrim("/World/Robot", "Xform")
+        schemas = Sdf.TokenListOp()
+        schemas.prependedItems = ["PhysicsArticulationRootAPI"]
+        robot.SetMetadata("apiSchemas", schemas)
+
+        base = stage.DefinePrim("/World/Robot/Base", "Xform")
+        base_schemas = Sdf.TokenListOp()
+        base_schemas.prependedItems = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        base.SetMetadata("apiSchemas", base_schemas)
+        base.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(1.0)
+        base.CreateAttribute("physics:kinematicEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+
+        link1 = stage.DefinePrim("/World/Robot/Link1", "Xform")
+        link1_schemas = Sdf.TokenListOp()
+        link1_schemas.prependedItems = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        link1.SetMetadata("apiSchemas", link1_schemas)
+        link1.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(0.5)
+
+        joint = stage.DefinePrim("/World/Robot/Joint1", "PhysicsRevoluteJoint")
+        joint_schemas = Sdf.TokenListOp()
+        joint_schemas.prependedItems = ["PhysicsDriveAPI:angular"]
+        joint.SetMetadata("apiSchemas", joint_schemas)
+        joint.CreateRelationship("physics:body0").SetTargets([Sdf.Path("/World/Robot/Base")])
+        joint.CreateRelationship("physics:body1").SetTargets([Sdf.Path("/World/Robot/Link1")])
+        joint.CreateAttribute("physics:axis", Sdf.ValueTypeNames.Token).Set("Z")
+
+        act_prim = stage.DefinePrim("/World/Robot/NeuralActuator", "NewtonActuator")
+        act_schemas = Sdf.TokenListOp()
+        act_schemas.prependedItems = ["NewtonNeuralControlAPI", "NewtonDCMotorClampingAPI"]
+        act_prim.SetMetadata("apiSchemas", act_schemas)
+        act_prim.CreateRelationship("newton:targets").SetTargets([Sdf.Path("/World/Robot/Joint1")])
+        act_prim.CreateAttribute("newton:modelPath", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(model_path))
+        act_prim.CreateAttribute("newton:saturationEffort", Sdf.ValueTypeNames.Float).Set(100.0)
+        act_prim.CreateAttribute("newton:velocityLimit", Sdf.ValueTypeNames.Float).Set(20.0)
+        act_prim.CreateAttribute("newton:maxMotorEffort", Sdf.ValueTypeNames.Float).Set(200.0)
+
+        return stage
+
+    def test_parse_mlp_from_usd(self):
+        """parse_actuator_prim resolves Sdf.AssetPath for MLP checkpoint."""
+        model_path = self._make_mlp_checkpoint(metadata={"model_type": "mlp"})
+        stage = self._build_neural_stage(model_path)
+        prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+
+        parsed = parse_actuator_prim(prim)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.controller_class, ControllerNeuralMLP)
+        self.assertEqual(parsed.controller_kwargs["model_path"], model_path)
+        self.assertEqual(parsed.target_path, "/World/Robot/Joint1")
+
+        self.assertEqual(len(parsed.component_specs), 1)
+        cls, kwargs = parsed.component_specs[0]
+        self.assertEqual(cls, ClampingDCMotor)
+        self.assertAlmostEqual(kwargs["saturation_effort"], 100.0)
+
+    def test_parse_lstm_from_usd(self):
+        """parse_actuator_prim resolves Sdf.AssetPath for LSTM checkpoint."""
+        model_path = self._make_lstm_checkpoint(metadata={"model_type": "lstm"})
+        stage = self._build_neural_stage(model_path)
+        prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+
+        parsed = parse_actuator_prim(prim)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.controller_class, ControllerNeuralLSTM)
+        self.assertEqual(parsed.controller_kwargs["model_path"], model_path)
+
+
+# ---------------------------------------------------------------------------
+# 9. target_pos_indices separation from pos_indices
+# ---------------------------------------------------------------------------
+
+
+class TestTargetPosIndicesSeparation(unittest.TestCase):
+    """Actuator must read joint_target_pos via target_pos_indices, not pos_indices."""
+
+    def test_target_pos_read_from_dof_index_not_coord_index(self):
+        device = wp.get_device()
+
+        def _a(vals, dtype=wp.float32):
+            return wp.array(vals, dtype=dtype, device=device)
+
+        kp = 100.0
+        actual_pos = 0.5
+        correct_target = 2.0
+        sentinel = 99.0  # placed at coord index 3 to catch wrong index usage
+
+        indices = _a([1], dtype=wp.uint32)  # DOF index 1
+        pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
+        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
+
+        ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
+        actuator = Actuator(
+            indices=indices,
+            controller=ctrl,
+            pos_indices=pos_indices,
+            target_pos_indices=target_pos_indices,
+        )
+
+        # joint_q is coord-shaped; actual position at coord index 3
+        joint_q = _a([0.0, 0.0, 0.0, actual_pos])
+        joint_qd = _a([0.0, 0.0])
+        # joint_target_pos padded to size 4 so both index 1 (correct) and
+        # index 3 (sentinel) are reachable — lets us distinguish the two code paths
+        joint_target_pos = _a([0.0, correct_target, 0.0, sentinel])
+        joint_target_vel = _a([0.0, 0.0, 0.0, 0.0])
+        joint_f = wp.zeros(4, dtype=wp.float32, device=device)
+
+        sim_state = types.SimpleNamespace(joint_q=joint_q, joint_qd=joint_qd)
+        sim_control = types.SimpleNamespace(
+            joint_target_pos=joint_target_pos,
+            joint_target_vel=joint_target_vel,
+            joint_act=None,
+            joint_f=joint_f,
+        )
+
+        actuator.step(sim_state, sim_control, None, None, dt=0.01)
+
+        expected = kp * (correct_target - actual_pos)  # 150.0
+        wrong = kp * (sentinel - actual_pos)  # 9850.0
+        got = joint_f.numpy()[1]
+        self.assertAlmostEqual(
+            got,
+            expected,
+            places=3,
+            msg=(
+                f"Force should be {expected} (target_pos_indices path); "
+                f"got {got}. If {wrong}, pos_indices was wrongly used for target lookup."
+            ),
+        )
 
 
 if __name__ == "__main__":

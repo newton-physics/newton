@@ -12,7 +12,7 @@ import newton
 from newton import GeoType
 from newton._src.sim.collide import _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
 from newton.examples import test_body_state
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 
 class TestLevel(IntFlag):
@@ -206,7 +206,7 @@ class CollisionSetup:
             )
 
 
-devices = get_test_devices(mode="basic")
+devices = get_cuda_test_devices(mode="basic")
 
 
 class TestCollisionPipeline(unittest.TestCase):
@@ -424,35 +424,15 @@ def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase: str):
     )
 
 
-# Mesh-mesh SDF mode tests: tests that call build_sdf() need wp.Volume (CUDA-only),
-# while BVH-only tests can run on any device.
-cuda_devices = get_cuda_test_devices(mode="basic")
-
-mesh_mesh_sdf_tests_cuda = [
+# Add mesh-mesh SDF mode tests for all broad phase modes
+mesh_mesh_sdf_tests = [
     ("sdf_vs_sdf", test_mesh_mesh_sdf_vs_sdf),
     ("sdf_vs_bvh", test_mesh_mesh_sdf_vs_bvh),
     ("bvh_vs_sdf", test_mesh_mesh_bvh_vs_sdf),
-]
-mesh_mesh_sdf_tests_all = [
     ("bvh_vs_bvh", test_mesh_mesh_bvh_vs_bvh),
 ]
 
-for mode_name, test_func in mesh_mesh_sdf_tests_cuda:
-    for broad_phase_name, broad_phase in [
-        ("explicit", "explicit"),
-        ("nxn", "nxn"),
-        ("sap", "sap"),
-    ]:
-        add_function_test(
-            TestCollisionPipeline,
-            f"test_mesh_mesh_{mode_name}_{broad_phase_name}",
-            test_func,
-            devices=cuda_devices,
-            broad_phase=broad_phase,
-            check_output=False,
-        )
-
-for mode_name, test_func in mesh_mesh_sdf_tests_all:
+for mode_name, test_func in mesh_mesh_sdf_tests:
     for broad_phase_name, broad_phase in [
         ("explicit", "explicit"),
         ("nxn", "nxn"),
@@ -464,7 +444,7 @@ for mode_name, test_func in mesh_mesh_sdf_tests_all:
             test_func,
             devices=devices,
             broad_phase=broad_phase,
-            check_output=False,
+            check_output=False,  # Disable output checking due to Warp module loading messages
         )
 
 
@@ -1366,193 +1346,6 @@ add_function_test(
     "test_deterministic_pipeline_500_steps",
     test_deterministic_pipeline_500_steps,
     devices=get_cuda_test_devices(),
-    check_output=False,
-)
-
-
-# ============================================================================
-# Mesh-SDF CPU coverage tests
-#
-# The mesh-SDF kernels (`mesh_sdf_collision_kernel` and
-# `mesh_sdf_collision_global_reduce_kernel`) run on CPU as well as CUDA.
-# These tests specifically exercise:
-#   1. The `reduce_contacts=True` CPU path, which reaches the global-reduce
-#      kernel not otherwise covered outside `test_deterministic_pipeline_*`
-#      (CUDA-only).
-#   2. The tile-stack overflow margin — a UV sphere has ~2880 edges, well
-#      above `MESH_SDF_BLOCK_DIM` (256), so each outer pass in the
-#      cooperative edge-culling loop refills the stack multiple times.
-#   3. CPU ↔ CUDA parity — the central claim of the CPU-enable work is
-#      "same kernels, different device"; the parity test guards against
-#      both CPU-only and GPU-only regressions.
-# ============================================================================
-
-
-class TestMeshSdfCpu(unittest.TestCase):
-    pass
-
-
-def _build_mesh_on_mesh_penetrating(device, *, sphere_subdiv: int = 32):
-    """Build a scene where a UV sphere mesh penetrates a box mesh.
-
-    Args:
-        device: Device to build the model on.
-        sphere_subdiv: Latitude/longitude subdivision count for the
-            sphere. Controls edge count (~3 * 2 * subdiv^2 edges): use
-            ``sphere_subdiv=32`` (~2800 edges) on CUDA to exercise the
-            tile-stack overflow margin, and a small value (~8, giving
-            ~140 edges) on CPU where the serial inner loop makes large
-            meshes prohibitively slow.
-    """
-    builder = newton.ModelBuilder(gravity=0.0)
-    builder.rigid_gap = 0.005
-
-    box_mesh = newton.Mesh.create_box(
-        0.5, 0.5, 0.5, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
-    )
-    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
-    builder.add_shape_mesh(body_a, mesh=box_mesh)
-
-    sphere_mesh = newton.Mesh.create_sphere(
-        0.5,
-        num_latitudes=sphere_subdiv,
-        num_longitudes=sphere_subdiv,
-        compute_normals=False,
-        compute_uvs=False,
-        compute_inertia=False,
-    )
-    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.6, 0.0, 0.0)))
-    builder.add_shape_mesh(body_b, mesh=sphere_mesh)
-
-    return builder.finalize(device=device)
-
-
-def test_mesh_mesh_cpu_reduce_contacts(test, device):
-    """Exercise the `reduce_contacts=True` CPU path for mesh-mesh contacts.
-
-    Guards against a regression silently disabling the global-reduce
-    kernel on CPU (e.g. a change that skips the CPU branch in
-    ``NarrowPhase.__init__``). Uses a small sphere (~140 edges) so that
-    the serial CPU inner loop stays fast; the tile-stack overflow
-    margin is covered separately by the CUDA-only test below.
-    """
-    with wp.ScopedDevice(device):
-        model = _build_mesh_on_mesh_penetrating(device, sphere_subdiv=8)
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=True)
-        contacts = pipeline.contacts()
-        state = model.state()
-        pipeline.collide(state, contacts)
-
-        contact_count = int(contacts.rigid_contact_count.numpy()[0])
-        test.assertGreater(
-            contact_count,
-            0,
-            f"No contacts produced on {device} with reduce_contacts=True for a clearly penetrating mesh pair",
-        )
-
-
-add_function_test(
-    TestMeshSdfCpu,
-    "test_mesh_mesh_cpu_reduce_contacts",
-    test_mesh_mesh_cpu_reduce_contacts,
-    devices=get_test_devices(mode="basic"),
-    check_output=False,
-)
-
-
-def test_mesh_mesh_stack_overflow_margin(test, device):
-    """Stress the tile-stack overflow margin with a high-edge-count mesh.
-
-    Uses a 32x32 UV sphere (~2880 edges, well above
-    ``MESH_SDF_BLOCK_DIM = 256``) so each outer pass of the cooperative
-    edge-culling loop refills the tile stack many times. Prior to the
-    drain-until-empty pop fix, ``tile_stack_clear`` would silently
-    discard up to ``block_dim - 1`` accepted edges per outer pass on
-    GPU; this test regresses if that behaviour ever returns.
-
-    CUDA-only: on CPU the inner loop is serial (block_dim=1), so the
-    overflow margin is never exercised there and the large mesh would
-    make this test slow without adding coverage.
-    """
-    with wp.ScopedDevice(device):
-        model = _build_mesh_on_mesh_penetrating(device, sphere_subdiv=32)
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=True)
-        contacts = pipeline.contacts()
-        state = model.state()
-        pipeline.collide(state, contacts)
-
-        n = int(contacts.rigid_contact_count.numpy()[0])
-        # A deep penetration between a ~2880-edge sphere and a box
-        # comfortably produces dozens of contacts after reduction; a
-        # count of ``0`` (or even ``< 10``) would signal that most
-        # accepted edges were silently dropped by the overflow bug.
-        test.assertGreaterEqual(
-            n,
-            10,
-            f"Suspiciously few contacts ({n}) from a high-edge-count penetration — "
-            "tile-stack overflow margin may be dropping accepted edges",
-        )
-
-
-add_function_test(
-    TestMeshSdfCpu,
-    "test_mesh_mesh_stack_overflow_margin",
-    test_mesh_mesh_stack_overflow_margin,
-    devices=get_cuda_test_devices(mode="basic"),
-    check_output=False,
-)
-
-
-class TestMeshSdfCpuCudaParity(unittest.TestCase):
-    pass
-
-
-def test_mesh_mesh_cpu_cuda_parity(test, _device):
-    """Assert CPU and CUDA produce matching contact sets for the same scene.
-
-    The mesh-SDF kernels were extended to run on CPU; this test guards
-    the "same code path, different device" claim by checking that both
-    backends produce comparable contact counts on a small scene. Uses a
-    low-subdivision sphere (~140 edges) so the CPU run is fast.
-    """
-    cuda_devices_list = get_cuda_test_devices()
-    if not cuda_devices_list:
-        test.skipTest("CUDA device required for CPU↔CUDA parity check")
-
-    def _collide(dev):
-        with wp.ScopedDevice(dev):
-            model = _build_mesh_on_mesh_penetrating(dev, sphere_subdiv=8)
-            pipeline = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=True)
-            contacts = pipeline.contacts()
-            state = model.state()
-            pipeline.collide(state, contacts)
-            n = int(contacts.rigid_contact_count.numpy()[0])
-            return n
-
-    n_cpu = _collide("cpu")
-    n_cuda = _collide(cuda_devices_list[0])
-
-    test.assertGreater(n_cpu, 0, "CPU produced no contacts — overflow path likely dropped edges")
-    test.assertGreater(n_cuda, 0, "CUDA produced no contacts")
-
-    # Contact count may differ modestly due to fp reordering in
-    # hashtable bucket selection on the two backends; assert within a
-    # loose margin. A large discrepancy (>= 30%) indicates one backend
-    # is silently dropping contacts (e.g. the stack-overflow bug this
-    # test was added to guard against).
-    tol = max(4, int(0.3 * max(n_cpu, n_cuda)))
-    test.assertLessEqual(
-        abs(n_cpu - n_cuda),
-        tol,
-        f"Contact counts differ too much: cpu={n_cpu}, cuda={n_cuda}",
-    )
-
-
-add_function_test(
-    TestMeshSdfCpuCudaParity,
-    "test_mesh_mesh_cpu_cuda_parity",
-    test_mesh_mesh_cpu_cuda_parity,
-    devices=["cpu"],
     check_output=False,
 )
 

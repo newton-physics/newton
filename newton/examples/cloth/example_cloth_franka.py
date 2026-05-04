@@ -254,7 +254,6 @@ class Example:
                 particle_vertex_contact_buffer_size=16,
                 particle_edge_contact_buffer_size=20,
                 particle_collision_detection_interval=-1,
-                rigid_contact_k_start=self.soft_contact_ke,
             )
 
         self.viewer.set_model(self.model)

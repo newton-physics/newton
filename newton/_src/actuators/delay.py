@@ -157,6 +157,7 @@ class Delay:
                     _delay_masked_reset_kernel,
                     dim=n,
                     inputs=[mask, rows, self.buffer_pos, self.buffer_vel, self.buffer_act, self.num_pushes],
+                    device=self.buffer_pos.device,
                 )
 
     @classmethod
@@ -334,6 +335,7 @@ class Delay:
                 next_state.buffer_act,
                 next_state.num_pushes,
             ],
+            device=self._device,
         )
 
         next_state.write_idx = write_idx
