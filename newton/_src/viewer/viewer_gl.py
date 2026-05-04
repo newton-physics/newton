@@ -245,6 +245,8 @@ class ViewerGL(ViewerBase):
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
         self._paused = False
+        self._step_requested = False
+        self._reset_callback: Callable[[], None] | None = None
 
         # Selection panel state
         self._selection_ui_state = {
@@ -1661,6 +1663,29 @@ class ViewerGL(ViewerBase):
         return self._paused
 
     @override
+    def should_step(self) -> bool:
+        """
+        Return True if the loop should advance one step.
+
+        Consumes a pending single-step request, so call exactly once per frame.
+        """
+        if not self._paused:
+            self._step_requested = False
+            return True
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
+    def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register a callback invoked when the user clicks the Reset button.
+
+        Args:
+            callback: Called with no arguments on reset, or ``None`` to remove.
+        """
+        self._reset_callback = callback
+
+    @override
     def close(self):
         """
         Close the viewer and clean up resources.
@@ -1948,6 +1973,8 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.SPACE:
             # Toggle pause with space key
             self._paused = not self._paused
+        elif symbol == pyglet.window.key.PERIOD and self._paused:
+            self._step_requested = True
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
@@ -2268,6 +2295,20 @@ class ViewerGL(ViewerBase):
             # Collapsing headers default-open handling (first frame only)
             header_flags = 0
 
+            # Run controls — shown once a model is loaded
+            if self.model is not None:
+                changed, self._paused = imgui.checkbox("Pause", self._paused)
+                imgui.same_line()
+                imgui.begin_disabled(not self._paused)
+                if imgui.button("Step"):
+                    self._step_requested = True
+                imgui.end_disabled()
+                if self._reset_callback is not None:
+                    imgui.same_line()
+                    if imgui.button("Reset"):
+                        self._reset_callback()
+                imgui.separator()
+
             # Panel callbacks (e.g. example browser) - top-level collapsing headers
             for callback in self._ui_callbacks["panel"]:
                 callback(self.ui.imgui)
@@ -2282,9 +2323,6 @@ class ViewerGL(ViewerBase):
                     gravity = self.model.gravity.numpy()[0]
                     gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
                     imgui.text(gravity_text)
-
-                    # Pause simulation checkbox
-                    changed, self._paused = imgui.checkbox("Pause", self._paused)
 
                 # Visualization Controls section
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
@@ -2437,6 +2475,7 @@ class ViewerGL(ViewerBase):
                 imgui.text("Scroll - Dolly")
                 imgui.text("Ctrl + Scroll - FOV zoom")
                 imgui.text("Space - Pause/Resume")
+                imgui.text(". - Step one frame (when paused)")
                 imgui.text("H - Toggle UI")
                 imgui.text("F - Frame camera around model")
 

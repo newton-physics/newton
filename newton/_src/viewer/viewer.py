@@ -65,6 +65,14 @@ class ViewerBase(ABC):
         """
         return False
 
+    def should_step(self) -> bool:
+        """Report whether the loop should advance one step.
+
+        Returns:
+            bool: True when the simulation should step forward.
+        """
+        return not self.is_paused()
+
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.
 
