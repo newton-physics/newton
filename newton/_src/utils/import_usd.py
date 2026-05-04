@@ -3477,6 +3477,9 @@ def parse_usd(
         if idx < len(builder.joint_q_start)
     }
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        prim_path = str(prim.GetPath())
+        if any(re.match(pattern, prim_path) for pattern in ignore_paths):
+            continue
         parsed = parse_actuator_prim(prim)
         if parsed is None:
             continue
