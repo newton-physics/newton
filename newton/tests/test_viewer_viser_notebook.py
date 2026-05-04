@@ -19,8 +19,18 @@ class _DummyHandle:
     def __init__(self):
         self.remove = Mock()
         self.points = None
-        self.colors = None
+        self._colors = None
         self.line_width = None
+
+    @property
+    def colors(self):
+        return self._colors
+
+    @colors.setter
+    def colors(self, value):
+        if value is not None and not isinstance(value, np.ndarray):
+            raise TypeError("Line segment colors must be a NumPy array when updating a handle.")
+        self._colors = value
 
 
 class _DummyScene:
@@ -36,7 +46,7 @@ class _DummyScene:
     def add_line_segments(self, **kwargs):
         handle = _DummyHandle()
         handle.points = kwargs["points"]
-        handle.colors = kwargs["colors"]
+        handle.colors = np.asarray(kwargs["colors"], dtype=np.uint8)
         handle.line_width = kwargs["line_width"]
         self.line_segments.append({**kwargs, "handle": handle})
         return handle
@@ -204,7 +214,7 @@ class TestViewerViserNotebookUrls(unittest.TestCase):
         expected_points = ViewerViser._build_plane_grid_points(2.0, 4.0) * np.array([2.0, 3.0, 1.0], dtype=np.float32)
         np.testing.assert_allclose(line_segments[0]["points"], expected_points)
 
-    def test_log_lines_updates_existing_handle_when_segment_count_changes(self):
+    def test_log_lines_updates_existing_handle_when_segment_count_is_unchanged(self):
         viewer = self._make_viewer()
         starts = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
         ends = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
@@ -213,16 +223,37 @@ class TestViewerViserNotebookUrls(unittest.TestCase):
         line_segments = _DummyServer.last_instance.scene.line_segments
         self.assertEqual(len(line_segments), 1)
         handle = line_segments[0]["handle"]
+        self.assertEqual(line_segments[0]["name"], "/trace")
+
+        shifted_ends = np.array([[1.0, 0.2, 0.0]], dtype=np.float32)
+        viewer.log_lines("/trace", starts, shifted_ends, colors=(0.1, 0.8, 1.0), width=0.03)
+
+        self.assertEqual(len(line_segments), 1)
+        handle.remove.assert_not_called()
+        np.testing.assert_allclose(handle.points, np.stack((starts, shifted_ends), axis=1))
+        np.testing.assert_array_equal(handle.colors, np.array([25, 204, 255], dtype=np.uint8))
+        self.assertEqual(handle.line_width, 3.0)
+
+    def test_log_lines_recreates_handle_with_unique_name_when_segment_count_changes(self):
+        viewer = self._make_viewer()
+        starts = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
+        ends = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+        viewer.log_lines("/trace", starts, ends, colors=(0.1, 0.8, 1.0), width=0.03)
+        line_segments = _DummyServer.last_instance.scene.line_segments
+        handle = line_segments[0]["handle"]
 
         starts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
         ends = np.array([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]], dtype=np.float32)
         viewer.log_lines("/trace", starts, ends, colors=(0.1, 0.8, 1.0), width=0.03)
 
-        self.assertEqual(len(line_segments), 1)
-        handle.remove.assert_not_called()
-        np.testing.assert_allclose(handle.points, np.stack((starts, ends), axis=1))
-        self.assertEqual(handle.colors, (25, 204, 255))
-        self.assertEqual(handle.line_width, 3.0)
+        self.assertEqual(len(line_segments), 2)
+        handle.remove.assert_called_once_with()
+        self.assertEqual(line_segments[1]["name"], "/trace__line_1")
+        new_handle = line_segments[1]["handle"]
+        np.testing.assert_allclose(new_handle.points, np.stack((starts, ends), axis=1))
+        np.testing.assert_array_equal(new_handle.colors, np.array([25, 204, 255], dtype=np.uint8))
+        self.assertEqual(new_handle.line_width, 3.0)
 
 
 if __name__ == "__main__":
