@@ -52,7 +52,7 @@ class Example:
             hide_collision_shapes=True,
         )
 
-        articulation_builder.joint_q[:3] = [0.0, 0.0, 0.62]
+        articulation_builder.joint_q[:3] = [0.0, 0.0, 0.68]
         if len(articulation_builder.joint_q) > 6:
             articulation_builder.joint_q[3:7] = [0.0, 0.0, 0.0, 1.0]
 
