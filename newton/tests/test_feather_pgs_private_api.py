@@ -66,6 +66,22 @@ class TestFeatherPGSUnsupportedModels(unittest.TestCase):
     pass
 
 
+class TestFeatherPGSValidation(unittest.TestCase):
+    pass
+
+
+def _build_single_revolute_model(device):
+    builder = newton.ModelBuilder(gravity=0.0)
+    link = builder.add_link()
+    joint = builder.add_joint_revolute(
+        parent=-1,
+        child=link,
+        axis=(0.0, 0.0, 1.0),
+    )
+    builder.add_articulation([joint])
+    return builder.finalize(device=device)
+
+
 def run_kinematic_body_rejected(test: TestFeatherPGSUnsupportedModels, device):
     builder = newton.ModelBuilder()
     builder.add_body(is_kinematic=True, mass=1.0)
@@ -75,6 +91,34 @@ def run_kinematic_body_rejected(test: TestFeatherPGSUnsupportedModels, device):
         SolverFeatherPGS(model)
 
 
+def run_constructor_rejects_invalid_values(test: TestFeatherPGSValidation, device):
+    model = _build_single_revolute_model(device)
+
+    cases = [
+        ({"update_mass_matrix_interval": 0}, "update_mass_matrix_interval"),
+        ({"max_constraints": 0}, "max_constraints"),
+        ({"max_constraints": 2}, "max_constraints"),
+        ({"mf_max_constraints": 0}, "mf_max_constraints"),
+    ]
+    for kwargs, match in cases:
+        with test.subTest(kwargs=kwargs):
+            with test.assertRaisesRegex(ValueError, match):
+                SolverFeatherPGS(model, **kwargs)
+
+
+def run_step_rejects_invalid_dt(test: TestFeatherPGSValidation, device):
+    model = _build_single_revolute_model(device)
+    solver = SolverFeatherPGS(model)
+    state_0 = model.state()
+    state_1 = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    for dt in (0.0, -1.0, float("nan"), float("inf")):
+        with test.subTest(dt=dt):
+            with test.assertRaisesRegex(ValueError, "finite dt > 0"):
+                solver.step(state_0, state_1, None, None, dt)
+
+
 devices = get_cuda_test_devices(mode="basic")
 
 for device in devices:
@@ -82,6 +126,18 @@ for device in devices:
         TestFeatherPGSUnsupportedModels,
         "test_kinematic_body_rejected",
         run_kinematic_body_rejected,
+        devices=[device],
+    )
+    add_function_test(
+        TestFeatherPGSValidation,
+        "test_constructor_rejects_invalid_values",
+        run_constructor_rejects_invalid_values,
+        devices=[device],
+    )
+    add_function_test(
+        TestFeatherPGSValidation,
+        "test_step_rejects_invalid_dt",
+        run_step_rejects_invalid_dt,
         devices=[device],
     )
 

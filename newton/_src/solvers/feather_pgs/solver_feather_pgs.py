@@ -147,6 +147,13 @@ class SolverFeatherPGS(SolverBase):
         """
         super().__init__(model)
 
+        if update_mass_matrix_interval < 1:
+            raise ValueError("update_mass_matrix_interval must be >= 1.")
+        if max_constraints < 1 or max_constraints % 3 != 0:
+            raise ValueError("max_constraints must be a positive multiple of 3.")
+        if mf_max_constraints < 1:
+            raise ValueError("mf_max_constraints must be >= 1.")
+
         self.angular_damping = angular_damping
         self.update_mass_matrix_interval = update_mass_matrix_interval
         self.friction_smoothing = friction_smoothing
@@ -165,8 +172,6 @@ class SolverFeatherPGS(SolverBase):
             raise ValueError("SolverFeatherPGS requires a CUDA device.")
         if not enable_contact_friction:
             raise ValueError("SolverFeatherPGS currently requires enable_contact_friction=True.")
-        if max_constraints % 3 != 0:
-            raise ValueError("max_constraints must be a multiple of 3 for fused-Warp contact triplet packing.")
         if model.body_count:
             body_flags = model.body_flags.numpy()
             if np.any((body_flags & int(BodyFlags.KINEMATIC)) != 0):
@@ -883,6 +888,9 @@ class SolverFeatherPGS(SolverBase):
         contacts: Contacts | None,
         dt: float,
     ):
+        if not np.isfinite(dt) or dt <= 0.0:
+            raise ValueError("SolverFeatherPGS.step() requires a finite dt > 0.")
+
         if self._last_step_dt is None:
             self._last_step_dt = dt
         elif abs(self._last_step_dt - dt) > 1.0e-8:
@@ -1806,8 +1814,16 @@ class SolverFeatherPGS(SolverBase):
             )
 
             # Snapshot contact-only dense row count before joint-limit and
-            # velocity-limit rows are appended.
-            wp.copy(self.dense_contact_row_count, self.slot_counter)
+            # velocity-limit rows are appended, clamped through the same
+            # capacity path as the final world constraint count.
+            slots_per_contact_dense = 3 if self.enable_contact_friction else 1
+            wp.launch(
+                finalize_world_constraint_counts,
+                dim=self.world_count,
+                inputs=[self.slot_counter, max_constraints, slots_per_contact_dense],
+                outputs=[self.dense_contact_row_count],
+                device=model.device,
+            )
 
             # Allocate joint limit constraint slots (same counter as contacts)
             if self.enable_joint_limits and self.limit_slot is not None:
