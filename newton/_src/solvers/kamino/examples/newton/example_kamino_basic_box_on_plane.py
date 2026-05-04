@@ -18,7 +18,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton.tests import get_kamino_basics_asset
-from newton.tests.builders import basics
+from newton.tests.utils import basics
 
 
 class Example:

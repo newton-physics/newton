@@ -16,7 +16,7 @@ import newton
 import newton.examples
 from newton._src.solvers.kamino._src.geometry.primitive.broadphase import PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES
 from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS
-from newton.tests.builders import testing
+from newton.tests.utils import testing
 
 
 class Example:

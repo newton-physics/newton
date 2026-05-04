@@ -14,7 +14,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.tests.builders import testing
+from newton.tests.utils import testing
 
 
 class Example:

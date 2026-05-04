@@ -28,7 +28,7 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton._src.solvers.kamino.tests.utils import print as print_utils
 from newton.tests import get_kamino_basics_asset
-from newton.tests.builders import basics as basics_newton
+from newton.tests.utils import basics as basics_newton
 
 ###
 # Tests
