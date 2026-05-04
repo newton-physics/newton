@@ -384,6 +384,7 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
+            rigid_contact_hard=False,
             rigid_body_contact_buffer_size=256,
         )
         for j in range(self.model.joint_count):

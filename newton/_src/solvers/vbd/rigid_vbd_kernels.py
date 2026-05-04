@@ -51,10 +51,10 @@ _NUM_CONTACT_THREADS_PER_BODY = wp.constant(4)
 """Threads per body for contact accumulation using strided iteration"""
 
 _STICK_FLAG_ANCHOR = wp.constant(1)
-"""contact_stick_flag value: frozen anchor (kinematic-dynamic contacts)"""
+"""contact_stick_flag value: frozen anchor (sticking kinematic/static contacts)"""
 
 _STICK_FLAG_DEADZONE = wp.constant(2)
-"""contact_stick_flag value: anti-creep deadzone (dynamic-dynamic contacts)"""
+"""contact_stick_flag value: anti-creep deadzone (sticking dynamic-dynamic contacts)"""
 
 # ---------------------------------
 # Helper classes and device functions
@@ -407,8 +407,10 @@ def evaluate_angular_constraint_force_hessian(
     kappa_stab = kappa_now_vec - alpha * C0_ang
     kappa_perp = P * kappa_stab
 
-    # P_ang constant -> lambda_ang in-basis by construction (see build_joint_projectors).
-    f_local = penalty_k * kappa_perp + sigma0 + lambda_ang
+    # P_ang is constant for joint angular residuals, so lambda_ang should already
+    # be in-basis. Project here too so stale or externally edited state cannot
+    # apply force along a free angular DOF.
+    f_local = penalty_k * kappa_perp + sigma0 + P * lambda_ang
 
     H_local = penalty_k * P + wp.mat33(
         C_fric[0],
@@ -1980,7 +1982,8 @@ def step_joint_C0_lambda(
     joint_constraint_start: wp.array[wp.int32],
     joint_constraint_dim: wp.array[wp.int32],
     joint_is_hard: wp.array[wp.int32],
-    gamma: float,
+    lambda_decay: float,
+    penalty_decay: float,
     joint_penalty_k_min: wp.array[float],
     joint_penalty_k_max: wp.array[float],
     joint_penalty_k: wp.array[float],
@@ -2001,7 +2004,7 @@ def step_joint_C0_lambda(
     for s in range(c_dim):
         idx = c_start + s
         joint_penalty_k[idx] = wp.clamp(
-            gamma * joint_penalty_k[idx], joint_penalty_k_min[idx], joint_penalty_k_max[idx]
+            penalty_decay * joint_penalty_k[idx], joint_penalty_k_min[idx], joint_penalty_k_max[idx]
         )
 
     child = joint_child[j]
@@ -2029,7 +2032,7 @@ def step_joint_C0_lambda(
             x_p = wp.transform_get_translation(X_wp)
             x_c = wp.transform_get_translation(X_wc)
             joint_C0_lin[j] = x_c - x_p
-            joint_lambda_lin[j] = joint_lambda_lin[j] * gamma
+            joint_lambda_lin[j] = joint_lambda_lin[j] * lambda_decay
         else:
             joint_C0_lin[j] = wp.vec3(0.0)
             joint_lambda_lin[j] = wp.vec3(0.0)
@@ -2045,7 +2048,7 @@ def step_joint_C0_lambda(
             q_wp_rest = wp.transform_get_rotation(X_wp_rest)
             q_wc_rest = wp.transform_get_rotation(X_wc_rest)
             joint_C0_ang[j] = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
-            joint_lambda_ang[j] = joint_lambda_ang[j] * gamma
+            joint_lambda_ang[j] = joint_lambda_ang[j] * lambda_decay
         else:
             joint_C0_ang[j] = wp.vec3(0.0)
             joint_lambda_ang[j] = wp.vec3(0.0)
@@ -2233,8 +2236,8 @@ def step_body_body_contact_C0_lambda(
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     hard_contacts: int,
-    gamma_lambda: float,
-    gamma_k: float,
+    lambda_decay: float,
+    penalty_decay: float,
     contact_material_ke: wp.array[float],
     k_start: float,
     # In/out
@@ -2245,8 +2248,8 @@ def step_body_body_contact_C0_lambda(
     """Per-step k decay + lambda decay + C0 snapshot.
 
     Runs every step. K decay is unconditional (hard and soft). Lambda decay
-    uses gamma_lambda (0 when contact history is off or contacts are soft).
-    C0 is always recomputed for hard contacts.
+    uses lambda_decay when retaining hard-contact lambda across steps or reused
+    contact rows. C0 is always recomputed for hard contacts.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -2254,9 +2257,9 @@ def step_body_body_contact_C0_lambda(
 
     ke = contact_material_ke[i]
     k_min = ke if k_start < 0.0 else wp.min(k_start, ke)
-    contact_penalty_k[i] = wp.clamp(gamma_k * contact_penalty_k[i], k_min, ke)
+    contact_penalty_k[i] = wp.clamp(penalty_decay * contact_penalty_k[i], k_min, ke)
 
-    contact_lambda[i] = contact_lambda[i] * gamma_lambda
+    contact_lambda[i] = contact_lambda[i] * lambda_decay
 
     if hard_contacts == 1:
         s0 = rigid_contact_shape0[i]
@@ -3358,12 +3361,13 @@ def update_duals_joint(
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
         kappa = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
         kappa_perp = P_ang * kappa
+        lam_old = P_ang * joint_lambda_ang[j]
         lam_new = _update_dual_vec3(
             kappa_perp,
             P_ang * joint_C0_ang[j],
             avbd_alpha,
             joint_penalty_k[i_ang],
-            joint_lambda_ang[j],
+            lam_old,
             joint_is_hard[i_ang],
         )
         joint_lambda_ang[j] = lam_new
@@ -3496,12 +3500,13 @@ def update_duals_joint(
         kappa = compute_kappa(q_wp_rot, q_wc, q_wp_rest, q_wc_rest)
         if ang_count < 3:
             kappa_perp = P_ang * kappa
+            lam_old = P_ang * joint_lambda_ang[j]
             lam_new = _update_dual_vec3(
                 kappa_perp,
                 P_ang * joint_C0_ang[j],
                 avbd_alpha,
                 joint_penalty_k[i_ang],
-                joint_lambda_ang[j],
+                lam_old,
                 joint_is_hard[i_ang],
             )
             joint_lambda_ang[j] = lam_new
@@ -3571,6 +3576,7 @@ def update_duals_body_body_contacts(
     contact_material_mu: wp.array[float],
     contact_C0: wp.array[wp.vec3],
     avbd_alpha: float,
+    stick_motion_eps: float,
     hard_contacts: int,
     body_inv_mass: wp.array[float],
     contact_material_ke: wp.array[float],
@@ -3642,7 +3648,8 @@ def update_duals_body_body_contacts(
         tangential_disp = rel_disp - n * wp.dot(n, rel_disp)
         C0_t_vec = C0_vec - n * C0_n
         lam_t_old = lam_vec - n * lam_n_old
-        lam_t_new = lam_t_old + k * (tangential_disp + (1.0 - avbd_alpha) * C0_t_vec)
+        tangent_residual = tangential_disp + (1.0 - avbd_alpha) * C0_t_vec
+        lam_t_new = lam_t_old + k * tangent_residual
         lam_t_len = wp.length(lam_t_new)
         cone_limit = mu * lam_n_new
         if lam_t_len > cone_limit and lam_t_len > 0.0:
@@ -3658,10 +3665,10 @@ def update_duals_body_body_contacts(
             has_kinematic = int(1)
 
         flag = int(0)
-        if lam_n_new > 0.0:
+        if lam_n_new > 0.0 and lam_t_len <= cone_limit and wp.length(tangent_residual) < stick_motion_eps:
             if has_kinematic == 1:
                 flag = _STICK_FLAG_ANCHOR
-            elif lam_t_len <= cone_limit:
+            else:
                 flag = _STICK_FLAG_DEADZONE
         contact_stick_flag[idx] = flag
     else:
@@ -3758,7 +3765,8 @@ def update_body_velocity(
         body_contact_buffer_pre_alloc: Per-body contact-list capacity.
         body_contact_counts: Number of body-body contacts adjacent to each body.
         body_contact_indices: Flat per-body contact index lists.
-        contact_stick_flag: Per-contact flag (0=none, ANCHOR=kinematic, DEADZONE=dynamic-dynamic).
+        contact_stick_flag: Per-contact flag (0=none, ANCHOR=sticking kinematic/static,
+            DEADZONE=sticking dynamic-dynamic).
         apply_stick_deadzone: If nonzero, enable anti-creep deadzone for bodies whose
             contacts carry DEADZONE but not ANCHOR.
         stick_freeze_translation_eps: Translation deadzone [m] for anti-creep snapping.
