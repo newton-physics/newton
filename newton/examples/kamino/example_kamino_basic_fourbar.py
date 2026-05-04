@@ -20,7 +20,6 @@ import newton
 import newton.examples
 from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
 from newton._src.solvers.kamino._src.models.builders import basics_newton
-from newton._src.solvers.kamino._src.utils import logger as msg
 
 
 class Example:
@@ -36,7 +35,6 @@ class Example:
         self.device = wp.get_device()
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
-        msg.notif("Creating and configuring the model builder for Kamino...")
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
@@ -46,7 +44,6 @@ class Example:
         # with the builder API, depending on the command-line argument `--from-usd`
         if args.from_usd:
             # Load the basic four-bar USD and add it to the builder
-            msg.notif("Loading USD asset and adding it to the model builder...")
             asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_fourbar.usda")
             robot_builder.add_usd(
                 asset_file,
@@ -62,14 +59,17 @@ class Example:
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
-        msg.notif(f"Duplicating the model builder for {self.world_count} worlds and finalizing the model...")
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
         # Create the model from the builder
-        msg.notif("Creating the model from the builder...")
         self.model = builder.finalize(skip_validation_joints=True)
+
+        # Set ad-hoc softer joint PD gains to make the
+        # four-bar more "squishy", i.e. more compliant
+        self.model.joint_target_ke.fill_(1.0)
+        self.model.joint_target_kd.fill_(0.001)
 
         # Create and configure settings for SolverKamino and the collision detector
         solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
@@ -88,7 +88,6 @@ class Example:
         solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
 
         # Create the Kamino solver for the given model
-        msg.notif("Creating the Kamino solver for the given model...")
         self.solver = newton.solvers.SolverKamino(model=self.model, config=solver_config)
 
         # Create state, control, and contacts data containers
@@ -105,7 +104,6 @@ class Example:
         self.solver.reset(self.state_0)
 
         # Reset the simulation state to a valid initial configuration above the ground
-        msg.notif("Resetting the simulation state to a valid initial configuration above the ground...")
         self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
         q_b = wp.quat_identity(dtype=wp.float32)
         q_base = wp.transformf((0.0, 0.0, 0.1), q_b)
@@ -187,7 +185,7 @@ class Example:
         parser.set_defaults(world_count=1)
         parser.add_argument(
             "--from-usd",
-            type=argparse.BooleanOptionalAction,
+            action=argparse.BooleanOptionalAction,
             default=True,
             help="Load the basic four-bar mechanism from USD.",
         )
@@ -198,5 +196,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
-    msg.notif("Starting the simulation...")
     newton.examples.run(example, args)

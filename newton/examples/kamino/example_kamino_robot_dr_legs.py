@@ -14,7 +14,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.kamino._src.utils import logger as msg
 
 
 class Example:
@@ -63,8 +62,6 @@ class Example:
 
         # TODO @nvtw: This is a temporary fix because `robot_builder.default_shape_cfg`
         # is not correctly applied to the shapes when using `add_usd()`,
-        msg.debug("self.model.shape_margin: %s", self.model.shape_margin)
-        msg.debug("self.model.shape_gap: %s", self.model.shape_gap)
         self.model.shape_margin.fill_(1e-6)
         self.model.shape_gap.fill_(0.01)
 

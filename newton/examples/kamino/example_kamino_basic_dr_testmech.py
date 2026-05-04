@@ -14,7 +14,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.kamino._src.utils import logger as msg
 
 
 class Example:
@@ -51,6 +50,7 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.num_rigid_contacts_per_world = 2048
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
@@ -59,8 +59,6 @@ class Example:
 
         # TODO @nvtw: This is a temporary fix because `robot_builder.default_shape_cfg`
         # is not correctly applied to the shapes when using `add_usd()`,
-        msg.debug("self.model.shape_margin: %s", self.model.shape_margin)
-        msg.debug("self.model.shape_gap: %s", self.model.shape_gap)
         self.model.shape_margin.fill_(1e-6)
         self.model.shape_gap.fill_(0.01)
 
@@ -79,7 +77,6 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -112,8 +109,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-            self.solver.update_contacts(self.contacts, self.state_0)
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -127,7 +123,6 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_1)
         self.viewer.end_frame()
 
     def test_final(self):
@@ -161,5 +156,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
-    msg.notif("Starting the simulation...")
     newton.examples.run(example, args)

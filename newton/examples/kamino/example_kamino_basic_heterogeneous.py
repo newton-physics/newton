@@ -17,7 +17,6 @@ import newton
 import newton.examples
 from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
 from newton._src.solvers.kamino._src.models.builders import basics_newton
-from newton._src.solvers.kamino._src.utils import logger as msg
 
 
 class Example:
@@ -61,17 +60,14 @@ class Example:
                 "box_on_plane",
                 "cartpole",
             ]
-            msg.notif("Loading USD asset and adding it to the model builder...")
             for asset_name in asset_names:
                 asset_file = os.path.join(get_basics_usd_assets_path(), f"{asset_name}.usda")
                 builder.add_world(builder=load_basic_asset_from_usd(asset_file))
         else:
             # Manually build the basic cartpole using the builder API
-            msg.notif("Creating the model builder with basic models using the builder API...")
             basics_newton.make_basics_heterogeneous_builder(builder=builder, ground=True)
 
         # Create the model from the builder
-        msg.notif("Creating the model from the builder...")
         self.model = builder.finalize(skip_validation_joints=True)
 
         # Create and configure settings for SolverKamino and the collision detector
@@ -91,7 +87,6 @@ class Example:
         solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
 
         # Create the Kamino solver for the given model
-        msg.notif("Creating the Kamino solver for the given model...")
         self.solver = newton.solvers.SolverKamino(model=self.model, config=solver_config)
 
         # Create state, control, and contacts data containers
@@ -178,7 +173,7 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument(
             "--from-usd",
-            type=argparse.BooleanOptionalAction,
+            action=argparse.BooleanOptionalAction,
             default=True,
             help="Load the basic four-bar mechanism from USD.",
         )
@@ -189,5 +184,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
-    msg.notif("Starting the simulation...")
     newton.examples.run(example, args)
