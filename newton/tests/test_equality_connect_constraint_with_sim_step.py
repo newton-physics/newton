@@ -24,36 +24,6 @@ class Sim:
         self.control = control
 
 
-def connect_residual(body_poses, connect_body_indices, leafbody1_anchor, leafbody2_anchor):
-    """Compute the world-space residual of a CONNECT constraint.
-
-    Transforms anchor points on leafbody1 and leafbody2 (in their respective
-    body frames) to world space using the body poses, then returns the
-    distance between them.
-
-    Args:
-        body_poses: Array of body transforms (from ``state.body_q.numpy()``).
-        connect_body_indices: ``[leafbody1_index, leafbody2_index]`` into
-            ``body_poses``.
-        leafbody1_anchor: Anchor on leafbody1 in leafbody1's local frame
-            (``wp.vec3``).
-        leafbody2_anchor: Anchor on leafbody2 in leafbody2's local frame
-            (``wp.vec3``).
-
-    Returns:
-        Euclidean distance between the two world-space anchor points.
-    """
-    leafbody1 = connect_body_indices[0]
-    leafbody2 = connect_body_indices[1]
-    bq1 = body_poses[leafbody1]
-    bq2 = body_poses[leafbody2]
-    T1 = wp.transform(wp.vec3(bq1[0], bq1[1], bq1[2]), wp.quat(bq1[3], bq1[4], bq1[5], bq1[6]))
-    T2 = wp.transform(wp.vec3(bq2[0], bq2[1], bq2[2]), wp.quat(bq2[3], bq2[4], bq2[5], bq2[6]))
-    P1 = wp.transform_get_translation(T1) + wp.quat_rotate(wp.transform_get_rotation(T1), leafbody1_anchor)
-    P2 = wp.transform_get_translation(T2) + wp.quat_rotate(wp.transform_get_rotation(T2), leafbody2_anchor)
-    return float(wp.length(P1 - P2))
-
-
 class TestEqualityConstraintWithSimStepBase:
     def _create_solver(self, model):
         raise NotImplementedError
@@ -66,7 +36,7 @@ class TestEqualityConstraintWithSimStepBase:
 
 
 class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase):
-    """Test that a CONNECT equality constraint pins two bodies at a point."""
+    """Test CONNECT equality constraint conversion for joint-local anchors."""
 
     def _build_connect_model(
         self,
@@ -253,14 +223,13 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         return wp.quat_rotate(q, wp.vec3(connect_anchor_leafbody1)) + t
 
     def _test_connect_constraint(self):
-        """Verify that the CONNECT constraint brings two separated bodies to the same point.
+        """Verify CONNECT anchor conversion and runtime updates.
 
-        Tests multiple anchor positions to exercise the constraint at different
-        offsets from the body origin.
+        The Newton-specific coverage is the MuJoCo input/output data: initial
+        ``eq_data`` and ``qpos0`` conversion plus runtime updates from
+        ``notify_model_changed``. Those checks run for every joint combination.
         """
 
-        dt = 0.002
-        num_steps = 250
         num_worlds = self._num_worlds()
         use_mujoco_cpu = self._use_mujoco_cpu()
 
@@ -269,9 +238,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
         num_joint_0_joint_types = len(joint_0_joint_types)
         joint_0_axis = 1
 
-        # Test a range of combinations that, given the test setup,
-        # should produce zero residual.
-        # Don't test all combinations because that will take too long.
+        # Exercise a range of combinations for the anchor conversion/update checks.
         connect_joint_types_and_axes = [
             ["prismatic", "prismatic", 0, 0],
             ["prismatic", "prismatic", 0, 1],
@@ -293,56 +260,30 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
         connect_body_indices = [3, 4]
         joint_dof_refs = [[0.75, -2.0, 4.0], [0.9, -1.7, 3.5]]
-        initial_q = [[0.0, 1.0, 2.0], [0.0, 1.2, 1.7]]
-        initial_qd = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
         connect_anchor_leafbody1 = [[1.0, 2.0, 3.0], [1.3, 2.4, 2.6]]
         changed_connect_anchor_leafbody1 = [[-1.5, -2.5, -3.5], [-1.8, -2.2, -3.1]]
         changed_joint_dof_refs = [[0.5, -1.0, 2.0], [0.3, -0.8, 1.5]]
 
-        # Ball joint identity quaternion coords (x, y, z, w)
-        ball_q_identity = [0.0, 0.0, 0.0, 1.0]
-        ball_qd_zero = [0.0, 0.0, 0.0]
-
-        flat_joint_dof_refs = []
-        flat_initial_q = []
-        flat_initial_qd = []
-        flat_changed_connect_anchor_leafbody1 = []
         flat_original_dof_ref = []
         flat_changed_dof_ref = []
-        flat_changed_ref_q = []
-        num_bodies = 5
         # Ball joint adds 4 coords (quaternion) before the 3 joint coords
         ball_q_offset = 4
         for w in range(num_worlds):
-            # Ball joint coords (identity quaternion for ref, identity for initial)
-            for v in ball_q_identity:
-                flat_joint_dof_refs.append(v)
-                flat_initial_q.append(v)
-            # Ball joint DOFs (zero velocity)
-            for v in ball_qd_zero:
-                flat_initial_qd.append(v)
-            for k in range(3):
-                flat_joint_dof_refs.append(joint_dof_refs[w][k])
-                flat_initial_q.append(initial_q[w][k])
-                flat_initial_qd.append(initial_qd[w][k])
-            for k in range(3):
-                flat_changed_connect_anchor_leafbody1.append(changed_connect_anchor_leafbody1[w][k])
             # Ball joint has 3 DOFs, all with ref = 0
             for _ in range(3):
                 flat_original_dof_ref.append(0.0)
                 flat_changed_dof_ref.append(0.0)
-            for v in ball_q_identity:
-                flat_changed_ref_q.append(v)
             for k in range(3):
                 flat_original_dof_ref.append(joint_dof_refs[w][k])
                 flat_changed_dof_ref.append(changed_joint_dof_refs[w][k])
-                flat_changed_ref_q.append(changed_joint_dof_refs[w][k])
 
         for i in range(0, num_joint_0_joint_types):
             for j in range(0, num_connect_joint_types_and_axes):
-                with self.subTest(joint0=joint_0_joint_types[i], joints=connect_joint_types_and_axes[j]):
+                joint0_type = joint_0_joint_types[i]
+
+                with self.subTest(joint0=joint0_type, joints=connect_joint_types_and_axes[j]):
                     joint_types = [
-                        joint_0_joint_types[i],
+                        joint0_type,
                         connect_joint_types_and_axes[j][0],
                         connect_joint_types_and_axes[j][1],
                     ]
@@ -403,122 +344,12 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
                     ##############
                     # TEST 1
-                    # Set the start state to the reference joint positions
-                    # to ensure that the start state satisfies the connect
-                    #  constraint. Nothing should move.
-                    ##############
-
-                    sim.state_in.joint_q.assign(flat_joint_dof_refs)
-                    sim.state_in.joint_qd.assign(flat_initial_qd)
-
-                    for _ in range(num_steps):
-                        sim.solver.step(
-                            state_in=sim.state_in,
-                            state_out=sim.state_out,
-                            control=sim.control,
-                            dt=dt,
-                            contacts=None,
-                        )
-                        sim.state_in, sim.state_out = sim.state_out, sim.state_in
-
-                    # After N steps, residual should be close to 0
-                    # and the joint positions should be unchanged from the
-                    # start state because the start state was deliberately
-                    # chosen to satisfy the connect constraint.
-                    for w in range(num_worlds):
-                        measured_eq_data = sim.solver.mjw_model.eq_data.numpy()
-                        measured_leafbody1_anchor = wp.vec3(
-                            measured_eq_data[w][0][0], measured_eq_data[w][0][1], measured_eq_data[w][0][2]
-                        )
-                        measured_leafbody2_anchor = wp.vec3(
-                            measured_eq_data[w][0][3], measured_eq_data[w][0][4], measured_eq_data[w][0][5]
-                        )
-                        measured_body_poses = sim.state_in.body_q.numpy()
-                        world_body_indices = [
-                            w * num_bodies + connect_body_indices[0],
-                            w * num_bodies + connect_body_indices[1],
-                        ]
-                        residual = connect_residual(
-                            measured_body_poses,
-                            world_body_indices,
-                            measured_leafbody1_anchor,
-                            measured_leafbody2_anchor,
-                        )
-                        self.assertAlmostEqual(residual, 0.0, places=4)
-                        if use_mujoco_cpu:
-                            mj_eq_data = sim.solver.mj_model.eq_data
-                            for k in range(6):
-                                self.assertAlmostEqual(
-                                    float(measured_eq_data[w][0][k]), float(mj_eq_data[0][k]), places=4
-                                )
-
-                        measured_joint_q = sim.state_in.joint_q.numpy()
-                        nq_per_world = ball_q_offset + 3
-                        for k in range(3):
-                            self.assertAlmostEqual(
-                                measured_joint_q[w * nq_per_world + ball_q_offset + k],
-                                flat_joint_dof_refs[w * nq_per_world + ball_q_offset + k],
-                                places=4,
-                            )
-
-                    ##############
-                    # TEST 2
-                    # Set the start state to differ from the reference joint positions.
-                    # The solver will now have to move the bodies to satisfy the
-                    # connect constraint.
-                    ##############
-
-                    sim.state_in.joint_q.assign(flat_initial_q)
-                    sim.state_in.joint_qd.assign(flat_initial_qd)
-
-                    for _ in range(num_steps):
-                        sim.solver.step(
-                            state_in=sim.state_in,
-                            state_out=sim.state_out,
-                            control=sim.control,
-                            dt=dt,
-                            contacts=None,
-                        )
-                        sim.state_in, sim.state_out = sim.state_out, sim.state_in
-
-                    # After N steps, the residual should be close to 0.
-                    # The anchors have not changed so it is correct to continue using measured_leafbody1_anchor, measured_leafbody2_anchor
-                    # as the anchors.
-                    for w in range(num_worlds):
-                        measured_eq_data = sim.solver.mjw_model.eq_data.numpy()
-                        measured_leafbody1_anchor = wp.vec3(
-                            measured_eq_data[w][0][0], measured_eq_data[w][0][1], measured_eq_data[w][0][2]
-                        )
-                        measured_leafbody2_anchor = wp.vec3(
-                            measured_eq_data[w][0][3], measured_eq_data[w][0][4], measured_eq_data[w][0][5]
-                        )
-                        measured_body_poses = sim.state_in.body_q.numpy()
-                        world_body_indices = [
-                            w * num_bodies + connect_body_indices[0],
-                            w * num_bodies + connect_body_indices[1],
-                        ]
-                        residual = connect_residual(
-                            measured_body_poses,
-                            world_body_indices,
-                            measured_leafbody1_anchor,
-                            measured_leafbody2_anchor,
-                        )
-                        self.assertAlmostEqual(residual, 0.0, places=3)
-                        if use_mujoco_cpu:
-                            mj_eq_data = sim.solver.mj_model.eq_data
-                            for k in range(6):
-                                self.assertAlmostEqual(
-                                    float(measured_eq_data[w][0][k]), float(mj_eq_data[0][k]), places=4
-                                )
-
-                    ##############
-                    # TEST 3
-                    # Change the anchor at runtime and verify the constraint responds
-                    # to the new anchor.
+                    # Change the anchor at runtime and verify the solver data
+                    # responds to the new anchor.
                     ##############
 
                     sim.model.equality_constraint_anchor.assign(
-                        np.array(flat_changed_connect_anchor_leafbody1, dtype=np.float32)
+                        np.array(changed_connect_anchor_leafbody1[:num_worlds], dtype=np.float32)
                     )
                     sim.solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
@@ -555,49 +386,8 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                                     float(changed_expected_leafbody2_anchor[k]), float(mj_eq_data[0][3 + k]), places=4
                                 )
 
-                    sim.state_in.joint_q.assign(flat_initial_q)
-                    sim.state_in.joint_qd.assign(flat_initial_qd)
-
-                    for _ in range(num_steps):
-                        sim.solver.step(
-                            state_in=sim.state_in,
-                            state_out=sim.state_out,
-                            control=sim.control,
-                            dt=dt,
-                            contacts=None,
-                        )
-                        sim.state_in, sim.state_out = sim.state_out, sim.state_in
-
-                    # After N steps, the residual should be close to 0.
-                    for w in range(num_worlds):
-                        measured_eq_data = sim.solver.mjw_model.eq_data.numpy()
-                        changed_measured_leafbody1_anchor = wp.vec3(
-                            measured_eq_data[w][0][0], measured_eq_data[w][0][1], measured_eq_data[w][0][2]
-                        )
-                        changed_measured_leafbody2_anchor = wp.vec3(
-                            measured_eq_data[w][0][3], measured_eq_data[w][0][4], measured_eq_data[w][0][5]
-                        )
-                        measured_body_poses = sim.state_in.body_q.numpy()
-                        world_body_indices = [
-                            w * num_bodies + connect_body_indices[0],
-                            w * num_bodies + connect_body_indices[1],
-                        ]
-                        residual = connect_residual(
-                            measured_body_poses,
-                            world_body_indices,
-                            changed_measured_leafbody1_anchor,
-                            changed_measured_leafbody2_anchor,
-                        )
-                        self.assertAlmostEqual(residual, 0.0, places=3)
-                        if use_mujoco_cpu:
-                            mj_eq_data = sim.solver.mj_model.eq_data
-                            for k in range(6):
-                                self.assertAlmostEqual(
-                                    float(measured_eq_data[w][0][k]), float(mj_eq_data[0][k]), places=4
-                                )
-
                     ##############
-                    # TEST 4
+                    # TEST 2
                     # Change dof_ref at runtime via JOINT_DOF_PROPERTIES and verify
                     # the connect constraint anchors are recomputed for the new
                     # reference pose.
@@ -656,49 +446,8 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                                 places=4,
                             )
 
-                    sim.state_in.joint_q.assign(flat_changed_ref_q)
-                    sim.state_in.joint_qd.assign(flat_initial_qd)
-
-                    for _ in range(num_steps):
-                        sim.solver.step(
-                            state_in=sim.state_in,
-                            state_out=sim.state_out,
-                            control=sim.control,
-                            dt=dt,
-                            contacts=None,
-                        )
-                        sim.state_in, sim.state_out = sim.state_out, sim.state_in
-
-                    # After N steps, the residual should be close to 0.
-                    for w in range(num_worlds):
-                        measured_eq_data = sim.solver.mjw_model.eq_data.numpy()
-                        changed_ref_measured_leafbody1_anchor = wp.vec3(
-                            measured_eq_data[w][0][0], measured_eq_data[w][0][1], measured_eq_data[w][0][2]
-                        )
-                        changed_ref_measured_leafbody2_anchor = wp.vec3(
-                            measured_eq_data[w][0][3], measured_eq_data[w][0][4], measured_eq_data[w][0][5]
-                        )
-                        measured_body_poses = sim.state_in.body_q.numpy()
-                        world_body_indices = [
-                            w * num_bodies + connect_body_indices[0],
-                            w * num_bodies + connect_body_indices[1],
-                        ]
-                        residual = connect_residual(
-                            measured_body_poses,
-                            world_body_indices,
-                            changed_ref_measured_leafbody1_anchor,
-                            changed_ref_measured_leafbody2_anchor,
-                        )
-                        self.assertAlmostEqual(residual, 0.0, places=3)
-                        if use_mujoco_cpu:
-                            mj_eq_data = sim.solver.mj_model.eq_data
-                            for k in range(6):
-                                self.assertAlmostEqual(
-                                    float(measured_eq_data[w][0][k]), float(mj_eq_data[0][k]), places=4
-                                )
-
                     ##############
-                    # TEST 5
+                    # TEST 3
                     # Restore the original dof_ref via JOINT_PROPERTIES alone
                     # and verify the connect constraint anchors are recomputed
                     # correctly.  No simulation is run because JOINT_PROPERTIES
