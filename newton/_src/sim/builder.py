@@ -903,6 +903,14 @@ class ModelBuilder:
         self.particle_world: list[int] = []
         """World indices accumulated for :attr:`Model.particle_world`."""
 
+        # deformables (cloth/soft meshes and grids — one entry per add_cloth_*/add_soft_* call)
+        self.deformable_label: list[str] = []
+        """Deformable labels; one entry per cloth or soft body added via :meth:`add_cloth_mesh`,
+        :meth:`add_cloth_grid`, :meth:`add_soft_mesh`, or :meth:`add_soft_grid`."""
+        self.deformable_offset: list[int] = [0]
+        """Particle index offsets for each deformable; deformable ``i`` covers particles
+        ``[deformable_offset[i], deformable_offset[i + 1])``. Length is ``deformable_count + 1``."""
+
         # shapes (each shape has an entry in these arrays)
         self.shape_label: list[str] = []
         """Shape labels accumulated for :attr:`Model.shape_label`."""
@@ -2060,6 +2068,13 @@ class ModelBuilder:
         return len(self.particle_q)
 
     @property
+    def deformable_count(self):
+        """
+        The number of deformables (cloth or soft bodies) in the model.
+        """
+        return len(self.deformable_label)
+
+    @property
     def tri_count(self):
         """
         The number of triangles in the model.
@@ -3047,6 +3062,13 @@ class ModelBuilder:
             self.tri_indices.extend((np.array(builder.tri_indices, dtype=np.int32) + start_particle_idx).tolist())
         if builder.tet_count:
             self.tet_indices.extend((np.array(builder.tet_indices, dtype=np.int32) + start_particle_idx).tolist())
+
+        if builder.deformable_count:
+            if not self.deformable_label:
+                self.deformable_offset = [start_particle_idx + builder.deformable_offset[0]]
+            self.deformable_label.extend(builder.deformable_label)
+            for off in builder.deformable_offset[1:]:
+                self.deformable_offset.append(start_particle_idx + off)
 
         builder_coloring_translated = [group + start_particle_idx for group in builder.particle_color_groups]
         self.particle_color_groups = combine_independent_particle_coloring(
@@ -7671,6 +7693,22 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.EDGE,
             )
 
+    def _register_deformable(self, kind: str, particle_start: int, label: str | None) -> None:
+        """Append one entry to the deformable registry.
+
+        ``deformable_offset`` always has length ``deformable_count + 1``. The first
+        registration sets ``deformable_offset[0]`` to the particle index where that
+        deformable started; each registration appends the current ``particle_count``
+        as the new end-of-range. Default labels follow ``"<kind>_<deformable id>"``,
+        where the id is the global deformable count at registration time (i.e. the
+        new deformable's index in ``deformable_label``).
+        """
+        if not self.deformable_label:
+            self.deformable_offset[0] = particle_start
+        name = label if label is not None else f"{kind}_{len(self.deformable_label)}"
+        self.deformable_label.append(name)
+        self.deformable_offset.append(self.particle_count)
+
     def add_cloth_grid(
         self,
         pos: Vec3,
@@ -7700,6 +7738,7 @@ class ModelBuilder:
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
+        label: str | None = None,
     ):
         """Helper to create a regular planar cloth grid
 
@@ -7720,7 +7759,11 @@ class ModelBuilder:
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
+            label: Optional name registered in :attr:`deformable_label` so the
+                cloth can be identified in diagnostics. Defaults to
+                ``"cloth_grid_<deformable_count>"``.
         """
+        effective_label = label if label is not None else f"cloth_grid_{self.deformable_count}"
 
         def grid_index(x, y, dim_x):
             return y * dim_x + x
@@ -7770,6 +7813,7 @@ class ModelBuilder:
             custom_attributes_particles=custom_attributes_particles,
             custom_attributes_triangles=custom_attributes_triangles,
             custom_attributes_edges=custom_attributes_edges,
+            label=effective_label,
         )
 
         vertex_id = 0
@@ -7815,6 +7859,8 @@ class ModelBuilder:
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
         custom_attributes_springs: dict[str, Any] | None = None,
+        validate_mesh: bool = False,
+        label: str | None = None,
     ) -> None:
         """Helper to create a cloth model from a regular triangle mesh
 
@@ -7833,6 +7879,13 @@ class ModelBuilder:
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
             custom_attributes_springs: Dictionary of custom attribute names to values for the springs.
+            validate_mesh: If True, run quality checks on the input mesh and
+                emit warnings for degenerate or sliver triangles, extreme
+                angles, and non-manifold topology. See
+                :func:`newton.utils.validate_triangle_mesh`.
+            label: Optional name registered in :attr:`deformable_label` so the
+                cloth can be identified in diagnostics. Defaults to
+                ``"cloth_mesh_<deformable_count>"``.
 
         Note:
             The mesh should be two-manifold.
@@ -7847,6 +7900,18 @@ class ModelBuilder:
         spring_ke = spring_ke if spring_ke is not None else self.default_spring_ke
         spring_kd = spring_kd if spring_kd is not None else self.default_spring_kd
         particle_radius = particle_radius if particle_radius is not None else self.default_particle_radius
+        effective_label = label if label is not None else f"cloth_mesh_{self.deformable_count}"
+
+        if validate_mesh:
+            from ..utils.mesh import validate_triangle_mesh  # noqa: PLC0415
+
+            verts_np = np.array(vertices, dtype=float) * scale
+            inds_np = np.asarray(indices, dtype=np.intp)
+            validate_triangle_mesh(verts_np, inds_np, label=effective_label, stacklevel=3)
+            if inds_np.size > 0 and inds_np.size % 3 != 0:
+                return
+
+        particle_start = self.particle_count
 
         num_verts = int(len(vertices))
         num_tris = int(len(indices) / 3)
@@ -7923,6 +7988,8 @@ class ModelBuilder:
 
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
+
+        self._register_deformable("cloth_mesh", particle_start, effective_label)
 
     def add_particle_grid(
         self,
@@ -8054,6 +8121,7 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        label: str | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
 
@@ -8089,6 +8157,9 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
+            label: Optional name registered in :attr:`deformable_label` so the
+                soft body can be identified in diagnostics. Defaults to
+                ``"soft_grid_<deformable_count>"``.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -8096,6 +8167,7 @@ class ModelBuilder:
             elastic forces. Set the triangle stiffness parameters above to non-zero values if you
             want the surface to behave like a thin skin.
         """
+        effective_label = label if label is not None else f"soft_grid_{self.deformable_count}"
         start_vertex = len(self.particle_q)
 
         mass = cell_x * cell_y * cell_z * density
@@ -8189,6 +8261,8 @@ class ModelBuilder:
                     for o1, o2, v1, v2 in edge_indices:
                         self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
+        self._register_deformable("soft_grid", start_vertex, effective_label)
+
     def add_soft_mesh(
         self,
         pos: Vec3,
@@ -8211,6 +8285,8 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        validate_mesh: bool = False,
+        label: str | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh.
 
@@ -8249,6 +8325,12 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
+            validate_mesh: If True, check for inverted or small-volume
+                tetrahedra, sliver tetrahedra, and non-manifold faces, and
+                emit warnings. See :func:`newton.utils.validate_tet_mesh`.
+            label: Optional name registered in :attr:`deformable_label` so the
+                soft body can be identified in diagnostics. Defaults to
+                ``"soft_mesh_<deformable_count>"``.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -8282,6 +8364,18 @@ class ModelBuilder:
 
         if vertices is None or indices is None:
             raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
+
+        effective_label = label if label is not None else f"soft_mesh_{self.deformable_count}"
+
+        if validate_mesh:
+            from ..utils.mesh import validate_tet_mesh  # noqa: PLC0415
+
+            verts_np = np.array(vertices, dtype=float) * scale
+            inds_np = np.asarray(indices, dtype=np.intp)
+            validate_tet_mesh(verts_np, inds_np, label=effective_label, stacklevel=3)
+            if inds_np.size > 0 and inds_np.size % 4 != 0:
+                return
+
         if density is None:
             density = self.default_tet_density
         if k_mu is None:
@@ -8394,6 +8488,8 @@ class ModelBuilder:
                     # Add edges with specified stiffness/damping (for collision)
                     for o1, o2, v1, v2 in edge_indices:
                         self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
+
+        self._register_deformable("soft_mesh", start_vertex, effective_label)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
@@ -9712,6 +9808,9 @@ class ModelBuilder:
                 particle_colors[self.particle_color_groups[color]] = color
             m.particle_colors = wp.array(particle_colors, dtype=int)
             m.particle_color_groups = [wp.array(group, dtype=int) for group in self.particle_color_groups]
+
+            m.deformable_label = list(self.deformable_label)
+            m.deformable_offset = wp.array(self.deformable_offset, dtype=wp.int32)
 
             # hash-grid for particle interactions
             if self.particle_count > 1 and m.particle_max_radius > 0.0:
