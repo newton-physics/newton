@@ -735,8 +735,6 @@ class TestActuatorBuilder(unittest.TestCase):
         """Actuator prims matched by ignore_paths are not registered."""
         test_dir = os.path.dirname(__file__)
         usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
-        if not os.path.exists(usd_path):
-            self.skipTest(f"Test USD file not found: {usd_path}")
 
         builder = newton.ModelBuilder()
         result = parse_usd(builder, usd_path, ignore_paths=[".*Joint1Actuator"])
