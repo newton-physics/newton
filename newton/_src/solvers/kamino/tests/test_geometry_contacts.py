@@ -24,9 +24,9 @@ from newton._src.solvers.kamino._src.geometry.contacts import (
     make_contact_frame_xnorm,
     make_contact_frame_znorm,
 )
-from newton._src.solvers.kamino._src.models.builders.basics_newton import build_boxes_nunchaku
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.builders.basics import build_boxes_nunchaku
 
 ###
 # Kernels
