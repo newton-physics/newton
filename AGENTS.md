@@ -39,6 +39,7 @@ uv run --extra dev --extra torch-cu12 -m newton.tests                  # with Py
 ### Testing guidelines
 
 - Never call `wp.synchronize()` or `wp.synchronize_device()` right before `.numpy()` on a Warp array. This is redundant as `.numpy()` performs a synchronous device-to-host copy that completes all outstanding work.
+- Per-phenomenon canonical benchmarks: one test file per physical phenomenon (friction, restitution, …), parameter-sweep over an analytic predicate, applied to all applicable solvers. See `newton/tests/test_rigid_friction_ramp.py`. Extend an existing one before adding a sibling test.
 
 ```bash
 # Benchmarks
