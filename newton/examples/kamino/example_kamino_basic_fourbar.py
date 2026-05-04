@@ -25,9 +25,10 @@ class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
         # Set simulation run-time configurations
         self.fps = 50
-        self.sim_dt = 0.0025
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
+        self.sim_substeps = max(1, round(self.frame_dt / 0.0025))
+        self.sim_dt = self.frame_dt / self.sim_substeps
+        msg.info(f"Using sim_dt = {self.sim_dt} ({self.sim_substeps} substeps per frame)")
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
         self.viewer = viewer

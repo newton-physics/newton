@@ -1140,6 +1140,56 @@ class TestImportUrdfComposition(unittest.TestCase):
         self.assertIn("gripper/gripper_base", builder.body_label)
         self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
 
+    def test_repeated_collapse_fixed_joints_preserves_articulation_order(self):
+        """Test repeated URDF imports with fixed-joint collapse preserve articulation order."""
+        joint_count = 12
+        links = ['    <link name="base"/>', '    <link name="mount"/>']
+        links.extend(f'    <link name="link_{i}"/>' for i in range(joint_count))
+
+        joints = [
+            """    <joint name="fixed_mount" type="fixed">
+        <parent link="base"/>
+        <child link="mount"/>
+    </joint>"""
+        ]
+        parent = "mount"
+        for i in range(joint_count):
+            child = f"link_{i}"
+            joints.append(
+                f"""    <joint name="joint_{i}" type="revolute">
+        <parent link="{parent}"/>
+        <child link="{child}"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-1" upper="1" effort="1" velocity="1"/>
+    </joint>"""
+            )
+            parent = child
+
+        robot_urdf = '<robot name="collapse_order">\n' + "\n".join(links + joints) + "\n</robot>\n"
+
+        builder = newton.ModelBuilder()
+        for i in range(3):
+            parse_urdf(
+                robot_urdf,
+                builder,
+                floating=True,
+                collapse_fixed_joints=True,
+                up_axis="Z",
+                xform=wp.transform(wp.vec3(float(i), 0.0, 0.0), wp.quat_identity()),
+            )
+
+        self.assertEqual(builder.articulation_start, [0, 13, 26])
+        self.assertEqual(builder.articulation_label, ["collapse_order", "collapse_order", "collapse_order"])
+        self.assertEqual(builder.articulation_world, [-1, -1, -1])
+        self.assertEqual(builder.joint_articulation, [0] * 13 + [1] * 13 + [2] * 13)
+        model = builder.finalize()
+        self.assertEqual(model.articulation_count, 3)
+        self.assertEqual(model.joint_count, 39)
+        assert_np_equal(model.articulation_start.numpy(), np.array([0, 13, 26, 39], dtype=np.int32))
+        self.assertEqual(model.articulation_label, ["collapse_order", "collapse_order", "collapse_order"])
+        assert_np_equal(model.articulation_world.numpy(), np.array([-1, -1, -1], dtype=np.int32))
+        assert_np_equal(model.joint_articulation.numpy(), np.array([0] * 13 + [1] * 13 + [2] * 13, dtype=np.int32))
+
     def test_floating_true_with_parent_body_raises_error(self):
         """Test that floating=True with parent_body raises an error."""
         robot_urdf = """<?xml version="1.0"?>

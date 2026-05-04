@@ -731,6 +731,20 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(parsed.controller_class, ControllerPD)
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_from_usd_ignore_paths(self):
+        """Actuator prims matched by ignore_paths are not registered."""
+        test_dir = os.path.dirname(__file__)
+        usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
+
+        builder = newton.ModelBuilder()
+        result = parse_usd(builder, usd_path, ignore_paths=[".*Joint1Actuator"])
+        self.assertEqual(result["actuator_count"], 1)
+
+        builder2 = newton.ModelBuilder()
+        result2 = parse_usd(builder2, usd_path, ignore_paths=[".*Actuator"])
+        self.assertEqual(result2["actuator_count"], 0)
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
     def test_from_usd_schema_plugin_not_loaded(self):
         """parse_actuator_prim works when the USD schema plugin is not registered.
 

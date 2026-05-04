@@ -14,15 +14,17 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.solvers.kamino._src.utils import logger as msg
 
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
         # Set simulation run-time configurations
         self.fps = 50
-        self.sim_dt = 0.0025
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
+        self.sim_substeps = max(1, round(self.frame_dt / 0.0025))
+        self.sim_dt = self.frame_dt / self.sim_substeps
+        msg.info(f"Using sim_dt = {self.sim_dt} ({self.sim_substeps} substeps per frame)")
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
@@ -159,15 +161,14 @@ class Example:
         # Only check velocities on CUDA where we run 500 frames (enough time to settle)
         # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
         if self.device.is_cuda:
-            # fmt: off
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
                 "body velocities are small",
-                lambda q, qd: max(abs(qd))
-                < 0.25,  # Relaxed from 0.1 - collision pipeline has residual velocities up to ~0.2
+                lambda q, qd: (
+                    max(abs(qd)) < 0.25
+                ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
             )
-            # fmt: on
 
     @staticmethod
     def create_parser():
