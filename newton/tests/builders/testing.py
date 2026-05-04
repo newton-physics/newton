@@ -16,9 +16,13 @@ import math
 import numpy as np
 import warp as wp
 
-from ..._src.core import Axis
-from ..._src.geometry import GeoType
-from ..._src.sim import JointTargetMode, JointType, ModelBuilder
+from newton import (
+    Axis,
+    GeoType,
+    JointTargetMode,
+    JointType,
+    ModelBuilder,
+)
 
 ###
 # Module interface

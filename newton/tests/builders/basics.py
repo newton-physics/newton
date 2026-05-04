@@ -27,9 +27,13 @@ import math
 
 import warp as wp
 
-from ..._src.core import MAXVAL, Axis
-from ..._src.geometry import inertia
-from ..._src.sim import JointTargetMode, ModelBuilder
+from newton import (
+    MAXVAL,
+    Axis,
+    JointTargetMode,
+    ModelBuilder,
+    inertia,
+)
 
 ###
 # Module interface
