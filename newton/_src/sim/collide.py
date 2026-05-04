@@ -846,7 +846,7 @@ class CollisionPipeline:
         filters = model.shape_collision_filter_pairs
         if not filters:
             return None
-        sorted_pairs = sorted(filters)  # lexicographic (already canonical min,max)
+        sorted_pairs = sorted(filters)  # lexicographic (canonicalized by GeoType, then Index)
         return wp.array(
             np.array(sorted_pairs),
             dtype=wp.vec2i,

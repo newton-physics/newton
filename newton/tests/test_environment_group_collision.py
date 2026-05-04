@@ -266,11 +266,14 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         child_body = builder.add_link(xform=wp.transform_identity())
         builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 0
         builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 1
+        builder.add_shape_cone(
+            body=child_body, radius=0.5, half_height=0.5
+        )  # index 2 (non-box shape to test mixed types)
 
         # Create parent body with shapes after
         parent_body = builder.add_link(xform=wp.transform((2.0, 0, 0), wp.quat_identity()))
-        builder.add_shape_box(body=parent_body, hx=0.5, hy=0.5, hz=0.5)  # index 2
         builder.add_shape_box(body=parent_body, hx=0.5, hy=0.5, hz=0.5)  # index 3
+        builder.add_shape_box(body=parent_body, hx=0.5, hy=0.5, hz=0.5)  # index 4
 
         # Connect with joint - this will naturally create non-canonical pairs!
         # Without canonicalization, this would add pairs like (2,0), (2,1), (3,0), (3,1)
@@ -291,7 +294,7 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         sub_builder.add_shape_box(body=sub_body, hx=0.5, hy=0.5, hz=0.5)
 
         # Add more shapes to main builder to create offset
-        builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 4
+        builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 5
 
         # Merge sub_builder - its filter pairs need canonicalization after offset
         builder.add_builder(sub_builder)
@@ -301,15 +304,26 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
 
         # Verify that parent-child filtering worked correctly
         contact_pairs = model.shape_contact_pairs.numpy()
-        contact_set = {tuple(sorted(pair)) for pair in contact_pairs}
+        contact_set = {tuple(pair) for pair in contact_pairs}
+
+        def get_canonical_pair(t1, t2, s1, s2):
+            if t1 > t2:
+                return (s2, s1)
+            elif t1 == t2 and s1 > s2:
+                return (s2, s1)
+            return (s1, s2)
 
         # Parent shapes (2,3) should not collide with child shapes (0,1,4)
-        for parent_shape in [2, 3]:
-            for child_shape in [0, 1, 4]:
+        for parent_shape in [3, 4]:
+            for child_shape in [0, 1, 2, 5]:
+                type1 = model.shape_type.numpy()[parent_shape]
+                type2 = model.shape_type.numpy()[child_shape]
+                pair_to_check = get_canonical_pair(type1, type2, parent_shape, child_shape)
+
                 self.assertNotIn(
-                    (min(parent_shape, child_shape), max(parent_shape, child_shape)),
+                    pair_to_check,
                     contact_set,
-                    f"Parent shape {parent_shape} should not collide with child shape {child_shape}",
+                    f"Pair {pair_to_check} (Types: {type1}, {type2}) should have been filtered out!",
                 )
 
 
