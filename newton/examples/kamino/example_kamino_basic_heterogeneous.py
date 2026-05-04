@@ -9,14 +9,13 @@
 ###########################################################################
 
 import argparse
-import os
 
 import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
-from newton._src.solvers.kamino._src.models.builders import basics_newton
+from newton.tests import get_kamino_basic_asset
+from newton.tests.builders import basics
 
 
 class Example:
@@ -47,8 +46,8 @@ class Example:
             )
             return asset_builder
 
-        # Load the basic cartpole either from USD or manually using the model
-        # builder API, depending on the command-line argument `--from-usd`
+        # Load the heterogeneous basic models either from USD or manually using the
+        # model builder API, depending on the command-line argument `--from-usd`
         builder = newton.ModelBuilder()
         if args.from_usd:
             # Load all basic USD assets and add them to the builder
@@ -61,11 +60,11 @@ class Example:
                 "cartpole",
             ]
             for asset_name in asset_names:
-                asset_file = os.path.join(get_basics_usd_assets_path(), f"{asset_name}.usda")
+                asset_file = get_kamino_basic_asset(f"{asset_name}.usda")
                 builder.add_world(builder=load_basic_asset_from_usd(asset_file))
         else:
-            # Manually build the basic cartpole using the builder API
-            basics_newton.make_basics_heterogeneous_builder(builder=builder, ground=True)
+            # Manually build the heterogeneous basic models using the builder API
+            basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
 
         # Create the model from the builder
         self.model = builder.finalize(skip_validation_joints=True)
@@ -174,8 +173,8 @@ class Example:
         parser.add_argument(
             "--from-usd",
             action=argparse.BooleanOptionalAction,
-            default=True,
-            help="Load the basic four-bar mechanism from USD.",
+            default=False,
+            help="Load the heterogeneous basic models from USD (otherwise build them manually).",
         )
         return parser
 
