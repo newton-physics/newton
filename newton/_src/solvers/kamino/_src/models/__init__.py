@@ -24,7 +24,7 @@ These include:
 
 import os
 
-from .builders import basics, basics_newton, testing, utils
+from .builders import basics, basics_newton, testing, testing_newton, utils
 
 __all__ = [
     "basics",
@@ -33,6 +33,7 @@ __all__ = [
     "get_basics_usd_assets_path",
     "get_testing_usd_assets_path",
     "testing",
+    "testing_newton",
     "utils",
 ]
 
