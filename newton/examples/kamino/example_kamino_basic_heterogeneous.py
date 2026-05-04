@@ -49,7 +49,7 @@ class Example:
         # Load the heterogeneous basic models either from USD or manually using the
         # model builder API, depending on the command-line argument `--from-usd`
         builder = newton.ModelBuilder()
-        if args.from_usd:
+        if args is not None and args.from_usd:
             # Load all basic USD assets and add them to the builder
             asset_names = [
                 "boxes_fourbar",

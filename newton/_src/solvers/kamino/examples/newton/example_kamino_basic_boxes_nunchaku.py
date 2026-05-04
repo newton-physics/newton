@@ -40,7 +40,7 @@ class Example:
 
         # Load the basic boxes nunchaku either from USD or by manually building it
         # with the builder API, depending on the command-line argument `--from-usd`
-        if args.from_usd:
+        if args is not None and args.from_usd:
             # Load the basic boxes nunchaku USD and add it to the builder
             asset_file = get_kamino_basics_asset("boxes_nunchaku.usda")
             robot_builder.add_usd(
