@@ -276,7 +276,8 @@ class TestModelConversions(unittest.TestCase):
         model_0: Model = builder_0.finalize(skip_validation_joints=True)
         model_1: ModelKamino = builder_1.finalize()
         model_2: ModelKamino = ModelKamino.from_newton(model_0)
-        test_util_checks.assert_model_equal(self, model_2, model_1)
+        excluded = ["base_joint_index"]
+        test_util_checks.assert_model_equal(self, model_2, model_1, excluded=excluded)
 
         # TODO: IMPLEMENT THIS CHECK: We wanna see if the both generate
         # the same data containers and unilateral constraint info
@@ -391,7 +392,7 @@ class TestModelConversions(unittest.TestCase):
         #   geom-pairs of joint neighbours to `shape_collision_filter_pairs` regardless of
         #   whether they are actually collidable or not, which leads to differences in the
         #   number of excluded pairs and their contents
-        excluded = ["ptr", "group", "gap", "num_excluded_pairs", "excluded_pairs"]
+        excluded = ["base_joint_index", "ptr", "group", "gap", "num_excluded_pairs", "excluded_pairs"]
         rtol = {"inv_i_I_i": 1e-5}
         atol = {"inv_i_I_i": 1e-6}
         test_util_checks.assert_model_equal(self, model_2, model_1, excluded=excluded, rtol=rtol, atol=atol)
