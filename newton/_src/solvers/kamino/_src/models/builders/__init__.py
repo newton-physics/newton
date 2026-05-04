@@ -10,12 +10,10 @@ as utility functions for composing and manipulating
 model builders.
 """
 
-from . import basics, basics_newton, testing, testing_newton, utils
+from . import basics, testing, utils
 
 __all__ = [
     "basics",
-    "basics_newton",
     "testing",
-    "testing_newton",
     "utils",
 ]

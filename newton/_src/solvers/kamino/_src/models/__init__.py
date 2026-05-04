@@ -24,8 +24,6 @@ from .builders import basics, testing, utils
 __all__ = [
     "basics",
     "builders",
-    "get_basics_usd_assets_path",
-    "get_testing_usd_assets_path",
     "testing",
     "utils",
 ]
