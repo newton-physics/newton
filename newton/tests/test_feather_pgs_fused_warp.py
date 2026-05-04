@@ -76,8 +76,8 @@ def run_constructor_accepts_fused_warp(test: TestFeatherPGSFusedWarpSelector, de
         pgs_iterations=1,
     )
 
-    test.assertEqual(solver.pgs_mode, "matrix_free")
-    test.assertEqual(solver.pgs_kernel, "fused_warp")
+    test.assertFalse(hasattr(solver, "pgs_mode"))
+    test.assertFalse(hasattr(solver, "pgs_kernel"))
     test.assertIsNotNone(solver.mf_meta)
     test.assertIsNotNone(solver.impulses_vec3)
     test.assertEqual(solver._max_contact_triplets, solver.max_constraints // 3)
@@ -107,7 +107,6 @@ def run_mixed_contact_one_step(test: TestFeatherPGSFusedWarpStep, device):
     model = _build_mixed_contact_model(device)
     solver = SolverFeatherPGS(
         model,
-        enable_joint_velocity_limits=True,
         pgs_iterations=1,
     )
     state_0 = model.state()
@@ -122,7 +121,6 @@ def run_mixed_contact_one_step(test: TestFeatherPGSFusedWarpStep, device):
     contacts = model.collide(state_0)
 
     solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
-    wp.synchronize_device(device)
 
     test.assertTrue(np.isfinite(state_1.joint_q.numpy()).all())
     test.assertGreaterEqual(int(solver.dense_contact_row_count.numpy()[0]), 3)
@@ -130,25 +128,64 @@ def run_mixed_contact_one_step(test: TestFeatherPGSFusedWarpStep, device):
     test.assertGreaterEqual(int(solver.mf_constraint_count.numpy()[0]), 3)
 
 
+class TestFeatherPGSBodyParentForce(unittest.TestCase):
+    """Coverage for the optional ``State.body_parent_f`` output."""
+
+
+def run_body_parent_force_static_pendulum(test: TestFeatherPGSBodyParentForce, device):
+    builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+    builder.request_state_attributes("body_parent_f")
+
+    link = builder.add_link()
+    builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+    joint = builder.add_joint_revolute(
+        -1,
+        link,
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
+        axis=wp.vec3(0.0, 1.0, 0.0),
+    )
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+
+    solver = SolverFeatherPGS(model)
+    state_0 = model.state()
+    state_1 = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    solver.step(state_0, state_1, None, None, 5.0e-3)
+
+    test.assertIsNotNone(state_1.body_parent_f)
+    parent_f = state_1.body_parent_f.numpy()[0]
+    weight = float(model.body_mass.numpy()[0]) * 9.81
+    np.testing.assert_allclose(parent_f[:3], [0.0, 0.0, weight], rtol=1.0e-4, atol=1.0e-5)
+    np.testing.assert_allclose(parent_f[3:6], [0.0, 0.0, 0.0], atol=1.0e-2)
+
+
 devices = get_cuda_test_devices(mode="basic")
 
 for device in devices:
     add_function_test(
         TestFeatherPGSFusedWarpSelector,
-        f"test_constructor_accepts_fused_warp_{device}",
+        "test_constructor_accepts_fused_warp",
         run_constructor_accepts_fused_warp,
         devices=[device],
     )
     add_function_test(
         TestFeatherPGSFusedWarpSelector,
-        f"test_constructor_rejects_unsupported_combinations_{device}",
+        "test_constructor_rejects_unsupported_combinations",
         run_constructor_rejects_unsupported_combinations,
         devices=[device],
     )
     add_function_test(
         TestFeatherPGSFusedWarpStep,
-        f"test_mixed_contact_one_step_{device}",
+        "test_mixed_contact_one_step",
         run_mixed_contact_one_step,
+        devices=[device],
+    )
+    add_function_test(
+        TestFeatherPGSBodyParentForce,
+        "test_body_parent_force_static_pendulum",
+        run_body_parent_force_static_pendulum,
         devices=[device],
     )
 
