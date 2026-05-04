@@ -3,42 +3,91 @@
 
 from __future__ import annotations
 
-import typing
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
 import warp as wp
 
-from ..utils import load_checkpoint
+from ..utils import load_checkpoint, load_metadata
 from .base import Controller
 
-if typing.TYPE_CHECKING:
-    import torch
+
+@wp.kernel
+def _compute_errors_kernel(
+    target_pos: wp.array[float],
+    target_vel: wp.array[float],
+    positions: wp.array[float],
+    velocities: wp.array[float],
+    pos_indices: wp.array[wp.uint32],
+    vel_indices: wp.array[wp.uint32],
+    target_pos_indices: wp.array[wp.uint32],
+    target_vel_indices: wp.array[wp.uint32],
+    pos_scale: float,
+    vel_scale: float,
+    out: wp.array3d[float],  # (1, N, 2)
+):
+    i = wp.tid()
+    pi = pos_indices[i]
+    vi = vel_indices[i]
+    tpi = target_pos_indices[i]
+    tvi = target_vel_indices[i]
+    out[0, i, 0] = (target_pos[tpi] - positions[pi]) * pos_scale
+    out[0, i, 1] = (target_vel[tvi] - velocities[vi]) * vel_scale
+
+
+@wp.kernel
+def _scale_effort_to_forces_kernel(
+    src: wp.array2d[float],  # (N, K) effort, row-major
+    dst: wp.array[float],  # (count,) forces
+    scale: float,
+    cols: int,
+):
+    """Read the leading ``count`` entries of ``src`` (row-major) and scale them.
+
+    Effectively flattens ``src`` and copies the first ``count`` values into
+    ``dst`` after multiplying by ``scale``.
+    """
+    i = wp.tid()
+    row = i // cols
+    col = i % cols
+    dst[i] = src[row, col] * scale
+
+
+@wp.kernel
+def _zero_masked_3d_kernel(buf: wp.array3d[float], mask: wp.array[wp.bool]):
+    layer, b, h = wp.tid()
+    if mask[b]:
+        buf[layer, b, h] = 0.0
 
 
 class ControllerNeuralLSTM(Controller):
-    """LSTM-based neural network controller.
+    """LSTM-based neural network controller, ONNX-backed.
 
-    Uses a pre-trained LSTM network to compute joint effort from position
-    error and velocity error. The network maintains hidden and cell state
-    across timesteps to capture temporal patterns.
+    Uses a pre-trained LSTM (loaded from an ``.onnx`` file) to compute joint
+    effort from position error and velocity error.  Hidden and cell state are
+    maintained across timesteps to capture temporal patterns.
 
-    The network must be callable as::
+    The exported ONNX model must have **three inputs** -- input,
+    initial_hidden, initial_cell -- and **three graph outputs** --
+    effort, hidden_out, cell_out.  The model's metadata properties must
+    specify which input/output names map to which roles.
 
-        effort, (hidden_new, cell_new) = network(input, (hidden, cell))
+    Required metadata properties:
 
-    where input has shape (batch, 1, 2) with features
-    [pos_error, vel_error], and hidden/cell have shape
-    (num_layers, batch, hidden_size).
+    - ``input_name`` (str): name of the (1, N, 2) input.
+    - ``hidden_in_name`` (str): name of the (num_layers, N, hidden_size) initial-hidden input.
+    - ``cell_in_name`` (str): name of the (num_layers, N, hidden_size) initial-cell input.
+    - ``output_name`` (str): name of the (N, output_size) effort output.
+    - ``hidden_out_name`` (str): name of the (num_layers, N, hidden_size) hidden-state output.
+    - ``cell_out_name`` (str): name of the (num_layers, N, hidden_size) cell-state output.
+    - ``num_layers`` (int): LSTM layer count.
+    - ``hidden_size`` (int): LSTM hidden size.
 
-    The network is expected to have a ``lstm`` attribute (``torch.nn.LSTM``) so
-    that ``num_layers`` and ``hidden_size`` can be inferred automatically.
+    Optional metadata properties (defaults shown):
 
-    Scale factors (``pos_scale``, ``vel_scale``, ``effort_scale``) are
-    read from checkpoint metadata, falling back to ``1.0`` when absent.
-    Supported checkpoint formats: TorchScript (``.pt`` saved with
-    ``torch.jit.save``) and state-dict bundles (``{"model": state_dict,
-    "metadata": {...}}`` saved with ``torch.save``).
+    - ``pos_scale`` (float, ``1.0``)
+    - ``vel_scale`` (float, ``1.0``)
+    - ``effort_scale`` (float, ``1.0``)
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -47,19 +96,28 @@ class ControllerNeuralLSTM(Controller):
     class State(Controller.State):
         """LSTM hidden and cell state."""
 
-        hidden: torch.Tensor | None = None
+        hidden: wp.array3d[float] | None = None
         """LSTM hidden state, shape (num_layers, N, hidden_size)."""
-        cell: torch.Tensor | None = None
+        cell: wp.array3d[float] | None = None
         """LSTM cell state, shape (num_layers, N, hidden_size)."""
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             if mask is None:
-                self.hidden = self.hidden.new_zeros(self.hidden.shape)
-                self.cell = self.cell.new_zeros(self.cell.shape)
+                self.hidden.zero_()
+                self.cell.zero_()
             else:
-                t = wp.to_torch(mask).bool()
-                self.hidden[:, t, :] = 0.0
-                self.cell[:, t, :] = 0.0
+                wp.launch(
+                    _zero_masked_3d_kernel,
+                    dim=self.hidden.shape,
+                    inputs=[self.hidden, mask],
+                    device=self.hidden.device,
+                )
+                wp.launch(
+                    _zero_masked_3d_kernel,
+                    dim=self.cell.shape,
+                    inputs=[self.cell, mask],
+                    device=self.cell.device,
+                )
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
@@ -71,74 +129,99 @@ class ControllerNeuralLSTM(Controller):
         return {"model_path": model_path}
 
     def __init__(self, model_path: str):
-        """Initialize LSTM controller from a checkpoint file.
-
-        Supported checkpoint formats: TorchScript (``.pt`` saved with
-        ``torch.jit.save``) and state-dict bundles (``{"model": state_dict,
-        "metadata": {...}}`` saved with ``torch.save``).
-
-        Configuration is read from checkpoint metadata:
-
-        - ``pos_scale`` (float): position-error scaling (default ``1.0``).
-        - ``vel_scale`` (float): velocity-error scaling (default ``1.0``).
-        - ``effort_scale`` (float): output effort scaling (default ``1.0``).
+        """Initialize LSTM controller from an ONNX checkpoint file.
 
         Args:
-            model_path: Path to the checkpoint (``.pt``).
+            model_path: Path to the ``.onnx`` checkpoint.
         """
-        import torch
-
         self.model_path = model_path
-        self._torch_device = torch.device("cpu")
 
-        self.network, metadata = load_checkpoint(model_path)
+        # ``.pt`` LSTM checkpoints require torch-specific introspection
+        # (network.lstm.num_layers, hidden tensors as torch.Tensor, etc.) that
+        # the new ONNX-only compute path can no longer perform.  The MLP
+        # adapter is single-input/single-output and not applicable here.
+        if model_path.lower().endswith((".pt", ".pth")):
+            raise NotImplementedError(
+                "ControllerNeuralLSTM no longer supports .pt/.pth TorchScript checkpoints. "
+                "Re-export the LSTM as an ONNX model with explicit input/output names and "
+                "the metadata properties listed in the class docstring "
+                "(input_name, hidden_in_name, cell_in_name, output_name, hidden_out_name, "
+                "cell_out_name, num_layers, hidden_size). See torch.onnx.export and the "
+                "test fixture _build_lstm_onnx in newton/tests/test_actuators.py for an example."
+            )
 
-        self.pos_scale = metadata.get("pos_scale", 1.0)
-        self.vel_scale = metadata.get("vel_scale", 1.0)
-        self.effort_scale = metadata.get("effort_scale", metadata.get("torque_scale", 1.0))
+        metadata = load_metadata(model_path)
 
-        if not hasattr(self.network, "lstm"):
-            raise ValueError("network must expose a 'lstm' attribute (torch.nn.LSTM)")
-        lstm = self.network.lstm
-        if not hasattr(lstm, "num_layers"):
-            raise ValueError("network.lstm must be a torch.nn.LSTM (missing num_layers)")
-        if not lstm.batch_first:
-            raise ValueError("network.lstm.batch_first must be True")
-        if lstm.input_size != 2:
-            raise ValueError(f"network.lstm.input_size must be 2 (pos_error, vel_error); got {lstm.input_size}")
-        if lstm.bidirectional:
-            raise ValueError("network.lstm must not be bidirectional")
-        if getattr(lstm, "proj_size", 0) != 0:
-            raise ValueError(f"network.lstm.proj_size must be 0; got {lstm.proj_size}")
+        self.pos_scale = float(metadata.get("pos_scale", 1.0))
+        self.vel_scale = float(metadata.get("vel_scale", 1.0))
+        self.effort_scale = float(metadata.get("effort_scale", metadata.get("torque_scale", 1.0)))
 
-        self._num_layers = lstm.num_layers
-        self._hidden_size = lstm.hidden_size
+        for key in (
+            "input_name",
+            "hidden_in_name",
+            "cell_in_name",
+            "output_name",
+            "hidden_out_name",
+            "cell_out_name",
+            "num_layers",
+            "hidden_size",
+        ):
+            if key not in metadata:
+                raise ValueError(f"ONNX metadata missing required key '{key}'")
 
-        self._torch_input_indices: torch.Tensor | None = None
-        self._torch_vel_indices: torch.Tensor | None = None
-        self._torch_sequential_indices: torch.Tensor | None = None
-        self._hidden: torch.Tensor | None = None
-        self._cell: torch.Tensor | None = None
+        self._input_name = metadata["input_name"]
+        self._hidden_in_name = metadata["hidden_in_name"]
+        self._cell_in_name = metadata["cell_in_name"]
+        self._output_name = metadata["output_name"]
+        self._hidden_out_name = metadata["hidden_out_name"]
+        self._cell_out_name = metadata["cell_out_name"]
+
+        self._num_layers = int(metadata["num_layers"])
+        self._hidden_size = int(metadata["hidden_size"])
+
+        self._network = None
+        self._device: wp.Device | None = None
+        self._num_actuators = 0
+        self._net_input: wp.array3d[float] | None = None
+        self._next_hidden: wp.array3d[float] | None = None
+        self._next_cell: wp.array3d[float] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
-        import torch
+        self._device = device
+        self._num_actuators = num_actuators
 
-        self._torch_device = torch.device(f"cuda:{device.ordinal}" if device.is_cuda else "cpu")
-        self.network = self.network.to(self._torch_device)
-        self._torch_sequential_indices = torch.arange(num_actuators, dtype=torch.long, device=self._torch_device)
+        runtime, _ = load_checkpoint(self.model_path, device=str(device), batch_size=num_actuators)
+        self._network = runtime
+
+        # The compute() copy assumes one effort per actuator, i.e. output shape
+        # exactly ``(num_actuators, 1)``.  A multi-column output would silently
+        # misalign actuator i with row 0, column i, dropping later rows; reject
+        # such models up front instead of producing wrong inferences.
+        out_shape = runtime._shapes[self._output_name]
+        if out_shape != (num_actuators, 1):
+            raise ValueError(
+                f"ControllerNeuralLSTM: ONNX output '{self._output_name}' has shape {out_shape}, "
+                f"expected {(num_actuators, 1)} (one scalar effort per actuator)"
+            )
+
+        self._net_input = wp.zeros((1, num_actuators, 2), dtype=wp.float32, device=device)
+        self._next_hidden = wp.zeros(
+            (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
+        )
+        self._next_cell = wp.zeros(
+            (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
+        )
 
     def is_stateful(self) -> bool:
         return True
 
     def is_graphable(self) -> bool:
-        return False
+        return True
 
     def state(self, num_actuators: int, device: wp.Device) -> ControllerNeuralLSTM.State:
-        import torch
-
         return ControllerNeuralLSTM.State(
-            hidden=torch.zeros(self._num_layers, num_actuators, self._hidden_size, device=self._torch_device),
-            cell=torch.zeros(self._num_layers, num_actuators, self._hidden_size, device=self._torch_device),
+            hidden=wp.zeros((self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device),
+            cell=wp.zeros((self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device),
         )
 
     def compute(
@@ -157,39 +240,55 @@ class ControllerNeuralLSTM(Controller):
         dt: float,
         device: wp.Device | None = None,
     ) -> None:
-        import torch
+        device = device or self._device
+        n = self._num_actuators
 
-        if self._torch_input_indices is None:
-            self._torch_input_indices = torch.tensor(pos_indices.numpy(), dtype=torch.long, device=self._torch_device)
-            self._torch_vel_indices = torch.tensor(vel_indices.numpy(), dtype=torch.long, device=self._torch_device)
-
-        current_pos = wp.to_torch(positions)
-        current_vel = wp.to_torch(velocities)
-        target_p = wp.to_torch(target_pos)
-        target_v = wp.to_torch(target_vel)
-
-        torch_target_pos_idx = (
-            self._torch_input_indices if target_pos_indices is pos_indices else self._torch_sequential_indices
+        wp.launch(
+            _compute_errors_kernel,
+            dim=n,
+            inputs=[
+                target_pos,
+                target_vel,
+                positions,
+                velocities,
+                pos_indices,
+                vel_indices,
+                target_pos_indices,
+                target_vel_indices,
+                self.pos_scale,
+                self.vel_scale,
+                self._net_input,
+            ],
+            device=device,
         )
-        torch_target_vel_idx = (
-            self._torch_vel_indices if target_vel_indices is vel_indices else self._torch_sequential_indices
+
+        out = self._network(
+            {
+                self._input_name: self._net_input,
+                self._hidden_in_name: state.hidden,
+                self._cell_in_name: state.cell,
+            }
         )
+        effort = out[self._output_name]
+        hidden_new = out[self._hidden_out_name]
+        cell_new = out[self._cell_out_name]
 
-        pos_error = target_p[torch_target_pos_idx] - current_pos[self._torch_input_indices]
-        vel_error = target_v[torch_target_vel_idx] - current_vel[self._torch_vel_indices]
+        # ``hidden_new`` / ``cell_new`` come back as ``(num_directions, N, H)``
+        # views over the runtime's preallocated ``(N, H)`` buffers, which
+        # matches ``num_layers=1`` here.  Copy on-device into the controller's
+        # next-state buffers so callers see a stable handle.
+        wp.copy(self._next_hidden, hidden_new.reshape((self._num_layers, n, self._hidden_size)))
+        wp.copy(self._next_cell, cell_new.reshape((self._num_layers, n, self._hidden_size)))
 
-        # (N, 1, 2): seq_len=1, features=[pos_error * scale, vel_error * scale]
-        net_input = torch.stack([pos_error * self.pos_scale, vel_error * self.vel_scale], dim=1).unsqueeze(1)
-
-        with torch.inference_mode():
-            effort, (self._hidden, self._cell) = self.network(
-                net_input,
-                (state.hidden, state.cell),
-            )
-
-        effort = effort.reshape(len(forces)) * self.effort_scale
-        effort_wp = wp.from_torch(effort.contiguous(), dtype=wp.float32)
-        wp.copy(forces, effort_wp)
+        # ``effort`` is guaranteed by ``finalize`` to be ``(N, 1)``; flatten
+        # the leading ``len(forces)`` entries into ``forces`` in a single
+        # launch.
+        wp.launch(
+            _scale_effort_to_forces_kernel,
+            dim=len(forces),
+            inputs=[effort, forces, self.effort_scale, 1],
+            device=device,
+        )
 
     def update_state(
         self,
@@ -198,5 +297,5 @@ class ControllerNeuralLSTM(Controller):
     ) -> None:
         if next_state is None:
             return
-        next_state.hidden = self._hidden
-        next_state.cell = self._cell
+        wp.copy(next_state.hidden, self._next_hidden)
+        wp.copy(next_state.cell, self._next_cell)

@@ -21,7 +21,6 @@ import newton
 import newton.examples
 from newton.selection import ArticulationView
 
-USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
 
 
@@ -86,16 +85,8 @@ class Example:
         # =========================
         # randomize initial state
         # =========================
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
-
-            cart_positions = 2.0 - 4.0 * torch.rand(self.world_count)
-            pole1_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(self.world_count)
-            pole2_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(self.world_count)
-            joint_q = torch.stack([cart_positions, pole1_angles, pole2_angles], dim=1)
-        else:
-            joint_q = self.cartpoles.get_attribute("joint_q", self.state_0)
-            wp.launch(randomize_states_kernel, dim=self.world_count, inputs=[joint_q, 42])
+        joint_q = self.cartpoles.get_attribute("joint_q", self.state_0)
+        wp.launch(randomize_states_kernel, dim=self.world_count, inputs=[joint_q, 42])
 
         self.cartpoles.set_attribute("joint_q", self.state_0, joint_q)
 
@@ -143,20 +134,13 @@ class Example:
         # ====================================
         # get observations and apply controls
         # ====================================
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
-
-            joint_q = wp.to_torch(self.cartpoles.get_attribute("joint_q", self.state_0))
-            joint_f = wp.to_torch(self.cartpoles.get_attribute("joint_f", self.control))
-            joint_f[..., 0] = torch.where(joint_q[..., 0] > 0, -20, 20)
-        else:
-            joint_q = self.cartpoles.get_attribute("joint_q", self.state_0)
-            joint_f = self.cartpoles.get_attribute("joint_f", self.control)
-            wp.launch(
-                apply_forces_kernel,
-                dim=joint_f.shape[0],
-                inputs=[joint_q, joint_f],
-            )
+        joint_q = self.cartpoles.get_attribute("joint_q", self.state_0)
+        joint_f = self.cartpoles.get_attribute("joint_f", self.control)
+        wp.launch(
+            apply_forces_kernel,
+            dim=joint_f.shape[0],
+            inputs=[joint_q, joint_f],
+        )
 
         self.cartpoles.set_attribute("joint_f", self.control, joint_f)
 
@@ -232,11 +216,6 @@ if __name__ == "__main__":
     parser = Example.create_parser()
 
     viewer, args = newton.examples.init(parser)
-
-    if USE_TORCH:
-        import torch
-
-        torch.set_default_device(args.device)
 
     example = Example(viewer, args)
 

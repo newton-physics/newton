@@ -21,7 +21,6 @@ import newton
 import newton.examples
 from newton.selection import ArticulationView
 
-USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
 VERBOSE = True
 
@@ -134,57 +133,31 @@ class Example:
             self.model, "humanoid", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE]
         )
 
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
+        # default ant root states
+        self.default_ant_root_transforms = wp.clone(self.ants.get_root_transforms(self.model))
+        self.default_ant_root_velocities = wp.clone(self.ants.get_root_velocities(self.model))
 
-            # default ant root states
-            self.default_ant_root_transforms = wp.to_torch(self.ants.get_root_transforms(self.model)).clone()
-            self.default_ant_root_velocities = wp.to_torch(self.ants.get_root_velocities(self.model)).clone()
+        # set ant DOFs to the middle of their range by default
+        dof_limit_lower = self.ants.get_attribute("joint_limit_lower", self.model)
+        dof_limit_upper = self.ants.get_attribute("joint_limit_upper", self.model)
+        self.default_ant_dof_positions = wp.empty_like(dof_limit_lower)
+        wp.launch(
+            compute_middle_kernel,
+            dim=self.default_ant_dof_positions.shape,
+            inputs=[dof_limit_lower, dof_limit_upper, self.default_ant_dof_positions],
+        )
+        self.default_ant_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
 
-            # set ant DOFs to the middle of their range by default
-            dof_limit_lower = wp.to_torch(self.ants.get_attribute("joint_limit_lower", self.model))
-            dof_limit_upper = wp.to_torch(self.ants.get_attribute("joint_limit_upper", self.model))
-            self.default_ant_dof_positions = 0.5 * (dof_limit_lower + dof_limit_upper)
-            self.default_ant_dof_velocities = wp.to_torch(self.ants.get_dof_velocities(self.model)).clone()
+        # default humanoid states
+        self.default_hum_root_transforms = wp.clone(self.hums.get_root_transforms(self.model))
+        self.default_hum_root_velocities = wp.clone(self.hums.get_root_velocities(self.model))
+        self.default_hum_dof_positions = wp.clone(self.hums.get_dof_positions(self.model))
+        self.default_hum_dof_velocities = wp.clone(self.hums.get_dof_velocities(self.model))
 
-            # default humanoid states
-            self.default_hum_root_transforms = wp.to_torch(self.hums.get_root_transforms(self.model)).clone()
-            self.default_hum_root_velocities = wp.to_torch(self.hums.get_root_velocities(self.model)).clone()
-            self.default_hum_dof_positions = wp.to_torch(self.hums.get_dof_positions(self.model)).clone()
-            self.default_hum_dof_velocities = wp.to_torch(self.hums.get_dof_velocities(self.model)).clone()
-
-            # create disjoint subsets to alternate resets
-            all_indices = torch.arange(self.world_count, dtype=torch.int32)
-            self.mask_0 = torch.zeros(self.world_count, dtype=bool)
-            self.mask_0[all_indices[::2]] = True
-            self.mask_1 = torch.zeros(self.world_count, dtype=bool)
-            self.mask_1[all_indices[1::2]] = True
-        else:
-            # default ant root states
-            self.default_ant_root_transforms = wp.clone(self.ants.get_root_transforms(self.model))
-            self.default_ant_root_velocities = wp.clone(self.ants.get_root_velocities(self.model))
-
-            # set ant DOFs to the middle of their range by default
-            dof_limit_lower = self.ants.get_attribute("joint_limit_lower", self.model)
-            dof_limit_upper = self.ants.get_attribute("joint_limit_upper", self.model)
-            self.default_ant_dof_positions = wp.empty_like(dof_limit_lower)
-            wp.launch(
-                compute_middle_kernel,
-                dim=self.default_ant_dof_positions.shape,
-                inputs=[dof_limit_lower, dof_limit_upper, self.default_ant_dof_positions],
-            )
-            self.default_ant_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
-
-            # default humanoid states
-            self.default_hum_root_transforms = wp.clone(self.hums.get_root_transforms(self.model))
-            self.default_hum_root_velocities = wp.clone(self.hums.get_root_velocities(self.model))
-            self.default_hum_dof_positions = wp.clone(self.hums.get_dof_positions(self.model))
-            self.default_hum_dof_velocities = wp.clone(self.hums.get_dof_velocities(self.model))
-
-            # create disjoint subsets to alternate resets
-            self.mask_0 = wp.empty(self.world_count, dtype=bool)
-            self.mask_1 = wp.empty(self.world_count, dtype=bool)
-            wp.launch(init_masks, dim=self.world_count, inputs=[self.mask_0, self.mask_1])
+        # create disjoint subsets to alternate resets
+        self.mask_0 = wp.empty(self.world_count, dtype=bool)
+        self.mask_1 = wp.empty(self.world_count, dtype=bool)
+        wp.launch(init_masks, dim=self.world_count, inputs=[self.mask_0, self.mask_1])
 
         self.viewer.set_model(self.model)
 
@@ -221,17 +194,12 @@ class Example:
         # ================================
         # apply random controls
         # ================================
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
-
-            dof_forces = 5.0 - 10.0 * torch.rand((self.world_count, self.ants.joint_dof_count))
-        else:
-            dof_forces = self.ants.get_dof_forces(self.control)
-            wp.launch(
-                random_forces_kernel,
-                dim=dof_forces.shape,
-                inputs=[dof_forces, 2.0, self.step_count],
-            )
+        dof_forces = self.ants.get_dof_forces(self.control)
+        wp.launch(
+            random_forces_kernel,
+            dim=dof_forces.shape,
+            inputs=[dof_forces, 2.0, self.step_count],
+        )
 
         self.ants.set_dof_forces(self.control, dof_forces)
 
@@ -248,23 +216,11 @@ class Example:
         # reset transforms and velocities
         # ================================
 
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
-
-            # randomize ant velocities
-            self.default_ant_root_velocities[..., 2] = 3.0 * torch.rand(self.world_count, 1)
-            self.default_ant_root_velocities[..., 5] = 4.0 * torch.pi * (0.5 - torch.rand(self.world_count, 1))
-
-            # humanoids move up at the same speed
-            self.default_hum_root_velocities[..., 2] = self.default_ant_root_velocities[..., 2]
-            # humanoids spin in the opposite direction
-            self.default_hum_root_velocities[..., 5] = -self.default_ant_root_velocities[..., 5]
-        else:
-            wp.launch(
-                reset_kernel,
-                dim=self.world_count,
-                inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.step_count],
-            )
+        wp.launch(
+            reset_kernel,
+            dim=self.world_count,
+            inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.step_count],
+        )
 
         self.ants.set_root_transforms(self.state_0, self.default_ant_root_transforms, mask=mask)
         self.ants.set_root_velocities(self.state_0, self.default_ant_root_velocities, mask=mask)
@@ -305,11 +261,6 @@ if __name__ == "__main__":
     parser = Example.create_parser()
 
     viewer, args = newton.examples.init(parser)
-
-    if USE_TORCH:
-        import torch
-
-        torch.set_default_device(args.device)
 
     example = Example(viewer, args)
 
