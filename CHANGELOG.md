@@ -65,6 +65,7 @@
 - Reduce default `stretch_stiffness` from `1.0e9` to `1.0e5` in `add_joint_cable()`, `add_rod()`, and `add_rod_graph()`
 - Treat `stretch_stiffness` and `bend_stiffness` in `add_rod()` and `add_rod_graph()` as direct per-joint stiffness values, matching `add_joint_cable()` and other joint stiffness APIs
 - VBD solver uses augmented-Lagrangian hard constraints for body-body contacts by default (`rigid_contact_hard=True`)
+- Reduce collision-pipeline overhead in `SolverMuJoCo`: fast-path contact conversion (skip constant fields when contact set is unchanged via a generation counter on `Contacts`), fused AABB + narrow-phase geom-data kernel, and capped conversion launch dim. ~6× collision-pipeline speedup on `example_robot_anymal_d` (4096 worlds)
 
 ### Deprecated
 
@@ -107,6 +108,10 @@
 - Fix multi-world coordinate conversion using the wrong body center of mass for replicated worlds
 - Fix MJCF importer ignoring `<default><equality/></default>` attribute defaults (e.g. `solref`, `solimp`) for `<connect>`/`<weld>`/`<joint>` equality constraints
 - Remove incorrect body-level `mjc:damping` -> `rigid_body_linear_damping` mapping from `SchemaResolverMjc`; `mjc:damping` is defined on `MjcJointAPI`, not on bodies
+- Fix `target_voxel_size` being silently ignored on the texture-SDF path of `SDF.create_from_mesh()` and on the primitive-mesh path in `ModelBuilder`; the requested voxel resolution is now honored end-to-end and matches the sparse-SDF path
+- Fix material-combination inconsistency in the Newton-to-`mujoco-warp` contact converter so combined friction / solref / solimp values match native MuJoCo
+- Fix `eq_objtype` mismatch for joint equality and mimic constraints in `SolverMuJoCo` so compiled models match native MuJoCo XML behavior
+- Fix `_tiled_sum_kernel` launch-dim handling in the implicit-MPM rheology solver under `warp-lang` 1.13's templated `launch_bounds` (formerly produced out-of-bounds reads)
 
 ## [1.1.0] - 2026-04-13
 
