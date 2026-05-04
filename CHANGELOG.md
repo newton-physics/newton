@@ -14,6 +14,7 @@
 - Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
 - Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
 - Add `Mesh.is_watertight` property (cached) that reports whether every geometric edge is shared by exactly two triangles
+- Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
 - Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
 - Add fast parity-based SDF construction path for watertight meshes in `SDF.create_from_mesh`, using `wp.mesh_query_point_sign_parity` instead of winding numbers; selected via the new `sign_method` argument (`"auto"` — the default — picks parity when `Mesh.is_watertight` is true, or `"parity"` / `"winding"` to force either strategy)
 - Add `Viewer.log_image()` for displaying single or batched images in `ViewerGL`; other backends inherit a no-op. Also add `SensorTiledCamera.utils.to_rgba_from_color()`, `to_rgba_from_normal()`, `to_rgba_from_depth()`, and `to_rgba_from_shape_index()` (hash palette or caller-provided RGB lookup) adapters producing output consumable by `log_image()`.

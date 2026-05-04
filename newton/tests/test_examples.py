@@ -341,6 +341,20 @@ add_example_test(
     test_options={"num-frames": 200},
     use_viewer=True,
 )
+add_example_test(
+    TestClothExamples,
+    name="VBD.Cloth.example_cloth_stiff_material_hanging",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 360},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="VBD.Cloth.example_cloth_stiff_material_stretch",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 600},
+    use_viewer=True,
+)
 
 
 class TestRobotExamples(unittest.TestCase):
