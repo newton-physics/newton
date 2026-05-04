@@ -6449,9 +6449,10 @@ class SolverMuJoCo(SolverBase):
         shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
         shape_geom_solmix = getattr(mujoco_attrs, "geom_solmix", None) if mujoco_attrs is not None else None
         geom_dataid = self.mjw_model.geom_dataid
-        # Some backends expose geom_dataid as [world, geom], but the kernel expects per-geom ids.
-        if hasattr(geom_dataid, "shape") and len(geom_dataid.shape) == 2:
-            geom_dataid = wp.array(geom_dataid.numpy()[0], dtype=wp.int32, device=self.model.device)
+        # The kernel indexes geom_dataid as [world, geom]. Keep that rank intact and
+        # normalize 1D backends to a single-world 2D array.
+        if hasattr(geom_dataid, "shape") and len(geom_dataid.shape) == 1:
+            geom_dataid = wp.array(geom_dataid.numpy()[None, :], dtype=wp.int32, device=self.model.device)
         wp.launch(
             update_geom_properties_kernel,
             dim=(world_count, num_geoms),
