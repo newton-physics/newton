@@ -1803,7 +1803,7 @@ def _eval_body_velocities(
 ):
     """
     A kernel computing the body velocities (twists) from the time derivative of body poses,
-    computing in particular angular velocities omega = G(q)q_dot
+    computing in particular angular velocities omega = 2G(q)q_dot
 
     Inputs:
         num_bodies: Number of bodies per world

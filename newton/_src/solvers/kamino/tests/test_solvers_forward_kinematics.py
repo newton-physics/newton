@@ -350,7 +350,7 @@ def simulate_random_poses(
         base_u = wp.array(shape=(model.size.num_worlds), dtype=vec6f)
         actuators_u = wp.array(shape=(actuators_u_np.shape[1]), dtype=wp.float32)
     data = model.data(device=model.device)
-    epsilon = 1e-2
+    epsilon = 1e-4
     for pose_id in range(num_poses):
         # Run FK solve and check convergence
         base_q.assign(base_q_np[pose_id])
