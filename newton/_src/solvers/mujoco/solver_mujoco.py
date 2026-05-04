@@ -6448,6 +6448,10 @@ class SolverMuJoCo(SolverBase):
         mujoco_attrs = getattr(self.model, "mujoco", None)
         shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
         shape_geom_solmix = getattr(mujoco_attrs, "geom_solmix", None) if mujoco_attrs is not None else None
+        geom_dataid = self.mjw_model.geom_dataid
+        # Some backends expose geom_dataid as [world, geom], but the kernel expects per-geom ids.
+        if hasattr(geom_dataid, "shape") and len(geom_dataid.shape) == 2:
+            geom_dataid = wp.array(geom_dataid.numpy()[0], dtype=wp.int32, device=self.model.device)
         wp.launch(
             update_geom_properties_kernel,
             dim=(world_count, num_geoms),
@@ -6460,7 +6464,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjc_geom_to_newton_shape,
                 self.mjw_model.geom_type,
                 self._mujoco.mjtGeom.mjGEOM_MESH,
-                self.mjw_model.geom_dataid,
+                geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
                 self.model.shape_material_mu_torsional,
