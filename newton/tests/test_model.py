@@ -500,7 +500,7 @@ class TestModelMesh(unittest.TestCase):
 
         def joint_first():
             b = ModelBuilder()
-            body = b.add_body()
+            body = b.add_link()
             b.add_joint_fixed(parent=-1, child=body)
             mesh_shape = b.add_shape_sphere(body=body, radius=0.5)
             ground_shape = b.add_ground_plane()
@@ -509,14 +509,14 @@ class TestModelMesh(unittest.TestCase):
         def world_shape_first():
             b = ModelBuilder()
             ground_shape = b.add_ground_plane()
-            body = b.add_body()
+            body = b.add_link()
             b.add_joint_fixed(parent=-1, child=body)
             mesh_shape = b.add_shape_sphere(body=body, radius=0.5)
             return b, mesh_shape, ground_shape
 
         def body_shape_first():
             b = ModelBuilder()
-            body = b.add_body()
+            body = b.add_link()
             mesh_shape = b.add_shape_sphere(body=body, radius=0.5)
             b.add_joint_fixed(parent=-1, child=body)
             ground_shape = b.add_ground_plane()
@@ -537,7 +537,7 @@ class TestModelMesh(unittest.TestCase):
         world shapes — they need to be able to land on the ground."""
 
         builder = ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_link()
         builder.add_joint_free(parent=-1, child=body)
         base_shape = builder.add_shape_sphere(body=body, radius=0.5)
         ground_shape = builder.add_ground_plane()
@@ -550,7 +550,7 @@ class TestModelMesh(unittest.TestCase):
         geometry (e.g. a pendulum hitting the ground)."""
 
         builder = ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_link()
         builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
         body_shape = builder.add_shape_sphere(body=body, radius=0.5)
         ground_shape = builder.add_ground_plane()
@@ -563,7 +563,7 @@ class TestModelMesh(unittest.TestCase):
         joint-creation time."""
 
         builder = ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_link()
         body_shape = builder.add_shape_sphere(body=body, radius=0.5)
         ground_shape = builder.add_ground_plane()
         builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z, collision_filter_parent=True)
@@ -575,8 +575,8 @@ class TestModelMesh(unittest.TestCase):
         default, matching the legacy behavior for joints between real bodies."""
 
         builder = ModelBuilder()
-        parent = builder.add_body()
-        child = builder.add_body()
+        parent = builder.add_link()
+        child = builder.add_link()
         parent_shape = builder.add_shape_sphere(body=parent, radius=0.5)
         child_shape = builder.add_shape_sphere(body=child, radius=0.5)
         builder.add_joint_free(parent=parent, child=child)
@@ -588,7 +588,7 @@ class TestModelMesh(unittest.TestCase):
         when shapes already exist on both sides at joint-creation time."""
 
         builder = ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_link()
         mesh_shape = builder.add_shape_sphere(body=body, radius=0.5)
         ground_shape = builder.add_ground_plane()
         builder.add_joint_fixed(parent=-1, child=body, collision_filter_parent=False)
