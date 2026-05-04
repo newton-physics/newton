@@ -5183,13 +5183,14 @@ class ModelBuilder:
                 return tuple(remap_articulation_reference(v) for v in value)
             return value
 
+        # ARTICULATION-frequency attributes use dict storage by construction
+        # (see CustomAttribute._create_empty_values_container).
         for custom_attr in self.get_custom_attributes_by_frequency([Model.AttributeFrequency.ARTICULATION]):
-            if isinstance(custom_attr.values, dict):
-                custom_attr.values = {
-                    new_idx: custom_attr.values[old_idx]
-                    for old_idx, new_idx in articulation_remap.items()
-                    if old_idx in custom_attr.values
-                }
+            custom_attr.values = {
+                new_idx: custom_attr.values[old_idx]
+                for old_idx, new_idx in articulation_remap.items()
+                if old_idx in custom_attr.values
+            }
 
         for custom_attr in self.custom_attributes.values():
             if custom_attr.references != "articulation" or custom_attr.values is None:
