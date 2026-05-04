@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example for basic Cartpole system.
+# Example for basic boxes nunchaku system.
 #
-# Shows how to simulate a basic cartpole with multiple worlds using SolverKamino.
+# Shows how to simulate a basic boxes nunchaku with multiple worlds using SolverKamino.
 #
-# Command: python -m newton.examples kamino_basic_cartpole --world-count 16
+# Command: python -m newton.examples kamino_basic_boxes_nunchaku --world-count 16
 #
 ###########################################################################
 
@@ -41,12 +41,12 @@ class Example:
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
 
-        # Load the basic cartpole either from USD or by manually building it
+        # Load the basic boxes nunchaku either from USD or by manually building it
         # with the builder API, depending on the command-line argument `--from-usd`
         if args.from_usd:
-            # Load the basic cartpole USD and add it to the builder
+            # Load the basic boxes nunchaku USD and add it to the builder
             msg.notif("Loading USD asset and adding it to the model builder...")
-            asset_file = os.path.join(get_basics_usd_assets_path(), "cartpole.usda")
+            asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_nunchaku.usda")
             robot_builder.add_usd(
                 asset_file,
                 joint_ordering=None,
@@ -56,8 +56,8 @@ class Example:
                 hide_collision_shapes=False,
             )
         else:
-            # Manually build the basic cartpole using the builder API
-            basics_newton.build_cartpole(builder=robot_builder, ground=False)
+            # Manually build the basic boxes nunchaku using the builder API
+            basics_newton.build_boxes_nunchaku_vertical(builder=robot_builder, z_offset=1.0)
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
@@ -108,9 +108,9 @@ class Example:
         # If only a single-world is created, set initial
         # camera position for better view of the system
         if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
-            camera_pos = wp.vec3(5.0, 5.0, 1.5)
-            pitch = -10.0
-            yaw = 218.0
+            camera_pos = wp.vec3(-0.2, -3.0, 0.75)
+            pitch = -8.0
+            yaw = 90.0
             self.viewer.set_camera(camera_pos, pitch, yaw)
 
     def capture(self):
@@ -172,9 +172,9 @@ class Example:
         parser.set_defaults(world_count=1)
         parser.add_argument(
             "--from-usd",
-            type=argparse.BooleanOptionalAction,
+            action=argparse.BooleanOptionalAction,
             default=False,
-            help="Load the basic cartpole from USD.",
+            help="Load the basic boxes nunchaku from USD.",
         )
         return parser
 

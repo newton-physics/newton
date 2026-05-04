@@ -2,18 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example for basic box on plane system.
+# Example for basic boxes hinged system
 #
-# Shows how to simulate a basic box on plane with multiple worlds using SolverKamino.
+# Shows how to simulate a basic boxes hinged with multiple worlds using SolverKamino.
 #
-# Command: python -m newton.examples kamino_basic_box_on_plane --world-count 16
+# Command: python -m newton.examples kamino_basic_boxes_hinged --world-count 16
 #
 ###########################################################################
 
 import argparse
 import os
 
-import numpy as np
 import warp as wp
 
 import newton
@@ -42,12 +41,12 @@ class Example:
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
 
-        # Load the basic box on plane either from USD or by manually building it
+        # Load the basic boxes hinged either from USD or by manually building it
         # with the builder API, depending on the command-line argument `--from-usd`
         if args.from_usd:
-            # Load the basic box on plane USD and add it to the builder
+            # Load the basic boxes hinged USD and add it to the builder
             msg.notif("Loading USD asset and adding it to the model builder...")
-            asset_file = os.path.join(get_basics_usd_assets_path(), "box_on_plane.usda")
+            asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_hinged.usda")
             robot_builder.add_usd(
                 asset_file,
                 joint_ordering=None,
@@ -57,8 +56,8 @@ class Example:
                 hide_collision_shapes=False,
             )
         else:
-            # Manually build the basic box on plane using the builder API
-            basics_newton.build_box_on_plane(builder=robot_builder)
+            # Manually build the basic boxes hinged using the builder API
+            basics_newton.build_boxes_hinged(builder=robot_builder)
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
@@ -76,9 +75,9 @@ class Example:
         solver_config.use_collision_detector = True
         solver_config.use_fk_solver = False
         solver_config.dynamics.preconditioning = True
-        solver_config.padmm.primal_tolerance = 1e-6
-        solver_config.padmm.dual_tolerance = 1e-6
-        solver_config.padmm.compl_tolerance = 1e-6
+        solver_config.padmm.primal_tolerance = 1e-4
+        solver_config.padmm.dual_tolerance = 1e-4
+        solver_config.padmm.compl_tolerance = 1e-4
         solver_config.padmm.max_iterations = 200
         solver_config.padmm.rho_0 = 0.1
         solver_config.padmm.use_acceleration = True
@@ -102,18 +101,6 @@ class Example:
         self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
         self.solver.reset(self.state_0)
 
-        # Reset the simulation state to a valid initial configuration above the ground
-        msg.notif("Resetting the simulation state to a valid initial configuration above the ground...")
-        self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
-        q_b = wp.quat_identity(dtype=wp.float32)
-        q_base = wp.transformf((0.0, 0.0, 0.1), q_b)
-        q_base = np.array(q_base)
-        q_base = np.tile(q_base, (self.world_count, 1))
-        for w in range(self.world_count):
-            q_base[w, :3] += np.array([0.0, 0.0, 0.2]) * float(w)
-        self.base_q.assign(q_base)
-        self.solver.reset(state_out=self.state_0, base_q=self.base_q)
-
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
         self.capture()
@@ -121,9 +108,9 @@ class Example:
         # If only a single-world is created, set initial
         # camera position for better view of the system
         if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
-            camera_pos = wp.vec3(2.0, 2.0, 0.5)
-            pitch = -5.0
-            yaw = 180.0 + 48.0
+            camera_pos = wp.vec3(-0.5, -5.2, 1.8)
+            pitch = -15.0
+            yaw = 90.0
             self.viewer.set_camera(camera_pos, pitch, yaw)
 
     def capture(self):
@@ -185,9 +172,9 @@ class Example:
         parser.set_defaults(world_count=1)
         parser.add_argument(
             "--from-usd",
-            type=argparse.BooleanOptionalAction,
+            action=argparse.BooleanOptionalAction,
             default=False,
-            help="Load the basic box on plane from USD.",
+            help="Load the basic boxes hinged from USD.",
         )
         return parser
 

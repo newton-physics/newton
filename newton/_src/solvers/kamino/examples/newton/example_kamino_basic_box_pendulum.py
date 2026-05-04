@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example for basic boxes hinged system
+# Example for basic box pendulum system.
 #
-# Shows how to simulate a basic boxes hinged with multiple worlds using SolverKamino.
+# Shows how to simulate a basic box pendulum with multiple worlds using SolverKamino.
 #
-# Command: python -m newton.examples kamino_basic_boxes_hinged --world-count 16
+# Command: python -m newton.examples kamino_basic_box_pendulum --world-count 16
 #
 ###########################################################################
 
@@ -41,12 +41,12 @@ class Example:
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
 
-        # Load the basic boxes hinged either from USD or by manually building it
+        # Load the basic box pendulum either from USD or by manually building it
         # with the builder API, depending on the command-line argument `--from-usd`
         if args.from_usd:
-            # Load the basic boxes hinged USD and add it to the builder
+            # Load the basic box pendulum USD and add it to the builder
             msg.notif("Loading USD asset and adding it to the model builder...")
-            asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_hinged.usda")
+            asset_file = os.path.join(get_basics_usd_assets_path(), "box_pendulum.usda")
             robot_builder.add_usd(
                 asset_file,
                 joint_ordering=None,
@@ -56,8 +56,8 @@ class Example:
                 hide_collision_shapes=False,
             )
         else:
-            # Manually build the basic boxes hinged using the builder API
-            basics_newton.build_boxes_hinged(builder=robot_builder)
+            # Manually build the basic box pendulum using the builder API
+            basics_newton.build_box_pendulum(builder=robot_builder)
 
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
@@ -75,9 +75,9 @@ class Example:
         solver_config.use_collision_detector = True
         solver_config.use_fk_solver = False
         solver_config.dynamics.preconditioning = True
-        solver_config.padmm.primal_tolerance = 1e-4
-        solver_config.padmm.dual_tolerance = 1e-4
-        solver_config.padmm.compl_tolerance = 1e-4
+        solver_config.padmm.primal_tolerance = 1e-6
+        solver_config.padmm.dual_tolerance = 1e-6
+        solver_config.padmm.compl_tolerance = 1e-6
         solver_config.padmm.max_iterations = 200
         solver_config.padmm.rho_0 = 0.1
         solver_config.padmm.use_acceleration = True
@@ -108,9 +108,9 @@ class Example:
         # If only a single-world is created, set initial
         # camera position for better view of the system
         if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
-            camera_pos = wp.vec3(-0.5, -5.2, 1.8)
-            pitch = -15.0
-            yaw = 90.0
+            camera_pos = wp.vec3(-2.0, -2.0, 1.0)
+            pitch = -5.0
+            yaw = 45.0
             self.viewer.set_camera(camera_pos, pitch, yaw)
 
     def capture(self):
@@ -172,9 +172,9 @@ class Example:
         parser.set_defaults(world_count=1)
         parser.add_argument(
             "--from-usd",
-            type=argparse.BooleanOptionalAction,
+            action=argparse.BooleanOptionalAction,
             default=False,
-            help="Load the basic boxes hinged from USD.",
+            help="Load the basic box pendulum from USD.",
         )
         return parser
 
