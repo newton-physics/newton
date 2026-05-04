@@ -1059,14 +1059,9 @@ class ModelBuilder:
         self.joint_parent: list[int] = []
         """Parent body indices accumulated for :attr:`Model.joint_parent`."""
         self.joint_parents: dict[int, list[tuple[int, int]]] = {}
-        """Mapping from child body index to ``(parent_body, joint_idx)`` pairs — one entry per joint
-        attached to the child. Used while composing articulations and for shape-collision-filter lookup
-        (where the per-joint :attr:`joint_collision_filter_parent` flag is consulted)."""
+        """Mapping from child body index to ``(parent_body, joint_idx)`` pairs (one per joint, no dedup)."""
         self.joint_children: dict[int, list[tuple[int, int]]] = {}
-        """Mapping from parent body index to ``(child_body, joint_idx)`` pairs — one entry per joint.
-        Two joints between the same parent/child pair appear as two entries (no dedup), mirroring
-        :attr:`joint_parents` so the per-joint :attr:`joint_collision_filter_parent` flag can be
-        resolved correctly when shapes are added after the joints."""
+        """Mapping from parent body index to ``(child_body, joint_idx)`` pairs (one per joint, no dedup)."""
         self.joint_child: list[int] = []
         """Child body indices accumulated for :attr:`Model.joint_child`."""
         self.joint_axis: list[Vec3] = []
@@ -1126,10 +1121,7 @@ class ModelBuilder:
         """Joint enabled flags accumulated for :attr:`Model.joint_enabled`."""
 
         self.joint_collision_filter_parent: list[bool] = []
-        """Per-joint resolved value of the ``collision_filter_parent`` flag (sentinel ``None`` already
-        resolved via :meth:`_default_filter_parent`). Consulted by :meth:`_finalize_shape` so that the
-        explicit user choice is honored regardless of whether shapes are added before or after the
-        joint. Builder-only — not propagated to :class:`Model`."""
+        """Per-joint resolved ``collision_filter_parent`` flag. Builder-only."""
 
         self.joint_q_start: list[int] = []
         """Joint coordinate start indices accumulated for :attr:`Model.joint_q_start`."""
@@ -1266,8 +1258,7 @@ class ModelBuilder:
 
     @staticmethod
     def _default_filter_parent(joint_type: JointType, parent: int) -> bool:
-        """Default value of ``collision_filter_parent``: ``False`` when the joint connects to world
-        and is not ``FIXED``; ``True`` otherwise."""
+        """Default ``collision_filter_parent``: ``False`` for non-fixed joints to world; ``True`` otherwise."""
         if parent == -1:
             return joint_type == JointType.FIXED
         return True
@@ -3074,7 +3065,6 @@ class ModelBuilder:
 
         start_body_idx = self.body_count
         start_shape_idx = self.shape_count
-        existing_world_shapes = tuple(self.body_shapes[-1])
         for s, b in enumerate(builder.shape_body):
             if b > -1:
                 new_b = b + start_body_idx
@@ -3149,25 +3139,6 @@ class ModelBuilder:
         self.shape_collision_filter_pairs.extend(
             [(i + start_shape_idx, j + start_shape_idx) for i, j in builder.shape_collision_filter_pairs]
         )
-
-        if existing_world_shapes:
-            # Source-local filter pairs were copied above. Add the cross-builder
-            # pairs between destination world shapes and copied bodies whose
-            # joints request parent collision filtering.
-            for i, parent in enumerate(builder.joint_parent):
-                if parent != -1 or not builder.joint_collision_filter_parent[i]:
-                    continue
-
-                child = builder.joint_child[i]
-                for child_shape in builder.body_shapes[child]:
-                    if not builder.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
-                        continue
-
-                    copied_child_shape = child_shape + start_shape_idx
-                    for world_shape in existing_world_shapes:
-                        if not self.shape_flags[world_shape] & ShapeFlags.COLLIDE_SHAPES:
-                            continue
-                        self.add_shape_collision_filter_pair(world_shape, copied_child_shape)
 
         # Handle world assignments
         # For particles
@@ -3779,7 +3750,7 @@ class ModelBuilder:
                 If None, the identity transform is used.
             child_xform: The transform from the child body frame to the joint child anchor frame.
                 If None, the identity transform is used.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` when the joint connects to world and is not ``FIXED``; ``True`` otherwise.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for non-fixed joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
             custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT_DOF` or :attr:`Model.AttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) a single scalar value that is broadcast to all DOFs/coordinates of the joint. For joints with zero DOFs (e.g., fixed joints), JOINT_DOF attributes are silently skipped. Custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT` require a single value to be defined.
 
@@ -3973,7 +3944,7 @@ class ModelBuilder:
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` when the parent is world; ``True`` otherwise.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
@@ -4065,7 +4036,7 @@ class ModelBuilder:
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` when the parent is world; ``True`` otherwise.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
@@ -4132,7 +4103,7 @@ class ModelBuilder:
             armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
             friction: Friction coefficient for the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` when the parent is world; ``True`` otherwise.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
             actuator_mode: The actuator mode for this joint's DOFs. If None, defaults to NONE.
@@ -4248,7 +4219,7 @@ class ModelBuilder:
             child_xform: The transform of the joint in the child body's local frame.
             parent: The index of the parent body (-1 by default to use the world frame, e.g. to make the child body and its children a floating-base mechanism).
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` when the parent is world; ``True`` otherwise.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
@@ -4305,7 +4276,7 @@ class ModelBuilder:
             child_xform: The transform of the joint in the child body's local frame.
             min_distance: The minimum distance between the bodies (no limit if negative).
             max_distance: The maximum distance between the bodies (no limit if negative).
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` when the parent is world; ``True`` otherwise.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
@@ -4367,7 +4338,7 @@ class ModelBuilder:
             parent_xform: The transform from the parent body frame to the joint parent anchor frame.
             child_xform: The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` when the parent is world; ``True`` otherwise.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
@@ -4439,7 +4410,7 @@ class ModelBuilder:
                 this is a dimensionless (Rayleigh-style) coefficient. If None,
                 defaults to 0.0.
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` when the parent is world; ``True`` otherwise.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD
                 frequency attributes.

@@ -532,23 +532,6 @@ class TestModelMesh(unittest.TestCase):
                 pair = (min(mesh_shape, ground_shape), max(mesh_shape, ground_shape))
                 self.assertEqual(builder.shape_collision_filter_pairs.count(pair), 1)
 
-    def test_collision_filter_fixed_to_world_add_builder(self):
-        """Merging a fixed-to-world builder should filter against existing world shapes."""
-
-        fixed_base_builder = ModelBuilder()
-        body = fixed_base_builder.add_body()
-        fixed_base_builder.add_joint_fixed(parent=-1, child=body)
-        base_shape = fixed_base_builder.add_shape_sphere(body=body, radius=0.5)
-
-        scene = ModelBuilder()
-        ground_shape = scene.add_ground_plane()
-        start_shape_idx = scene.shape_count
-        scene.add_builder(fixed_base_builder)
-
-        copied_base_shape = start_shape_idx + base_shape
-        pair = (min(copied_base_shape, ground_shape), max(copied_base_shape, ground_shape))
-        self.assertEqual(scene.shape_collision_filter_pairs.count(pair), 1)
-
     def test_collision_filter_floating_base_not_filtered(self):
         """Floating-base bodies (FREE joint to world) must NOT be filtered against
         world shapes — they need to be able to land on the ground."""

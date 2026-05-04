@@ -89,7 +89,7 @@
 - Fix `SensorRaycast` and viewer picking ignoring `HFIELD` (heightfield) geometry
 - Fix `SensorTiledCamera` textured albedo output rendering flat colors when color and normal outputs are disabled
 - Fix `ModelBuilder.add_shape_heightfield` `scale` being ignored by narrow-phase collision and raycast
-- Fix `collision_filter_parent` being silently ignored on joints to world (`parent=-1`) for all `add_joint_*` methods; explicit values are now honored regardless of joint type, including when builders are composed with `add_builder()`. The default smart-resolves to `True` for `add_joint_fixed(parent=-1, ...)` (auto-filtering child-body shapes against world-static shapes such as a ground plane) and `False` otherwise
+- Fix `collision_filter_parent` silently ignored on joints to world (`parent=-1`); now honored for all `add_joint_*` methods, with `add_joint_fixed(parent=-1, ...)` defaulting to filter child shapes against world-static shapes
 - Fix multi-world `qfrc_actuator` conversion using the wrong body center of mass for worlds with `worldid > 0`
 - Fix `SolverMuJoCo.__init__` time scaling with `world_count × actuators_per_world` instead of `actuators_per_world` by vectorizing the template-world filter for site-targeted actuators
 - Fix compressed tets in `evaluate_volumetric_neo_hookean_force_and_hessian` producing an indefinite Hessian by clamping the cofactor-derivative coefficient to `max(0, s)`, removing a contribution that could corrupt the VBD inner solve
