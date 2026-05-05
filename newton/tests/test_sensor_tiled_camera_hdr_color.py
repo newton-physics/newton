@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import unittest
 
 import numpy as np
 import warp as wp
@@ -39,23 +40,27 @@ def _render_tiny_color_and_hdr(model):
     return np.asarray(color_image.numpy(), dtype=np.uint32), np.asarray(hdr_color_image.numpy(), dtype=np.float32)
 
 
-def test_hdr_color_is_available_next_to_packed_color():
-    model = _build_single_sphere_model()
+class TestSensorTiledCameraHdrColor(unittest.TestCase):
+    def test_hdr_color_is_available_next_to_packed_color(self):
+        model = _build_single_sphere_model()
 
-    color, hdr_color = _render_tiny_color_and_hdr(model)
+        color, hdr_color = _render_tiny_color_and_hdr(model)
 
-    assert color.shape == (1, 1, 4, 4)
-    assert hdr_color.shape == (1, 1, 4, 4, 3)
-    assert color.dtype == np.uint32
-    assert hdr_color.dtype == np.float32
-    assert np.isfinite(hdr_color).all()
-    assert hdr_color.max() > 0.0
+        self.assertEqual(color.shape, (1, 1, 4, 4))
+        self.assertEqual(hdr_color.shape, (1, 1, 4, 4, 3))
+        self.assertEqual(color.dtype, np.uint32)
+        self.assertEqual(hdr_color.dtype, np.float32)
+        self.assertTrue(np.isfinite(hdr_color).all())
+        self.assertGreater(hdr_color.max(), 0.0)
+
+    def test_hdr_color_matches_linear_color_before_packing(self):
+        model = _build_single_sphere_model()
+
+        color, hdr_color = _render_tiny_color_and_hdr(model)
+        packed_rgb = color.view(np.uint8).reshape(*color.shape, 4)[..., :3].astype(np.float32) / 255.0
+
+        np.testing.assert_allclose(np.clip(hdr_color, 0.0, 1.0), packed_rgb, atol=1.0 / 255.0)
 
 
-def test_hdr_color_matches_linear_color_before_packing():
-    model = _build_single_sphere_model()
-
-    color, hdr_color = _render_tiny_color_and_hdr(model)
-    packed_rgb = color.view(np.uint8).reshape(*color.shape, 4)[..., :3].astype(np.float32) / 255.0
-
-    np.testing.assert_allclose(np.clip(hdr_color, 0.0, 1.0), packed_rgb, atol=1.0 / 255.0)
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

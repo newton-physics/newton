@@ -165,7 +165,11 @@ def create_kernel(
         if wp.static(state.render_shape_index):
             out_shape_index[out_index] = closest_hit.shape_index
 
-        if not wp.static(state.render_color) and not wp.static(state.render_albedo) and not wp.static(state.render_hdr_color):
+        if (
+            not wp.static(state.render_color)
+            and not wp.static(state.render_albedo)
+            and not wp.static(state.render_hdr_color)
+        ):
             return
 
         is_gaussian = wp.bool(False)
