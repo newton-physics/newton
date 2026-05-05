@@ -394,6 +394,18 @@ class TestRigidFrictionRamp(unittest.TestCase):
     def test_view_friction_grid_mujoco_warp(self):
         self._run_viewer("mujoco_warp")
 
+    @unittest.skip("Visual debugging - run manually to view simulation")
+    def test_view_stopping_distance_xpbd(self):
+        self._run_stopping_distance_viewer("xpbd")
+
+    @unittest.skip("Visual debugging - run manually to view simulation")
+    def test_view_stopping_distance_vbd(self):
+        self._run_stopping_distance_viewer("vbd")
+
+    @unittest.skip("Visual debugging - run manually to view simulation")
+    def test_view_stopping_distance_mujoco_warp(self):
+        self._run_stopping_distance_viewer("mujoco_warp")
+
     def _run_viewer(self, solver_name):
         device = wp.get_device("cuda:0")
         cfg = _SOLVERS[solver_name]
@@ -414,6 +426,56 @@ class TestRigidFrictionRamp(unittest.TestCase):
             return
 
         print(f"\nFriction-ramp grid with '{solver_name}' solver for {VIEWER_FRAMES} frames...")
+        print("Close the viewer window or press Ctrl+C to stop.")
+
+        sim_time = 0.0
+        try:
+            for _ in range(VIEWER_FRAMES):
+                viewer.begin_frame(sim_time)
+                viewer.log_state(state_0)
+                if contacts is not None:
+                    viewer.log_contacts(contacts, state_0)
+                viewer.end_frame()
+
+                state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, 1)
+                sim_time += SIM_DT
+                time.sleep(SIM_DT)
+        except KeyboardInterrupt:
+            print("\nStopped by user.")
+
+    def _run_stopping_distance_viewer(self, solver_name):
+        device = wp.get_device("cuda:0")
+        cfg = _SOLVERS[solver_name]
+
+        model, box_ids = build_stopping_distance_scene(device)
+        solver = cfg["factory"](model)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        is_mujoco = isinstance(solver, newton.solvers.SolverMuJoCo)
+        contacts = model.contacts() if not is_mujoco else None
+
+        qd = state_0.body_qd.numpy()
+        for bid in box_ids:
+            qd[bid, 0] = STOPPING_V0
+        state_0.body_qd.assign(qd)
+
+        if is_mujoco:
+            q_ik = wp.zeros_like(model.joint_q, device=device)
+            qd_ik = wp.zeros_like(model.joint_qd, device=device)
+            newton.eval_ik(model, state_0, q_ik, qd_ik)
+            state_0.joint_q.assign(q_ik)
+            state_0.joint_qd.assign(qd_ik)
+
+        try:
+            viewer = newton.viewer.ViewerGL()
+            viewer.set_model(model)
+            viewer.set_camera(pos=wp.vec3(4.0, -12.0, 8.0), pitch=-25.0, yaw=90.0)
+        except Exception as e:
+            self.skipTest(f"ViewerGL not available: {e}")
+            return
+
+        print(f"\nStopping-distance scene with '{solver_name}' solver for {VIEWER_FRAMES} frames...")
         print("Close the viewer window or press Ctrl+C to stop.")
 
         sim_time = 0.0
