@@ -35,9 +35,9 @@ from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 @wp.kernel
 def _test_control_callback(
-    model_dt: wp.array(dtype=float32),
-    data_time: wp.array(dtype=float32),
-    control_tau_j: wp.array(dtype=float32),
+    model_dt: wp.array[float32],
+    data_time: wp.array[float32],
+    control_tau_j: wp.array[float32],
 ):
     """
     An example control callback kernel.
@@ -86,6 +86,7 @@ def test_prestep_callback(
             solver._data.time.time,
             control.tau_j,
         ],
+        device=solver.device,
     )
 
 
@@ -1098,7 +1099,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         # Create a single-instance system
         single_builder = build_boxes_fourbar(ground=False)
-        for i, body in enumerate(single_builder.bodies):
+        for i, body in enumerate(single_builder.all_bodies):
             msg.info(f"[single]: [builder]: body {i}: q_i: {body.q_i_0}")
             msg.info(f"[single]: [builder]: body {i}: u_i: {body.u_i_0}")
 
@@ -1109,7 +1110,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         single_control = single_model.control()
         self.assertEqual(single_model.size.sum_of_num_bodies, 4)
         self.assertEqual(single_model.size.sum_of_num_joints, 4)
-        for i, body in enumerate(single_builder.bodies):
+        for i, body in enumerate(single_builder.all_bodies):
             np.testing.assert_allclose(single_model.bodies.q_i_0.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
             np.testing.assert_allclose(single_model.bodies.u_i_0.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
             np.testing.assert_allclose(single_state_p.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
@@ -1197,7 +1198,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Create a multi-instance system by replicating the single-instance builder
         multi_builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_fourbar, ground=False)
-        for i, body in enumerate(multi_builder.bodies):
+        for i, body in enumerate(multi_builder.all_bodies):
             msg.info(f"[multi]: [builder]: body {i}: bid: {body.bid}")
             msg.info(f"[multi]: [builder]: body {i}: q_i: {body.q_i_0}")
             msg.info(f"[multi]: [builder]: body {i}: u_i: {body.u_i_0}")
@@ -1212,7 +1213,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         multi_solver = SolverKaminoImpl(model=multi_model)
         self.assertEqual(multi_model.size.sum_of_num_bodies, single_model.size.sum_of_num_bodies * num_worlds)
         self.assertEqual(multi_model.size.sum_of_num_joints, single_model.size.sum_of_num_joints * num_worlds)
-        for i, body in enumerate(multi_builder.bodies):
+        for i, body in enumerate(multi_builder.all_bodies):
             np.testing.assert_allclose(multi_model.bodies.q_i_0.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
             np.testing.assert_allclose(multi_model.bodies.u_i_0.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
             np.testing.assert_allclose(multi_state_p.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
@@ -1275,7 +1276,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         """
         # Create a single-instance system
         single_builder = build_boxes_fourbar(ground=True)
-        for i, body in enumerate(single_builder.bodies):
+        for i, body in enumerate(single_builder.all_bodies):
             msg.info(f"[single]: [builder]: body {i}: q_i: {body.q_i_0}")
             msg.info(f"[single]: [builder]: body {i}: u_i: {body.u_i_0}")
 
@@ -1286,7 +1287,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         single_control = single_model.control()
         self.assertEqual(single_model.size.sum_of_num_bodies, 4)
         self.assertEqual(single_model.size.sum_of_num_joints, 4)
-        for i, body in enumerate(single_builder.bodies):
+        for i, body in enumerate(single_builder.all_bodies):
             np.testing.assert_allclose(single_model.bodies.q_i_0.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
             np.testing.assert_allclose(single_model.bodies.u_i_0.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
             np.testing.assert_allclose(single_state_p.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
@@ -1378,7 +1379,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Create a multi-instance system by replicating the single-instance builder
         multi_builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_boxes_fourbar, ground=True)
-        for i, body in enumerate(multi_builder.bodies):
+        for i, body in enumerate(multi_builder.all_bodies):
             msg.info(f"[multi]: [builder]: body {i}: bid: {body.bid}")
             msg.info(f"[multi]: [builder]: body {i}: q_i: {body.q_i_0}")
             msg.info(f"[multi]: [builder]: body {i}: u_i: {body.u_i_0}")
@@ -1397,7 +1398,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         multi_solver = SolverKaminoImpl(model=multi_model, contacts=multi_contacts)
         self.assertEqual(multi_model.size.sum_of_num_bodies, single_model.size.sum_of_num_bodies * num_worlds)
         self.assertEqual(multi_model.size.sum_of_num_joints, single_model.size.sum_of_num_joints * num_worlds)
-        for i, body in enumerate(multi_builder.bodies):
+        for i, body in enumerate(multi_builder.all_bodies):
             np.testing.assert_allclose(multi_model.bodies.q_i_0.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)
             np.testing.assert_allclose(multi_model.bodies.u_i_0.numpy()[i], body.u_i_0, rtol=rtol, atol=atol)
             np.testing.assert_allclose(multi_state_p.q_i.numpy()[i], body.q_i_0, rtol=rtol, atol=atol)

@@ -98,6 +98,53 @@ wp.set_module_options({"enable_backward": False})
 
 
 ###
+# Helpers
+###
+
+
+@wp.func
+def upper_triangular_indices_from_index(index: int, mat_size: int):
+    """
+    Maps a single index to a pair of indices of the upper triangular part of a
+    quadratic matrix.
+
+    Args:
+        index: Single index.
+        mat_size: Size of the matrix (number of rows or columns).
+
+    Returns:
+        Pair of matrix indices for the upper triangular part of the matrix, or
+        `-1, -1` if the input index is outside the valid range.
+    """
+    # Map input index to upper-triangular index (i, j):
+    #   Row i starts at flat position f(i) = i * mat_size - i * (i - 1) / 2
+    #   and contains (mat_size - i) elements.
+    # Total elements = mat_size * (mat_size + 1) / 2.
+
+    # Return invalid indices if index is outside of valid range.
+    if index < 0 or index >= mat_size * (mat_size + 1) // 2:
+        return -1, -1
+
+    # Recover row i: largest i such that f(i) <= index (integer binary search; avoids float32 sqrt)
+    lo = int32(0)
+    hi = mat_size - int32(1)
+    i = int32(0)
+    while lo <= hi:
+        mid = lo + (hi - lo) // 2
+        fi = mid * mat_size - mid * (mid - 1) // 2
+        if fi <= index:
+            i = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    # Recover column j: offset within row i, shifted by i (upper triangle starts at diagonal)
+    j = index - i * mat_size + i * (i + 1) // 2
+
+    return i, j
+
+
+###
 # Kernels
 ###
 
@@ -105,23 +152,22 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _build_delassus_elementwise_dense(
     # Inputs:
-    model_info_num_bodies: wp.array(dtype=int32),
-    model_info_bodies_offset: wp.array(dtype=int32),
-    model_bodies_inv_m_i: wp.array(dtype=float32),
-    data_bodies_inv_I_i: wp.array(dtype=mat33f),
-    jacobians_cts_offset: wp.array(dtype=int32),
-    jacobians_cts_data: wp.array(dtype=float32),
-    delassus_dim: wp.array(dtype=int32),
-    delassus_mio: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array[int32],
+    model_bodies_inv_m_i: wp.array[float32],
+    data_bodies_inv_I_i: wp.array[mat33f],
+    jacobians_cts_offset: wp.array[int32],
+    jacobians_cts_data: wp.array[float32],
+    delassus_dim: wp.array[int32],
+    delassus_mio: wp.array[int32],
     # Outputs:
-    delassus_D: wp.array(dtype=float32),
+    delassus_D: wp.array[float32],
 ):
-    # Retrieve the thread index as the world index and Delassus element index
+    # Retrieve the thread index as the world index and upper-triangle element index
     wid, tid = wp.tid()
 
     # Retrieve the world dimensions
-    nb = model_info_num_bodies[wid]
     bio = model_info_bodies_offset[wid]
+    nb = model_info_bodies_offset[wid + 1] - bio
 
     # Retrieve the problem dimensions
     ncts = delassus_dim[wid]
@@ -130,12 +176,10 @@ def _build_delassus_elementwise_dense(
     if ncts == 0:
         return
 
-    # Compute i (row) and j (col) indices from the tid
-    i = tid // ncts
-    j = tid % ncts
-
-    # Skip if indices exceed the problem size
-    if i >= ncts or j >= ncts:
+    # The Delassus matrix is symmetric, so we only compute the upper triangle (i <= j).
+    # Recover matrix indices from tid.
+    i, j = upper_triangular_indices_from_index(tid, ncts)
+    if i < 0 or i >= ncts or j < i or j >= ncts:
         return
 
     # Retrieve the world's matrix offsets
@@ -146,13 +190,11 @@ def _build_delassus_elementwise_dense(
     nbd = 6 * nb
 
     # Buffers
-    # tmp = vec3f(0.0)
     Jv_i = vec3f(0.0)
     Jv_j = vec3f(0.0)
     Jw_i = vec3f(0.0)
     Jw_j = vec3f(0.0)
     D_ij = float32(0.0)
-    D_ji = float32(0.0)
 
     # Loop over rigid body blocks
     # NOTE: k is the body index w.r.t the world
@@ -176,37 +218,31 @@ def _build_delassus_elementwise_dense(
             Jw_j[d] = jacobians_cts_data[jio_jk + d + 3]
 
         # Linear term: inv_m_k * dot(Jv_i, Jv_j)
+        # Angular term: dot(Jw_i, inv_I_k @ Jw_j)
         inv_m_k = model_bodies_inv_m_i[bid_k]
-        lin_ij = inv_m_k * wp.dot(Jv_i, Jv_j)
-        lin_ji = inv_m_k * wp.dot(Jv_j, Jv_i)
-
-        # Angular term: dot(Jw_i.T * I_k, Jw_j)
         inv_I_k = data_bodies_inv_I_i[bid_k]
-        ang_ij = wp.dot(Jw_i, inv_I_k @ Jw_j)
-        ang_ji = wp.dot(Jw_j, inv_I_k @ Jw_i)
+        D_ij += inv_m_k * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, inv_I_k @ Jw_j)
 
-        # Accumulate
-        D_ij += lin_ij + ang_ij
-        D_ji += lin_ji + ang_ji
-
-    # Store the result in the Delassus matrix
-    delassus_D[dmio + ncts * i + j] = 0.5 * (D_ij + D_ji)
+    # Write upper triangle and mirror to lower
+    delassus_D[dmio + ncts * i + j] = D_ij
+    if i != j:
+        delassus_D[dmio + ncts * j + i] = D_ij
 
 
 @wp.kernel
 def _build_delassus_elementwise_sparse(
     # Inputs:
-    model_info_bodies_offset: wp.array(dtype=int32),
-    model_bodies_inv_m_i: wp.array(dtype=float32),
-    data_bodies_inv_I_i: wp.array(dtype=mat33f),
-    jacobian_cts_num_nzb: wp.array(dtype=int32),
-    jacobian_cts_nzb_start: wp.array(dtype=int32),
-    jacobian_cts_nzb_coords: wp.array2d(dtype=int32),
-    jacobian_cts_nzb_values: wp.array(dtype=vec6f),
-    delassus_dim: wp.array(dtype=int32),
-    delassus_mio: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array[int32],
+    model_bodies_inv_m_i: wp.array[float32],
+    data_bodies_inv_I_i: wp.array[mat33f],
+    jacobian_cts_num_nzb: wp.array[int32],
+    jacobian_cts_nzb_start: wp.array[int32],
+    jacobian_cts_nzb_coords: wp.array2d[int32],
+    jacobian_cts_nzb_values: wp.array[vec6f],
+    delassus_dim: wp.array[int32],
+    delassus_mio: wp.array[int32],
     # Outputs:
-    delassus_D: wp.array(dtype=float32),
+    delassus_D: wp.array[float32],
 ):
     # Retrieve the thread index as the world index and Jacobian block index pair
     wid, tid = wp.tid()
@@ -244,6 +280,12 @@ def _build_delassus_elementwise_sparse(
     if block_coords_i[1] != block_coords_j[1]:
         return
 
+    # The Delassus matrix is symmetric, so we only compute the upper triangle (ct_i <= ct_j).
+    ct_i = block_coords_i[0]
+    ct_j = block_coords_j[0]
+    if ct_i > ct_j:
+        return
+
     # Body index (bid) of body k w.r.t the model, from Jacobian block coords
     bid_k = bio + block_coords_i[1] // 6
 
@@ -261,33 +303,27 @@ def _build_delassus_elementwise_sparse(
     Jw_j = vec3f(block_j[3], block_j[4], block_j[5])
 
     # Linear term: inv_m_k * dot(Jv_i, Jv_j)
+    # Angular term: dot(Jw_i, inv_I_k @ Jw_j)
     inv_m_k = model_bodies_inv_m_i[bid_k]
-    lin_ij = inv_m_k * wp.dot(Jv_i, Jv_j)
-    lin_ji = inv_m_k * wp.dot(Jv_j, Jv_i)
-
-    # Angular term: dot(Jw_i.T * I_k, Jw_j)
     inv_I_k = data_bodies_inv_I_i[bid_k]
-    ang_ij = wp.dot(Jw_i, inv_I_k @ Jw_j)
-    ang_ji = wp.dot(Jw_j, inv_I_k @ Jw_i)
+    D_ij = inv_m_k * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, inv_I_k @ Jw_j)
 
-    # Compute sum
-    D_ij = lin_ij + ang_ij
-    D_ji = lin_ji + ang_ji
-
-    # Store the result in the Delassus matrix
-    wp.atomic_add(delassus_D, dmio + ncts * block_coords_i[0] + block_coords_j[0], 0.5 * (D_ij + D_ji))
+    # Write upper triangle and mirror to lower
+    wp.atomic_add(delassus_D, dmio + ncts * ct_i + ct_j, D_ij)
+    if ct_i != ct_j:
+        wp.atomic_add(delassus_D, dmio + ncts * ct_j + ct_i, D_ij)
 
 
 @wp.kernel
 def _add_joint_armature_diagonal_regularization_dense(
     # Inputs:
-    model_info_num_joint_dynamic_cts: wp.array(dtype=int32),
-    model_info_joint_dynamic_cts_offset: wp.array(dtype=int32),
-    model_joint_inv_m_j: wp.array(dtype=float32),
-    delassus_dim: wp.array(dtype=int32),
-    delassus_mio: wp.array(dtype=int32),
+    model_info_num_joint_dynamic_cts: wp.array[int32],
+    model_info_joint_dynamic_cts_offset: wp.array[int32],
+    model_joint_inv_m_j: wp.array[float32],
+    delassus_dim: wp.array[int32],
+    delassus_mio: wp.array[int32],
     # Outputs:
-    delassus_D: wp.array(dtype=float32),
+    delassus_D: wp.array[float32],
 ):
     # Retrieve the thread index as the world index and Delassus element index
     wid, tid = wp.tid()
@@ -316,12 +352,12 @@ def _add_joint_armature_diagonal_regularization_dense(
 @wp.kernel
 def _regularize_delassus_diagonal_dense(
     # Inputs:
-    delassus_dim: wp.array(dtype=int32),
-    delassus_vio: wp.array(dtype=int32),
-    delassus_mio: wp.array(dtype=int32),
-    eta: wp.array(dtype=float32),
+    delassus_dim: wp.array[int32],
+    delassus_vio: wp.array[int32],
+    delassus_mio: wp.array[int32],
+    eta: wp.array[float32],
     # Outputs:
-    delassus_D: wp.array(dtype=float32),
+    delassus_D: wp.array[float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -341,13 +377,13 @@ def _regularize_delassus_diagonal_dense(
 
 @wp.kernel
 def _merge_inv_mass_matrix_kernel(
-    model_info_bodies_offset: wp.array(dtype=int32),
-    model_bodies_inv_m_i: wp.array(dtype=float32),
-    data_bodies_inv_I_i: wp.array(dtype=mat33f),
-    num_nzb: wp.array(dtype=int32),
-    nzb_start: wp.array(dtype=int32),
-    nzb_coords: wp.array2d(dtype=int32),
-    nzb_values: wp.array(dtype=vec6f),
+    model_info_bodies_offset: wp.array[int32],
+    model_bodies_inv_m_i: wp.array[float32],
+    data_bodies_inv_I_i: wp.array[mat33f],
+    num_nzb: wp.array[int32],
+    nzb_start: wp.array[int32],
+    nzb_coords: wp.array2d[int32],
+    nzb_values: wp.array[vec6f],
 ):
     """
     Kernel to merge the inverse mass matrix into an existing sparse matrix, so that the resulting
@@ -404,13 +440,13 @@ def _make_merge_preconditioner_kernel(block_type: BlockDType):
     @wp.kernel
     def merge_preconditioner_kernel(
         # Inputs:
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        row_start: wp.array(dtype=int32),
-        preconditioner: wp.array(dtype=float32),
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        row_start: wp.array[int32],
+        preconditioner: wp.array[float32],
         # Outputs:
-        nzb_values: wp.array(dtype=block_type.warp_type),
+        nzb_values: wp.array[block_type.warp_type],
     ):
         mat_id, block_idx = wp.tid()
 
@@ -445,12 +481,12 @@ def _make_merge_preconditioner_kernel(block_type: BlockDType):
 @wp.kernel
 def _add_armature_regularization_sparse(
     # Inputs:
-    model_info_num_joint_dynamic_cts: wp.array(dtype=int32),
-    model_info_joint_dynamic_cts_offset: wp.array(dtype=int32),
-    row_start: wp.array(dtype=int32),
-    model_joint_inv_m_j: wp.array(dtype=float32),
+    model_info_num_joint_dynamic_cts: wp.array[int32],
+    model_info_joint_dynamic_cts_offset: wp.array[int32],
+    row_start: wp.array[int32],
+    model_joint_inv_m_j: wp.array[float32],
     # Outputs:
-    combined_regularization: wp.array(dtype=float32),
+    combined_regularization: wp.array[float32],
 ):
     # Retrieve the thread index as the world index and joint dynamics index
     wid, tid = wp.tid()
@@ -478,13 +514,13 @@ def _add_armature_regularization_sparse(
 @wp.kernel
 def _add_armature_regularization_preconditioned_sparse(
     # Inputs:
-    model_info_num_joint_dynamic_cts: wp.array(dtype=int32),
-    model_info_joint_dynamic_cts_offset: wp.array(dtype=int32),
-    model_joint_inv_m_j: wp.array(dtype=float32),
-    row_start: wp.array(dtype=int32),
-    preconditioner: wp.array(dtype=float32),
+    model_info_num_joint_dynamic_cts: wp.array[int32],
+    model_info_joint_dynamic_cts_offset: wp.array[int32],
+    model_joint_inv_m_j: wp.array[float32],
+    row_start: wp.array[int32],
+    preconditioner: wp.array[float32],
     # Outputs:
-    combined_regularization: wp.array(dtype=float32),
+    combined_regularization: wp.array[float32],
 ):
     # Retrieve the thread index as the world index and joint dynamics index
     wid, tid = wp.tid()
@@ -515,16 +551,16 @@ def _add_armature_regularization_preconditioned_sparse(
 @wp.kernel
 def _compute_block_sparse_delassus_diagonal(
     # Inputs:
-    model_info_bodies_offset: wp.array(dtype=int32),
-    model_bodies_inv_m_i: wp.array(dtype=float32),
-    data_bodies_inv_I_i: wp.array(dtype=mat33f),
-    bsm_nzb_start: wp.array(dtype=int32),
-    bsm_num_nzb: wp.array(dtype=int32),
-    bsm_nzb_coords: wp.array2d(dtype=int32),
-    bsm_nzb_values: wp.array(dtype=vec6f),
-    vec_start: wp.array(dtype=int32),
+    model_info_bodies_offset: wp.array[int32],
+    model_bodies_inv_m_i: wp.array[float32],
+    data_bodies_inv_I_i: wp.array[mat33f],
+    bsm_nzb_start: wp.array[int32],
+    bsm_num_nzb: wp.array[int32],
+    bsm_nzb_coords: wp.array2d[int32],
+    bsm_nzb_values: wp.array[vec6f],
+    vec_start: wp.array[int32],
     # Outputs:
-    diag: wp.array(dtype=float32),
+    diag: wp.array[float32],
 ):
     """
     Computes the diagonal entries of the Delassus matrix by summing up the contributions of each
@@ -574,13 +610,13 @@ def _compute_block_sparse_delassus_diagonal(
 
 @wp.kernel
 def _add_matrix_diag_product(
-    model_data_num_total_cts: wp.array(dtype=int32),
-    row_start: wp.array(dtype=int32),
-    d: wp.array(dtype=float32),
-    x: wp.array(dtype=float32),
-    y: wp.array(dtype=float32),
+    model_data_num_total_cts: wp.array[int32],
+    row_start: wp.array[int32],
+    d: wp.array[float32],
+    x: wp.array[float32],
+    y: wp.array[float32],
     alpha: float,
-    world_mask: wp.array(dtype=int32),
+    world_mask: wp.array[int32],
 ):
     """
     Adds the product of a vector with a diagonal matrix to another vector: y += alpha * diag(d) @ x
@@ -600,14 +636,14 @@ def _add_matrix_diag_product(
 @wp.kernel
 def _scale_row_vector_kernel(
     # Matrix data:
-    matrix_dims: wp.array2d(dtype=int32),
+    matrix_dims: wp.array2d[int32],
     # Vector block offsets:
-    row_start: wp.array(dtype=int32),
+    row_start: wp.array[int32],
     # Inputs:
-    x: wp.array(dtype=Any),
+    x: wp.array[Any],
     beta: Any,
     # Mask:
-    matrix_mask: wp.array(dtype=int32),
+    matrix_mask: wp.array[int32],
 ):
     """
     Computes a vector scaling for all active entries: y = beta * y
@@ -629,22 +665,22 @@ def _make_block_sparse_gemv_regularization_kernel(alpha: float32):
     @wp.kernel
     def _block_sparse_gemv_regularization_kernel(
         # Matrix data:
-        dims: wp.array2d(dtype=int32),
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        nzb_values: wp.array(dtype=vec6f),
+        dims: wp.array2d[int32],
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        nzb_values: wp.array[vec6f],
         # Vector block offsets:
-        row_start: wp.array(dtype=int32),
-        col_start: wp.array(dtype=int32),
+        row_start: wp.array[int32],
+        col_start: wp.array[int32],
         # Regularization:
-        eta: wp.array(dtype=float32),
+        eta: wp.array[float32],
         # Vector:
-        x: wp.array(dtype=float32),
-        y: wp.array(dtype=float32),
-        z: wp.array(dtype=float32),
+        x: wp.array[float32],
+        y: wp.array[float32],
+        z: wp.array[float32],
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         """
         Computes a generalized matrix-vector product with an added diagonal regularization component:
@@ -705,7 +741,6 @@ class DelassusOperator:
         contacts: ContactsKamino | None = None,
         solver: LinearSolverType = None,
         solver_kwargs: dict[str, Any] | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         Creates a Delassus operator for the given model, limits and contacts containers.
@@ -724,7 +759,6 @@ class DelassusOperator:
             data (DataKamino, optional): The model data container holding the state info and data.
             limits (LimitsKamino, optional): The container holding the allocated joint-limit data.
             contacts (ContactsKamino, optional): The container holding the allocated contacts data.
-            device (wp.DeviceLike, optional): The device identifier for the Delassus operator. Defaults to None.
             factorizer (CholeskyFactorizer, optional): An optional Cholesky factorization object. Defaults to None.
         """
         # Declare and initialize the host-side cache of the necessary memory allocations
@@ -735,8 +769,8 @@ class DelassusOperator:
         self._world_maxsize: list[int] = []
         self._max_of_max_total_D_size: int = 0
 
-        # Cache the requested device
-        self._device: wp.DeviceLike = device
+        # Declare the device cache
+        self._device: wp.DeviceLike = None
 
         # Declare the model size cache
         self._size: SizeKamino | None = None
@@ -756,7 +790,6 @@ class DelassusOperator:
                 contacts=contacts,
                 solver=solver,
                 solver_kwargs=solver_kwargs,
-                device=device,
             )
 
     @property
@@ -819,16 +852,14 @@ class DelassusOperator:
         limits: LimitsKamino | None = None,
         contacts: ContactsKamino | None = None,
         solver: LinearSolverType = None,
-        device: wp.DeviceLike = None,
         solver_kwargs: dict[str, Any] | None = None,
     ):
         """
-        Allocates the Delassus operator with the specified dimensions and device.
+        Allocates the Delassus operator with the specified dimensions.
 
         Args
         ----
             dims (List[int]): The dimensions of the Delassus matrix for each world.
-            device (wp.DeviceLike, optional): The device identifier for the Delassus operator. Defaults to None.
             factorizer (CholeskyFactorizer, optional): An optional Cholesky factorization object. Defaults to None.
         """
 
@@ -872,9 +903,8 @@ class DelassusOperator:
         self._model_maxsize = sum(self._world_size)
         self._max_of_max_total_D_size = max(self._world_size)
 
-        # Override the device identifier if specified, otherwise use the current device
-        if device is not None:
-            self._device = device
+        # Use the model's device
+        self._device = model.device
 
         # Construct the Delassus operator data structure
         self._operator = DenseLinearOperatorData()
@@ -952,14 +982,18 @@ class DelassusOperator:
         if reset_to_zero:
             self.zero()
 
-        # Build the Delassus matrix parallelized element-wise
+        # Build the Delassus matrix parallelized over the upper triangle.
+        # Aligns to warp size (32) to avoid partially-filled warps.
         if isinstance(jacobians, DenseSystemJacobians):
+            max_ncts = max(self._world_dims) if self._world_dims else 0
+            upper_tri_size = max_ncts * (max_ncts + 1) // 2
+            warp_size = 32
+            upper_tri_size = ((upper_tri_size + warp_size - 1) // warp_size) * warp_size
             wp.launch(
                 kernel=_build_delassus_elementwise_dense,
-                dim=(self._size.num_worlds, self._max_of_max_total_D_size),
+                dim=(self._size.num_worlds, upper_tri_size),
                 inputs=[
                     # Inputs:
-                    model.info.num_bodies,
                     model.info.bodies_offset,
                     model.bodies.inv_m_i,
                     data.bodies.inv_I_i,
@@ -970,6 +1004,7 @@ class DelassusOperator:
                     # Outputs:
                     self._operator.mat,
                 ],
+                device=self._device,
             )
         else:
             jacobian_cts = jacobians._J_cts.bsm
@@ -990,6 +1025,7 @@ class DelassusOperator:
                     # Outputs:
                     self._operator.mat,
                 ],
+                device=self._device,
             )
 
         # Add armature regularization to the upper diagonal if dynamic joint constraints are present
@@ -1007,6 +1043,7 @@ class DelassusOperator:
                     # Outputs:
                     self._operator.mat,
                 ],
+                device=self._device,
             )
 
     def regularize(self, eta: wp.array):
@@ -1022,6 +1059,7 @@ class DelassusOperator:
             kernel=_regularize_delassus_diagonal_dense,
             dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
             inputs=[self._operator.info.dim, self._operator.info.vio, self._operator.info.mio, eta, self._operator.mat],
+            device=self._device,
         )
 
     def compute(self, reset_to_zero: bool = True):
@@ -1160,7 +1198,6 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         jacobians: SparseSystemJacobians | None = None,
         solver: LinearSolverType = None,
         solver_kwargs: dict[str, Any] | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         Creates a Delassus operator for the given model.
@@ -1175,7 +1212,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         be active in each world.
 
         Args:
-            model (ModelKamino):
+            model (ModelKamino, optional):
                 The model container for which the Delassus operator is built.
             data (DataKamino, optional):
                 The model data container holding the state info and data.
@@ -1185,14 +1222,11 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
                 Contacts data container for contact constraints.
             jacobians (SparseSystemJacobians, optional):
                 The sparse Jacobians container.
-                Can be assigned later via the `assign` method.
             solver (LinearSolverType, optional):
                 The linear solver class to use for solving linear systems.
                 Must be a subclass of `IterativeSolver`.
             solver_kwargs (dict, optional):
                 Additional keyword arguments to pass to the solver constructor.
-            device (wp.DeviceLike, optional):
-                The device identifier for the Delassus operator. Defaults to None.
         """
         super().__init__()
 
@@ -1210,8 +1244,8 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         # TODO: Create more general info object independent of dense matrix representation
         self._info: DenseSquareMultiLinearInfo | None = None
 
-        # Cache the requested device
-        self._device: wp.DeviceLike = device
+        # Declare the device cache
+        self._device: wp.DeviceLike = None
 
         # Declare the optional (iterative) solver
         self._solver: LinearSolverType | None = None
@@ -1237,7 +1271,6 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
                 contacts=contacts,
                 jacobians=jacobians,
                 solver=solver,
-                device=device,
                 solver_kwargs=solver_kwargs,
             )
 
@@ -1245,11 +1278,10 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         self,
         model: ModelKamino,
         data: DataKamino,
+        jacobians: SparseSystemJacobians,
         limits: LimitsKamino | None,
         contacts: ContactsKamino | None,
-        jacobians: SparseSystemJacobians | None = None,
         solver: LinearSolverType = None,
-        device: wp.DeviceLike = None,
         solver_kwargs: dict[str, Any] | None = None,
     ):
         """
@@ -1260,19 +1292,15 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
                 The model container for which the Delassus operator is built.
             data (DataKamino):
                 The model data container holding the state info and data.
+            jacobians (SparseSystemJacobians):
+                The sparse Jacobians container.
             limits (LimitsKamino, optional):
                 Limits data container for joint limit constraints.
             contacts (ContactsKamino, optional):
                 Contacts data container for contact constraints.
-            jacobians (SparseSystemJacobians, optional):
-                The sparse Jacobians container.
-                Can be assigned later via the `assign` method.
             solver (LinearSolverType, optional):
                 The linear solver class to use for solving linear systems.
                 Must be a subclass of `IterativeSolver`.
-            device (wp.DeviceLike, optional):
-                The device identifier for the Delassus operator.
-                Defaults to None.
             solver_kwargs (dict, optional):
                 Additional keyword arguments to pass to the solver constructor.
         """
@@ -1292,6 +1320,10 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         elif not isinstance(data, DataKamino):
             raise ValueError("Invalid data container provided. Must be an instance of `DataKamino`.")
 
+        # Ensure the Jacobians are provided
+        if jacobians is None:
+            raise ValueError("The sparse system Jacobians must be provided to allocate the Delassus operator.")
+
         # Ensure the solver is iterative if provided
         if solver is not None and not issubclass(solver, IterativeSolver):
             raise ValueError("Invalid solver provided. Must be a subclass of `IterativeSolver`.")
@@ -1301,9 +1333,8 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         self._limits = limits
         self._contacts = contacts
 
-        # Override the device identifier if specified, otherwise use the current device
-        if device is not None:
-            self._device = device
+        # Use the model's device
+        self._device = model.device
 
         self._info = DenseSquareMultiLinearInfo()
         if model.info is not None and data.info is not None:
@@ -1357,40 +1388,17 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
                 limits=self._limits,
                 contacts=self._contacts,
                 jacobians=self._jacobians,
-                device=self.device,
             )
             self._transpose_op_matrix = self._col_major_jacobian.bsm
         else:
             self._col_major_jacobian = None
 
-        # Assign Jacobian if specified
-        if jacobians is not None:
-            self.assign(jacobians)
-
-        # Optionally initialize the iterative linear system solver if one is specified
-        if solver is not None:
-            solver_kwargs = solver_kwargs or {}
-            self._solver = solver(operator=self, device=self._device, **solver_kwargs)
-
-        self.set_needs_update()
-
-    def assign(self, jacobians: SparseSystemJacobians):
-        """
-        Assigns the constraint Jacobian to the Delassus operator.
-
-        This method links the Delassus operator to the block sparse Jacobian matrix,
-        which is used to compute the implicit Delassus matrix-vector products.
-
-        Args:
-            jacobians (SparseSystemJacobians):
-                The sparse system Jacobians container holding the
-                constraint Jacobian matrix in block sparse format.
-        """
+        # Assign Jacobian
         self._jacobians = jacobians
 
+        # Create copy of constraint Jacobian with separate non-zero block values, so we can apply
+        # preconditioning directly to the Jacobian.
         if self._col_major_jacobian is None and self._transpose_op_matrix is None:
-            # Create copy of constraint Jacobian with separate non-zero block values, so we can apply
-            # preconditioning directly to the Jacobian.
             self._transpose_op_matrix = copy.copy(jacobians._J_cts.bsm)
             self._transpose_op_matrix.nzb_values = wp.empty_like(self.constraint_jacobian.nzb_values)
 
@@ -1401,7 +1409,12 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
             self.bsm = copy.copy(jacobians._J_cts.bsm)
             self.bsm.nzb_values = wp.empty_like(self.constraint_jacobian.nzb_values)
 
-        self.update()
+        # Optionally initialize the iterative linear system solver if one is specified
+        if solver is not None:
+            solver_kwargs = solver_kwargs or {}
+            self._solver = solver(operator=self, device=self._device, **solver_kwargs)
+
+        self.set_needs_update()
 
     def set_needs_update(self):
         """

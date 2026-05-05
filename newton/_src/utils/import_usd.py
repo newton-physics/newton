@@ -3305,9 +3305,6 @@ def parse_usd(
         body_merged_parent = collapse_results["body_merged_parent"]
         body_merged_transform = collapse_results["body_merged_transform"]
         body_remap = collapse_results["body_remap"]
-        # remap body ids in articulation bodies
-        for art_id, bodies in articulation_bodies.items():
-            articulation_bodies[art_id] = [body_remap[b] for b in bodies if b in body_remap]
 
         for path, body_id in path_body_map.items():
             if body_id in body_remap:
@@ -3477,6 +3474,9 @@ def parse_usd(
         if idx < len(builder.joint_q_start)
     }
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        prim_path = str(prim.GetPath())
+        if any(re.match(pattern, prim_path) for pattern in ignore_paths):
+            continue
         parsed = parse_actuator_prim(prim)
         if parsed is None:
             continue
