@@ -14,3 +14,15 @@ def get_asset_directory() -> str:
 
 def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
+
+
+def get_kamino_assets_directory() -> str:
+    return os.path.join(get_asset_directory(), "kamino")
+
+
+def get_kamino_basics_asset(filename: str) -> str:
+    return os.path.join(get_kamino_assets_directory(), "basics", filename)
+
+
+def get_kamino_testing_asset(filename: str) -> str:
+    return os.path.join(get_kamino_assets_directory(), "testing", filename)

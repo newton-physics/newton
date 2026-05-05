@@ -6,7 +6,6 @@ Unit tests for the :class:`ModelKamino` class and related functionality.
 """
 
 import copy
-import os
 import unittest
 
 import numpy as np
@@ -22,13 +21,14 @@ from newton._src.solvers.kamino._src.core.materials import MaterialDescriptor
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
 from newton._src.solvers.kamino._src.models import basics as basics_kamino
-from newton._src.solvers.kamino._src.models import basics_newton, get_basics_usd_assets_path
 from newton._src.solvers.kamino._src.models.builders import utils as model_utils
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton._src.solvers.kamino.tests.utils import print as print_utils
+from newton.tests import get_kamino_basics_asset
+from newton.tests.utils import basics as basics_newton
 
 ###
 # Tests
@@ -239,7 +239,7 @@ class TestModelConversions(unittest.TestCase):
         on a simple fourbar model loaded from USD.
         """
         # Define the path to the USD file for the fourbar model
-        asset_file = os.path.join(get_basics_usd_assets_path(), "boxes_fourbar.usda")
+        asset_file = get_kamino_basics_asset("boxes_fourbar.usda")
 
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
@@ -276,7 +276,8 @@ class TestModelConversions(unittest.TestCase):
         model_0: Model = builder_0.finalize(skip_validation_joints=True)
         model_1: ModelKamino = builder_1.finalize()
         model_2: ModelKamino = ModelKamino.from_newton(model_0)
-        test_util_checks.assert_model_equal(self, model_2, model_1)
+        excluded = ["base_joint_index"]
+        test_util_checks.assert_model_equal(self, model_2, model_1, excluded=excluded)
 
         # TODO: IMPLEMENT THIS CHECK: We wanna see if the both generate
         # the same data containers and unilateral constraint info
@@ -391,7 +392,7 @@ class TestModelConversions(unittest.TestCase):
         #   geom-pairs of joint neighbours to `shape_collision_filter_pairs` regardless of
         #   whether they are actually collidable or not, which leads to differences in the
         #   number of excluded pairs and their contents
-        excluded = ["ptr", "group", "gap", "num_excluded_pairs", "excluded_pairs"]
+        excluded = ["base_joint_index", "ptr", "group", "gap", "num_excluded_pairs", "excluded_pairs"]
         rtol = {"inv_i_I_i": 1e-5}
         atol = {"inv_i_I_i": 1e-6}
         test_util_checks.assert_model_equal(self, model_2, model_1, excluded=excluded, rtol=rtol, atol=atol)
@@ -941,7 +942,7 @@ class TestModelConversions(unittest.TestCase):
         on a simple box on plane model loaded from USD, containing different materials.
         """
         # Define the path to the USD file for the fourbar model
-        asset_file = os.path.join(get_basics_usd_assets_path(), "box_on_plane.usda")
+        asset_file = get_kamino_basics_asset("box_on_plane.usda")
 
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes

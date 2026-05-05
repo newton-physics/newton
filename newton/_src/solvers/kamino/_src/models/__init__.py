@@ -11,9 +11,6 @@ These include:
 
 - A set of utility functions to retrieve paths to USD asset directories
 
-- A set of 'example' models in the form of USD assets.\n
-    This directory currently provides a symbolic link to `newton-assets/disneyreasearch`.
-
 - A set of 'basic' models used for demonstrating fundamental features of Kamino and for testing purposes.
     These are provided both in the form of USD assets as well as manually constructed model builders.
 
@@ -22,15 +19,11 @@ These include:
     - supported joint types,e.g. revolute, prismatic, spherical, etc.
 """
 
-from .builders import basics, basics_newton, testing, utils
-from .builders.utils import get_basics_usd_assets_path, get_testing_usd_assets_path
+from .builders import basics, testing, utils
 
 __all__ = [
     "basics",
-    "basics_newton",
     "builders",
-    "get_basics_usd_assets_path",
-    "get_testing_usd_assets_path",
     "testing",
     "utils",
 ]

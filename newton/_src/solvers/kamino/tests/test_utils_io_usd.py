@@ -4,7 +4,6 @@
 """Unit tests for the USD importer utility."""
 
 import math
-import os
 import unittest
 
 import numpy as np
@@ -16,12 +15,12 @@ from newton._src.geometry.types import GeoType
 from newton._src.solvers.kamino import SolverKamino
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.joints import JOINT_QMAX, JOINT_QMIN, JointActuationType, JointDoFType
-from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path, get_testing_usd_assets_path
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton._src.solvers.kamino.tests.utils.checks import assert_builders_equal
+from newton.tests import get_kamino_basics_asset, get_kamino_testing_asset
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 ###
@@ -35,10 +34,6 @@ class TestUSDImporter(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
-
-        # Set the paths to the assets provided by the kamino package
-        self.TEST_USD_ASSETS_PATH = get_testing_usd_assets_path()
-        self.BASICS_USD_ASSETS_PATH = get_basics_usd_assets_path()
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
@@ -58,7 +53,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_revolute_passive_unary(self):
         """Test importing a passive revolute joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_revolute_passive_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_revolute_passive_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -80,7 +75,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_revolute_passive(self):
         """Test importing a passive revolute joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_revolute_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_revolute_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -102,7 +97,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_revolute_actuated(self):
         """Test importing a actuated revolute joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_revolute_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_revolute_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -125,7 +120,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_prismatic_passive_unary(self):
         """Test importing a passive prismatic joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_prismatic_passive_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_prismatic_passive_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -147,7 +142,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_prismatic_passive(self):
         """Test importing a passive prismatic joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_prismatic_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_prismatic_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -169,7 +164,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_prismatic_actuated(self):
         """Test importing a actuated prismatic joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_prismatic_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_prismatic_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -192,7 +187,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_spherical_unary(self):
         """Test importing a passive spherical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_spherical_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_spherical_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -214,7 +209,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_spherical(self):
         """Test importing a passive spherical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_spherical.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_spherical.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -240,7 +235,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_cylindrical_passive_unary(self):
         """Test importing a passive cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cylindrical_passive_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cylindrical_passive_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -262,7 +257,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_cylindrical_passive(self):
         """Test importing a passive cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cylindrical_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cylindrical_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -284,7 +279,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_cylindrical_actuated(self):
         """Test importing a actuated cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cylindrical_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cylindrical_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -307,7 +302,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_universal_passive_unary(self):
         """Test importing a passive universal joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_universal_passive_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_universal_passive_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -329,7 +324,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_universal_passive(self):
         """Test importing a passive universal joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_universal_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_universal_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -351,7 +346,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_universal_actuated(self):
         """Test importing a actuated universal joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_universal_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_universal_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -375,7 +370,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_cartesian_passive_unary(self):
         """Test importing a passive cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cartesian_passive_unary.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cartesian_passive_unary.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -398,7 +393,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_cartesian_passive(self):
         """Test importing a passive cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cartesian_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cartesian_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -421,7 +416,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_cartesian_actuated(self):
         """Test importing a actuated cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_cartesian_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_cartesian_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -449,7 +444,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_revolute_passive(self):
         """Test importing a passive revolute joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_revolute_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_revolute_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -471,7 +466,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_revolute_actuated(self):
         """Test importing a actuated revolute joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_revolute_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_revolute_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -494,7 +489,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_prismatic_passive(self):
         """Test importing a passive prismatic joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_prismatic_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_prismatic_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -516,7 +511,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_prismatic_actuated(self):
         """Test importing a actuated prismatic joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_prismatic_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_prismatic_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -539,7 +534,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_cylindrical_passive(self):
         """Test importing a passive cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_cylindrical_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_cylindrical_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -561,7 +556,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_cylindrical_actuated(self):
         """Test importing a actuated cylindrical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_cylindrical_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_cylindrical_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -584,7 +579,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_universal_passive(self):
         """Test importing a passive universal joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_universal_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_universal_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -606,7 +601,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_universal_actuated(self):
         """Test importing a actuated universal joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_universal_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_universal_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -629,7 +624,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_cartesian_passive(self):
         """Test importing a passive cartesian joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_cartesian_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_cartesian_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -651,7 +646,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_importjoint__d6_cartesian_actuated(self):
         """Test importing a actuated cartesian joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_cartesian_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_cartesian_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -674,7 +669,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_spherical_passive(self):
         """Test importing a passive spherical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_spherical_passive.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_spherical_passive.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -696,7 +691,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_joint_d6_spherical_actuated(self):
         """Test importing a actuated spherical joint with limits from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "joints/test_joint_d6_spherical_actuated.usda")
+        usd_asset_filename = get_kamino_testing_asset("joints/test_joint_d6_spherical_actuated.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
         # Check the loaded contents
@@ -723,7 +718,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_geom_capsule(self):
         """Test importing a body with geometric primitive capsule shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_capsule.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_capsule.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -760,7 +755,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_geom_cone(self):
         """Test importing a body with geometric primitive cone shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_cone.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_cone.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -797,7 +792,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_geom_cylinder(self):
         """Test importing a body with geometric primitive cylinder shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_cylinder.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_cylinder.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -834,7 +829,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_geom_sphere(self):
         """Test importing a body with geometric primitive sphere shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_sphere.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_sphere.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -869,7 +864,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_geom_ellipsoid(self):
         """Test importing a body with geometric primitive ellipsoid shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_ellipsoid.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_ellipsoid.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -908,7 +903,7 @@ class TestUSDImporter(unittest.TestCase):
 
     def test_import_geom_box(self):
         """Test importing a body with geometric primitive box shape from a USD file"""
-        usd_asset_filename = os.path.join(self.TEST_USD_ASSETS_PATH, "geoms/test_geom_box.usda")
+        usd_asset_filename = get_kamino_testing_asset("geoms/test_geom_box.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(source=usd_asset_filename)
 
@@ -953,7 +948,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic box_on_plane model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "box_on_plane.usda")
+        usd_asset_filename = get_kamino_basics_asset("box_on_plane.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -969,7 +964,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic box_pendulum model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "box_pendulum.usda")
+        usd_asset_filename = get_kamino_basics_asset("box_pendulum.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -985,7 +980,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic boxes_hinged model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "boxes_hinged.usda")
+        usd_asset_filename = get_kamino_basics_asset("boxes_hinged.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -1001,7 +996,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic boxes_nunchaku model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "boxes_nunchaku.usda")
+        usd_asset_filename = get_kamino_basics_asset("boxes_nunchaku.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -1017,7 +1012,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic boxes_fourbar model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "boxes_fourbar.usda")
+        usd_asset_filename = get_kamino_basics_asset("boxes_fourbar.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=False, load_materials=False
@@ -1033,7 +1028,7 @@ class TestUSDImporter(unittest.TestCase):
         """Test importing the basic cartpole model from a USD file"""
 
         # Construct a builder from imported USD asset
-        usd_asset_filename = os.path.join(self.BASICS_USD_ASSETS_PATH, "cartpole.usda")
+        usd_asset_filename = get_kamino_basics_asset("cartpole.usda")
         importer = USDImporter()
         builder_usd: ModelBuilderKamino = importer.import_from(
             source=usd_asset_filename, load_static_geometry=True, load_materials=False
@@ -1145,10 +1140,6 @@ class TestUSDKaminoSceneAPIImport(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose  # Set to True for verbose output
-
-        # Set the paths to the assets provided by the kamino package
-        self.TEST_USD_ASSETS_PATH = get_testing_usd_assets_path()
-        self.BASICS_USD_ASSETS_PATH = get_basics_usd_assets_path()
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:

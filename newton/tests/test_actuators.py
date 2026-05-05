@@ -412,7 +412,7 @@ class TestDelay(unittest.TestCase):
         self.assertEqual(ds.buffer_pos.shape, (max_delay, n))
         self.assertEqual(ds.buffer_vel.shape, (max_delay, n))
         self.assertEqual(ds.buffer_act.shape, (max_delay, n))
-        self.assertEqual(ds.write_idx, max_delay - 1)
+        self.assertEqual(ds.write_idx.numpy()[0], max_delay - 1)
         np.testing.assert_array_equal(ds.num_pushes.numpy(), [0, 0])
 
     def test_latency_behavior(self):
@@ -1261,7 +1261,7 @@ class TestStateReset(unittest.TestCase):
         np.testing.assert_array_equal(state.buffer_pos.numpy(), np.zeros((max_delay, n)))
         np.testing.assert_array_equal(state.buffer_vel.numpy(), np.zeros((max_delay, n)))
         np.testing.assert_array_equal(state.buffer_act.numpy(), np.zeros((max_delay, n)))
-        self.assertEqual(state.write_idx, max_delay - 1)
+        self.assertEqual(state.write_idx.numpy()[0], max_delay - 1)
 
     def test_pid_masked_reset(self):
         """PID integral accumulator: masked reset zeros selected DOFs only."""
@@ -1359,6 +1359,122 @@ class TestStateReset(unittest.TestCase):
             state_0.controller_state.integral.numpy()[0], 0.0, places=6, msg="env 0 integral should be reset"
         )
         self.assertGreater(state_0.controller_state.integral.numpy()[1], 0.0, msg="env 1 integral should be untouched")
+
+
+# ---------------------------------------------------------------------------
+# 7b. CUDA graph capture — end-to-end with Newton solver + delayed actuator
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(
+    wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
+    "CUDA graph capture requires CUDA device with memory pools",
+)
+class TestDelayGraphCapture(unittest.TestCase):
+    """Verify delayed actuator is graph-safe with device-side write_idx.
+
+    Captures N actuator + K physics substeps as a CUDA graph and replays
+    with varying targets. With N even and N % buf_depth != 0, the test
+    confirms graph replay matches eager execution — proving the write
+    pointer advances correctly on-device during replay.
+    """
+
+    def test_delay_graph_n_not_multiple_matches_eager(self):
+        """N=2, buf_depth=5: graph matches eager across multiple cycles.
+
+        This configuration (N < buf_depth, N % buf_depth != 0) previously
+        failed when write_idx was a host-side scalar baked into the graph.
+        With device-side write_idx the kernel advances the pointer on-GPU,
+        making graph replay correct for any even N.
+        """
+        max_delay = 5
+        N = 2  # 2 % 5 != 0, N < buf_depth, N is even
+        K = 2
+        dt = 0.02
+        warmup_target = 0.0
+        cycle_targets = [2.0, -3.0, 5.0, -1.0]
+
+        # Build a single-DOF revolute pendulum with delayed PD actuator
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.density = 1000.0
+        link = builder.add_link()
+        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        builder.add_shape_sphere(body=link, radius=0.1)
+        builder.add_articulation([joint])
+        dof = builder.joint_qd_start[joint]
+        builder.add_actuator(
+            ControllerPD,
+            index=dof,
+            kp=200.0,
+            kd=10.0,
+            delay_steps=max_delay,
+            clamping=[(ClampingMaxEffort, {"max_effort": 500.0})],
+        )
+        model = builder.finalize()
+        device = model.device
+        ndof = model.joint_coord_count
+
+        def _setup():
+            solver = newton.solvers.SolverMuJoCo(model, iterations=4, ls_iterations=4)
+            s0 = model.state()
+            s1 = model.state()
+            ctrl = model.control()
+            newton.eval_fk(model, s0.joint_q, s0.joint_qd, s0)
+            act = model.actuators[0]
+            act_a, act_b = act.state(), act.state()
+            return solver, s0, s1, ctrl, act, act_a, act_b
+
+        def _loop(solver, s0, s1, ctrl, act, act_a, act_b, n):
+            sub_dt = dt / K
+            for _ in range(n):
+                ctrl.joint_f.zero_()
+                act.step(s0, ctrl, act_a, act_b, dt=dt)
+                act_a, act_b = act_b, act_a
+                for _ in range(K):
+                    s0.clear_forces()
+                    solver.step(s0, s1, ctrl, None, sub_dt)
+                    s0, s1 = s1, s0
+            return s0, s1, act_a, act_b
+
+        # --- Eager ---
+        solver, s0, s1, ctrl, act, act_a, act_b = _setup()
+        wp.copy(ctrl.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, max_delay)
+        eager_results = []
+        for tgt in cycle_targets:
+            wp.copy(ctrl.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, N)
+            eager_results.append(s0.joint_q.numpy().copy())
+
+        # --- Graph ---
+        solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g = _setup()
+        wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        s0_g, s1_g, act_a_g, act_b_g = _loop(solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay)
+        sub_dt = dt / K
+        with wp.ScopedCapture(device=device) as capture:
+            for _ in range(N):
+                ctrl_g.joint_f.zero_()
+                act_g.step(s0_g, ctrl_g, act_a_g, act_b_g, dt=dt)
+                act_a_g, act_b_g = act_b_g, act_a_g
+                for _ in range(K):
+                    s0_g.clear_forces()
+                    solver_g.step(s0_g, s1_g, ctrl_g, None, sub_dt)
+                    s0_g, s1_g = s1_g, s0_g
+        graph = capture.graph
+
+        graph_results = []
+        for tgt in cycle_targets:
+            wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.capture_launch(graph)
+            graph_results.append(s0_g.joint_q.numpy().copy())
+
+        for ci in range(len(cycle_targets)):
+            np.testing.assert_allclose(
+                graph_results[ci],
+                eager_results[ci],
+                rtol=1e-4,
+                err_msg=f"Cycle {ci}: graph should match eager with device-side write_idx",
+            )
 
 
 # ---------------------------------------------------------------------------
