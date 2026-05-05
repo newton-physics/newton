@@ -41,9 +41,10 @@ class _SensorTiledCameraMeta(type):
 class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     """Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
 
-    Renders up to five image channels per (world, camera) pair:
+    Renders up to six image channels per (world, camera) pair:
 
     - **color** -- RGBA shaded image (``uint32``).
+    - **hdr_color** -- linear shaded RGB image (``vec3f``).
     - **depth** -- ray-hit distance [m] (``float32``); negative means no hit.
     - **normal** -- surface normal at hit point (``vec3f``).
     - **albedo** -- unshaded surface color (``uint32``).
@@ -203,6 +204,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
         refit_bvh: bool | None = None,
     ):
@@ -230,6 +232,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
             albedo_image: Output for unshaded surface color. None to skip.
+            hdr_color_image: Output for linear HDR color. None to skip.
             clear_data: Values to clear output buffers with.
                 See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
             refit_bvh: Refit the BVH before rendering. This is deprecated, use
@@ -278,6 +281,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             shape_index_image,
             normal_image,
             albedo_image,
+            hdr_color_image,
             clear_data=clear_data,
         )
 
