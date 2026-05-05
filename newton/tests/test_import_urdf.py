@@ -127,6 +127,30 @@ JOINT_URDF = """
 </robot>
 """
 
+MASSLESS_FIXED_ROOT_URDF = """
+<robot name="massless_fixed_root">
+    <link name="base_link"/>
+    <link name="chassis">
+        <inertial>
+            <mass value="2.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0"
+                     iyy="0.1" iyz="0.0"
+                     izz="0.1"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <box size="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="base_to_chassis" type="fixed">
+        <parent link="base_link"/>
+        <child link="chassis"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+</robot>
+"""
+
 JOINT_TREE_URDF = """
 <robot name="joint_tree_test">
 <!-- Mixed ordering of links -->
@@ -350,6 +374,33 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))
         assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
         assert_np_equal(builder.joint_effort_limit[-1], np.array([6.78]))
+
+    def test_floating_massless_fixed_root_urdf_is_dynamic(self):
+        builder = newton.ModelBuilder()
+        builder.add_urdf(MASSLESS_FIXED_ROOT_URDF, floating=True, up_axis="Z")
+
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
+        self.assertGreater(builder.body_mass[0], 0.0)
+
+        model = builder.finalize()
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        contacts = model.contacts()
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+        root_body = int(model.joint_child.numpy()[0])
+        start_z = float(state_0.body_q.numpy()[root_body][2])
+
+        solver = newton.solvers.SolverXPBD(model, iterations=2)
+        for _ in range(5):
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+            state_0, state_1 = state_1, state_0
+
+        end_z = float(state_0.body_q.numpy()[root_body][2])
+        self.assertLess(end_z, start_z)
 
     def test_cartpole_urdf(self):
         builder = newton.ModelBuilder()
