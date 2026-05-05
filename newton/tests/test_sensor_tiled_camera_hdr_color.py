@@ -20,6 +20,7 @@ def _build_single_sphere_model():
 
 def _render_tiny_color_and_hdr(model):
     sensor = SensorTiledCamera(model=model)
+    state = model.state()
 
     camera_transforms = wp.array(
         [[wp.transformf(wp.vec3f(3.0, 0.0, 0.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]],
@@ -30,8 +31,10 @@ def _render_tiny_color_and_hdr(model):
     color_image = sensor.utils.create_color_image_output(4, 4, 1)
     hdr_color_image = sensor.utils.create_hdr_color_image_output(4, 4, 1)
 
+    newton.geometry.build_bvh_shape(model, state)
+    newton.geometry.build_bvh_particle(model, state)
     sensor.update(
-        model.state(),
+        state,
         camera_transforms,
         camera_rays,
         color_image=color_image,
