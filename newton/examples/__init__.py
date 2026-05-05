@@ -371,6 +371,7 @@ def run(example, args):
         if example is None:
             viewer.begin_frame(0.0)
             viewer.end_frame()
+            _throttle_render_fps(frame_start_time, render_fps)
             continue
 
         if viewer.should_step():

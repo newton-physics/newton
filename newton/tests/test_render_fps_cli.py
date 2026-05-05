@@ -6,7 +6,10 @@
 import contextlib
 import io
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import newton.examples as examples_module
 from newton.examples import _throttle_render_fps, create_parser
 
 
@@ -79,6 +82,60 @@ class TestRenderFPSCLI(unittest.TestCase):
 
         self.assertEqual(slept, 0.0)
         self.assertEqual(sleeps, [])
+
+    def test_run_throttles_idle_frames(self):
+        """The main run loop should throttle empty idle frames."""
+
+        class DummyViewer:
+            def __init__(self):
+                self._running = [True, True, False]
+                self.frames = []
+                self.closed = False
+
+            def is_running(self):
+                return self._running.pop(0)
+
+            def begin_frame(self, dt):
+                self.frames.append(("begin", dt))
+
+            def end_frame(self):
+                self.frames.append(("end",))
+
+            def should_step(self):
+                raise AssertionError("idle branch should skip stepping")
+
+            def close(self):
+                self.closed = True
+
+        class DummyBrowser:
+            def __init__(self):
+                self.switch_target = object()
+                self._reset_requested = False
+
+            def switch(self, example_class):
+                self.switch_target = None
+                return None, example_class
+
+        viewer = DummyViewer()
+        example = SimpleNamespace(viewer=viewer)
+        args = SimpleNamespace(render_fps=30.0, test=False)
+        browser = DummyBrowser()
+        throttle_calls = []
+
+        def record_throttle(frame_start_time, render_fps):
+            throttle_calls.append((frame_start_time, render_fps))
+            return 0.0
+
+        with (
+            patch.object(examples_module, "_ExampleBrowser", return_value=browser),
+            patch.object(examples_module, "_throttle_render_fps", side_effect=record_throttle),
+            patch.object(examples_module.time, "perf_counter", side_effect=[10.0, 11.0]),
+        ):
+            examples_module.run(example, args)
+
+        self.assertEqual(viewer.frames, [("begin", 0.0), ("end",)])
+        self.assertEqual(throttle_calls, [(11.0, 30.0)])
+        self.assertTrue(viewer.closed)
 
 
 if __name__ == "__main__":
