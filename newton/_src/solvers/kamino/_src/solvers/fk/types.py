@@ -100,8 +100,10 @@ class ForwardKinematicsStatus:
     Shape `(num_worlds,)` and type :class:`np.int32`.
     """
 
-    max_constraints: np.ndarray(dtype=np.float32)
+    max_residual: np.ndarray(dtype=np.float32)
     """
-    Maximal absolute kinematic constraint residual at the final solution, per world.\n
+    Maximal absolute residual at the final solution, per world. In the general case, the residual vector
+    is the kinematic constraints vector; if regularization is enabled, it is the penalty gradient.
+
     Shape `(num_worlds,)` and type :class:`np.float32`.
     """
