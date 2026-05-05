@@ -17,7 +17,7 @@ from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
 from ..geometry import Mesh
 from ..sim import ModelBuilder
-from ..sim.enums import JointTargetMode
+from ..sim.enums import JointTargetMode, JointType
 from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content, should_show_collider
 from .mesh import load_meshes_from_file
@@ -178,6 +178,8 @@ def parse_urdf(
 
     if override_root_xform and xform is None:
         raise ValueError("override_root_xform=True requires xform to be set")
+
+    import_start_joint_count = builder.joint_count
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
@@ -880,5 +882,25 @@ def parse_urdf(
             for j in range(i + 1, end_shape_count):
                 builder.add_shape_collision_filter_pair(i, j)
 
+    # A massless dummy root connected to the physical base by fixed joints is
+    # immovable in maximal-coordinate solvers. Collapse that fixed subtree so
+    # the free root carries the imported mass and inertia.
+    massless_floating_fixed_root = (
+        floating
+        and base_parent == -1
+        and builder.body_mass[root] <= 0.0
+        and any(
+            builder.joint_type[joint_idx] == JointType.FIXED and builder.joint_parent[joint_idx] == root
+            for joint_idx in joint_indices
+        )
+    )
+
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
+    elif massless_floating_fixed_root:
+        external_fixed_joints = {
+            joint_idx
+            for joint_idx in range(import_start_joint_count)
+            if builder.joint_type[joint_idx] == JointType.FIXED
+        }
+        builder.collapse_fixed_joints(joint_indices_to_keep=external_fixed_joints)
