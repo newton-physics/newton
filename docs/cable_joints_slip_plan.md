@@ -4,6 +4,14 @@ This document records the target formulation and acceptance policy for adding
 finite slip back to Newton's routed cable solver.  It should be treated as the
 working contract for future cable/tendon friction changes.
 
+## Known-Good Baseline
+
+Commit `21ca37106` (`Document routed cable slip plan`) is the known-good
+no-friction routed-cable baseline.  If slip work breaks existing routed-cable
+behavior in a way that is not a small, justified tolerance change or a
+documented physical-expectation correction, compare against this commit before
+continuing.
+
 ## Design Criteria
 
 ### One routed-cable formulation

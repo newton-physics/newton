@@ -14,9 +14,9 @@ from newton.viewer import ViewerGL
 EXAMPLES = [
     ("tendon_pulley", "newton.examples.cable.example_tendon_pulley", 240),
     ("tendon_rolling_pulley", "newton.examples.cable.example_tendon_rolling_pulley", 180),
-    ("tendon_xy_table", "newton.examples.cable.example_tendon_xy_table", 480),
+    ("tendon_xy_table", "newton.examples.cable.example_tendon_xy_table", 600),
     ("tendon_capstan_dynamic", "newton.examples.cable.example_tendon_capstan_friction", 100),
-    ("tendon_capstan_kinematic", "newton.examples.cable.example_tendon_capstan_kinematic", 100),
+    ("tendon_capstan_kinematic", "newton.examples.cable.example_tendon_capstan_kinematic", 180),
     ("tendon_compound_pulley", "newton.examples.cable.example_tendon_compound_pulley", 220),
     ("tendon_gear_pulley", "newton.examples.cable.example_tendon_gear_pulley", 180),
     ("tendon_3d_routing", "newton.examples.cable.example_tendon_3d_routing", 140),

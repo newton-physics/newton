@@ -54,7 +54,7 @@ class Example:
         builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=-9.81)
 
         self.pulley_radius = 0.22
-        self.pulley_z = 3.5
+        self.pulley_z = 4.1
         pulley_mass = 40.0
         pulley_inertia_y = 0.90
         pulley_inertia = wp.mat33(
@@ -72,7 +72,7 @@ class Example:
         self.x_offsets = [-1.5, 0.0, 1.5]
 
         mass_light = 1.0
-        mass_heavy = 1.4
+        mass_heavy = 1.2
         contact_cfg = newton.ModelBuilder.ShapeConfig(mu=0.7, margin=0.01, gap=0.02)
 
         q_cyl = wp.quat(np.sin(np.pi / 4.0), 0.0, 0.0, np.cos(np.pi / 4.0))
@@ -132,7 +132,7 @@ class Example:
             builder.add_articulation([j_pulley])
             self.pulley_indices.append(pulley)
 
-            left_pos = wp.vec3(x_off - 0.4, 0.0, 3.0)
+            left_pos = wp.vec3(x_off - 0.4, 0.0, 2.0)
             left = builder.add_link(
                 xform=wp.transform(p=left_pos, q=wp.quat_identity()),
                 mass=mass_light,
@@ -149,7 +149,7 @@ class Example:
             builder.add_articulation([j1])
             self.left_indices.append(left)
 
-            right_pos = wp.vec3(x_off + 0.4, 0.0, 3.0)
+            right_pos = wp.vec3(x_off + 0.4, 0.0, 2.0)
             right = builder.add_link(
                 xform=wp.transform(p=right_pos, q=wp.quat_identity()),
                 mass=mass_heavy,
@@ -213,7 +213,7 @@ class Example:
 
         if self.viewer is not None:
             self.viewer.set_model(self.model)
-            self.viewer.set_camera(pos=wp.vec3(0.0, -6.0, 2.5), pitch=5.0, yaw=90.0)
+            self.viewer.set_camera(pos=wp.vec3(0.0, -6.0, 3.0), pitch=5.0, yaw=90.0)
             if hasattr(self.viewer, "renderer"):
                 self.viewer.renderer.show_wireframe_overlay = True
 
@@ -259,12 +259,7 @@ class Example:
     def _assert_light_attachments_stay_below_pulleys(self, attachments, body_q, label="Dynamic capstan"):
         for i, attachment in enumerate(attachments):
             pulley_center = body_q[self.pulley_indices[i]][:3]
-            crown_limit = float(pulley_center[2] + self.pulley_radius + 0.04)
             side_limit = float(pulley_center[0] + self.pulley_radius)
-            assert float(attachment[2]) <= crown_limit, (
-                f"{label} case {i} light-side cable attachment should not crest over the pulley: "
-                f"attachment_z={attachment[2]:.4f}, crown_limit={crown_limit:.4f}"
-            )
             assert float(attachment[0]) <= side_limit, (
                 f"{label} case {i} light weight should stay on the near side of the pulley: "
                 f"attachment_x={attachment[0]:.4f}, side_limit={side_limit:.4f}"
@@ -298,7 +293,8 @@ class Example:
 
         theta = np.array(self._pulley_rotation_history)
         assert np.isfinite(theta).all(), "Non-finite dynamic capstan pulley rotation history"
-        final_theta = theta[-1]
+        capstan_idx = min(39, len(theta) - 1)
+        capstan_theta = theta[capstan_idx]
         right_pos = np.array(self._right_position_history, dtype=np.float64)
         body_q = self.state_0.body_q.numpy()
         for attachments in self._left_attachment_history:
@@ -306,9 +302,24 @@ class Example:
         if len(right_pos) > 1:
             right_step = float(np.max(np.linalg.norm(np.diff(right_pos, axis=0), axis=2)))
             assert right_step < 0.40, f"Dynamic capstan heavy weights should not jump per frame: step={right_step:.4f}"
-        assert final_theta[1] > 0.25, (
-            f"Dynamic capstan middle finite-friction pulley should rotate with heavy-side cable travel: "
-            f"theta={final_theta[1]:.4f}, all={final_theta}"
+        left_z = np.array(self._left_z_history, dtype=np.float64)
+        max_left_z = np.max(left_z, axis=0)
+        light_limit = self.pulley_z + self.pulley_radius - 0.02
+        assert np.all(max_left_z < light_limit), (
+            f"Dynamic capstan light weights should not crest over the pulleys: "
+            f"max_z={max_left_z}, limit={light_limit:.4f}"
+        )
+        assert abs(capstan_theta[0]) < 0.08, (
+            f"Dynamic capstan zero-friction pulley should not rotate before payload contact: "
+            f"theta={capstan_theta[0]:.4f}, all={capstan_theta}"
+        )
+        assert capstan_theta[1] > 0.25, (
+            f"Dynamic capstan middle finite-friction pulley should rotate with heavy-side cable travel before contact: "
+            f"theta={capstan_theta[1]:.4f}, all={capstan_theta}"
+        )
+        assert capstan_theta[2] > capstan_theta[1], (
+            f"Dynamic capstan high-friction pulley should rotate at least as much as the mid-friction case before contact: "
+            f"mid={capstan_theta[1]:.4f}, high={capstan_theta[2]:.4f}, all={capstan_theta}"
         )
 
     def render(self):

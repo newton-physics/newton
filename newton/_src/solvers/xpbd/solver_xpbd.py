@@ -4,22 +4,6 @@
 import numpy as np
 import warp as wp
 
-
-def _transform_point_np(pose: np.ndarray, point: np.ndarray) -> np.ndarray:
-    """Apply a Newton transform (px,py,pz,qx,qy,qz,qw) to a 3D point using numpy."""
-    p = pose[:3]
-    q = pose[3:]  # qx,qy,qz,qw
-    # quaternion rotation: q * v * q_conj
-    t = 2.0 * np.cross(q[:3], point)
-    return point + q[3] * t + np.cross(q[:3], t) + p
-
-
-def _transform_vector_np(pose: np.ndarray, vec: np.ndarray) -> np.ndarray:
-    """Rotate a 3D vector by the quaternion in a Newton transform."""
-    q = pose[3:]
-    t = 2.0 * np.cross(q[:3], vec)
-    return vec + q[3] * t + np.cross(q[:3], t)
-
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
 from ..flags import SolverNotifyFlags
@@ -48,6 +32,22 @@ from .tendon_kernels import (
     solve_tendon_segments,
     update_tendon_attachments,
 )
+
+
+def _transform_point_np(pose: np.ndarray, point: np.ndarray) -> np.ndarray:
+    """Apply a Newton transform (px,py,pz,qx,qy,qz,qw) to a 3D point using numpy."""
+    p = pose[:3]
+    q = pose[3:]  # qx,qy,qz,qw
+    # quaternion rotation: q * v * q_conj
+    t = 2.0 * np.cross(q[:3], point)
+    return point + q[3] * t + np.cross(q[:3], t) + p
+
+
+def _transform_vector_np(pose: np.ndarray, vec: np.ndarray) -> np.ndarray:
+    """Rotate a 3D vector by the quaternion in a Newton transform."""
+    q = pose[3:]
+    t = 2.0 * np.cross(q[:3], vec)
+    return vec + q[3] * t + np.cross(q[:3], t)
 
 
 class SolverXPBD(SolverBase):
@@ -237,9 +237,11 @@ class SolverXPBD(SolverBase):
                 model.tendon_link_type,
                 model.tendon_link_radius,
                 model.tendon_link_orientation,
+                model.tendon_link_mu,
                 model.tendon_link_offset,
                 model.tendon_link_axis,
                 self.tendon_seg_rest_length,
+                model.tendon_seg_compliance,
                 self.tendon_seg_attachment_l,
                 self.tendon_seg_attachment_r,
                 self.tendon_seg_attachment_l_local,
@@ -801,9 +803,11 @@ class SolverXPBD(SolverBase):
                                 model.tendon_link_type,
                                 model.tendon_link_radius,
                                 model.tendon_link_orientation,
+                                model.tendon_link_mu,
                                 model.tendon_link_offset,
                                 model.tendon_link_axis,
                                 self.tendon_seg_rest_length,
+                                model.tendon_seg_compliance,
                                 self.tendon_seg_attachment_l,
                                 self.tendon_seg_attachment_r,
                                 self.tendon_seg_attachment_l_local,
@@ -829,6 +833,11 @@ class SolverXPBD(SolverBase):
                                 self.body_inv_mass_effective,
                                 self.body_inv_inertia_effective,
                                 model.tendon_link_body,
+                                model.tendon_link_type,
+                                model.tendon_link_radius,
+                                model.tendon_link_offset,
+                                model.tendon_link_axis,
+                                model.tendon_link_mu,
                                 self.tendon_seg_rest_length,
                                 self.tendon_seg_attachment_l,
                                 self.tendon_seg_attachment_r,
@@ -838,6 +847,7 @@ class SolverXPBD(SolverBase):
                                 model.tendon_seg_damping,
                                 self.tendon_seg_lambda,
                                 self.tendon_seg_link_l,
+                                model.tendon_segment_count,
                                 self.joint_linear_relaxation,
                                 dt,
                             ],

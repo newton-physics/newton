@@ -334,7 +334,7 @@ add_example_test(
     name="cable.example_tendon_xy_table",
     devices=test_devices,
     use_viewer=True,
-    test_options={"num-frames": 480},
+    test_options={"num-frames": 600},
 )
 add_example_test(
     TestCableExamples,

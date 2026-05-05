@@ -107,7 +107,7 @@ class Example:
             link_type=int(TendonLinkType.ROLLING),
             radius=self.pulley_radius,
             orientation=1,
-            mu=0.0,
+            mu=10.0,
             offset=(0.0, 0.0, 0.0),
             axis=axis,
             compliance=1.0e-6,

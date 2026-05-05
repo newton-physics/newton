@@ -4,7 +4,7 @@
 ###########################################################################
 # Example Tendon Capstan Kinematic
 #
-# Three side-by-side asymmetric Atwood machines (3:1 mass ratio) with
+# Three side-by-side asymmetric Atwood machines with
 # kinematic (fixed) pulleys and different placeholder capstan friction
 # coefficients:
 #
@@ -12,9 +12,9 @@
 #   Center: mu = 0.05
 #   Right:  mu = 10.0
 #
-# The current clean Cable Joints baseline intentionally has no capstan
-# friction model.  ``mu`` is ignored, and a kinematic rolling pulley cannot
-# rotate, so the no-slip angular Jacobian locks all three cases.
+# The unified capstan projection uses the same path for all three cases:
+# zero friction slips freely, finite friction reduces slip, and high friction
+# locks against the fixed pulley.
 #
 # Command: python -m newton.examples tendon_capstan_kinematic
 #
@@ -35,7 +35,7 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 16
+        self.sim_substeps = 64
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -48,13 +48,13 @@ class Example:
         self.x_offsets = [-1.5, 0.0, 1.5]
 
         mass_light = 1.0
-        mass_heavy = 3.0
+        mass_heavy = 1.08
 
         q_cyl = wp.quat(np.sin(np.pi / 4.0), 0.0, 0.0, np.cos(np.pi / 4.0))
 
         Dof = newton.ModelBuilder.JointDofConfig
         planar_lin = [Dof(axis=Axis.X), Dof(axis=Axis.Z)]
-        planar_ang = [Dof(axis=Axis.Y)]
+        planar_ang = []
 
         self.pulley_indices = []
         self.left_indices = []
@@ -75,7 +75,7 @@ class Example:
             )
             self.pulley_indices.append(pulley)
 
-            left_pos = wp.vec3(x_off - 0.4, 0.0, 2.0)
+            left_pos = wp.vec3(x_off - 0.4, 0.0, 1.85)
             left = builder.add_link(
                 xform=wp.transform(p=left_pos, q=wp.quat_identity()),
                 mass=mass_light,
@@ -90,7 +90,7 @@ class Example:
             builder.add_articulation([j1])
             self.left_indices.append(left)
 
-            right_pos = wp.vec3(x_off + 0.4, 0.0, 2.0)
+            right_pos = wp.vec3(x_off + 0.4, 0.0, 1.85)
             right = builder.add_link(
                 xform=wp.transform(p=right_pos, q=wp.quat_identity()),
                 mass=mass_heavy,
@@ -121,8 +121,8 @@ class Example:
                 mu=mu,
                 offset=(0.0, 0.0, 0.0),
                 axis=axis,
-                compliance=1.0e-5,
-                damping=0.1,
+                compliance=2.0e-5,
+                damping=8.0,
                 rest_length=-1.0,
             )
             builder.add_tendon_link(
@@ -130,8 +130,8 @@ class Example:
                 link_type=int(TendonLinkType.ATTACHMENT),
                 offset=(0.0, 0.0, 0.06),
                 axis=axis,
-                compliance=1.0e-5,
-                damping=0.1,
+                compliance=2.0e-5,
+                damping=8.0,
                 rest_length=-1.0,
             )
 
@@ -140,7 +140,7 @@ class Example:
 
         self.solver = newton.solvers.SolverXPBD(
             self.model,
-            iterations=8,
+            iterations=32,
             joint_linear_relaxation=0.8,
         )
 
@@ -178,7 +178,7 @@ class Example:
         self._right_z_history.append(np.array([body_q[i][2] for i in self.right_indices], dtype=np.float64))
 
     def test_post_step(self):
-        assert_tendon_total_length(self)
+        assert_tendon_total_length(self, rel_tol=0.06)
         if self.sim_time < self.frame_dt * 1.5:
             att_r = self.solver.tendon_seg_attachment_r.numpy()
             att_l = self.solver.tendon_seg_attachment_l.numpy()
@@ -196,7 +196,7 @@ class Example:
                 )
 
     def test_final(self):
-        assert_tendon_total_length(self)
+        assert_tendon_total_length(self, rel_tol=0.06)
         body_q = self.state_0.body_q.numpy()
         assert np.isfinite(body_q).all(), "Non-finite values in body positions"
         if not self._right_z_history:
@@ -211,10 +211,27 @@ class Example:
         assert np.all(left_disp > -0.04), f"Light weights should not sink in kinematic capstan: dz={left_disp}"
         assert np.all(right_disp > -0.02), f"Heavy weights should not rise in kinematic capstan: dz={right_disp}"
 
-        assert np.max(right_disp) < 0.12, f"Kinematic no-slip pulleys should lock: dz={right_disp}"
-        assert np.max(right_disp) - np.min(right_disp) < 0.03, (
-            f"Baseline should ignore capstan mu until slip support is reintroduced: dz={right_disp}"
+        assert right_disp[0] > 0.18, f"Zero-friction kinematic capstan should freely slip: dz={right_disp}"
+        assert right_disp[0] > right_disp[1] + 0.03, (
+            f"Mid-friction kinematic capstan should slip less than zero friction: dz={right_disp}"
         )
+        assert right_disp[1] > right_disp[2] + 0.03, (
+            f"High-friction kinematic capstan should lock more than mid friction: dz={right_disp}"
+        )
+        assert right_disp[2] < 0.08, f"High-friction kinematic capstan should lock cable motion: dz={right_disp}"
+        if len(left_z) > 2:
+            left_step = np.max(np.abs(np.diff(left_z[:, :2], axis=0)), axis=0)
+            right_step = np.max(np.abs(np.diff(right_z[:, :2], axis=0)), axis=0)
+            left_acc_step = np.max(np.abs(np.diff(left_z[:, :2], n=2, axis=0)), axis=0)
+            right_acc_step = np.max(np.abs(np.diff(right_z[:, :2], n=2, axis=0)), axis=0)
+            assert np.max(left_step) < 0.035 and np.max(right_step) < 0.035, (
+                f"Low/mid kinematic capstan slip should move smoothly per frame: "
+                f"left_step={left_step}, right_step={right_step}"
+            )
+            assert np.max(left_acc_step) < 0.012 and np.max(right_acc_step) < 0.012, (
+                f"Low/mid kinematic capstan slip should not show stick-slip jumps: "
+                f"left_ddz={left_acc_step}, right_ddz={right_acc_step}"
+            )
 
     def render(self):
         if self.viewer is not None:

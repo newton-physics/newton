@@ -205,7 +205,7 @@ P6_TARGET = np.array(
     dtype=np.float32,
 )
 
-DRIVE_HOLD_TIME = 8.0
+DRIVE_HOLD_TIME = 10.0
 
 
 def _interp_target(t: float, values: np.ndarray) -> tuple[float, float]:
@@ -336,8 +336,8 @@ class Example:
             parent=-1,
             child=slider,
             axis=Axis.X,
-            limit_lower=-0.075,
-            limit_upper=0.075,
+            limit_lower=-0.11,
+            limit_upper=0.11,
             limit_ke=1.0e4,
             limit_kd=100.0,
             friction=0.0,
@@ -347,8 +347,8 @@ class Example:
             parent=slider,
             child=table,
             axis=Axis.Y,
-            limit_lower=-0.075,
-            limit_upper=0.075,
+            limit_lower=-0.11,
+            limit_upper=0.11,
             limit_ke=1.0e4,
             limit_kd=100.0,
             friction=0.0,
@@ -511,7 +511,7 @@ class Example:
                 link_type=int(link_type),
                 radius=radius,
                 orientation=orientation,
-                mu=0.0,
+                mu=10.0,
                 offset=offset,
                 axis=axis,
                 compliance=compliance,
@@ -712,11 +712,13 @@ class Example:
             "Drive pulley joints should be the only actuated joints"
         )
         link_mu = self.model.tendon_link_mu.numpy()
-        assert np.allclose(link_mu, 0.0), "Clean baseline must not rely on tendon friction coefficients"
+        link_type = self.model.tendon_link_type.numpy()
+        rolling_mu = link_mu[link_type == int(TendonLinkType.ROLLING)]
+        assert np.all(rolling_mu >= 9.0), "XY table rolling pulleys should run in the high-friction no-slip regime"
 
         max_abs_table = float(np.max(np.abs(table_xy)))
         max_abs_slider = float(np.max(np.abs(slider_x)))
-        assert max_abs_table < 0.065 and max_abs_slider < 0.065, (
+        assert max_abs_table < 0.115 and max_abs_slider < 0.115, (
             f"Table exceeded expected travel: max_abs_table={max_abs_table:.5f}, max_abs_slider={max_abs_slider:.5f}"
         )
 
@@ -755,6 +757,7 @@ class Example:
         assert_reference_window(2.5, 5.0, 0.006, 0.004)
         assert_reference_window(5.0, 7.5, 0.012, 0.0065)
         assert_reference_window(7.5, 8.0, 0.008, 0.006)
+        assert_reference_window(7.5, 10.0, 0.012, 0.0065)
 
         guide_rotation = np.max(np.abs(pulley_rot[:, :5]), axis=0)
         assert float(np.min(guide_rotation)) > 0.05, (

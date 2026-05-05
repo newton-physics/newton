@@ -8,8 +8,10 @@ pinholes, attachments) using the Cable Joints method [Müller et al. SCA 2018].
 
 Each tendon is an ordered sequence of waypoints on rigid bodies. Between
 adjacent waypoints, a unilateral distance constraint enforces the cable
-length. Rolling links are no-slip in the XPBD baseline, and pinholes transfer
-rest length between their two adjacent spans as frictionless slip waypoints.
+length. Rolling links use the Cable Joints tangent update and can apply finite
+capstan slip through their ``mu`` value; high ``mu`` recovers the no-slip
+baseline. Pinholes transfer rest length between their two adjacent spans as
+frictionless slip waypoints.
 """
 
 from __future__ import annotations

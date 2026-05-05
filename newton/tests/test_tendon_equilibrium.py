@@ -78,7 +78,7 @@ def build_atwood_equal_weights(mass=2.0, pulley_mass=0.5, pulley_radius=0.15):
         link_type=int(TendonLinkType.ROLLING),
         radius=pulley_radius,
         orientation=1,
-        mu=0.0,
+        mu=10.0,
         offset=(0.0, 0.0, 0.0),
         axis=axis,
         compliance=1.0e-6,
