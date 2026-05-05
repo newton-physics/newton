@@ -664,25 +664,26 @@ class SolverXPBD(SolverBase):
                     state_out.body_q.assign(body_q)
                     state_out.body_qd.assign(body_qd)
 
-            # update body velocities from position changes
-            # skipped when requires_grad=True due to numerical issues with gradients
-            if (
-                (self.compute_body_velocity_from_position_delta or self.enable_restitution)
-                and model.body_count
-                and not requires_grad
-            ):
+            # Update body velocities from position changes. Grad-enabled steps
+            # write into a cloned buffer so restitution can use corrected
+            # impact velocities without mutating a recorded array in place.
+            body_qd_for_restitution = state_out.body_qd
+            if (self.compute_body_velocity_from_position_delta or self.enable_restitution) and model.body_count:
+                body_qd_from_position_delta = wp.clone(state_out.body_qd) if requires_grad else state_out.body_qd
                 wp.launch(
                     kernel=update_body_velocities,
                     dim=model.body_count,
                     inputs=[state_out.body_q, body_q_init, model.body_com, dt],
-                    outputs=[state_out.body_qd],
+                    outputs=[body_qd_from_position_delta],
                     device=model.device,
                 )
+                body_qd_for_restitution = body_qd_from_position_delta
+                if requires_grad:
+                    state_out.body_qd = body_qd_from_position_delta
 
-            # restitution requires corrected velocities from update_body_velocities above;
-            # skip on grad-enabled steps where that update is intentionally omitted
-            if self.enable_restitution and contacts is not None and not requires_grad:
-                if model.particle_count:
+            # Restitution requires corrected velocities from update_body_velocities above.
+            if self.enable_restitution and contacts is not None:
+                if model.particle_count and not requires_grad:
                     wp.launch(
                         kernel=apply_particle_shape_restitution,
                         dim=contacts.soft_contact_max,
@@ -713,14 +714,17 @@ class SolverXPBD(SolverBase):
                     )
 
                 if model.body_count:
-                    body_deltas.zero_()
+                    if requires_grad:
+                        body_deltas = wp.zeros_like(body_deltas)
+                    else:
+                        body_deltas.zero_()
 
                     wp.launch(
                         kernel=apply_rigid_restitution,
                         dim=contacts.rigid_contact_max,
                         inputs=[
                             state_out.body_q,
-                            state_out.body_qd,
+                            body_qd_for_restitution,
                             body_q_init,
                             body_qd_init,
                             model.body_com,
@@ -749,15 +753,18 @@ class SolverXPBD(SolverBase):
                         device=model.device,
                     )
 
+                    body_qd_with_restitution = wp.clone(body_qd_for_restitution) if requires_grad else state_out.body_qd
                     wp.launch(
                         kernel=apply_body_delta_velocities,
                         dim=model.body_count,
                         inputs=[
                             body_deltas,
                         ],
-                        outputs=[state_out.body_qd],
+                        outputs=[body_qd_with_restitution],
                         device=model.device,
                     )
+                    if requires_grad:
+                        state_out.body_qd = body_qd_with_restitution
 
             if model.body_count:
                 self.copy_kinematic_body_state(model, state_in, state_out)

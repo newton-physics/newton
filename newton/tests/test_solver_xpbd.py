@@ -544,21 +544,17 @@ def test_rigid_restitution_elastic_no_explosion(test, device):
     )
 
 
-def test_rigid_restitution_skipped_with_requires_grad(test, device):
+def test_rigid_restitution_runs_with_requires_grad(test, device):
     """
-    Regression test for the grad-path restitution guard: the restitution pass must
-    be skipped when requires_grad=True because the velocity-update step it depends
-    on is also omitted on grad-enabled steps to avoid gradient issues.
+    Regression test for grad-enabled rigid restitution.
 
     Setup:
     - Two runs with the same sphere (z=0.3, restitution=1.0, mu=0.0):
       requires_grad=True vs requires_grad=False, 50 frames at 60 fps / 16 substeps.
 
-    Without the fix, the restitution pass ran unconditionally, reading stale body_qd
-    before the positional corrections — the same explosion as Bug 2 (~1e29 m).
-
-    With the fix, requires_grad=True must not bounce; requires_grad=False must bounce
-    and reach a meaningfully higher peak, confirming the guard discriminates both paths.
+    Assert: both paths must bounce without exploding. The grad-enabled path uses a
+    cloned velocity buffer for the position-delta velocity update so restitution
+    sees corrected impact velocities without overwriting recorded arrays in place.
     """
     radius = 0.05
     drop_z = 0.3
@@ -600,59 +596,36 @@ def test_rigid_restitution_skipped_with_requires_grad(test, device):
     post_impact_grad = zs_grad[contact_frame:]
     post_impact_no_grad = zs_no_grad[contact_frame:]
 
-    # requires_grad=True: restitution pass is skipped — sphere must not bounce.
-    z_min_grad = min(post_impact_grad)
-    z_min_grad_idx = post_impact_grad.index(z_min_grad)
-    bounced_up = any(z > z_min_grad + 0.001 for z in post_impact_grad[z_min_grad_idx + 1 :])
-    test.assertFalse(
-        bounced_up,
-        msg=(
-            f"With requires_grad=True, restitution pass should be skipped so the sphere "
-            f"must not rise above its post-impact minimum (z_min={z_min_grad:.4f} m). "
-            f"Post-impact z values: {post_impact_grad}. "
-            f"Before the fix, the pass ran with stale velocities and caused explosion to ~1e29 m."
-        ),
-    )
+    def assert_rebounds(name, zs):
+        z_min = zs[0]
+        for z in zs[1:]:
+            if z > z_min + 0.001:
+                return
+            z_min = min(z_min, z)
+        test.fail(
+            f"With {name}, sphere should rise after an impact minimum "
+            f"(latest z_min={z_min:.4f} m). Post-impact z values: {zs}."
+        )
 
-    # requires_grad=False: check via first local minimum, not global. XPBD dissipates
-    # energy each bounce so the global minimum drifts to the last frame with no frames
-    # after it to assert a rise. The first local minimum is followed by a clear rebound.
-    first_min_idx = next(
-        (
-            i
-            for i in range(1, len(post_impact_no_grad) - 1)
-            if post_impact_no_grad[i] <= post_impact_no_grad[i - 1]
-            and post_impact_no_grad[i] < post_impact_no_grad[i + 1]
-        ),
-        None,
-    )
-    test.assertIsNotNone(
-        first_min_idx,
-        msg=(
-            f"With requires_grad=False, no local minimum found in post-impact window — "
-            f"sphere never rebounded. Post-impact z values: {post_impact_no_grad}."
-        ),
-    )
-    z_first_min = post_impact_no_grad[first_min_idx]
-    did_bounce = any(z > z_first_min + 0.005 for z in post_impact_no_grad[first_min_idx + 1 :])
-    test.assertTrue(
-        did_bounce,
-        msg=(
-            f"With requires_grad=False, sphere should rise after first rebound minimum "
-            f"(z_first_min={z_first_min:.4f} m). Post-impact z values: {post_impact_no_grad}."
-        ),
-    )
+    assert_rebounds("requires_grad=True", post_impact_grad)
+    assert_rebounds("requires_grad=False", post_impact_no_grad)
 
-    # The non-grad peak must be meaningfully higher — guard discriminates paths, not
-    # merely suppresses restitution on both.
     peak_grad = max(post_impact_grad)
     peak_no_grad = max(post_impact_no_grad)
-    test.assertGreater(
-        peak_no_grad,
-        peak_grad + 0.02,
+    test.assertLess(
+        peak_grad,
+        2.0 * drop_z,
         msg=(
-            f"Non-grad peak ({peak_no_grad:.4f} m) should exceed grad peak ({peak_grad:.4f} m) "
-            f"by at least 2 cm — the guard should discriminate, not suppress both paths."
+            f"With requires_grad=True, restitution should not explode above {2.0 * drop_z:.2f} m; "
+            f"peak was {peak_grad:.4f} m. Post-impact z values: {post_impact_grad}."
+        ),
+    )
+    test.assertLess(
+        peak_no_grad,
+        2.0 * drop_z,
+        msg=(
+            f"With requires_grad=False, restitution should not explode above {2.0 * drop_z:.2f} m; "
+            f"peak was {peak_no_grad:.4f} m. Post-impact z values: {post_impact_no_grad}."
         ),
     )
 
@@ -1380,8 +1353,8 @@ add_function_test(
 
 add_function_test(
     TestSolverXPBD,
-    "test_rigid_restitution_skipped_with_requires_grad",
-    test_rigid_restitution_skipped_with_requires_grad,
+    "test_rigid_restitution_runs_with_requires_grad",
+    test_rigid_restitution_runs_with_requires_grad,
     devices=devices,
     check_output=False,
 )
