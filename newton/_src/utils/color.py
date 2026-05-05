@@ -24,9 +24,6 @@ TEXTURE_COLOR_SPACE_AUTO = "auto"
 TEXTURE_COLOR_SPACE_RAW = "raw"
 TEXTURE_COLOR_SPACE_SRGB = "srgb"
 
-TEXTURE_COLOR_SPACE_RAW_ID = int(ColorSpace.LINEAR)
-TEXTURE_COLOR_SPACE_SRGB_ID = int(ColorSpace.SRGB)
-
 
 def _to_rgb_array(color: Sequence[float] | np.ndarray) -> np.ndarray:
     rgb = np.asarray(color, dtype=np.float32).reshape(-1)
@@ -164,7 +161,7 @@ def texture_color_space_to_id(color_space: ColorSpace | str | int | None) -> int
 
 
 @wp.func
-def srgb_channel_to_linear_wp(value: float):
+def srgb_channel_to_linear_wp(value: float) -> float:
     clamped = wp.max(value, 0.0)
     if clamped <= 0.04045:
         return clamped / 12.92
@@ -172,7 +169,7 @@ def srgb_channel_to_linear_wp(value: float):
 
 
 @wp.func
-def linear_channel_to_srgb_wp(value: float):
+def linear_channel_to_srgb_wp(value: float) -> float:
     clamped = wp.max(value, 0.0)
     if clamped <= 0.0031308:
         return clamped * 12.92
@@ -180,7 +177,7 @@ def linear_channel_to_srgb_wp(value: float):
 
 
 @wp.func
-def srgb_to_linear_wp(rgb: wp.vec3f):
+def srgb_to_linear_wp(rgb: wp.vec3f) -> wp.vec3f:
     return wp.vec3f(
         srgb_channel_to_linear_wp(rgb[0]),
         srgb_channel_to_linear_wp(rgb[1]),
@@ -189,7 +186,7 @@ def srgb_to_linear_wp(rgb: wp.vec3f):
 
 
 @wp.func
-def linear_to_srgb_wp(rgb: wp.vec3f):
+def linear_to_srgb_wp(rgb: wp.vec3f) -> wp.vec3f:
     return wp.vec3f(
         linear_channel_to_srgb_wp(rgb[0]),
         linear_channel_to_srgb_wp(rgb[1]),

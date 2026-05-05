@@ -27,19 +27,19 @@ class TestSensorTiledCamera(unittest.TestCase):
         )
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         if not wp.is_cuda_available():
             return
         cls._shared_model = cls._build_scene()
 
     @staticmethod
-    def _build_single_sphere_scene(color: tuple[float, float, float]):
+    def _build_single_sphere_scene(color: tuple[float, float, float]) -> newton.Model:
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()), label="sphere")
         builder.add_shape_sphere(body, radius=0.75, color=color)
         return builder.finalize(device="cpu")
 
-    def test_render_config_uses_reusable_color_space_enum(self):
+    def test_render_config_uses_reusable_color_space_enum(self) -> None:
         self.assertIs(SensorTiledCamera.ColorSpace, newton.utils.ColorSpace)
 
         self.assertEqual(SensorTiledCamera.RenderConfig().output_color_space, newton.utils.ColorSpace.SRGB)
@@ -195,7 +195,7 @@ class TestSensorTiledCamera(unittest.TestCase):
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
 
-    def test_albedo_output_linearizes_srgb_shape_colors_only_once(self):
+    def test_albedo_output_linearizes_srgb_shape_colors_only_once(self) -> None:
         color = (0.25, 0.5, 0.75)
         model = self._build_single_sphere_scene(color)
 

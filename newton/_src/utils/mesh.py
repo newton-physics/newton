@@ -426,7 +426,7 @@ def _extract_trimesh_texture(visual_or_material, base_dir: str) -> np.ndarray | 
 
 
 def _extract_trimesh_material_params(
-    material,
+    material: object | None,
     *,
     authored_linear: bool = False,
 ) -> tuple[float | None, float | None, tuple[float, float, float] | None]:

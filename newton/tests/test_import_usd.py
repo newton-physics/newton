@@ -24,7 +24,7 @@ from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test
 devices = get_test_devices()
 
 
-def _reference_color_linear_to_srgb(color):
+def _reference_color_linear_to_srgb(color: tuple[float, float, float] | np.ndarray) -> tuple[float, float, float]:
     rgb = np.clip(np.asarray(color, dtype=np.float32).reshape(-1)[:3], 0.0, None)
     srgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
     return (float(srgb[0]), float(srgb[1]), float(srgb[2]))
