@@ -2146,7 +2146,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         neg_two = wp.transform(wp.vec3(-2.0, 0.0, 0.0), joint_quat)
         z_axis = wp.vec3(0.0, 0.0, 1.0)
 
-        def build_articulation(mass: float, inertia: wp.mat33, floating_base: bool) -> newton.ModelBuilder:
+        def build_articulation(mass: float, inertia: wp.mat33, root_joint_type: str) -> newton.ModelBuilder:
             b = newton.ModelBuilder(gravity=gravity_value, up_axis=newton.Axis.Z)
             link0 = b.add_link(
                 xform=identity_xform,
@@ -2154,20 +2154,29 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 inertia=inertia,
                 com=link_com,
             )
-            if floating_base:
+            if root_joint_type == "free":
                 j0 = b.add_joint_free(
                     parent=-1,
                     child=link0,
                     parent_xform=root_parent_xform,
                     child_xform=identity_xform,
                 )
-            else:
+            elif root_joint_type == "ball":
+                j0 = b.add_joint_ball(
+                    parent=-1,
+                    child=link0,
+                    parent_xform=root_parent_xform,
+                    child_xform=identity_xform,
+                )
+            elif root_joint_type == "fixed":
                 j0 = b.add_joint_fixed(
                     parent=-1,
                     child=link0,
                     parent_xform=root_parent_xform,
                     child_xform=identity_xform,
                 )
+            else:
+                raise ValueError(f"Unknown root_joint_type: {root_joint_type!r}")
             link1 = b.add_link(
                 xform=identity_xform,
                 mass=mass,
@@ -2204,20 +2213,26 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             return b
 
         num_worlds = 2
-        num_arts_per_world = 2
+        num_arts_per_world = 3
         num_arts = num_worlds * num_arts_per_world
 
-        # Each world has one fixed-root articulation and one floating-base one.
-        # The floating-base form contributes 6 root DOFs (3 linear, 3 angular)
-        # in joint_qd plus 7 root coords (3 pos, 4 quat) in joint_q.
-        floating_flags = [False, True, False, True]
-        assert len(floating_flags) == num_arts
+        # Per-articulation root joint type. ``"free"`` adds 6 qd / 7 q root
+        # DOFs (3 linear, 3 angular) for a free body; ``"ball"`` adds 3 qd
+        # / 4 q root DOFs (orientation only); ``"fixed"`` adds none.
+        # SolverMuJoCo requires homogeneous worlds, so every world uses the
+        # same ``[fixed, free, ball]`` pattern -- exercising all three root
+        # joint types in each world.
+        root_joint_types_per_world = ["fixed", "free", "ball"]
+        assert len(root_joint_types_per_world) == num_arts_per_world
+        root_joint_types = root_joint_types_per_world * num_worlds
+        # Per-type root qd-DOF counts (used to size the expected_dofs check).
+        root_qd_len = {"fixed": 0, "ball": 3, "free": 6}
 
         # Per-articulation link mass. The first value (16) corresponds to a
         # density-1 4x2x2 box (mass = density * volume); the others are arbitrary
         # multiples and submultiples to vary M(q) across articulations. Inertia
         # tracks mass for the same shape.
-        per_articulation_masses = [16.0, 32.0, 8.0, 24.0]
+        per_articulation_masses = [16.0, 32.0, 8.0, 24.0, 12.0, 20.0]
         assert len(per_articulation_masses) == num_arts
 
         builder = newton.ModelBuilder(gravity=gravity_value, up_axis=newton.Axis.Z)
@@ -2226,7 +2241,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             world_builder = newton.ModelBuilder(gravity=gravity_value, up_axis=newton.Axis.Z)
             for _ in range(num_arts_per_world):
                 m = per_articulation_masses[art_idx]
-                world_builder.add_builder(build_articulation(m, box_inertia(m), floating_flags[art_idx]))
+                world_builder.add_builder(build_articulation(m, box_inertia(m), root_joint_types[art_idx]))
                 art_idx += 1
             builder.add_world(world_builder)
 
@@ -2239,9 +2254,9 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         solver = newton.solvers.SolverMuJoCo(model)
         dt = 1e-4
 
-        # 2 fixed-root articulations contribute 2 DOFs each; 2 floating-base
-        # articulations contribute 6 root + 2 internal = 8 DOFs each.
-        expected_dofs = sum(8 if f else 2 for f in floating_flags)
+        # Each articulation contributes 2 internal-revolute DOFs plus the
+        # root joint's qd-DOFs (free=6, ball=3, fixed=0).
+        expected_dofs = sum(2 + root_qd_len[t] for t in root_joint_types)
         self.assertEqual(model.body_count, 3 * num_arts)
         self.assertEqual(model.joint_dof_count, expected_dofs)
 
@@ -2264,20 +2279,33 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             (-0.7, 0.2),
         ]
 
-        # Floating-base root state used for every test case. The base sits at the
-        # world origin with identity orientation. Root velocity is zero unless
-        # ``non_zero_initial_dof_velocities`` flips on the angular DOFs (linear
-        # stays zero -- non-zero ``omega x v_com`` cross-coupling between root
-        # linear and angular velocity surfaces a separate Newton-vs-MuJoCo
-        # angular-velocity-frame question on the simulator side, independent
-        # of the inverse-dynamics convention this test exercises). Root
-        # accelerations are arbitrary non-zero values so the floating root
-        # exercises non-trivial M(q)*qddot rows.
-        floating_root_q = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
-        floating_root_qd = (
-            (0.0, 0.0, 0.0, 0.3, -0.1, 0.2) if non_zero_initial_dof_velocities else (0.0,) * 6
-        )
-        floating_root_qdd = (0.05, -0.1, 0.15, 0.2, -0.25, 0.3)
+        # Per-type root state used for every test case. The base sits at the
+        # joint's parent_xform pose with identity orientation. Root velocity
+        # is zero unless ``non_zero_initial_dof_velocities`` flips on the
+        # angular DOFs (linear stays zero -- non-zero ``omega x v_com``
+        # cross-coupling between root linear and angular velocity surfaces a
+        # separate Newton-vs-MuJoCo angular-velocity-frame question on the
+        # simulator side, independent of the inverse-dynamics convention this
+        # test exercises). Root accelerations are arbitrary non-zero values so
+        # the floating root exercises non-trivial M(q)*qddot rows.
+        root_omega = (0.3, -0.1, 0.2) if non_zero_initial_dof_velocities else (0.0, 0.0, 0.0)
+        root_alpha = (0.2, -0.25, 0.3)
+        root_lin_dot = (0.05, -0.1, 0.15)
+        root_q_per_type = {
+            "fixed": (),
+            "ball": (0.0, 0.0, 0.0, 1.0),
+            "free": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+        }
+        root_qd_per_type = {
+            "fixed": (),
+            "ball": root_omega,
+            "free": (0.0, 0.0, 0.0, *root_omega),
+        }
+        root_qdd_per_type = {
+            "fixed": (),
+            "ball": root_alpha,
+            "free": (*root_lin_dot, *root_alpha),
+        }
 
         # Pick the smallest eval_type that covers the active bias terms:
         # MASS_MATRIX is always required for M*qddot; add GRAVITY_COMPENSATION_FORCE
@@ -2296,11 +2324,10 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 q_pieces: list[float] = []
                 qd_pieces: list[float] = []
                 qdd_pieces: list[float] = []
-                for is_floating in floating_flags:
-                    if is_floating:
-                        q_pieces.extend(floating_root_q)
-                        qd_pieces.extend(floating_root_qd)
-                        qdd_pieces.extend(floating_root_qdd)
+                for root_type in root_joint_types:
+                    q_pieces.extend(root_q_per_type[root_type])
+                    qd_pieces.extend(root_qd_per_type[root_type])
+                    qdd_pieces.extend(root_qdd_per_type[root_type])
                     q_pieces.extend(joint_q_values)
                     qd_pieces.extend(joint_qd_values)
                     qdd_pieces.extend(joint_qdd_values)
