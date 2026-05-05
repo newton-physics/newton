@@ -220,7 +220,7 @@ def _load_cable_centerline(stage) -> tuple[wp.vec3, ...]:
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, _args=None):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -514,5 +514,5 @@ class Example:
 
 if __name__ == "__main__":
     viewer, args = newton.examples.init()
-    example = Example(viewer)
+    example = Example(viewer, args)
     newton.examples.run(example, args)
