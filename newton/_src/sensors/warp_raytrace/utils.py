@@ -343,12 +343,11 @@ class Utils:
         """Flatten rendered color image to a tiled RGBA buffer.
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
+        Useful for writing a single pre-tiled image to disk; use :meth:`to_rgba_from_color`
+        with :meth:`~newton.viewer.ViewerBase.log_image` for in-viewer display.
 
         Args:
-            image: Color output from :meth:`~SensorTiledCamera.update`, shape
-                ``(world_count, camera_count, height, width)``. The packed
-                bytes are copied as-is; no additional color-space conversion is
-                performed here.
+            image: Color output from :meth:`~newton.sensors.SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
