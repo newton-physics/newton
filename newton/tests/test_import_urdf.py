@@ -402,6 +402,29 @@ class TestImportUrdfBasic(unittest.TestCase):
         end_z = float(state_0.body_q.numpy()[root_body][2])
         self.assertLess(end_z, start_z)
 
+    def test_floating_massless_fixed_root_preserves_existing_fixed_joints(self):
+        builder = newton.ModelBuilder()
+        root = builder.add_link(mass=1.0, label="pre_root")
+        child = builder.add_link(mass=1.0, label="pre_child")
+        root_joint = builder.add_joint_fixed(parent=-1, child=root, label="pre_world_fixed")
+        child_joint = builder.add_joint_fixed(parent=root, child=child, label="pre_child_fixed")
+        builder.add_articulation([root_joint, child_joint], label="pre_articulation")
+
+        builder.add_urdf(MASSLESS_FIXED_ROOT_URDF, floating=True, up_axis="Z")
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertIn("pre_world_fixed", builder.joint_label)
+        self.assertIn("pre_child_fixed", builder.joint_label)
+        self.assertIn("massless_fixed_root/floating_base", builder.joint_label)
+        self.assertNotIn("massless_fixed_root/base_to_chassis", builder.joint_label)
+
+        self.assertEqual(builder.joint_type[builder.joint_label.index("pre_world_fixed")], newton.JointType.FIXED)
+        self.assertEqual(builder.joint_type[builder.joint_label.index("pre_child_fixed")], newton.JointType.FIXED)
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root/floating_base")],
+            newton.JointType.FREE,
+        )
+
     def test_cartpole_urdf(self):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 123.0
