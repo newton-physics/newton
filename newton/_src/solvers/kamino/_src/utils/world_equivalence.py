@@ -201,6 +201,10 @@ def compute_equivalence_classes(signatures: Iterable[DiscreteSignature]) -> list
     Returns:
         Equivalence classes, as a list of lists of world indices (each sorted in ascending order).
     """
+    # Convert input to list
+    signatures = list(signatures)
+    if len(signatures) == 0:
+        raise ValueError("`signatures` cannot be empty.")
 
     # Helper listing ids per class, from a class id per world
     def class_ids_to_classes(class_ids, num_classes):
@@ -210,19 +214,19 @@ def compute_equivalence_classes(signatures: Iterable[DiscreteSignature]) -> list
         return classes
 
     # Dimensions
-    num_worlds = next(iter(signatures)).num_worlds
+    num_worlds = signatures[0].num_worlds
     assert all(sig.num_worlds == num_worlds for sig in signatures)
-    device = next(iter(signatures)).data.device
+    device = signatures[0].data.device
 
     # Initialize class labels
-    class_ids = [-1 for i in range(num_worlds)]
+    class_ids = [-1 for _ in range(num_worlds)]
     next_class = 0
 
     # Group all worlds by sizes
     sizes_np = [sig.world_size.numpy() for sig in signatures]
     num_signatures = len(sizes_np)
     world_groups = {}
-    world_ref = [-1 for i in range(num_worlds)]  # Reference per group (first world in each group)
+    world_ref = [-1 for _ in range(num_worlds)]  # Reference per group (first world in each group)
     for i in range(num_worlds):
         world_sizes = tuple(sizes_np[sig_id][i] for sig_id in range(num_signatures))
         try:
@@ -290,7 +294,7 @@ def compute_equivalence_classes(signatures: Iterable[DiscreteSignature]) -> list
     # Group remaining worlds by hash
     hashes_np = hashes_wp.numpy()
     world_groups = {}
-    world_ref = [-1 for i in range(num_worlds)]
+    world_ref = [-1 for _ in range(num_worlds)]
     for group_id, group in enumerate(leftover_groups):
         for i in group:
             try:
@@ -323,7 +327,7 @@ def compute_equivalence_classes(signatures: Iterable[DiscreteSignature]) -> list
         # Assign class label to all worlds that match the reference in their group
         eq_mask_np = eq_mask_wp.numpy()
         new_groups = {}
-        world_ref = [-1 for i in range(num_worlds)]
+        world_ref = [-1 for _ in range(num_worlds)]
         for old_indices, old_ref in world_groups.values():
             for index in old_indices:
                 if eq_mask_np[index]:

@@ -1329,7 +1329,7 @@ class ForwardKinematicsSolver:
         else:
             wp.launch_tiled(
                 self._eval_jacobian_T_jacobian_kernel,
-                dim=(self.num_worlds, self.num_tiles_cts_2d, self.num_tiles_cts_2d),
+                dim=(self.num_worlds, self.num_tiles_vrs_2d, self.num_tiles_vrs_2d),
                 inputs=[self.jacobian, self.tile_sparsity_pattern, world_mask, self.lhs],
                 block_dim=32,
                 device=self.device,
