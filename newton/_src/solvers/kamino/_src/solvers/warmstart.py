@@ -60,17 +60,17 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _warmstart_limits_by_matched_jid_dof_key(
     # Inputs - Previous:
-    sorted_limit_keys_old: wp.array(dtype=uint64),
-    sorted_to_unsorted_map_old: wp.array(dtype=int32),
-    num_active_limits_old: wp.array(dtype=int32),
-    limit_velocity_old: wp.array(dtype=float32),
-    limit_reaction_old: wp.array(dtype=float32),
+    sorted_limit_keys_old: wp.array[uint64],
+    sorted_to_unsorted_map_old: wp.array[int32],
+    num_active_limits_old: wp.array[int32],
+    limit_velocity_old: wp.array[float32],
+    limit_reaction_old: wp.array[float32],
     # Inputs - Next:
-    num_active_limits_new: wp.array(dtype=int32),
-    limit_key_new: wp.array(dtype=uint64),
+    num_active_limits_new: wp.array[int32],
+    limit_key_new: wp.array[uint64],
     # Outputs:
-    limit_reaction_new: wp.array(dtype=float32),
-    limit_velocity_new: wp.array(dtype=float32),
+    limit_reaction_new: wp.array[float32],
+    limit_velocity_new: wp.array[float32],
 ):
     """
     Match current limits to previous timestep limits using joint-DoF index pair keys.
@@ -114,27 +114,27 @@ def _warmstart_limits_by_matched_jid_dof_key(
 def _warmstart_contacts_by_matched_geom_pair_key_and_position(
     # Inputs - Common:
     tolerance: float32,
-    time_dt: wp.array(dtype=float32),
-    body_q_i: wp.array(dtype=transformf),
-    body_u_i: wp.array(dtype=vec6f),
+    time_dt: wp.array[float32],
+    body_q_i: wp.array[transformf],
+    body_u_i: wp.array[vec6f],
     # Inputs - Previous:
-    sorted_contact_keys_old: wp.array(dtype=uint64),
-    sorted_to_unsorted_map_old: wp.array(dtype=int32),
-    num_active_contacts_old: wp.array(dtype=int32),
-    contact_position_B_old: wp.array(dtype=vec3f),
-    contact_frame_old: wp.array(dtype=quatf),
-    contact_reaction_old: wp.array(dtype=vec3f),
-    contact_velocity_old: wp.array(dtype=vec3f),
+    sorted_contact_keys_old: wp.array[uint64],
+    sorted_to_unsorted_map_old: wp.array[int32],
+    num_active_contacts_old: wp.array[int32],
+    contact_position_B_old: wp.array[vec3f],
+    contact_frame_old: wp.array[quatf],
+    contact_reaction_old: wp.array[vec3f],
+    contact_velocity_old: wp.array[vec3f],
     # Inputs - Next:
-    num_active_contacts_new: wp.array(dtype=int32),
-    contact_key_new: wp.array(dtype=uint64),
-    contact_wid_new: wp.array(dtype=int32),
-    contact_bid_AB_new: wp.array(dtype=vec2i),
-    contact_position_B_new: wp.array(dtype=vec3f),
-    contact_frame_new: wp.array(dtype=quatf),
+    num_active_contacts_new: wp.array[int32],
+    contact_key_new: wp.array[uint64],
+    contact_wid_new: wp.array[int32],
+    contact_bid_AB_new: wp.array[vec2i],
+    contact_position_B_new: wp.array[vec3f],
+    contact_frame_new: wp.array[quatf],
     # Outputs:
-    contact_reaction_new: wp.array(dtype=vec3f),
-    contact_velocity_new: wp.array(dtype=vec3f),
+    contact_reaction_new: wp.array[vec3f],
+    contact_velocity_new: wp.array[vec3f],
 ):
     """
     Match current contacts to previous timestep contacts using geom-pair keys and relative distance.
@@ -224,25 +224,25 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position(
 def _warmstart_contacts_from_geom_pair_net_force(
     # Inputs - Common:
     scaling: float32,
-    body_q_i: wp.array(dtype=transformf),
-    body_u_i: wp.array(dtype=vec6f),
+    body_q_i: wp.array[transformf],
+    body_u_i: wp.array[vec6f],
     # Inputs - Previous:
-    sorted_contact_keys_old: wp.array(dtype=uint64),
-    sorted_to_unsorted_map_old: wp.array(dtype=int32),
-    num_active_contacts_old: wp.array(dtype=int32),
-    contact_frame_old: wp.array(dtype=quatf),
-    contact_reaction_old: wp.array(dtype=vec3f),
+    sorted_contact_keys_old: wp.array[uint64],
+    sorted_to_unsorted_map_old: wp.array[int32],
+    num_active_contacts_old: wp.array[int32],
+    contact_frame_old: wp.array[quatf],
+    contact_reaction_old: wp.array[vec3f],
     # Inputs - Next:
-    num_active_contacts_new: wp.array(dtype=int32),
-    contact_key_new: wp.array(dtype=uint64),
-    contact_bid_AB_new: wp.array(dtype=vec2i),
-    contact_position_A_new: wp.array(dtype=vec3f),
-    contact_position_B_new: wp.array(dtype=vec3f),
-    contact_frame_new: wp.array(dtype=quatf),
-    contact_material_new: wp.array(dtype=vec2f),
+    num_active_contacts_new: wp.array[int32],
+    contact_key_new: wp.array[uint64],
+    contact_bid_AB_new: wp.array[vec2i],
+    contact_position_A_new: wp.array[vec3f],
+    contact_position_B_new: wp.array[vec3f],
+    contact_frame_new: wp.array[quatf],
+    contact_material_new: wp.array[vec2f],
     # Outputs:
-    contact_reaction_new: wp.array(dtype=vec3f),
-    contact_velocity_new: wp.array(dtype=vec3f),
+    contact_reaction_new: wp.array[vec3f],
+    contact_velocity_new: wp.array[vec3f],
 ):
     """
     Match current contacts to previous timestep contacts using geom-pair keys and relative distance.
@@ -355,29 +355,29 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
     # Inputs - Common:
     tolerance: float32,
     scaling: float32,
-    time_dt: wp.array(dtype=float32),
-    body_q_i: wp.array(dtype=transformf),
-    body_u_i: wp.array(dtype=vec6f),
+    time_dt: wp.array[float32],
+    body_q_i: wp.array[transformf],
+    body_u_i: wp.array[vec6f],
     # Inputs - Previous:
-    sorted_contact_keys_old: wp.array(dtype=uint64),
-    sorted_to_unsorted_map_old: wp.array(dtype=int32),
-    num_active_contacts_old: wp.array(dtype=int32),
-    contact_position_B_old: wp.array(dtype=vec3f),
-    contact_frame_old: wp.array(dtype=quatf),
-    contact_reaction_old: wp.array(dtype=vec3f),
-    contact_velocity_old: wp.array(dtype=vec3f),
+    sorted_contact_keys_old: wp.array[uint64],
+    sorted_to_unsorted_map_old: wp.array[int32],
+    num_active_contacts_old: wp.array[int32],
+    contact_position_B_old: wp.array[vec3f],
+    contact_frame_old: wp.array[quatf],
+    contact_reaction_old: wp.array[vec3f],
+    contact_velocity_old: wp.array[vec3f],
     # Inputs - Next:
-    num_active_contacts_new: wp.array(dtype=int32),
-    contact_key_new: wp.array(dtype=uint64),
-    contact_wid_new: wp.array(dtype=int32),
-    contact_bid_AB_new: wp.array(dtype=vec2i),
-    contact_position_A_new: wp.array(dtype=vec3f),
-    contact_position_B_new: wp.array(dtype=vec3f),
-    contact_frame_new: wp.array(dtype=quatf),
-    contact_material_new: wp.array(dtype=vec2f),
+    num_active_contacts_new: wp.array[int32],
+    contact_key_new: wp.array[uint64],
+    contact_wid_new: wp.array[int32],
+    contact_bid_AB_new: wp.array[vec2i],
+    contact_position_A_new: wp.array[vec3f],
+    contact_position_B_new: wp.array[vec3f],
+    contact_frame_new: wp.array[quatf],
+    contact_material_new: wp.array[vec2f],
     # Outputs:
-    contact_reaction_new: wp.array(dtype=vec3f),
-    contact_velocity_new: wp.array(dtype=vec3f),
+    contact_reaction_new: wp.array[vec3f],
+    contact_velocity_new: wp.array[vec3f],
 ):
     """
     Match current contacts to previous timestep contacts using geom-pair keys and relative distance.

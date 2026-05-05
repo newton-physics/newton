@@ -11,13 +11,13 @@ import newton
 import newton.examples
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.types import float32
-from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_hinged
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino._src.utils.sim import SimulationLogger, Simulator, ViewerKamino
 from newton._src.solvers.kamino.examples import get_examples_output_path, run_headless
+from newton.tests import get_kamino_basics_asset
 
 ###
 # Module configs
@@ -33,8 +33,8 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.kernel
 def _control_callback(
-    state_t: wp.array(dtype=float32),
-    control_tau_j: wp.array(dtype=float32),
+    state_t: wp.array[float32],
+    control_tau_j: wp.array[float32],
 ):
     """
     An example control callback kernel.
@@ -73,6 +73,7 @@ def control_callback(sim: Simulator):
             sim.solver.data.time.time,
             sim.control.tau_j,
         ],
+        device=sim._device,
     )
 
 
@@ -97,10 +98,11 @@ class Example:
         async_save: bool = False,
     ):
         # Initialize target frames per second and corresponding time-steps
-        self.fps = 60
-        self.sim_dt = 0.001
+        self.fps = 50
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
+        self.sim_substeps = max(1, round(self.frame_dt / 0.001))
+        self.sim_dt = self.frame_dt / self.sim_substeps
+        msg.info(f"Using sim_dt = {self.sim_dt} ({self.sim_substeps} substeps per frame)")
         self.max_steps = max_steps
 
         # Cache the device and other internal flags
@@ -111,7 +113,7 @@ class Example:
         # Construct model builder
         if load_from_usd:
             msg.notif("Constructing builder from imported USD ...")
-            USD_MODEL_PATH = os.path.join(get_basics_usd_assets_path(), "boxes_hinged.usda")
+            USD_MODEL_PATH = get_kamino_basics_asset("boxes_hinged.usda")
             importer = USDImporter()
             self.builder: ModelBuilderKamino = make_homogeneous_builder(
                 num_worlds=num_worlds,
@@ -181,14 +183,14 @@ class Example:
         self.step_graph = None
         self.simulate_graph = None
 
-        # Capture CUDA graph if requested and available
-        self.capture()
-
         # Warm-start the simulator before rendering
         # NOTE: This compiles and loads the warp kernels prior to execution
         msg.notif("Warming up simulator...")
         self.step_once()
         self.reset()
+
+        # Capture CUDA graph if requested and available
+        self.capture()
 
     def capture(self):
         """Capture CUDA graph if requested and available."""

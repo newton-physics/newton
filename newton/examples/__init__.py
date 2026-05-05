@@ -511,6 +511,19 @@ def add_mujoco_contacts_arg(parser):
     return parser
 
 
+def add_kamino_contacts_arg(parser):
+    """Add ``--use-kamino-contacts`` argument to *parser*."""
+    import argparse  # noqa: PLC0415  — needed for BooleanOptionalAction
+
+    parser.add_argument(
+        "--use-kamino-contacts",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use Kamino's collision-detection wrapper instead of Newton contacts (default: use Newton contacts).",
+    )
+    return parser
+
+
 def add_world_count_arg(parser):
     """Add ``--world-count`` argument to *parser*."""
     parser.add_argument(

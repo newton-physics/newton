@@ -133,7 +133,7 @@ def make_build_pair_key3_func(main_key_bits: int, aux_key_bits: int | None = Non
 def binary_search_find_pair(
     num_pairs: int32,
     target: vec2i,
-    pairs: wp.array(dtype=vec2i),
+    pairs: wp.array[vec2i],
 ) -> int32:
     """
     Performs binary-search over a sorted array of pairs to find the index of a target pair.
@@ -145,7 +145,7 @@ def binary_search_find_pair(
         num_pairs (int32): Number of "active" pairs in the array.\n
             This is required because not all elements may be active.
         target (vec2i): The target pair to search for.
-        pairs (wp.array(dtype=vec2i)): Sorted array of pairs to search within.
+        pairs (wp.array[vec2i]): Sorted array of pairs to search within.
 
     Returns:
         Index of the target pair if found, otherwise `-1`.
@@ -172,7 +172,7 @@ def binary_search_find_range_start(
     lower: int32,
     upper: int32,
     target: uint64,
-    keys: wp.array(dtype=uint64),
+    keys: wp.array[uint64],
 ) -> int32:
     """
     Performs binary-search over a sorted array of integer keys
@@ -184,7 +184,7 @@ def binary_search_find_range_start(
         lower (wp.int32): Lower bound index for the search (inclusive).
         upper (wp.int32): Upper bound index for the search (exclusive).
         target (wp.uint64): The target key to search for.
-        keys (wp.array(dtype=wp.uint64)): Sorted array of keys to search within.
+        keys (wp.array[wp.uint64]): Sorted array of keys to search within.
 
     Returns:
         Index of the first occurrence of target if found, otherwise `-1`.
@@ -217,20 +217,20 @@ def uint64_sentinel_value() -> wp.uint64: ...
 @wp.kernel
 def _prepare_key_sort(
     # Inputs:
-    num_active_keys: wp.array(dtype=wp.int32),
-    keys_source: wp.array(dtype=wp.uint64),
+    num_active_keys: wp.array[wp.int32],
+    keys_source: wp.array[wp.uint64],
     # Outputs:
-    keys: wp.array(dtype=wp.uint64),
-    sorted_to_unsorted_map: wp.array(dtype=wp.int32),
+    keys: wp.array[wp.uint64],
+    sorted_to_unsorted_map: wp.array[wp.int32],
 ):
     """
     Prepares keys and sorting-maps for radix sort.
 
     Args:
-        num_active_keys (wp.array(dtype=wp.int32)): Number of active keys to copy
-        keys_source (wp.array(dtype=wp.uint64)): Source array of keys
-        keys (wp.array(dtype=wp.uint64)): Destination array of keys for sorting
-        sorted_to_unsorted_map (wp.array(dtype=wp.int32)): Map from sorted indices to original unsorted indices
+        num_active_keys (wp.array[wp.int32]): Number of active keys to copy
+        keys_source (wp.array[wp.uint64]): Source array of keys
+        keys (wp.array[wp.uint64]): Destination array of keys for sorting
+        sorted_to_unsorted_map (wp.array[wp.int32]): Map from sorted indices to original unsorted indices
     """
     # Retrieve the thread index
     tid = wp.tid()
@@ -347,8 +347,8 @@ class KeySorter:
         Sorts the provided keys using radix sort.
 
         Args:
-            num_active_keys (wp.array(dtype=int32)): Number of active keys to sort.
-            keys (wp.array(dtype=uint64)): The source keys to be sorted.
+            num_active_keys (wp.array[int32]): Number of active keys to sort.
+            keys (wp.array[uint64]): The source keys to be sorted.
         """
         # Check compatibility of input sizes
         if num_active_keys.device != self._device:

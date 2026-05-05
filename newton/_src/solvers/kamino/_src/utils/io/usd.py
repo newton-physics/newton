@@ -445,6 +445,18 @@ class USDImporter:
         pair_properties.dynamic_friction = 0.5 * (first.dynamic_friction + second.dynamic_friction)
         return pair_properties
 
+    def _is_effectively_visible(self, prim) -> bool:
+        """Return whether ``prim`` is effectively visible in USD.
+
+        A prim is effectively visible only when it is a :class:`UsdGeom.Imageable`
+        whose inherited visibility is not ``invisible``. Non-imageable prims are
+        not renderable in USD, so they are treated as not effectively visible.
+        """
+        imageable = self.UsdGeom.Imageable(prim)
+        if not imageable:
+            return False
+        return imageable.ComputeVisibility() != self.UsdGeom.Tokens.invisible
+
     def _parse_material(
         self,
         material_prim,
@@ -1416,8 +1428,8 @@ class USDImporter:
             if np.all(scale[0:] == scale[0]):
                 shape = SphereShape(radius=radius)
             else:
-                a, b, c = distance_unit * scale * radius
-                shape = EllipsoidShape(a=a, b=b, c=c)
+                rx, ry, rz = distance_unit * scale * radius
+                shape = EllipsoidShape(rx=rx, ry=ry, rz=rz)
 
         elif geom_type == self.UsdGeom.Mesh:
             # Retrieve the mesh data from the USD mesh prim
@@ -1477,6 +1489,7 @@ class USDImporter:
         distance_unit: float = 1.0,
         meshes_are_collidable: bool = False,
         force_show_colliders: bool = False,
+        hide_collision_shapes: bool = False,
         prim_path_names: bool = False,
     ) -> GeometryDescriptor | None:
         """
@@ -1589,8 +1602,8 @@ class USDImporter:
             if np.all(scale[0:] == scale[0]):
                 shape = SphereShape(radius=distance_unit * geom_spec.radius)
             else:
-                a, b, c = distance_unit * scale
-                shape = EllipsoidShape(a=a, b=b, c=c)
+                rx, ry, rz = distance_unit * scale
+                shape = EllipsoidShape(rx=rx, ry=ry, rz=rz)
 
         elif geom_type == self.UsdPhysics.ObjectType.MeshShape:
             # Retrieve the mesh data from the USD mesh prim
@@ -1669,8 +1682,13 @@ class USDImporter:
                     geom_collides += cgroup
             msg.debug(f"[{name}]: geom_collides: {geom_collides}")
 
+        # Explicit hide_collision_shapes overrides material-based visibility:
+        # if the body already has visual shapes, hide its colliders unconditionally.
+        collider_is_visible = force_show_colliders and not hide_collision_shapes
+        collider_is_visible = collider_is_visible and self._is_effectively_visible(geom_prim)
+
         # Set the geom to be visible if it is a non-collidable mesh and we are forcing show colliders
-        if force_show_colliders:
+        if collider_is_visible:
             geom_flags = geom_flags | ShapeFlags.VISIBLE
 
         ###
@@ -1714,6 +1732,7 @@ class USDImporter:
         load_materials: bool = True,
         meshes_are_collidable: bool = False,
         force_show_colliders: bool = False,
+        hide_collision_shapes: bool = False,
         use_prim_path_names: bool = False,
         use_articulation_root_name: bool = True,
         use_angular_drive_scaling: bool = True,
@@ -2056,7 +2075,7 @@ class USDImporter:
 
                 # If not, create a FREE joint descriptor to attach the root body to the
                 # world and insert it at the beginning of the joint descriptors list
-                root_body_name = builder.bodies[root_body_index].name
+                root_body_name = builder.bodies[0][root_body_index].name
 
                 joint_desc = JointDescriptor(
                     name=f"world_to_{root_body_name}"
@@ -2066,6 +2085,8 @@ class USDImporter:
                     act_type=JointActuationType.PASSIVE,
                     bid_B=-1,
                     bid_F=root_body_index,
+                    B_r_Bj=wp.transform_get_translation(builder.bodies[0][root_body_index].q_i_0),
+                    F_r_Fj=vec3f(0.0),
                     X_j=Axis.X.to_mat33(),
                 )
                 msg.debug(
@@ -2203,6 +2224,7 @@ class USDImporter:
                                 distance_unit=distance_unit,
                                 meshes_are_collidable=meshes_are_collidable,
                                 force_show_colliders=force_show_colliders,
+                                hide_collision_shapes=hide_collision_shapes,
                                 prim_path_names=use_prim_path_names,
                             )
                             break  # Stop after the first match

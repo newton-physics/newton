@@ -29,7 +29,7 @@ from newton._src.solvers.kamino.tests.utils.rand import RandomProblemLLT
 ###
 
 
-class TestLinAlgLLTSequential(unittest.TestCase):
+class TestLinAlgLLTBlocked(unittest.TestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -60,7 +60,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
 
     def test_01_single_problem_dims_all_active(self):
         """
-        Test the sequential LLT solver on a single small problem.
+        Test the blocked LLT solver on a single small problem.
         """
         # Constants
         # N = 12  # Use this for visual debugging with small matrices
@@ -111,7 +111,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -153,7 +152,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             b=problem.b_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -194,7 +192,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             L=L_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -217,7 +214,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
 
     def test_02_single_problem_dims_partially_active(self):
         """
-        Test the sequential LLT solver on a single small problem.
+        Test the blocked LLT solver on a single small problem.
         """
         # Constants
         # N_max = 16  # Use this for visual debugging with small matrices
@@ -274,7 +271,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -316,7 +312,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             b=problem.b_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -355,7 +350,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             L=L_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -378,7 +372,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
 
     def test_03_multiple_problems_dims_all_active(self):
         """
-        Test the sequential LLT solver on multiple small problems.
+        Test the blocked LLT solver on multiple small problems.
         """
         # Constants
         N = [7, 8, 9, 10, 11]
@@ -432,7 +426,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
@@ -477,7 +470,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             b=problem.b_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
@@ -520,7 +512,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             L=L_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
@@ -547,7 +538,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
 
     def test_04_multiple_problems_dims_partially_active(self):
         """
-        Test the sequential LLT solver on multiple small problems.
+        Test the blocked LLT solver on multiple small problems.
         """
         # Constants
         # N_max = [7, 8, 9, 14, 21]  # Use this for visual debugging with small matrices
@@ -607,7 +598,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
@@ -652,7 +642,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             b=problem.b_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
@@ -695,7 +684,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             L=L_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
