@@ -151,6 +151,48 @@ MASSLESS_FIXED_ROOT_URDF = """
 </robot>
 """
 
+MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF = """
+<robot name="massless_fixed_root_internal_fixed">
+    <link name="base_link"/>
+    <link name="chassis">
+        <inertial>
+            <mass value="2.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0"
+                     iyy="0.1" iyz="0.0"
+                     izz="0.1"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <box size="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>
+    </link>
+    <link name="sensor">
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="0.01" ixy="0.0" ixz="0.0"
+                     iyy="0.01" iyz="0.0"
+                     izz="0.01"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <sphere radius="0.1"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="base_to_chassis" type="fixed">
+        <parent link="base_link"/>
+        <child link="chassis"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+    <joint name="chassis_to_sensor" type="fixed">
+        <parent link="chassis"/>
+        <child link="sensor"/>
+        <origin xyz="0 0 0.6" rpy="0 0 0"/>
+    </joint>
+</robot>
+"""
+
 JOINT_TREE_URDF = """
 <robot name="joint_tree_test">
 <!-- Mixed ordering of links -->
@@ -423,6 +465,25 @@ class TestImportUrdfBasic(unittest.TestCase):
         self.assertEqual(
             builder.joint_type[builder.joint_label.index("massless_fixed_root/floating_base")],
             newton.JointType.FREE,
+        )
+
+    def test_floating_massless_fixed_root_preserves_imported_internal_fixed_joints(self):
+        builder = newton.ModelBuilder()
+        builder.add_urdf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF, floating=True, up_axis="Z")
+
+        self.assertEqual(builder.joint_count, 2)
+        self.assertIn("massless_fixed_root_internal_fixed/floating_base", builder.joint_label)
+        self.assertNotIn("massless_fixed_root_internal_fixed/base_to_chassis", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/chassis_to_sensor", builder.joint_label)
+
+        self.assertGreater(builder.body_mass[0], 0.0)
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root_internal_fixed/floating_base")],
+            newton.JointType.FREE,
+        )
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root_internal_fixed/chassis_to_sensor")],
+            newton.JointType.FIXED,
         )
 
     def test_cartpole_urdf(self):
