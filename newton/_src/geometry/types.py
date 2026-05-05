@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
+from ..utils.color import ColorSpace, normalize_texture_color_space
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -182,7 +183,7 @@ class Mesh:
         self.color = color
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
-        self.texture_color_space: str = "auto"
+        self.texture_color_space = "auto"
         """Source color space of :attr:`texture`: ``"auto"``, ``"srgb"``, or ``"raw"``."""
         self._roughness = roughness
         self._metallic = metallic
@@ -932,14 +933,17 @@ class Mesh:
         """Source color space of the assigned texture.
 
         One of ``"auto"`` (assume sRGB for the raytracer), ``"raw"`` (linear /
-        data), or ``"srgb"`` (explicit sRGB). Reset to ``"auto"`` whenever
+        data), or ``"srgb"`` (explicit sRGB). The shared
+        :class:`newton.utils.ColorSpace` enum is also accepted and normalized
+        to ``"raw"`` or ``"srgb"``. Reset to ``"auto"`` whenever
         :attr:`texture` is reassigned.
         """
         return self._texture_color_space
 
     @texture_color_space.setter
-    def texture_color_space(self, value: str):
-        self._texture_color_space = value
+    def texture_color_space(self, value: ColorSpace | str | int | None):
+        self._texture_color_space = normalize_texture_color_space(value)
+        self._cached_hash = None
 
     @property
     def texture_hash(self) -> int:

@@ -3,17 +3,29 @@
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Sequence
 
 import numpy as np
 import warp as wp
 
+
+class ColorSpace(enum.IntEnum):
+    """RGB color spaces used at Newton rendering boundaries."""
+
+    LINEAR = 0
+    """Linear-light RGB."""
+
+    SRGB = 1
+    """sRGB/display-encoded RGB."""
+
+
 TEXTURE_COLOR_SPACE_AUTO = "auto"
 TEXTURE_COLOR_SPACE_RAW = "raw"
 TEXTURE_COLOR_SPACE_SRGB = "srgb"
 
-TEXTURE_COLOR_SPACE_RAW_ID = 0
-TEXTURE_COLOR_SPACE_SRGB_ID = 1
+TEXTURE_COLOR_SPACE_RAW_ID = int(ColorSpace.LINEAR)
+TEXTURE_COLOR_SPACE_SRGB_ID = int(ColorSpace.SRGB)
 
 
 def _to_rgb_array(color: Sequence[float] | np.ndarray) -> np.ndarray:
@@ -76,15 +88,60 @@ def srgb_image_to_uint8(image: np.ndarray) -> np.ndarray:
     return np.clip(np.round(np.clip(img, 0.0, 1.0) * 255.0), 0.0, 255.0).astype(np.uint8)
 
 
-def normalize_texture_color_space(color_space: str | None) -> str:
+def normalize_color_space(
+    color_space: ColorSpace | str | int | None,
+    *,
+    default: ColorSpace = ColorSpace.SRGB,
+) -> ColorSpace:
+    """Normalize color-space metadata to :class:`ColorSpace`.
+
+    Args:
+        color_space: Color-space enum, string token, integer value, or ``None``.
+        default: Color space to use for ``None``, ``"auto"``, or unknown
+            tokens.
+
+    Returns:
+        Normalized color-space enum.
+    """
+
+    if color_space is None:
+        return default
+    if isinstance(color_space, ColorSpace):
+        return color_space
+
+    token = str(color_space).strip().lower()
+    if token in ("", TEXTURE_COLOR_SPACE_AUTO, "unknown"):
+        return default
+    if token in ("identity", TEXTURE_COLOR_SPACE_RAW, "data", "linear", "lin_rec709_scene") or token.startswith("lin_"):
+        return ColorSpace.LINEAR
+    if token in ("display", TEXTURE_COLOR_SPACE_SRGB, "srgb_rec709_scene", "g22_rec709_scene") or token.startswith(
+        "srgb_"
+    ):
+        return ColorSpace.SRGB
+
+    try:
+        return ColorSpace(color_space)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_texture_color_space(color_space: ColorSpace | str | int | None) -> str:
     """Normalize texture color-space metadata to ``raw``, ``srgb``, or ``auto``."""
 
     if color_space is None:
         return TEXTURE_COLOR_SPACE_AUTO
+    if isinstance(color_space, ColorSpace):
+        return TEXTURE_COLOR_SPACE_RAW if color_space == ColorSpace.LINEAR else TEXTURE_COLOR_SPACE_SRGB
 
     token = str(color_space).strip().lower()
     if token in ("", TEXTURE_COLOR_SPACE_AUTO, "unknown"):
         return TEXTURE_COLOR_SPACE_AUTO
+    try:
+        enum_value = ColorSpace(color_space)
+    except (TypeError, ValueError):
+        enum_value = None
+    if enum_value is not None:
+        return TEXTURE_COLOR_SPACE_RAW if enum_value == ColorSpace.LINEAR else TEXTURE_COLOR_SPACE_SRGB
     if token in ("identity", TEXTURE_COLOR_SPACE_RAW, "data", "lin_rec709_scene") or token.startswith("lin_"):
         return TEXTURE_COLOR_SPACE_RAW
     if token in (TEXTURE_COLOR_SPACE_SRGB, "srgb_rec709_scene", "g22_rec709_scene") or token.startswith("srgb_"):
@@ -92,14 +149,18 @@ def normalize_texture_color_space(color_space: str | None) -> str:
     return TEXTURE_COLOR_SPACE_AUTO
 
 
-def texture_color_space_to_id(color_space: str | None) -> int:
-    """Map normalized texture color-space metadata to the raytracer enum."""
+def texture_color_space_to_color_space(color_space: ColorSpace | str | int | None) -> ColorSpace:
+    """Map texture color-space metadata to a shading color space."""
 
     return (
-        TEXTURE_COLOR_SPACE_RAW_ID
-        if normalize_texture_color_space(color_space) == TEXTURE_COLOR_SPACE_RAW
-        else TEXTURE_COLOR_SPACE_SRGB_ID
+        ColorSpace.LINEAR if normalize_texture_color_space(color_space) == TEXTURE_COLOR_SPACE_RAW else ColorSpace.SRGB
     )
+
+
+def texture_color_space_to_id(color_space: ColorSpace | str | int | None) -> int:
+    """Map normalized texture color-space metadata to the raytracer enum."""
+
+    return int(texture_color_space_to_color_space(color_space))
 
 
 @wp.func

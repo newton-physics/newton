@@ -164,7 +164,7 @@ class Utils:
             Array of shape ``(world_count, camera_count, height, width)``,
             dtype ``uint32``. Each pixel stores packed RGBA bytes in either
             display/sRGB or linear space depending on
-            ``render_config.encode_output_srgb``.
+            ``render_config.output_color_space``.
         """
         return wp.zeros(
             (self.__render_context.world_count, camera_count, height, width),
@@ -235,7 +235,7 @@ class Utils:
             Array of shape ``(world_count, camera_count, height, width)``,
             dtype ``uint32``. Each pixel stores packed RGBA bytes in either
             display/sRGB or linear space depending on
-            ``render_config.encode_output_srgb``.
+            ``render_config.output_color_space``.
         """
         return wp.zeros(
             (self.__render_context.world_count, camera_count, height, width),

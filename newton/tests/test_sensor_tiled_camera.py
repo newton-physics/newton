@@ -39,6 +39,13 @@ class TestSensorTiledCamera(unittest.TestCase):
         builder.add_shape_sphere(body, radius=0.75, color=color)
         return builder.finalize(device="cpu")
 
+    def test_render_config_uses_reusable_color_space_enum(self):
+        self.assertIs(SensorTiledCamera.ColorSpace, newton.utils.ColorSpace)
+
+        self.assertEqual(SensorTiledCamera.RenderConfig().output_color_space, newton.utils.ColorSpace.SRGB)
+        config = SensorTiledCamera.RenderConfig(output_color_space=SensorTiledCamera.ColorSpace.LINEAR)
+        self.assertEqual(config.output_color_space, newton.utils.ColorSpace.LINEAR)
+
     @staticmethod
     def _build_scene():
         from pxr import Usd, UsdGeom
@@ -198,10 +205,10 @@ class TestSensorTiledCamera(unittest.TestCase):
             device="cpu",
         )
 
-        for encode_output_srgb in (True, False):
+        for output_color_space in (SensorTiledCamera.ColorSpace.SRGB, SensorTiledCamera.ColorSpace.LINEAR):
             sensor = SensorTiledCamera(
                 model=model,
-                config=SensorTiledCamera.RenderConfig(encode_output_srgb=encode_output_srgb),
+                config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
             )
             camera_rays = sensor.utils.compute_pinhole_camera_rays(1, 1, math.radians(30.0))
             albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=1)
@@ -210,7 +217,7 @@ class TestSensorTiledCamera(unittest.TestCase):
             packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
             expected_rgb = (
                 np.array([63, 127, 191], dtype=np.uint8)
-                if encode_output_srgb
+                if output_color_space == SensorTiledCamera.ColorSpace.SRGB
                 else np.array([12, 54, 133], dtype=np.uint8)
             )
 

@@ -110,11 +110,13 @@ __all__ += [
 # ==================================================================================
 
 from ._src.utils.color import (  # noqa: E402
+    ColorSpace,
     color_linear_to_srgb,
     color_srgb_to_linear,
 )
 
 __all__ += [
+    "ColorSpace",
     "color_linear_to_srgb",
     "color_srgb_to_linear",
 ]

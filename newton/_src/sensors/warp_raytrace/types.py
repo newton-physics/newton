@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import warp as wp
 
+from ...utils.color import ColorSpace, normalize_color_space
+
 
 class RenderLightType(enum.IntEnum):
     """Light types supported by the Warp raytracer."""
@@ -60,12 +62,11 @@ class RenderConfig:
     enable_backface_culling: bool = True
     """Cull back-facing triangles."""
 
-    encode_output_srgb: bool = True
-    """Encode packed color/albedo outputs to display/sRGB.
+    output_color_space: ColorSpace = ColorSpace.SRGB
+    """Color space for packed color/albedo outputs.
 
-    When ``False``, :class:`SensorTiledCamera` writes packed linear RGB bytes
-    instead, which can be useful for training pipelines that want to avoid
-    display transfer functions.
+    Use ``ColorSpace.SRGB`` for display-encoded bytes or
+    ``ColorSpace.LINEAR`` for linear RGB bytes.
     """
 
     render_order: int = RenderOrder.PIXEL_PRIORITY
@@ -88,6 +89,9 @@ class RenderConfig:
 
     gaussians_max_num_hits: int = 20
     """Maximum Gaussian hits accumulated per ray."""
+
+    def __post_init__(self) -> None:
+        self.output_color_space = normalize_color_space(self.output_color_space)
 
 
 @dataclass(unsafe_hash=True)
@@ -123,7 +127,8 @@ class TextureData:
     Attributes:
         texture: 2D Texture as ``wp.Texture2D``.
         repeat: UV tiling factors along U and V axes.
-        color_space: ``0`` for raw/linear textures, ``1`` for sRGB textures.
+        color_space: ``ColorSpace.LINEAR`` for raw/linear textures,
+            ``ColorSpace.SRGB`` for sRGB textures.
     """
 
     texture: wp.Texture2D

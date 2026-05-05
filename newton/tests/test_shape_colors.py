@@ -69,6 +69,16 @@ class TestShapeColors(unittest.TestCase):
 
         np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.2, 0.4, 0.6], atol=1e-6, rtol=1e-6)
 
+    def test_mesh_texture_color_space_accepts_reusable_enum(self):
+        """Verify mesh texture metadata accepts the shared color-space enum."""
+        mesh = self._make_tetra_mesh()
+
+        mesh.texture_color_space = newton.utils.ColorSpace.LINEAR
+        self.assertEqual(mesh.texture_color_space, "raw")
+
+        mesh.texture_color_space = newton.utils.ColorSpace.SRGB
+        self.assertEqual(mesh.texture_color_space, "srgb")
+
     def test_explicit_shape_color_overrides_mesh_color(self):
         """Verify explicit shape colors override colors embedded in meshes."""
         mesh = self._make_tetra_mesh(color=(0.2, 0.4, 0.6))

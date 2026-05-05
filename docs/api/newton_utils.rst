@@ -13,6 +13,7 @@ newton.utils
    :toctree: _generated
    :nosignatures:
 
+   ColorSpace
    EventTracer
    MeshAdjacency
 
