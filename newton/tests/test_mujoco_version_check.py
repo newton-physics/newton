@@ -68,10 +68,12 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
         }
         previous_mujoco = solver_mujoco.SolverMuJoCo._mujoco
         previous_mujoco_warp = solver_mujoco.SolverMuJoCo._mujoco_warp
+        previous_versions_checked = solver_mujoco.SolverMuJoCo._versions_checked
 
         try:
             solver_mujoco.SolverMuJoCo._mujoco = types.SimpleNamespace()
             solver_mujoco.SolverMuJoCo._mujoco_warp = types.SimpleNamespace()
+            solver_mujoco.SolverMuJoCo._versions_checked = False
 
             with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.__getitem__):
                 with self.assertWarnsRegex(RuntimeWarning, "MuJoCo dependency version mismatch"):
@@ -79,6 +81,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
         finally:
             solver_mujoco.SolverMuJoCo._mujoco = previous_mujoco
             solver_mujoco.SolverMuJoCo._mujoco_warp = previous_mujoco_warp
+            solver_mujoco.SolverMuJoCo._versions_checked = previous_versions_checked
 
     def test_accepts_versions_that_satisfy_pyproject(self):
         versions = {

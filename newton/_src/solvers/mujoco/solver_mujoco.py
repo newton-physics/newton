@@ -281,6 +281,7 @@ class SolverMuJoCo(SolverBase):
     # Class variables to cache the imported modules
     _mujoco = None
     _mujoco_warp = None
+    _versions_checked = False
     _convert_mjw_contacts_to_newton_kernel = None
 
     @classmethod
@@ -302,10 +303,12 @@ class SolverMuJoCo(SolverBase):
                 raise ImportError(
                     "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
                 ) from e
-        try:
-            _warn_if_mujoco_versions_mismatch(cls._mujoco, cls._mujoco_warp)
-        except Exception:
-            pass
+        if not cls._versions_checked:
+            try:
+                _warn_if_mujoco_versions_mismatch(cls._mujoco, cls._mujoco_warp)
+            except Exception:
+                pass
+            cls._versions_checked = True
         return cls._mujoco, cls._mujoco_warp
 
     @staticmethod
