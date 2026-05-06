@@ -94,14 +94,7 @@ AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
 
-def _required_specifier(package: str) -> str | None:
-    try:
-        requirements = importlib_metadata.requires("newton")
-    except importlib_metadata.PackageNotFoundError:
-        return None
-    if requirements is None:
-        return None
-
+def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:
     pattern = re.compile(rf"^{re.escape(package)}(?=[<>=!~])([^;]+)")
     for requirement in requirements:
         match = pattern.match(requirement)
@@ -111,9 +104,16 @@ def _required_specifier(package: str) -> str | None:
 
 
 def _warn_if_mujoco_versions_mismatch(mujoco: Any, mujoco_warp: Any) -> None:
+    try:
+        requirements = importlib_metadata.requires("newton")
+    except importlib_metadata.PackageNotFoundError:
+        return
+    if requirements is None:
+        return
+
     mismatches = []
     for package, module in (("mujoco", mujoco), ("mujoco-warp", mujoco_warp)):
-        specifier = _required_specifier(package)
+        specifier = _required_specifier(package, requirements)
         installed_version = _installed_version(package, module)
         if specifier and installed_version and not _version_satisfies(installed_version, specifier):
             mismatches.append(f"{package}=={installed_version} (requires {specifier})")

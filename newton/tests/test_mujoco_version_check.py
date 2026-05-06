@@ -8,12 +8,24 @@ from unittest import mock
 
 from newton._src.solvers.mujoco import solver_mujoco
 
+_MOCK_REQUIREMENTS = (
+    "mujoco~=3.8.0 ; extra == 'sim'",
+    "mujoco-warp~=3.8.0,>=3.8.0.1 ; extra == 'sim'",
+)
+
 
 def _mujoco_dependency_specs():
-    return {package: solver_mujoco._required_specifier(package) for package in ("mujoco", "mujoco-warp")}
+    return {
+        package: solver_mujoco._required_specifier(package, _MOCK_REQUIREMENTS) for package in ("mujoco", "mujoco-warp")
+    }
 
 
 class TestMuJoCoVersionCheck(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(solver_mujoco.importlib_metadata, "requires", return_value=list(_MOCK_REQUIREMENTS))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_warns_when_installed_versions_do_not_satisfy_pyproject(self):
         specs = _mujoco_dependency_specs()
         versions = {
@@ -86,21 +98,12 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
 
     def test_required_specifier_returns_none(self):
         cases = {
-            "metadata missing": mock.patch.object(
-                solver_mujoco.importlib_metadata,
-                "requires",
-                side_effect=solver_mujoco.importlib_metadata.PackageNotFoundError("newton"),
-            ),
-            "no requirements declared": mock.patch.object(
-                solver_mujoco.importlib_metadata, "requires", return_value=None
-            ),
-            "package not in requirements": mock.patch.object(
-                solver_mujoco.importlib_metadata, "requires", return_value=["warp-lang>=1.0"]
-            ),
+            "empty requirements": [],
+            "package not in requirements": ["warp-lang>=1.0"],
         }
-        for name, patch in cases.items():
-            with self.subTest(name), patch:
-                self.assertIsNone(solver_mujoco._required_specifier("mujoco"))
+        for name, requirements in cases.items():
+            with self.subTest(name):
+                self.assertIsNone(solver_mujoco._required_specifier("mujoco", requirements))
 
 
 def _matching_version(specifier: str) -> str:
