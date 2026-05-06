@@ -9,7 +9,6 @@ import re
 import warnings
 from collections.abc import Iterable
 from enum import IntEnum
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -95,22 +94,31 @@ AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
 
-def _warn_if_mujoco_versions_mismatch(mujoco: Any, mujoco_warp: Any) -> None:
+def _required_specifier(package: str) -> str | None:
     try:
-        pyproject_text = (Path(__file__).resolve().parents[4] / "pyproject.toml").read_text(encoding="utf-8")
-    except OSError:
-        return
+        requirements = importlib_metadata.requires("newton") or ()
+    except importlib_metadata.PackageNotFoundError:
+        return None
 
+    pattern = re.compile(rf"^{re.escape(package)}(?=[<>=!~])([^;]+)")
+    for requirement in requirements:
+        match = pattern.match(requirement)
+        if match:
+            return match.group(1).strip().replace(" ", "")
+    return None
+
+
+def _warn_if_mujoco_versions_mismatch(mujoco: Any, mujoco_warp: Any) -> None:
     mismatches = []
     for package, module in (("mujoco", mujoco), ("mujoco-warp", mujoco_warp)):
-        match = re.search(rf'^\s*"{re.escape(package)}(?=[<>=!~])([^";]+)', pyproject_text, re.MULTILINE)
+        specifier = _required_specifier(package)
         installed_version = _installed_version(package, module)
-        if match and installed_version and not _version_satisfies(installed_version, match.group(1)):
-            mismatches.append(f"{package}=={installed_version} (requires {match.group(1).replace(' ', '')})")
+        if specifier and installed_version and not _version_satisfies(installed_version, specifier):
+            mismatches.append(f"{package}=={installed_version} (requires {specifier})")
 
     if mismatches:
         warnings.warn(
-            "MuJoCo dependency version mismatch with pyproject.toml: "
+            "MuJoCo dependency version mismatch with Newton's declared requirements: "
             + "; ".join(mismatches)
             + '. Reinstall Newton dependencies, for example `uv pip install -e ".[examples]"`.',
             RuntimeWarning,
