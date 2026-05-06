@@ -348,7 +348,7 @@ class Example:
                 newton.GeoType.BOX,
                 (0.1, 0.1, 0.1),
                 wp.array([wp.transform(self.target, wp.quat_identity())], dtype=wp.transform),
-                wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3),
+                wp.array([wp.vec3(0.5, 0.0, 0.5)], dtype=wp.vec3),
             )
             self.viewer.log_lines(
                 f"/traj_{self.train_iter - 1}",
