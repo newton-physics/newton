@@ -765,8 +765,8 @@ class DelassusOperator:
         self._num_worlds: int = 0
         self._model_maxdims: int = 0
         self._model_maxsize: int = 0
-        self._world_dims: list[int] = []
-        self._world_size: list[int] = []
+        self._world_maxdims: list[int] = []
+        self._world_maxsize: list[int] = []
         self._max_of_max_total_D_size: int = 0
 
         # Declare the device cache
