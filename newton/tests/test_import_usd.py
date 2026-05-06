@@ -6752,7 +6752,7 @@ def Xform "BodyWithoutVisuals" (
 
         self.assertIsNotNone(mesh)
         self.assertEqual(mesh.texture, "dummy.png")
-        self.assertEqual(mesh.texture_color_space, "raw")
+        self.assertIs(mesh.texture_color_space, newton.utils.ColorSpace.LINEAR)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_preserves_identity_texture_color_space_metadata(self):
@@ -6790,7 +6790,7 @@ def Xform "BodyWithoutVisuals" (
         mesh_out = usd.get_mesh(mesh_prim, load_uvs=True)
 
         self.assertEqual(mesh_out.texture, "dummy.png")
-        self.assertEqual(mesh_out.texture_color_space, "raw")
+        self.assertIs(mesh_out.texture_color_space, newton.utils.ColorSpace.LINEAR)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_preserves_material_input_texture_color_space_metadata(self):
@@ -6824,7 +6824,7 @@ def Xform "BodyWithoutVisuals" (
         mesh_out = usd.get_mesh(mesh_prim)
 
         self.assertEqual(mesh_out.texture, "dummy.png")
-        self.assertEqual(mesh_out.texture_color_space, "raw")
+        self.assertIs(mesh_out.texture_color_space, newton.utils.ColorSpace.LINEAR)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_overrides_visual_material(self):

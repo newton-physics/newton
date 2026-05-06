@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Sequence
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -21,8 +22,6 @@ class ColorSpace(enum.IntEnum):
 
 
 TEXTURE_COLOR_SPACE_AUTO = "auto"
-TEXTURE_COLOR_SPACE_RAW = "raw"
-TEXTURE_COLOR_SPACE_SRGB = "srgb"
 
 
 def _to_rgb_array(color: Sequence[float] | np.ndarray) -> np.ndarray:
@@ -109,11 +108,9 @@ def normalize_color_space(
     token = str(color_space).strip().lower()
     if token in ("", TEXTURE_COLOR_SPACE_AUTO, "unknown"):
         return default
-    if token in ("identity", TEXTURE_COLOR_SPACE_RAW, "data", "linear", "lin_rec709_scene") or token.startswith("lin_"):
+    if token in ("identity", "raw", "data", "linear", "lin_rec709_scene") or token.startswith("lin_"):
         return ColorSpace.LINEAR
-    if token in ("display", TEXTURE_COLOR_SPACE_SRGB, "srgb_rec709_scene", "g22_rec709_scene") or token.startswith(
-        "srgb_"
-    ):
+    if token in ("display", "srgb", "srgb_rec709_scene", "g22_rec709_scene") or token.startswith("srgb_"):
         return ColorSpace.SRGB
 
     try:
@@ -122,13 +119,13 @@ def normalize_color_space(
         return default
 
 
-def normalize_texture_color_space(color_space: ColorSpace | str | int | None) -> str:
-    """Normalize texture color-space metadata to ``raw``, ``srgb``, or ``auto``."""
+def normalize_texture_color_space(color_space: ColorSpace | str | int | None) -> ColorSpace | Literal["auto"]:
+    """Normalize texture color-space metadata to :class:`ColorSpace` or ``"auto"``."""
 
     if color_space is None:
         return TEXTURE_COLOR_SPACE_AUTO
     if isinstance(color_space, ColorSpace):
-        return TEXTURE_COLOR_SPACE_RAW if color_space == ColorSpace.LINEAR else TEXTURE_COLOR_SPACE_SRGB
+        return color_space
 
     token = str(color_space).strip().lower()
     if token in ("", TEXTURE_COLOR_SPACE_AUTO, "unknown"):
@@ -138,20 +135,19 @@ def normalize_texture_color_space(color_space: ColorSpace | str | int | None) ->
     except (TypeError, ValueError):
         enum_value = None
     if enum_value is not None:
-        return TEXTURE_COLOR_SPACE_RAW if enum_value == ColorSpace.LINEAR else TEXTURE_COLOR_SPACE_SRGB
-    if token in ("identity", TEXTURE_COLOR_SPACE_RAW, "data", "lin_rec709_scene") or token.startswith("lin_"):
-        return TEXTURE_COLOR_SPACE_RAW
-    if token in (TEXTURE_COLOR_SPACE_SRGB, "srgb_rec709_scene", "g22_rec709_scene") or token.startswith("srgb_"):
-        return TEXTURE_COLOR_SPACE_SRGB
+        return enum_value
+    if token in ("identity", "raw", "data", "linear", "lin_rec709_scene") or token.startswith("lin_"):
+        return ColorSpace.LINEAR
+    if token in ("display", "srgb", "srgb_rec709_scene", "g22_rec709_scene") or token.startswith("srgb_"):
+        return ColorSpace.SRGB
     return TEXTURE_COLOR_SPACE_AUTO
 
 
 def texture_color_space_to_color_space(color_space: ColorSpace | str | int | None) -> ColorSpace:
     """Map texture color-space metadata to a shading color space."""
 
-    return (
-        ColorSpace.LINEAR if normalize_texture_color_space(color_space) == TEXTURE_COLOR_SPACE_RAW else ColorSpace.SRGB
-    )
+    normalized = normalize_texture_color_space(color_space)
+    return ColorSpace.SRGB if normalized == TEXTURE_COLOR_SPACE_AUTO else normalized
 
 
 def texture_color_space_to_id(color_space: ColorSpace | str | int | None) -> int:

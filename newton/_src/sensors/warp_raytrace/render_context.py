@@ -14,6 +14,7 @@ from ...core import MAXVAL
 from ...geometry import Gaussian, GeoType, Mesh, ShapeFlags
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
+from ...utils.color import texture_color_space_to_id
 from .bvh import (
     compute_bvh_group_roots,
     compute_particle_bvh_bounds,
@@ -21,7 +22,7 @@ from .bvh import (
 )
 from .gaussians import compute_gaussian_bounds
 from .render import create_kernel
-from .types import ClearData, ColorSpace, MeshData, RenderConfig, RenderOrder, TextureData
+from .types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData
 from .utils import Utils
 
 
@@ -721,9 +722,7 @@ class RenderContext:
                             device=self.device,
                         )
                         data.repeat = wp.vec2f(1.0, 1.0)
-                        data.color_space = int(
-                            ColorSpace.LINEAR if shape.texture_color_space == "raw" else ColorSpace.SRGB
-                        )
+                        data.color_space = texture_color_space_to_id(shape.texture_color_space)
                         self.__texture_data.append(data)
 
                     texture_data_ids.append(texture_hashes[texture_key])

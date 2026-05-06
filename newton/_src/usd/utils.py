@@ -16,6 +16,7 @@ from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 from ..utils.color import (
     TEXTURE_COLOR_SPACE_AUTO,
+    ColorSpace,
     normalize_texture_color_space,
 )
 
@@ -1427,7 +1428,7 @@ def _resolve_asset_path(
 def _resolve_texture_color_space(
     shader: UsdShade.Shader | None,
     file_attr: Usd.Attribute | None = None,
-) -> str:
+) -> ColorSpace | Literal["auto"]:
     """Resolve a texture's authored source color space."""
 
     source_color_space = None
@@ -1460,7 +1461,9 @@ def _resolve_texture_color_space(
     return normalize_texture_color_space(source_color_space)
 
 
-def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> tuple[str | None, str]:
+def _find_texture_in_shader(
+    shader: UsdShade.Shader | None, prim: Usd.Prim
+) -> tuple[str | None, ColorSpace | Literal["auto"]]:
     """Search a shader network for a connected texture asset.
 
     Args:

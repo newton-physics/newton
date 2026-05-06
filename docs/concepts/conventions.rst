@@ -440,9 +440,10 @@ When you need linear-light math explicitly, convert at the boundary with
 
    linear_color = newton.utils.color_srgb_to_linear(display_color)
 
-Albedo or base-color textures follow the same rule: authored color textures are
-treated as display colors, while data textures should be marked as ``raw`` so
-they are not color-converted during rendering.
+Albedo or base-color textures follow the same rule. Authored color textures
+are treated as display colors by default; set
+``mesh.texture_color_space = newton.utils.ColorSpace.LINEAR`` for linear/data
+textures that should not be color-converted during rendering.
 
 Collision Primitive Conventions
 -------------------------------
