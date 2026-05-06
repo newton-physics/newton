@@ -105,11 +105,17 @@ def _required_specifier(package: str, requirements: Iterable[str]) -> str | None
 
 def _warn_if_mujoco_versions_mismatch(mujoco: Any, mujoco_warp: Any) -> None:
     try:
-        requirements = importlib_metadata.requires("newton")
+        metadata_text = importlib_metadata.distribution("newton").read_text("METADATA")
     except importlib_metadata.PackageNotFoundError:
         return
-    if requirements is None:
+    if metadata_text is None:
         return
+
+    requirements = [
+        line.removeprefix("Requires-Dist:").strip()
+        for line in metadata_text.splitlines()
+        if line.startswith("Requires-Dist:")
+    ]
 
     mismatches = []
     for package, module in (("mujoco", mujoco), ("mujoco-warp", mujoco_warp)):

@@ -12,6 +12,7 @@ _MOCK_REQUIREMENTS = (
     "mujoco~=3.8.0 ; extra == 'sim'",
     "mujoco-warp~=3.8.0,>=3.8.0.1 ; extra == 'sim'",
 )
+_MOCK_METADATA = "\n".join(f"Requires-Dist: {requirement}" for requirement in _MOCK_REQUIREMENTS)
 
 
 def _mujoco_dependency_specs():
@@ -22,7 +23,8 @@ def _mujoco_dependency_specs():
 
 class TestMuJoCoVersionCheck(unittest.TestCase):
     def setUp(self):
-        patcher = mock.patch.object(solver_mujoco.importlib_metadata, "requires", return_value=list(_MOCK_REQUIREMENTS))
+        mock_dist = types.SimpleNamespace(read_text=lambda name: _MOCK_METADATA)
+        patcher = mock.patch.object(solver_mujoco.importlib_metadata, "distribution", return_value=mock_dist)
         patcher.start()
         self.addCleanup(patcher.stop)
 
