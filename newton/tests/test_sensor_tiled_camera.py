@@ -39,11 +39,10 @@ class TestSensorTiledCamera(unittest.TestCase):
         builder.add_shape_sphere(body, radius=0.75, color=color)
         return builder.finalize(device="cpu")
 
-    def test_render_config_uses_reusable_color_space_enum(self) -> None:
-        self.assertIs(SensorTiledCamera.ColorSpace, newton.utils.ColorSpace)
-
+    def test_render_config_uses_utils_color_space_enum(self) -> None:
+        self.assertFalse(hasattr(SensorTiledCamera, "ColorSpace"))
         self.assertEqual(SensorTiledCamera.RenderConfig().output_color_space, newton.utils.ColorSpace.SRGB)
-        config = SensorTiledCamera.RenderConfig(output_color_space=SensorTiledCamera.ColorSpace.LINEAR)
+        config = SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)
         self.assertEqual(config.output_color_space, newton.utils.ColorSpace.LINEAR)
 
     @staticmethod
@@ -205,7 +204,7 @@ class TestSensorTiledCamera(unittest.TestCase):
             device="cpu",
         )
 
-        for output_color_space in (SensorTiledCamera.ColorSpace.SRGB, SensorTiledCamera.ColorSpace.LINEAR):
+        for output_color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
             sensor = SensorTiledCamera(
                 model=model,
                 config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
@@ -217,7 +216,7 @@ class TestSensorTiledCamera(unittest.TestCase):
             packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
             expected_rgb = (
                 np.array([63, 127, 191], dtype=np.uint8)
-                if output_color_space == SensorTiledCamera.ColorSpace.SRGB
+                if output_color_space == newton.utils.ColorSpace.SRGB
                 else np.array([12, 54, 133], dtype=np.uint8)
             )
 

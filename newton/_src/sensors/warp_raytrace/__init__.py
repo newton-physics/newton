@@ -4,7 +4,6 @@
 from .render_context import RenderContext
 from .types import (
     ClearData,
-    ColorSpace,
     GaussianRenderMode,
     MeshData,
     RenderConfig,
@@ -16,7 +15,6 @@ from .utils import Utils
 
 __all__ = [
     "ClearData",
-    "ColorSpace",
     "GaussianRenderMode",
     "MeshData",
     "RenderConfig",

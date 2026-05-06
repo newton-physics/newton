@@ -12,7 +12,6 @@ import warp as wp
 from ..sim import Model, State
 from .warp_raytrace import (
     ClearData,
-    ColorSpace,
     GaussianRenderMode,
     RenderConfig,
     RenderContext,
@@ -40,7 +39,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
     - **color** -- RGBA shaded image packed into ``uint32``. By default these
       bytes are display/sRGB-encoded; set
-      ``RenderConfig.output_color_space=SensorTiledCamera.ColorSpace.LINEAR``
+      ``RenderConfig.output_color_space=newton.utils.ColorSpace.LINEAR``
       to keep them linear.
     - **depth** -- ray-hit distance [m] (``float32``); negative means no hit.
     - **normal** -- surface normal at hit point (``vec3f``).
@@ -75,7 +74,6 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     RenderLightType = RenderLightType
     RenderOrder = RenderOrder
     GaussianRenderMode = GaussianRenderMode
-    ColorSpace = ColorSpace
     RenderConfig = RenderConfig
     ClearData = ClearData
     Utils = Utils
@@ -213,7 +211,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             color_image: Output for packed RGBA color. The bytes are sRGB by
                 default, or linear when
                 ``self.render_config.output_color_space`` is
-                ``ColorSpace.LINEAR``. None to skip.
+                ``newton.utils.ColorSpace.LINEAR``. None to skip.
             depth_image: Output for ray-hit distance [m]. None to skip.
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
