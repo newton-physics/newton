@@ -39,6 +39,17 @@ class TestSensorTiledCamera(unittest.TestCase):
         builder.add_shape_sphere(body, radius=0.75, color=color)
         return builder.finalize(device="cpu")
 
+    @staticmethod
+    def _build_sensor_bvhs(model: newton.Model, state: newton.State) -> None:
+        build_bvh_shape = getattr(newton.geometry, "build_bvh_shape", None)
+        if build_bvh_shape is None:
+            return
+
+        build_bvh_shape(model, state)
+        build_bvh_particle = getattr(newton.geometry, "build_bvh_particle", None)
+        if build_bvh_particle is not None:
+            build_bvh_particle(model, state)
+
     def test_render_config_uses_utils_color_space_enum(self) -> None:
         self.assertFalse(hasattr(SensorTiledCamera, "ColorSpace"))
         self.assertEqual(SensorTiledCamera.RenderConfig().output_color_space, newton.utils.ColorSpace.SRGB)
@@ -232,6 +243,8 @@ class TestSensorTiledCamera(unittest.TestCase):
     def test_albedo_output_linearizes_srgb_shape_colors_only_once(self) -> None:
         color = (0.25, 0.5, 0.75)
         model = self._build_single_sphere_scene(color)
+        state = model.state()
+        self._build_sensor_bvhs(model, state)
 
         camera_transforms = wp.array(
             [[wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
@@ -246,7 +259,7 @@ class TestSensorTiledCamera(unittest.TestCase):
             )
             camera_rays = sensor.utils.compute_pinhole_camera_rays(1, 1, math.radians(30.0))
             albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=1)
-            sensor.update(model.state(), camera_transforms, camera_rays, albedo_image=albedo_image)
+            sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
 
             packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
             expected_rgb = (
