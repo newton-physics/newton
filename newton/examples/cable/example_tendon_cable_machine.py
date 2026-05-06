@@ -187,7 +187,7 @@ class Example:
         builder.add_articulation([j2])
 
         axis = (0.0, 1.0, 0.0)
-        drive_mu = 10.0
+        drive_mu = 1000.0
         builder.add_tendon()
 
         builder.add_tendon_link(

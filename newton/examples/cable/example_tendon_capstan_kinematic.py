@@ -44,7 +44,7 @@ class Example:
         builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=-9.81)
 
         self.pulley_radius = 0.15
-        self.mus = [0.0, 0.05, 10.0]
+        self.mus = [0.0, 0.08, 10.0]
         self.x_offsets = [-1.5, 0.0, 1.5]
 
         mass_light = 1.0

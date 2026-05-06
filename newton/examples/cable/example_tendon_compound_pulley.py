@@ -224,7 +224,7 @@ class Example:
         builder.add_articulation([j2])
 
         axis = (0.0, 1.0, 0.0)
-        drive_mu = 10.0
+        drive_mu = 1000.0
         builder.add_tendon()
         builder.add_tendon_link(
             body=left,
@@ -545,9 +545,11 @@ class Example:
             )
 
         max_theta = np.max(np.abs(history), axis=0)
-        assert max_theta[0] < 0.04 and max_theta[1] < 0.04, (
+        max_rim = max_theta * np.array([self.r1, self.r2], dtype=float)
+        assert max_rim[0] < 0.015 and max_rim[1] < 0.015, (
             f"Balanced compound pulley should not wind up the dynamic pulleys: "
-            f"P1_max={max_theta[0]:.4f}, P2_max={max_theta[1]:.4f}"
+            f"P1_theta={max_theta[0]:.4f}, P2_theta={max_theta[1]:.4f}, "
+            f"P1_rim={max_rim[0]:.4f}, P2_rim={max_rim[1]:.4f}"
         )
         rim_accel = self._fit_rim_acceleration()
         assert rim_accel is not None, "Compound pulley acceleration validation needs at least 16 samples"

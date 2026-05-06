@@ -6,11 +6,12 @@ working contract for future cable/tendon friction changes.
 
 ## Known-Good Baseline
 
-Commit `21ca37106` (`Document routed cable slip plan`) is the known-good
-no-friction routed-cable baseline.  If slip work breaks existing routed-cable
-behavior in a way that is not a small, justified tolerance change or a
-documented physical-expectation correction, compare against this commit before
-continuing.
+Commit `1a87f7a2a` (`Add finite capstan routed cable baseline`) is the
+known-good pre-split finite capstan baseline.  Commit `21ca37106` remains the
+older no-friction routed-cable reference.  If slip work breaks existing
+routed-cable behavior in a way that is not a small, justified tolerance change
+or a documented physical-expectation correction, compare against these commits
+before continuing.
 
 ## Design Criteria
 
@@ -19,9 +20,10 @@ continuing.
 - Use the same constraints for slip and no-slip behavior.
 - Do not add separate slip and no-slip solver paths.
 - Do not add an explicit no-slip row.
-- Do not change the physical Jacobian based on a stick/slip classification.
-- The Jacobian should represent the contact and rolling coupling; friction
-  projection should determine how much of that coupling is admissible.
+- Do not change constraints based on a stick/slip classification.
+- The stretch row should represent cable load, and the rolling friction row
+  should represent spin-axis contact coupling; friction projection should
+  determine how much rolling coupling is admissible.
 
 ### Friction coefficient determines the regime
 
@@ -108,10 +110,10 @@ The intended XPBD pipeline is:
 ```text
 update_tendon_attachments()
 solve_tendon_stretch()
-solve_tendon_friction()
+solve_tendon_slip()
 ```
 
-`solve_tendon_friction()` should:
+`solve_tendon_slip()` should:
 
 - compute the physical rolling/friction row with the full angular coupling,
 - use projection/clamping of the tangential impulse to enforce the friction

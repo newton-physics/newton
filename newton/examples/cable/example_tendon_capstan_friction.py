@@ -68,7 +68,7 @@ class Example:
             0.0,
             0.50,
         )
-        self.mus = [0.0, 0.06, 10.0]
+        self.mus = [0.0, 1.0, 10.0]
         self.x_offsets = [-1.5, 0.0, 1.5]
 
         mass_light = 1.0

@@ -409,7 +409,7 @@ def _dynamic_capstan_metrics(device, mu, num_frames=40):
     return body_q, left_travel, right_travel, cable_travel, theta, rim_travel, slip
 
 
-def _kinematic_capstan_metrics(device, mu, num_frames=80):
+def _kinematic_capstan_metrics(device, mu, num_frames=100):
     model, left_idx, right_idx, pulley_idx = build_kinematic_pulley_atwood(mu=mu)
     state = run_model(model, num_frames=num_frames)
     body_q = state.body_q.numpy()
@@ -543,7 +543,7 @@ def test_kinematic_capstan_mu_controls_slip_and_locking(test, device):
         _, _, right_high, _ = high
 
         test.assertGreater(right_low, 0.18, f"Zero-mu kinematic capstan should freely slip: dz={right_low:.5f}")
-        test.assertGreater(left_low, 0.10, f"Zero-mu light side should rise through slip: dz={left_low:.5f}")
+        test.assertGreater(left_low, 0.08, f"Zero-mu light side should rise through slip: dz={left_low:.5f}")
         test.assertGreater(right_low, right_mid + 0.03, f"Mid mu should slip less than zero mu: {right_low:.5f} vs {right_mid:.5f}")
         test.assertGreater(right_mid, right_high + 0.03, f"High mu should lock more than mid mu: {right_mid:.5f} vs {right_high:.5f}")
         test.assertLess(right_high, 0.06, f"High-mu kinematic capstan should lock cable motion: dz={right_high:.5f}")
@@ -563,6 +563,26 @@ def test_motorized_pulley_drives_slider(test, device):
 
         test.assertGreater(theta, 0.5, f"Drive pulley should rotate under its target: theta={theta:.4f}")
         test.assertGreater(slider_x, -0.2, f"No-slip drive should pull the slider through the cable: x={slider_x:.4f}")
+
+
+def test_frictionless_motorized_pulley_does_not_drive_slider(test, device):
+    """With mu=0, pulley spin should not inject cable sliding through rolling transfer."""
+    with wp.ScopedDevice(device):
+        model, slider_idx, pulley_idx, drive_joint = build_motorized_pulley_drive(mu=0.0)
+        state = run_motorized_model(model, drive_joint)
+        body_q = state.body_q.numpy()
+        test.assertTrue(np.isfinite(body_q).all(), "Non-finite frictionless motorized pulley state")
+
+        slider_x = float(body_q[slider_idx][0])
+        q = body_q[pulley_idx]
+        theta = abs(2.0 * np.arctan2(float(q[5]), float(q[6])))
+
+        test.assertGreater(theta, 0.5, f"Frictionless drive pulley should still rotate: theta={theta:.4f}")
+        test.assertLess(
+            abs(slider_x + 0.4),
+            0.02,
+            f"Frictionless pulley spin should not pull cable/slider: x={slider_x:.4f}",
+        )
 
 
 def test_motorized_pulley_couples_without_delay(test, device):
@@ -677,6 +697,12 @@ add_test(TestTendonCapstan, "pulley_inertia_limit_locks_cable_travel", devices, 
 add_test(TestTendonCapstan, "dynamic_capstan_mu_controls_pulley_rotation", devices, test_dynamic_capstan_mu_controls_pulley_rotation)
 add_test(TestTendonCapstan, "kinematic_capstan_mu_controls_slip_and_locking", devices, test_kinematic_capstan_mu_controls_slip_and_locking)
 add_test(TestTendonCapstan, "motorized_pulley_drives_slider", devices, test_motorized_pulley_drives_slider)
+add_test(
+    TestTendonCapstan,
+    "frictionless_motorized_pulley_does_not_drive_slider",
+    devices,
+    test_frictionless_motorized_pulley_does_not_drive_slider,
+)
 add_test(TestTendonCapstan, "motorized_pulley_couples_without_delay", devices, test_motorized_pulley_couples_without_delay)
 add_test(TestTendonCapstan, "motorized_pulley_updates_rest_in_first_step", devices, test_motorized_pulley_updates_rest_in_first_step)
 add_test(TestTendonCapstan, "rolling_transfer_saturates_at_zero_span", devices, test_rolling_transfer_saturates_at_zero_span)

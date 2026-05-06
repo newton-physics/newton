@@ -47,7 +47,6 @@ class Example:
         self.tendon_compliance = 2.0e-6
         self.tendon_damping = 0.25
 
-        shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
         pulley_shape_cfg = newton.ModelBuilder.ShapeConfig(
             density=0.0,
             has_shape_collision=False,
@@ -254,7 +253,7 @@ class Example:
         builder.add_articulation([j_redirect])
 
         axis = (0.0, 1.0, 0.0)
-        drive_mu = 10.0
+        drive_mu = 1000.0
         builder.add_tendon()
         for body, link_type, radius, orientation, offset in [
             (anchor, TendonLinkType.ATTACHMENT, 0.0, 1, (0.0, 0.0, 0.0)),

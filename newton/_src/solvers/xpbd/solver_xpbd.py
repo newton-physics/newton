@@ -29,7 +29,8 @@ from .kernels import (
     update_body_velocities,
 )
 from .tendon_kernels import (
-    solve_tendon_segments,
+    solve_tendon_slip,
+    solve_tendon_stretch,
     update_tendon_attachments,
 )
 
@@ -156,6 +157,9 @@ class SolverXPBD(SolverBase):
             self.tendon_seg_attachment_l_local = None
             self.tendon_seg_attachment_r_local = None
             self.tendon_seg_lambda = None
+            self.tendon_seg_delta_lambda = None
+            self.tendon_seg_rolling_delta_l = None
+            self.tendon_seg_rolling_delta_r = None
             self.tendon_seg_link_l = None
             self.tendon_total_cable = None
             return
@@ -166,6 +170,9 @@ class SolverXPBD(SolverBase):
             self.tendon_seg_attachment_l_local = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
             self.tendon_seg_attachment_r_local = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
             self.tendon_seg_lambda = wp.zeros(model.tendon_segment_count, dtype=float)
+            self.tendon_seg_delta_lambda = wp.zeros(model.tendon_segment_count, dtype=float)
+            self.tendon_seg_rolling_delta_l = wp.zeros(model.tendon_segment_count, dtype=float)
+            self.tendon_seg_rolling_delta_r = wp.zeros(model.tendon_segment_count, dtype=float)
             self.tendon_total_cable = wp.zeros(model.tendon_count, dtype=float)
 
             # build seg_link_l mapping: for each segment, the index of its left link
@@ -246,6 +253,8 @@ class SolverXPBD(SolverBase):
                 self.tendon_seg_attachment_r,
                 self.tendon_seg_attachment_l_local,
                 self.tendon_seg_attachment_r_local,
+                self.tendon_seg_rolling_delta_l,
+                self.tendon_seg_rolling_delta_r,
                 0,
                 0,
             ],
@@ -523,10 +532,9 @@ class SolverXPBD(SolverBase):
             if model.edge_count:
                 edge_constraint_lambdas = wp.empty_like(model.edge_rest_angle)
 
-            # Tendon constraints are solved with the baseline Cable Joints
-            # path: each solver iteration updates route geometry/rest lengths,
-            # then solves segment stretch constraints with the full angular
-            # Jacobian.
+            # Tendon constraints are split into route update, stretch, and
+            # rolling slip/friction stages.  Stretch carries cable load; the
+            # slip stage applies capstan-limited spin-axis coupling.
             if model.tendon_segment_count > 0 and body_q is not None:
                 self.tendon_seg_lambda.zero_()
 
@@ -812,6 +820,8 @@ class SolverXPBD(SolverBase):
                                 self.tendon_seg_attachment_r,
                                 self.tendon_seg_attachment_l_local,
                                 self.tendon_seg_attachment_r_local,
+                                self.tendon_seg_rolling_delta_l,
+                                self.tendon_seg_rolling_delta_r,
                                 1,
                                 1,
                             ],
@@ -824,7 +834,7 @@ class SolverXPBD(SolverBase):
                             body_deltas.zero_()
 
                         wp.launch(
-                            kernel=solve_tendon_segments,
+                            kernel=solve_tendon_stretch,
                             dim=model.tendon_segment_count,
                             inputs=[
                                 body_q,
@@ -834,10 +844,7 @@ class SolverXPBD(SolverBase):
                                 self.body_inv_inertia_effective,
                                 model.tendon_link_body,
                                 model.tendon_link_type,
-                                model.tendon_link_radius,
-                                model.tendon_link_offset,
                                 model.tendon_link_axis,
-                                model.tendon_link_mu,
                                 self.tendon_seg_rest_length,
                                 self.tendon_seg_attachment_l,
                                 self.tendon_seg_attachment_r,
@@ -846,10 +853,41 @@ class SolverXPBD(SolverBase):
                                 model.tendon_seg_compliance,
                                 model.tendon_seg_damping,
                                 self.tendon_seg_lambda,
+                                self.tendon_seg_delta_lambda,
                                 self.tendon_seg_link_l,
-                                model.tendon_segment_count,
                                 self.joint_linear_relaxation,
                                 dt,
+                            ],
+                            outputs=[body_deltas],
+                            device=model.device,
+                        )
+
+                        body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
+
+                        if requires_grad:
+                            body_deltas = wp.zeros_like(body_deltas)
+                        else:
+                            body_deltas.zero_()
+
+                        wp.launch(
+                            kernel=solve_tendon_slip,
+                            dim=model.tendon_count,
+                            inputs=[
+                                body_q,
+                                model.body_com,
+                                model.tendon_start,
+                                model.tendon_link_body,
+                                model.tendon_link_type,
+                                model.tendon_link_radius,
+                                model.tendon_link_mu,
+                                model.tendon_link_offset,
+                                model.tendon_link_axis,
+                                self.tendon_seg_rest_length,
+                                self.tendon_seg_attachment_l,
+                                self.tendon_seg_attachment_r,
+                                model.tendon_seg_compliance,
+                                self.tendon_seg_delta_lambda,
+                                self.joint_linear_relaxation,
                             ],
                             outputs=[body_deltas],
                             device=model.device,

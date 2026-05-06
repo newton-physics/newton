@@ -511,7 +511,7 @@ class Example:
                 link_type=int(link_type),
                 radius=radius,
                 orientation=orientation,
-                mu=10.0,
+                mu=1000.0,
                 offset=offset,
                 axis=axis,
                 compliance=compliance,
