@@ -322,5 +322,51 @@ class TestImageLoggerEnsurePboRollback(unittest.TestCase):
         self.assertEqual(len(self.fake_gl.deleted_buffers), 1)
 
 
+class TestViewerGLClearModelClearsImageLogger(unittest.TestCase):
+    """Regression test for issue #2731: example-browser switching must not
+    leave stale image-logger entries behind.
+
+    Two symptoms originally observed in the GUI:
+      1) The image window opened by the previous example stayed visible after
+         switching to one that does not call ``log_image``.
+      2) Closing that window manually and re-entering the camera example did
+         not re-open it (because logger entries from the prior run survived,
+         so the auto-select branch in ``ImageLogger.log`` was skipped).
+    Both stem from ``ViewerGL.clear_model`` not clearing the image logger.
+    """
+
+    def test_clear_model_clears_image_logger(self):
+        try:
+            import newton.viewer  # noqa: PLC0415
+
+            viewer = newton.viewer.ViewerGL(headless=True)
+        except Exception as exc:
+            self.skipTest(f"ViewerGL not available: {exc}")
+            return
+
+        try:
+            viewer.log_image("color", np.zeros((4, 4), dtype=np.uint8))
+            logger = viewer._image_logger
+            self.assertIn("color", logger._images)
+            self.assertEqual(logger._selected, "color")
+
+            # Simulate user closing the image window (the X button maps to
+            # this internally in ImageLogger.draw).
+            logger._selected = None
+
+            viewer.clear_model()
+
+            self.assertEqual(logger._images, {})
+            self.assertIsNone(logger._selected)
+
+            # Re-logging the same name after clear_model must auto-select
+            # again so the window re-opens, matching the behavior on first
+            # entry into a camera example.
+            viewer.log_image("color", np.zeros((4, 4), dtype=np.uint8))
+            self.assertEqual(logger._selected, "color")
+        finally:
+            viewer.close()
+
+
 if __name__ == "__main__":
     unittest.main()

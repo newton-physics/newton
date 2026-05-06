@@ -230,7 +230,21 @@ add_example_test(
 
 add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
 
-add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_joints",
+    devices=test_devices,
+    use_viewer=True,
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_joints",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"solver": "vbd"},
+    test_suffix="vbd",
+)
 
 add_example_test(
     TestBasicExamples,
