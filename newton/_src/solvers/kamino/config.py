@@ -867,8 +867,13 @@ class ForwardKinematicsSolverConfig:
     Whether to regularize the FK problem by trying to preserve the rigid body poses with a small weight.
     This might result in constraint violations of the order of the regularization weight, but allows to
     tackle systems with solution sub-spaces, in particular underactuated systems.
+
+    Important note: the default tolerance of 1e-6 may not be reachable if regularization is enabled,
+    using 1e-5 instead is recommended in most cases.
+
     For systems that are only underactuated due to tie rods being free to rotate about their own axis,
     enabling `add_axis_joints` is recommended instead.
+
     Changes to this setting after the solver's initialization lead to undefined behavior.
     Defaults to `False`.
     """
