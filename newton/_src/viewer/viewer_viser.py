@@ -300,7 +300,7 @@ class ViewerViser(ViewerBase):
         return f"http://{local_host}:{port}{normalized_path}{query}"
 
     @classmethod
-    def _get_viser_client_dir(cls) -> Path:
+    def get_viser_client_dir(cls) -> Path:
         """Return the installed Viser client build for notebook playback."""
         viser = cls._get_viser()
 
@@ -590,16 +590,25 @@ class ViewerViser(ViewerBase):
     def _quats_xyzw_to_wxyz(quats_xyzw: np.ndarray) -> np.ndarray:
         """Convert quaternions from Warp's XYZW layout to viser's WXYZ layout."""
         quats_xyzw = np.asarray(quats_xyzw, dtype=np.float32)
+        was_1d = quats_xyzw.ndim == 1
+        if was_1d:
+            quats_xyzw = quats_xyzw.reshape(1, 4)
+        if quats_xyzw.ndim != 2 or quats_xyzw.shape[1] != 4:
+            raise ValueError(f"Expected quaternion array with shape (4,) or (N, 4), got {quats_xyzw.shape}")
+
         quats_wxyz = np.empty_like(quats_xyzw)
         quats_wxyz[:, 0] = quats_xyzw[:, 3]
         quats_wxyz[:, 1] = quats_xyzw[:, 0]
         quats_wxyz[:, 2] = quats_xyzw[:, 1]
         quats_wxyz[:, 3] = quats_xyzw[:, 2]
-        return quats_wxyz
+        return quats_wxyz[0] if was_1d else quats_wxyz
 
     def _remove_plane_handles(self, name: str):
         """Remove any plane-grid handles associated with an instance batch."""
-        handles = self._plane_handles.pop(name, [])
+        handle = self._plane_handles.pop(name, None)
+        if handle is None:
+            return
+        handles = handle if isinstance(handle, (list, tuple)) else (handle,)
         for handle in handles:
             try:
                 handle.remove()
@@ -628,6 +637,21 @@ class ViewerViser(ViewerBase):
             segments.append([[-width * 0.5, y, 0.0], [width * 0.5, y, 0.0]])
 
         return np.asarray(segments, dtype=np.float32)
+
+    @staticmethod
+    def _rotate_points_wxyz(points: np.ndarray, quat_wxyz: np.ndarray) -> np.ndarray:
+        """Rotate points by a unit quaternion stored in WXYZ order."""
+        quat_wxyz = np.asarray(quat_wxyz, dtype=np.float32)
+        norm = np.linalg.norm(quat_wxyz)
+        if norm > 0.0:
+            quat_wxyz = quat_wxyz / norm
+
+        qvec = quat_wxyz[1:4]
+        flat_points = points.reshape(-1, 3)
+        uv = np.cross(qvec, flat_points)
+        uuv = np.cross(qvec, uv)
+        rotated = flat_points + 2.0 * (quat_wxyz[0] * uv + uuv)
+        return rotated.reshape(points.shape).astype(np.float32, copy=False)
 
     def _log_plane_instances(
         self,
@@ -658,23 +682,26 @@ class ViewerViser(ViewerBase):
         length = float(plane_info["length"])
         grid_points = self._build_plane_grid_points(width, length)
 
-        handles = []
+        all_points = []
         for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
             instance_points = grid_points
             if scales_np is not None:
                 plane_scale = np.array([scales_np[idx][0], scales_np[idx][1], 1.0], dtype=np.float32)
                 instance_points = grid_points * plane_scale
-            handle = self._server.scene.add_line_segments(
-                name=f"{name}/grid_{idx}",
-                points=instance_points,
-                colors=(150, 150, 150),
-                line_width=1.5,
-                wxyz=quat_wxyz,
-                position=position,
-            )
-            handles.append(handle)
+            instance_points = self._rotate_points_wxyz(instance_points, quat_wxyz) + position
+            all_points.append(instance_points)
 
-        self._plane_handles[name] = handles
+        if not all_points:
+            return
+
+        handle = self._server.scene.add_line_segments(
+            name=f"{name}/grid",
+            points=np.concatenate(all_points, axis=0),
+            colors=(150, 150, 150),
+            line_width=1.5,
+        )
+
+        self._plane_handles[name] = handle
 
     @override
     def log_instances(
@@ -1359,7 +1386,7 @@ class ViewerViser(ViewerBase):
         if not recording_path.exists():
             raise FileNotFoundError(f"Recording file not found: {recording_path}")
 
-        viser_client_dir = ViewerViser._get_viser_client_dir()
+        viser_client_dir = ViewerViser.get_viser_client_dir()
 
         # Read the recording file content
         recording_bytes = recording_path.read_bytes()

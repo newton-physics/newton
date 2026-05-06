@@ -247,7 +247,7 @@ html_title = "Newton Physics"
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
-html_js_files = ["mermaid-nbsphinx.js"]
+html_js_files = [*globals().get("html_js_files", []), "mermaid-nbsphinx.js"]
 html_show_sourcelink = False
 
 # PyData theme configuration
@@ -432,7 +432,7 @@ def _copy_viser_client_into_output_static(*, outdir: Path) -> None:
     try:
         from newton.viewer import ViewerViser  # noqa: PLC0415
 
-        src_dir = ViewerViser._get_viser_client_dir()
+        src_dir = ViewerViser.get_viser_client_dir()
     except Exception as e:
         # Don't hard-fail doc builds; the viewer docs can still build without the embedded client.
         print(
