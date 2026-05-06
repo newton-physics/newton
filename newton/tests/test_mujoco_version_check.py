@@ -36,7 +36,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
             if specifier and not solver_mujoco._version_satisfies("0.0.0", specifier)
         }
 
-        with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.__getitem__):
+        with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.get):
             with self.assertWarnsRegex(
                 RuntimeWarning,
                 r"MuJoCo dependency version mismatch.*mujoco==0\.0\.0.*mujoco-warp==0\.0\.0",
@@ -52,7 +52,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
         self.assertFalse(solver_mujoco._version_satisfies(mujoco_warp_bad_version, specs["mujoco-warp"]))
 
         versions = {"mujoco": _matching_version(specs["mujoco"]), "mujoco-warp": mujoco_warp_bad_version}
-        with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.__getitem__):
+        with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.get):
             with self.assertWarnsRegex(RuntimeWarning, f"mujoco-warp=={mujoco_warp_bad_version}"):
                 solver_mujoco._warn_if_mujoco_versions_mismatch(
                     types.SimpleNamespace(),
@@ -75,7 +75,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
             solver_mujoco.SolverMuJoCo._mujoco_warp = types.SimpleNamespace()
             solver_mujoco.SolverMuJoCo._versions_checked = False
 
-            with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.__getitem__):
+            with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.get):
                 with self.assertWarnsRegex(RuntimeWarning, "MuJoCo dependency version mismatch"):
                     solver_mujoco.SolverMuJoCo.import_mujoco()
         finally:
@@ -90,7 +90,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
             if specifier
         }
 
-        with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.__getitem__):
+        with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.get):
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 solver_mujoco._warn_if_mujoco_versions_mismatch(
@@ -116,7 +116,7 @@ def _matching_version(specifier: str) -> str:
         match = solver_mujoco.re.search(pattern, specifier)
         if match:
             return match.group(1)
-    return "0.0.0"
+    raise ValueError(f"_matching_version cannot derive a satisfying version from specifier {specifier!r}")
 
 
 if __name__ == "__main__":
