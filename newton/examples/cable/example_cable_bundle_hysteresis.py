@@ -422,15 +422,15 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
-    example = Example(
-        viewer,
+    newton.examples.run(
+        Example(
+            viewer,
+            args,
+            num_cables=7,
+            segments=args.segments,
+            with_dahl=not args.no_dahl and args.eps_max > 0.0 and args.tau > 0.0,
+            eps_max=args.eps_max,
+            tau=args.tau,
+        ),
         args,
-        num_cables=7,
-        segments=args.segments,
-        with_dahl=not args.no_dahl and args.eps_max > 0.0 and args.tau > 0.0,
-        eps_max=args.eps_max,
-        tau=args.tau,
     )
-
-    newton.examples.run(example, args)

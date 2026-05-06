@@ -462,10 +462,10 @@ if __name__ == "__main__":
     else:
         policy_path = f"{asset_directory}/{robot_config.policy_path['mjw']}"
 
-    example = Example(viewer, robot_config, config, asset_directory, mjc_to_physx, physx_to_mjc)
-
-    # Use utility function to load policy and setup tensors
-    load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
+    def _build():
+        ex = Example(viewer, robot_config, config, asset_directory, mjc_to_physx, physx_to_mjc)
+        load_policy_and_setup_tensors(ex, policy_path, config["num_dofs"], slice(7, None))
+        return ex
 
     # Run using standard example loop
-    newton.examples.run(example, args)
+    newton.examples.run(_build(), args)
