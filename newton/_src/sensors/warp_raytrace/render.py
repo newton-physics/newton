@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian, GeoType
-from ...utils.color import ColorSpace, linear_to_srgb_wp, srgb_to_linear_wp
+from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
 from .types import MeshData, RenderOrder, TextureData
 
@@ -16,10 +16,27 @@ if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
+def _srgb_packed_rgba_to_linear(packed: int) -> int:
+    r = packed & 0xFF
+    g = (packed >> 8) & 0xFF
+    b = (packed >> 16) & 0xFF
+    a = (packed >> 24) & 0xFF
+    linear = color_srgb_to_linear((r / 255.0, g / 255.0, b / 255.0))
+    lr = min(max(round(linear[0] * 255.0), 0), 255)
+    lg = min(max(round(linear[1] * 255.0), 0), 255)
+    lb = min(max(round(linear[2] * 255.0), 0), 255)
+    return (a << 24) | (lb << 16) | (lg << 8) | lr
+
+
 def create_kernel(
     config: RenderContext.Config, state: RenderContext.State, clear_data: RenderContext.ClearData
 ) -> wp.kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state)
+    clear_color = clear_data.clear_color
+    clear_albedo = clear_data.clear_albedo
+    if config.output_color_space == ColorSpace.LINEAR:
+        clear_color = _srgb_packed_rgba_to_linear(clear_color)
+        clear_albedo = _srgb_packed_rgba_to_linear(clear_albedo)
 
     if state.render_color or state.render_normal:
         raytrace_closest_hit = raytrace.create_closest_hit_function(config, state)
@@ -134,9 +151,9 @@ def create_kernel(
 
         if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
             if wp.static(state.render_color):
-                out_color[out_index] = wp.uint32(wp.static(clear_data.clear_color))
+                out_color[out_index] = wp.uint32(wp.static(clear_color))
             if wp.static(state.render_albedo):
-                out_albedo[out_index] = wp.uint32(wp.static(clear_data.clear_albedo))
+                out_albedo[out_index] = wp.uint32(wp.static(clear_albedo))
             if wp.static(state.render_depth):
                 out_depth[out_index] = wp.float32(wp.static(clear_data.clear_depth))
             if wp.static(state.render_normal):

@@ -45,6 +45,41 @@ class TestSensorTiledCamera(unittest.TestCase):
         config = SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)
         self.assertEqual(config.output_color_space, newton.utils.ColorSpace.LINEAR)
 
+    def test_clear_pixels_follow_output_color_space(self) -> None:
+        model = newton.ModelBuilder().finalize(device="cpu")
+        clear_data = SensorTiledCamera.ClearData(clear_color=0xFF666666, clear_albedo=0xFF666666)
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+
+        expected = {
+            newton.utils.ColorSpace.SRGB: np.array([102, 102, 102, 255], dtype=np.uint8),
+            newton.utils.ColorSpace.LINEAR: np.array([34, 34, 34, 255], dtype=np.uint8),
+        }
+
+        for output_color_space, expected_rgba in expected.items():
+            sensor = SensorTiledCamera(
+                model=model,
+                config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
+            )
+            camera_rays = sensor.utils.compute_pinhole_camera_rays(1, 1, math.radians(30.0))
+            color_image = sensor.utils.create_color_image_output(1, 1, camera_count=1)
+            albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=1)
+
+            sensor.update(
+                model.state(),
+                camera_transforms,
+                camera_rays,
+                color_image=color_image,
+                albedo_image=albedo_image,
+                clear_data=clear_data,
+            )
+
+            np.testing.assert_array_equal(self._unpack_rgba(color_image.numpy()[0, 0, 0, 0]), expected_rgba)
+            np.testing.assert_array_equal(self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0]), expected_rgba)
+
     @staticmethod
     def _build_scene():
         from pxr import Usd, UsdGeom

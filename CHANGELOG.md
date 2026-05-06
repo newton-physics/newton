@@ -126,7 +126,7 @@
 - Migrate `wp.array(dtype=X)` type annotations to `wp.array[X]` bracket syntax (Warp 1.12+).
 - Align articulated `State.body_qd` / FK / IK / Jacobian / mass-matrix linear velocity with COM-referenced motion. If you were comparing `body_qd[:3]` against finite-differenced body-origin motion, recover origin velocity via `v_origin = v_com - omega x r_com_world`. Descendant `FREE` / `DISTANCE` `joint_qd` remains parent-frame and `joint_f` remains a world-frame COM wrench.
 - Store `Model.shape_color` in display RGB instead of linear RGB. If you write linear-light values directly into `Model.shape_color`, convert them first with `newton.utils.color_linear_to_srgb()`.
-- Encode `SensorTiledCamera` color/albedo outputs as sRGB by default. Set `RenderConfig.output_color_space=SensorTiledCamera.ColorSpace.LINEAR` to keep packed linear RGB bytes.
+- Encode `SensorTiledCamera` color/albedo outputs as sRGB by default. Set `RenderConfig.output_color_space=newton.utils.ColorSpace.LINEAR` to keep packed linear RGB bytes.
 
 ### Deprecated
 
