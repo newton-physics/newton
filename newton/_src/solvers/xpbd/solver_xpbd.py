@@ -110,6 +110,29 @@ class SolverXPBD(SolverBase):
         angular_damping: float = 0.0,
         enable_restitution: bool = False,
     ):
+        """
+        Args:
+            model: The model to be simulated.
+            collapse_fixed_joints: When ``True`` (the default), FIXED joints
+                are internally merged at the solver level for improved stability
+                and efficiency.  The original :class:`~newton.Model` body
+                hierarchy is preserved — only the solver's internal shadow
+                arrays reflect the merge.
+            joints_to_keep: Optional list of joint labels to exempt from
+                collapsing when ``collapse_fixed_joints`` is ``True``.
+            iterations: Number of constraint solver iterations per step. Defaults to 2.
+            soft_body_relaxation: Relaxation factor for soft body constraints. Defaults to 0.9.
+            soft_contact_relaxation: Relaxation factor for soft contact constraints. Defaults to 0.9.
+            joint_linear_relaxation: Relaxation factor for linear joint constraints. Defaults to 0.7.
+            joint_angular_relaxation: Relaxation factor for angular joint constraints. Defaults to 0.4.
+            joint_linear_compliance: Compliance for linear joint constraints [m/N]. Defaults to 0.0.
+            joint_angular_compliance: Compliance for angular joint constraints [rad/N·m]. Defaults to 0.0.
+            rigid_contact_relaxation: Relaxation factor for rigid body contact constraints. Defaults to 0.8.
+            rigid_contact_con_weighting: Divide positional correction by active contact count per body
+                for improved stacking convergence. Defaults to True.
+            angular_damping: Angular damping factor for rigid body integration. Defaults to 0.0.
+            enable_restitution: Enable restitution (bouncing) at contacts. Defaults to False.
+        """
         super().__init__(model=model)
         self.iterations = iterations
 

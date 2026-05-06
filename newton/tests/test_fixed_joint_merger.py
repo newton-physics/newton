@@ -137,6 +137,43 @@ class TestComputeFixedJointMerge(unittest.TestCase):
         self.assertIsNone(solver._merge_info)
         self.assertIs(solver.joint_enabled_effective, model.joint_enabled)
 
+    def test_notify_merges_to_no_merges_clears_merge_info_xpbd(self):
+        """Topology change from merges to no merges clears stale _merge_info."""
+        b = ModelBuilder(gravity=0.0)
+        b0 = b.add_body(mass=1.0)
+        b1 = b.add_body(mass=2.0, xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()))
+        b.add_joint_free(b0)
+        b.add_joint_fixed(b0, b1, parent_xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()), label="the_joint")
+        model = b.finalize(device="cpu")
+
+        solver = SolverXPBD(model)
+        self.assertIsNotNone(solver._merge_info)
+
+        # Now exempt the only fixed joint — should collapse to no merges.
+        solver._joints_to_keep = ["the_joint"]
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        self.assertIsNone(solver._merge_info)
+        self.assertIs(solver.joint_enabled_effective, model.joint_enabled)
+
+    def test_notify_merges_to_no_merges_clears_merge_info_semi_implicit(self):
+        """Topology change from merges to no merges clears stale _merge_info in SemiImplicit."""
+        b = ModelBuilder(gravity=0.0)
+        b0 = b.add_body(mass=1.0)
+        b1 = b.add_body(mass=2.0, xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()))
+        b.add_joint_free(b0)
+        b.add_joint_fixed(b0, b1, parent_xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()), label="the_joint")
+        model = b.finalize(device="cpu")
+
+        solver = SolverSemiImplicit(model)
+        self.assertIsNotNone(solver._merge_info)
+
+        solver._joints_to_keep = ["the_joint"]
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        self.assertIsNone(solver._merge_info)
+        self.assertIs(solver.joint_enabled_effective, model.joint_enabled)
+
 
 # ---------------------------------------------------------------------------
 # Device tests for XPBD

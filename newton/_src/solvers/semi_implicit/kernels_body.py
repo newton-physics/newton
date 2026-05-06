@@ -509,6 +509,21 @@ def eval_body_joint_forces(
     joint_attach_kd: float,
     joint_enabled_override: wp.array | None = None,
 ):
+    """Compute and accumulate joint forces into ``body_f``.
+
+    Args:
+        model: The simulation model.
+        state: Current simulation state providing body poses and velocities.
+        control: Control inputs providing joint targets and feedforward forces.
+        body_f: Output spatial force array [N, N·m], shape [body_count].
+            Forces are accumulated with atomic adds.
+        joint_attach_ke: Joint attachment spring stiffness [N/m].
+        joint_attach_kd: Joint attachment spring damping [N·s/m].
+        joint_enabled_override: Optional per-joint enabled flags to use
+            instead of :attr:`~newton.Model.joint_enabled`.  Pass the solver's
+            ``joint_enabled_effective`` array when fixed-joint collapsing is
+            active so that merged FIXED joints do not generate constraint forces.
+    """
     if model.joint_count:
         wp.launch(
             kernel=eval_body_joints,

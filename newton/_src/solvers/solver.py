@@ -277,10 +277,18 @@ class SolverBase:
         merging is active.  Re-reads ``model.body_inv_mass`` etc. (which the
         user has updated), recomputes accumulated values, and writes them into
         the existing GPU arrays without reallocating.
+
+        Handles the topology change where all fixed joints become exempt (e.g.
+        all are now in ``joints_to_keep``): in that case ``_merge_info`` is
+        cleared and ``joint_enabled_effective`` is reset to ``model.joint_enabled``
+        so stale merged effective-mass data is no longer applied.
         """
         joints_to_keep = getattr(self, "_joints_to_keep", None)
         new_info = compute_fixed_joint_merge(self.model, joints_to_keep=joints_to_keep)
-        if new_info is not None and self._merge_info is not None:
+        if new_info is None:
+            self._merge_info = None
+            self.joint_enabled_effective = self.model.joint_enabled
+        elif self._merge_info is not None:
             self._merge_info.merged_body_inv_mass_gpu.assign(new_info.merged_body_inv_mass_gpu)
             self._merge_info.merged_body_inv_inertia_gpu.assign(new_info.merged_body_inv_inertia_gpu)
             self._merge_info.merged_body_mass_gpu.assign(new_info.merged_body_mass_gpu)
