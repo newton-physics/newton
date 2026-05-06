@@ -371,13 +371,14 @@ def test_particle_shape_restitution_accounts_for_body_velocity(test, device):
 
 def test_rigid_restitution_zero_settles(test, device):
     """
-    Regression test for issue #1137: shape restitution values were silently ignored
-    because enable_restitution defaulted to False; the fix changes the default to True.
+    Regression test: per-shape restitution coefficients are respected when
+    ``enable_restitution=True`` is passed to the solver.
 
     Setup:
     - Two spheres dropped from z=0.3 onto the ground plane (Z-up, default gravity).
     - restitution=0.0 (inelastic) and restitution=1.0 (elastic), mu=0.0.
-    - Before the fix, both behaved identically — the restitution pass never ran.
+    - Before the energy-explosion fix, both behaved identically because the
+      velocity-from-position-delta update was not running before the restitution pass.
     - 25 frames at 60 fps with 16 substeps.
 
     Assert: restitution=0.0 must not bounce above its impact minimum; restitution=1.0
