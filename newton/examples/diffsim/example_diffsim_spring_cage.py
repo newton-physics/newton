@@ -287,5 +287,4 @@ if __name__ == "__main__":
     if isinstance(viewer, newton.viewer.ViewerGL):
         viewer.show_particles = True
 
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)
