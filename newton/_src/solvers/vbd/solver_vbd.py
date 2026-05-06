@@ -222,6 +222,9 @@ class SolverVBD(SolverBase):
         # Rigid body - contacts
         rigid_contact_hard: bool = True,  # Body-body contacts: hard=AL duals+C0, soft=penalty only
         rigid_contact_history: bool = False,  # Body-body contact warm-start (hard: k+duals+anchors; soft: k)
+        rigid_contact_stick_motion_eps: float = 1.0e-4,  # Sticky contact residual threshold; 0 disables point replay
+        rigid_contact_stick_freeze_translation_eps: float = 1.0e-4,  # Deadzone snap translation threshold; 0 disables snap
+        rigid_contact_stick_freeze_angular_eps: float = 1.0e-4,  # Deadzone snap angular threshold; 0 disables snap
         rigid_contact_k_start: float = 1.0e2,  # Body-body/body-particle penalty seed when ramping is enabled
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
         rigid_body_particle_contact_buffer_size: int = 256,  # Per-body particle-contact list capacity
@@ -282,14 +285,15 @@ class SolverVBD(SolverBase):
             Rigid body parameters:
 
             rigid_avbd_alpha: C0 stabilization strength (C_stab = C - alpha * C0). Range: [0, 1].
-                Used as the default joint alpha. Also used as the default body-body contact alpha
-                when both ``rigid_contact_hard`` and ``rigid_contact_history`` are enabled; otherwise
-                body-body contacts default to zero alpha.
+                Used as the default alpha for joints and body-body contacts.
             rigid_avbd_joint_alpha: Joint-specific alpha override. ``None`` (default)
                 uses ``rigid_avbd_alpha``.
             rigid_avbd_contact_alpha: Body-body contact alpha override. ``None`` (default)
-                uses ``rigid_avbd_alpha`` when both ``rigid_contact_hard`` and
-                ``rigid_contact_history`` are enabled, ``0.0`` otherwise.
+                uses ``rigid_avbd_alpha``.
+                For hard contacts, lower values (e.g., ``0.0``) correct more current penetration each step and can
+                give stronger repulsion when iteration count is low or contact history is disabled.
+                Larger values can improve stability with enough iterations or contact history, but
+                may feel weak with few iterations and no history.
             rigid_avbd_beta: Penalty ramp rate per AVBD iteration. ``0`` (default) disables
                 ramping (fixed-k). Set to e.g. ``1e5`` for ramping. Used for both linear and
                 angular constraints unless overridden. Note: linear (meters) and angular
@@ -299,8 +303,9 @@ class SolverVBD(SolverBase):
                 ``None`` (default) uses ``rigid_avbd_beta``.
             rigid_avbd_angular_beta: Angular beta override for angular constraints (radians).
                 ``None`` (default) uses ``rigid_avbd_beta``.
-            rigid_avbd_gamma: Per-step decay factor for penalty k and persisted hard-mode lambda. Lower values
-                decay faster, improving stability at the cost of slower convergence.
+            rigid_avbd_gamma: Per-step decay factor for penalty k and persisted hard-mode lambda. Hard joint/contact
+                lambda is additionally scaled by the corresponding alpha during warm-starting, following the AVBD
+                reference scheme. Lower values decay faster, improving stability at the cost of slower convergence.
             rigid_contact_hard: Whether body-body rigid contacts use hard mode (augmented Lagrangian with
                 persistent lambda and C0 stabilization) or soft mode (penalty only).
             rigid_contact_history: Whether to persist body-body contact state across steps using
@@ -310,6 +315,17 @@ class SolverVBD(SolverBase):
                 Requires contacts with ``rigid_contact_match_index`` populated; use
                 ``CollisionPipeline(contact_matching="latest")`` for VBD warm-starting. Ignored
                 when ``integrate_with_external_rigid_solver=True`` or ``model.body_count == 0``.
+            rigid_contact_stick_motion_eps: Tangential contact residual threshold for marking hard
+                body-body contacts as sticking. Sticking contacts may replay contact points when
+                ``rigid_contact_history=True``; dynamic-dynamic sticking contacts may also use the
+                body-level deadzone snap. Set to ``0.0`` to disable sticky flags while preserving
+                lambda and penalty warm-starting.
+            rigid_contact_stick_freeze_translation_eps: World-space translation threshold for the
+                body-level deadzone snap on dynamic-dynamic sticking contacts. Set to ``0.0`` to
+                disable translation snapping.
+            rigid_contact_stick_freeze_angular_eps: Angular threshold [rad] for the body-level
+                deadzone snap on dynamic-dynamic sticking contacts. Set to ``0.0`` to disable
+                angular snapping.
             rigid_contact_k_start: Body-body and body-particle contact penalty seed for AVBD ramping. Used when
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the contact stiffness regardless of this value.
@@ -400,6 +416,9 @@ class SolverVBD(SolverBase):
             rigid_avbd_contact_alpha,
             rigid_contact_hard,
             rigid_contact_history,
+            rigid_contact_stick_motion_eps,
+            rigid_contact_stick_freeze_translation_eps,
+            rigid_contact_stick_freeze_angular_eps,
             rigid_contact_k_start,
             rigid_body_contact_buffer_size,
             rigid_body_particle_contact_buffer_size,
@@ -528,6 +547,9 @@ class SolverVBD(SolverBase):
         rigid_avbd_contact_alpha: float | None,
         rigid_contact_hard: bool,
         rigid_contact_history: bool,
+        rigid_contact_stick_motion_eps: float,
+        rigid_contact_stick_freeze_translation_eps: float,
+        rigid_contact_stick_freeze_angular_eps: float,
         rigid_contact_k_start: float,
         rigid_body_contact_buffer_size: int,
         rigid_body_particle_contact_buffer_size: int,
@@ -559,6 +581,17 @@ class SolverVBD(SolverBase):
             raise ValueError(f"rigid_avbd_gamma must be in [0, 1], got {rigid_avbd_gamma}")
         if rigid_contact_k_start < 0:
             raise ValueError(f"rigid_contact_k_start must be >= 0, got {rigid_contact_k_start}")
+        if rigid_contact_stick_motion_eps < 0:
+            raise ValueError(f"rigid_contact_stick_motion_eps must be >= 0, got {rigid_contact_stick_motion_eps}")
+        if rigid_contact_stick_freeze_translation_eps < 0:
+            raise ValueError(
+                "rigid_contact_stick_freeze_translation_eps must be >= 0, "
+                f"got {rigid_contact_stick_freeze_translation_eps}"
+            )
+        if rigid_contact_stick_freeze_angular_eps < 0:
+            raise ValueError(
+                f"rigid_contact_stick_freeze_angular_eps must be >= 0, got {rigid_contact_stick_freeze_angular_eps}"
+            )
         if rigid_joint_linear_k_start < 0:
             raise ValueError(f"rigid_joint_linear_k_start must be >= 0, got {rigid_joint_linear_k_start}")
         if rigid_joint_angular_k_start < 0:
@@ -580,12 +613,12 @@ class SolverVBD(SolverBase):
         if rigid_avbd_contact_alpha is not None:
             self.rigid_contact_alpha = rigid_avbd_contact_alpha
         else:
-            # Zero alpha works better without contact history: no warm duals to stabilize.
-            self.rigid_contact_alpha = rigid_avbd_alpha if (rigid_contact_history and rigid_contact_hard) else 0.0
+            self.rigid_contact_alpha = rigid_avbd_alpha
 
+        self.rigid_contact_stick_motion_eps = rigid_contact_stick_motion_eps
         # DEADZONE body-snap thresholds; suppressed by _STICK_FLAG_ANCHOR.
-        self.rigid_contact_stick_freeze_translation_eps = 1.0e-4
-        self.rigid_contact_stick_freeze_angular_eps = 1.0e-4
+        self.rigid_contact_stick_freeze_translation_eps = rigid_contact_stick_freeze_translation_eps
+        self.rigid_contact_stick_freeze_angular_eps = rigid_contact_stick_freeze_angular_eps
 
         # Joint constraint stiffness and damping for non-cable structural joints
         self.rigid_joint_linear_ke = rigid_joint_linear_ke
@@ -986,18 +1019,20 @@ class SolverVBD(SolverBase):
                     dof0 = int(jdofs[j])
                     lc = int(jdof_dim[j, 0])
                     ac = int(jdof_dim[j, 1])
-                    joint_k_max_np[c0 + 0] = structural_linear_ke
-                    joint_k_init_np[c0 + 0] = (
-                        structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
-                    )
-                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
-                    is_hard_np[c0 + 0] = int(j_is_hard[j])
-                    joint_k_max_np[c0 + 1] = structural_angular_ke
-                    joint_k_init_np[c0 + 1] = (
-                        structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
-                    )
-                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
-                    is_hard_np[c0 + 1] = int(j_is_hard[j])
+                    if lc < 3:
+                        joint_k_max_np[c0 + 0] = structural_linear_ke
+                        joint_k_init_np[c0 + 0] = (
+                            structural_linear_ke if lin_k_start is None else min(lin_k_start, structural_linear_ke)
+                        )
+                        joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
+                        is_hard_np[c0 + 0] = int(j_is_hard[j])
+                    if ac < 3:
+                        joint_k_max_np[c0 + 1] = structural_angular_ke
+                        joint_k_init_np[c0 + 1] = (
+                            structural_angular_ke if ang_k_start is None else min(ang_k_start, structural_angular_ke)
+                        )
+                        joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
+                        is_hard_np[c0 + 1] = int(j_is_hard[j])
                     for li in range(lc):
                         dof_idx = dof0 + li
                         slot = c0 + 2 + li
@@ -1855,8 +1890,10 @@ class SolverVBD(SolverBase):
             # Per-step k decay + lambda decay + C0 (body_q is still collide frame here).
             if contacts is not None and contacts.rigid_contact_max > 0:
                 contact_launch_dim = contacts.rigid_contact_max
-                gamma_lambda = (
-                    self.rigid_avbd_gamma if (self.rigid_contact_history and self.rigid_contact_hard) else 0.0
+                contact_lambda_decay = (
+                    self.rigid_contact_alpha * self.rigid_avbd_gamma
+                    if (self.rigid_contact_hard and (self.rigid_contact_history or not refresh))
+                    else 0.0
                 )
                 wp.launch(
                     kernel=step_body_body_contact_C0_lambda,
@@ -1873,7 +1910,7 @@ class SolverVBD(SolverBase):
                         model.shape_body,
                         state_in.body_q,
                         self.rigid_contact_hard,
-                        gamma_lambda,
+                        contact_lambda_decay,
                         self.rigid_avbd_gamma,
                         self.body_body_contact_material_ke,
                         self.rigid_contact_k_start_value,
@@ -1938,6 +1975,8 @@ class SolverVBD(SolverBase):
             )
 
             if model.joint_count > 0:
+                # Warm-started lambda decays by alpha * gamma, while penalty k uses gamma only.
+                joint_lambda_decay = self.rigid_joint_alpha * self.rigid_avbd_gamma
                 wp.launch(
                     kernel=step_joint_C0_lambda,
                     dim=model.joint_count,
@@ -1952,6 +1991,7 @@ class SolverVBD(SolverBase):
                         self.joint_constraint_start,
                         self.joint_constraint_dim,
                         self.joint_is_hard,
+                        joint_lambda_decay,
                         self.rigid_avbd_gamma,
                         self.joint_penalty_k_min,
                         self.joint_penalty_k_max,
@@ -2466,6 +2506,7 @@ class SolverVBD(SolverBase):
                     self.body_body_contact_material_mu,
                     self.body_body_contact_C0,
                     self.rigid_contact_alpha,
+                    self.rigid_contact_stick_motion_eps,
                     self.rigid_contact_hard,
                     self.body_inv_mass_effective,
                     self.body_body_contact_material_ke,

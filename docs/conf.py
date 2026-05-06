@@ -267,7 +267,7 @@ html_title = "Newton Physics"
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
-html_js_files = ["mermaid-nbsphinx.js"]
+html_js_files = [*globals().get("html_js_files", []), "mermaid-nbsphinx.js"]
 html_show_sourcelink = False
 
 # PyData theme configuration
@@ -449,31 +449,14 @@ def _copy_viser_client_into_output_static(*, outdir: Path) -> None:
 
     dest_dir = outdir / "_static" / "viser"
 
-    src_candidates: list[Path] = []
-
-    # Installed viser package build. Prefer this so the copied docs assets stay in
-    # sync with the serializer version used for notebook playback.
     try:
-        import inspect  # noqa: PLC0415
+        from newton.viewer import ViewerViser  # noqa: PLC0415
 
-        import viser  # noqa: PLC0415
-
-        viser_package_dir = Path(inspect.getfile(viser)).resolve().parent
-        src_candidates.extend(
-            [
-                viser_package_dir / "client" / "build",
-                viser_package_dir / "static",
-            ]
-        )
-    except Exception:
-        pass
-
-    src_dir = next((p for p in src_candidates if (p / "index.html").is_file()), None)
-    if src_dir is None:
+        src_dir = ViewerViser.get_viser_client_dir()
+    except Exception as e:
         # Don't hard-fail doc builds; the viewer docs can still build without the embedded client.
-        expected = ", ".join(str(p) for p in src_candidates)
         print(
-            f"Warning: could not find installed Viser client assets to copy. Expected `index.html` under one of: {expected}",
+            f"Warning: could not find installed Viser client assets to copy: {e}",
             file=sys.stderr,
         )
         return
@@ -497,15 +480,7 @@ def _on_source_read(app: Any, docname: str, source: list[str]) -> None:
         return
 
     entries = "\n".join(f"   /tutorials/{path.stem}" for path in notebook_paths)
-    source[0] += (
-        "\n\n"
-        "Local Notebook Build\n"
-        "--------------------\n\n"
-        ".. toctree::\n"
-        "   :maxdepth: 2\n"
-        "   :caption: Tutorial Notebooks\n\n"
-        f"{entries}\n"
-    )
+    source[0] += f"\n\n.. toctree::\n   :maxdepth: 2\n   :caption: Tutorial Notebooks\n\n{entries}\n"
 
 
 def setup(app: Any) -> None:

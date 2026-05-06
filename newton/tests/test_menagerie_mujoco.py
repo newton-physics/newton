@@ -1624,6 +1624,10 @@ class TestMenagerieBase(unittest.TestCase):
         # This mirrors the Newton solver's approach in SolverMuJoCo.
         mj_model.geom_margin[:] = 0.0
 
+        # Mirror SolverMuJoCo's enable_multiccd=False default. MuJoCo 3.8 turns
+        # multi-CCD on by default; Newton disables it via mjDSBL_MULTICCD.
+        mj_model.opt.disableflags |= int(_mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+
         # Create mujoco_warp model/data with multiple worlds
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)

@@ -267,6 +267,9 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-    example.check_grad()
-    newton.examples.run(example, args)
+    def _build():
+        ex = Example(viewer, args)
+        ex.check_grad()
+        return ex
+
+    newton.examples.run(_build(), args)

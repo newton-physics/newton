@@ -494,9 +494,9 @@ class Model:
         self.joint_enabled: wp.array[wp.bool] | None = None
         """Controls which joint is simulated (bodies become disconnected if False, supported by :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
         self.joint_limit_lower: wp.array[wp.float32] | None = None
-        """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
+        """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float. Values must be finite; use ``-newton.MAXVAL`` to indicate no lower limit."""
         self.joint_limit_upper: wp.array[wp.float32] | None = None
-        """Joint upper position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
+        """Joint upper position limits [m or rad, depending on joint type], shape [joint_dof_count], float. Values must be finite; use ``newton.MAXVAL`` to indicate no upper limit."""
         self.joint_limit_ke: wp.array[wp.float32] | None = None
         """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd: wp.array[wp.float32] | None = None

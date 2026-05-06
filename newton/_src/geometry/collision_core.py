@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import warp as wp
@@ -254,7 +255,7 @@ def post_process_axial_on_discrete_contact(
                 is_rolling = True
         else:
             # For cylinder: axis should be perpendicular to normal (dot product ≈ 0)
-            perpendicular_threshold = wp.static(wp.sin(2.0 * wp.pi / 180.0))
+            perpendicular_threshold = wp.static(math.sin(2.0 * math.pi / 180.0))
             if axis_normal_dot <= perpendicular_threshold:
                 is_rolling = True
 

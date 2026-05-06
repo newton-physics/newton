@@ -146,7 +146,7 @@ class TestViewerViserNotebookUrls(unittest.TestCase):
             mock_viser.__file__ = str(package_init)
 
             with patch.object(ViewerViser, "_get_viser", return_value=mock_viser):
-                self.assertTrue(ViewerViser._get_viser_client_dir().samefile(package_build_dir))
+                self.assertTrue(ViewerViser.get_viser_client_dir().samefile(package_build_dir))
 
     def test_get_viser_client_dir_uses_static_fallback(self):
         from newton._src.viewer.viewer_viser import ViewerViser
@@ -165,7 +165,7 @@ class TestViewerViserNotebookUrls(unittest.TestCase):
             mock_viser.__file__ = str(package_init)
 
             with patch.object(ViewerViser, "_get_viser", return_value=mock_viser):
-                self.assertTrue(ViewerViser._get_viser_client_dir().samefile(package_static_dir))
+                self.assertTrue(ViewerViser.get_viser_client_dir().samefile(package_static_dir))
 
     def test_get_viser_client_dir_raises_without_installed_build(self):
         from newton._src.viewer.viewer_viser import ViewerViser
@@ -181,7 +181,7 @@ class TestViewerViserNotebookUrls(unittest.TestCase):
 
             with patch.object(ViewerViser, "_get_viser", return_value=mock_viser):
                 with self.assertRaises(FileNotFoundError):
-                    ViewerViser._get_viser_client_dir()
+                    ViewerViser.get_viser_client_dir()
 
     def test_repo_does_not_ship_vendored_viser_client(self):
         static_index = Path(__file__).resolve().parents[1] / "_src" / "viewer" / "viser" / "static" / "index.html"
@@ -212,6 +212,7 @@ class TestViewerViserNotebookUrls(unittest.TestCase):
         line_segments = _DummyServer.last_instance.scene.line_segments
         self.assertEqual(len(line_segments), 1)
         expected_points = ViewerViser._build_plane_grid_points(2.0, 4.0) * np.array([2.0, 3.0, 1.0], dtype=np.float32)
+        expected_points += np.array([1.0, 2.0, 3.0], dtype=np.float32)
         np.testing.assert_allclose(line_segments[0]["points"], expected_points)
 
     def test_log_lines_updates_existing_handle_when_segment_count_is_unchanged(self):
