@@ -397,7 +397,7 @@ def test_rigid_restitution_zero_settles(test, device):
         cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=restitution, mu=0.0)
         builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
         model = builder.finalize(device=device)
-        solver = newton.solvers.SolverXPBD(model)  # enable_restitution=True by default
+        solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
         state_0, state_1 = model.state(), model.state()
         control, contacts = model.control(), model.contacts()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -569,7 +569,7 @@ def test_rigid_restitution_runs_with_requires_grad(test, device):
         cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=1.0, mu=0.0)
         builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
         model = builder.finalize(device=device)
-        solver = newton.solvers.SolverXPBD(model)  # enable_restitution=True by default
+        solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
         state_0 = model.state(requires_grad=requires_grad)
         state_1 = model.state(requires_grad=requires_grad)
         control, contacts = model.control(), model.contacts()
@@ -628,6 +628,69 @@ def test_rigid_restitution_runs_with_requires_grad(test, device):
             f"peak was {peak_no_grad:.4f} m. Post-impact z values: {post_impact_no_grad}."
         ),
     )
+
+
+def test_particle_shape_restitution_runs_with_requires_grad(test, device):
+    """
+    Regression test ensuring particle-body restitution runs (and does not NaN) with requires_grad=True.
+
+    Before the fix, apply_particle_shape_restitution was gated behind ``not requires_grad``,
+    so particles against dynamic bodies never bounced on the grad path.  After the fix the
+    kernel writes into a cloned output buffer (same pattern as rigid restitution), keeping
+    the tape-recorded array intact.
+
+    Setup:
+    - A dynamic rigid box moving upward at 5 m/s.
+    - A stationary particle sitting just above the top face of the box.
+    - Restitution = 1.0, gravity disabled.
+
+    Assert (both grad and non-grad paths):
+    - No NaN / Inf in particle velocity after one step.
+    - Particle receives a restitution impulse (upward velocity > 7 m/s).
+    """
+    builder = newton.ModelBuilder(up_axis="Y")
+
+    body_id = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_box(body=body_id, hx=1.0, hy=0.5, hz=1.0)
+
+    particle_radius = 0.1
+    builder.add_particle(
+        pos=(0.0, 0.5 + particle_radius, 0.0),
+        vel=(0.0, 0.0, 0.0),
+        mass=1.0,
+        radius=particle_radius,
+    )
+
+    for requires_grad in [False, True]:
+        model = builder.finalize(device=device, requires_grad=requires_grad)
+        model.set_gravity((0.0, 0.0, 0.0))
+        model.soft_contact_restitution = 1.0
+
+        solver = newton.solvers.SolverXPBD(model, iterations=10, enable_restitution=True)
+
+        state0 = model.state(requires_grad=requires_grad)
+        state1 = model.state(requires_grad=requires_grad)
+
+        body_vel = np.array([[0.0, 5.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+        state0.body_qd.assign(wp.array(body_vel, dtype=wp.spatial_vector, device=device))
+
+        contacts = model.contacts()
+        model.collide(state0, contacts)
+        control = model.control()
+        solver.step(state0, state1, control, contacts, 1.0 / 60.0)
+
+        vel = state1.particle_qd.numpy()
+
+        label = f"requires_grad={requires_grad}"
+        test.assertTrue(
+            np.all(np.isfinite(vel)),
+            msg=f"[{label}] Particle velocity is not finite after restitution: {vel}",
+        )
+        test.assertGreater(
+            float(vel[0, 1]),
+            7.0,
+            msg=f"[{label}] Particle should receive restitution impulse (expected ~10 m/s, got {float(vel[0, 1]):.2f})",
+        )
 
 
 def test_articulation_contact_drift(test, device):
@@ -1355,6 +1418,14 @@ add_function_test(
     TestSolverXPBD,
     "test_rigid_restitution_runs_with_requires_grad",
     test_rigid_restitution_runs_with_requires_grad,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_particle_shape_restitution_runs_with_requires_grad",
+    test_particle_shape_restitution_runs_with_requires_grad,
     devices=devices,
     check_output=False,
 )

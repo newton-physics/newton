@@ -105,7 +105,7 @@ class SolverXPBD(SolverBase):
         rigid_contact_relaxation: float = 0.8,
         rigid_contact_con_weighting: bool = True,
         angular_damping: float = 0.0,
-        enable_restitution: bool = True,
+        enable_restitution: bool = False,
     ):
         super().__init__(model=model)
         self.iterations = iterations
@@ -683,7 +683,11 @@ class SolverXPBD(SolverBase):
 
             # Restitution requires corrected velocities from update_body_velocities above.
             if self.enable_restitution and contacts is not None:
-                if model.particle_count and not requires_grad:
+                if model.particle_count:
+                    # Grad-enabled steps write into a cloned buffer to avoid
+                    # mutating a recorded array in place.
+                    assert particle_qd is not None
+                    particle_qd_with_restitution = wp.clone(particle_qd) if requires_grad else state_out.particle_qd
                     wp.launch(
                         kernel=apply_particle_shape_restitution,
                         dim=contacts.soft_contact_max,
@@ -695,7 +699,7 @@ class SolverXPBD(SolverBase):
                             model.particle_flags,
                             body_q,
                             body_q_init,
-                            body_qd,
+                            body_qd_for_restitution,
                             body_qd_init,
                             model.body_com,
                             model.shape_body,
@@ -709,9 +713,11 @@ class SolverXPBD(SolverBase):
                             contacts.soft_contact_normal,
                             contacts.soft_contact_max,
                         ],
-                        outputs=[state_out.particle_qd],
+                        outputs=[particle_qd_with_restitution],
                         device=model.device,
                     )
+                    if requires_grad:
+                        state_out.particle_qd = particle_qd_with_restitution
 
                 if model.body_count:
                     if requires_grad:
