@@ -96,8 +96,10 @@ AttributeFrequency = Model.AttributeFrequency
 
 def _required_specifier(package: str) -> str | None:
     try:
-        requirements = importlib_metadata.requires("newton") or ()
+        requirements = importlib_metadata.requires("newton")
     except importlib_metadata.PackageNotFoundError:
+        return None
+    if requirements is None:
         return None
 
     pattern = re.compile(rf"^{re.escape(package)}(?=[<>=!~])([^;]+)")
