@@ -34,6 +34,25 @@ SEMANTIC_COLOR_GAUSSIAN = (255, 153, 0)
 SEMANTIC_COLOR_GROUND_PLANE = (68, 68, 68)
 
 
+# Sweeping every Franka joint across its full URDF range yields poses that
+# punch the wrist through the ground plane or fold the arm onto itself.
+# Animate each joint as ``home + radius * sin(time + phase)`` instead, where
+# ``home`` sits at the standard "ready" pose and ``radius = alpha * min(home -
+# lower, upper - home)`` uses a per-joint fraction of the symmetric distance
+# to the URDF limits.
+_FRANKA_HOME_AND_ALPHA: dict[str, tuple[float, float]] = {
+    "fr3_joint1": (0.0, 0.6),
+    "fr3_joint2": (-math.pi / 4.0, 0.4),
+    "fr3_joint3": (0.0, 0.5),
+    "fr3_joint4": (-3.0 * math.pi / 4.0, 0.5),
+    "fr3_joint5": (0.0, 0.6),
+    "fr3_joint6": (math.pi / 2.0, 0.5),
+    "fr3_joint7": (math.pi / 4.0, 0.7),
+    "fr3_finger_joint1": (0.02, 1.0),
+    "fr3_finger_joint2": (0.02, 1.0),
+}
+
+
 @wp.kernel(enable_backward=False)
 def animate_franka(
     time: wp.float32,
@@ -41,8 +60,8 @@ def animate_franka(
     joint_dof_dim: wp.array2d[wp.int32],
     joint_q_start: wp.array[wp.int32],
     joint_qd_start: wp.array[wp.int32],
-    joint_limit_lower: wp.array[wp.float32],
-    joint_limit_upper: wp.array[wp.float32],
+    dof_home: wp.array[wp.float32],
+    dof_radius: wp.array[wp.float32],
     joint_q: wp.array[wp.float32],
 ):
     tid = wp.tid()
@@ -56,9 +75,7 @@ def animate_franka(
     q_start = joint_q_start[tid]
     qd_start = joint_qd_start[tid]
     for i in range(num_linear_dofs + num_angular_dofs):
-        joint_q[q_start + i] = joint_limit_lower[qd_start + i] + (
-            joint_limit_upper[qd_start + i] - joint_limit_lower[qd_start + i]
-        ) * ((wp.sin(time + wp.randf(rng)) + 1.0) * 0.5)
+        joint_q[q_start + i] = dof_home[qd_start + i] + dof_radius[qd_start + i] * wp.sin(time + wp.randf(rng))
 
 
 class Example:
@@ -148,6 +165,27 @@ class Example:
         self.model = builder.finalize()
         self.state = self.model.state()
 
+        # Build per-DOF home pose and oscillation radius for animate_franka.
+        # Joints not listed in _FRANKA_HOME_AND_ALPHA keep radius=0 and stay put.
+        joint_qd_start = self.model.joint_qd_start.numpy()
+        joint_limit_lower = self.model.joint_limit_lower.numpy()
+        joint_limit_upper = self.model.joint_limit_upper.numpy()
+        dof_home = np.zeros(self.model.joint_dof_count, dtype=np.float32)
+        dof_radius = np.zeros(self.model.joint_dof_count, dtype=np.float32)
+        for j_idx, label in enumerate(self.model.joint_label):
+            # URDF parser produces hierarchical labels like "fr3/fr3_joint1".
+            params = _FRANKA_HOME_AND_ALPHA.get(label.rsplit("/", 1)[-1])
+            if params is None:
+                continue
+            home_val, alpha_val = params
+            qd0 = int(joint_qd_start[j_idx])
+            lower = float(joint_limit_lower[qd0])
+            upper = float(joint_limit_upper[qd0])
+            dof_home[qd0] = home_val
+            dof_radius[qd0] = max(0.0, alpha_val * min(home_val - lower, upper - home_val))
+        self.dof_home = wp.array(dof_home, dtype=wp.float32, device=self.model.device)
+        self.dof_radius = wp.array(dof_radius, dtype=wp.float32, device=self.model.device)
+
         self.viewer.set_model(self.model)
 
         self.camera_count = 1
@@ -216,8 +254,8 @@ class Example:
                 self.model.joint_dof_dim,
                 self.model.joint_q_start,
                 self.model.joint_qd_start,
-                self.model.joint_limit_lower,
-                self.model.joint_limit_upper,
+                self.dof_home,
+                self.dof_radius,
             ],
             outputs=[self.state.joint_q],
         )
