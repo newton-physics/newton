@@ -48,13 +48,13 @@ from .kinematics.joints import (
 )
 from .kinematics.limits import LimitsKamino
 from .kinematics.resets import (
-    _set_joint_state_masked,
     reset_body_net_wrenches,
     reset_joint_constraint_reactions,
     reset_state_from_base_state,
     reset_state_from_bodies_state,
     reset_state_to_model_default,
     reset_time,
+    set_joint_state_masked,
 )
 from .linalg import ConjugateResidualSolver, IterativeSolver, LinearSolverNameToType
 from .solvers.fk import ForwardKinematicsSolver
@@ -859,7 +859,7 @@ class SolverKaminoImpl(SolverBase):
         # write ensures worlds outside `world_mask` keep their previous values (notably
         # `q_j_p`, the TWOPI angle-correction reference).
         if with_joint_targets:
-            _set_joint_state_masked(
+            set_joint_state_masked(
                 model=self._model,
                 world_mask=world_mask,
                 src_q=joint_q,
@@ -878,7 +878,7 @@ class SolverKaminoImpl(SolverBase):
                 joint_q=state_out.q_j,
                 joint_u=state_out.dq_j,
             )
-            _set_joint_state_masked(
+            set_joint_state_masked(
                 model=self._model,
                 world_mask=world_mask,
                 src_q=state_out.q_j,

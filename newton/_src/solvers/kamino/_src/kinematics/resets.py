@@ -26,6 +26,7 @@ __all__ = [
     "reset_state_from_bodies_state",
     "reset_state_to_model_default",
     "reset_time",
+    "set_joint_state_masked",
 ]
 
 
@@ -212,13 +213,13 @@ def _reset_joint_state_of_select_worlds(
 @wp.kernel
 def _set_joint_state_of_select_worlds(
     # Inputs:
+    write_velocities: int32,
     world_mask: wp.array[int32],
     model_joint_wid: wp.array[int32],
     model_joint_coords_offset: wp.array[int32],
     model_joint_dofs_offset: wp.array[int32],
     src_q: wp.array[float32],
     src_u: wp.array[float32],
-    write_velocities: int32,
     # Outputs:
     dst_q: wp.array[float32],
     dst_q_p: wp.array[float32],
@@ -566,7 +567,7 @@ def reset_joint_constraint_reactions(
     )
 
 
-def _set_joint_state_masked(
+def set_joint_state_masked(
     model: ModelKamino,
     world_mask: wp.array,
     src_q: wp.array,
@@ -592,13 +593,13 @@ def _set_joint_state_masked(
         dim=model.size.sum_of_num_joints,
         inputs=[
             # Inputs:
+            write_velocities,
             world_mask,
             model.joints.wid,
             model.joints.coords_offset,
             model.joints.dofs_offset,
             src_q,
             _src_u,
-            write_velocities,
             # Outputs:
             dst_q,
             dst_q_p,
