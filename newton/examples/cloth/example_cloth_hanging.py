@@ -223,13 +223,13 @@ if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
-    example = Example(
-        viewer=viewer,
-        args=args,
-        solver_type=args.solver,
-        height=args.height,
-        width=args.width,
+    newton.examples.run(
+        Example(
+            viewer=viewer,
+            args=args,
+            solver_type=args.solver,
+            height=args.height,
+            width=args.width,
+        ),
+        args,
     )
-
-    newton.examples.run(example, args)

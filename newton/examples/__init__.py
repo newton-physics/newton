@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
+import gc
 import importlib
 import os
 import warnings
@@ -239,7 +240,11 @@ class _ExampleBrowser:
         return example, type(example)
 
     def reset(self, example_class):
-        """Reset the current example by re-creating it. Returns the new example or None."""
+        """Reset the current example by re-creating it. Returns the new example or None.
+
+        The caller must drop its reference to the old example before calling
+        this method.
+        """
         self._reset_requested = False
         self.viewer.clear_model()
         try:
@@ -280,6 +285,12 @@ def run(example, args):
             continue
 
         if browser is not None and browser._reset_requested:
+            # Drop our reference and force cycle collection so the old
+            # example's destructors finish before reset() enters the new
+            # CUDA graph capture; otherwise late texture/array __del__
+            # calls could fire mid-capture and CUDA rejects them.
+            example = None
+            gc.collect()
             example = browser.reset(example_class)
             continue
 

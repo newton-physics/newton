@@ -796,13 +796,13 @@ if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    example = Example(
-        viewer,
-        args.verbose,
-        args.num_rollouts,
-        args.render_rollouts,
-        args.drone_path,
+    newton.examples.run(
+        Example(
+            viewer,
+            args.verbose,
+            args.num_rollouts,
+            args.render_rollouts,
+            args.drone_path,
+        ),
+        args,
     )
-
-    # Run example
-    newton.examples.run(example, args)

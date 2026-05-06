@@ -26,6 +26,7 @@ __all__ = [
     "reset_state_from_bodies_state",
     "reset_state_to_model_default",
     "reset_time",
+    "set_joint_state_masked",
 ]
 
 
@@ -207,6 +208,47 @@ def _reset_joint_state_of_select_worlds(
         state_lambda_j[dynamic_cts_offset + j] = 0.0
     for j in range(num_kinematic_cts):
         state_lambda_j[kinematic_cts_offset + j] = 0.0
+
+
+@wp.kernel
+def _set_joint_state_of_select_worlds(
+    # Inputs:
+    write_velocities: bool,
+    world_mask: wp.array[int32],
+    model_joint_wid: wp.array[int32],
+    model_joint_coords_offset: wp.array[int32],
+    model_joint_dofs_offset: wp.array[int32],
+    src_q: wp.array[float32],
+    src_u: wp.array[float32],
+    # Outputs:
+    dst_q: wp.array[float32],
+    dst_q_p: wp.array[float32],
+    dst_dq: wp.array[float32],
+):
+    # Retrieve the joint index from the 1D thread index
+    jid = wp.tid()
+
+    # Retrieve the world index for this joint
+    wid = model_joint_wid[jid]
+
+    # Skip writing this joint's state if the world has not been marked for reset
+    if world_mask[wid] == 0:
+        return
+
+    # Write the joint's coordinate block to both `q` and `q_p` (TWOPI reference)
+    coords_offset = model_joint_coords_offset[jid]
+    num_coords = model_joint_coords_offset[jid + 1] - coords_offset
+    for j in range(num_coords):
+        v = src_q[coords_offset + j]
+        dst_q[coords_offset + j] = v
+        dst_q_p[coords_offset + j] = v
+
+    # Optionally write the joint's DoF velocities
+    if write_velocities:
+        dofs_offset = model_joint_dofs_offset[jid]
+        num_dofs = model_joint_dofs_offset[jid + 1] - dofs_offset
+        for j in range(num_dofs):
+            dst_dq[dofs_offset + j] = src_u[dofs_offset + j]
 
 
 @wp.kernel
@@ -520,6 +562,48 @@ def reset_joint_constraint_reactions(
             model.joints.kinematic_cts_offset_total_cts,
             # Outputs:
             lambda_j,
+        ],
+        device=model.device,
+    )
+
+
+def set_joint_state_masked(
+    model: ModelKamino,
+    world_mask: wp.array,
+    src_q: wp.array,
+    src_u: wp.array | None,
+    dst_q: wp.array,
+    dst_q_p: wp.array,
+    dst_dq: wp.array | None,
+):
+    """
+    Writes joint state into ``dst_q`` and ``dst_q_p`` from ``src_q``, and optionally
+    writes joint velocities into ``dst_dq`` from ``src_u``, for the worlds selected
+    by ``world_mask``. Joints whose world is masked out are left untouched.
+
+    Velocities are written only when both ``src_u`` and ``dst_dq`` are provided. When
+    either is ``None``, the velocity write is skipped and ``src_q`` / ``dst_q`` are
+    passed as placeholders to satisfy the kernel signature.
+    """
+    write_velocities = src_u is not None and dst_dq is not None
+    _src_u = src_u if src_u is not None else src_q
+    _dst_dq = dst_dq if dst_dq is not None else dst_q
+    wp.launch(
+        _set_joint_state_of_select_worlds,
+        dim=model.size.sum_of_num_joints,
+        inputs=[
+            # Inputs:
+            write_velocities,
+            world_mask,
+            model.joints.wid,
+            model.joints.coords_offset,
+            model.joints.dofs_offset,
+            src_q,
+            _src_u,
+            # Outputs:
+            dst_q,
+            dst_q_p,
+            _dst_dq,
         ],
         device=model.device,
     )
