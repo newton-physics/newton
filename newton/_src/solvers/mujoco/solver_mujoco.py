@@ -510,8 +510,8 @@ class SolverMuJoCo(SolverBase):
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
-                # Sentinel for "not authored". MJCF import fills this with the
-                # raw MuJoCo solreflimit for native-compatibility.
+                # Sentinel for "not authored". MJCF/USD import fills this only
+                # when a raw MuJoCo solreflimit was explicitly authored.
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 usd_attribute_name="mjc:solreflimit",

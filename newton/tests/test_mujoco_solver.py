@@ -9190,6 +9190,72 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         self.assertAlmostEqual(float(actual_solref[0]), expected_ke, delta=abs(expected_ke) * rel_tol)
         self.assertAlmostEqual(float(actual_solref[1]), expected_kd, delta=abs(expected_kd) * rel_tol)
 
+    def test_mjcf_unauthored_solreflimit_ke_updates_are_not_shadowed(self):
+        """MJCF joints without ``solreflimit`` must keep the sentinel so ``limit_ke`` updates apply."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], [0.0, 0.0], rtol=0.0, atol=0.0)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        initial_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+
+        ke = np.array([5000.0], dtype=np.float32)
+        kd = np.array([50.0], dtype=np.float32)
+        model.joint_limit_ke.assign(ke)
+        model.joint_limit_kd.assign(kd)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+        dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
+        factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+        expected_solref = np.array([-ke[0] * factor, -kd[0] * factor], dtype=np.float64)
+        actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+
+        self.assertFalse(np.allclose(actual_solref, initial_solref))
+        np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
+
+    def test_mjcf_authored_solreflimit_is_preserved_as_native_parameter(self):
+        """Authored MJCF ``solreflimit`` still bypasses Newton force-space gain scaling."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1" solreflimit="0.03 0.7"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+
+        expected_solref = np.array([0.03, 0.7], dtype=np.float64)
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], expected_solref, rtol=1e-6, atol=1e-6)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(solver.mjw_model.jnt_solref.numpy()[0, 0], expected_solref, rtol=1e-6, atol=1e-6)
+
     def test_saved_mjcf_and_mj_model_use_scaled_joint_limit_solref(self):
         """The host ``MjModel`` and exported MJCF must match the scaled warp ``jnt_solref``."""
         ke = 10000.0
