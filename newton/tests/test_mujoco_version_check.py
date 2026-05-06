@@ -84,6 +84,24 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
         messages = [str(warning.message) for warning in caught]
         self.assertFalse(any("MuJoCo dependency version mismatch" in message for message in messages))
 
+    def test_required_specifier_returns_none(self):
+        cases = {
+            "metadata missing": mock.patch.object(
+                solver_mujoco.importlib_metadata,
+                "requires",
+                side_effect=solver_mujoco.importlib_metadata.PackageNotFoundError("newton"),
+            ),
+            "no requirements declared": mock.patch.object(
+                solver_mujoco.importlib_metadata, "requires", return_value=None
+            ),
+            "package not in requirements": mock.patch.object(
+                solver_mujoco.importlib_metadata, "requires", return_value=["warp-lang>=1.0"]
+            ),
+        }
+        for name, patch in cases.items():
+            with self.subTest(name), patch:
+                self.assertIsNone(solver_mujoco._required_specifier("mujoco"))
+
 
 def _matching_version(specifier: str) -> str:
     for pattern in (r">=\s*([0-9][^,;]*)", r"~=\s*([0-9][^,;]*)"):
