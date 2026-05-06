@@ -204,9 +204,9 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
-        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
         refit_bvh: bool | None = None,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
     ):
         """Render output images for all worlds and cameras.
 
@@ -232,7 +232,6 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
             albedo_image: Output for unshaded surface color. None to skip.
-            hdr_color_image: Output for linear HDR color. None to skip.
             clear_data: Values to clear output buffers with.
                 See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
             refit_bvh: Refit the BVH before rendering. This is deprecated, use
@@ -241,6 +240,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 :func:`~newton.geometry.build_bvh_particle`, and
                 :func:`~newton.geometry.refit_bvh_particle` explicitly
                 before calling this method instead.
+            hdr_color_image: Output for linear HDR color. None to skip.
         """
 
         # TODO: Remove this deprecation behaviour in the next release.
@@ -281,8 +281,8 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             shape_index_image,
             normal_image,
             albedo_image,
-            hdr_color_image,
             clear_data=clear_data,
+            hdr_color_image=hdr_color_image,
         )
 
     def compute_pinhole_camera_rays(

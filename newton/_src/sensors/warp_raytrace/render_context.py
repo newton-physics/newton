@@ -146,8 +146,8 @@ class RenderContext:
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
-        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         clear_data: RenderContext.ClearData | None = DEFAULT_CLEAR_DATA,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
     ):
         """Raytrace the scene into the provided output images.
 
@@ -175,9 +175,9 @@ class RenderContext:
             shape_index_image: Output shape-index buffer.
             normal_image: Output world-space surface normals.
             albedo_image: Output albedo buffer (packed ``uint32``).
-            hdr_color_image: Output linear HDR color buffer.
             clear_data: Values used to clear output images before
                 rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
+            hdr_color_image: Output linear HDR color buffer.
         """
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
             raise RuntimeError("build_bvh_shape() must be called before rendering shapes.")
