@@ -32,7 +32,15 @@ def _to_rgb_array(color: Sequence[float] | np.ndarray) -> np.ndarray:
 
 
 def color_srgb_to_linear(color: Sequence[float] | np.ndarray) -> tuple[float, float, float]:
-    """Convert an sRGB/display RGB triple to linear Rec.709."""
+    """Convert an sRGB/display RGB triple to linear Rec.709.
+
+    Args:
+        color: RGB values in sRGB/display encoding. Negative components are
+            clamped to zero before conversion.
+
+    Returns:
+        Linear RGB triple.
+    """
 
     rgb = np.clip(_to_rgb_array(color), 0.0, None)
     linear = np.where(rgb <= 0.04045, rgb / 12.92, np.power((rgb + 0.055) / 1.055, 2.4))
@@ -40,7 +48,15 @@ def color_srgb_to_linear(color: Sequence[float] | np.ndarray) -> tuple[float, fl
 
 
 def color_linear_to_srgb(color: Sequence[float] | np.ndarray) -> tuple[float, float, float]:
-    """Convert a linear RGB triple to sRGB/display encoding."""
+    """Convert a linear RGB triple to sRGB/display encoding.
+
+    Args:
+        color: Linear RGB values. Negative components are clamped to zero
+            before conversion.
+
+    Returns:
+        sRGB/display-encoded RGB triple.
+    """
 
     rgb = np.clip(_to_rgb_array(color), 0.0, None)
     srgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
