@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
+import gc
 import importlib
 import os
 import warnings
@@ -284,9 +285,12 @@ def run(example, args):
             continue
 
         if browser is not None and browser._reset_requested:
-            # Drop our reference so the old example is freed before reset()
-            # builds the replacement; otherwise both coexist in VRAM.
+            # Drop our reference and force cycle collection so the old
+            # example's destructors finish before reset() enters the new
+            # CUDA graph capture; otherwise late texture/array __del__
+            # calls could fire mid-capture and CUDA rejects them.
             example = None
+            gc.collect()
             example = browser.reset(example_class)
             continue
 
