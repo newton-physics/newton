@@ -97,6 +97,7 @@
 - Fix `SensorRaycast` and viewer picking ignoring `HFIELD` (heightfield) geometry
 - Fix `SensorTiledCamera` textured albedo output rendering flat colors when color and normal outputs are disabled
 - Fix `contacts_rj45_plug` example crashing on reset
+- Fix `SolverMuJoCo` dependency version-mismatch warning being silently skipped when Newton is installed from a wheel; the check now reads required versions via `importlib.metadata.requires` instead of `pyproject.toml`
 - Fix `ModelBuilder.add_shape_heightfield` `scale` being ignored by narrow-phase collision and raycast
 - Fix `collision_filter_parent` silently ignored on joints to world (`parent=-1`); now honored for all `add_joint_*` methods, with `add_joint_fixed(parent=-1, ...)` defaulting to filter child shapes against world-static shapes
 - Fix multi-world `qfrc_actuator` conversion using the wrong body center of mass for worlds with `worldid > 0`
