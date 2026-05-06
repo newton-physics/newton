@@ -2168,6 +2168,19 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                     parent_xform=root_parent_xform,
                     child_xform=identity_xform,
                 )
+            elif root_joint_type == "d6_revolute":
+                # D6 with a single angular Z axis and no linear axes
+                # behaves as a 1-DOF revolute joint about world +Z.
+                j0 = b.add_joint_d6(
+                    parent=-1,
+                    child=link0,
+                    parent_xform=root_parent_xform,
+                    child_xform=identity_xform,
+                    linear_axes=[],
+                    angular_axes=[
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
+                    ],
+                )
             elif root_joint_type == "fixed":
                 j0 = b.add_joint_fixed(
                     parent=-1,
@@ -2213,26 +2226,28 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             return b
 
         num_worlds = 2
-        num_arts_per_world = 3
+        num_arts_per_world = 4
         num_arts = num_worlds * num_arts_per_world
 
         # Per-articulation root joint type. ``"free"`` adds 6 qd / 7 q root
         # DOFs (3 linear, 3 angular) for a free body; ``"ball"`` adds 3 qd
-        # / 4 q root DOFs (orientation only); ``"fixed"`` adds none.
-        # SolverMuJoCo requires homogeneous worlds, so every world uses the
-        # same ``[fixed, free, ball]`` pattern -- exercising all three root
-        # joint types in each world.
-        root_joint_types_per_world = ["fixed", "free", "ball"]
+        # / 4 q root DOFs (orientation only, quaternion); ``"d6_revolute"``
+        # is a D6 joint with a single angular Z axis, giving 1 qd / 1 q
+        # root DOF (per-axis angle); ``"fixed"`` adds none. SolverMuJoCo
+        # requires homogeneous worlds, so every world uses the same
+        # ``[fixed, free, ball, d6_revolute]`` pattern -- exercising all four
+        # root joint types in each world.
+        root_joint_types_per_world = ["fixed", "free", "ball", "d6_revolute"]
         assert len(root_joint_types_per_world) == num_arts_per_world
         root_joint_types = root_joint_types_per_world * num_worlds
         # Per-type root qd-DOF counts (used to size the expected_dofs check).
-        root_qd_len = {"fixed": 0, "ball": 3, "free": 6}
+        root_qd_len = {"fixed": 0, "ball": 3, "d6_revolute": 1, "free": 6}
 
         # Per-articulation link mass. The first value (16) corresponds to a
         # density-1 4x2x2 box (mass = density * volume); the others are arbitrary
         # multiples and submultiples to vary M(q) across articulations. Inertia
         # tracks mass for the same shape.
-        per_articulation_masses = [16.0, 32.0, 8.0, 24.0, 12.0, 20.0]
+        per_articulation_masses = [16.0, 32.0, 8.0, 24.0, 12.0, 20.0, 28.0, 14.0]
         assert len(per_articulation_masses) == num_arts
 
         builder = newton.ModelBuilder(gravity=gravity_value, up_axis=newton.Axis.Z)
@@ -2291,19 +2306,26 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         root_omega = (0.3, -0.1, 0.2) if non_zero_initial_dof_velocities else (0.0, 0.0, 0.0)
         root_alpha = (0.2, -0.25, 0.3)
         root_lin_dot = (0.05, -0.1, 0.15)
+        # ``d6_revolute`` exercises a single Z-axis angular DOF; its qd uses
+        # the z-component of ``root_omega`` and qdd the z-component of
+        # ``root_alpha`` so it tracks the same active/zero pattern as the
+        # multi-DOF root types.
         root_q_per_type = {
             "fixed": (),
             "ball": (0.0, 0.0, 0.0, 1.0),
+            "d6_revolute": (0.0,),
             "free": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
         }
         root_qd_per_type = {
             "fixed": (),
             "ball": root_omega,
+            "d6_revolute": (root_omega[2],),
             "free": (0.0, 0.0, 0.0, *root_omega),
         }
         root_qdd_per_type = {
             "fixed": (),
             "ball": root_alpha,
+            "d6_revolute": (root_alpha[2],),
             "free": (*root_lin_dot, *root_alpha),
         }
 
