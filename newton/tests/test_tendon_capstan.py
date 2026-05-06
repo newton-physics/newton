@@ -16,6 +16,7 @@ import warp as wp
 import newton
 from newton._src.sim.builder import Axis
 from newton._src.sim.tendon import TendonLinkType
+from newton.examples.cable.example_tendon_capstan_friction import Example as DynamicCapstanExample
 from newton.tests.unittest_utils import sanitize_identifier
 
 
@@ -409,6 +410,14 @@ def _dynamic_capstan_metrics(device, mu, num_frames=40):
     return body_q, left_travel, right_travel, cable_travel, theta, rim_travel, slip
 
 
+def _dynamic_capstan_example_theta(device, num_frames=40):
+    example = DynamicCapstanExample(None, None)
+    for _ in range(num_frames):
+        example.step()
+    theta = np.array(example._pulley_rotation_history[-1], dtype=np.float64)
+    return tuple(example.mus), theta
+
+
 def _kinematic_capstan_metrics(device, mu, num_frames=100):
     model, left_idx, right_idx, pulley_idx = build_kinematic_pulley_atwood(mu=mu)
     state = run_model(model, num_frames=num_frames)
@@ -524,6 +533,25 @@ def test_dynamic_capstan_mu_controls_pulley_rotation(test, device):
         test.assertGreater(slip_low, slip_mid, f"Dynamic slip should decrease from low to mid mu: {slip_low:.5f} <= {slip_mid:.5f}")
         test.assertGreater(slip_mid, slip_high, f"Dynamic slip should decrease from mid to high mu: {slip_mid:.5f} <= {slip_high:.5f}")
         test.assertGreater(rim_mid, 0.0, f"Mid-mu rim travel should be positive: {rim_mid:.5f}")
+
+
+def test_dynamic_capstan_example_mid_mu_stays_below_high_mu(test, device):
+    """The rendered finite-friction dynamic capstan case should remain visually distinct from no-slip."""
+    with wp.ScopedDevice(device):
+        mus, theta = _dynamic_capstan_example_theta(device)
+        test.assertEqual(mus[0], 0.0, f"Dynamic capstan example should keep the zero-friction case first: {mus}")
+        test.assertGreater(mus[1], 0.0, f"Dynamic capstan example mid friction should be finite: {mus}")
+        test.assertGreaterEqual(mus[2], 10.0, f"Dynamic capstan example high friction should be no-slip-like: {mus}")
+
+        theta_low, theta_mid, theta_high = theta
+        test.assertLess(abs(theta_low), 0.08, f"Example zero-mu pulley should not rotate: theta={theta_low:.5f}")
+        test.assertGreater(theta_mid, 0.25, f"Example mid-mu pulley should rotate in cable direction: {theta_mid:.5f}")
+        test.assertLess(
+            theta_mid,
+            0.75 * theta_high,
+            f"Example mid-mu pulley should stay visibly below high-friction/no-slip rotation: "
+            f"mid={theta_mid:.5f}, high={theta_high:.5f}, mus={mus}",
+        )
 
 
 def test_kinematic_capstan_mu_controls_slip_and_locking(test, device):
@@ -695,6 +723,12 @@ add_test(TestTendonCapstan, "slack_pinhole_does_not_redistribute", devices, test
 add_test(TestTendonCapstan, "dynamic_pulley_uses_angular_jacobian", devices, test_dynamic_pulley_uses_angular_jacobian)
 add_test(TestTendonCapstan, "pulley_inertia_limit_locks_cable_travel", devices, test_pulley_inertia_limit_locks_cable_travel)
 add_test(TestTendonCapstan, "dynamic_capstan_mu_controls_pulley_rotation", devices, test_dynamic_capstan_mu_controls_pulley_rotation)
+add_test(
+    TestTendonCapstan,
+    "dynamic_capstan_example_mid_mu_stays_below_high_mu",
+    devices,
+    test_dynamic_capstan_example_mid_mu_stays_below_high_mu,
+)
 add_test(TestTendonCapstan, "kinematic_capstan_mu_controls_slip_and_locking", devices, test_kinematic_capstan_mu_controls_slip_and_locking)
 add_test(TestTendonCapstan, "motorized_pulley_drives_slider", devices, test_motorized_pulley_drives_slider)
 add_test(

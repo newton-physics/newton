@@ -136,6 +136,8 @@ first finite-slip capstan criteria:
 - Dynamic capstan `mu` sweep: zero friction does not rotate the pulley, mid
   friction rotates in the cable direction, and high friction approaches
   no-slip rim/cable agreement.
+- Rendered dynamic capstan regression: the authored mid-friction example
+  remains visually distinct from the high-friction/no-slip case.
 - Kinematic capstan `mu` sweep: zero friction slips freely, mid friction slips
   less, and high friction locks cable motion.
 - Motorized rolling pulley: a driven dynamic pulley produces slider motion
@@ -151,7 +153,7 @@ uv run --extra examples python -m unittest \
   newton.tests.test_tendon_equilibrium
 ```
 
-Result: focused tendon capstan/equilibrium run passed 24 tests on CPU and CUDA.
+Result: focused tendon capstan/equilibrium run passed 26 tests on CPU and CUDA.
 
 Additional example regressions exercise the larger routed-cable scenes:
 

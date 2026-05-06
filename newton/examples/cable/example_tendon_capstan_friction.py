@@ -37,7 +37,13 @@ import newton
 import newton.examples
 from newton._src.sim.builder import Axis
 from newton._src.sim.tendon import TendonLinkType
-from newton.examples.cable.cable import assert_tendon_total_length, get_tendon_attachment_worlds, get_tendon_cable_lines
+from newton.examples.cable.cable import (
+    assert_tendon_total_length,
+    get_tendon_attachment_worlds,
+    get_tendon_cable_lines,
+)
+
+DYNAMIC_CAPSTAN_MUS = (0.0, 0.40, 10.0)
 
 
 class Example:
@@ -68,7 +74,7 @@ class Example:
             0.0,
             0.50,
         )
-        self.mus = [0.0, 1.0, 10.0]
+        self.mus = list(DYNAMIC_CAPSTAN_MUS)
         self.x_offsets = [-1.5, 0.0, 1.5]
 
         mass_light = 1.0
