@@ -192,23 +192,6 @@ def find_physx_mjwarp_mapping(mjwarp_joint_names, physx_joint_names):
 
 
 class Example:
-    @staticmethod
-    def create_parser():
-        parser = newton.examples.create_parser()
-        parser.add_argument(
-            "--robot",
-            type=str,
-            default="g1_29dof",
-            choices=list(ROBOT_CONFIGS.keys()),
-            help="Robot name to load",
-        )
-        parser.add_argument(
-            "--physx",
-            action="store_true",
-            help="Run physX policy instead of MJWarp.",
-        )
-        return parser
-
     def __init__(self, viewer, args):
         # Resolve robot configuration, asset paths, and joint mapping from args.
         # Done in __init__ (rather than at module level) so the example can be
@@ -452,6 +435,23 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > 0.0,
         )
+
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--robot",
+            type=str,
+            default="g1_29dof",
+            choices=list(ROBOT_CONFIGS.keys()),
+            help="Robot name to load",
+        )
+        parser.add_argument(
+            "--physx",
+            action="store_true",
+            help="Run physX policy instead of MJWarp.",
+        )
+        return parser
 
 
 if __name__ == "__main__":
