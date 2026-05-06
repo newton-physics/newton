@@ -896,9 +896,9 @@ class DelassusOperator:
         maxdims = get_max_constraints_per_world(model, limits, contacts)
 
         # Update the allocation meta-data the specified constraint dimensions
-        self._num_worlds = int(model.size.num_worlds)
-        self._world_dims = [int(d) for d in maxdims]
-        self._world_size = [d * d for d in self._world_dims]
+        self._num_worlds = model.size.num_worlds
+        self._world_dims = maxdims
+        self._world_size = [maxdims[i] * maxdims[i] for i in range(self._num_worlds)]
         self._model_maxdims = sum(self._world_dims)
         self._model_maxsize = sum(self._world_size)
         self._max_of_max_total_D_size = max(self._world_size) if self._world_size else 0
