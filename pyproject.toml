@@ -28,7 +28,7 @@ description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "warp-lang>=1.13.0rc1",
+    "warp-lang>=1.13.0",
 ]
 
 [project.optional-dependencies]
@@ -145,7 +145,7 @@ conflicts = [
 ]
 
 [tool.uv.sources]
-warp-lang = { index = "nvidia" }
+# warp-lang = { index = "nvidia" }
 torch = [
     { index = "pytorch-cu128", extra = "torch-cu12" },
     { index = "pytorch-cu130", extra = "torch-cu13" },
