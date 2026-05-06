@@ -14,7 +14,6 @@ from ...core import MAXVAL
 from ...geometry import Gaussian, GeoType, Mesh, ShapeFlags
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
-from ...utils.color import texture_color_space_to_id
 from .bvh import (
     compute_bvh_group_roots,
     compute_particle_bvh_bounds,
@@ -686,6 +685,8 @@ class RenderContext:
             load_textures: If ``True``, load image textures from disk;
                 otherwise assign ``-1`` texture IDs to all shapes.
         """
+        from ...utils.color import texture_color_space_to_id  # noqa: PLC0415
+
         self.__mesh_data = []
         self.__texture_data = []
 
