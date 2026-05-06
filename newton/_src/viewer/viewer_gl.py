@@ -492,6 +492,13 @@ class ViewerGL(ViewerBase):
         self._array_dirty.clear()
         self._clear_array_textures()
 
+        # Drop image-logger entries so example-switch removes any image
+        # windows the previous example opened, and a re-entry into the same
+        # example creates a fresh entry (re-triggering the auto-select that
+        # opens the window after the user manually closed it).
+        if getattr(self, "_image_logger", None) is not None:
+            self._image_logger.clear()
+
         super().clear_model()
 
     @override

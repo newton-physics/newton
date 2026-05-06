@@ -54,6 +54,7 @@ from .kinematics.resets import (
     reset_state_from_bodies_state,
     reset_state_to_model_default,
     reset_time,
+    set_joint_state_masked,
 )
 from .linalg import ConjugateResidualSolver, IterativeSolver, LinearSolverNameToType
 from .solvers.fk import ForwardKinematicsSolver
@@ -854,14 +855,20 @@ class SolverKaminoImpl(SolverBase):
         reset_body_net_wrenches(model=self._model, body_w=state_out.w_i, world_mask=world_mask)
         reset_joint_constraint_reactions(model=self._model, lambda_j=state_out.lambda_j, world_mask=world_mask)
 
-        # If joint targets were provided, copy them to the output state
+        # If joint targets were provided, write them to the output state. The mask-aware
+        # write ensures worlds outside `world_mask` keep their previous values (notably
+        # `q_j_p`, the TWOPI angle-correction reference).
         if with_joint_targets:
-            # Copy the joint states to the output state
-            wp.copy(state_out.q_j_p, joint_q)
-            wp.copy(state_out.q_j, joint_q)
-            if joint_u is not None:
-                wp.copy(state_out.dq_j, joint_u)
-        # Otherwise, extract the joint states from the actuators
+            set_joint_state_masked(
+                model=self._model,
+                world_mask=world_mask,
+                src_q=joint_q,
+                src_u=joint_u,
+                dst_q=state_out.q_j,
+                dst_q_p=state_out.q_j_p,
+                dst_dq=state_out.dq_j,
+            )
+        # Otherwise, extract the joint states from the actuators and synchronize `q_j_p`
         else:
             extract_joints_state_from_actuators(
                 model=self._model,
@@ -871,7 +878,15 @@ class SolverKaminoImpl(SolverBase):
                 joint_q=state_out.q_j,
                 joint_u=state_out.dq_j,
             )
-            wp.copy(state_out.q_j_p, state_out.q_j)
+            set_joint_state_masked(
+                model=self._model,
+                world_mask=world_mask,
+                src_q=state_out.q_j,
+                src_u=None,
+                dst_q=state_out.q_j,
+                dst_q_p=state_out.q_j_p,
+                dst_dq=None,
+            )
 
     def _reset_post_process(self, world_mask: wp.array | None = None):
         """

@@ -767,6 +767,11 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
+        # Snapshot pre-reset state to verify masked-out worlds are preserved
+        pre_reset_q_j = state_n.q_j.numpy().copy()
+        pre_reset_q_j_p = state_n.q_j_p.numpy().copy()
+        pre_reset_dq_j = state_n.dq_j.numpy().copy()
+
         # Reset selected worlds to the specified joint states
         solver.reset(
             state_out=state_n,
@@ -812,6 +817,23 @@ class TestSolverKaminoImpl(unittest.TestCase):
                     rtol=rtol,
                     atol=atol,
                     err_msg="\n`state_out.dq_j` does not match joint_u target\n",
+                )
+            else:
+                # Worlds outside the mask must keep their pre-reset values
+                np.testing.assert_array_equal(
+                    state_n.q_j.numpy()[coords_start : coords_start + num_world_coords],
+                    pre_reset_q_j[coords_start : coords_start + num_world_coords],
+                    err_msg="\n`state_out.q_j` was modified for an unmasked world\n",
+                )
+                np.testing.assert_array_equal(
+                    state_n.q_j_p.numpy()[coords_start : coords_start + num_world_coords],
+                    pre_reset_q_j_p[coords_start : coords_start + num_world_coords],
+                    err_msg="\n`state_out.q_j_p` was modified for an unmasked world\n",
+                )
+                np.testing.assert_array_equal(
+                    state_n.dq_j.numpy()[dofs_start : dofs_start + num_world_dofs],
+                    pre_reset_dq_j[dofs_start : dofs_start + num_world_dofs],
+                    err_msg="\n`state_out.dq_j` was modified for an unmasked world\n",
                 )
             coords_start += num_world_coords
             dofs_start += num_world_dofs
@@ -1010,6 +1032,11 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
+        # Snapshot pre-reset state to verify masked-out worlds are preserved
+        pre_reset_q_j = state_n.q_j.numpy().copy()
+        pre_reset_q_j_p = state_n.q_j_p.numpy().copy()
+        pre_reset_dq_j = state_n.dq_j.numpy().copy()
+
         # Reset all worlds to the specified joint states
         solver.reset(
             state_out=state_n,
@@ -1076,6 +1103,23 @@ class TestSolverKaminoImpl(unittest.TestCase):
                     rtol=rtol,
                     atol=atol,
                     err_msg="\n`state_out.dq_j` does not match joint_u target\n",
+                )
+            else:
+                # Worlds outside the mask must keep their pre-reset values
+                np.testing.assert_array_equal(
+                    state_n.q_j.numpy()[coords_start : coords_start + num_world_coords],
+                    pre_reset_q_j[coords_start : coords_start + num_world_coords],
+                    err_msg="\n`state_out.q_j` was modified for an unmasked world\n",
+                )
+                np.testing.assert_array_equal(
+                    state_n.q_j_p.numpy()[coords_start : coords_start + num_world_coords],
+                    pre_reset_q_j_p[coords_start : coords_start + num_world_coords],
+                    err_msg="\n`state_out.q_j_p` was modified for an unmasked world\n",
+                )
+                np.testing.assert_array_equal(
+                    state_n.dq_j.numpy()[dofs_start : dofs_start + num_world_dofs],
+                    pre_reset_dq_j[dofs_start : dofs_start + num_world_dofs],
+                    err_msg="\n`state_out.dq_j` was modified for an unmasked world\n",
                 )
             coords_start += num_world_coords
             dofs_start += num_world_dofs

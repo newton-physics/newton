@@ -3972,6 +3972,324 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         n_stale = int((efc_address[inactive] >= 0).sum())
         self.assertEqual(n_stale, 0, f"{n_stale}/{inactive.sum()} inactive contacts have stale efc_address")
 
+    def test_notify_body_inertial_invalidates_contact_fast_path(self):
+        """notify_model_changed(BODY_INERTIAL_PROPERTIES) must invalidate the
+        cached contact conversion fast path.
+
+        Regression: ``set_const_fixed`` recomputes MuJoCo constants that feed
+        into the cached MJWarp contact fields written by the fast path.  If the
+        fast path is not invalidated, subsequent substeps reuse stale ``cid``
+        and field values, which previously produced an illegal-memory-access
+        when the underlying ``mjw_data`` contact arrays had been reallocated
+        (observed in IsaacLab dexsuite training).
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.18), wp.quat_identity()))
+        builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        contacts = model.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        # Run one full substep so the fast path becomes "armed" (i.e. the next
+        # substep would normally take the fast path).
+        state_in.clear_forces()
+        model.collide(state_in, contacts)
+        solver.step(state_in, state_out, control, contacts, 0.002)
+        state_in, state_out = state_out, state_in
+
+        last_gen_before = int(solver._last_contact_generation.numpy()[0])
+        self.assertNotEqual(
+            last_gen_before,
+            -1,
+            "Fast path should be armed after one full substep (last_contact_generation != sentinel).",
+        )
+
+        # Notify body inertial properties — this must invalidate the fast path.
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        last_gen_after = int(solver._last_contact_generation.numpy()[0])
+        self.assertEqual(
+            last_gen_after,
+            -1,
+            "BODY_INERTIAL_PROPERTIES notify must invalidate the contact fast path.",
+        )
+
+        # Verify the next step still runs cleanly through the full path.
+        state_in.clear_forces()
+        model.collide(state_in, contacts)
+        solver.step(state_in, state_out, control, contacts, 0.002)
+        wp.synchronize()  # force surfacing any async device errors
+
+    def test_contacts_instance_swap_invalidates_fast_path(self):
+        """Swapping the bound :class:`Contacts` instance must invalidate the
+        cached fast path so cached ``cid`` values aren't reused against a
+        different output buffer.
+
+        The cache is keyed on ``id(contacts.contact_generation)`` (the inner
+        per-Contacts device array) rather than ``id(contacts)`` itself, so
+        this test asserts the inner-array id is what gets tracked.
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.18), wp.quat_identity()))
+        builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        contacts_a = model.contacts()
+        contacts_b = model.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        state_in.clear_forces()
+        model.collide(state_in, contacts_a)
+        solver.step(state_in, state_out, control, contacts_a, 0.002)
+        state_in, state_out = state_out, state_in
+
+        cached_id = solver._last_contacts_id
+        self.assertEqual(cached_id, id(contacts_a.contact_generation))
+
+        # Swap to a different Contacts instance — solver must notice and rebuild
+        # the fast-path cache rather than reusing stale tid_to_cid mappings.
+        state_in.clear_forces()
+        model.collide(state_in, contacts_b)
+        solver.step(state_in, state_out, control, contacts_b, 0.002)
+        wp.synchronize()
+
+        self.assertEqual(solver._last_contacts_id, id(contacts_b.contact_generation))
+        self.assertNotEqual(
+            cached_id,
+            id(contacts_b.contact_generation),
+            "_last_contacts_id should track the bound Contacts object's contact_generation array",
+        )
+
+    def test_fast_path_buffers_eagerly_allocated(self):
+        """The fast-path tracking buffers must be allocated in ``__init__``,
+        not lazily inside :meth:`_convert_contacts_to_mjwarp`.
+
+        Regression (PR #2678 bisect, "Fix 2"): lazy ``wp.full(...)`` allocation
+        on the first step often runs while a CUDA graph is being captured.  The
+        resulting buffers can have a tangled lifetime, and
+        :meth:`_invalidate_contact_fast_path` — which is called from outside
+        the captured graph (e.g. from :meth:`notify_model_changed`) — would
+        then touch stale captured memory and raise CUDA error 700 (illegal
+        memory access).  Eager pre-allocation in ``__init__`` is the fix.
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.18), wp.quat_identity()))
+        builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        # Buffers must exist as Warp arrays on the model's device immediately
+        # after construction — before any solver.step() call has run.
+        self.assertIsNotNone(
+            solver._last_contact_generation,
+            "_last_contact_generation must be eagerly pre-allocated in __init__",
+        )
+        self.assertIsNotNone(
+            solver._last_nacon_count,
+            "_last_nacon_count must be eagerly pre-allocated in __init__",
+        )
+        self.assertIsInstance(solver._last_contact_generation, wp.array)
+        self.assertIsInstance(solver._last_nacon_count, wp.array)
+        self.assertEqual(solver._last_contact_generation.dtype, wp.int32)
+        self.assertEqual(solver._last_nacon_count.dtype, wp.int32)
+        self.assertEqual(solver._last_contact_generation.shape, (1,))
+        self.assertEqual(solver._last_nacon_count.shape, (1,))
+        self.assertEqual(solver._last_contact_generation.device, model.device)
+        self.assertEqual(solver._last_nacon_count.device, model.device)
+
+        # Calling _invalidate_contact_fast_path() before any step must succeed
+        # cleanly — this is the exact path that previously hit stale captured
+        # memory when the buffers were still None / lazily allocated.
+        solver._invalidate_contact_fast_path()
+        self.assertEqual(int(solver._last_contact_generation.numpy()[0]), -1)
+        self.assertEqual(int(solver._last_nacon_count.numpy()[0]), 0)
+
+        # And again immediately after a notify before any step — the CUDA 700
+        # repro path from the bug report.
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+        wp.synchronize()  # surface any async device errors
+
+    def test_ephemeral_contacts_wrapper_keeps_fast_path_armed(self):
+        """A new ``Contacts`` wrapper that shares the same underlying
+        ``contact_generation`` array must NOT invalidate the fast path.
+
+        Regression (PR #2678 bisect, "Fix 1"): keying the cache on
+        ``id(contacts)`` (the outer wrapper) over-invalidates in dexsuite /
+        IsaacLab batched workflows where a fresh ``Contacts`` wrapper is
+        constructed per substep around persistent device buffers.  Every step
+        was forced to take the full path, and combined with the contact-count
+        accumulation across forced full passes this drove the simulation to
+        NaN within ~218 iterations.  The cache must instead be keyed on
+        ``id(contacts.contact_generation)`` — the inner Warp array's identity,
+        which survives wrapper recreation.
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.18), wp.quat_identity()))
+        builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        contacts_a = model.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        # Arm the fast path.
+        state_in.clear_forces()
+        model.collide(state_in, contacts_a)
+        solver.step(state_in, state_out, control, contacts_a, 0.002)
+        state_in, state_out = state_out, state_in
+
+        cached_gen_id = solver._last_contacts_id
+        self.assertEqual(cached_gen_id, id(contacts_a.contact_generation))
+
+        # Build an ephemeral wrapper that aliases the same device arrays as
+        # ``contacts_a`` (in particular the same ``contact_generation``
+        # Warp array).  This mimics the dexsuite/IsaacLab pattern where a
+        # fresh Contacts wrapper is materialised each substep around a pool
+        # of persistent device buffers.
+        class _AliasedContacts:
+            pass
+
+        contacts_alias = _AliasedContacts()
+        for attr in (
+            "contact_counters",
+            "rigid_contact_count",
+            "contact_generation",
+            "rigid_contact_max",
+            "soft_contact_max",
+            "rigid_contact_shape0",
+            "rigid_contact_shape1",
+            "rigid_contact_point0",
+            "rigid_contact_point1",
+            "rigid_contact_normal",
+            "rigid_contact_margin0",
+            "rigid_contact_margin1",
+            "rigid_contact_stiffness",
+            "rigid_contact_damping",
+            "rigid_contact_friction",
+        ):
+            setattr(contacts_alias, attr, getattr(contacts_a, attr))
+
+        # Sanity: the two wrappers are distinct objects but share the same
+        # contact_generation array — the precise dexsuite scenario.
+        self.assertNotEqual(id(contacts_a), id(contacts_alias))
+        self.assertEqual(id(contacts_a.contact_generation), id(contacts_alias.contact_generation))
+
+        # Step with the new wrapper.  The cache must NOT be invalidated, since
+        # the underlying contact data is identical.
+        state_in.clear_forces()
+        model.collide(state_in, contacts_a)  # populate via the original handle
+        solver.step(state_in, state_out, control, contacts_alias, 0.002)
+        wp.synchronize()
+
+        self.assertEqual(
+            solver._last_contacts_id,
+            cached_gen_id,
+            "Cache key must be id(contacts.contact_generation), not id(contacts) — "
+            "an ephemeral wrapper around the same underlying buffers should not "
+            "invalidate the fast path (dexsuite over-invalidation regression).",
+        )
+
+    def test_isaaclab_mass_randomization_loop(self):
+        """End-to-end reproduction of the IsaacLab mass-randomization workflow.
+
+        Mirrors the minimal repro from PR #2678: arm the fast path, then
+        repeatedly interleave ``notify_model_changed(BODY_INERTIAL_PROPERTIES)``
+        (which IsaacLab's ``randomize_rigid_body_mass`` event hook triggers)
+        with substeps and force a D2H sync each time.  Without the fixes this
+        loop crashes with ``RuntimeError: Warp copy error: ... an illegal
+        memory access was encountered`` inside ``set_const_fixed`` ->
+        ``body_gravcomp.numpy()``.
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.add_ground_plane()
+        body_idx = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.18), wp.quat_identity()))
+        builder.add_shape_box(body_idx, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=200, nconmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        contacts = model.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        # Pull the body mass into NumPy so we can perturb and write it back.
+        body_mass_np = model.body_mass.numpy().copy()
+        body_inv_mass_np = model.body_inv_mass.numpy().copy()
+        rng = np.random.default_rng(seed=2026)
+
+        num_outer = 8  # randomization events
+        substeps_per_outer = 5  # substeps between each randomization
+        for outer in range(num_outer):
+            for _ in range(substeps_per_outer):
+                state_in.clear_forces()
+                model.collide(state_in, contacts)
+                solver.step(state_in, state_out, control, contacts, 0.002)
+                state_in, state_out = state_out, state_in
+
+            # IsaacLab-style mass randomization: jitter the body's mass and
+            # notify the solver, which triggers set_const_fixed and reallocates
+            # MJWarp contact buffers.  This is the exact crash trigger from the
+            # bug report.
+            scale = float(rng.uniform(0.7, 1.3))
+            new_mass = body_mass_np[body_idx] * scale
+            model.body_mass.assign(np.array([new_mass if i == body_idx else m for i, m in enumerate(body_mass_np)]))
+            model.body_inv_mass.assign(
+                np.array([1.0 / new_mass if i == body_idx else inv for i, inv in enumerate(body_inv_mass_np)])
+            )
+            solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+            # Force a D2H sync — this is where the CUDA 700 surfaced in the
+            # bug report (set_const_fixed -> body_gravcomp.numpy()).  Reading
+            # any field that requires a copy out is sufficient to trigger it.
+            _ = solver.mjw_data.nacon.numpy()
+            wp.synchronize()
+
+            # The simulation must remain stable: no NaNs in body pose.
+            body_q = state_in.body_q.numpy()
+            self.assertTrue(
+                np.all(np.isfinite(body_q)),
+                f"NaN/Inf in body_q after randomization round {outer}: {body_q}",
+            )
+
 
 class TestFrictionPriority(unittest.TestCase):
     """Verify that contact friction respects geom priority.

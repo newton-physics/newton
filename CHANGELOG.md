@@ -50,6 +50,7 @@
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
 - Adjust grouping of `reset`, `step`, and `pause` controls so they appear together
 - Bump `Pillow` floor to `>=11.3.0`
+- Bump `jupyterlab` lower bound to `>=4.5.7` to pick up the fix for CVE-2026-40171
 - Replace `ModelBuilder.add_actuator(actuator_class, input_indices=..., output_indices=..., **kwargs)` with `ModelBuilder.add_actuator(controller_class, index=..., clamping=[...], delay_steps=..., pos_index=..., **ctrl_kwargs)` where each call registers a single DOF
 - Change `ArticulationView.get_actuator_parameter(actuator, name)` and `set_actuator_parameter(actuator, name, values)` to require a `component` argument identifying the owning `Controller`, `Clamping`, or `Delay` instance: `get_actuator_parameter(actuator, actuator.controller, "kp")`
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
@@ -59,6 +60,7 @@
 - Bump `GitPython` lower bound to `>=3.1.47` to pick up the fix for GHSA-x2qx-6953-8485 (`multi_options` argument injection in `Repo.clone_from`)
 - Bump `open3d` floor to `>=0.19.0`
 - Bump `meshio` floor to `>=5.3.5`; `5.3.0` calls `np.string_` which was removed in NumPy 2.0
+- Restrict `usd-core` to `<26.5` to avoid deprecation warnings introduced in 26.5
 - Require explicit `SensorTiledCamera` BVH lifecycle management instead of implicit camera maintenance: call `newton.geometry.build_bvh_shape()` / `build_bvh_particle()` once after setup, then `refit_bvh_shape()` / `refit_bvh_particle()` before rendering frames that change geometry
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
@@ -79,6 +81,7 @@
 
 - Fix `remesh_convex_hull` raising `QhullError` on degenerate (coincident, collinear, or coplanar) point clouds; it now returns a zero-volume fallback mesh with a `UserWarning`, raises `ValueError` on empty input, and retries Qhull with `QJ` joggle as a last resort on the 3D path
 - Fix `ViewerGL` Step button remaining clickable while the simulation is running; the button is now greyed out when not paused
+- Fix the example viewer's Reset button discarding user-provided CLI options (e.g. `--world-count`) and rebuilding the example with parser defaults instead
 - Fix `ModelBuilder.finalize()` crashing with 3+ articulations after `collapse_fixed_joints()` reordered `articulation_start` and dropped per-articulation metadata
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration
 - Fix `SolverStyle3D` initialization to precompute its fixed PD matrix from the finalized model
@@ -86,14 +89,19 @@
 - Fix joint-synthesized CONNECT constraint anchors not updating when `dof_ref` or `joint_X_p` changes at runtime via `notify_model_changed()`
 - Fix WELD constraint data corruption when a model contains both FIXED and revolute/ball loop joints
 - Fix `SolverMuJoCo` passing non-zero geom/pair margins to `mujoco_warp.put_model()`, which fails when NATIVECCD is enabled. Margins are forced to zero when MuJoCo handles collisions (`use_mujoco_contacts=True`); the Newton collision pipeline (`use_mujoco_contacts=False`) is unchanged
+- Fix GPU illegal-memory-access in `SolverMuJoCo` Newton-contacts fast path when `notify_model_changed(BODY_INERTIAL_PROPERTIES | JOINT_DOF_PROPERTIES | MODEL_PROPERTIES)` was called between substeps (e.g. mass randomization in IsaacLab), or when the bound `Contacts` instance / MJWarp `naconmax` changed without invalidating the cached `tid_to_cid` mapping. The fast path is now invalidated on any property notify that affects cached MJWarp contact fields, and bounds-checks `cid` against `naconmax` defensively
 - Fix `State.assign` not copying namespaced extended and custom state attributes 
 - Fix mesh-convex back-face contacts generating inverted normals that trap shapes inside meshes and cause solver divergence (NaN)
 - Fix finite plane geometry 2x too large in collision, bounding sphere, and raytrace sensor
 - Fix MPR convergence failure on large and extreme-aspect-ratio mesh triangles by projecting the starting point onto the triangle nearest the convex center
 - Fix O(W²·S²) memory explosion in `CollisionPipeline` shape-pair buffer allocation for NXN and SAP broad phase modes by computing per-world pair counts instead of a global N²
 - Fix `SensorRaycast` ignoring `PLANE` geometry
+- Fix VRAM leak when resetting examples that allocate large GPU state (e.g. `diffsim_bear`)
 - Fix `SensorRaycast` and viewer picking ignoring `HFIELD` (heightfield) geometry
 - Fix `SensorTiledCamera` textured albedo output rendering flat colors when color and normal outputs are disabled
+- Fix `contacts_rj45_plug` example crashing on reset
+- Fix `SolverMuJoCo` dependency version-mismatch warning being silently skipped when Newton is installed from a wheel
+- Fix `ViewerGL.log_image()` windows persisting across example-browser switches and failing to re-open on re-entry after manual close, by clearing the image logger in `ViewerGL.clear_model()`
 - Fix `ModelBuilder.add_shape_heightfield` `scale` being ignored by narrow-phase collision and raycast
 - Fix `collision_filter_parent` silently ignored on joints to world (`parent=-1`); now honored for all `add_joint_*` methods, with `add_joint_fixed(parent=-1, ...)` defaulting to filter child shapes against world-static shapes
 - Fix multi-world `qfrc_actuator` conversion using the wrong body center of mass for worlds with `worldid > 0`
@@ -109,6 +117,8 @@
 - Fix MJCF importer in `compiler.angle="degree"` mode: (1) stop multiplying joint `damping`/`stiffness` by `180/π` (MuJoCo stores these in `N·m·s/rad` and `N·m/rad` regardless of `angle`); (2) stop `deg2rad`-scaling the default `±MAXVAL` sentinel for joints without an explicit `range=`, which was turning unlimited hinges into bounded joints with `~1.75e8 rad` range
 - Fix MJCF importer ignoring explicit `mass=` on visual geoms loaded via `parse_visuals=True`; authored visual-only mass now contributes to body mass and inertia like visual-only density already does
 - Fix ViewerViser mesh popping artifacts caused by viser's automatic LOD simplification creating holes in complex geometry
+- Fix ViewerViser notebook recording playback to load the matching browser client from the installed `viser` package and bind the playback HTTP server to loopback only
+- Fix rendering of planes in ViewerViser as finite grids of line segments to prevent flickering artifacts
 - Fix degenerate zero-area triangles in SDF marching-cubes isosurface extraction by clamping edge interpolation away from cube corners and guarding against near-zero cross products
 - Fix multi-world coordinate conversion using the wrong body center of mass for replicated worlds
 - Fix MJCF importer ignoring `<default><equality/></default>` attribute defaults (e.g. `solref`, `solimp`) for `<connect>`/`<weld>`/`<joint>` equality constraints
@@ -117,6 +127,7 @@
 - Fix material-combination inconsistency in the Newton-to-`mujoco-warp` contact converter so combined friction / solref / solimp values match native MuJoCo
 - Fix `eq_objtype` mismatch for joint equality and mimic constraints in `SolverMuJoCo` so compiled models match native MuJoCo XML behavior
 - Fix implicit-MPM rheology solver launch-dim handling under `warp-lang` 1.13's templated `launch_bounds` (formerly produced out-of-bounds reads)
+- Fix `SolverKamino.reset` clobbering `q_j_p`, `q_j`, and `dq_j` for worlds outside `world_mask` when `joint_q`/`joint_u` targets were provided. The previous unmasked writes broke TWOPI revolute-joint angle unwrapping after partial-mask resets.
 
 ## [1.1.0] - 2026-04-13
 

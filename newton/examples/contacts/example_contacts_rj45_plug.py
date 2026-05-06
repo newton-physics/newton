@@ -220,7 +220,7 @@ def _load_cable_centerline(stage) -> tuple[wp.vec3, ...]:
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -384,6 +384,7 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
+            rigid_contact_hard=False,
             rigid_body_contact_buffer_size=256,
         )
         for j in range(self.model.joint_count):
@@ -514,5 +515,4 @@ class Example:
 
 if __name__ == "__main__":
     viewer, args = newton.examples.init()
-    example = Example(viewer)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)
