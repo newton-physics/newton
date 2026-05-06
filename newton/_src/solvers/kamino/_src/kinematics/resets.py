@@ -213,7 +213,7 @@ def _reset_joint_state_of_select_worlds(
 @wp.kernel
 def _set_joint_state_of_select_worlds(
     # Inputs:
-    write_velocities: int32,
+    write_velocities: bool,
     world_mask: wp.array[int32],
     model_joint_wid: wp.array[int32],
     model_joint_coords_offset: wp.array[int32],
@@ -244,7 +244,7 @@ def _set_joint_state_of_select_worlds(
         dst_q_p[coords_offset + j] = v
 
     # Optionally write the joint's DoF velocities
-    if write_velocities != 0:
+    if write_velocities:
         dofs_offset = model_joint_dofs_offset[jid]
         num_dofs = model_joint_dofs_offset[jid + 1] - dofs_offset
         for j in range(num_dofs):
@@ -585,7 +585,7 @@ def set_joint_state_masked(
     either is ``None``, the velocity write is skipped and ``src_q`` / ``dst_q`` are
     passed as placeholders to satisfy the kernel signature.
     """
-    write_velocities = wp.int32(1) if (src_u is not None and dst_dq is not None) else wp.int32(0)
+    write_velocities = src_u is not None and dst_dq is not None
     _src_u = src_u if src_u is not None else src_q
     _dst_dq = dst_dq if dst_dq is not None else dst_q
     wp.launch(
