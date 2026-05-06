@@ -22,9 +22,9 @@ def _srgb_packed_rgba_to_linear(packed: int) -> int:
     b = (packed >> 16) & 0xFF
     a = (packed >> 24) & 0xFF
     linear = color_srgb_to_linear((r / 255.0, g / 255.0, b / 255.0))
-    lr = min(max(round(linear[0] * 255.0), 0), 255)
-    lg = min(max(round(linear[1] * 255.0), 0), 255)
-    lb = min(max(round(linear[2] * 255.0), 0), 255)
+    lr = min(max(int(linear[0] * 255.0), 0), 255)
+    lg = min(max(int(linear[1] * 255.0), 0), 255)
+    lb = min(max(int(linear[2] * 255.0), 0), 255)
     return (a << 24) | (lb << 16) | (lg << 8) | lr
 
 

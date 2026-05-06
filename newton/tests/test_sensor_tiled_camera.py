@@ -67,7 +67,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         expected = {
             newton.utils.ColorSpace.SRGB: np.array([102, 102, 102, 255], dtype=np.uint8),
-            newton.utils.ColorSpace.LINEAR: np.array([34, 34, 34, 255], dtype=np.uint8),
+            newton.utils.ColorSpace.LINEAR: np.array([33, 33, 33, 255], dtype=np.uint8),
         }
 
         for output_color_space, expected_rgba in expected.items():
