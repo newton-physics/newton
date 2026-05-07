@@ -354,11 +354,17 @@ def convert_newton_contacts_to_mjwarp_kernel(
         offset_a = rigid_contact_offset0[tid] * offset_scale_a
         offset_b = rigid_contact_offset1[tid] * offset_scale_b
 
+        bx_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid])
+        bx_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid])
         point_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid] + offset_a)
         point_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid] + offset_b)
 
+        radius_eff = (rigid_contact_margin0[tid] - shape_margin[shape_a]) + (
+            rigid_contact_margin1[tid] - shape_margin[shape_b]
+        )
+
         n = rigid_contact_normal[tid]
-        dist = wp.dot(n, point_b - point_a)
+        dist = wp.dot(n, bx_b - bx_a) - radius_eff
         pos = 0.5 * (point_a + point_b)
 
         frame = make_frame(n)
@@ -486,11 +492,17 @@ def convert_newton_contacts_to_mjwarp_kernel(
         offset_a = rigid_contact_offset0[tid] * offset_scale_a
         offset_b = rigid_contact_offset1[tid] * offset_scale_b
 
+        bx_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid])
+        bx_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid])
         point_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid] + offset_a)
         point_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid] + offset_b)
 
+        radius_eff = (rigid_contact_margin0[tid] - shape_margin[shape_a]) + (
+            rigid_contact_margin1[tid] - shape_margin[shape_b]
+        )
+
         n = rigid_contact_normal[tid]
-        contact_dist_out[cid] = wp.dot(n, point_b - point_a)
+        contact_dist_out[cid] = wp.dot(n, bx_b - bx_a) - radius_eff
         contact_pos_out[cid] = 0.5 * (point_a + point_b)
 
         for i in range(contact_efc_address_out.shape[1]):
