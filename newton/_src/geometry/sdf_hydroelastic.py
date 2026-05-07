@@ -50,6 +50,7 @@ from .contact_reduction_global import (
     make_contact_key,
 )
 from .contact_reduction_hydroelastic import (
+    EPS_SMALL,
     HydroelasticContactReduction,
     HydroelasticReductionConfig,
     export_hydroelastic_contact_to_buffer,
@@ -101,6 +102,32 @@ def get_effective_stiffness(k_a: wp.float32, k_b: wp.float32) -> wp.float32:
     if denom <= 0.0:
         return 0.0
     return (k_a * k_b) / denom
+
+
+@wp.struct
+class LinearPressureData:
+    """Default pressure-callback state: a per-shape stiffness array.
+
+    Backs the linear hydroelastic law ``pressure = -kh * signed_depth``
+    used by :func:`linear_pressure`.
+    """
+
+    shape_kh: wp.array[wp.float32]
+    """Per-shape stiffness coefficient (typically ``Model.shape_material_kh``)."""
+
+
+@wp.func
+def linear_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: LinearPressureData) -> wp.float32:
+    """Default linear pressure law ``pressure = -kh * signed_depth``.
+
+    Defined for any ``signed_depth`` so the iso-pressure surface evaluation
+    stays continuous across the patch boundary. Returns a non-negative value
+    when penetrating (``signed_depth < 0``) and a non-positive extrapolation
+    otherwise; only the difference of pressures across shapes drives the
+    marching-cubes interpolation, so the extrapolation just needs to be
+    monotone non-increasing in ``signed_depth``.
+    """
+    return -data.shape_kh[shape_idx] * signed_depth
 
 
 @wp.func
@@ -271,6 +298,34 @@ class HydroelasticSDF:
         Only active when reduce_contacts is True."""
         margin_contact_area: float = 1e-2
         """Contact area used for non-penetrating contacts at the margin."""
+        pressure_func: Any = None
+        """Optional Warp function defining ``pressure = f(signed_depth, shape_idx, data)``.
+
+        The contact surface is the locus where ``pressure_a == pressure_b``.
+        Signature:
+
+        .. code-block:: python
+
+            @wp.func
+            def my_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: MyData) -> wp.float32:
+                ...
+
+        Invoked at every sampled point — including non-penetrating ones
+        (``signed_depth >= 0``) — by both the iso-voxel pruning kernel
+        (:func:`count_iso_voxels_block`) and the marching-cubes corner
+        evaluation (:func:`mc_iterate_voxel_vertices`). The callback must
+        therefore be defined and monotone non-increasing in ``signed_depth``
+        over its full domain; returning NaN or undefined values for
+        ``signed_depth >= 0`` will corrupt the prune intervals and the
+        marching-cubes interpolation that locates the iso-pressure surface.
+        When ``None`` the default :func:`linear_pressure` is used.
+        """
+        pressure_data: Any = None
+        """Optional ``wp.struct`` instance carrying state for :attr:`pressure_func`.
+
+        When ``None`` a default :class:`LinearPressureData` containing
+        ``Model.shape_material_kh`` is constructed automatically.
+        """
 
     @dataclass
     class ContactSurfaceData:
@@ -400,9 +455,29 @@ class HydroelasticSDF:
             # no wp.empty() call occurs during CUDA graph capture (#1616).
             self._shape_sdf_data = wp.empty(n_shapes, dtype=TextureSDFData, device=device)
 
+            # Resolve the pressure callback. Defaults to the linear hydroelastic
+            # law backed by ``shape_material_kh`` so behavior is unchanged when
+            # the user does not supply one. ``pressure_func`` and
+            # ``pressure_data`` must be supplied together; supplying only one
+            # is a configuration error rather than silently dropped.
+            if self.config.pressure_func is None:
+                if self.config.pressure_data is not None:
+                    raise ValueError("HydroelasticSDF.Config.pressure_func must be provided when pressure_data is set.")
+                self.pressure_func = linear_pressure
+                self.pressure_data = LinearPressureData()
+                self.pressure_data.shape_kh = shape_material_kh
+            else:
+                if self.config.pressure_data is None:
+                    raise ValueError("HydroelasticSDF.Config.pressure_data must be provided when pressure_func is set.")
+                self.pressure_func = self.config.pressure_func
+                self.pressure_data = self.config.pressure_data
+
+            self.count_iso_voxels_block_kernel = create_count_iso_voxels_block_kernel(self.pressure_func)
+
             self.generate_contacts_kernel = get_generate_contacts_kernel(
                 output_vertices=self.config.output_contact_surface,
                 pre_prune=self.config.reduce_contacts and self.config.pre_prune_contacts,
+                pressure_func=self.pressure_func,
             )
 
             if self.config.reduce_contacts:
@@ -419,6 +494,8 @@ class HydroelasticSDF:
                     device=device,
                     writer_func=writer_func,
                     config=reduction_config,
+                    pressure_func=self.pressure_func,
+                    pressure_data=self.pressure_data,
                 )
                 self.decode_contacts_kernel = None
             else:
@@ -428,10 +505,13 @@ class HydroelasticSDF:
                     device=device,
                     writer_func=writer_func,
                     config=HydroelasticReductionConfig(margin_contact_area=self.config.margin_contact_area),
+                    pressure_func=self.pressure_func,
+                    pressure_data=self.pressure_data,
                 )
                 self.decode_contacts_kernel = get_decode_contacts_kernel(
                     self.config.margin_contact_area,
                     writer_func,
+                    self.pressure_func,
                 )
 
         self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
@@ -724,14 +804,14 @@ class HydroelasticSDF:
         # The check is first performed for subblocks of size (8 x 8 x 8), then (4 x 4 x 4), then (2 x 2 x 2), and finally for each voxel.
         for i, (subblock_size, n_blocks) in enumerate([(8, 1), (4, 2), (2, 2), (1, 2)]):
             wp.launch(
-                kernel=count_iso_voxels_block,
+                kernel=self.count_iso_voxels_block_kernel,
                 dim=[self.grid_size],
                 inputs=[
                     self.grid_size,
                     self.iso_buffer_counts[i],
                     shape_sdf_data,
                     shape_transform,
-                    self.shape_material_kh,
+                    self.pressure_data,
                     self.iso_buffer_coords[i],
                     self.iso_buffer_shape_pairs[i],
                     shape_gap,
@@ -811,6 +891,7 @@ class HydroelasticSDF:
                 shape_sdf_data,
                 shape_transform,
                 self.shape_material_kh,
+                self.pressure_data,
                 self.iso_voxel_coords,
                 self.iso_voxel_shape_pair,
                 self.mc_tables[0],
@@ -856,6 +937,7 @@ class HydroelasticSDF:
                 self.contact_reduction.reducer.normal,
                 self.contact_reduction.reducer.shape_pairs,
                 self.contact_reduction.reducer.contact_area,
+                self.pressure_data,
                 self.max_num_face_contacts,
             ],
             outputs=[writer_data],
@@ -1027,153 +1109,102 @@ def decode_coords_8(bit_pos: wp.uint8) -> wp.vec3ub:
     )
 
 
-@wp.func
-def get_rel_stiffness(k_a: wp.float32, k_b: wp.float32) -> tuple[wp.float32, wp.float32]:
-    k_m_inv = 1.0 / wp.sqrt(k_a * k_b)
-    return k_a * k_m_inv, k_b * k_m_inv
+def create_count_iso_voxels_block_kernel(pressure_func: Any):
+    """Factory specializing :func:`count_iso_voxels_block` to a pressure callback.
 
-
-@wp.func
-def sdf_diff_sdf(
-    sdfA_data: TextureSDFData,
-    sdfB_data: TextureSDFData,
-    transfA: wp.transform,
-    transfB: wp.transform,
-    k_eff_a: wp.float32,
-    k_eff_b: wp.float32,
-    x_id: wp.int32,
-    y_id: wp.int32,
-    z_id: wp.int32,
-) -> tuple[wp.float32, wp.float32, wp.float32, wp.bool]:
-    """Compute signed distance difference between two SDFs at a voxel position.
-
-    SDF A is queried via texture SDF using voxel coordinates converted to local space.
-    SDF B is queried via texture SDF after transforming through world space.
+    The subblock prune uses interval arithmetic on the user-supplied
+    ``pressure_func`` to bound how much ``p_a - p_b`` can change across a
+    subblock of radius ``r``. Each SDF is 1-Lipschitz in space so ``phi`` lies
+    in ``[phi_c - r, phi_c + r]``; assuming ``pressure_func`` is monotone
+    non-increasing in ``signed_depth`` (deeper penetration => higher pressure),
+    the per-shape pressure interval is ``[p(phi_c + r), p(phi_c - r)]``. We
+    skip subblocks where these intervals can't overlap.
     """
-    local_pos_a = sdfA_data.sdf_box_lower + wp.cw_mul(
-        wp.vec3(float(x_id), float(y_id), float(z_id)), sdfA_data.voxel_size
-    )
-    pointA_world = wp.transform_point(transfA, local_pos_a)
-    pointB = wp.transform_point(wp.transform_inverse(transfB), pointA_world)
-    valA = texture_sample_sdf_at_voxel(sdfA_data, x_id, y_id, z_id)
-    valB = texture_sample_sdf(sdfB_data, pointB)
 
-    is_valid = not (wp.isnan(valA) or wp.isnan(valB))
+    @wp.kernel(enable_backward=False)
+    def count_iso_voxels_block(
+        grid_size: int,
+        in_buffer_collide_count: wp.array[int],
+        shape_sdf_data: wp.array[TextureSDFData],
+        shape_transform: wp.array[wp.transform],
+        pressure_data: Any,
+        in_buffer_collide_coords: wp.array[wp.vec3us],
+        in_buffer_collide_shape_pair: wp.array[wp.vec2i],
+        shape_gap: wp.array[wp.float32],
+        subblock_size: int,
+        n_blocks: int,
+        max_input_buffer_size: int,
+        # outputs
+        iso_subblock_counts: wp.array[wp.int32],
+        iso_subblock_idx: wp.array[wp.uint8],
+    ):
+        # checks if the isosurface between shapes a and b lies inside the subblock (iterating over subblocks of b).
+        # if so, write the subblock coordinates to the output.
+        offset = wp.tid()
+        num_items = wp.min(in_buffer_collide_count[0], max_input_buffer_size)
+        for tid in range(offset, num_items, grid_size):
+            pair = in_buffer_collide_shape_pair[tid]
+            shape_a = pair[0]
+            shape_b = pair[1]
 
-    if valA < 0 and valB < 0:
-        diff = k_eff_a * valA - k_eff_b * valB
-    else:
-        diff = valA - valB
-    return diff, valA, valB, is_valid
+            sdf_data_a = shape_sdf_data[shape_a]
+            sdf_data_b = shape_sdf_data[shape_b]
 
+            X_ws_a = shape_transform[shape_a]
+            X_ws_b = shape_transform[shape_b]
 
-@wp.func
-def sdf_diff_sdf(
-    sdfA_data: TextureSDFData,
-    sdfB_data: TextureSDFData,
-    transfA: wp.transform,
-    transfB: wp.transform,
-    k_eff_a: wp.float32,
-    k_eff_b: wp.float32,
-    pos_a_local: wp.vec3,
-) -> tuple[wp.float32, wp.float32, wp.float32, wp.bool]:
-    """Compute signed distance difference between two SDFs at a local position.
+            gap_a = shape_gap[shape_a]
+            gap_b = shape_gap[shape_b]
 
-    SDF A is queried via texture SDF using fractional voxel coordinates converted to local space.
-    SDF B is queried via texture SDF after transforming through world space.
-    """
-    local_pos_a = sdfA_data.sdf_box_lower + wp.cw_mul(pos_a_local, sdfA_data.voxel_size)
-    pointA_world = wp.transform_point(transfA, local_pos_a)
-    pointB = wp.transform_point(wp.transform_inverse(transfB), pointA_world)
-    valA = texture_sample_sdf(sdfA_data, local_pos_a)
-    valB = texture_sample_sdf(sdfB_data, pointB)
+            voxel_radius = sdf_data_b.voxel_radius
+            r = float(subblock_size) * voxel_radius
 
-    is_valid = not (wp.isnan(valA) or wp.isnan(valB))
+            # get global voxel coordinates
+            bc = in_buffer_collide_coords[tid]
 
-    if valA < 0 and valB < 0:
-        diff = k_eff_a * valA - k_eff_b * valB
-    else:
-        diff = valA - valB
-    return diff, valA, valB, is_valid
+            X_b_to_a = wp.transform_multiply(wp.transform_inverse(X_ws_a), X_ws_b)
 
+            num_iso_subblocks = wp.int32(0)
+            subblock_idx = wp.uint8(0)
+            for x_local in range(n_blocks):
+                for y_local in range(n_blocks):
+                    for z_local in range(n_blocks):
+                        x_global = wp.vec3i(bc) + wp.vec3i(x_local, y_local, z_local) * subblock_size
 
-@wp.kernel(enable_backward=False)
-def count_iso_voxels_block(
-    grid_size: int,
-    in_buffer_collide_count: wp.array[int],
-    shape_sdf_data: wp.array[TextureSDFData],
-    shape_transform: wp.array[wp.transform],
-    shape_material_kh: wp.array[float],
-    in_buffer_collide_coords: wp.array[wp.vec3us],
-    in_buffer_collide_shape_pair: wp.array[wp.vec2i],
-    shape_gap: wp.array[wp.float32],
-    subblock_size: int,
-    n_blocks: int,
-    max_input_buffer_size: int,
-    # outputs
-    iso_subblock_counts: wp.array[wp.int32],
-    iso_subblock_idx: wp.array[wp.uint8],
-):
-    # checks if the isosurface between shapes a and b lies inside the subblock (iterating over subblocks of b).
-    # if so, write the subblock coordinates to the output.
-    offset = wp.tid()
-    num_items = wp.min(in_buffer_collide_count[0], max_input_buffer_size)
-    for tid in range(offset, num_items, grid_size):
-        pair = in_buffer_collide_shape_pair[tid]
-        shape_a = pair[0]
-        shape_b = pair[1]
+                        # lookup distances at subblock center
+                        x_center = wp.vec3f(x_global) + wp.vec3f(0.5 * float(subblock_size))
+                        local_pos_b = sdf_data_b.sdf_box_lower + wp.cw_mul(x_center, sdf_data_b.voxel_size)
+                        point_a = wp.transform_point(X_b_to_a, local_pos_b)
+                        vb = texture_sample_sdf(sdf_data_b, local_pos_b)
+                        va = texture_sample_sdf(sdf_data_a, point_a)
+                        is_valid = not (wp.isnan(vb) or wp.isnan(va))
 
-        sdf_data_a = shape_sdf_data[shape_a]
-        sdf_data_b = shape_sdf_data[shape_b]
+                        # Bound p_a, p_b across the subblock using monotonicity of
+                        # pressure_func in signed_depth (assumed non-increasing) and
+                        # the 1-Lipschitz spatial bound phi in [phi_c - r, phi_c + r].
+                        # The per-shape pressure interval is
+                        # [pressure_func(phi_c + r), pressure_func(phi_c - r)]. Skip
+                        # when these intervals cannot intersect, since then the iso-
+                        # pressure surface ``p_a == p_b`` cannot lie inside the
+                        # subblock. Evaluated for every subblock (not only the
+                        # both-penetrating case) so the prune stays consistent with
+                        # the iso-surface definition used in marching cubes.
+                        pa_lo = pressure_func(va + r, shape_a, pressure_data)
+                        pa_hi = pressure_func(va - r, shape_a, pressure_data)
+                        pb_lo = pressure_func(vb + r, shape_b, pressure_data)
+                        pb_hi = pressure_func(vb - r, shape_b, pressure_data)
+                        skip = pa_hi < pb_lo or pb_hi < pa_lo
 
-        X_ws_a = shape_transform[shape_a]
-        X_ws_b = shape_transform[shape_b]
+                        # check that subblock is within contact gap on both sides
+                        if skip or va > r + gap_a or vb > r + gap_b or not is_valid:
+                            continue
+                        num_iso_subblocks += 1
+                        subblock_idx |= encode_coords_8(x_local, y_local, z_local)
 
-        gap_a = shape_gap[shape_a]
-        gap_b = shape_gap[shape_b]
+            iso_subblock_counts[tid] = num_iso_subblocks
+            iso_subblock_idx[tid] = subblock_idx
 
-        voxel_radius = sdf_data_b.voxel_radius
-        r = float(subblock_size) * voxel_radius
-
-        k_a = shape_material_kh[shape_a]
-        k_b = shape_material_kh[shape_b]
-
-        k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b)
-        r_eff = r * (k_eff_a + k_eff_b)
-
-        # get global voxel coordinates
-        bc = in_buffer_collide_coords[tid]
-
-        X_b_to_a = wp.transform_multiply(wp.transform_inverse(X_ws_a), X_ws_b)
-
-        num_iso_subblocks = wp.int32(0)
-        subblock_idx = wp.uint8(0)
-        for x_local in range(n_blocks):
-            for y_local in range(n_blocks):
-                for z_local in range(n_blocks):
-                    x_global = wp.vec3i(bc) + wp.vec3i(x_local, y_local, z_local) * subblock_size
-
-                    # lookup distances at subblock center
-                    x_center = wp.vec3f(x_global) + wp.vec3f(0.5 * float(subblock_size))
-                    local_pos_b = sdf_data_b.sdf_box_lower + wp.cw_mul(x_center, sdf_data_b.voxel_size)
-                    point_a = wp.transform_point(X_b_to_a, local_pos_b)
-                    vb = texture_sample_sdf(sdf_data_b, local_pos_b)
-                    va = texture_sample_sdf(sdf_data_a, point_a)
-                    is_valid = not (wp.isnan(vb) or wp.isnan(va))
-
-                    if vb < 0.0 and va < 0.0:
-                        diff_val = k_eff_b * vb - k_eff_a * va
-                    else:
-                        diff_val = vb - va
-
-                    # check if bounding sphere contains the isosurface and the distance is within contact gap
-                    if wp.abs(diff_val) > r_eff or va > r + gap_a or vb > r + gap_b or not is_valid:
-                        continue
-                    num_iso_subblocks += 1
-                    subblock_idx |= encode_coords_8(x_local, y_local, z_local)
-
-        iso_subblock_counts[tid] = num_iso_subblocks
-        iso_subblock_idx[tid] = subblock_idx
+    return count_iso_voxels_block
 
 
 @wp.kernel(enable_backward=False)
@@ -1210,58 +1241,72 @@ def scatter_iso_subblock(
                 write_idx += 1
 
 
-@wp.func
-def mc_iterate_voxel_vertices(
-    x_id: wp.int32,
-    y_id: wp.int32,
-    z_id: wp.int32,
-    corner_offsets_table: wp.array[wp.vec3ub],
-    sdf_data: TextureSDFData,
-    sdf_other_data: TextureSDFData,
-    X_ws: wp.transform,
-    X_ws_other: wp.transform,
-    k_eff: wp.float32,
-    k_eff_other: wp.float32,
-    gap_sum: wp.float32,
-) -> tuple[wp.uint8, vec8f, vec8f, bool, bool]:
-    """Iterate over the vertices of a voxel and return the cube index, corner values, and whether any vertices are inside the shape."""
-    cube_idx = wp.uint8(0)
-    any_verts_inside_gap = False
-    corner_vals = vec8f()
-    corner_sdf_vals = vec8f()
+def create_mc_iterate_voxel_vertices_func(pressure_func: Any):
+    """Factory specializing :func:`mc_iterate_voxel_vertices` to a pressure callback."""
 
-    X_a_to_b = wp.transform_multiply(wp.transform_inverse(X_ws_other), X_ws)
+    @wp.func
+    def mc_iterate_voxel_vertices(
+        x_id: wp.int32,
+        y_id: wp.int32,
+        z_id: wp.int32,
+        corner_offsets_table: wp.array[wp.vec3ub],
+        sdf_data: TextureSDFData,
+        sdf_other_data: TextureSDFData,
+        X_ws: wp.transform,
+        X_ws_other: wp.transform,
+        shape_self: wp.int32,
+        shape_other: wp.int32,
+        pressure_data: Any,
+        gap_sum: wp.float32,
+    ):
+        """Iterate over the vertices of a voxel and return the cube index, corner values, and whether any vertices are inside the shape."""
+        cube_idx = wp.uint8(0)
+        any_verts_inside_gap = False
+        corner_vals = vec8f()
+        corner_sdf_vals = vec8f()
 
-    for i in range(8):
-        corner_offset = wp.vec3i(corner_offsets_table[i])
-        x = x_id + corner_offset.x
-        y = y_id + corner_offset.y
-        z = z_id + corner_offset.z
+        X_a_to_b = wp.transform_multiply(wp.transform_inverse(X_ws_other), X_ws)
 
-        local_pos_a = sdf_data.sdf_box_lower + wp.cw_mul(wp.vec3(float(x), float(y), float(z)), sdf_data.voxel_size)
-        point_b = wp.transform_point(X_a_to_b, local_pos_a)
-        valA = texture_sample_sdf_at_voxel(sdf_data, x, y, z)
-        valB = texture_sample_sdf(sdf_other_data, point_b)
+        for i in range(8):
+            corner_offset = wp.vec3i(corner_offsets_table[i])
+            x = x_id + corner_offset.x
+            y = y_id + corner_offset.y
+            z = z_id + corner_offset.z
 
-        is_valid = not (wp.isnan(valA) or wp.isnan(valB))
-        if not is_valid:
-            return wp.uint8(0), corner_vals, corner_sdf_vals, False, False
+            local_pos_a = sdf_data.sdf_box_lower + wp.cw_mul(wp.vec3(float(x), float(y), float(z)), sdf_data.voxel_size)
+            point_b = wp.transform_point(X_a_to_b, local_pos_a)
+            valA = texture_sample_sdf_at_voxel(sdf_data, x, y, z)
+            valB = texture_sample_sdf(sdf_other_data, point_b)
 
-        if valA < 0.0 and valB < 0.0:
-            v_diff = k_eff * valA - k_eff_other * valB
-        else:
-            v_diff = valA - valB
+            is_valid = not (wp.isnan(valA) or wp.isnan(valB))
+            if not is_valid:
+                return wp.uint8(0), corner_vals, corner_sdf_vals, False, False
 
-        corner_vals[i] = v_diff
-        corner_sdf_vals[i] = valA
+            # Iso-pressure surface: the contact patch is the locus where
+            # ``p_self == p_other``. Evaluate ``pressure_func`` at every
+            # corner (penetrating or not) so corner_vals stays continuous
+            # across the patch boundary; this is what guarantees the MC
+            # interpolation ``t = -v0 / (v1 - v0)`` produces the right
+            # vertex along edges that span penetrating/non-penetrating
+            # corners. ``pressure_func`` is required to be defined and
+            # monotone non-increasing in ``signed_depth`` over its full
+            # range, not just for ``signed_depth < 0``.
+            p_self = pressure_func(valA, shape_self, pressure_data)
+            p_other = pressure_func(valB, shape_other, pressure_data)
+            v_diff = p_other - p_self
 
-        if v_diff < 0.0:
-            cube_idx |= wp.uint8(1) << wp.uint8(i)
+            corner_vals[i] = v_diff
+            corner_sdf_vals[i] = valA
 
-        if valA <= gap_sum:
-            any_verts_inside_gap = True
+            if v_diff < 0.0:
+                cube_idx |= wp.uint8(1) << wp.uint8(i)
 
-    return cube_idx, corner_vals, corner_sdf_vals, any_verts_inside_gap, True
+            if valA <= gap_sum:
+                any_verts_inside_gap = True
+
+        return cube_idx, corner_vals, corner_sdf_vals, any_verts_inside_gap, True
+
+    return mc_iterate_voxel_vertices
 
 
 # =============================================================================
@@ -1269,19 +1314,29 @@ def mc_iterate_voxel_vertices(
 # =============================================================================
 
 
-def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: Any = None):
+def get_decode_contacts_kernel(
+    margin_contact_area: float = 1e-4,
+    writer_func: Any = None,
+    pressure_func: Any = None,
+):
     """Create a kernel that decodes hydroelastic contacts without reduction.
 
     This kernel is used when reduce_contacts=False. It exports all generated
-    contacts directly to the writer without any spatial reduction.
+    contacts directly to the writer without any spatial reduction. Per-contact
+    pressure is computed on demand from the user's ``pressure_func``; depth
+    and shape index are read from the contact buffer.
 
     Args:
         margin_contact_area: Contact area used for non-penetrating contacts at the margin.
         writer_func: Warp function for writing decoded contacts.
+        pressure_func: Warp function defining the user pressure law. Required.
 
     Returns:
         A warp kernel that can be launched to decode all contacts.
     """
+
+    if pressure_func is None:
+        raise ValueError("get_decode_contacts_kernel requires a non-None pressure_func.")
 
     @wp.kernel(enable_backward=False)
     def decode_contacts_kernel(
@@ -1294,6 +1349,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
         normal: wp.array[wp.vec2],  # Octahedral-encoded
         shape_pairs: wp.array[wp.vec2i],
         contact_area: wp.array[wp.float32],
+        pressure_data: Any,
         max_num_face_contacts: int,
         # outputs
         writer_data: Any,
@@ -1344,17 +1400,29 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             gap_b = shape_gap[shape_b]
             gap_sum = gap_a + gap_b
 
-            k_a = shape_material_kh[shape_a]
-            k_b = shape_material_kh[shape_b]
-            k_eff = get_effective_stiffness(k_a, k_b)
             area = contact_area[tid]
 
-            # Compute stiffness, use margin_contact_area for non-penetrating contacts
-            # Standard convention: depth < 0 = penetrating
+            # Hydroelastic force per face: F = area * pressure_func(depth)
+            # (Elandt et al. 2019). The solver applies
+            # ``F = c_stiffness * (-contact_distance) = c_stiffness * 2*|depth|``
+            # because Newton stores ``contact_distance = 2*depth``, so the
+            # secant stiffness must absorb that factor of 2:
+            #     c_stiffness = area * p_face / (2 * |depth|)
+            # gives F_solver = area * p_face exactly, for any pressure law and
+            # any (kh_a, kh_b) pair. Pressure is recomputed from buffer state
+            # (``depth`` and ``shape_b``) rather than cached.
+            #
+            # Margin (non-penetrating) contacts are a constraint regularization
+            # rather than a physical force: pressure_func is only required to be
+            # monotone in this regime. Keep the linear-law slope from
+            # ``shape_material_kh`` so margin behavior stays well-defined.
             if depth < 0.0:
-                c_stiffness = area * k_eff
+                p_face = wp.static(pressure_func)(depth, shape_b, pressure_data)
+                c_stiffness = area * p_face / (2.0 * wp.max(-depth, EPS_SMALL))
             else:
-                c_stiffness = wp.static(margin_contact_area) * k_eff
+                k_a = shape_material_kh[shape_a]
+                k_b = shape_material_kh[shape_b]
+                c_stiffness = wp.static(margin_contact_area) * get_effective_stiffness(k_a, k_b)
 
             # Create ContactData for the writer function
             # contact_distance = 2 * depth (depth is negative for penetrating)
@@ -1384,6 +1452,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
 def get_generate_contacts_kernel(
     output_vertices: bool,
     pre_prune: bool = False,
+    pressure_func: Any = None,
 ):
     """Create kernel for hydroelastic contact generation.
 
@@ -1406,10 +1475,17 @@ def get_generate_contacts_kernel(
     Args:
         output_vertices: Whether to output contact surface vertices for visualization.
         pre_prune: Whether to perform local-first face compaction.
+        pressure_func: Warp function defining the per-shape pressure law used
+            to locate the iso-pressure surface. Required.
 
     Returns:
         generate_contacts_kernel: Warp kernel for contact generation.
     """
+
+    if pressure_func is None:
+        raise ValueError("get_generate_contacts_kernel requires a non-None pressure_func.")
+
+    mc_iterate = create_mc_iterate_voxel_vertices_func(pressure_func)
 
     @wp.kernel(enable_backward=False)
     def generate_contacts_kernel(
@@ -1418,6 +1494,7 @@ def get_generate_contacts_kernel(
         shape_sdf_data: wp.array[TextureSDFData],
         shape_transform: wp.array[wp.transform],
         shape_material_kh: wp.array[float],
+        pressure_data: Any,
         iso_voxel_coords: wp.array[wp.vec3us],
         iso_voxel_shape_pair: wp.array[wp.vec2i],
         tri_range_table: wp.array[wp.int32],
@@ -1458,14 +1535,12 @@ def get_generate_contacts_kernel(
             k_a = shape_material_kh[shape_a]
             k_b = shape_material_kh[shape_b]
 
-            k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b)
-
             x_id = wp.int32(iso_coords.x)
             y_id = wp.int32(iso_coords.y)
             z_id = wp.int32(iso_coords.z)
 
             # Compute cube state (marching cubes lookup)
-            cube_idx, corner_vals, corner_sdf_vals, any_verts_inside, all_verts_valid = mc_iterate_voxel_vertices(
+            cube_idx, corner_vals, corner_sdf_vals, any_verts_inside, all_verts_valid = wp.static(mc_iterate)(
                 x_id,
                 y_id,
                 z_id,
@@ -1474,8 +1549,9 @@ def get_generate_contacts_kernel(
                 sdf_data_a,
                 transform_b,
                 transform_a,
-                k_eff_b,
-                k_eff_a,
+                shape_b,
+                shape_a,
+                pressure_data,
                 gap_sum,
             )
 
@@ -1541,16 +1617,26 @@ def get_generate_contacts_kernel(
                 )
                 if area <= 0.0:
                     continue
+                # Pressure at the face. ``pen_depth`` is the SDF-B depth at the
+                # face centroid; on the iso-pressure surface ``p_a == p_b`` so
+                # evaluating either side at its own depth gives the same value.
+                # Force accumulation below uses ``area * face_pressure`` instead
+                # of ``area * |pen_depth|``, removing the implicit linear-law
+                # assumption from the aggregate / anchor / moment computations.
+                face_pressure = wp.static(pressure_func)(pen_depth, shape_b, pressure_data)
                 # Accumulate stats per normal bin
                 if pen_depth < 0.0:
                     bin_id = get_slot(normal)
                     key = make_contact_key(shape_a, shape_b, bin_id)
                     entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
                     if entry_idx >= 0:
-                        force_weight = area * (-pen_depth)
+                        force_weight = area * face_pressure
                         wp.atomic_add(reducer_data.agg_force, entry_idx, force_weight * normal)
                         wp.atomic_add(reducer_data.weighted_pos_sum, entry_idx, force_weight * face_center)
                         wp.atomic_add(reducer_data.weight_sum, entry_idx, force_weight)
+                        # ``entry_k_eff`` is retained as the linear-law slope used
+                        # for margin (non-penetrating) contact regularization, where
+                        # the user pressure law is documented as undefined.
                         reducer_data.entry_k_eff[entry_idx] = k_eff
                     else:
                         wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
@@ -1563,7 +1649,6 @@ def get_generate_contacts_kernel(
                         normal,
                         pen_depth,
                         area,
-                        k_eff,
                         reducer_data,
                     )
                     if wp.static(output_vertices) and contact_id >= 0:
@@ -1573,9 +1658,12 @@ def get_generate_contacts_kernel(
                         iso_vertex_shape_pair[contact_id] = pair
                     continue
 
-                # Local-first compaction: keep top-K penetrating faces by score.
+                # Local-first compaction: keep top-K penetrating faces by force
+                # magnitude (area * pressure). Under a non-linear pressure law
+                # this is no longer the same as area * |depth|, and ranking by
+                # force keeps the contacts that contribute most to agg_force.
                 if pen_depth < 0.0:
-                    score = area * (-pen_depth)
+                    score = area * face_pressure
                     if best_pen0_valid == 0 or score > best_pen0_score:
                         # Shift slot0 -> slot1
                         best_pen1_valid = best_pen0_valid

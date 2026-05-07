@@ -10,6 +10,9 @@
 #
 ###########################################################################
 
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import trimesh
 import warp as wp
@@ -25,6 +28,9 @@ ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
 
 SDF_MAX_RESOLUTION = 256
 SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
+# Persist cooked SDFs across runs so the (slow) cook only happens once.
+# Entries are content-addressed, so leftovers from older runs are harmless.
+MESH_SDF_CACHE_DIR = Path(tempfile.gettempdir()) / "newton_sdf_cache"
 
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     margin=0.0,
@@ -37,6 +43,27 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     mu_rolling=0.0,
     is_hydroelastic=True,
 )
+
+
+# Demonstrate the user-facing pressure-callback API for the hydroelastic
+# solver. The contact patch is defined as the iso-pressure surface
+# ``p_a == p_b``; users supply a Warp ``@wp.func`` that maps a signed depth
+# to a pressure value, plus a ``@wp.struct`` carrying any per-shape state it
+# needs. The callback must be defined for any signed depth (positive or
+# negative) and monotone non-increasing in ``signed_depth`` so the marching-
+# cubes interpolation stays continuous across the patch boundary.
+#
+# Here we re-implement the default linear law ``pressure = -kh * signed_depth``
+# explicitly so the example exercises the user pathway. Any monotone function
+# (e.g. ``-kh * signed_depth ** 3`` for a stiffer-with-depth response) works.
+@wp.struct
+class LinearPressureData:
+    shape_kh: wp.array[wp.float32]
+
+
+@wp.func
+def linear_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: LinearPressureData) -> wp.float32:
+    return -data.shape_kh[shape_idx] * signed_depth
 
 
 def add_mesh_object(
@@ -106,6 +133,7 @@ def load_mesh_with_sdf(
         narrow_band_range=SDF_NARROW_BAND_RANGE,
         margin=shape_cfg.gap if shape_cfg and shape_cfg.gap is not None else 0.005,
         scale=(scale, scale, scale),
+        cache_dir=MESH_SDF_CACHE_DIR,
     )
     return mesh, center_vec
 
@@ -161,11 +189,24 @@ class Example:
 
         self.model = main_scene.finalize()
 
+        # Configure the hydroelastic pipeline with our custom (still linear)
+        # pressure callback. ``shape_kh`` reuses the per-shape stiffness already
+        # stored on the model, so the resulting contact patches are identical
+        # to the built-in default; the example just demonstrates the user-
+        # facing API.
+        pressure_data = LinearPressureData()
+        pressure_data.shape_kh = self.model.shape_material_kh
+        sdf_hydroelastic_config = newton.geometry.HydroelasticSDF.Config(
+            pressure_func=linear_pressure,
+            pressure_data=pressure_data,
+        )
+
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
             rigid_contact_max=self.rigid_contact_max,
             broad_phase=self.broad_phase_mode,
+            sdf_hydroelastic_config=sdf_hydroelastic_config,
         )
 
         # Create solver based on user choice

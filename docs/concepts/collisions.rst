@@ -1538,6 +1538,26 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 
 The ``kh`` parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: ``k_eff = 2 * k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
 
+**Custom pressure laws:**
+
+The contact patch is the iso-pressure surface ``p_a == p_b``. ``signed_depth`` follows the SDF sign convention — negative inside the shape, positive outside — so the default linear law ``p = -kh * signed_depth`` is positive when penetrating. Supply ``pressure_func`` and ``pressure_data`` on :class:`~geometry.HydroelasticSDF.Config` to use a different law — for example a stiffer-with-depth response. The callback must be defined for any ``signed_depth`` and monotone non-increasing in it (deeper penetration ⇒ higher pressure):
+
+.. code-block:: python
+
+    @wp.struct
+    class MyData:
+        shape_kh: wp.array[wp.float32]
+
+    @wp.func
+    def cubic_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: MyData) -> wp.float32:
+        d = -signed_depth  # >0 when penetrating
+        return data.shape_kh[shape_idx] * d * d * d
+
+    data = MyData(); data.shape_kh = model.shape_material_kh
+    config = HydroelasticSDF.Config(pressure_func=cubic_pressure, pressure_data=data)
+
+See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked example.
+
 Contact reduction options for hydroelastic contacts are configured via :class:`~geometry.HydroelasticSDF.Config` (see :ref:`Contact Reduction`).
 
 Hydroelastic memory can be tuned with ``buffer_fraction`` on
