@@ -1198,8 +1198,11 @@ class PADMMSolver:
             problem (DualProblem): The dual forward dynamics problem to be solved.
         """
         # Compute infinity-norm of all residuals and check for convergence
-        tile_size = min(2048, 2 ** math.ceil(math.log(self._size.max_of_max_total_cts, 2)))
-        block_dim = min(256, tile_size // 8)
+        if self._size.max_of_max_total_cts > 0:
+            tile_size = min(2048, 2 ** math.ceil(math.log(self._size.max_of_max_total_cts, 2)))
+        else:
+            tile_size = 1
+        block_dim = max(1, min(256, tile_size // 8))
         wp.launch_tiled(
             kernel=_make_compute_infnorm_residuals_kernel(
                 tile_size,
@@ -1239,8 +1242,11 @@ class PADMMSolver:
             problem (DualProblem): The dual forward dynamics problem to be solved.
         """
         # Compute infinity-norm of all residuals and check for convergence
-        tile_size = min(2048, 2 ** math.ceil(math.log(self._size.max_of_max_total_cts, 2)))
-        block_dim = min(256, tile_size // 8)
+        if self._size.max_of_max_total_cts > 0:
+            tile_size = min(2048, 2 ** math.ceil(math.log(self._size.max_of_max_total_cts, 2)))
+        else:
+            tile_size = 1
+        block_dim = max(1, min(256, tile_size // 8))
         wp.launch_tiled(
             kernel=_make_compute_infnorm_residuals_accel_kernel(
                 tile_size,

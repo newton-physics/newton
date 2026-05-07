@@ -628,7 +628,7 @@ class ConjugateSolver:
             wp.launch_tiled(
                 self.tiled_dot_kernel,
                 dim=(a.shape[0], self.n_worlds),
-                block_dim=min(256, self.dot_tile_size // 8),
+                block_dim=max(1, min(256, self.dot_tile_size // 8)),
                 inputs=[a, b, self.vio, active_dims, world_active],
                 outputs=[result],
                 device=self.device,
