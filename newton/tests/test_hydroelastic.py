@@ -1064,6 +1064,21 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
 
 class TestHydroelastic(unittest.TestCase):
+    def test_mc_edge_clamp_min_validation(self):
+        """``HydroelasticSDF.Config.mc_edge_clamp_min`` validates its range at construction.
+
+        The validator runs in ``Config.__post_init__`` and is host-side only,
+        so this test is device-independent and runs even on CPU-only CI.
+        """
+        # In-range values, including the boundaries, must construct cleanly.
+        for good_value in (0.0, 0.02, 0.5):
+            HydroelasticSDF.Config(mc_edge_clamp_min=good_value)
+
+        # Out-of-range values, including NaN, must raise ``ValueError``.
+        for bad_value in (-0.1, 0.51, float("nan")):
+            with self.assertRaises(ValueError, msg=f"Should reject mc_edge_clamp_min={bad_value}"):
+                HydroelasticSDF.Config(mc_edge_clamp_min=bad_value)
+
     @unittest.skip("Visual debugging - run manually to view simulation")
     def test_view_stacked_primitive_cubes(self):
         """View stacked primitive cubes simulation with hydroelastic contacts."""
@@ -1349,7 +1364,12 @@ add_function_test(
 
 
 def _build_two_box_hydro_pipeline(device, mc_edge_clamp_min: float):
-    """Build a deeply-overlapping two-box hydroelastic scene and return the populated contact surface."""
+    """Build a deeply-overlapping two-box hydroelastic scene and return the live pipeline.
+
+    The pipeline (and its model) are kept alive by the caller so that the
+    Warp arrays referenced by the contact surface remain valid until
+    ``.numpy()`` reads have completed.
+    """
     box_half = 0.1
     narrow_band = box_half * 0.2
     contact_gap = box_half * 0.2
@@ -1388,54 +1408,62 @@ def _build_two_box_hydro_pipeline(device, mc_edge_clamp_min: float):
     )
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
-    return pipeline.hydroelastic_sdf.get_contact_surface()
+    return pipeline, model
+
+
+def _canonical_contact_surface_signature(cs):
+    """Return an order-invariant signature of a contact surface for equality checks.
+
+    Returns ``(num_faces, sorted_flattened_vertex_components)``.  The contact
+    writer uses ``wp.atomic_add`` to assign output slots, so two builds with
+    identical inputs may produce vertices in different orders but with the
+    same set of values; sorting all vertex components together cancels any
+    ordering noise.
+    """
+    n = int(cs.face_contact_count.numpy()[0])
+    if n == 0:
+        return 0, np.empty(0, dtype=np.float32)
+    components = cs.contact_surface_point.numpy()[: n * 3].reshape(-1).astype(np.float64)
+    return n, np.sort(components)
 
 
 def test_mc_edge_clamp_min_changes_contact_surface(test, device):
     """Verify ``mc_edge_clamp_min`` actually flows through to vertex placement.
 
-    Builds the same scene twice with different clamp values and asserts that
-    the resulting vertex positions differ. Without this guard, swapping the
-    clamp for a no-op constant in the kernel would still pass CI.
+    Builds the same two-box scene three times: twice with ``mc_edge_clamp_min=0.02``
+    (same-args control to confirm the build is order-invariantly deterministic)
+    and once with ``mc_edge_clamp_min=0.0``.  Asserts that the two same-args runs
+    produce identical canonical signatures, then asserts the differing-args run
+    produces a different signature.  The control rules out atomic-ordering
+    false positives — without it, swapping the clamp for a no-op constant in
+    the kernel would still pass CI.
     """
-    cs_clamped = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.02)
-    cs_unclamped = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.0)
-    n_clamped = int(cs_clamped.face_contact_count.numpy()[0])
-    n_unclamped = int(cs_unclamped.face_contact_count.numpy()[0])
-    test.assertGreater(n_clamped, 0)
-    test.assertGreater(n_unclamped, 0)
+    pipe_a, _model_a = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.02)
+    pipe_b, _model_b = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.02)
+    pipe_diff, _model_diff = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.0)
 
-    n = min(n_clamped, n_unclamped)
-    v_clamped = cs_clamped.contact_surface_point.numpy()[: n * 3].reshape(n, 3, 3)
-    v_unclamped = cs_unclamped.contact_surface_point.numpy()[: n * 3].reshape(n, 3, 3)
-    test.assertGreater(
-        float(np.linalg.norm(v_clamped - v_unclamped)),
-        0.0,
-        "mc_edge_clamp_min did not change vertex positions",
+    n_a, sig_a = _canonical_contact_surface_signature(pipe_a.hydroelastic_sdf.get_contact_surface())
+    n_b, sig_b = _canonical_contact_surface_signature(pipe_b.hydroelastic_sdf.get_contact_surface())
+    n_diff, sig_diff = _canonical_contact_surface_signature(pipe_diff.hydroelastic_sdf.get_contact_surface())
+
+    test.assertGreater(n_a, 0, "Expected non-empty contact surface for the baseline build")
+    test.assertEqual(n_a, n_b, "Same-args builds produced different face counts — non-deterministic build")
+    np.testing.assert_allclose(
+        sig_a,
+        sig_b,
+        atol=1e-6,
+        rtol=0.0,
+        err_msg="Same-args builds produced different vertex sets — non-deterministic build",
     )
+
+    differs = (n_a != n_diff) or not np.allclose(sig_a, sig_diff, atol=1e-6, rtol=0.0)
+    test.assertTrue(differs, "Changing mc_edge_clamp_min did not change the contact surface")
 
 
 add_function_test(
     TestHydroelastic,
     "test_mc_edge_clamp_min_changes_contact_surface",
     test_mc_edge_clamp_min_changes_contact_surface,
-    devices=cuda_devices,
-    check_output=False,
-)
-
-
-def test_mc_edge_clamp_min_rejects_out_of_range(test, device):
-    """``HydroelasticSDF.Config.mc_edge_clamp_min`` must be in ``[0.0, 0.5]``."""
-    del device  # validation runs at Config construction; no device needed
-    for bad_value in (-0.1, 0.51, float("nan")):
-        with test.assertRaises(ValueError, msg=f"Should reject mc_edge_clamp_min={bad_value}"):
-            HydroelasticSDF.Config(mc_edge_clamp_min=bad_value)
-
-
-add_function_test(
-    TestHydroelastic,
-    "test_mc_edge_clamp_min_rejects_out_of_range",
-    test_mc_edge_clamp_min_rejects_out_of_range,
     devices=cuda_devices,
     check_output=False,
 )
