@@ -544,6 +544,183 @@ def parse_usd(
             mesh.metallic = material_props["metallic"]
         return mesh
 
+    def _get_face_material_subsets(prim: Usd.Prim) -> list[Usd.Prim]:
+        """Return face-based material subsets authored directly under a mesh prim."""
+        subsets = []
+        for child in prim.GetChildren():
+            try:
+                is_subset = child.IsA(UsdGeom.Subset)
+            except Exception:
+                is_subset = False
+            if not is_subset:
+                continue
+
+            subset = UsdGeom.Subset(child)
+            element_type = subset.GetElementTypeAttr().Get()
+            if element_type != UsdGeom.Tokens.face:
+                continue
+            family_name = subset.GetFamilyNameAttr().Get()
+            if family_name and family_name != "materialBind":
+                continue
+            indices = subset.GetIndicesAttr().Get()
+            if not indices:
+                continue
+            subsets.append(child)
+        return subsets
+
+    def _get_subset_uvs(prim: Usd.Prim, used_vertices: np.ndarray, expected_count: int) -> np.ndarray | None:
+        """Return UVs for a material subset when a matching primvar is authored."""
+        max_used_vertex = int(np.max(used_vertices, initial=-1))
+        full_mesh_uvs = None
+        for primvar in UsdGeom.PrimvarsAPI(prim).GetPrimvars():
+            name = primvar.GetBaseName()
+            if not name.startswith("st"):
+                continue
+            values = primvar.Get()
+            if values is None:
+                continue
+            uvs = np.asarray(values, dtype=np.float32)
+            if primvar.IsIndexed():
+                indices = primvar.GetIndices()
+                if indices is None:
+                    continue
+                indices = np.asarray(indices, dtype=np.int32)
+                if len(indices) == expected_count:
+                    uvs = uvs[indices]
+                    if len(uvs) == expected_count:
+                        return uvs
+                    continue
+                if len(indices) > max_used_vertex:
+                    uvs = uvs[indices]
+                else:
+                    continue
+            if len(uvs) == expected_count:
+                return uvs
+            if full_mesh_uvs is None and len(uvs) > max_used_vertex:
+                full_mesh_uvs = uvs[used_vertices]
+        return full_mesh_uvs
+
+    def _make_visual_submesh(
+        mesh: Mesh,
+        triangle_indices: np.ndarray,
+        material_props: dict[str, Any],
+        *,
+        prim: Usd.Prim,
+        path_name: str,
+    ) -> Mesh | None:
+        """Create a render-only mesh slice for the selected triangle rows."""
+        if len(triangle_indices) == 0:
+            return None
+
+        triangles = mesh.indices.reshape(-1, 3)[triangle_indices]
+        used_vertices = np.unique(triangles)
+        vertex_remap = np.full(len(mesh.vertices), -1, dtype=np.int32)
+        vertex_remap[used_vertices] = np.arange(len(used_vertices), dtype=np.int32)
+
+        normals = None
+        if mesh.normals is not None and len(mesh.normals) == len(mesh.vertices):
+            normals = mesh.normals[used_vertices]
+
+        uvs = None
+        if mesh.uvs is not None and len(mesh.uvs) == len(mesh.vertices):
+            uvs = mesh.uvs[used_vertices]
+        elif material_props.get("texture") is not None:
+            uvs = _get_subset_uvs(prim, used_vertices, len(used_vertices))
+
+        submesh = Mesh(
+            mesh.vertices[used_vertices],
+            vertex_remap[triangles].reshape(-1),
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=False,
+            is_solid=mesh.is_solid,
+            maxhullvert=mesh.maxhullvert,
+        )
+
+        texture = material_props.get("texture")
+        if texture:
+            submesh.texture = texture
+        if submesh.texture is not None and submesh.uvs is None:
+            warnings.warn(
+                f"Warning: mesh material subset {path_name} has a texture but no UVs; texture will be ignored.",
+                stacklevel=2,
+            )
+            submesh.texture = None
+
+        color = material_props.get("color")
+        if color is not None:
+            submesh.color = color
+        elif submesh.texture is not None:
+            submesh.color = (1.0, 1.0, 1.0)
+        if material_props.get("roughness") is not None:
+            submesh.roughness = material_props["roughness"]
+        if material_props.get("metallic") is not None:
+            submesh.metallic = material_props["metallic"]
+        return submesh
+
+    def _get_visual_material_subset_meshes(prim: Usd.Prim) -> list[tuple[str, Mesh]]:
+        """Load one render mesh per USD material subset when subsets are authored."""
+        subsets = _get_face_material_subsets(prim)
+        if not subsets:
+            return []
+
+        mesh_schema = UsdGeom.Mesh(prim)
+        face_counts = mesh_schema.GetFaceVertexCountsAttr().Get()
+        if face_counts is None:
+            return []
+        face_counts = np.asarray(face_counts, dtype=np.int32)
+        if len(face_counts) == 0 or np.any(face_counts < 3):
+            return []
+
+        subset_props = [(str(subset.GetPath()), usd.resolve_material_properties_for_prim(subset)) for subset in subsets]
+        mesh = _get_mesh_cached(prim)
+        triangle_face_indices = np.repeat(np.arange(len(face_counts), dtype=np.int32), face_counts - 2)
+        covered_faces = np.zeros(len(face_counts), dtype=bool)
+
+        submeshes = []
+        for subset_path, material_props in subset_props:
+            subset = UsdGeom.Subset(stage.GetPrimAtPath(subset_path))
+            subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
+            valid = (subset_indices >= 0) & (subset_indices < len(face_counts))
+            if not np.all(valid):
+                warnings.warn(
+                    f"Warning: mesh material subset {subset_path} has face indices outside the mesh face range; "
+                    "out-of-range indices will be ignored.",
+                    stacklevel=2,
+                )
+                subset_indices = subset_indices[valid]
+            if len(subset_indices) == 0:
+                continue
+
+            face_mask = np.zeros(len(face_counts), dtype=bool)
+            face_mask[subset_indices] = True
+            triangle_indices = np.nonzero(face_mask[triangle_face_indices])[0]
+            submesh = _make_visual_submesh(mesh, triangle_indices, material_props, prim=prim, path_name=subset_path)
+            if submesh is None:
+                continue
+            covered_faces[subset_indices] = True
+            submeshes.append((subset_path, submesh))
+
+        if not submeshes:
+            return []
+
+        uncovered_faces = np.nonzero(~covered_faces)[0]
+        if len(uncovered_faces) > 0:
+            face_mask = np.zeros(len(face_counts), dtype=bool)
+            face_mask[uncovered_faces] = True
+            triangle_indices = np.nonzero(face_mask[triangle_face_indices])[0]
+            fallback_mesh = _make_visual_submesh(
+                mesh,
+                triangle_indices,
+                _get_material_props_cached(prim),
+                prim=prim,
+                path_name=str(prim.GetPath()),
+            )
+            if fallback_mesh is not None:
+                submeshes.insert(0, (str(prim.GetPath()), fallback_mesh))
+
+        return submeshes
+
     def _get_tetmesh_cached(prim: Usd.Prim) -> TetMesh:
         """Load and cache TetMesh data to avoid repeated USD extraction."""
         prim_path = str(prim.GetPath())
@@ -746,16 +923,38 @@ def parse_usd(
                     label=path_name,
                 )
             elif type_name == "mesh":
-                mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
-                shape_id = builder.add_shape_mesh(
-                    parent_body_id,
-                    xform,
-                    scale=scale,
-                    mesh=mesh,
-                    cfg=visual_shape_cfg_for_prim,
-                    color=shape_color,
-                    label=path_name,
-                )
+                subset_meshes = _get_visual_material_subset_meshes(prim)
+                if subset_meshes:
+                    for subset_path, subset_mesh in subset_meshes:
+                        subset_shape_id = builder.add_shape_mesh(
+                            parent_body_id,
+                            xform,
+                            scale=scale,
+                            mesh=subset_mesh,
+                            cfg=visual_shape_cfg_for_prim,
+                            color=None,
+                            label=subset_path,
+                        )
+                        path_shape_map[subset_path] = subset_shape_id
+                        path_shape_scale[subset_path] = scale
+                        if shape_id < 0:
+                            shape_id = subset_shape_id
+                        if verbose:
+                            print(
+                                f"Added visual shape {subset_path} ({type_name} material subset) "
+                                f"with id {subset_shape_id}."
+                            )
+                else:
+                    mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
+                    shape_id = builder.add_shape_mesh(
+                        parent_body_id,
+                        xform,
+                        scale=scale,
+                        mesh=mesh,
+                        cfg=visual_shape_cfg_for_prim,
+                        color=shape_color,
+                        label=path_name,
+                    )
             elif type_name == "particlefield3dgaussiansplat":
                 gaussian = usd.get_gaussian(prim)
                 shape_id = builder.add_shape_gaussian(
@@ -767,7 +966,11 @@ def parse_usd(
                     color=shape_color,
                     label=path_name,
                 )
-            elif len(type_name) > 0 and type_name not in {"xform", "tetmesh"} and verbose:
+            elif (
+                len(type_name) > 0
+                and type_name not in {"geomsubset", "material", "scope", "shader", "xform", "tetmesh"}
+                and verbose
+            ):
                 print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
 
             if shape_id >= 0:
