@@ -129,12 +129,18 @@ the underlying `cudaMalloc` produced, the ChysX kernel writes directly
 into Newton's particle state — no host round-trip.  Material parameters
 are *copied* (values), buffer pointers are *referenced* (views).
 
-## Run the demo
+## Run the demos
 
 ```powershell
+# 10x10 cloth patch with one corner pinned; without elastic forces every
+# other particle free-falls under gravity while particle 0 stays clamped.
+# Exercises PinConstraint + the inertia / mass branch of the PCG step.
 uv run python -m newton.examples chysx_freefall
-```
 
-This drops a 10×10 cloth patch 2 m above the ground and lets the whole sheet
-fall as a rigid plane (the toy integrator has no internal forces, so every
-particle accelerates the same way).
+# Same patch, but the PCG step also assembles SpringConstraint (one
+# Hookean spring per mesh edge) and TriangleStretchConstraint (one
+# Baraff-Witkin element per face) into the global block-CSR Hessian.
+# The cloth drapes from the pinned corner under gravity and settles
+# into a hanging configuration.
+uv run python -m newton.examples chysx_hanging_cloth
+```

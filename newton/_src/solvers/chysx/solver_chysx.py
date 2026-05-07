@@ -34,6 +34,9 @@ contract that `SolverUIPC` and similar plug-in solvers use.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
+import numpy as np
 import warp as wp
 
 from ...core.types import override
@@ -55,6 +58,30 @@ class SolverChysX(SolverBase):
             world 0.
         damping: Optional velocity damping ``[1/s]`` applied as
             ``v *= exp(-damping * dt)``.  Default 0 (no damping).
+        spring_stiffness: Per-edge Hookean spring stiffness ``k`` [N/m].
+            One spring is installed per unique mesh edge, with rest
+            length taken from the initial particle configuration.
+            Default ``0.0`` disables springs entirely; with a single
+            pinned corner the cloth then free-falls particle-by-particle.
+            Set to ``> 0`` (typical: ``1e3``) to recover the classic
+            hanging-cloth behaviour.
+        fem_stretch_stiffness: Per-area Baraff-Witkin triangle stretch
+            stiffness ``k`` [N/m^2].  Default ``0.0`` disables the FEM
+            membrane element; combine with ``spring_stiffness=0`` for a
+            cleaner FEM-only cloth.  ``1e3`` is a reasonable starting
+            value for soft cotton-like cloth.
+        pin_indices: Optional iterable of particle indices to pin in
+            place.  Each pinned particle has its position frozen at
+            its initial value (pulled from
+            :attr:`Model.particle_q`) and its velocity zeroed every
+            step.  Use this to attach a cloth corner to a frame, etc.
+        pin_stiffness: Penalty stiffness for the pin constraint when
+            running the PCG implicit-Euler step.  Larger values yield
+            harder pins.
+        pcg_iterations: Maximum number of PCG iterations per step.
+            ``50`` is the chysx default and works well for the cloth
+            scales targeted here; reduce for cheaper-but-less-accurate
+            steps, or increase if the solve fails to converge.
     """
 
     def __init__(
@@ -62,6 +89,11 @@ class SolverChysX(SolverBase):
         model: Model,
         gravity: tuple[float, float, float] | None = None,
         damping: float = 0.0,
+        spring_stiffness: float = 0.0,
+        fem_stretch_stiffness: float = 0.0,
+        pin_indices: Sequence[int] | None = None,
+        pin_stiffness: float = 1.0e6,
+        pcg_iterations: int = 50,
     ):
         super().__init__(model=model)
 
@@ -90,8 +122,64 @@ class SolverChysX(SolverBase):
 
         self._sim = chysx.ClothSimulator()
         self._sim.set_material(material)
+        self._sim.set_pcg_iterations(int(pcg_iterations))
 
         self._device = wp.get_device(str(model.device))
+
+        # Bind initial particle pointers so the simulator can read
+        # the rest configuration when installing mesh-derived springs.
+        # These pointers will be re-bound every step() call anyway.
+        if model.particle_count > 0:
+            inv_mass_ptr = (
+                model.particle_inv_mass.ptr
+                if getattr(model, "particle_inv_mass", None) is not None
+                else 0
+            )
+            self._sim.set_external_buffers(
+                pos_ptr=model.particle_q.ptr,
+                vel_ptr=model.particle_qd.ptr,
+                particle_count=model.particle_count,
+                inv_mass_ptr=inv_mass_ptr,
+            )
+
+        # Mesh + spring + FEM topology — installed once at construction.
+        # Newton's `model.tri_indices` is a wp.array of int32 with
+        # shape (M, 3); pass straight through to chysx.
+        wants_mesh = (spring_stiffness > 0.0) or (fem_stretch_stiffness > 0.0)
+        if (
+            wants_mesh
+            and getattr(model, "tri_indices", None) is not None
+            and model.tri_count > 0
+        ):
+            tris_np = np.ascontiguousarray(
+                model.tri_indices.numpy().reshape(-1, 3), dtype=np.int32
+            )
+            self._sim.set_mesh(tris_np)
+            if spring_stiffness > 0.0:
+                self._sim.build_springs_from_current_positions(
+                    stiffness=float(spring_stiffness)
+                )
+            if fem_stretch_stiffness > 0.0:
+                self._sim.build_fem_stretch_from_current_positions(
+                    stiffness=float(fem_stretch_stiffness)
+                )
+
+        # Pin configuration: targets are read once from the model's
+        # initial particle_q so the user can express pinning purely
+        # by index.  In the PCG implicit-Euler step pin energy
+        # 1/2 k |x - target|^2 contributes a k*I diagonal block to
+        # the global Hessian (and a k*(target - x_tilde) entry to
+        # the RHS), so a sufficiently large `pin_stiffness` produces
+        # a hard pin.
+        if pin_indices is not None and len(pin_indices) > 0 and model.particle_count > 0:
+            indices_np = np.asarray(list(pin_indices), dtype=np.int32)
+            if indices_np.ndim != 1:
+                raise ValueError("pin_indices must be a 1-D iterable of ints")
+            if (indices_np < 0).any() or (indices_np >= model.particle_count).any():
+                raise ValueError(f"pin_indices out of range [0, {model.particle_count})")
+            q_np = model.particle_q.numpy().reshape(-1, 3)
+            targets_np = np.ascontiguousarray(q_np[indices_np], dtype=np.float32)
+            self._sim.set_pins(indices_np, targets_np, float(pin_stiffness))
 
     @override
     def step(
@@ -110,8 +198,7 @@ class SolverChysX(SolverBase):
 
         if not self._device.is_cuda:
             raise RuntimeError(
-                f"SolverChysX requires a CUDA device, got {self._device}. "
-                "The chysx kernel only supports GPU execution."
+                f"SolverChysX requires a CUDA device, got {self._device}. The chysx kernel only supports GPU execution."
             )
 
         # Newton callers double-buffer state.  Seed state_out with
@@ -124,9 +211,15 @@ class SolverChysX(SolverBase):
         # Hand raw CUDA device pointers to the external engine.  The
         # chysx kernel writes directly into Newton's particle buffers;
         # no data round-trip.
+        inv_mass_ptr = (
+            self.model.particle_inv_mass.ptr
+            if getattr(self.model, "particle_inv_mass", None) is not None
+            else 0
+        )
         self._sim.set_external_buffers(
             pos_ptr=state_out.particle_q.ptr,
             vel_ptr=state_out.particle_qd.ptr,
             particle_count=n,
+            inv_mass_ptr=inv_mass_ptr,
         )
         self._sim.step(dt=float(dt))

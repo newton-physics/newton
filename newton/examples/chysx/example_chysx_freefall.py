@@ -10,11 +10,15 @@
 # elasticity, no spring/bending forces — just `v += g*dt; x += v*dt`
 # running on the GPU.
 #
-# Because the integrator is purely free-fall, every cloth particle receives
-# the same gravity and starts from rest, so the whole sheet drops as a
-# rigid plane.  This is exactly what we should see when the solver ignores
-# all internal forces — a deliberate visual baseline before plugging in
-# elasticity later.
+# To showcase chysx's `PinConstraint`, particle 0 (a corner of the grid)
+# is pinned in place.  In the current freefall integrator the pin is
+# enforced by hard-clamping the particle's position at the end of every
+# step; once the chysx PCG step lands, the same `PinConstraint` will
+# contribute a large diagonal block to the linear system instead.
+#
+# Without elastic forces the rest of the sheet still falls as a rigid
+# plane (no inter-particle coupling), so visually you see particle 0
+# floating in mid-air while the other 120 particles drop together.
 #
 # Command: python -m newton.examples chysx_freefall
 #
@@ -68,7 +72,18 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverChysX(self.model)
+        # Pin particle 0 (a grid corner).  Its initial position is
+        # captured from `model.particle_q` and stays fixed forever.
+        self._pinned_indices = [0]
+        self.solver = newton.solvers.SolverChysX(
+            self.model,
+            pin_indices=self._pinned_indices,
+        )
+
+        # Snapshot the pinned particles' initial positions so test_final
+        # can verify the clamp held.
+        q0 = self.model.particle_q.numpy().reshape(-1, 3)
+        self._pinned_targets = q0[self._pinned_indices].copy()
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -97,21 +112,40 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        # Free fall: v_z = -g t, z = z0 - 0.5 g t^2.  After self.sim_time
-        # seconds, every particle should be at the same height (no
-        # interaction between particles), strictly below the start height
-        # and falling downward.
+        # After self.sim_time seconds:
+        #   * pinned particles are still exactly at their initial
+        #     position with zero velocity (hard-clamped every step);
+        #   * every other particle followed free-fall analytic
+        #     z(t) = z0 - 0.5 g t^2, v_z(t) = -g t.
         z0 = self._initial_z
         g = 9.81
         t = self.sim_time
         z_expected = z0 - 0.5 * g * t * t
         vz_expected = -g * t
 
+        # Pinned particles: position is exactly their initial location.
+        # Verify by reading the state on the host (this is a single
+        # particle, so the round-trip cost is negligible).
+        q_np = self.state_0.particle_q.numpy().reshape(-1, 3)
+        qd_np = self.state_0.particle_qd.numpy().reshape(-1, 3)
+        for k, idx in enumerate(self._pinned_indices):
+            tx, ty, tz = self._pinned_targets[k]
+            qx, qy, qz = q_np[idx]
+            vx, vy, vz = qd_np[idx]
+            pos_ok = abs(qx - tx) < 1e-5 and abs(qy - ty) < 1e-5 and abs(qz - tz) < 1e-5
+            vel_ok = abs(vx) < 1e-5 and abs(vy) < 1e-5 and abs(vz) < 1e-5
+            if not (pos_ok and vel_ok):
+                raise ValueError(
+                    f"Pinned particle {idx} drifted: "
+                    f"pos=({qx:.4g},{qy:.4g},{qz:.4g}) target=({tx:.4g},{ty:.4g},{tz:.4g}) "
+                    f"vel=({vx:.4g},{vy:.4g},{vz:.4g})"
+                )
+
+        # Free-fall particles: 5% relative error plus an absolute floor.
+        tol_z = max(0.05 * abs(z_expected - z0), 0.05)
+        tol_v = max(0.05 * abs(vz_expected), 0.05)
+
         def check(q, qd):
-            # Numerical drift from semi-implicit Euler at dt=1/60 is small;
-            # accept 5% relative error plus an absolute floor.
-            tol_z = max(0.05 * abs(z_expected - z0), 0.05)
-            tol_v = max(0.05 * abs(vz_expected), 0.05)
             return (
                 abs(q[2] - z_expected) < tol_z
                 and abs(qd[2] - vz_expected) < tol_v
@@ -121,10 +155,16 @@ class Example:
                 and abs(qd[1]) < 1e-4
             )
 
+        # Test all particles except the pinned ones.
+        free_indices = [
+            i for i in range(self.model.particle_count)
+            if i not in set(self._pinned_indices)
+        ]
         newton.examples.test_particle_state(
             self.state_0,
-            "free-fall trajectory matches analytic z(t) and v_z(t)",
+            "free-fall particles match z(t) / v_z(t)",
             check,
+            indices=free_indices,
         )
 
 

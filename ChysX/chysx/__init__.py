@@ -27,9 +27,7 @@ Typical use::
 
     sim = chysx.ClothSimulator()
     sim.set_material(mat)
-    sim.set_external_buffers(pos_ptr=pos.ptr,
-                             vel_ptr=vel.ptr,
-                             particle_count=n)
+    sim.set_external_buffers(pos_ptr=pos.ptr, vel_ptr=vel.ptr, particle_count=n)
     sim.step(dt=1.0 / 60.0)
 """
 
