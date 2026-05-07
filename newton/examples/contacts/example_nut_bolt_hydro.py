@@ -24,7 +24,7 @@ ASSEMBLY_STR = "m20_loose"
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
 
-SDF_MAX_RESOLUTION = 256
+SDF_MAX_RESOLUTION = 128
 SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
 
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
