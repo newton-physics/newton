@@ -8485,12 +8485,6 @@ def Mesh "JustAMesh" ()
         self.assertEqual(len(builder.tet_indices), 2)
         self.assertEqual(len(builder.tri_indices), 8)
 
-        # Each instance should register its own deformable, labelled with its instance-proxy prim path.
-        self.assertEqual(builder.deformable_label, ["/World/Instance0/SoftBody", "/World/Instance1/SoftBody"])
-        self.assertEqual(len(builder.deformable_offset), 3)
-        self.assertEqual(builder.deformable_offset[0], 0)
-        self.assertEqual(builder.deformable_offset[-1], 8)
-
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_add_usd_imports_tetmesh_with_transforms(self):
         """Test that add_usd applies TetMesh rotation and non-uniform scale transforms."""

@@ -510,109 +510,8 @@ class TestBuilderIntegration(unittest.TestCase):
         self.assertTrue(any("multiple of 4" in str(wi.message) for wi in w))
 
 
-class TestDeformableRegistry(unittest.TestCase):
-    def _add_cloth(self, builder, scale=0.1, label=None):
-        verts, inds = _equilateral_triangle(scale=scale)
-        builder.add_cloth_mesh(
-            pos=wp.vec3(0, 0, 0),
-            rot=wp.quat_identity(),
-            scale=1.0,
-            vel=wp.vec3(0, 0, 0),
-            vertices=verts.tolist(),
-            indices=inds.flatten().tolist(),
-            density=100.0,
-            label=label,
-        )
-
-    def _add_soft(self, builder, scale=0.1, label=None):
-        verts, inds = _regular_tet(scale=scale)
-        builder.add_soft_mesh(
-            pos=wp.vec3(0, 0, 0),
-            rot=wp.quat_identity(),
-            scale=1.0,
-            vel=wp.vec3(0, 0, 0),
-            vertices=verts.tolist(),
-            indices=inds.flatten().tolist(),
-            density=1000.0,
-            label=label,
-        )
-
-    def test_initial_state(self):
-        builder = newton.ModelBuilder()
-        self.assertEqual(builder.deformable_count, 0)
-        self.assertEqual(builder.deformable_label, [])
-        self.assertEqual(builder.deformable_offset, [0])
-
-    def test_default_labels_global_id(self):
-        builder = newton.ModelBuilder()
-        self._add_cloth(builder)
-        self._add_soft(builder)
-        self._add_cloth(builder)
-        # Single global counter, kind suffix from the source function.
-        self.assertEqual(
-            builder.deformable_label,
-            ["cloth_mesh_0", "soft_mesh_1", "cloth_mesh_2"],
-        )
-        self.assertEqual(builder.deformable_count, 3)
-
-    def test_custom_label_overrides_default(self):
-        builder = newton.ModelBuilder()
-        self._add_cloth(builder, label="left_panel")
-        self._add_cloth(builder)
-        self.assertEqual(builder.deformable_label, ["left_panel", "cloth_mesh_1"])
-
-    def test_offsets_partition_particle_range(self):
-        builder = newton.ModelBuilder()
-        self._add_cloth(builder)
-        cloth_end = builder.particle_count
-        self._add_soft(builder)
-        soft_end = builder.particle_count
-        self.assertEqual(len(builder.deformable_offset), builder.deformable_count + 1)
-        self.assertEqual(builder.deformable_offset[0], 0)
-        self.assertEqual(builder.deformable_offset[1], cloth_end)
-        self.assertEqual(builder.deformable_offset[2], soft_end)
-
-    def test_offsets_initialized_to_first_deformable_start(self):
-        builder = newton.ModelBuilder()
-        # Add free particles before any deformable; first deformable should start past them.
-        builder.add_particle(wp.vec3(0, 0, 0), wp.vec3(0, 0, 0), 1.0)
-        builder.add_particle(wp.vec3(0, 0, 0), wp.vec3(0, 0, 0), 1.0)
-        self._add_cloth(builder)
-        self.assertEqual(builder.deformable_offset[0], 2)
-        self.assertEqual(builder.deformable_offset[1], builder.particle_count)
-
-    def test_grid_label_uses_grid_suffix(self):
-        builder = newton.ModelBuilder()
-        builder.add_cloth_grid(
-            pos=wp.vec3(0, 0, 0),
-            rot=wp.quat_identity(),
-            vel=wp.vec3(0, 0, 0),
-            dim_x=2,
-            dim_y=2,
-            cell_x=0.1,
-            cell_y=0.1,
-            mass=0.01,
-        )
-        self.assertEqual(builder.deformable_label, ["cloth_grid_0"])
-
-    def test_soft_grid_label_uses_grid_suffix(self):
-        builder = newton.ModelBuilder()
-        builder.add_soft_grid(
-            pos=wp.vec3(0, 0, 0),
-            rot=wp.quat_identity(),
-            vel=wp.vec3(0, 0, 0),
-            dim_x=1,
-            dim_y=1,
-            dim_z=1,
-            cell_x=0.1,
-            cell_y=0.1,
-            cell_z=0.1,
-            density=1000.0,
-            k_mu=1e4,
-            k_lambda=1e4,
-            k_damp=0.0,
-        )
-        self.assertEqual(builder.deformable_label, ["soft_grid_0"])
+class TestLabelInWarnings(unittest.TestCase):
+    """The ``label`` argument flows into ``validate_*_mesh`` warning text."""
 
     def test_validate_mesh_warning_includes_label(self):
         builder = newton.ModelBuilder()
@@ -642,35 +541,6 @@ class TestDeformableRegistry(unittest.TestCase):
             validate_triangle_mesh(verts, np.array([[0, 1, 2]]))
         self.assertEqual(len(w), 1)
         self.assertNotIn("[", str(w[0].message))
-
-    def test_finalize_propagates_label_and_offset_to_model(self):
-        builder = newton.ModelBuilder()
-        self._add_cloth(builder)
-        self._add_soft(builder)
-        model = builder.finalize()
-        self.assertEqual(model.deformable_label, ["cloth_mesh_0", "soft_mesh_1"])
-        self.assertIsNotNone(model.deformable_offset)
-        self.assertEqual(model.deformable_offset.dtype, wp.int32)
-        self.assertEqual(list(model.deformable_offset.numpy()), builder.deformable_offset)
-
-    def test_failed_validation_does_not_register_deformable(self):
-        # Malformed indices early-return; no deformable should be recorded.
-        builder = newton.ModelBuilder()
-        verts, _ = _equilateral_triangle(scale=0.1)
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            builder.add_cloth_mesh(
-                pos=wp.vec3(0, 0, 0),
-                rot=wp.quat_identity(),
-                scale=1.0,
-                vel=wp.vec3(0, 0, 0),
-                vertices=verts.tolist(),
-                indices=[0, 1],
-                density=100.0,
-                validate_mesh=True,
-            )
-        self.assertEqual(builder.deformable_count, 0)
-        self.assertEqual(builder.deformable_offset, [0])
 
 
 if __name__ == "__main__":

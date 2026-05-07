@@ -267,12 +267,11 @@ def add_cloth_mesh(
             edges are reported separately by :class:`MeshAdjacency`,
             which is built unconditionally for the bending-edge
             pipeline.)
-        label: Optional name registered in
-            :attr:`newton.ModelBuilder.deformable_label` so the cloth can
-            be identified in diagnostics. Defaults to
-            ``"cloth_mesh_<deformable_count>"``.
+        label: Optional name forwarded to
+            :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
+            warning emitted with ``validate_mesh=True`` can identify
+            this cloth.
     """
-    effective_label = label if label is not None else f"cloth_mesh_{builder.deformable_count}"
     vertices_np = np.array(vertices, dtype=float) * scale
     rot_mat = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
     verts_3d = np.dot(vertices_np, rot_mat.T) + np.array(pos, dtype=float)
@@ -285,7 +284,7 @@ def add_cloth_mesh(
     if validate_mesh:
         from ...utils.mesh import validate_triangle_mesh  # noqa: PLC0415
 
-        validate_triangle_mesh(vertices_np, tri_indices_np, label=effective_label, stacklevel=3)
+        validate_triangle_mesh(vertices_np, tri_indices_np, label=label, stacklevel=3)
 
     panel_inv_D_all, panel_areas_all = _compute_panel_triangles(panel_verts_np, panel_indices_np)
     valid_inds = (panel_areas_all > 0.0).nonzero()[0]
@@ -396,8 +395,6 @@ def add_cloth_mesh(
                 custom_attributes=custom_attributes_springs,
             )
 
-    builder._register_deformable("cloth_mesh", start_vertex, effective_label)
-
 
 def add_cloth_grid(
     builder: ModelBuilder,
@@ -465,12 +462,10 @@ def add_cloth_grid(
         particle_radius: Per-particle radius.
         custom_attributes_particles: Extra custom attributes for particles.
         custom_attributes_springs: Extra custom attributes for springs.
-        label: Optional name registered in
-            :attr:`newton.ModelBuilder.deformable_label` so the cloth grid
-            can be identified in diagnostics. Defaults to
-            ``"cloth_grid_<deformable_count>"``.
+        label: Optional name forwarded through to
+            :func:`newton.solvers.style3d.add_cloth_mesh` and ultimately
+            to :func:`newton.utils.validate_triangle_mesh`.
     """
-    effective_label = label if label is not None else f"cloth_grid_{builder.deformable_count}"
 
     def grid_index(x: int, y: int, dim_x: int) -> int:
         return y * dim_x + x
@@ -524,7 +519,7 @@ def add_cloth_grid(
         particle_radius=particle_radius,
         custom_attributes_particles=custom_attributes_particles,
         custom_attributes_springs=custom_attributes_springs,
-        label=effective_label,
+        label=label,
     )
 
     if fix_left or fix_right or fix_top or fix_bottom:
