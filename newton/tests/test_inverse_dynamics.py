@@ -165,8 +165,11 @@ class TestGravCompForce(TestInverseDynamicsBase):
             link_masses: Per-link masses ``[w][a][link]``.
             link_inertias: Per-link body-frame inertia tensors
                 ``[w][a][link]`` as ``wp.mat33``.
-            expected_grav_comp_forces: Flat expected ``-G(q)`` in the order
-                Newton reports them.
+            expected_grav_comp_forces: Flat expected ``g(q) = ∂U/∂q`` (the
+                standard manipulator-equation gravity bias) in the order
+                Newton reports them. Equivalently, the joint-space force a
+                controller would apply to hold the articulation static under
+                gravity.
         """
         gravity_scalar, up_axis = _gravity_vec_to_scalar_and_axis(gravity_vec)
 
@@ -243,11 +246,12 @@ class TestGravCompForce(TestInverseDynamicsBase):
         measured_gravity_comp_force = inverse_dynamics.gravity_compensation_force.numpy()
         self.assertTrue(np.all(np.isfinite(measured_gravity_comp_force)))
 
-        # Newton's gravity_compensation_force returns G(q); the force the user
-        # would apply to hold the articulation static is -G(q), which is what
-        # expected_grav_comp_forces lists, so compare against -tau.
+        # Newton's gravity_compensation_force stores the standard
+        # manipulator-equation gravity bias g(q) = ∂U/∂q, which equals the
+        # joint-space force a controller would apply to hold the articulation
+        # static under gravity -- the value listed in expected_grav_comp_forces.
         self.assertEqual(measured_gravity_comp_force.shape, (len(expected_grav_comp_forces),))
-        np.testing.assert_allclose(-measured_gravity_comp_force, expected_grav_comp_forces, atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(measured_gravity_comp_force, expected_grav_comp_forces, atol=1e-5, rtol=1e-5)
 
     def test_gravity_zero_without_gravity(self):
         """G(q) must vanish when the model has zero gravity."""
@@ -532,10 +536,10 @@ class TestGravCompForce(TestInverseDynamicsBase):
 
         Every articulation here is floating-base so the rotation can live in
         ``joint_q``. World 0 a0 and World 1 a1 use a +90 deg rotation
-        (body +X maps to world +Y, prismatic-DOF entry of ``-G(q)`` is
-        ``+m_2 * g``); World 0 a1 and World 1 a0 use a -90 deg rotation
+        (body +X maps to world +Y, prismatic-DOF entry of ``g(q) = ∂U/∂q``
+        is ``+m_2 * g``); World 0 a1 and World 1 a0 use a -90 deg rotation
         (body +X maps to world -Y, prismatic-DOF entry is ``-m_2 * g``).
-        With all CoMs zero the per-articulation expected ``-G(q)`` is
+        With all CoMs zero the per-articulation expected ``g(q)`` is
         ``(0, M_total * g, 0, 0, 0, 0, +/- m_2 * g)``, with the prismatic
         sign matching the sign of the rotation.
         """
@@ -843,9 +847,11 @@ class TestGravCompForce(TestInverseDynamicsBase):
             0.0,
             0.0,
             0.0,
-            # angular z: gravity on child (offset from root CoM by (-0.5, 0, 0))
-            # creates torque (-0.5, 0, 0) × (0, -40, 0) = (0, 0, +20) about root CoM;
-            # compensation is -20, Newton negates to +20, test expects -measured = -20
+            # angular z about root CoM: child (offset from root CoM by
+            # (-0.5, 0, 0)) carries gravity force (0, -40, 0); the torque
+            # gravity exerts about root CoM is r × F = (-0.5, 0, 0) ×
+            # (0, -40, 0) = (0, 0, +20). g(q) = ∂U/∂q is the joint-space
+            # force needed to hold static, i.e. the counter-torque: -20.
             -20.0,
             40.0,
             60.0,  # World 1, fixed root, 1 dof
@@ -977,7 +983,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
             )
 
     def test_two_link_revolute_grav_comp_force_from_jnt_frame(self):
-        """Sweeps the internal-joint ``child_xform`` to verify ``G(q)`` for
+        """Sweeps the internal-joint ``child_xform`` to verify ``g(q)`` for
         a revolute DOF tracks the moment arm of the distal link.
 
         Each articulation has a revolute-about-+z internal joint with zero
@@ -986,7 +992,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
         distal link's origin — and therefore its CoM, since the body CoM
         is zero — to a known world position at zero internal q. With
         gravity along ``-y`` and revolute axis ``+z``, the internal-DOF
-        entry of ``-G(q)`` reduces to ``m_distal * |g| * x_world``.
+        entry of ``g(q) = ∂U/∂q`` reduces to ``m_distal * |g| * x_world``.
         Articulations whose displacement is along ``+/- y`` or ``+/- z``
         therefore have a zero internal entry. Floating-root articulations
         additionally carry ``M_total * |g|`` on the base linear-y entry
@@ -1198,9 +1204,10 @@ class TestGravCompForce(TestInverseDynamicsBase):
         ``(arm_length * cos q, arm_length * sin q, 0)``. Under gravity
         ``(0, -g, 0)`` the Lagrangian generalized gravity force on the
         internal DOF reduces to
-        ``G(q) = m_distal * g * arm_length * cos(q)``. Newton returns
-        ``-G(q)`` with the sign convention used elsewhere in this file, so
-        we compare ``-tau[0]`` against the closed form over a pose sweep.
+        ``g(q) = ∂U/∂q = m_distal * g * arm_length * cos(q)``, which is
+        exactly what Newton's ``gravity_compensation_force`` stores, so
+        we compare ``tau[0]`` directly against the closed form over a
+        pose sweep.
         """
         arm_length = 1.0
         m_distal = 2.0
@@ -1240,11 +1247,11 @@ class TestGravCompForce(TestInverseDynamicsBase):
 
                 expected = m_distal * g_mag * arm_length * np.cos(q)
                 np.testing.assert_allclose(
-                    -tau[0],
+                    tau[0],
                     expected,
                     atol=1e-5,
                     rtol=1e-5,
-                    err_msg=f"At q = {q}: expected {expected}, got -tau = {-tau[0]}",
+                    err_msg=f"At q = {q}: expected {expected}, got tau = {tau[0]}",
                 )
 
     def test_gravity_three_worlds_different_axes(self):
@@ -1318,12 +1325,15 @@ class TestGravCompForce(TestInverseDynamicsBase):
         measured = inverse_dynamics.gravity_compensation_force.numpy()
 
         # Free joint: 6 DOFs per articulation -- linear at CoM (parent frame =
-        # world for parent=-1), then angular at CoM. Newton's compensation is
-        # -G_standard, so the linear part equals m * g_world and the angular
-        # part is zero (body CoM at the body origin -> no gravity torque).
+        # world for parent=-1), then angular at CoM. Newton's
+        # gravity_compensation_force stores g(q) = ∂U/∂q, the standard
+        # manipulator-equation gravity bias. With U = -m * g_world . x_com,
+        # ∂U/∂x_com = -m * g_world, so the linear part equals -m * g_world.
+        # The angular part is zero (body CoM at the body origin -> no
+        # gravity torque).
         for w, g in enumerate(gravity_per_world):
             with self.subTest(world=w, gravity=g):
-                expected_linear = m * np.asarray(g, dtype=np.float64)
+                expected_linear = -m * np.asarray(g, dtype=np.float64)
                 expected_angular = np.zeros(3)
                 np.testing.assert_allclose(
                     measured[w * 6 : w * 6 + 3], expected_linear, atol=1e-5, rtol=1e-5
@@ -1387,8 +1397,9 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
 
         With ``m = 25``, ``L_1 = 1``, ``l_2c = 0.5`` the prefactor is 12.5;
         the test evaluates these formulas at each ``q_dot`` case below and
-        compares against ``-coriolis_compensation_force`` from
-        :func:`newton.eval_inverse_dynamics`.
+        compares against ``coriolis_compensation_force`` from
+        :func:`newton.eval_inverse_dynamics`, which stores the standard
+        manipulator-equation bias term ``+C(q, q_dot)*q_dot``.
         """
         # Per-link mass, link length L_1 (joint-to-joint distance), and link
         # COM offset from the joint l_2c. Defined here so the closed-form
@@ -1470,12 +1481,11 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                     scratch,
                 )
 
-                # Newton's coriolis_compensation_force has the same sign
-                # convention as gravity_compensation_force (i.e. opposite
-                # of "force the user would apply to compensate"), so
-                # compare -tau against the expected values.
+                # Newton's coriolis_compensation_force stores the standard
+                # manipulator-equation Coriolis bias +C(q, q_dot)*q_dot,
+                # which is the closed-form ``expected`` above.
                 measured = inverse_dynamics.coriolis_compensation_force.numpy()
-                np.testing.assert_allclose(-measured, expected, atol=1e-3, rtol=1e-5)
+                np.testing.assert_allclose(measured, expected, atol=1e-3, rtol=1e-5)
 
     def test_coriolis_radial_slider_matches_analytical(self):
         """C(q, q_dot) for a rotating radial slider matches the closed-form values.
@@ -1573,7 +1583,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 )
 
                 measured = inverse_dynamics.coriolis_compensation_force.numpy()
-                np.testing.assert_allclose(-measured, expected, atol=1e-4, rtol=1e-5)
+                np.testing.assert_allclose(measured, expected, atol=1e-4, rtol=1e-5)
 
     def test_coriolis_anisotropic_gimbal_independent_of_mass(self):
         """C(q, q_dot) for a 2-DOF gimbal depends on rotational inertia but not on link mass.
@@ -1669,7 +1679,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 )
 
                 measured = inverse_dynamics.coriolis_compensation_force.numpy()
-                np.testing.assert_allclose(-measured, expected, atol=1e-4, rtol=1e-5)
+                np.testing.assert_allclose(measured, expected, atol=1e-4, rtol=1e-5)
 
     def test_coriolis_floating_root_with_com_offset(self):
         """Pin down Newton's free-joint Coriolis convention with non-zero root CoM.
@@ -1686,9 +1696,9 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
             linear  = 0                       (m * a_com = F, no Coriolis)
             angular = omega x (I_body * omega)  (gyroscopic)
 
-        Newton's compensation force returns ``-(C * q_dot)`` (matching
-        gravity_compensation_force's sign convention), so the test
-        compares ``-tau`` against the closed-form values.
+        Newton's ``coriolis_compensation_force`` stores the standard
+        manipulator-equation bias ``+C(q, q_dot)*q_dot``, so the test
+        compares ``tau`` directly against the closed-form values.
 
         Both the linear and angular components must match: the angular
         bias is the gyroscopic ``omega x (I * omega)``, and the linear
@@ -1770,10 +1780,9 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                     inverse_dynamics,
                     scratch,
                 )
-                # Newton's value with the negation convention flipped back to
-                # the standard +C(q, q_dot)*q_dot.
-                measured_linear = -inverse_dynamics.coriolis_compensation_force.numpy()[0:3]
-                measured_angular = -inverse_dynamics.coriolis_compensation_force.numpy()[3:6]
+                # Newton stores the standard +C(q, q_dot)*q_dot directly.
+                measured_linear = inverse_dynamics.coriolis_compensation_force.numpy()[0:3]
+                measured_angular = inverse_dynamics.coriolis_compensation_force.numpy()[3:6]
 
                 # Closed-form spatial Coriolis bias at the body CoM under
                 # Newton's documented free-joint convention. Linear is
@@ -1888,10 +1897,9 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                     inverse_dynamics,
                     scratch,
                 )
-                # Flip Newton's negation convention back to standard
-                # +C(q, q_dot) * q_dot for comparison with the closed form.
-                measured_linear = -inverse_dynamics.coriolis_compensation_force.numpy()[0:3]
-                measured_angular = -inverse_dynamics.coriolis_compensation_force.numpy()[3:6]
+                # Newton stores the standard +C(q, q_dot)*q_dot directly.
+                measured_linear = inverse_dynamics.coriolis_compensation_force.numpy()[0:3]
+                measured_angular = inverse_dynamics.coriolis_compensation_force.numpy()[3:6]
 
                 omega = np.asarray(omega_values, dtype=np.float64)
                 expected_linear = np.zeros(3)
@@ -1907,8 +1915,8 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         for cross-coupling) with non-zero CoM offsets and anisotropic
         inertias on both links. Under zero gravity and zero applied force
         the manipulator equation reduces to ``M(q) * qddot = -C(q, qd) * qd``,
-        so the simulator's ``M * qddot`` after one step must equal
-        Newton's ``coriolis_compensation_force``.
+        so the simulator's ``M * qddot`` after one step must equal the
+        negation of Newton's ``coriolis_compensation_force``.
 
         For non-free joints, the joint torque is the scalar projection
         ``S^T * f``, which is reference-point invariant -- so unlike free
@@ -1995,7 +2003,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 coriolis_comp = inverse_dynamics.coriolis_compensation_force.numpy()
 
                 # Step with zero applied force and zero gravity:
-                # M * qddot = -C(q, qd) * qd = coriolis_compensation_force.
+                # M * qddot = -C(q, qd) * qd = -coriolis_compensation_force.
                 solver.step(state, state_next, control, contacts, dt)
                 qddot_observed = (
                     state_next.joint_qd.numpy() - np.asarray(joint_qd[:], dtype=np.float64)
@@ -2014,7 +2022,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 )
                 M_qddot = inverse_dynamics.tau.numpy()
 
-                np.testing.assert_allclose(coriolis_comp, M_qddot, atol=2e-3, rtol=2e-3)
+                np.testing.assert_allclose(-coriolis_comp, M_qddot, atol=2e-3, rtol=2e-3)
 
 
 class TestMassMatrix(TestInverseDynamicsBase):
@@ -2384,11 +2392,9 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         ]
         # Internal-DOF velocities. Non-zero values let the C(q, q_dot)*q_dot term
         # of the manipulator equation contribute.
-        # Internal-DOF velocities. Non-zero values let the C(q, q_dot)*q_dot term
-        # of the manipulator equation contribute.
         internal_speed = (0.5, -0.3) if non_zero_initial_dof_velocities else (0.0, 0.0)
         initial_joint_speeds = [internal_speed] * 4
-        # Per-test-case intern#al-DOF accelerations. Magnitudes and signs vary so
+        # Per-test-case internal-DOF accelerations. Magnitudes and signs vary so
         # the assertion exercises both small and large q_ddot, including negatives.
         initial_joint_accelerations = [
             (0.02, 0.04),

@@ -1266,14 +1266,12 @@ def eval_articulation_inverse_dynamics_force_kernel(
 ):
     """Compute the manipulator-equation joint force per articulation.
 
-    Evaluates ``tau = H @ qddot - coriolis_compensation_force - gravity_compensation_force``
-    per DOF. The two compensation-force inputs are expected in Newton's sign
-    convention (the values populated into
+    Evaluates ``tau = H @ qddot + coriolis_compensation_force + gravity_compensation_force``
+    per DOF, matching the standard manipulator-equation
+    ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)`` when the inputs hold the
+    Lagrangian bias terms populated by :func:`eval_inverse_dynamics` into
     :attr:`InverseDynamics.coriolis_compensation_force` and
-    :attr:`InverseDynamics.gravity_compensation_force` by
-    :func:`eval_inverse_dynamics`), which is the negation of the standard
-    manipulator-equation bias terms. Subtracting them therefore yields the
-    standard ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)``.
+    :attr:`InverseDynamics.gravity_compensation_force`.
 
     Per-articulation DOF counts are recovered from ``joint_qd_start``, so a
     mix of fixed-root (1+ internal DOFs) and floating-root (6 root DOFs +
@@ -1296,8 +1294,8 @@ def eval_articulation_inverse_dynamics_force_kernel(
             sum_val += H[art_idx, i, j] * qddot[dof_start + j]
         tau[dof_start + i] = (
             sum_val
-            - coriolis_compensation_force[dof_start + i]
-            - gravity_compensation_force[dof_start + i]
+            + coriolis_compensation_force[dof_start + i]
+            + gravity_compensation_force[dof_start + i]
         )
 
 
@@ -1314,14 +1312,13 @@ def eval_inverse_dynamics_force(
     Combines a per-articulation mass-matrix-times-acceleration product with
     the Coriolis and gravity bias terms to produce the full joint force
     required to realize ``qddot`` at the current ``(q, q_dot)`` under
-    gravity, writing the result into ``tau`` in place. The two
-    compensation-force inputs are expected in Newton's sign convention
-    (the buffers populated by :func:`eval_inverse_dynamics`), which is the
-    negation of the standard manipulator-equation bias terms; they are
-    subtracted internally so the output matches the standard convention.
-    Per-articulation DOF counts are recovered from
-    :attr:`Model.joint_qd_start`, so a mix of fixed-root and floating-root
-    articulations across multiple worlds is handled uniformly.
+    gravity, writing the result into ``tau`` in place. The compensation-force
+    inputs follow the standard manipulator-equation sign convention
+    (``+C(q,q_dot)*q_dot`` and ``+g(q) = +∂U/∂q``, the buffers populated by
+    :func:`eval_inverse_dynamics`) and are added directly. Per-articulation
+    DOF counts are recovered from :attr:`Model.joint_qd_start`, so a mix of
+    fixed-root and floating-root articulations across multiple worlds is
+    handled uniformly.
 
     Args:
         model: The model containing articulation definitions.
@@ -1332,13 +1329,13 @@ def eval_inverse_dynamics_force(
             by :func:`eval_mass_matrix`.
         qddot: Joint accelerations [m/s^2 or rad/s^2, depending on joint
             type], shape ``(joint_dof_count,)``, dtype float.
-        coriolis_compensation_force: Coriolis compensation generalized
-            force in Newton's sign convention [N or N·m, depending on
-            joint type], shape ``(joint_dof_count,)``, dtype float, e.g.
+        coriolis_compensation_force: Standard Coriolis bias term
+            ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type],
+            shape ``(joint_dof_count,)``, dtype float, e.g.
             :attr:`InverseDynamics.coriolis_compensation_force`.
-        gravity_compensation_force: Gravity compensation generalized force
-            in Newton's sign convention [N or N·m, depending on joint
-            type], shape ``(joint_dof_count,)``, dtype float, e.g.
+        gravity_compensation_force: Standard gravity bias term
+            ``g(q) = ∂U/∂q`` [N or N·m, depending on joint type], shape
+            ``(joint_dof_count,)``, dtype float, e.g.
             :attr:`InverseDynamics.gravity_compensation_force`.
         tau: Output joint forces [N or N·m, depending on joint type],
             shape ``(joint_dof_count,)``, dtype float, written in place.
