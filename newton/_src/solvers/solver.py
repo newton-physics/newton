@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import warp as wp
 
 from ..geometry import ParticleFlags
@@ -274,7 +276,7 @@ class SolverBase:
             self.joint_enabled_effective = new_info.joint_enabled_effective_gpu
         self._refresh_kinematic_state()
 
-    def _scatter_merged_body_forces(self, state_in: State, body_f: wp.array | None) -> None:
+    def _scatter_merged_body_forces(self, state_in: State, body_f: wp.array[wp.spatial_vector] | None) -> None:
         """Move external body_f written to merged-child slots onto their survivors."""
         merge_info: FixedJointMergeInfo | None = getattr(self, "_merge_info", None)
         if merge_info is None or body_f is None:
@@ -330,11 +332,11 @@ class SolverBase:
         state_out: State,
         dt: float,
         angular_damping: float = 0.0,
-        body_com: wp.array | None = None,
-        body_mass: wp.array | None = None,
-        body_inertia: wp.array | None = None,
-        body_inv_mass: wp.array | None = None,
-        body_inv_inertia: wp.array | None = None,
+        body_com: wp.array[wp.vec3] | None = None,
+        body_mass: wp.array[float] | None = None,
+        body_inertia: wp.array[wp.mat33] | None = None,
+        body_inv_mass: wp.array[float] | None = None,
+        body_inv_inertia: wp.array[wp.mat33] | None = None,
     ) -> None:
         """Integrate the rigid bodies of the model.
 

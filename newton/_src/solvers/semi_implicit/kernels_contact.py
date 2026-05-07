@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import warp as wp
 
 from ...geometry import ParticleFlags
@@ -604,9 +606,9 @@ def eval_body_contact_forces(
     contacts: Contacts | None,
     friction_smoothing: float = 1.0,
     force_in_world_frame: bool = False,
-    body_f_out: wp.array | None = None,
-    body_com_override: wp.array | None = None,
-    shape_body_override: wp.array | None = None,
+    body_f_out: wp.array[wp.spatial_vector] | None = None,
+    body_com_override: wp.array[wp.vec3] | None = None,
+    shape_body_override: wp.array[wp.int32] | None = None,
 ):
     """Compute and accumulate rigid contact forces into ``body_f_out``.
 
@@ -656,8 +658,8 @@ def eval_particle_body_contact_forces(
     particle_f: wp.array,
     body_f: wp.array,
     body_f_in_world_frame: bool = False,
-    body_com_override: wp.array | None = None,
-    shape_body_override: wp.array | None = None,
+    body_com_override: wp.array[wp.vec3] | None = None,
+    shape_body_override: wp.array[wp.int32] | None = None,
 ):
     """Compute particle-shape soft contact forces.
 

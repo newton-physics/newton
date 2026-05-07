@@ -507,12 +507,12 @@ def eval_body_joint_forces(
     body_f: wp.array,
     joint_attach_ke: float,
     joint_attach_kd: float,
-    joint_enabled_override: wp.array | None = None,
-    body_com_override: wp.array | None = None,
-    joint_parent_override: wp.array | None = None,
-    joint_child_override: wp.array | None = None,
-    joint_X_p_override: wp.array | None = None,
-    joint_X_c_override: wp.array | None = None,
+    joint_enabled_override: wp.array[wp.bool] | None = None,
+    body_com_override: wp.array[wp.vec3] | None = None,
+    joint_parent_override: wp.array[wp.int32] | None = None,
+    joint_child_override: wp.array[wp.int32] | None = None,
+    joint_X_p_override: wp.array[wp.transform] | None = None,
+    joint_X_c_override: wp.array[wp.transform] | None = None,
 ):
     """Compute and accumulate joint forces into ``body_f``.
 
