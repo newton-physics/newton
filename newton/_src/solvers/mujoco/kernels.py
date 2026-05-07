@@ -2345,6 +2345,7 @@ def update_jnt_solref_from_invweight0_kernel(
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
     joint_limit_solref: wp.array[wp.vec2],
+    joint_limit_solref_mode: wp.array[wp.int32],
     jnt_dofadr: wp.array[wp.int32],
     dof_invweight0: wp.array2d[float],
     jnt_solimp: wp.array2d[vec5],
@@ -2365,24 +2366,42 @@ def update_jnt_solref_from_invweight0_kernel(
     ``solref = (-ke * factor, -kd * factor)``. When ``ke <= 0``, Newton restores
     MuJoCo's default ``(0.02, 1.0)`` pair so runtime disablement matches a fresh
     model compiled without ``solref_limit``. MJCF-imported raw ``solreflimit``
-    values are forwarded unchanged when present. ``dof_invweight0`` is only
-    valid after MuJoCo's ``set_const_0`` / ``mj_setConst`` has run, so this
-    kernel must be launched from ``notify_model_changed`` after those calls (and
-    once at initialisation right after ``put_model``).
+    values are forwarded unchanged when present; MJCF joints that rely on the
+    implicit default keep MuJoCo's native ``(0.02, 1.0)`` until
+    ``joint_limit_ke``/``joint_limit_kd`` are changed by the user.
+    ``dof_invweight0`` is only valid after MuJoCo's ``set_const_0`` /
+    ``mj_setConst`` has run, so this kernel must be launched from
+    ``notify_model_changed`` after those calls (and once at initialisation right
+    after ``put_model``).
     """
     world, mjc_jnt = wp.tid()
     newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
     if newton_dof < 0:
         return
 
+    solref_mode = int(0)
+    if joint_limit_solref_mode:
+        # Mode values mirror SolverMuJoCo._SOLREF_MODE_*; kernels keep the
+        # numeric values so they can run independently of the Python class.
+        solref_mode = joint_limit_solref_mode[newton_dof]
+
     if joint_limit_solref:
         raw_solref = joint_limit_solref[newton_dof]
-        if raw_solref[0] != 0.0 or raw_solref[1] != 0.0:
+        raw_solref_is_set = raw_solref[0] != 0.0 or raw_solref[1] != 0.0
+        if solref_mode == 1 or raw_solref_is_set:
             jnt_solref[world, mjc_jnt] = raw_solref
             return
 
     ke = joint_limit_ke[newton_dof]
     kd = joint_limit_kd[newton_dof]
+    if solref_mode == 2 and wp.abs(ke - 2500.0) <= 1.0e-4 and wp.abs(kd - 100.0) <= 1.0e-4:
+        # MJCF import converts MuJoCo's implicit default solreflimit to
+        # Newton's default ke/kd. Preserve the native MuJoCo default until the
+        # user edits those Newton gains, then fall through to force-space
+        # scaling below.
+        jnt_solref[world, mjc_jnt] = wp.vec2(0.02, 1.0)
+        return
+
     if ke <= 0.0:
         # Restore MuJoCo's compiled default so runtime ``ke -> 0`` updates
         # behave the same as a fresh model built without a custom limit solref.

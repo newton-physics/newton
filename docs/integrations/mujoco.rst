@@ -115,9 +115,31 @@ Shape parameters
   (``timeconst = 0.02``, ``dampratio = 1.0``).
 
 **Joint-limit stiffness and damping (solref_limit).**
-  ``joint_limit_ke`` and ``joint_limit_kd`` are forwarded as negative
-  ``solref_limit`` values ``(-ke, -kd)``, which MuJoCo interprets as direct
-  stiffness/damping rather than time-constant/damp-ratio.
+  Newton's ``joint_limit_ke`` and ``joint_limit_kd`` are force-space gains
+  (for example, ``N·m/rad`` and ``N·m·s/rad`` for revolute joints).  MuJoCo's
+  negative ``solref_limit`` convention stores stiffness/damping values, but
+  the limit solver then converts them to an effective response using the
+  owning DOF's ``dof_invweight0`` and the limit impedance parameter
+  ``dmax = solimp_limit[1]``:
+
+  .. math::
+
+     k_\mathrm{eff} = k_\mathrm{stored} /
+     (\mathrm{dof\_invweight0} \cdot (1 - dmax))
+
+  To keep Newton's force-space meaning, ``SolverMuJoCo`` writes
+  ``solref_limit = (-ke * factor, -kd * factor)`` with
+  ``factor = dof_invweight0 * (1 - dmax)``.  This update runs after MuJoCo has
+  compiled or refreshed ``dof_invweight0``.  If ``joint_limit_ke <= 0``, the
+  solver restores MuJoCo's default ``solref_limit`` ``(0.02, 1.0)``.
+
+  MJCF-authored ``solreflimit`` values are different: they are already native
+  MuJoCo parameters, so they are preserved verbatim through the
+  ``mujoco.solreflimit`` custom attribute and are not rescaled.  Imported MJCF
+  joints that did not author ``solreflimit`` keep MuJoCo's implicit default
+  ``(0.02, 1.0)`` until their Newton ``joint_limit_ke`` or ``joint_limit_kd``
+  values are changed, at which point the Newton force-space scaling above is
+  used.
 
 **Margin.**
   Newton's ``shape_margin`` maps to MuJoCo ``geom_margin``.
@@ -128,9 +150,17 @@ Shape parameters
   These cover geom properties (``condim``, ``geom_priority``, ``geom_solimp``,
   ``geom_solmix``), joint properties (``dof_passive_stiffness``,
   ``dof_passive_damping``, ``jnt_actgravcomp``, ``dof_springref``, ``dof_ref``,
-  ``limit_margin``, ``solimplimit``, ``solreffriction``, ``solimpfriction``),
+  ``limit_margin``, ``solimplimit``, ``solreflimit``, ``solreflimit_mode``,
+  ``solreffriction``, ``solimpfriction``),
   equality constraints (``eq_solref``), tendons, general actuators, and solver
   options.  See :doc:`/concepts/custom_attributes` for the full list.
+
+  ``solreflimit_mode`` is an implementation detail that records how
+  ``solreflimit`` should be interpreted: Newton force-space gains, a raw
+  authored MuJoCo value, or an implicit MJCF default.  This extra flag is
+  needed because the two-component ``solreflimit`` value alone cannot
+  distinguish an unauthored value from an authored native value such as
+  ``solreflimit="0 0"``.
 
 
 Collision filtering

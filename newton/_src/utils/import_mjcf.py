@@ -336,6 +336,8 @@ def parse_mjcf(
     builder_custom_attr_dof: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.JOINT_DOF]
     )
+    solreflimit_mode_key = "mujoco:solreflimit_mode"
+    has_solreflimit_mode = solreflimit_mode_key in builder.custom_attributes
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.EQUALITY_CONSTRAINT]
     )
@@ -1521,6 +1523,17 @@ def parse_mjcf(
                             dof_custom_attributes[key] = {}
                         for dof_offset in range(3):
                             dof_custom_attributes[key][current_dof_index + dof_offset] = value
+                    if has_solreflimit_mode:
+                        # The raw vec2 cannot distinguish authored
+                        # solreflimit="0 0" from the "not authored" sentinel.
+                        # Track whether MJCF provided a raw value or merely
+                        # inherited MuJoCo's implicit default.
+                        solreflimit_mode = 1 if "solreflimit" in joint_attrib else 2
+                        dof_custom_attributes.setdefault(solreflimit_mode_key, {})
+                        for dof_offset in range(3):
+                            dof_custom_attributes[solreflimit_mode_key][current_dof_index + dof_offset] = (
+                                solreflimit_mode
+                            )
                     # Lift frictionloss into the builder's per-DOF friction array so it
                     # reaches the MuJoCo spec (joint_friction[qd_start]) on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
@@ -1597,6 +1610,15 @@ def parse_mjcf(
                     if key not in dof_custom_attributes:
                         dof_custom_attributes[key] = {}
                     dof_custom_attributes[key][current_dof_index] = value
+                if has_solreflimit_mode:
+                    # The mode keeps native MJCF semantics separate from
+                    # Newton-authored force-space ``joint_limit_ke``/``kd``:
+                    # authored solreflimit is raw MuJoCo data, while an
+                    # unauthored limit starts from MuJoCo's implicit default
+                    # and only switches to Newton scaling after the gains move
+                    # away from their imported default values.
+                    solreflimit_mode = 1 if "solreflimit" in joint_attrib else 2
+                    dof_custom_attributes.setdefault(solreflimit_mode_key, {})[current_dof_index] = solreflimit_mode
 
                 # Track this MJCF joint's name and DOF offset within the combined Newton joint
                 mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))

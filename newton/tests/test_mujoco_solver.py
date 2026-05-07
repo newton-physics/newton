@@ -8976,7 +8976,7 @@ class TestUpdateContactsPointPositions(unittest.TestCase):
 class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
     """Regression tests for joint-limit solref calibration.
 
-    Newton users set :meth:`ModelBuilder.add_joint_revolute` ``limit_ke`` /
+    Newton users set ``ModelBuilder.add_joint_revolute`` ``limit_ke`` /
     ``limit_kd`` as *force-space* stiffness/damping (N·m/rad). MuJoCo's
     limit-constraint solver, however, applies effective stiffness
     ``k_eff = k / (invweight * (1 - dmax))``. Unless the Newton→MuJoCo
@@ -9046,6 +9046,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             model.mujoco.solreflimit.assign(
                 wp.array(np.array([solref], dtype=np.float32), dtype=wp.vec2, device=model.device)
             )
+            model.mujoco.solreflimit_mode.assign(np.array([SolverMuJoCo._SOLREF_MODE_RAW], dtype=np.int32))
 
         return SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
 
@@ -9056,7 +9057,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         kd: float,
         solref: tuple[float, float] | None,
     ):
-        if solref is not None and np.any(np.asarray(solref) != 0.0):
+        if solref is not None:
             return np.array(solref, dtype=np.float64)
         if ke <= 0.0:
             return np.array([0.02, 1.0], dtype=np.float64)
@@ -9082,6 +9083,13 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                 "kd": 120.0,
                 "solimp": None,
                 "solref": (0.03, 0.7),
+            },
+            {
+                "name": "preserve MuJoCo-native zero solreflimit",
+                "ke": 12000.0,
+                "kd": 120.0,
+                "solimp": None,
+                "solref": (0.0, 0.0),
             },
             {
                 "name": "restore default solref when Newton limit is disabled",
@@ -9211,9 +9219,11 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         model = builder.finalize()
 
         np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], [0.0, 0.0], rtol=0.0, atol=0.0)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SolverMuJoCo._SOLREF_MODE_MJCF_DEFAULT)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         initial_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+        np.testing.assert_allclose(initial_solref, [0.02, 1.0], rtol=1e-6, atol=1e-6)
 
         ke = np.array([5000.0], dtype=np.float32)
         kd = np.array([50.0], dtype=np.float32)
@@ -9252,9 +9262,37 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
 
         expected_solref = np.array([0.03, 0.7], dtype=np.float64)
         np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], expected_solref, rtol=1e-6, atol=1e-6)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SolverMuJoCo._SOLREF_MODE_RAW)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         np.testing.assert_allclose(solver.mjw_model.jnt_solref.numpy()[0, 0], expected_solref, rtol=1e-6, atol=1e-6)
+
+    def test_mjcf_authored_zero_solreflimit_is_preserved_as_native_parameter(self):
+        """Authored MJCF ``solreflimit="0 0"`` must not be confused with the sentinel."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1" solreflimit="0 0"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+
+        expected_solref = np.array([0.0, 0.0], dtype=np.float64)
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], expected_solref, rtol=0.0, atol=0.0)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SolverMuJoCo._SOLREF_MODE_RAW)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(solver.mjw_model.jnt_solref.numpy()[0, 0], expected_solref, rtol=0.0, atol=0.0)
 
     def test_saved_mjcf_and_mj_model_use_scaled_joint_limit_solref(self):
         """The host ``MjModel`` and exported MJCF must match the scaled warp ``jnt_solref``."""
