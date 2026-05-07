@@ -93,6 +93,7 @@
 - Fix joint-synthesized CONNECT constraint anchors not updating when `dof_ref` or `joint_X_p` changes at runtime via `notify_model_changed()`
 - Fix WELD constraint data corruption when a model contains both FIXED and revolute/ball loop joints
 - Fix `SolverMuJoCo` passing non-zero geom/pair margins to `mujoco_warp.put_model()`, which fails when NATIVECCD is enabled. Margins are forced to zero when MuJoCo handles collisions (`use_mujoco_contacts=True`); the Newton collision pipeline (`use_mujoco_contacts=False`) is unchanged
+- Fix `SolverMuJoCo` failing to compile planar mesh colliders with MuJoCo's convex-hull path when `use_mujoco_contacts=False`; use MuJoCo contacts only with non-planar mesh colliders, primitive planes, or thick proxy geometry
 - Fix GPU illegal-memory-access in `SolverMuJoCo` Newton-contacts fast path when `notify_model_changed(BODY_INERTIAL_PROPERTIES | JOINT_DOF_PROPERTIES | MODEL_PROPERTIES)` was called between substeps (e.g. mass randomization in IsaacLab), or when the bound `Contacts` instance / MJWarp `naconmax` changed without invalidating the cached `tid_to_cid` mapping. The fast path is now invalidated on any property notify that affects cached MJWarp contact fields, and bounds-checks `cid` against `naconmax` defensively
 - Fix `State.assign` not copying namespaced extended and custom state attributes 
 - Fix mesh-convex back-face contacts generating inverted normals that trap shapes inside meshes and cause solver divergence (NaN)
