@@ -807,20 +807,6 @@ class ForwardKinematicsSolverConfig:
     Defaults to `1e-6`.
     """
 
-    TILE_SIZE_CTS: int = 8
-    """
-    Tile size for kernels along the dimension of kinematic constraints.
-    Changes to this setting after the solver's initialization will have no effect.
-    Defaults to `8`.
-    """
-
-    TILE_SIZE_VRS: int = 8
-    """
-    Tile size for kernels along the dimension of rigid body pose variables.
-    Changes to this setting after the solver's initialization will have no effect.
-    Defaults to `8`.
-    """
-
     use_sparsity: bool = False
     """
     Whether to use sparse Jacobian and solver; otherwise, dense versions are used.
@@ -903,10 +889,6 @@ class ForwardKinematicsSolverConfig:
             raise ValueError("`max_line_search_iterations` must be positive.")
         if self.tolerance <= 0.0:
             raise ValueError("`tolerance` must be positive.")
-        if self.TILE_SIZE_CTS <= 0:
-            raise ValueError("`TILE_SIZE_CTS` must be positive.")
-        if self.TILE_SIZE_VRS <= 0:
-            raise ValueError("`TILE_SIZE_VRS` must be positive.")
 
     @override
     def __post_init__(self):

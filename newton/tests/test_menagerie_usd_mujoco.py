@@ -908,6 +908,57 @@ def compare_tendon_jacobian_structure_mapped(
     )
 
 
+def compare_qD_structure_mapped(
+    newton_mjw: Any,
+    native_mjw: Any,
+    dof_map: dict[int, int],
+) -> None:
+    """Compare sparse RNE derivative D-structure under DOF reordering.
+
+    qD_fullm_i and qD_fullm_j are flat arrays of (row, col) DOF indices
+    enumerating the D-structure (full square sparsity used by RNE
+    derivatives). When DOF ordering differs the indices are permuted but
+    the underlying (row, col) set is structurally equivalent: each native
+    (i, j) entry should map to a Newton entry at (dof_map[i], dof_map[j]).
+
+    Gracefully skips if the fields are absent (older mujoco_warp without
+    RNE derivative support).
+
+    Args:
+        dof_map: native_dof_idx -> newton_dof_idx.
+    """
+    if not hasattr(native_mjw, "qD_fullm_i") or not hasattr(newton_mjw, "qD_fullm_i"):
+        return
+
+    nD = int(getattr(native_mjw, "nD", 0))
+    assert int(getattr(newton_mjw, "nD", 0)) == nD, (
+        f"nD mismatch: newton={getattr(newton_mjw, 'nD', None)} vs native={nD}"
+    )
+
+    if nD == 0:
+        return
+
+    newton_i = newton_mjw.qD_fullm_i.numpy().flatten()
+    newton_j = newton_mjw.qD_fullm_j.numpy().flatten()
+    native_i = native_mjw.qD_fullm_i.numpy().flatten()
+    native_j = native_mjw.qD_fullm_j.numpy().flatten()
+
+    inv_dof_map = {v: k for k, v in dof_map.items()}
+
+    native_pairs = {(int(native_i[k]), int(native_j[k])) for k in range(nD)}
+    newton_pairs = {(inv_dof_map.get(int(newton_i[k]), -1), inv_dof_map.get(int(newton_j[k]), -1)) for k in range(nD)}
+
+    missing = native_pairs - newton_pairs
+    extra = newton_pairs - native_pairs
+    if missing or extra:
+        parts = []
+        if missing:
+            parts.append(f"missing in newton (remapped): {sorted(missing)[:10]}")
+        if extra:
+            parts.append(f"extra in newton (remapped): {sorted(extra)[:10]}")
+        raise AssertionError("qD_fullm sparsity mismatch:\n" + "\n".join(parts))
+
+
 ACTUATOR_SKIP_FIELDS: set[str] = {
     "actuator_plugin",
     "actuator_user",
@@ -1053,6 +1104,8 @@ class TestMenagerieUSD(TestMenagerieBase):
         "jnt_",
         # Sparse mass matrix structure: DOF-indexed, compared via _compare_mass_matrix_structure
         "M_",
+        # Sparse RNE derivative D-structure: DOF-indexed, compared via _compare_qD_structure
+        "qD_fullm_",
         # Sparse tendon Jacobian structure: DOF-indexed, compared via _compare_tendon_jacobian_structure
         "ten_J_",
         "nJten",
@@ -1151,6 +1204,10 @@ class TestMenagerieUSD(TestMenagerieBase):
     def _compare_tendon_jacobian_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare sparse tendon Jacobian structure using DOF index mapping."""
         compare_tendon_jacobian_structure_mapped(newton_mjw, native_mjw, self._dof_map)
+
+    def _compare_qD_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare sparse RNE derivative D-structure using DOF index mapping."""
+        compare_qD_structure_mapped(newton_mjw, native_mjw, self._dof_map)
 
     def _compare_actuator_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare actuator fields using name-based index mapping."""

@@ -43,7 +43,7 @@ class Example:
         if self.solver_type == "vbd":
             quadruped.default_joint_cfg.target_ke = 1.0e4
             quadruped.default_joint_cfg.target_kd = 0.0
-            quadruped.default_shape_cfg.ke = 1.0e4
+            quadruped.default_shape_cfg.ke = 5.0e5
             quadruped.default_shape_cfg.kd = 0.0
             quadruped.default_shape_cfg.mu = 1.0
         else:
@@ -86,14 +86,10 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
 
         if self.solver_type == "vbd":
-            self.update_step_interval = 10
+            self.update_step_interval = 1
             self.solver = newton.solvers.SolverVBD(
                 self.model,
-                iterations=1,
-                # One-iteration VBD demo tuning: use full hard-contact correction and mild penalty decay.
-                # Prefer more iterations and contact damping for general use.
-                rigid_avbd_contact_alpha=0.0,
-                rigid_avbd_gamma=0.9,
+                iterations=2,
             )
         else:
             self.update_step_interval = 1
