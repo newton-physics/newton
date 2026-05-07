@@ -48,6 +48,7 @@
 
 - Use pre-computed local AABB for `CONVEX_MESH` shapes in `compute_shape_aabbs`, avoiding a per-frame support-function AABB computation
 - Build mesh SDFs via the texture-based sparse path only; sample via `SDF.texture_data` instead of `SDF.sparse_volume` / `SDF.coarse_volume`.
+- Change `SensorTiledCamera` default packed `color` and `albedo` outputs to sRGB-encoded bytes so authored display colors render at the expected display brightness; pass `RenderConfig(output_color_space=ColorSpace.LINEAR)` to preserve the previous linear-byte behavior.
 - Change implicit MPM default `solver` from `"gs"` to `"auto"`, which selects `"gs"` for trilinear bases and `"gs-batched"` for higher-order ones. Set `solver="gs"` explicitly to restore the previous behavior.
 - Change `SolverImplicitMPM.Config.solver` warmstart syntax from `+`-separated strings to ordered sequences; use `solver=("cg", "gauss-seidel")` instead of `solver="cg+gauss-seidel"`.
 - Change implicit MPM default `collider_basis` from `"Q1"` to `"S2"` for improved contact quality; set `collider_basis="Q1"` explicitly to restore the previous behavior.

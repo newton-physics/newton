@@ -14,6 +14,7 @@ import warp as wp
 from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
+from ..utils.color import color_linear_to_srgb
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
 AttributeAssignment = Model.AttributeAssignment
@@ -1455,6 +1456,9 @@ def _get_texture_source_color_space(shader: UsdShade.Shader | None, file_attr: U
                     except Exception:
                         source_color_space = None
 
+    if isinstance(source_color_space, str) and source_color_space.strip().lower() == "auto":
+        source_color_space = None
+
     if source_color_space is None and file_attr is not None:
         try:
             source_color_space = file_attr.GetColorSpace()
@@ -1616,9 +1620,13 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
                         "displayColor",
                     ),
                 )
-                properties["color"] = _coerce_color(color_value)
+                coerced_color = _coerce_color(color_value)
+                if coerced_color is not None:
+                    properties["color"] = color_linear_to_srgb(coerced_color)
         else:
-            properties["color"] = _coerce_color(color_input.Get())
+            coerced_color = _coerce_color(color_input.Get())
+            if coerced_color is not None:
+                properties["color"] = color_linear_to_srgb(coerced_color)
 
     metallic_input = shader.GetInput("metallic")
     if metallic_input:

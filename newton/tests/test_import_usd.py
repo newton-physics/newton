@@ -9226,5 +9226,54 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
 
 
+class TestUsdMaterialColorSpaces(unittest.TestCase):
+    def test_texture_color_space_auto_uses_file_attribute_fallback(self):
+        from newton._src.usd.utils import _get_texture_source_color_space  # noqa: PLC0415
+
+        shader = mock.Mock()
+        source_color_space_input = mock.Mock()
+        source_color_space_input.Get.return_value = "auto"
+        shader.GetInput.return_value = source_color_space_input
+
+        file_attr = mock.Mock()
+        file_attr.GetColorSpace.return_value = "raw"
+
+        self.assertEqual(_get_texture_source_color_space(shader, file_attr), "raw")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_preview_surface_color_is_converted_to_display_space(self):
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Mesh")
+        mesh.GetPointsAttr().Set(
+            [
+                Gf.Vec3f(0.0, 0.0, 0.0),
+                Gf.Vec3f(1.0, 0.0, 0.0),
+                Gf.Vec3f(0.0, 1.0, 0.0),
+            ]
+        )
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+        material = UsdShade.Material.Define(stage, "/World/Looks/Material")
+        shader = UsdShade.Shader.Define(stage, "/World/Looks/Material/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        linear_color = (0.25, 0.5, 0.75)
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*linear_color))
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI(mesh).Bind(material)
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+
+        np.testing.assert_allclose(
+            material_props["color"],
+            newton.utils.color_linear_to_srgb(linear_color),
+            atol=1e-6,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
