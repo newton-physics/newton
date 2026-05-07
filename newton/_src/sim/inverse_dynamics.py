@@ -16,12 +16,6 @@ if TYPE_CHECKING:
     from .state import State
 
 
-@wp.kernel
-def _negate_array_kernel(arr: wp.array[wp.float32]):
-    i = wp.tid()
-    arr[i] = -arr[i]
-
-
 class InverseDynamicsScratchBuffer:
     """Internal scratch buffers reused across calls to :func:`eval_inverse_dynamics`.
 
@@ -334,10 +328,13 @@ def _rnea_compensation_pass(
     )
 
     # Convert output tau_out from RNEA's internal body-origin convention to
-    # Newton's documented free-joint joint_f convention (wrench at body CoM).
-    # Subtracts the spatial-vs-classical acceleration convention bias and
-    # then shifts the wrench from body origin to body CoM. Non-free /
-    # non-distance joints are unaffected.
+    # Newton's documented free-joint joint_f convention (wrench at body CoM)
+    # and flip the RNEA sign so tau_out stores the standard ``+g(q)`` /
+    # ``+C(q, q_dot)*q_dot`` directly. Subtracts the spatial-vs-classical
+    # acceleration bias, shifts the wrench from body origin to body CoM,
+    # then negates every per-DOF entry. Non-free / non-distance joints
+    # skip the corrections (their joint_f is reference-point-invariant)
+    # but still get the sign flip.
     wp.launch(
         convert_free_distance_joint_f_internal_to_public,
         dim=model.joint_count,
@@ -353,17 +350,6 @@ def _rnea_compensation_pass(
             joint_qd,
         ],
         outputs=[tau_out],
-        device=device,
-    )
-
-    # ``eval_rigid_tau`` produces ``tau = -dot(S, body_f_s)``, which under the
-    # RNEA bias setup (``a_base = -gravity``, ``qdd = 0``) returns the negation
-    # of the standard manipulator-equation bias terms. Flip the sign so the
-    # buffer stores the standard `+g(q)` / `+C(q, q_dot)*q_dot` directly.
-    wp.launch(
-        _negate_array_kernel,
-        dim=tau_out.shape[0],
-        inputs=[tau_out],
         device=device,
     )
 

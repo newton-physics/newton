@@ -1039,10 +1039,17 @@ def convert_free_distance_joint_f_internal_to_public(
     body_com: wp.array[wp.vec3],
     body_mass: wp.array[float],
     joint_qd_public: wp.array[float],
-    # in/out (modified for free/distance joints, untouched otherwise)
+    # in/out
     joint_f: wp.array[float],
 ):
-    """Convert free/distance bias joint_f from internal Featherstone form to Newton's public convention.
+    """Convert RNEA bias ``joint_f`` from internal Featherstone form to Newton's public manipulator-equation convention.
+
+    ``eval_rigid_tau`` produces ``joint_f = -dot(S, body_f_s)``, which is the
+    negation of the standard manipulator-equation bias terms. After this
+    kernel, ``joint_f`` holds the standard ``+g(q) = +∂U/∂q`` /
+    ``+C(q, q_dot)*q_dot``, i.e. the form consumed by
+    :func:`eval_inverse_dynamics_force` (and the form a controller would
+    feed forward to compensate for gravity / Coriolis).
 
     For free and distance joints the joint motion subspace is the 6x6
     identity, so ``joint_f`` IS the body's spatial wrench. Three convention
@@ -1077,65 +1084,73 @@ def convert_free_distance_joint_f_internal_to_public(
 
     The linear correction is applied first so the subsequent wrench shift
     uses the corrected F_linear; the angular correction is applied after
-    the shift. Non-free / non-distance joints are untouched: their
-    ``joint_f`` is a per-axis scalar whose value does not depend on the
-    reference point.
+    the shift. After all three corrections (or for non-free / non-distance
+    joints, where ``joint_f`` is a per-axis scalar invariant under the
+    reference-point shift), every per-DOF entry is negated to flip from
+    RNEA's ``-bias`` convention to the standard ``+bias`` convention.
     """
     joint_id = wp.tid()
     jtype = joint_type[joint_id]
-    if jtype != JointType.FREE and jtype != JointType.DISTANCE:
-        return
-
-    parent = joint_parent[joint_id]
-    child = joint_child[joint_id]
     qd_start = joint_qd_start[joint_id]
+    qd_end = joint_qd_start[joint_id + 1]
 
-    # r_child_com expressed in the parent frame (matches
-    # convert_free_distance_joint_qd_public_to_internal so the input-side
-    # qd shift and the output-side wrench shift use the same offset vector).
-    X_wpj = joint_X_p[joint_id]
-    if parent >= 0:
-        X_wpj = body_q[parent] * X_wpj
-    q_p = wp.transform_get_rotation(X_wpj)
-    x_anchor_world = wp.transform_get_translation(X_wpj)
-    x_child_com_world = wp.transform_point(body_q[child], body_com[child])
-    r_child_com_parent = wp.quat_rotate_inv(q_p, x_child_com_world - x_anchor_world)
+    if jtype == JointType.FREE or jtype == JointType.DISTANCE:
+        parent = joint_parent[joint_id]
+        child = joint_child[joint_id]
 
-    # Velocity-product correction. tau = -f_b_s, so adding to tau is
-    # equivalent to subtracting the spurious omega x m * v_com from f_b_s.
-    v_com_parent = wp.vec3(
-        joint_qd_public[qd_start + 0],
-        joint_qd_public[qd_start + 1],
-        joint_qd_public[qd_start + 2],
-    )
-    omega_parent = wp.vec3(
-        joint_qd_public[qd_start + 3],
-        joint_qd_public[qd_start + 4],
-        joint_qd_public[qd_start + 5],
-    )
-    bias_correction = body_mass[child] * wp.cross(omega_parent, v_com_parent)
-    joint_f[qd_start + 0] = joint_f[qd_start + 0] + bias_correction[0]
-    joint_f[qd_start + 1] = joint_f[qd_start + 1] + bias_correction[1]
-    joint_f[qd_start + 2] = joint_f[qd_start + 2] + bias_correction[2]
+        # r_child_com expressed in the parent frame (matches
+        # convert_free_distance_joint_qd_public_to_internal so the input-side
+        # qd shift and the output-side wrench shift use the same offset vector).
+        X_wpj = joint_X_p[joint_id]
+        if parent >= 0:
+            X_wpj = body_q[parent] * X_wpj
+        q_p = wp.transform_get_rotation(X_wpj)
+        x_anchor_world = wp.transform_get_translation(X_wpj)
+        x_child_com_world = wp.transform_point(body_q[child], body_com[child])
+        r_child_com_parent = wp.quat_rotate_inv(q_p, x_child_com_world - x_anchor_world)
 
-    # Wrench shift origin -> CoM, using the corrected F_linear.
-    F_linear = wp.vec3(
-        joint_f[qd_start + 0],
-        joint_f[qd_start + 1],
-        joint_f[qd_start + 2],
-    )
-    shift = wp.cross(r_child_com_parent, F_linear)
-    joint_f[qd_start + 3] = joint_f[qd_start + 3] - shift[0]
-    joint_f[qd_start + 4] = joint_f[qd_start + 4] - shift[1]
-    joint_f[qd_start + 5] = joint_f[qd_start + 5] - shift[2]
+        # Velocity-product correction. tau = -f_b_s, so adding to tau is
+        # equivalent to subtracting the spurious omega x m * v_com from f_b_s.
+        v_com_parent = wp.vec3(
+            joint_qd_public[qd_start + 0],
+            joint_qd_public[qd_start + 1],
+            joint_qd_public[qd_start + 2],
+        )
+        omega_parent = wp.vec3(
+            joint_qd_public[qd_start + 3],
+            joint_qd_public[qd_start + 4],
+            joint_qd_public[qd_start + 5],
+        )
+        bias_correction = body_mass[child] * wp.cross(omega_parent, v_com_parent)
+        joint_f[qd_start + 0] = joint_f[qd_start + 0] + bias_correction[0]
+        joint_f[qd_start + 1] = joint_f[qd_start + 1] + bias_correction[1]
+        joint_f[qd_start + 2] = joint_f[qd_start + 2] + bias_correction[2]
 
-    # Angular velocity-product correction. The residual after the linear
-    # correction + wrench shift is m * r_com x (omega x v_com); subtract
-    # it from M_at_CoM (i.e. add to joint_f_ang since joint_f_ang = -M_at_CoM).
-    ang_correction = body_mass[child] * wp.cross(r_child_com_parent, wp.cross(omega_parent, v_com_parent))
-    joint_f[qd_start + 3] = joint_f[qd_start + 3] + ang_correction[0]
-    joint_f[qd_start + 4] = joint_f[qd_start + 4] + ang_correction[1]
-    joint_f[qd_start + 5] = joint_f[qd_start + 5] + ang_correction[2]
+        # Wrench shift origin -> CoM, using the corrected F_linear.
+        F_linear = wp.vec3(
+            joint_f[qd_start + 0],
+            joint_f[qd_start + 1],
+            joint_f[qd_start + 2],
+        )
+        shift = wp.cross(r_child_com_parent, F_linear)
+        joint_f[qd_start + 3] = joint_f[qd_start + 3] - shift[0]
+        joint_f[qd_start + 4] = joint_f[qd_start + 4] - shift[1]
+        joint_f[qd_start + 5] = joint_f[qd_start + 5] - shift[2]
+
+        # Angular velocity-product correction. The residual after the linear
+        # correction + wrench shift is m * r_com x (omega x v_com); subtract
+        # it from M_at_CoM (i.e. add to joint_f_ang since joint_f_ang = -M_at_CoM).
+        ang_correction = body_mass[child] * wp.cross(r_child_com_parent, wp.cross(omega_parent, v_com_parent))
+        joint_f[qd_start + 3] = joint_f[qd_start + 3] + ang_correction[0]
+        joint_f[qd_start + 4] = joint_f[qd_start + 4] + ang_correction[1]
+        joint_f[qd_start + 5] = joint_f[qd_start + 5] + ang_correction[2]
+
+    # Sign flip: ``eval_rigid_tau`` outputs ``-dot(S, body_f_s)`` which is
+    # the negation of the standard manipulator-equation bias. Flip every
+    # per-DOF entry so the buffer stores the standard ``+g(q)`` /
+    # ``+C(q, q_dot)*q_dot`` directly.
+    for i in range(qd_start, qd_end):
+        joint_f[i] = -joint_f[i]
 
 
 # Inverse dynamics via Recursive Newton-Euler algorithm (Featherstone Table 5.1)
