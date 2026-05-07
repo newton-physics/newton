@@ -43,6 +43,26 @@ class InverseDynamicsScratchBuffer:
         world_count: int,
         device: Devicelike | None = None,
     ):
+        """Allocate scratch buffers for inverse dynamics.
+
+        Args:
+            body_count: Total number of rigid bodies across all articulations
+                (matches :attr:`Model.body_count`).
+            articulation_count: Number of articulations (matches
+                :attr:`Model.articulation_count`).
+            joint_dof_count: Total number of joint DOFs across all
+                articulations (matches :attr:`Model.joint_dof_count`).
+            max_dofs_per_articulation: Per-articulation DOF count (inclusive
+                of floating-base root DOFs, if any). Matches
+                :attr:`Model.max_dofs_per_articulation`.
+            max_joints_per_articulation: Maximum number of joints in any
+                articulation, used to size the per-articulation Jacobian
+                scratch. Matches :attr:`Model.max_joints_per_articulation`.
+            world_count: Number of simulation worlds, used to size the
+                constant-zero gravity vector consumed by the Coriolis
+                compensation pass. Matches :attr:`Model.world_count`.
+            device: Warp device on which the buffers are allocated.
+        """
         bc = body_count
         ac = articulation_count
         jdc = joint_dof_count
