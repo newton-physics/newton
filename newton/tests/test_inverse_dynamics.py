@@ -1596,8 +1596,8 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         y_axis = wp.vec3(0.0, 1.0, 0.0)
 
         Ix = 2.0
-        Iy = 1.0
-        Iz = 0.5
+        Iy = 1.5
+        Iz = 1.0
         outer_inertia = wp.mat33(Ix, 0.0, 0.0, 0.0, Iy, 0.0, 0.0, 0.0, Iz)
 
         q1 = 0.0  # arbitrary; system is rotationally symmetric about +Z
@@ -1704,7 +1704,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         m = 1.0
         # Anisotropic body-frame inertia so the gyroscopic angular bias
         # omega x (I * omega) is non-zero for a generic omega.
-        I_diag = (2.0, 1.0, 0.5)
+        I_diag = (2.0, 1.5, 1.0)
         I_body = wp.mat33(I_diag[0], 0.0, 0.0, 0.0, I_diag[1], 0.0, 0.0, 0.0, I_diag[2])
         # Non-zero CoM offset so the conversion's angular correction
         # ``m * r_com x (omega x v_com)`` is exercised in addition to the
@@ -1820,7 +1820,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         child_xform_offset = wp.transform(wp.vec3(0.3, -0.2, 0.1), child_xform_quat)
 
         m = 1.0
-        I_diag = (2.0, 1.0, 0.5)
+        I_diag = (2.0, 1.5, 1.0)
         I_body = wp.mat33(I_diag[0], 0.0, 0.0, 0.0, I_diag[1], 0.0, 0.0, 0.0, I_diag[2])
         r_com = wp.vec3(0.5, 0.2, -0.3)
 
@@ -1925,7 +1925,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
 
         # Anisotropic inertia and non-zero CoM offsets on both links to
         # exercise the body-CoM term in the spatial-inertia bias.
-        I_link = wp.mat33(2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.5)
+        I_link = wp.mat33(2.0, 0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0, 1.0)
         com_link = wp.vec3(0.1, 0.2, -0.15)
 
         builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
