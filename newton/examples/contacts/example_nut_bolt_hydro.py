@@ -116,7 +116,8 @@ class Example:
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 5
+        self.sim_substeps = 6
+        self.collide_every = 3 if args.solver == "mujoco" else 1  # re-collide every K substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
@@ -140,7 +141,7 @@ class Example:
 
         # Maximum number of rigid contacts to allocate (limits memory usage)
         # None = auto-calculate (can be very large), or set explicit limit (e.g., 1_000_000)
-        self.rigid_contact_max = 100000
+        self.rigid_contact_max = 40_000
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
         self.broad_phase_mode = "sap"
@@ -293,10 +294,11 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
-            # Re-run collision detection every substep so contact normals
-            # stay aligned with the threading rotation (#2702).
-            self.collision_pipeline.collide(self.state_0, self.contacts)
+        for sub in range(self.sim_substeps):
+            # Refresh contacts every K substeps so contact normals stay
+            # aligned with the threading rotation.
+            if sub % self.collide_every == 0:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
             self.state_0.clear_forces()
 
             self.viewer.apply_forces(self.state_0)
