@@ -162,7 +162,8 @@ class InverseDynamics:
         Equivalently, the joint-space force a controller must apply to hold the articulation static under gravity (feed-forward gravity compensation)."""
 
         self.coriolis_compensation_force: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
-        """Standard manipulator-equation Coriolis + centrifugal bias ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float."""
+        """Standard manipulator-equation Coriolis + centrifugal bias ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
+        Equivalently, the joint-space force a controller must apply to maintain the current ``joint_qd`` at zero acceleration in the absence of gravity (feed-forward Coriolis compensation)."""
 
         self.tau: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
         """Inverse-dynamics joint force ``tau = M(q)*qddot + C(q, q_dot)*q_dot + g(q)`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
