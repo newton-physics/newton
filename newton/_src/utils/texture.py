@@ -94,6 +94,29 @@ def load_texture(texture: str | os.PathLike[str] | np.ndarray | None) -> np.ndar
     return np.ascontiguousarray(np.asarray(texture))
 
 
+def linear_texture_to_srgb(texture_image: np.ndarray | None) -> np.ndarray | None:
+    """Convert RGB channels from linear light to sRGB/display encoding."""
+    if texture_image is None:
+        return None
+
+    image = np.asarray(texture_image)
+    if image.ndim < 3 or image.shape[-1] < 3 or image.size == 0:
+        return np.ascontiguousarray(image)
+
+    out = image.copy()
+    if np.issubdtype(out.dtype, np.integer):
+        scale = float(np.iinfo(out.dtype).max)
+        rgb = np.clip(out[..., :3].astype(np.float32) / scale, 0.0, 1.0)
+        srgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
+        out[..., :3] = np.clip(np.round(srgb * scale), 0.0, scale).astype(out.dtype)
+        return np.ascontiguousarray(out)
+
+    out = out.astype(np.float32, copy=False)
+    rgb = np.clip(out[..., :3], 0.0, 1.0)
+    out[..., :3] = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
+    return np.ascontiguousarray(out.astype(image.dtype, copy=False))
+
+
 def normalize_texture(
     texture_image: np.ndarray | None,
     *,

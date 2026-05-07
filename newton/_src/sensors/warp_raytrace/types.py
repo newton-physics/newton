@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from ...utils.color import ColorSpace, normalize_color_space
+from ...utils.color import ColorSpace
 
 
 class RenderLightType(enum.IntEnum):
@@ -63,7 +63,7 @@ class RenderConfig:
     """Cull back-facing triangles."""
 
     output_color_space: ColorSpace = ColorSpace.SRGB
-    """Color space for packed color/albedo outputs.
+    """Color space for packed color and albedo outputs.
 
     Use ``ColorSpace.SRGB`` for display-encoded bytes or
     ``ColorSpace.LINEAR`` for linear RGB bytes.
@@ -89,9 +89,6 @@ class RenderConfig:
 
     gaussians_max_num_hits: int = 20
     """Maximum Gaussian hits accumulated per ray."""
-
-    def __post_init__(self) -> None:
-        self.output_color_space = normalize_color_space(self.output_color_space)
 
 
 @dataclass(unsafe_hash=True)
@@ -127,10 +124,7 @@ class TextureData:
     Attributes:
         texture: 2D Texture as ``wp.Texture2D``.
         repeat: UV tiling factors along U and V axes.
-        color_space: ``ColorSpace.LINEAR`` for raw/linear textures,
-            ``ColorSpace.SRGB`` for sRGB textures.
     """
 
     texture: wp.Texture2D
     repeat: wp.vec2f
-    color_space: wp.int32

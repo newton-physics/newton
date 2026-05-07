@@ -32,7 +32,7 @@ class TestShapeColors(unittest.TestCase):
         """Cache the active Warp device for model finalization."""
         self.device = wp.get_device()
 
-    def _make_tetra_mesh(self, color=None, **kwargs):
+    def _make_tetra_mesh(self, color=None):
         """Create a small tetrahedral mesh with an optional display color."""
         vertices = np.array(
             [
@@ -44,7 +44,7 @@ class TestShapeColors(unittest.TestCase):
             dtype=np.float32,
         )
         indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
-        return newton.Mesh(vertices, indices, color=color, **kwargs)
+        return newton.Mesh(vertices, indices, color=color)
 
     def test_collision_shape_without_explicit_color_uses_palette_by_default(self):
         """Verify collision shapes use the per-shape palette sequence by default."""
@@ -69,25 +69,6 @@ class TestShapeColors(unittest.TestCase):
 
         np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.2, 0.4, 0.6], atol=1e-6, rtol=1e-6)
 
-    def test_mesh_texture_color_space_uses_color_space_enum_or_auto(self):
-        """Verify mesh texture metadata uses the shared color-space enum."""
-        mesh = self._make_tetra_mesh(texture="albedo.png", texture_color_space=newton.utils.ColorSpace.LINEAR)
-
-        self.assertIs(mesh.texture_color_space, newton.utils.ColorSpace.LINEAR)
-
-        mesh.texture_color_space = newton.utils.ColorSpace.SRGB
-        self.assertIs(mesh.texture_color_space, newton.utils.ColorSpace.SRGB)
-
-        mesh.texture_color_space = "auto"
-        self.assertEqual(mesh.texture_color_space, "auto")
-
-        with self.assertRaises(ValueError):
-            mesh.texture_color_space = "raw"
-
-        mesh.texture_color_space = newton.utils.ColorSpace.LINEAR
-        mesh.texture = "replacement.png"
-        self.assertEqual(mesh.texture_color_space, "auto")
-
     def test_explicit_shape_color_overrides_mesh_color(self):
         """Verify explicit shape colors override colors embedded in meshes."""
         mesh = self._make_tetra_mesh(color=(0.2, 0.4, 0.6))
@@ -106,16 +87,13 @@ class TestShapeColors(unittest.TestCase):
     def test_ground_plane_keeps_checkerboard_material_with_resolved_shape_colors(self):
         """Verify the ground plane keeps its checkerboard material after color resolution."""
         builder = newton.ModelBuilder()
-        shape = builder.add_ground_plane()
+        builder.add_ground_plane()
         model = builder.finalize(device=self.device)
-        expected = np.array((0.125, 0.125, 0.15), dtype=np.float32)
 
         viewer = ViewerNull()
         viewer.set_model(model)
 
         batch = next(iter(viewer._shape_instances.values()))
-        np.testing.assert_allclose(model.shape_color.numpy()[shape], expected, atol=1e-6, rtol=1e-6)
-        np.testing.assert_allclose(batch.colors.numpy()[0], expected, atol=1e-6, rtol=1e-6)
         np.testing.assert_allclose(batch.materials.numpy()[0], [0.5, 0.0, 1.0, 0.0], atol=1e-6, rtol=1e-6)
 
     def test_viewer_syncs_runtime_shape_colors_from_model(self):

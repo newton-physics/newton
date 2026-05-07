@@ -39,8 +39,8 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
     - **color** -- RGBA shaded image packed into ``uint32``. By default these
       bytes are display/sRGB-encoded; set
-      ``RenderConfig.output_color_space=newton.utils.ColorSpace.LINEAR``
-      to keep them linear.
+      ``RenderConfig.output_color_space=newton.utils.ColorSpace.LINEAR`` to
+      keep them linear.
     - **depth** -- ray-hit distance [m] (``float32``); negative means no hit.
     - **normal** -- surface normal at hit point (``vec3f``).
     - **albedo** -- unshaded surface color packed into ``uint32`` using the
@@ -52,10 +52,9 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
     Shapes without the ``VISIBLE`` flag are excluded.
 
-    Shape colors are stored on the model as sRGB/display RGB, then converted to
-    linear RGB internally for shading. Mesh textures authored as sRGB are
-    converted to linear before shading, and the packed ``color``/``albedo``
-    outputs are optionally encoded back to display/sRGB at the end.
+    Shape colors and base-color textures are interpreted as display/sRGB RGB,
+    converted to linear RGB internally for shading, and packed according to
+    :attr:`RenderConfig.output_color_space` at the output boundary.
 
     Example:
         ::
@@ -130,7 +129,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 defaults. The legacy :class:`Config` dataclass is still
                 accepted but deprecated. Use
                 ``RenderConfig.output_color_space`` to control whether packed
-                ``color``/``albedo`` outputs are display-encoded or left
+                ``color`` and ``albedo`` outputs are display-encoded or left
                 linear.
             load_textures: Load texture data from the model. Set to ``False``
                 to skip texture loading when textures are not needed.
@@ -208,17 +207,20 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
                 ``(camera_count, height, width, 2)``.
-            color_image: Output for packed RGBA color. The bytes are sRGB by
-                default, or linear when
+            color_image: Output for packed RGBA color. The bytes are
+                display/sRGB by default, or linear when
                 ``self.render_config.output_color_space`` is
                 ``newton.utils.ColorSpace.LINEAR``. None to skip.
             depth_image: Output for ray-hit distance [m]. None to skip.
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
-            albedo_image: Output for unshaded surface color. None to skip.
+            albedo_image: Output for packed unshaded surface color, using the
+                same output color space as ``color_image``. None to skip.
             refit_bvh: Refit the BVH before rendering.
-            clear_data: Values to clear output buffers with.
-                See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
+            clear_data: Values to clear output buffers with. Packed color and
+                albedo clear values are specified as display/sRGB RGBA and
+                converted to linear when linear output is requested. See
+                :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
         """
         if state is not None:
             self.sync_transforms(state)

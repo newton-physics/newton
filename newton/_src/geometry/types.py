@@ -5,13 +5,12 @@ import enum
 import os
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
-from ..utils.color import ColorSpace
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -150,7 +149,6 @@ class Mesh:
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
         *,
-        texture_color_space: ColorSpace | Literal["auto"] = "auto",
         sdf: "SDF | None" = None,
     ):
         """
@@ -172,9 +170,6 @@ class Mesh:
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
             texture: Optional texture path/URL or image data (H, W, C).
-            texture_color_space: Texture source color space. Use
-                :class:`~newton.utils.ColorSpace` values for explicit linear
-                or sRGB textures, or ``"auto"`` to use the renderer default.
             sdf: Optional prebuilt SDF object owned by this mesh.
         """
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
@@ -187,8 +182,6 @@ class Mesh:
         self.color = color
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
-        self.texture_color_space = texture_color_space
-        """Source color space of :attr:`texture`."""
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -714,7 +707,6 @@ class Mesh:
             else (self._texture.copy() if self._texture is not None else None),
             roughness=self._roughness,
             metallic=self._metallic,
-            texture_color_space=self.texture_color_space,
         )
         if not recompute_inertia:
             m.inertia = self.inertia
@@ -928,26 +920,7 @@ class Mesh:
     def texture(self, value: str | np.ndarray | None):
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(value)
-        self.texture_color_space = "auto"
         self._texture_hash = None
-        self._cached_hash = None
-
-    @property
-    def texture_color_space(self) -> ColorSpace | Literal["auto"]:
-        """Source color space of the assigned texture.
-
-        Use :class:`~newton.utils.ColorSpace` values for explicit linear or
-        sRGB textures, or ``"auto"`` to use the renderer default. Reset to
-        ``"auto"`` whenever :attr:`texture` is reassigned.
-        """
-        return self._texture_color_space
-
-    @texture_color_space.setter
-    def texture_color_space(self, value: ColorSpace | Literal["auto"]):
-        if isinstance(value, ColorSpace) or (isinstance(value, str) and value == "auto"):
-            self._texture_color_space = value
-        else:
-            raise ValueError('texture_color_space must be a ColorSpace value or "auto".')
         self._cached_hash = None
 
     @property

@@ -11,7 +11,6 @@ import numpy as np
 import warp as wp
 
 from ...core import MAXVAL
-from ...utils.color import ColorSpace
 from .types import RenderLightType, TextureData
 
 if TYPE_CHECKING:
@@ -161,10 +160,7 @@ class Utils:
             camera_count: Number of cameras.
 
         Returns:
-            Array of shape ``(world_count, camera_count, height, width)``,
-            dtype ``uint32``. Each pixel stores packed RGBA bytes in either
-            display/sRGB or linear space depending on
-            ``render_config.output_color_space``.
+            Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
         """
         return wp.zeros(
             (self.__render_context.world_count, camera_count, height, width),
@@ -232,10 +228,7 @@ class Utils:
             camera_count: Number of cameras.
 
         Returns:
-            Array of shape ``(world_count, camera_count, height, width)``,
-            dtype ``uint32``. Each pixel stores packed RGBA bytes in either
-            display/sRGB or linear space depending on
-            ``render_config.output_color_space``.
+            Array of shape ``(world_count, camera_count, height, width)``, dtype ``uint32``.
         """
         return wp.zeros(
             (self.__render_context.world_count, camera_count, height, width),
@@ -343,11 +336,9 @@ class Utils:
         """Flatten rendered color image to a tiled RGBA buffer.
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
-        Useful for writing a single pre-tiled image to disk; use :meth:`to_rgba_from_color`
-        with :meth:`~newton.viewer.ViewerBase.log_image` for in-viewer display.
 
         Args:
-            image: Color output from :meth:`~newton.sensors.SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
+            image: Color output from :meth:`~SensorTiledCamera.update`, shape ``(world_count, camera_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Tiles per row in the grid. If None, picks a square-ish layout.
         """
@@ -567,7 +558,6 @@ class Utils:
         )
 
         self.__checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
-        self.__checkerboard_data.color_space = int(ColorSpace.SRGB)
 
         self.__render_context.config.enable_textures = True
         self.__render_context.texture_data = wp.array(

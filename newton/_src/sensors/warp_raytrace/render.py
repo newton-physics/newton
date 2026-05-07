@@ -38,7 +38,7 @@ def create_kernel(
         clear_color = _srgb_packed_rgba_to_linear(clear_color)
         clear_albedo = _srgb_packed_rgba_to_linear(clear_albedo)
 
-    if state.render_color or state.render_normal:
+    if state.render_color or state.render_normal or (state.render_albedo and config.enable_textures):
         raytrace_closest_hit = raytrace.create_closest_hit_function(config, state)
     else:
         raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
@@ -209,7 +209,7 @@ def create_kernel(
                         closest_hit.face_idx,
                     )
 
-                    albedo_color = wp.cw_mul(albedo_color, tex_color)
+                    albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
 
         if wp.static(state.render_albedo):
             packed_albedo = albedo_color

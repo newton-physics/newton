@@ -16,7 +16,6 @@ import warp as wp
 import newton
 
 from ..core.types import override
-from ..utils.color import srgb_image_to_uint8
 from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
 
@@ -572,9 +571,9 @@ class ViewerViser(ViewerBase):
         else:
             batched_scales = np.ones((num_instances, 3), dtype=np.float32)
 
-        # Prepare colors as display-space uint8 values for viser/three.js.
+        # Prepare colors (convert from 0-1 float to 0-255 uint8)
         if colors_np is not None:
-            batched_colors = srgb_image_to_uint8(colors_np)
+            batched_colors = (colors_np * 255).astype(np.uint8)
         else:
             batched_colors = None  # Will use cached colors or default gray
 

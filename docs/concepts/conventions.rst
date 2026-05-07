@@ -415,18 +415,16 @@ apply the appropriate rotation transforms:
 Color Space Handling
 --------------------
 
-Newton stores authored surface colors in display RGB by default. Public color
-inputs such as :attr:`newton.Model.shape_color`, :attr:`newton.Mesh.color`,
-and the ``color`` arguments on :class:`newton.ModelBuilder` shape helpers
-should be passed as the values you want to see on screen, with components in
-``[0, 1]``.
+Newton treats authored surface colors as display/sRGB RGB values by default.
+Public color inputs such as :attr:`newton.Model.shape_color`,
+:attr:`newton.Mesh.color`, and the ``color`` arguments on
+:class:`newton.ModelBuilder` shape helpers should be passed as the values you
+want to see on screen, with components in ``[0, 1]``.
 
-Rendering backends convert these authored colors to linear light for shading
-and encode the final image for display. In other words, do not pre-linearize
-shape or mesh colors before assigning them to Newton.
-
-When you need linear-light math explicitly, convert at the boundary with
-:func:`newton.utils.color_srgb_to_linear` and
+Rendering backends convert authored display colors to linear light for shading.
+In other words, do not pre-linearize shape or mesh colors before assigning them
+to Newton. When you need linear-light math explicitly, convert at the boundary
+with :func:`newton.utils.color_srgb_to_linear` and
 :func:`newton.utils.color_linear_to_srgb`.
 
 .. code-block:: python
@@ -440,10 +438,18 @@ When you need linear-light math explicitly, convert at the boundary with
 
    linear_color = newton.utils.color_srgb_to_linear(display_color)
 
-Albedo or base-color textures follow the same rule. Authored color textures
-are treated as display colors by default; set
-``mesh.texture_color_space = newton.utils.ColorSpace.LINEAR`` for linear/data
-textures that should not be color-converted during rendering.
+Base-color textures follow the same convention. Textures authored in display or
+sRGB space stay display-encoded when loaded. USD color textures explicitly
+marked as linear/raw data (for example ``sourceColorSpace = "raw"`` or
+``"linear"``) are converted to display/sRGB when imported so Newton stores
+color textures consistently.
+
+Packed color and albedo outputs from :class:`newton.sensors.SensorTiledCamera`
+use display/sRGB encoding by default. Set
+``SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
+when linear RGB bytes are required for downstream processing. Clear colors are
+specified as display/sRGB packed RGBA values and are converted to linear when
+linear output is requested.
 
 Collision Primitive Conventions
 -------------------------------
