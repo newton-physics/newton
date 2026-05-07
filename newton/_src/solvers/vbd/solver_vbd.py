@@ -211,7 +211,7 @@ class SolverVBD(SolverBase):
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
         particle_external_edge_contact_filtering_map: dict | None = None,
-        # Rigid body parameters — AVBD hyperparameters
+        # Rigid body parameters - AVBD hyperparameters
         rigid_avbd_alpha: float = 0.95,  # C0 stabilization strength (C_stab = C - alpha * C0)
         rigid_avbd_joint_alpha: float | None = None,  # Joint alpha override; None uses rigid_avbd_alpha
         rigid_avbd_contact_alpha: float | None = None,  # Body-body contact alpha; None selects default
@@ -2412,6 +2412,8 @@ class SolverVBD(SolverBase):
                         contacts.rigid_contact_shape1,
                         contacts.rigid_contact_point0,
                         contacts.rigid_contact_point1,
+                        contacts.rigid_contact_offset0,
+                        contacts.rigid_contact_offset1,
                         contacts.rigid_contact_normal,
                         contacts.rigid_contact_margin0,
                         contacts.rigid_contact_margin1,
@@ -2497,6 +2499,8 @@ class SolverVBD(SolverBase):
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_point1,
+                    contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
                     contacts.rigid_contact_margin0,
                     contacts.rigid_contact_margin1,
@@ -2677,6 +2681,8 @@ class SolverVBD(SolverBase):
                 contacts.rigid_contact_shape1,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
                 contacts.rigid_contact_normal,
                 contacts.rigid_contact_margin0,
                 contacts.rigid_contact_margin1,
