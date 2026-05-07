@@ -166,7 +166,7 @@ class Example:
         # M20 helix are sensitive to the contact-surface vertex bias the clamp
         # introduces (see #2702).
         sdf_hydroelastic_config = HydroelasticSDF.Config(
-            mc_edge_clamp=0.0,
+            mc_edge_clamp_min=0.0,
         )
 
         self.collision_pipeline = newton.CollisionPipeline(
@@ -207,7 +207,8 @@ class Example:
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
+        self.collision_pipeline.collide(self.state_0, self.contacts)
 
         self.viewer.set_model(self.model)
 
@@ -295,7 +296,7 @@ class Example:
         for _ in range(self.sim_substeps):
             # Re-run collision detection every substep so contact normals
             # stay aligned with the threading rotation (#2702).
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.state_0.clear_forces()
 
             self.viewer.apply_forces(self.state_0)

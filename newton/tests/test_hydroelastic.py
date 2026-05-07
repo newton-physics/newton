@@ -1245,9 +1245,10 @@ def test_no_degenerate_triangles_deep_penetration(test, device):
     of degenerate (zero-area) triangles that arise from vertex collapse at
     SDF ridge boundaries.
 
-    The edge-interpolation clamp (:attr:`HydroelasticSDF.Config.mc_edge_clamp`)
-    is the mechanism that prevents these vertex collapses, so this test is
-    only meaningful when ``mc_edge_clamp`` is non-zero.
+    The edge-interpolation clamp
+    (:attr:`HydroelasticSDF.Config.mc_edge_clamp_min`) is the mechanism that
+    prevents these vertex collapses, so this test is only meaningful when
+    ``mc_edge_clamp_min`` is non-zero.
 
     Args:
         test: Unittest-style assertion helper.
@@ -1298,7 +1299,7 @@ def test_no_degenerate_triangles_deep_penetration(test, device):
             reduce_contacts=False,
             buffer_mult_iso=4,
             buffer_mult_contact=4,
-            mc_edge_clamp=0.02,
+            mc_edge_clamp_min=0.02,
         )
         collision_pipeline = newton.CollisionPipeline(
             model,
@@ -1342,6 +1343,99 @@ add_function_test(
     TestHydroelastic,
     "test_no_degenerate_triangles_deep_penetration",
     test_no_degenerate_triangles_deep_penetration,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+
+def _build_two_box_hydro_pipeline(device, mc_edge_clamp_min: float):
+    """Build a deeply-overlapping two-box hydroelastic scene and return the populated contact surface."""
+    box_half = 0.1
+    narrow_band = box_half * 0.2
+    contact_gap = box_half * 0.2
+
+    cfg = newton.ModelBuilder.ShapeConfig(
+        mu=0.5,
+        kh=1e10,
+        sdf_max_resolution=64,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-narrow_band, narrow_band),
+        gap=contact_gap,
+    )
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()))
+    builder.add_shape_box(body=body_a, hx=box_half, hy=box_half, hz=box_half, cfg=cfg)
+    overlap = 0.10
+    z_b = box_half + 2.0 * box_half - overlap
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, z_b), wp.quat_identity()))
+    builder.add_shape_box(body=body_b, hx=box_half, hy=box_half, hz=box_half, cfg=cfg)
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    hydro_config = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        buffer_mult_iso=4,
+        buffer_mult_contact=4,
+        mc_edge_clamp_min=mc_edge_clamp_min,
+    )
+    pipeline = newton.CollisionPipeline(
+        model,
+        rigid_contact_max=100000,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=hydro_config,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    return pipeline.hydroelastic_sdf.get_contact_surface()
+
+
+def test_mc_edge_clamp_min_changes_contact_surface(test, device):
+    """Verify ``mc_edge_clamp_min`` actually flows through to vertex placement.
+
+    Builds the same scene twice with different clamp values and asserts that
+    the resulting vertex positions differ. Without this guard, swapping the
+    clamp for a no-op constant in the kernel would still pass CI.
+    """
+    cs_clamped = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.02)
+    cs_unclamped = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.0)
+    n_clamped = int(cs_clamped.face_contact_count.numpy()[0])
+    n_unclamped = int(cs_unclamped.face_contact_count.numpy()[0])
+    test.assertGreater(n_clamped, 0)
+    test.assertGreater(n_unclamped, 0)
+
+    n = min(n_clamped, n_unclamped)
+    v_clamped = cs_clamped.contact_surface_point.numpy()[: n * 3].reshape(n, 3, 3)
+    v_unclamped = cs_unclamped.contact_surface_point.numpy()[: n * 3].reshape(n, 3, 3)
+    test.assertGreater(
+        float(np.linalg.norm(v_clamped - v_unclamped)),
+        0.0,
+        "mc_edge_clamp_min did not change vertex positions",
+    )
+
+
+add_function_test(
+    TestHydroelastic,
+    "test_mc_edge_clamp_min_changes_contact_surface",
+    test_mc_edge_clamp_min_changes_contact_surface,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+
+def test_mc_edge_clamp_min_rejects_out_of_range(test, device):
+    """``HydroelasticSDF.Config.mc_edge_clamp_min`` must be in ``[0.0, 0.5]``."""
+    del device  # validation runs at Config construction; no device needed
+    for bad_value in (-0.1, 0.51, float("nan")):
+        with test.assertRaises(ValueError, msg=f"Should reject mc_edge_clamp_min={bad_value}"):
+            HydroelasticSDF.Config(mc_edge_clamp_min=bad_value)
+
+
+add_function_test(
+    TestHydroelastic,
+    "test_mc_edge_clamp_min_rejects_out_of_range",
+    test_mc_edge_clamp_min_rejects_out_of_range,
     devices=cuda_devices,
     check_output=False,
 )

@@ -126,7 +126,8 @@ def mc_calc_face_texture(
 
     ``edge_clamp_min`` / ``edge_clamp_max`` clamp the edge-interpolation
     parameter ``t`` to ``[edge_clamp_min, edge_clamp_max]``.  Pass
-    ``(0.0, 1.0)`` to disable.  See :attr:`HydroelasticSDF.Config.mc_edge_clamp`.
+    ``(0.0, 1.0)`` to disable.  See
+    :attr:`HydroelasticSDF.Config.mc_edge_clamp_min`.
     """
     thickness = sdf_a.voxel_radius * 1.0e-4
 
@@ -275,18 +276,24 @@ class HydroelasticSDF:
         Only active when reduce_contacts is True."""
         margin_contact_area: float = 1e-2
         """Contact area used for non-penetrating contacts at the margin."""
-        mc_edge_clamp: float = 0.0
-        """Symmetric clamp on the marching-cubes edge interpolation parameter
-        (``t`` clamped to ``[mc_edge_clamp, 1 - mc_edge_clamp]``).
+        mc_edge_clamp_min: float = 0.02
+        """Lower bound for the marching-cubes edge interpolation parameter
+        (``t`` clamped to ``[mc_edge_clamp_min, 1 - mc_edge_clamp_min]``).
 
-        Range: ``[0.0, 0.5]``.
+        Range: ``[0.0, 0.5]``.  The default of ``0.02`` matches the behavior
+        introduced in #2424 and prevents vertex collapse at SDF ridge
+        boundaries (where multiple triangle vertices would otherwise land on
+        the same cube corner).  Set to ``0.0`` for the most faithful
+        contact-surface dynamics — recommended for threading-style scenarios
+        like ``nut_bolt_hydro`` where the surface bias measurably damps the
+        contact response (#2702)."""
 
-        ``0.0`` (default) disables clamping and yields the most faithful
-        contact-surface dynamics. Larger values prevent vertex collapse at
-        SDF ridge boundaries (where multiple triangle vertices would
-        otherwise land on the same cube corner) at the cost of biasing
-        contact-surface vertices off the true zero-isosurface; values close
-        to zero are recommended."""
+        def __post_init__(self):
+            # NaN fails both bounds (NaN comparisons return False) and lands here too.
+            if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
+                raise ValueError(
+                    f"HydroelasticSDF.Config.mc_edge_clamp_min must be in [0.0, 0.5], got {self.mc_edge_clamp_min}"
+                )
 
     @dataclass
     class ContactSurfaceData:
@@ -419,7 +426,7 @@ class HydroelasticSDF:
             self.generate_contacts_kernel = get_generate_contacts_kernel(
                 output_vertices=self.config.output_contact_surface,
                 pre_prune=self.config.reduce_contacts and self.config.pre_prune_contacts,
-                mc_edge_clamp=self.config.mc_edge_clamp,
+                mc_edge_clamp_min=self.config.mc_edge_clamp_min,
             )
 
             if self.config.reduce_contacts:
@@ -1401,7 +1408,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
 def get_generate_contacts_kernel(
     output_vertices: bool,
     pre_prune: bool = False,
-    mc_edge_clamp: float = 0.0,
+    mc_edge_clamp_min: float = 0.02,
 ):
     """Create kernel for hydroelastic contact generation.
 
@@ -1424,15 +1431,16 @@ def get_generate_contacts_kernel(
     Args:
         output_vertices: Whether to output contact surface vertices for visualization.
         pre_prune: Whether to perform local-first face compaction.
-        mc_edge_clamp: Symmetric clamp applied to the marching-cubes edge
-            interpolation parameter; see :attr:`HydroelasticSDF.Config.mc_edge_clamp`.
+        mc_edge_clamp_min: Lower bound for the marching-cubes edge
+            interpolation parameter; see
+            :attr:`HydroelasticSDF.Config.mc_edge_clamp_min`.
 
     Returns:
         generate_contacts_kernel: Warp kernel for contact generation.
     """
 
-    edge_clamp_min = wp.float32(mc_edge_clamp)
-    edge_clamp_max = wp.float32(1.0 - mc_edge_clamp)
+    edge_clamp_min = float(mc_edge_clamp_min)
+    edge_clamp_max = float(1.0 - mc_edge_clamp_min)
 
     @wp.kernel(enable_backward=False)
     def generate_contacts_kernel(
