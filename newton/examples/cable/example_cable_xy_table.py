@@ -10,6 +10,11 @@
 # and the beige carriage moves vertically on the green carriage. The cable is
 # driven only by the two blue input pulleys.
 #
+# The sample combines passive revolute pulleys, a closed cable loop, and two
+# commanded input pulleys. The input rotations trace a rectangle with the
+# beige table marker while the solver resolves cable wrapping and contact
+# against the guides.
+#
 ###########################################################################
 
 from __future__ import annotations
@@ -54,6 +59,7 @@ def drive_input_pulleys(
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
 ):
+    """Drive the two blue input pulleys along the rectangular table path."""
     tid = wp.tid()
     body = body_indices[tid]
     base_xform = body_base_xforms[tid]
@@ -105,6 +111,7 @@ def drive_input_pulleys(
 
 @wp.kernel
 def advance_time(sim_time: wp.array[wp.float32], dt: float):
+    """Advance a device-side time accumulator for graph-captured simulation."""
     sim_time[0] = sim_time[0] + dt
 
 
@@ -115,6 +122,7 @@ def set_body_xforms(
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
 ):
+    """Initialize selected body transforms in both state buffers."""
     tid = wp.tid()
     body = body_indices[tid]
     xform = body_xforms[tid]
@@ -123,6 +131,15 @@ def set_body_xforms(
 
 
 def compute_input_pulley_rotations(t: float, pulley_radius: float) -> tuple[float, float]:
+    """Compute the commanded left and right input pulley rotations.
+
+    Args:
+        t: Simulation time [s].
+        pulley_radius: Radius of each driven input pulley [m].
+
+    Returns:
+        Tuple of left and right pulley rotations [rad].
+    """
     ramp = min(1.0, max(0.0, t / START_RAMP_DURATION))
     ramp = ramp * ramp * (3.0 - 2.0 * ramp)
     phase_time = t - math.floor(t / TABLE_RECT_PERIOD) * TABLE_RECT_PERIOD
@@ -155,6 +172,7 @@ def _dim_color(color: tuple[float, float, float], scale: float) -> tuple[float, 
 
 
 def _make_body_kinematic(builder: newton.ModelBuilder, body: int):
+    """Clear body mass properties so the solver treats the body as kinematic."""
     builder.body_mass[body] = 0.0
     builder.body_inv_mass[body] = 0.0
     builder.body_inertia[body] = wp.mat33(0.0)
@@ -413,6 +431,7 @@ def add_passive_guided_pulley(
 
 
 def append_segment(points: list[wp.vec3], end: wp.vec3, segment_length: float):
+    """Append evenly spaced points along a straight segment."""
     start = points[-1]
     length = float(wp.length(end - start))
     if length <= 1.0e-8:
@@ -434,6 +453,7 @@ def append_arc_xy(
     *,
     direction: str | None = None,
 ):
+    """Append points along a circular arc in the XY plane."""
     delta = (end_angle - start_angle + math.pi) % (2.0 * math.pi) - math.pi
     if direction == "cw" and delta > 0.0:
         delta -= 2.0 * math.pi
@@ -549,6 +569,7 @@ def add_visual_bar(
     label: str,
     density: float = 1000.0,
 ):
+    """Add a non-colliding box used to visualize a table component."""
     cfg = newton.ModelBuilder.ShapeConfig(
         density=density,
         has_shape_collision=False,
@@ -568,6 +589,7 @@ def add_visual_bar(
 
 class Example:
     def __init__(self, viewer, args):
+        # Store viewer and configure simulation cadence.
         self.viewer = viewer
 
         fps = 60
@@ -577,6 +599,7 @@ class Example:
         sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
+        # Cable and mechanism dimensions.
         cable_radius = 0.003
         self.input_pulley_radius = 0.025
         green_sheave_radius = 0.015
@@ -588,11 +611,15 @@ class Example:
         green = (0.12, 0.58, 0.28)
         beige = (0.74, 0.63, 0.45)
 
+        # The mechanism is flattened onto the XY plane and layered in Z only
+        # enough to keep the base, slide, table, and pulleys visually distinct.
         base_z = 0.006
         slide_z = 0.014
         table_z = 0.022
         pulley_z = 0.046
 
+        # Build the table frame and assign stiff, frictional contact material
+        # so the cable remains guided by the pulley grooves.
         builder = newton.ModelBuilder()
         builder.rigid_gap = 5.0 * cable_radius
         builder.default_shape_cfg.ke = 1.0e5
@@ -603,6 +630,7 @@ class Example:
         slide_origin = wp.vec3(0.0, 0.0, slide_z)
         table_origin = wp.vec3(0.0, 0.0, table_z)
 
+        # Fixed blue base.
         add_visual_bar(
             builder,
             body=-1,
@@ -613,6 +641,8 @@ class Example:
             density=1000.0,
         )
 
+        # Moving table stages: the green carriage slides in X and the beige
+        # carriage rides on it in Y.
         self.slide_body = builder.add_link(
             xform=wp.transform(slide_origin, wp.quat_identity()),
             label="green_x_slide",
@@ -653,6 +683,7 @@ class Example:
         )
         table_articulation_joints = [slide_joint, table_joint]
 
+        # Non-colliding stage visuals and a marker used for table tracking.
         add_visual_bar(
             builder,
             body=self.slide_body,
@@ -685,6 +716,9 @@ class Example:
             label="beige_table_center_marker",
         )
 
+        # Seven pulleys define the cross-base cable route. Blue pulleys are
+        # kinematic inputs; green and beige pulleys spin passively on their
+        # parent stage bodies.
         pulley_specs = [
             (
                 "green_lower_left",
@@ -778,6 +812,7 @@ class Example:
                 table_articulation_joints.append(pulley_joint)
             self.pulley_bodies.append(pulley_body)
 
+        # The cable loop starts and ends on the bottom of the beige table.
         self.left_anchor_local = wp.vec3(-0.028, -0.21, pulley_z - table_z)
         self.right_anchor_local = wp.vec3(0.028, -0.21, pulley_z - table_z)
         left_anchor_world = table_origin + self.left_anchor_local
@@ -801,6 +836,9 @@ class Example:
                 label=label,
             )
 
+        # Create the wrapped route around the pulley grooves, then resample to
+        # equal segment lengths. The rod is built straight first and moved into
+        # place below so each capsule starts with the desired transform.
         cable_route_points = create_xy_table_cable_points(
             start=left_anchor_world,
             pulley_centers=pulley_centers,
@@ -822,7 +860,7 @@ class Example:
 
         cable_cfg = builder.default_shape_cfg.copy()
         cable_cfg.density = 200.0
-        cable_cfg.gap = 5.0 * cable_radius
+        cable_cfg.gap = 2.0 * cable_radius
 
         self.cable_bodies, cable_joints = builder.add_rod(
             positions=straight_cable_points,
@@ -831,14 +869,15 @@ class Example:
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
             stretch_damping=0.0,
-            bend_stiffness=1.0e-3,
-            bend_damping=1.0,
+            bend_stiffness=1.0e-2,
+            bend_damping=1.0e-2,
             wrap_in_articulation=False,
             label="xy_table_cable",
         )
         initial_cable_xforms = [wp.transform(cable_points[i], cable_quats[i]) for i in range(len(self.cable_bodies))]
         filter_body_group_collisions(builder, self.cable_bodies)
 
+        # Ball joints close the cable loop at the table anchors.
         first_cable_body = self.cable_bodies[0]
         last_cable_body = self.cable_bodies[-1]
         last_segment_length = cable_segment_length
@@ -889,6 +928,7 @@ class Example:
         builder.add_ground_plane()
         builder.color(balance_colors=False)
 
+        # Finalize the model and use VBD with explicit broad-phase contacts.
         sim_device = wp.get_device(args.device) if args.device else None
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, 0.0))
@@ -907,6 +947,7 @@ class Example:
         pipeline = newton.CollisionPipeline(self.model, broad_phase="explicit", contact_matching="latest")
         self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
+        # Device arrays used by kernels during simulation and CUDA graph replay.
         self.kinematic_body_indices = wp.array(
             kinematic_body_indices,
             dtype=wp.int32,
@@ -949,6 +990,7 @@ class Example:
         self.solver.body_q_prev = wp.clone(self.state_0.body_q, device=self.solver.device)
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
 
+        # Viewer setup.
         self.viewer.set_model(self.model)
         self.viewer.set_camera(
             pos=wp.vec3(0.0, 0.0, 0.8),
@@ -959,6 +1001,7 @@ class Example:
         self.capture()
 
     def capture(self):
+        """Capture the simulation update when running on CUDA."""
         if self.solver.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
@@ -967,6 +1010,7 @@ class Example:
             self.graph = None
 
     def simulate(self):
+        """Advance the XY table simulation by one rendered frame."""
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
@@ -993,6 +1037,7 @@ class Example:
             wp.launch(advance_time, dim=1, inputs=[self.sim_time_wp, self.sim_dt], device=self.model.device)
 
     def step(self):
+        """Step the simulation and update logged diagnostics."""
         if self.graph:
             wp.capture_launch(self.graph)
         else:
@@ -1001,6 +1046,7 @@ class Example:
         self.record_diagrams()
 
     def record_diagrams(self):
+        """Log pulley rotations and table position for viewer diagrams."""
         q2, q6 = compute_input_pulley_rotations(self.sim_time, self.input_pulley_radius)
         body_q = self.state_0.body_q.numpy()
         table_pos = body_q[self.table_body, 0:3]
@@ -1016,12 +1062,14 @@ class Example:
         self.viewer.log_scalar("Beige table Y position [m]", table_y)
 
     def render(self):
+        """Render the current simulation state and contact points."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     def test_final(self):
+        """Validate table travel, cable bounds, and rectangle coverage."""
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
 
