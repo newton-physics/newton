@@ -282,6 +282,13 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_cable_xy_table",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 540},
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_pile",
     devices=test_devices,
     use_viewer=True,
