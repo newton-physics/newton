@@ -601,11 +601,6 @@ def evaluate_rigid_contact_from_collision(
     which correctly captures kinematic body motion.
     Soft contacts: velocity-based IPC friction with scalar penalty.
 
-    The friction anchor lives on the contact surface, computed as
-    ``contact_point_local + contact_offset_local``. Some narrow-phase contact points
-    lie on a shape skeleton, with the radial extent stored in ``contact_offset``.
-    Tangential slip must use the offset anchor so rigid rotation moves the contact point.
-
     Returns:
         10-tuple: (force_a, torque_a, H_ll_a, H_al_a, H_aa_a,
                    force_b, torque_b, H_ll_b, H_al_b, H_aa_b)
@@ -650,9 +645,6 @@ def evaluate_rigid_contact_from_collision(
     x_com_a_now = wp.transform_point(X_wa, body_a_com_local)
     x_com_b_now = wp.transform_point(X_wb, body_b_com_local)
 
-    # Friction anchor on the contact surface. The offset is body-local, so the same material
-    # point is tracked across all inner-solver iterations within a step. This is required for
-    # the ALM tangent multiplier to accumulate consistently.
     anchor_a_local = contact_point_a_local + contact_offset_a_local
     anchor_b_local = contact_point_b_local + contact_offset_b_local
     x_c_a_now = wp.transform_point(X_wa, anchor_a_local)
@@ -3642,10 +3634,6 @@ def update_duals_body_body_contacts(
 
     cp0_local = rigid_contact_point0[idx]
     cp1_local = rigid_contact_point1[idx]
-    # Friction anchor on the contact surface; see evaluate_rigid_contact_from_collision.
-    # The skeleton points (p0/p1) drive the normal C_n term so that ``thickness`` accounts
-    # for the radial extent without double-counting; the surface anchors (a0/a1) drive the
-    # tangential rel_disp so that spin about a body's symmetry axis registers as slip.
     anchor0_local = cp0_local + rigid_contact_offset0[idx]
     anchor1_local = cp1_local + rigid_contact_offset1[idx]
 
