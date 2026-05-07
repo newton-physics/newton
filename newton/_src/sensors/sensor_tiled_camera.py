@@ -41,16 +41,13 @@ class _SensorTiledCameraMeta(type):
 class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     """Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
 
-    Renders up to five image channels per (world, camera) pair:
+    Renders up to six image channels per (world, camera) pair:
 
-    - **color** -- RGBA shaded image packed into ``uint32``. By default these
-      bytes are display/sRGB-encoded; set
-      ``RenderConfig.output_color_space=newton.utils.ColorSpace.LINEAR`` to
-      keep them linear.
+    - **color** -- RGBA shaded image (``uint32``).
+    - **hdr_color** -- linear shaded RGB image (``vec3f``).
     - **depth** -- ray-hit distance [m] (``float32``); negative means no hit.
     - **normal** -- surface normal at hit point (``vec3f``).
-    - **albedo** -- unshaded surface color packed into ``uint32`` using the
-      same output encoding convention as **color**.
+    - **albedo** -- unshaded surface color (``uint32``).
     - **shape_index** -- shape id per pixel (``uint32``).
 
     All output arrays have shape ``(world_count, camera_count, height, width)``. Use the ``flatten_*`` helpers to
@@ -216,6 +213,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         albedo_image: wp.array4d[wp.uint32] | None = None,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
         refit_bvh: bool | None = None,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
     ):
         """Render output images for all worlds and cameras.
 
@@ -255,6 +253,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 :func:`~newton.geometry.build_bvh_particle`, and
                 :func:`~newton.geometry.refit_bvh_particle` explicitly
                 before calling this method instead.
+            hdr_color_image: Output for linear HDR color. None to skip.
         """
 
         # TODO: Remove this deprecation behaviour in the next release.
@@ -296,6 +295,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             normal_image,
             albedo_image,
             clear_data=clear_data,
+            hdr_color_image=hdr_color_image,
         )
 
     def compute_pinhole_camera_rays(
