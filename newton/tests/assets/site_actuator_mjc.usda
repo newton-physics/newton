@@ -1,0 +1,161 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "Newton test fixture"
+    }
+    defaultPrim = "test_site_actuator"
+    doc = """Minimal scene with an MjcActuator targeting a site (MjcSiteAPI)."""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "test_site_actuator" (
+    apiSchemas = ["GeomModelAPI"]
+    assetInfo = {
+        string name = "test_site_actuator"
+    }
+    kind = "component"
+)
+{
+    float3[] extentsHint = [(-4, -4, -1), (4, 4, 0.645), (3.4028235e38, 3.4028235e38, 3.4028235e38), (-3.4028235e38, -3.4028235e38, -3.4028235e38), (3.4028235e38, 3.4028235e38, 3.4028235e38), (-3.4028235e38, -3.4028235e38, -3.4028235e38), (-0.2, -0.1, -0.05), (0.2, 0.1, 0.61)]
+
+    def Scope "Geometry"
+    {
+        def Plane "floor" (
+            apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-4, -4, -0), (4, 4, 0)]
+            double length = 8
+            rel material:binding:physics = </test_site_actuator/Physics/PhysicsMaterial>
+            double width = 8
+            quatf xformOp:orient = (1, 0, 0, 0)
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, -1)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Xform "cart" (
+            apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI"]
+        )
+        {
+            quatf xformOp:orient = (1, 0, 0, 0)
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Cube "cart" (
+                apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                rel material:binding:physics = </test_site_actuator/Physics/PhysicsMaterial>
+                double size = 2
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (0.2, 0.1, 0.05)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Xform "pole" (
+                apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Capsule "cpole" (
+                    apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.045, -0.045, -0.345), (0.045, 0.045, 0.345)]
+                    double height = 0.6
+                    rel material:binding:physics = </test_site_actuator/Physics/PhysicsMaterial>
+                    double radius = 0.045
+                    quatf xformOp:orient = (6.123234e-17, 1, 0, 0)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0, 0, 0.3)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Sphere "tip" (
+                    apiSchemas = ["MjcSiteAPI"]
+                )
+                {
+                    float3[] extent = [(-0.01, -0.01, -0.01), (0.01, 0.01, 0.01)]
+                    uniform token purpose = "guide"
+                    double radius = 0.01
+                    quatf xformOp:orient = (1, 0, 0, 0)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.001, 0, 0.6)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def PhysicsRevoluteJoint "hinge" (
+                    apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:damping = 0.05
+                    uniform double[] mjc:solreflimit = [0.08, 1]
+                    uniform token physics:axis = "Y"
+                    rel physics:body0 = </test_site_actuator/Geometry/cart>
+                    rel physics:body1 = </test_site_actuator/Geometry/cart/pole>
+                    point3f physics:localPos0 = (0, 0, 0)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (1, 0, 0, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+                }
+            }
+
+            def PhysicsPrismaticJoint "slider" (
+                apiSchemas = ["MjcJointAPI"]
+            )
+            {
+                uniform double mjc:damping = 0.05
+                uniform double[] mjc:solreflimit = [0.08, 1]
+                uniform token physics:axis = "X"
+                rel physics:body0 = </test_site_actuator>
+                rel physics:body1 = </test_site_actuator/Geometry/cart>
+                point3f physics:localPos0 = (0, 0, 0)
+                point3f physics:localPos1 = (0, 0, 0)
+                quatf physics:localRot0 = (1, 0, 0, 0)
+                quatf physics:localRot1 = (1, 0, 0, 0)
+                float physics:lowerLimit = -1
+                float physics:upperLimit = 1
+            }
+        }
+    }
+
+    def Scope "Physics"
+    {
+        def Material "PhysicsMaterial" (
+            apiSchemas = ["PhysicsMaterialAPI", "MjcMaterialAPI"]
+        )
+        {
+            uniform double mjc:rollingfriction = 0.1
+            uniform double mjc:torsionalfriction = 0.1
+            float physics:dynamicFriction = 1
+        }
+
+        def MjcActuator "site_force"
+        {
+            uniform double[] mjc:gear = [0, 0, 10, 0, 0, 2]
+            rel mjc:target = </test_site_actuator/Geometry/cart/pole/tip>
+        }
+    }
+}
+
+def PhysicsScene "PhysicsScene" (
+    apiSchemas = ["MjcSceneAPI"]
+)
+{
+    uniform token mjc:compiler:inertiaFromGeom = "true"
+    uniform double mjc:option:timestep = 0.01
+    vector3f physics:gravityDirection = (0, 0, -1)
+    float physics:gravityMagnitude = 9.81
+}

@@ -1380,7 +1380,11 @@ def create_texture_sdf_from_mesh(
     scale_baked: bool = False,
     use_parity: bool = False,
     device: str | None = None,
-) -> tuple[TextureSDFData, wp.Texture3D, wp.Texture3D, list]:
+    return_sparse_data: bool = False,
+) -> (
+    tuple[TextureSDFData, wp.Texture3D, wp.Texture3D, list]
+    | tuple[TextureSDFData, wp.Texture3D, wp.Texture3D, list, dict | None]
+):
     """Create texture SDF from a Warp mesh.
 
     This is the main entry point for texture SDF construction. It mirrors the
@@ -1408,9 +1412,18 @@ def create_texture_sdf_from_mesh(
             Cheaper per sample than winding numbers; requires a closed,
             manifold mesh.
         device: Warp device string. ``None`` uses the mesh's device.
+        return_sparse_data: when ``True``, also return the raw cooked
+            ``sparse_data`` dict produced by
+            :func:`build_sparse_sdf_from_mesh` (or ``None`` for degenerate
+            meshes). Intended for callers that want to persist the cook
+            output (e.g. an on-disk SDF cache) before it is consumed by
+            the GPU upload. The default ``False`` preserves the original
+            return signature.
 
     Returns:
         Tuple of ``(texture_sdf, coarse_texture, subgrid_texture, block_coords)``.
+        When ``return_sparse_data`` is ``True``, an additional trailing
+        ``sparse_data`` element is included.
         Caller must keep texture references alive to prevent GC.
         ``block_coords`` is a list of ``wp.vec3us`` block coordinates for
         hydroelastic broadphase.
@@ -1429,7 +1442,8 @@ def create_texture_sdf_from_mesh(
     ext = max_ext - min_ext
     max_ext_scalar = np.max(ext)
     if max_ext_scalar < 1e-10:
-        return create_empty_texture_sdf_data(), None, None, []
+        empty = (create_empty_texture_sdf_data(), None, None, [])
+        return (*empty, None) if return_sparse_data else empty
 
     # Resolve max_resolution, honoring target_voxel_size when provided.
     # Mirrors the sparse SDF path in sdf_utils._compute_sdf_from_shape_impl
@@ -1486,6 +1500,8 @@ def create_texture_sdf_from_mesh(
         subgrid_occupied=sparse_data["subgrid_occupied"],
     )
 
+    if return_sparse_data:
+        return sdf_params, coarse_tex, subgrid_tex, block_coords, sparse_data
     return sdf_params, coarse_tex, subgrid_tex, block_coords
 
 

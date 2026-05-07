@@ -41,11 +41,10 @@ class Example:
         quadruped.default_joint_cfg.armature = 0.01
 
         if self.solver_type == "vbd":
-            quadruped.default_joint_cfg.target_ke = 2000.0
-            quadruped.default_joint_cfg.target_kd = 1.0e-3
-            quadruped.default_joint_cfg.limit_kd = 1.0e-5
-            quadruped.default_shape_cfg.ke = 1.0e7
-            quadruped.default_shape_cfg.kd = 1.0e-1
+            quadruped.default_joint_cfg.target_ke = 1.0e4
+            quadruped.default_joint_cfg.target_kd = 0.0
+            quadruped.default_shape_cfg.ke = 1.0e4
+            quadruped.default_shape_cfg.kd = 0.0
             quadruped.default_shape_cfg.mu = 1.0
         else:
             quadruped.default_joint_cfg.target_ke = 2000.0
@@ -88,7 +87,14 @@ class Example:
 
         if self.solver_type == "vbd":
             self.update_step_interval = 10
-            self.solver = newton.solvers.SolverVBD(self.model, iterations=1, rigid_contact_k_start=1.0e6)
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=1,
+                # One-iteration VBD demo tuning: use full hard-contact correction and mild penalty decay.
+                # Prefer more iterations and contact damping for general use.
+                rigid_avbd_contact_alpha=0.0,
+                rigid_avbd_gamma=0.9,
+            )
         else:
             self.update_step_interval = 1
             self.solver = newton.solvers.SolverXPBD(self.model)
@@ -119,12 +125,13 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            update_step_history = (substep % self.update_step_interval) == 0
-            if update_step_history:
+            # Collision detection and contact refresh cadence.
+            refresh_contacts = (substep % self.update_step_interval) == 0
+            if refresh_contacts:
                 self.model.collide(self.state_0, self.contacts)
 
             if self.solver_type == "vbd":
-                self.solver.set_rigid_history_update(update_step_history)
+                self.solver.set_rigid_history_update(refresh_contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
@@ -183,6 +190,4 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

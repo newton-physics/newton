@@ -11,9 +11,6 @@ These include:
 
 - A set of utility functions to retrieve paths to USD asset directories
 
-- A set of 'example' models in the form of USD assets.\n
-    This directory currently provides a symbolic link to `newton-assets/disneyreasearch`.
-
 - A set of 'basic' models used for demonstrating fundamental features of Kamino and for testing purposes.
     These are provided both in the form of USD assets as well as manually constructed model builders.
 
@@ -22,40 +19,11 @@ These include:
     - supported joint types,e.g. revolute, prismatic, spherical, etc.
 """
 
-import os
-
-from .builders import basics, basics_newton, testing, utils
+from .builders import basics, testing, utils
 
 __all__ = [
     "basics",
-    "basics_newton",
     "builders",
-    "get_basics_usd_assets_path",
-    "get_testing_usd_assets_path",
     "testing",
     "utils",
 ]
-
-###
-# Asset path utilities
-###
-
-
-def get_basics_usd_assets_path() -> str:
-    """
-    Returns the path to the USD assets for basic models.
-    """
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "assets/basics")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"The USD assets path for basic models does not exist: {path}")
-    return path
-
-
-def get_testing_usd_assets_path() -> str:
-    """
-    Returns the path to the USD assets for testing models.
-    """
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "assets/testing")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"The USD assets path for testing models does not exist: {path}")
-    return path

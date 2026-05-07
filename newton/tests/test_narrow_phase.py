@@ -1414,9 +1414,15 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere B with larger margin should have contact")
 
     def _assert_mesh_mesh_scaled_separated_positive_penetration(self, narrow_phase: NarrowPhase):
-        """Run the scaled mesh-mesh separation scenario and verify positive contact distance."""
+        """Run the scaled mesh-mesh separation scenario and verify positive contact distance.
+
+        On CUDA we exercise the full path. On CPU we still run the same minimal
+        case (a pair of unit-box meshes, 12 triangles each) as a smoke test so
+        the new mesh-mesh SDF backend keeps direct coverage there - the serial
+        inner loop is bounded for this size.
+        """
         if narrow_phase.mesh_mesh_contacts_kernel is None:
-            self.skipTest("Mesh-mesh NarrowPhase SDF contacts require CUDA")
+            self.skipTest("Mesh-mesh NarrowPhase SDF contacts not available")
 
         device = narrow_phase.device if narrow_phase.device is not None else wp.get_device()
         with wp.ScopedDevice(device):

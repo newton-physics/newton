@@ -119,16 +119,17 @@ jobs:
       - name: Set up Python
         run: uv python install
 
-      - name: Resolve minimum dependency versions
+      - name: Resolve and install minimum dependency versions
         run: |
-          uv lock --resolution lowest-direct
+          uv sync --extra dev --resolution lowest-direct
           echo "Resolved dependency versions:"
-          uv tree --depth 1
+          uv tree --depth 1 --frozen
 
+      # `--no-sync` is load-bearing: without it `uv run` re-resolves to `highest` and the floors above stop applying.
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
-        run: uv run --extra dev -m newton.tests --junit-report-xml rspec.xml
+        run: uv run --no-sync -m newton.tests --junit-report-xml rspec.xml
 
       - name: Test Summary
         if: ${{ !cancelled() }}

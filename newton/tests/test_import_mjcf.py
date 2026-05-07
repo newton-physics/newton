@@ -667,6 +667,24 @@ class TestImportMjcfBasic(unittest.TestCase):
         np.testing.assert_allclose(leaf2_pos, expected_leaf2_xform.p, atol=1e-6)
         np.testing.assert_allclose(leaf2_quat, expected_leaf2_xform.q, atol=1e-6)
 
+    def test_native_ball_joint_preserves_friction(self):
+        """Regression: authored frictionloss on <joint type="ball"/> must reach joint_friction."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="root">
+            <joint name="j" type="ball" armature="0.5" frictionloss="1.25"/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_type[0], newton.JointType.BALL)
+        # Ball joint has 3 DOFs; all three should carry the authored friction.
+        self.assertEqual(builder.joint_friction, [1.25, 1.25, 1.25])
+
     def test_replace_3d_hinge_with_ball_joint(self):
         """Test that 3D hinge joints are replaced with ball joints."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -2292,6 +2310,32 @@ class TestImportMjcfGeometry(unittest.TestCase):
             expected_mass,
             places=2,
             msg=f"Visual geom with default density should produce mass={expected_mass}, got {actual_mass}",
+        )
+
+    def test_visual_geom_explicit_mass_with_parse_visuals(self):
+        """Regression: visual geoms must honor explicit mass when parse_visuals=True."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <worldbody>
+    <body name="test" pos="0 0 0.5">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="vis" type="box" size="0.1 0.1 0.1"
+            contype="0" conaffinity="0" group="2" mass="5"/>
+      <geom name="col" type="box" size="0.1 0.1 0.1"
+            mass="0" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=True)
+        model = builder.finalize()
+
+        actual_mass = float(model.body_mass.numpy()[0])
+        self.assertAlmostEqual(actual_mass, 5.0, places=4, msg=f"Expected visual geom mass=5.0, got {actual_mass}")
+        self.assertGreater(
+            float(np.trace(model.body_inertia.numpy()[0])),
+            0.0,
+            msg="Visual geom with explicit mass should contribute non-zero inertia",
         )
 
     def test_inertial_locks_body_against_frame_geom_mass(self):

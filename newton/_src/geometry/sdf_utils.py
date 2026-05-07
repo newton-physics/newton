@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import os
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
@@ -355,6 +356,7 @@ class SDF:
         scale: tuple[float, float, float] | None = None,
         texture_format: str = "uint16",
         sign_method: SignMethod = "auto",
+        cache_dir: str | os.PathLike[str] | None = None,
     ) -> "SDF":
         """Create an SDF from a mesh in local mesh coordinates.
 
@@ -399,6 +401,16 @@ class SDF:
                   ``wp.mesh_query_point_sign_winding_number``. Robust for
                   general (possibly open or non-manifold) meshes but more
                   expensive to build and query.
+            cache_dir: Optional directory holding cached cooked SDFs. When
+                provided, the cooked SDF data (everything that backs the
+                GPU 3D textures) is keyed by mesh content + build
+                parameters and persisted as a single ``{hash}.sdf.npz``
+                file (an uncompressed ``np.savez`` bundle of typed
+                numpy arrays). A subsequent call with the same inputs
+                reloads from disk and skips the expensive mesh-SDF
+                build. ``shape_margin`` is applied at sample time and
+                is *not* part of the cache key. Defaults to ``None``
+                (cache disabled).
 
         Returns:
             A validated :class:`SDF` runtime handle.
@@ -430,7 +442,14 @@ class SDF:
         else:
             use_parity = sign_method == "parity"
 
-        from .sdf_texture import QuantizationMode, create_texture_sdf_from_mesh  # noqa: PLC0415
+        sign_method_resolved = "parity" if use_parity else "winding"
+
+        from .sdf_texture import (  # noqa: PLC0415
+            QuantizationMode,
+            block_coords_from_subgrid_required,
+            create_sparse_sdf_textures,
+            create_texture_sdf_from_mesh,
+        )
 
         _tex_fmt_map = {
             "float32": QuantizationMode.FLOAT32,
@@ -441,34 +460,76 @@ class SDF:
             raise ValueError(f"Unknown texture_format {texture_format!r}. Expected one of {list(_tex_fmt_map)}.")
         qmode = _tex_fmt_map[texture_format]
 
-        with wp.ScopedDevice(device):
-            verts = mesh.vertices * np.array(effective_scale)[None, :]
-            pos = wp.array(verts, dtype=wp.vec3)
-            indices = wp.array(mesh.indices, dtype=wp.int32)
+        cache_hash: str | None = None
+        loaded_sparse_data = None
+        if cache_dir is not None:
+            from . import _sdf_cache  # noqa: PLC0415
 
-            winding_threshold = 0.5
-            if use_parity:
-                tex_mesh = wp.Mesh(points=pos, indices=indices)
-            else:
-                tex_mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
-                signed_volume = compute_mesh_signed_volume(pos, indices)
-                winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
-
-            # Forward target_voxel_size so the texture SDF path honors it
-            # with the same precedence as the sparse SDF path. When provided,
-            # create_texture_sdf_from_mesh derives max_resolution from it.
-            res = effective_max_resolution if effective_max_resolution is not None else 64
-            texture_data, coarse_texture, subgrid_texture, tex_block_coords = create_texture_sdf_from_mesh(
-                tex_mesh,
-                margin=margin,
+            verts_for_hash = np.asarray(mesh.vertices, dtype=np.float32) * np.array(effective_scale, dtype=np.float32)
+            indices_for_hash = np.asarray(mesh.indices, dtype=np.int32).reshape(-1)
+            cache_hash = _sdf_cache.hash_inputs(
+                vertices=verts_for_hash,
+                indices=indices_for_hash,
+                is_solid=bool(getattr(mesh, "is_solid", True)),
                 narrow_band_range=narrow_band_range,
-                max_resolution=res,
                 target_voxel_size=target_voxel_size,
-                quantization_mode=qmode,
-                winding_threshold=winding_threshold,
-                scale_baked=bake_scale,
-                use_parity=use_parity,
+                max_resolution=effective_max_resolution,
+                margin=margin,
+                texture_format=texture_format,
+                sign_method_resolved=sign_method_resolved,
+                # winding_threshold's actual value is set post-cook, but
+                # the cooked output's equivalence class only depends on
+                # its sign. +0.5 is the canonical positive case.
+                winding_threshold=0.5,
+                scale=scale,
             )
+            loaded_sparse_data = _sdf_cache.try_load_sparse_data(cache_dir, cache_hash)
+
+        with wp.ScopedDevice(device):
+            if loaded_sparse_data is not None:
+                sdf_device = str(wp.get_device())
+                sdf_params, coarse_texture, subgrid_texture = create_sparse_sdf_textures(loaded_sparse_data, sdf_device)
+                sdf_params.scale_baked = bake_scale
+                tex_block_coords = block_coords_from_subgrid_required(
+                    loaded_sparse_data["subgrid_required"],
+                    loaded_sparse_data["coarse_dims"],
+                    loaded_sparse_data["subgrid_size"],
+                    subgrid_occupied=loaded_sparse_data["subgrid_occupied"],
+                )
+                texture_data = sdf_params
+            else:
+                verts = mesh.vertices * np.array(effective_scale)[None, :]
+                pos = wp.array(verts, dtype=wp.vec3)
+                indices = wp.array(mesh.indices, dtype=wp.int32)
+
+                winding_threshold = 0.5
+                if use_parity:
+                    tex_mesh = wp.Mesh(points=pos, indices=indices)
+                else:
+                    tex_mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
+                    signed_volume = compute_mesh_signed_volume(pos, indices)
+                    winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
+
+                want_sparse = cache_dir is not None
+                res = effective_max_resolution if effective_max_resolution is not None else 64
+                result = create_texture_sdf_from_mesh(
+                    tex_mesh,
+                    margin=margin,
+                    narrow_band_range=narrow_band_range,
+                    max_resolution=res,
+                    target_voxel_size=target_voxel_size,
+                    quantization_mode=qmode,
+                    winding_threshold=winding_threshold,
+                    scale_baked=bake_scale,
+                    use_parity=use_parity,
+                    return_sparse_data=want_sparse,
+                )
+                if want_sparse:
+                    texture_data, coarse_texture, subgrid_texture, tex_block_coords, sparse_data = result
+                    if sparse_data is not None:
+                        _sdf_cache.write(cache_dir, cache_hash, sparse_data)
+                else:
+                    texture_data, coarse_texture, subgrid_texture, tex_block_coords = result
 
         sdf = SDF(
             data=create_empty_sdf_data(),

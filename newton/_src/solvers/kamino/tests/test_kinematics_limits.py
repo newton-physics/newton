@@ -43,13 +43,13 @@ Q_X_J_MAX = 0.25 * math.pi
 
 @wp.kernel
 def _set_joint_follower_body_state(
-    model_joint_bid_B: wp.array(dtype=int32),
-    model_joint_bid_F: wp.array(dtype=int32),
-    model_joint_B_r_Bj: wp.array(dtype=vec3f),
-    model_joint_F_r_Fj: wp.array(dtype=vec3f),
-    model_joint_X_j: wp.array(dtype=mat33f),
-    state_body_q_i: wp.array(dtype=transformf),
-    state_body_u_i: wp.array(dtype=vec6f),
+    model_joint_bid_B: wp.array[int32],
+    model_joint_bid_F: wp.array[int32],
+    model_joint_B_r_Bj: wp.array[vec3f],
+    model_joint_F_r_Fj: wp.array[vec3f],
+    model_joint_X_j: wp.array[mat33f],
+    state_body_q_i: wp.array[transformf],
+    state_body_u_i: wp.array[vec6f],
 ):
     """
     Set the state of the bodies to a certain values in order to check computations of joint states.
@@ -132,6 +132,7 @@ def set_joint_follower_body_state(model: ModelKamino, data: DataKamino):
             data.bodies.q_i,
             data.bodies.u_i,
         ],
+        device=model.device,
     )
 
 
@@ -164,7 +165,7 @@ class TestKinematicsLimits(unittest.TestCase):
         Tests the creation of an empty LimitsKamino container (for deferred allocation).
         """
         # Create a LimitsKamino container
-        limits = LimitsKamino(device=self.default_device)
+        limits = LimitsKamino()
 
         # Check the initial state of the limits
         self.assertEqual(limits._data.model_max_limits_host, 0)
@@ -179,7 +180,7 @@ class TestKinematicsLimits(unittest.TestCase):
         model = builder.finalize(device=self.default_device)
 
         # Create a LimitsKamino container
-        limits = LimitsKamino(model=model, device=self.default_device)
+        limits = LimitsKamino(model=model)
 
         # Check the initial state of the limits
         self.assertIsNotNone(limits.model_max_limits)
@@ -252,7 +253,7 @@ class TestKinematicsLimits(unittest.TestCase):
         msg.info("data.joints.dq_j: %s\n\n", data.joints.dq_j)
 
         # Create a LimitsKamino container
-        limits = LimitsKamino(model=model, device=self.default_device)
+        limits = LimitsKamino(model=model)
 
         # Optional verbose output
         msg.info("[before]: limits.model_max_limits_host: %s", limits.model_max_limits_host)
@@ -309,7 +310,7 @@ class TestKinematicsLimits(unittest.TestCase):
                 self.assertEqual(limits_wid_np[i], i)
                 self.assertEqual(limits_lid_np[i], j)
                 self.assertEqual(limits_jid_np[i], i * limits_num_np[i] + j)
-                self.assertEqual(limits_dof_np[i], j)
+                self.assertEqual(limits_dof_np[i], i + j)  # global DoF index (1 DoF per world)
                 self.assertEqual(limits_side_np[i], -1)
                 self.assertAlmostEqual(limits_r_q_np[i * limits_num_np[i] + j], Q_X_J_MAX - Q_X_J, places=6)
 
