@@ -2362,6 +2362,8 @@ class ViewerGL(ViewerBase):
                     show_collision = self.show_collision
                     changed, self.show_collision = imgui.checkbox("Show Collision", show_collision)
 
+                    changed, self.renderer.draw_edges = imgui.checkbox("Show Edges", self.renderer.draw_edges)
+
                     # Gap + margin wireframe mode
                     _sdf_margin_labels = ["Off", "Margin", "Margin + Gap"]
                     _, new_sdf_idx = imgui.combo("Gap + Margin", int(self.sdf_margin_mode), _sdf_margin_labels)
