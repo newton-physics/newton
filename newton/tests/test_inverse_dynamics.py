@@ -231,13 +231,13 @@ class TestGravCompForce(TestInverseDynamicsBase):
         state.joint_q.assign(joint_q_arr)
 
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics, scratch = model.inverse_dynamics()
 
         newton.eval_inverse_dynamics(
             model=model,
             state=state,
             eval_type=newton.InverseDynamics.EvalType.GRAVITY_COMPENSATION_FORCE,
-            inverse_dynamics=inverse_dynamics,
+            inverse_dynamics=inverse_dynamics, scratch=scratch,
         )
 
         measured_gravity_comp_force = inverse_dynamics.gravity_compensation_force.numpy()
@@ -272,12 +272,13 @@ class TestGravCompForce(TestInverseDynamicsBase):
             state.joint_q.assign(joint_q)
             newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-            inverse_dynamics = model.inverse_dynamics()
+            inverse_dynamics, scratch = model.inverse_dynamics()
             newton.eval_inverse_dynamics(
                 model,
                 state,
                 newton.InverseDynamics.EvalType.GRAVITY_COMPENSATION_FORCE,
                 inverse_dynamics,
+                scratch,
             )
 
             tau = inverse_dynamics.gravity_compensation_force.numpy()
@@ -313,12 +314,13 @@ class TestGravCompForce(TestInverseDynamicsBase):
             state.joint_q.assign(joint_q)
             newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-            inverse_dynamics = model.inverse_dynamics()
+            inverse_dynamics, scratch = model.inverse_dynamics()
             newton.eval_inverse_dynamics(
                 model,
                 state,
                 newton.InverseDynamics.EvalType.GRAVITY_COMPENSATION_FORCE,
                 inverse_dynamics,
+                scratch,
             )
 
             tau = inverse_dynamics.gravity_compensation_force.numpy()
@@ -1219,7 +1221,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
             )
             model = builder.finalize(device=self.device)
             state = model.state()
-            inverse_dynamics = model.inverse_dynamics()
+            inverse_dynamics, scratch = model.inverse_dynamics()
 
             sweep = [0.0, 0.5 * np.pi, np.pi, 1.5 * np.pi]
             for q in sweep:
@@ -1232,7 +1234,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
                     model=model,
                     state=state,
                     eval_type=newton.InverseDynamics.EvalType.GRAVITY_COMPENSATION_FORCE,
-                    inverse_dynamics=inverse_dynamics,
+                    inverse_dynamics=inverse_dynamics, scratch=scratch,
                 )
                 tau = inverse_dynamics.gravity_compensation_force.numpy()
 
@@ -1272,12 +1274,13 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
         state.joint_qd.zero_()
 
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics, scratch = model.inverse_dynamics()
         newton.eval_inverse_dynamics(
             model,
             state,
             newton.InverseDynamics.EvalType.CORIOLIS_COMPENSATION_FORCE,
             inverse_dynamics,
+            scratch,
         )
 
         tau = inverse_dynamics.coriolis_compensation_force.numpy()
@@ -1347,7 +1350,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         builder.add_articulation([j1, j2], label="double_pendulum")
 
         model = builder.finalize(device=self.device)
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics, scratch = model.inverse_dynamics()
 
         # All cases share q = (0, pi/2); only q_dot varies. The expected
         # +C(q, q_dot) * q_dot values come from the closed-form Coriolis terms
@@ -1379,6 +1382,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                     state,
                     newton.InverseDynamics.EvalType.CORIOLIS_COMPENSATION_FORCE,
                     inverse_dynamics,
+                    scratch,
                 )
 
                 # Newton's coriolis_compensation_force has the same sign
@@ -1464,7 +1468,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 builder.add_articulation([j_rot, j_slide], label="radial_slider")
 
                 model = builder.finalize(device=self.device)
-                inverse_dynamics = model.inverse_dynamics()
+                inverse_dynamics, scratch = model.inverse_dynamics()
 
                 state = model.state()
                 joint_q = state.joint_q.numpy()
@@ -1480,6 +1484,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                     state,
                     newton.InverseDynamics.EvalType.CORIOLIS_COMPENSATION_FORCE,
                     inverse_dynamics,
+                    scratch,
                 )
 
                 measured = inverse_dynamics.coriolis_compensation_force.numpy()
@@ -1559,7 +1564,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 builder.add_articulation([j1, j2], label="anisotropic_gimbal")
 
                 model = builder.finalize(device=self.device)
-                inverse_dynamics = model.inverse_dynamics()
+                inverse_dynamics, scratch = model.inverse_dynamics()
 
                 state = model.state()
                 joint_q = state.joint_q.numpy()
@@ -1575,6 +1580,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                     state,
                     newton.InverseDynamics.EvalType.CORIOLIS_COMPENSATION_FORCE,
                     inverse_dynamics,
+                    scratch,
                 )
 
                 measured = inverse_dynamics.coriolis_compensation_force.numpy()
@@ -1640,7 +1646,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
 
         model = builder.finalize(device=self.device)
         state = model.state()
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics, scratch = model.inverse_dynamics()
 
         # Sweep two states: stationary CoM with rotation (purely gyroscopic,
         # so v_com convention predicts zero linear), and translating + rotating
@@ -1677,6 +1683,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                     state,
                     newton.InverseDynamics.EvalType.CORIOLIS_COMPENSATION_FORCE,
                     inverse_dynamics,
+                    scratch,
                 )
                 # Newton's value with the negation convention flipped back to
                 # the standard +C(q, q_dot)*q_dot.
@@ -1752,7 +1759,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
 
         model = builder.finalize(device=self.device)
         state = model.state()
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics, scratch = model.inverse_dynamics()
 
         # Body world rotation R_b = R_c^T = R(z, -2 * half_angle).
         body_z_angle = -2.0 * half_angle
@@ -1794,6 +1801,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                     state,
                     newton.InverseDynamics.EvalType.CORIOLIS_COMPENSATION_FORCE,
                     inverse_dynamics,
+                    scratch,
                 )
                 # Flip Newton's negation convention back to standard
                 # +C(q, q_dot) * q_dot for comparison with the closed form.
@@ -1859,7 +1867,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         state_next = model.state()
         control = model.control()
         contacts = model.contacts()
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics, scratch = model.inverse_dynamics()
         solver = newton.solvers.SolverMuJoCo(model)
         dt = 1e-4
         zero_bias = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device)
@@ -1897,6 +1905,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                     newton.InverseDynamics.EvalType.MASS_MATRIX
                     | newton.InverseDynamics.EvalType.CORIOLIS_COMPENSATION_FORCE,
                     inverse_dynamics,
+                    scratch,
                 )
                 coriolis_comp = inverse_dynamics.coriolis_compensation_force.numpy()
 
@@ -1950,8 +1959,8 @@ class TestMassMatrix(TestInverseDynamicsBase):
 
         H_reference = newton.eval_mass_matrix(model, state).numpy()
 
-        inverse_dynamics = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics)
+        inverse_dynamics, scratch = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics, scratch)
 
         np.testing.assert_allclose(inverse_dynamics.mass_matrix.numpy(), H_reference, rtol=1e-6, atol=1e-6)
 
@@ -2024,7 +2033,7 @@ class TestMassMatrix(TestInverseDynamicsBase):
                 builder.add_articulation([j1, j2], label="double_pendulum")
 
                 model = builder.finalize(device=self.device)
-                inverse_dynamics = model.inverse_dynamics()
+                inverse_dynamics, scratch = model.inverse_dynamics()
 
                 for q2 in q2_cases:
                     with self.subTest(com_x=com_x, q2=q2):
@@ -2035,7 +2044,7 @@ class TestMassMatrix(TestInverseDynamicsBase):
                         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
                         newton.eval_inverse_dynamics(
-                            model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics
+                            model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics, scratch
                         )
                         M = inverse_dynamics.mass_matrix.numpy()[0, :2, :2]
 
@@ -2084,8 +2093,8 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         joint_qd[:] = np.linspace(0.1, 0.7, joint_qd.shape[0])
         state.joint_qd.assign(joint_qd)
 
-        inverse_dynamics = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics)
+        inverse_dynamics, scratch = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics, scratch)
 
         H = inverse_dynamics.mass_matrix.numpy()
         g = inverse_dynamics.gravity_compensation_force.numpy()
@@ -2169,8 +2178,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                     child_xform=identity_xform,
                 )
             elif root_joint_type == "d6_revolute":
-                # D6 with a single angular Z axis and no linear axes
-                # behaves as a 1-DOF revolute joint about world +Z.
+                # D6 with a single angular Z axis -> 1-DOF revolute.
                 j0 = b.add_joint_d6(
                     parent=-1,
                     child=link0,
@@ -2229,14 +2237,22 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         num_arts_per_world = 4
         num_arts = num_worlds * num_arts_per_world
 
-        # Per-articulation root joint type. ``"free"`` adds 6 qd / 7 q root
-        # DOFs (3 linear, 3 angular) for a free body; ``"ball"`` adds 3 qd
-        # / 4 q root DOFs (orientation only, quaternion); ``"d6_revolute"``
-        # is a D6 joint with a single angular Z axis, giving 1 qd / 1 q
-        # root DOF (per-axis angle); ``"fixed"`` adds none. SolverMuJoCo
-        # requires homogeneous worlds, so every world uses the same
-        # ``[fixed, free, ball, d6_revolute]`` pattern -- exercising all four
-        # root joint types in each world.
+        # Per-articulation root joint type:
+        #   ``"free"``: 6 qd / 7 q -- 3 linear + 3 angular for a free body.
+        #   ``"ball"``: 3 qd / 4 q -- orientation only (quaternion).
+        #   ``"d6_revolute"``: 1 qd / 1 q -- D6 with a single angular Z axis.
+        #   ``"fixed"``: 0 qd / 0 q.
+        # SolverMuJoCo requires homogeneous worlds, so every world uses the
+        # same pattern -- exercising all four root joint types per world.
+        # ``"d6_ball"`` (D6 with three angular axes, ball-equivalent) should
+        # also appear here but is blocked on
+        # https://github.com/newton-physics/newton/issues/2749 -- SolverMuJoCo's
+        # stacked-hinge integration of multi-angular-axis D6 joints disagrees
+        # with the manipulator equation under non-zero ``joint_qd``. Once the
+        # issue is fixed, add a ``"d6_ball"`` branch to :func:`build_articulation`
+        # and corresponding entries to ``root_qd_len`` / ``root_q_per_type`` /
+        # ``root_qd_per_type`` / ``root_qdd_per_type``, then append
+        # ``"d6_ball"`` to ``root_joint_types_per_world``.
         root_joint_types_per_world = ["fixed", "free", "ball", "d6_revolute"]
         assert len(root_joint_types_per_world) == num_arts_per_world
         root_joint_types = root_joint_types_per_world * num_worlds
@@ -2265,7 +2281,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         state_next = model.state()
         control = model.control()
         contacts = model.contacts()
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics, scratch = model.inverse_dynamics()
         solver = newton.solvers.SolverMuJoCo(model)
         dt = 1e-4
 
@@ -2283,9 +2299,11 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         ]
         # Internal-DOF velocities. Non-zero values let the C(q, q_dot)*q_dot term
         # of the manipulator equation contribute.
+        # Internal-DOF velocities. Non-zero values let the C(q, q_dot)*q_dot term
+        # of the manipulator equation contribute.
         internal_speed = (0.5, -0.3) if non_zero_initial_dof_velocities else (0.0, 0.0)
         initial_joint_speeds = [internal_speed] * 4
-        # Per-test-case internal-DOF accelerations. Magnitudes and signs vary so
+        # Per-test-case intern#al-DOF accelerations. Magnitudes and signs vary so
         # the assertion exercises both small and large q_ddot, including negatives.
         initial_joint_accelerations = [
             (0.02, 0.04),
@@ -2366,7 +2384,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
                 # Manipulator equation: tau = M(q)*qddot + C(q,qdot)*qdot + g(q).
-                newton.eval_inverse_dynamics(model, state, eval_type, inverse_dynamics)
+                newton.eval_inverse_dynamics(model, state, eval_type, inverse_dynamics, scratch)
                 qddot = wp.array(qddot_target, dtype=wp.float32, device=self.device)
                 newton.eval_inverse_dynamics_force(
                     model,
