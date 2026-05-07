@@ -18,14 +18,13 @@
 # where mu = tri_ke, lmbd_nh = tri_ka + tri_ke, and Poisson ratio
 # nu = tri_ka / (tri_ka + 2 * tri_ke).
 #
-# Run on `main` (StVK) and on `vbd_stiff_material_stretch` (Neo-Hookean)
-# to compare against the same theoretical curve.
+# The example validates the Neo-Hookean membrane against the StableNH
+# closed-form prediction.
 #
 # Command: python -m newton.examples cloth_stiff_material_stretch
 #
 ###########################################################################
 
-import numpy as np
 import warp as wp
 
 import newton
@@ -127,17 +126,6 @@ class Example:
         # over RAMP_FRAMES — easing avoids the instant force spike that breaks
         # VBD at low Poisson ratios.
         self._frame_index = 0
-
-        # Triangle index ranges per sheet, for area measurement.
-        tri_ind = self.model.tri_indices.numpy()
-        self.sheet_tri_ranges: list[tuple[int, int]] = []
-        sheet_starts_with_end = [*self.sheet_starts, self.model.particle_count]
-        for s in range(len(self.POISSON_RATIOS)):
-            lo = sheet_starts_with_end[s]
-            hi = sheet_starts_with_end[s + 1]
-            mask = (tri_ind[:, 0] >= lo) & (tri_ind[:, 0] < hi)
-            indices = np.where(mask)[0]
-            self.sheet_tri_ranges.append((int(indices.min()), int(indices.max()) + 1))
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(pos=wp.vec3(8.44, 3.26, 4.23), pitch=-20.0, yaw=-180.0)

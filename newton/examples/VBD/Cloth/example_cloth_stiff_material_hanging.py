@@ -51,7 +51,6 @@ class Example:
         builder.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 2.0),
             rot=wp.quat_from_axis_angle(wp.vec3(1, 0, 0), np.pi / 2),
-            # rot=wp.quat_identity(),
             scale=0.01,
             vertices=vertices,
             indices=mesh_indices,
