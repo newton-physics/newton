@@ -32,7 +32,7 @@ MOTOR_INPUT_RIGHT = 2
 
 TABLE_RECT_HALF_X = 0.050
 TABLE_RECT_HALF_Y = 0.060
-TABLE_RECT_PERIOD = 8.0
+TABLE_RECT_PERIOD = 16.0
 TABLE_RECT_POINTS = (
     (-TABLE_RECT_HALF_X, -TABLE_RECT_HALF_Y),
     (TABLE_RECT_HALF_X, -TABLE_RECT_HALF_Y),
@@ -40,7 +40,7 @@ TABLE_RECT_POINTS = (
     (-TABLE_RECT_HALF_X, TABLE_RECT_HALF_Y),
 )
 TABLE_RECT_HIT_TOLERANCE = 0.025
-TABLE_RECT_TEST_FRAMES = 540
+TABLE_RECT_TEST_FRAMES = 2100
 START_RAMP_DURATION = 1.2
 
 
@@ -61,9 +61,9 @@ def drive_input_pulleys(
     t = sim_time[0]
 
     # The two input pulley rotations are the only prescribed motion. The
-    # slide and table are moved only by the cable and passive pulleys. The
-    # rectangular marker path is converted through x = r(q2 - q6)/2 and
-    # y = r(q2 + q6)/2.
+    # slide and table are moved only by the cable and passive pulleys. In
+    # this layout, a direct cable-drive command maps approximately to world
+    # (x, y) = (command_y, -command_x), so invert that mapping first.
     ramp = wp.clamp(t / START_RAMP_DURATION, 0.0, 1.0)
     ramp = ramp * ramp * (3.0 - 2.0 * ramp)
     phase_time = t - wp.floor(t / TABLE_RECT_PERIOD) * TABLE_RECT_PERIOD
@@ -82,10 +82,12 @@ def drive_input_pulleys(
     else:
         table_y = TABLE_RECT_HALF_Y - 2.0 * TABLE_RECT_HALF_Y * (side - 3.0)
 
-    table_x = ramp * table_x
-    table_y = ramp * table_y
-    q2 = (table_x + table_y) / pulley_radius
-    q6 = (table_y - table_x) / pulley_radius
+    target_x = ramp * table_x
+    target_y = ramp * table_y
+    command_x = -target_y
+    command_y = target_x
+    q2 = (command_x + command_y) / pulley_radius
+    q6 = (command_y - command_x) / pulley_radius
 
     p = wp.transform_get_translation(base_xform)
     q = wp.transform_get_rotation(base_xform)
@@ -139,10 +141,12 @@ def compute_input_pulley_rotations(t: float, pulley_radius: float) -> tuple[floa
     else:
         table_y = TABLE_RECT_HALF_Y - 2.0 * TABLE_RECT_HALF_Y * (side - 3.0)
 
-    table_x *= ramp
-    table_y *= ramp
-    q2 = (table_x + table_y) / pulley_radius
-    q6 = (table_y - table_x) / pulley_radius
+    target_x = ramp * table_x
+    target_y = ramp * table_y
+    command_x = -target_y
+    command_y = target_x
+    q2 = (command_x + command_y) / pulley_radius
+    q6 = (command_y - command_x) / pulley_radius
     return q2, q6
 
 
@@ -592,8 +596,8 @@ class Example:
         builder = newton.ModelBuilder()
         builder.rigid_gap = 5.0 * cable_radius
         builder.default_shape_cfg.ke = 1.0e5
-        builder.default_shape_cfg.kd = 1.0e-1
-        builder.default_shape_cfg.mu = 0.7
+        builder.default_shape_cfg.kd = 0.0
+        builder.default_shape_cfg.mu = 1.0
 
         base_origin = wp.vec3(0.0, 0.0, base_z)
         slide_origin = wp.vec3(0.0, 0.0, slide_z)
@@ -754,9 +758,9 @@ class Example:
                 "groove_width_scale": 3.1,
                 "flange_radius_scale": 3.2,
                 "flange_thickness_scale": 1.2,
-                "ke": 1.0e6,
-                "kd": 1.0e-1,
-                "mu": 2.0,
+                "ke": 1.0e5,
+                "kd": 0.0,
+                "mu": 1.0,
                 "density": 220.0,
                 "label": f"xy_table_{i}_{label}",
             }
@@ -818,9 +822,6 @@ class Example:
 
         cable_cfg = builder.default_shape_cfg.copy()
         cable_cfg.density = 20.0
-        cable_cfg.ke = 5.0e4
-        cable_cfg.kd = 1.0e-1
-        cable_cfg.mu = 1.0
         cable_cfg.gap = 5.0 * cable_radius
 
         self.cable_bodies, cable_joints = builder.add_rod(
@@ -828,9 +829,9 @@ class Example:
             quaternions=straight_cable_quats,
             radius=cable_radius,
             cfg=cable_cfg,
-            stretch_stiffness=1.0e4,
-            stretch_damping=None,
-            bend_stiffness=1.0e-6,
+            stretch_stiffness=1.0e5,
+            stretch_damping=0.0,
+            bend_stiffness=5.0e-5,
             bend_damping=1.0e-2,
             wrap_in_articulation=False,
             label="xy_table_cable",
@@ -895,8 +896,18 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=sim_iterations,
-            friction_epsilon=0.1,
+            friction_epsilon=1.0e-2,
+            rigid_body_contact_buffer_size=256,
+            rigid_contact_hard=False,
+            rigid_joint_linear_ke=1.0e5,
+            rigid_joint_angular_ke=1.0e5,
+            rigid_joint_linear_kd=0.0,
+            rigid_joint_angular_kd=0.0,
+            rigid_avbd_gamma=0.999,
         )
+        self.solver.rigid_contact_stick_motion_eps = 0.0
+        self.solver.rigid_contact_stick_freeze_translation_eps = 0.0
+        self.solver.rigid_contact_stick_freeze_angular_eps = 0.0
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -939,6 +950,10 @@ class Example:
             ],
             device=self.model.device,
         )
+        # The wrapped cable pose is the initial condition, not a one-frame
+        # teleport. Keep VBD's previous-pose buffer in sync to avoid a fake
+        # first-step velocity.
+        self.solver.body_q_prev = wp.clone(self.state_0.body_q, device=self.solver.device)
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
