@@ -1245,6 +1245,10 @@ def test_no_degenerate_triangles_deep_penetration(test, device):
     of degenerate (zero-area) triangles that arise from vertex collapse at
     SDF ridge boundaries.
 
+    The edge-interpolation clamp (:attr:`HydroelasticSDF.Config.mc_edge_clamp`)
+    is the mechanism that prevents these vertex collapses, so this test is
+    only meaningful when ``mc_edge_clamp`` is non-zero.
+
     Args:
         test: Unittest-style assertion helper.
         device: Warp device under test.
@@ -1294,6 +1298,7 @@ def test_no_degenerate_triangles_deep_penetration(test, device):
             reduce_contacts=False,
             buffer_mult_iso=4,
             buffer_mult_contact=4,
+            mc_edge_clamp=0.02,
         )
         collision_pipeline = newton.CollisionPipeline(
             model,
