@@ -1247,6 +1247,91 @@ class TestGravCompForce(TestInverseDynamicsBase):
                     err_msg=f"At q = {q}: expected {expected}, got -tau = {-tau[0]}",
                 )
 
+    def test_gravity_three_worlds_different_axes(self):
+        """G(q) for a free body in each of three worlds with X, Y, Z gravity vectors.
+
+        Three worlds, each containing a single free body of mass ``m`` at the
+        origin with identity orientation and CoM at the body origin. World 0
+        has gravity along +X, world 1 along +Y, world 2 along +Z. Under
+        Newton's free-joint convention the per-world gravity-compensation
+        force must equal ``m * g_world`` in the linear part and zero in the
+        angular part, which exercises the per-world ``body_world`` lookup
+        inside the RNEA gravity term.
+        """
+        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        m = 1.5
+        g_mag = 9.81
+        I_body = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+        # Build a single-world template containing one free body.
+        def build_world() -> newton.ModelBuilder:
+            b = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+            body = b.add_link(
+                xform=identity_xform,
+                mass=m,
+                inertia=I_body,
+                com=wp.vec3(0.0, 0.0, 0.0),
+            )
+            j = b.add_joint_free(
+                parent=-1,
+                child=body,
+                parent_xform=identity_xform,
+                child_xform=identity_xform,
+            )
+            b.add_articulation([j])
+            return b
+
+        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        for _ in range(3):
+            builder.add_world(build_world())
+
+        model = builder.finalize(device=self.device)
+        self.assertEqual(model.world_count, 3)
+        self.assertEqual(model.articulation_count, 3)
+        self.assertEqual(model.joint_dof_count, 18)  # 3 free joints * 6 DOFs
+
+        # Per-world gravity vectors along the three world axes.
+        gravity_per_world = [
+            (g_mag, 0.0, 0.0),  # world 0: along +X
+            (0.0, g_mag, 0.0),  # world 1: along +Y
+            (0.0, 0.0, g_mag),  # world 2: along +Z
+        ]
+        for w, g in enumerate(gravity_per_world):
+            model.set_gravity(g, world=w)
+
+        # Identity pose for every body: translation = 0, rotation = identity quat.
+        state = model.state()
+        joint_q = state.joint_q.numpy()
+        for w in range(3):
+            joint_q[w * 7 : (w + 1) * 7] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        state.joint_q.assign(joint_q)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        inverse_dynamics, scratch = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(
+            model=model,
+            state=state,
+            eval_type=newton.InverseDynamics.EvalType.GRAVITY_COMPENSATION_FORCE,
+            inverse_dynamics=inverse_dynamics, scratch=scratch,
+        )
+
+        measured = inverse_dynamics.gravity_compensation_force.numpy()
+
+        # Free joint: 6 DOFs per articulation -- linear at CoM (parent frame =
+        # world for parent=-1), then angular at CoM. Newton's compensation is
+        # -G_standard, so the linear part equals m * g_world and the angular
+        # part is zero (body CoM at the body origin -> no gravity torque).
+        for w, g in enumerate(gravity_per_world):
+            with self.subTest(world=w, gravity=g):
+                expected_linear = m * np.asarray(g, dtype=np.float64)
+                expected_angular = np.zeros(3)
+                np.testing.assert_allclose(
+                    measured[w * 6 : w * 6 + 3], expected_linear, atol=1e-5, rtol=1e-5
+                )
+                np.testing.assert_allclose(
+                    measured[w * 6 + 3 : w * 6 + 6], expected_angular, atol=1e-5, rtol=1e-5
+                )
+
 
 class TestCoriolisCompForce(TestInverseDynamicsBase):
     """Coriolis-compensation-force tests for the two-link pendulum harness."""
