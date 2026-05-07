@@ -18,8 +18,11 @@ def _build_single_sphere_model():
     return builder.finalize(device="cpu")
 
 
-def _render_tiny_color_and_hdr(model):
-    sensor = SensorTiledCamera(model=model)
+def _render_tiny_color_and_hdr(model, *, output_color_space=newton.utils.ColorSpace.SRGB):
+    sensor = SensorTiledCamera(
+        model=model,
+        config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
+    )
     state = model.state()
 
     camera_transforms = wp.array(
@@ -69,6 +72,14 @@ class TestSensorTiledCameraHdrColor(unittest.TestCase):
         packed_rgb = color.view(np.uint8).reshape(*color.shape, 4)[..., :3].astype(np.float32) / 255.0
 
         np.testing.assert_allclose(expected_packed_rgb, packed_rgb, atol=1.0 / 255.0)
+
+    def test_hdr_color_matches_linear_color_when_packing_linear_output(self):
+        model = _build_single_sphere_model()
+
+        color, hdr_color = _render_tiny_color_and_hdr(model, output_color_space=newton.utils.ColorSpace.LINEAR)
+        packed_rgb = color.view(np.uint8).reshape(*color.shape, 4)[..., :3].astype(np.float32) / 255.0
+
+        np.testing.assert_allclose(np.clip(hdr_color, 0.0, 1.0), packed_rgb, atol=1.0 / 255.0)
 
 
 if __name__ == "__main__":
