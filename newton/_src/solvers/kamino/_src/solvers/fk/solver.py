@@ -155,6 +155,12 @@ class ForwardKinematicsSolver:
         if self.model is None:
             raise ValueError("ForwardKinematicsSolver: error, provided model is None.")
 
+        # Validate config
+        try:
+            self.config.validate()
+        except Exception as e:
+            raise RuntimeError("Solver configuration is invalid.") from e
+
         # Initialize device
         self.device = self.model.device
 
@@ -378,8 +384,6 @@ class ForwardKinematicsSolver:
         )
         world_actuated_coord_offsets = np.concatenate(([0], world_num_actuated_coords.cumsum()))
         self.num_actuated_coords_max = np.max(world_num_actuated_coords)
-        if self.num_actuated_coords_max == 0:  # No actuated coordinates
-            self.config.use_incremental_solve = 0  # Turn off incremental solve (corner case in unit tests)
 
         # Retrieve / compute dimensions - Actuated dofs (FK model)
         joints_num_actuated_dofs = np.array(joints_num_actuated_dofs)  # Number of actuated dofs per joint
@@ -460,8 +464,8 @@ class ForwardKinematicsSolver:
         # Initialize maximal step size per iteration in actuated coordinates
         if self.config.use_incremental_solve:
             delta_q_max = np.zeros(self.num_actuated_coords, dtype=np.float32)
-            max_step_linear = self.config.max_linear_incremental_step_meters
-            max_step_angular = np.radians(self.config.max_angular_incremental_step_degrees)
+            max_step_linear = self.config.max_linear_incremental_step
+            max_step_angular = self.config.max_angular_incremental_step
             half_angle = 0.5 * min(max_step_angular, np.pi)
             max_step_quat = max(np.sin(half_angle), 1.0 - np.cos(half_angle))
             for eq_class in classes:
@@ -506,19 +510,19 @@ class ForwardKinematicsSolver:
 
         # Retrieve / compute dimensions - Number of tiles (for kernels using Tile API)
         # For 1d reduction kernels, large tiles yield the best performance
-        self.tile_size_cts_1d = min(2048, 2 ** math.ceil(math.log(self.num_constraints_max, 2)))
-        self.num_tiles_cts_1d = (self.num_constraints_max + self.tile_size_cts_1d - 1) // self.tile_size_cts_1d
-        self.tile_size_vrs_1d = min(2048, 2 ** math.ceil(math.log(self.num_states_max, 2)))
-        self.num_tiles_vrs_1d = (self.num_states_max + self.tile_size_vrs_1d - 1) // self.tile_size_vrs_1d
+        self.tile_size_cts_1d = get_tile_size(self.num_constraints_max)
+        self.num_tiles_cts_1d = get_num_tiles(self.num_constraints_max, self.tile_size_cts_1d)
+        self.tile_size_vrs_1d = get_tile_size(self.num_states_max)
+        self.num_tiles_vrs_1d = get_num_tiles(self.num_states_max, self.tile_size_vrs_1d)
         # For 2d matrix product kernels, smaller 16x16 tiles give the best tradeoff (also for using sparsity)
         self.tile_size_cts_2d = 16
-        self.num_tiles_cts_2d = (self.num_constraints_max + self.tile_size_cts_2d - 1) // self.tile_size_cts_2d
+        self.num_tiles_cts_2d = get_num_tiles(self.num_constraints_max, self.tile_size_cts_2d)
         self.tile_size_vrs_2d = 16
-        self.num_tiles_vrs_2d = (self.num_states_max + self.tile_size_vrs_2d - 1) // self.tile_size_vrs_2d
+        self.num_tiles_vrs_2d = get_num_tiles(self.num_states_max, self.tile_size_vrs_2d)
         # For optional 1d reduction kernel over actuated coordinates
         if self.config.use_incremental_solve:
-            self.tile_size_coords = min(2048, 2 ** math.ceil(math.log(self.num_actuated_coords_max, 2)))
-            self.num_tiles_coords = (self.num_actuated_coords_max + self.tile_size_coords - 1) // self.tile_size_coords
+            self.tile_size_coords = get_tile_size(self.num_actuated_coords_max)
+            self.num_tiles_coords = get_num_tiles(self.num_actuated_coords_max, self.tile_size_coords)
 
         # Data allocation or transfer from numpy to warp
         with wp.ScopedDevice(self.device):
@@ -931,8 +935,7 @@ class ForwardKinematicsSolver:
     def _initialize_incremental_solve(self, bodies_q: wp.array[wp.transformf]):
         """
         Internal function running all necessary precomputations for the incremental solve.
-        Assumes without check that data related to incremental solve is allocated, and min_newton_iterations
-        is pre-filled with zeros.
+        Assumes without check that data related to incremental solve is allocated.
         """
         # Extract current actuator coordinates
         wp.launch(
@@ -970,7 +973,7 @@ class ForwardKinematicsSolver:
         wp.launch_tiled(
             self._eval_min_num_iterations_kernel,
             dim=(self.num_worlds, self.num_tiles_coords),
-            block_dim=max(32, min(256, self.tile_size_coords // 8)),
+            block_dim=get_block_size(self.tile_size_coords),
             inputs=[
                 self.world_actuated_coord_offsets,
                 self.actuators_q_prev,
@@ -1102,7 +1105,7 @@ class ForwardKinematicsSolver:
             self._eval_max_constraint_kernel,
             dim=(self.num_worlds, self.num_tiles_cts_1d),
             inputs=[constraints, max_constraint],
-            block_dim=max(32, min(256, self.tile_size_cts_1d // 8)),
+            block_dim=get_block_size(self.tile_size_cts_1d),
             device=self.device,
         )
 
@@ -1233,7 +1236,7 @@ class ForwardKinematicsSolver:
             self._eval_merit_function_kernel,
             dim=(self.num_worlds, self.num_tiles_cts_1d),
             inputs=[constraints, error],
-            block_dim=max(32, min(256, self.tile_size_cts_1d // 8)),
+            block_dim=get_block_size(self.tile_size_cts_1d),
             device=self.device,
         )
 
@@ -1252,7 +1255,7 @@ class ForwardKinematicsSolver:
             self._eval_merit_function_gradient_kernel,
             dim=(self.num_worlds, self.num_tiles_vrs_1d),
             inputs=[step, grad, error_grad],
-            block_dim=max(32, min(256, self.tile_size_vrs_1d // 8)),
+            block_dim=get_block_size(self.tile_size_vrs_1d),
             device=self.device,
         )
 
@@ -1895,6 +1898,23 @@ class ForwardKinematicsSolver:
 ###
 # Functions
 ###
+
+
+def get_tile_size(size: int, max_size: int = 2048):
+    """Rounds up size into a power-of-two tile size, clamping to the [1, max_size] range if needed."""
+    if size < 1:
+        return 1
+    return min(max_size, 2 ** math.ceil(math.log(size, 2)))
+
+
+def get_num_tiles(size: int, tile_size: int):
+    """Computes the number of tiles needed to cover an array of given size, with tiles of given size."""
+    return (size + tile_size - 1) // tile_size
+
+
+def get_block_size(tile_size: int, ratio: int = 8, min_size: int = 32, max_size: int = 256):
+    """Computes the block size as a fixed ratio of the tile size, clamped to a min-max range."""
+    return max(min_size, min(max_size, tile_size // ratio))
 
 
 def compute_fk_equivalence_classes(model: ModelKamino) -> list[list[int]]:

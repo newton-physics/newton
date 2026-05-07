@@ -483,6 +483,8 @@ def _eval_incremental_target_actuator_coords(
 
     # Read data
     coord_id = world_actuated_coord_offsets[wd_id] + coord_id_loc
+    if coord_id >= world_actuated_coord_offsets[wd_id + 1]:
+        return
     q_prev = actuators_q_prev[coord_id]
     q_next = actuators_q_next[coord_id]
     delta = delta_q_max[coord_id]

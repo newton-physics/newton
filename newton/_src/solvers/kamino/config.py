@@ -7,6 +7,7 @@ Defines configurations for :class:`SolverKamino`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -845,20 +846,20 @@ class ForwardKinematicsSolverConfig:
     Defaults to `True`.
     """
 
-    max_linear_incremental_step_meters: float = 0.05
+    max_linear_incremental_step: float = 0.05
     """
     If incremental solve is enabled, maximal allowed step in linear actuator coordinates
     per solver iteration, in meters. A lower value results in more incremental steps.
     Changes to this setting after the solver's initialization will have no effect.
-    Defaults to `0.1`.
+    Defaults to `0.05`.
     """
 
-    max_angular_incremental_step_degrees: float = 10.0
+    max_angular_incremental_step: float = math.radians(10.0)
     """
     If incremental solve is enabled, maximal allowed step in angular actuator coordinates
-    per solver iteration, in degrees. A lower value results in more incremental steps.
+    per solver iteration, in radians. A lower value results in more incremental steps.
     Changes to this setting after the solver's initialization will have no effect.
-    Defaults to `10.0`.
+    Defaults to `math.radians(10.0)`, i.e. 10 degrees.
     """
 
     @override
@@ -913,10 +914,10 @@ class ForwardKinematicsSolverConfig:
             raise ValueError("`max_line_search_iterations` must be positive.")
         if self.tolerance <= 0.0:
             raise ValueError("`tolerance` must be positive.")
-        if self.max_linear_incremental_step_meters <= 0.0:
-            raise ValueError("`max_linear_incremental_step_meters` must be positive.")
-        if self.max_angular_incremental_step_degrees <= 0.0:
-            raise ValueError("`max_angular_incremental_step_degrees` must be positive.")
+        if self.max_linear_incremental_step <= 0.0:
+            raise ValueError("`max_linear_incremental_step` must be positive.")
+        if self.max_angular_incremental_step <= 0.0:
+            raise ValueError("`max_angular_incremental_step` must be positive.")
 
     @override
     def __post_init__(self):
