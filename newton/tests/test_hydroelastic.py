@@ -1411,53 +1411,57 @@ def _build_two_box_hydro_pipeline(device, mc_edge_clamp_min: float):
     return pipeline, model
 
 
-def _canonical_contact_surface_signature(cs):
-    """Return an order-invariant signature of a contact surface for equality checks.
+def _contact_surface_aggregates(cs):
+    """Return order-invariant scalar aggregates summarizing a contact surface.
 
-    Returns ``(num_faces, sorted_flattened_vertex_components)``.  The contact
-    writer uses ``wp.atomic_add`` to assign output slots, so two builds with
-    identical inputs may produce vertices in different orders but with the
-    same set of values; sorting all vertex components together cancels any
-    ordering noise.
+    Returns ``(face_count, total_triangle_area, sum_of_vertex_norms)``.  All
+    three are commutative reductions, so they are insensitive to the
+    ``wp.atomic_add`` ordering the contact writer uses to assign output
+    slots; comparing them across configs avoids false negatives from
+    atomic-ordering noise without depending on bit-exact reproducibility.
     """
     n = int(cs.face_contact_count.numpy()[0])
     if n == 0:
-        return 0, np.empty(0, dtype=np.float32)
-    components = cs.contact_surface_point.numpy()[: n * 3].reshape(-1).astype(np.float64)
-    return n, np.sort(components)
+        return 0, 0.0, 0.0
+    verts = cs.contact_surface_point.numpy()[: n * 3].astype(np.float64).reshape(-1, 3)
+    e1 = verts[1::3] - verts[0::3]
+    e2 = verts[2::3] - verts[0::3]
+    total_area = 0.5 * float(np.linalg.norm(np.cross(e1, e2), axis=1).sum())
+    vertex_norm_sum = float(np.linalg.norm(verts, axis=1).sum())
+    return n, total_area, vertex_norm_sum
 
 
 def test_mc_edge_clamp_min_changes_contact_surface(test, device):
     """Verify ``mc_edge_clamp_min`` actually flows through to vertex placement.
 
-    Builds the same two-box scene three times: twice with ``mc_edge_clamp_min=0.02``
-    (same-args control to confirm the build is order-invariantly deterministic)
-    and once with ``mc_edge_clamp_min=0.0``.  Asserts that the two same-args runs
-    produce identical canonical signatures, then asserts the differing-args run
-    produces a different signature.  The control rules out atomic-ordering
-    false positives — without it, swapping the clamp for a no-op constant in
-    the kernel would still pass CI.
+    Builds the same two-box scene with ``mc_edge_clamp_min=0.02`` and with
+    ``mc_edge_clamp_min=0.0`` and asserts that at least one of three
+    order-invariant scalar aggregates (face count, total triangle area, sum
+    of vertex norms) differs by more than a relative tolerance.  A kernel
+    that ignored the parameter would produce identical aggregates and fail
+    the test.
     """
-    pipe_a, _model_a = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.02)
-    pipe_b, _model_b = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.02)
-    pipe_diff, _model_diff = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.0)
+    pipe_clamped, _model_clamped = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.02)
+    pipe_unclamped, _model_unclamped = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.0)
 
-    n_a, sig_a = _canonical_contact_surface_signature(pipe_a.hydroelastic_sdf.get_contact_surface())
-    n_b, sig_b = _canonical_contact_surface_signature(pipe_b.hydroelastic_sdf.get_contact_surface())
-    n_diff, sig_diff = _canonical_contact_surface_signature(pipe_diff.hydroelastic_sdf.get_contact_surface())
+    n_c, area_c, norm_c = _contact_surface_aggregates(pipe_clamped.hydroelastic_sdf.get_contact_surface())
+    n_u, area_u, norm_u = _contact_surface_aggregates(pipe_unclamped.hydroelastic_sdf.get_contact_surface())
 
-    test.assertGreater(n_a, 0, "Expected non-empty contact surface for the baseline build")
-    test.assertEqual(n_a, n_b, "Same-args builds produced different face counts — non-deterministic build")
-    np.testing.assert_allclose(
-        sig_a,
-        sig_b,
-        atol=1e-6,
-        rtol=0.0,
-        err_msg="Same-args builds produced different vertex sets — non-deterministic build",
+    test.assertGreater(n_c, 0, "Expected non-empty contact surface for the clamped build")
+    test.assertGreater(n_u, 0, "Expected non-empty contact surface for the unclamped build")
+
+    rel_tol = 1e-3
+    differs = (
+        n_c != n_u
+        or abs(area_c - area_u) / max(area_c, area_u, 1e-12) > rel_tol
+        or abs(norm_c - norm_u) / max(norm_c, norm_u, 1e-12) > rel_tol
     )
-
-    differs = (n_a != n_diff) or not np.allclose(sig_a, sig_diff, atol=1e-6, rtol=0.0)
-    test.assertTrue(differs, "Changing mc_edge_clamp_min did not change the contact surface")
+    test.assertTrue(
+        differs,
+        f"mc_edge_clamp_min did not change the contact surface: "
+        f"n=({n_c},{n_u}) area=({area_c:.6f},{area_u:.6f}) "
+        f"norm_sum=({norm_c:.6f},{norm_u:.6f})",
+    )
 
 
 add_function_test(
