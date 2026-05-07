@@ -292,8 +292,10 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
         for _ in range(self.sim_substeps):
+            # Re-run collision detection every substep so contact normals
+            # stay aligned with the threading rotation (#2702).
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
             self.state_0.clear_forces()
 
             self.viewer.apply_forces(self.state_0)
