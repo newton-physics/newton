@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast, overload
+from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
@@ -532,7 +533,10 @@ def load_meshes_from_file(
         def resolve_dae_texture_path(texture_path: str | None) -> str | None:
             if not texture_path:
                 return None
-            texture_path = image_paths.get(texture_path, texture_path)
+            texture_path = image_paths.get(texture_path.lstrip("#"), texture_path)
+            parsed = urlparse(texture_path)
+            if parsed.scheme in {"file", "http", "https", "data"}:
+                return texture_path
             if not os.path.isabs(texture_path):
                 texture_path = os.path.abspath(os.path.join(base_dir, texture_path))
             return texture_path

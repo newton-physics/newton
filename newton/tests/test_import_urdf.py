@@ -362,6 +362,36 @@ class TestImportUrdfBasic(unittest.TestCase):
             self.assertIsNotNone(texture)
             np.testing.assert_array_equal(texture[0, 0, :3], np.array([255, 0, 0], dtype=np.uint8))
 
+    def test_dae_visual_texture_uri_preserved(self):
+        """Verify URI-style Collada textures are not path-joined against the mesh directory."""
+        urdf = """
+<robot name="dae_texture_uri_test">
+    <link name="base_link">
+        <visual>
+            <geometry><mesh filename="triangle_uri.dae"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            texture_path = temp_path / "texture.png"
+            texture_uri = texture_path.resolve().as_uri()
+            dae_with_uri = TEXTURED_DAE.replace("texture.png", texture_uri)
+
+            (temp_path / "robot.urdf").write_text(urdf)
+            (temp_path / "triangle_uri.dae").write_text(dae_with_uri)
+            texture_path.write_bytes(base64.b64decode(TEXTURE_PNG_BASE64))
+
+            builder = newton.ModelBuilder()
+            builder.add_urdf(str(temp_path / "robot.urdf"))
+
+            self.assertEqual(builder.shape_count, 1)
+            self.assertEqual(builder.shape_type[0], GeoType.MESH)
+            mesh = builder.shape_source[0]
+            self.assertIsNotNone(mesh.texture)
+            self.assertEqual(mesh.texture, texture_uri)
+
     def test_inertial_params_urdf(self):
         builder = newton.ModelBuilder()
         parse_urdf(INERTIAL_URDF, builder, ignore_inertial_definitions=False)
