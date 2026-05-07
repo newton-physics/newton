@@ -2511,6 +2511,163 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         self._test_inverse_dynamics_force(non_zero_gravity=True, non_zero_initial_dof_velocities=True)
 
 
+class TestInverseDynamicsAPI(TestInverseDynamicsBase):
+    """API-surface tests: flag dispatch, error paths, and degenerate-model
+    edge cases not exercised by the analytical-correctness suites."""
+
+    def test_compensation_forces_flag_populates_both_biases(self):
+        """``EvalType.COMPENSATION_FORCES`` writes ``g(q)`` and
+        ``C(q, q_dot)*q_dot`` in a single call and leaves the mass matrix
+        untouched.
+
+        A floating-base articulation with non-zero gravity and non-zero
+        joint velocities is used so both bias buffers must come back
+        non-zero. A sentinel value is stamped into ``mass_matrix`` before
+        the call to detect any inadvertent write to it.
+        """
+        builder = self._build_two_link_articulation(
+            gravity=wp.vec3(0.0, -9.81, 0.0),
+            floating_base=True,
+            joint_type="revolute",
+            joint_axis=wp.vec3(0.0, 0.0, 1.0),
+            link_coms=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],
+            link_masses=[1.0, 2.0],
+            joint_frames=[
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            ],
+            link_inertias=[self.I_UNIT, self.I_UNIT],
+        )
+        model = builder.finalize(device=self.device)
+        state = model.state()
+        joint_q = state.joint_q.numpy()
+        joint_q[0] = 0.3
+        joint_q[1] = 0.5
+        state.joint_q.assign(joint_q)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        # Populate every DOF (including the floating-root angular DOFs) so
+        # gyroscopic and cross-coupling contributions to C(q, q_dot)*q_dot
+        # are non-zero.
+        joint_qd = state.joint_qd.numpy()
+        joint_qd[:] = np.linspace(0.1, 0.7, joint_qd.shape[0])
+        state.joint_qd.assign(joint_qd)
+
+        inverse_dynamics, scratch = model.inverse_dynamics()
+
+        sentinel = np.full(inverse_dynamics.mass_matrix.shape, 7.5, dtype=np.float32)
+        inverse_dynamics.mass_matrix.assign(sentinel)
+
+        newton.eval_inverse_dynamics(
+            model,
+            state,
+            newton.InverseDynamics.EvalType.COMPENSATION_FORCES,
+            inverse_dynamics,
+            scratch,
+        )
+
+        np.testing.assert_array_equal(inverse_dynamics.mass_matrix.numpy(), sentinel)
+        g = inverse_dynamics.gravity_compensation_force.numpy()
+        c = inverse_dynamics.coriolis_compensation_force.numpy()
+        self.assertTrue(np.all(np.isfinite(g)))
+        self.assertTrue(np.all(np.isfinite(c)))
+        self.assertGreater(float(np.linalg.norm(g)), 1e-6)
+        self.assertGreater(float(np.linalg.norm(c)), 1e-6)
+
+    def test_eval_inverse_dynamics_raises_on_mass_matrix_shape_mismatch(self):
+        """``eval_inverse_dynamics`` raises ``ValueError`` when the
+        ``MASS_MATRIX`` flag is set but the supplied ``mass_matrix`` buffer's
+        shape disagrees with
+        ``(articulation_count, max_dofs_per_articulation, max_dofs_per_articulation)``.
+        """
+        builder = self._build_two_link_articulation(
+            gravity=wp.vec3(0.0, 0.0, 0.0),
+            floating_base=False,
+            joint_type="revolute",
+            joint_axis=wp.vec3(0.0, 0.0, 1.0),
+            link_coms=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],
+            link_masses=[1.0, 1.0],
+            joint_frames=[
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            ],
+            link_inertias=[self.I_UNIT, self.I_UNIT],
+        )
+        model = builder.finalize(device=self.device)
+        state = model.state()
+        inverse_dynamics, scratch = model.inverse_dynamics()
+
+        # Replace mass_matrix with a wrong-shaped buffer (extra DOF on each
+        # axis) so the shape check inside eval_inverse_dynamics must fire.
+        wrong_shape = (
+            model.articulation_count,
+            model.max_dofs_per_articulation + 1,
+            model.max_dofs_per_articulation + 1,
+        )
+        inverse_dynamics.mass_matrix = wp.zeros(wrong_shape, dtype=wp.float32, device=self.device)
+
+        with self.assertRaises(ValueError) as ctx:
+            newton.eval_inverse_dynamics(
+                model,
+                state,
+                newton.InverseDynamics.EvalType.MASS_MATRIX,
+                inverse_dynamics,
+                scratch,
+            )
+        msg = str(ctx.exception)
+        self.assertIn("mass_matrix", msg)
+        self.assertIn(str(wrong_shape), msg)
+
+    def test_eval_inverse_dynamics_force_zero_articulations_preserves_tau(self):
+        """``eval_inverse_dynamics_force`` short-circuits on a model with
+        zero articulations without touching ``tau``.
+
+        The ``articulation_count == 0`` guard returns before the in-place
+        ``tau.zero_()``, so a sentinel previously written into ``tau`` must
+        be preserved -- a regression check that the early return stays in
+        place ahead of the zero pass.
+        """
+        builder = newton.ModelBuilder()
+        model = builder.finalize(device=self.device)
+        self.assertEqual(model.articulation_count, 0)
+
+        n = 4
+        sentinel = np.array([7.0, -2.5, 0.1, 99.0], dtype=np.float32)
+        tau = wp.array(sentinel, dtype=wp.float32, device=self.device)
+        # Buffer sizes here are otherwise irrelevant: the kernel never runs.
+        H = wp.zeros((1, 1, 1), dtype=wp.float32, device=self.device)
+        qddot = wp.zeros(n, dtype=wp.float32, device=self.device)
+        zero_bias = wp.zeros(n, dtype=wp.float32, device=self.device)
+
+        newton.eval_inverse_dynamics_force(model, H, qddot, zero_bias, zero_bias, tau)
+
+        np.testing.assert_array_equal(tau.numpy(), sentinel)
+
+    def test_eval_inverse_dynamics_zero_articulations_no_error(self):
+        """``eval_inverse_dynamics`` with ``EvalType.ALL`` on a model with
+        zero articulations completes without raising and leaves the
+        zero-sized output buffers consistent.
+        """
+        builder = newton.ModelBuilder()
+        model = builder.finalize(device=self.device)
+        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.joint_dof_count, 0)
+
+        state = model.state()
+        inverse_dynamics, scratch = model.inverse_dynamics()
+
+        newton.eval_inverse_dynamics(
+            model,
+            state,
+            newton.InverseDynamics.EvalType.ALL,
+            inverse_dynamics,
+            scratch,
+        )
+
+        self.assertEqual(inverse_dynamics.gravity_compensation_force.shape, (0,))
+        self.assertEqual(inverse_dynamics.coriolis_compensation_force.shape, (0,))
+        self.assertEqual(inverse_dynamics.mass_matrix.shape[0], 0)
+
+
 class TestGravCompForceCPU(TestGravCompForce, unittest.TestCase):
     device = wp.get_device("cpu")
 
@@ -2544,6 +2701,15 @@ class TestManipulatorEquationCPU(TestManipulatorEquation, unittest.TestCase):
 
 @unittest.skipUnless(wp.is_cuda_available(), "CUDA not available")
 class TestManipulatorEquationCUDA(TestManipulatorEquation, unittest.TestCase):
+    device = wp.get_device("cuda:0") if wp.is_cuda_available() else None
+
+
+class TestInverseDynamicsAPICPU(TestInverseDynamicsAPI, unittest.TestCase):
+    device = wp.get_device("cpu")
+
+
+@unittest.skipUnless(wp.is_cuda_available(), "CUDA not available")
+class TestInverseDynamicsAPICUDA(TestInverseDynamicsAPI, unittest.TestCase):
     device = wp.get_device("cuda:0") if wp.is_cuda_available() else None
 
 
