@@ -280,13 +280,12 @@ class HydroelasticSDF:
         """Lower bound for the marching-cubes edge interpolation parameter
         (``t`` clamped to ``[mc_edge_clamp_min, 1 - mc_edge_clamp_min]``).
 
-        Range: ``[0.0, 0.5]``.  The default of ``0.02`` matches the behavior
-        introduced in #2424 and prevents vertex collapse at SDF ridge
-        boundaries (where multiple triangle vertices would otherwise land on
-        the same cube corner).  Set to ``0.0`` for the most faithful
-        contact-surface dynamics — recommended for threading-style scenarios
-        like ``nut_bolt_hydro`` where the surface bias measurably damps the
-        contact response (#2702)."""
+        Range: ``[0.0, 0.5]``.  The default of ``0.02`` prevents vertex
+        collapse at SDF ridge boundaries, where multiple triangle vertices
+        would otherwise land on the same cube corner.  Set to ``0.0`` for
+        the most faithful contact-surface dynamics — recommended for
+        threading-style scenarios like ``nut_bolt_hydro`` where the surface
+        bias measurably damps the contact response."""
 
         def __post_init__(self):
             # NaN fails both bounds (NaN comparisons return False) and lands here too.

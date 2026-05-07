@@ -165,7 +165,7 @@ class Example:
 
         # Disable the marching-cubes edge clamp — threading dynamics on the
         # M20 helix are sensitive to the contact-surface vertex bias the clamp
-        # introduces (see #2702).
+        # introduces.
         sdf_hydroelastic_config = HydroelasticSDF.Config(
             mc_edge_clamp_min=0.0,
         )
