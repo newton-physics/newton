@@ -4507,13 +4507,32 @@ class SolverMuJoCo(SolverBase):
         )
 
         selected_shapes_set = set(selected_shapes)
+        mujoco_attrs = getattr(model, "mujoco", None)
+
+        mujoco_pair_contact_shapes: set[int] = set()
+        pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
+        if mujoco_attrs is not None and pair_count > 0:
+            pair_world_attr = getattr(mujoco_attrs, "pair_world", None)
+            pair_geom1_attr = getattr(mujoco_attrs, "pair_geom1", None)
+            pair_geom2_attr = getattr(mujoco_attrs, "pair_geom2", None)
+            if pair_world_attr is not None and pair_geom1_attr is not None and pair_geom2_attr is not None:
+                pair_world_np = pair_world_attr.numpy()
+                pair_geom1_np = pair_geom1_attr.numpy()
+                pair_geom2_np = pair_geom2_attr.numpy()
+                pair_count = min(pair_count, len(pair_world_np), len(pair_geom1_np), len(pair_geom2_np))
+                for pair_index in range(pair_count):
+                    pair_world = int(pair_world_np[pair_index])
+                    if pair_world != first_world and pair_world >= 0:
+                        continue
+                    for pair_shape in (int(pair_geom1_np[pair_index]), int(pair_geom2_np[pair_index])):
+                        if pair_shape >= 0 and pair_shape in selected_shapes_set:
+                            mujoco_pair_contact_shapes.add(pair_shape)
 
         # Compute shapes required by spatial tendons (sites, wrapping geoms, sidesites)
         # so they are not skipped when skip_visual_only_geoms=True or include_sites=False.
         # Only collect from template-world tendons to avoid inflating the count with
         # shape indices from other worlds.
         tendon_required_shapes: set[int] = set()
-        mujoco_attrs = getattr(model, "mujoco", None)
         if mujoco_attrs is not None:
             _wrap_shape = getattr(mujoco_attrs, "tendon_wrap_shape", None)
             _wrap_sidesite = getattr(mujoco_attrs, "tendon_wrap_sidesite", None)
@@ -4581,7 +4600,7 @@ class SolverMuJoCo(SolverBase):
                     for label in template_target_labels & site_shape_by_label.keys():
                         actuator_required_shapes.add(site_shape_by_label[label])
 
-        required_shapes = tendon_required_shapes | actuator_required_shapes
+        required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
         mesh_export_cache: dict[tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray, int, bool]] = {}
 
         def add_geoms(newton_body_id: int):
@@ -4702,12 +4721,10 @@ class SolverMuJoCo(SolverBase):
                         mesh_export_cache[key] = mesh_export
 
                     vertices, indices, maxhullvert, is_planar = mesh_export
-                    if (
-                        is_planar
-                        and self._use_mujoco_contacts
-                        and not disable_contacts
-                        and (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
-                    ):
+                    uses_mujoco_contacts = (
+                        bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) and int(shape_collision_group[shape]) != 0
+                    ) or shape in mujoco_pair_contact_shapes
+                    if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
                         raise ValueError(
                             f"MuJoCo contact generation does not support planar mesh collider "
                             f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
