@@ -3,8 +3,8 @@
 
 """Solver-level fixed-joint merger utility.
 
-Computes merge metadata from a finalized :class:`~newton.Model` and provides
-Warp kernels to propagate merged-body poses/velocities after each solver step.
+Produces an effective-index layer that routes shapes, joints, and body forces
+onto surviving bodies without modifying the :class:`~newton.Model`.
 """
 
 from __future__ import annotations
@@ -20,50 +20,11 @@ from ..sim.model import Model
 
 @dataclass
 class FixedJointMergeInfo:
-    """Describes which bodies are collapsed at the solver level.
-
-    Computed once at solver construction from the finalized :class:`~newton.Model`.
-    All GPU arrays are allocated on the same device as the model.
-
-    Attributes:
-        has_merges: True iff at least one FIXED joint was collapsed.
-        survivor_of: Per-body survivor index, shape [body_count].
-            ``survivor_of[b] == b`` for bodies that are not merged children.
-        relative_xform_of: Per-body transform from the survivor frame to body
-            ``b``'s frame [m, unitless quat], shape [body_count].
-            Identity transform for survivors.
-        merged_body_mass: Per-body accumulated mass [kg], shape [body_count].
-            Survivor bodies hold the sum of their own mass plus all merged
-            children; merged children retain their original mass (it is not
-            used in dynamics since their effective inv_mass is zeroed).
-        merged_body_inertia: Per-body accumulated inertia tensor [kg·m²],
-            shape [body_count].
-        merged_body_inv_mass: Per-body effective inverse mass [1/kg],
-            shape [body_count].  0 for merged children and for zero-mass bodies.
-        merged_body_inv_inertia: Per-body effective inverse inertia [1/(kg·m²)],
-            shape [body_count].  Zero matrix for merged children.
-        merged_body_com: Per-body accumulated center of mass [m],
-            shape [body_count].  Mass-weighted average for survivors.
-        joint_enabled_effective: Per-joint effective enabled flag,
-            shape [joint_count].  False for FIXED joints that were collapsed.
-        survivor_indices_gpu: GPU int32 array, shape [body_count].
-        relative_xforms_gpu: GPU transform array, shape [body_count].
-        merged_body_inv_mass_gpu: GPU float array, shape [body_count].
-        merged_body_inv_inertia_gpu: GPU mat33 array, shape [body_count].
-        merged_body_mass_gpu: GPU float array, shape [body_count].
-        merged_body_inertia_gpu: GPU mat33 array, shape [body_count].
-        merged_body_com_gpu: GPU vec3 array, shape [body_count].
-    """
+    """Solver-level merge metadata for collapsed FIXED joints."""
 
     has_merges: bool
     survivor_of: list[int]
     relative_xform_of: list[wp.transform]
-    merged_body_mass: list[float]
-    merged_body_inertia: list[wp.mat33]
-    merged_body_inv_mass: list[float]
-    merged_body_inv_inertia: list[wp.mat33]
-    merged_body_com: list[wp.vec3]
-    joint_enabled_effective: list[bool]
     survivor_indices_gpu: wp.array
     relative_xforms_gpu: wp.array
     merged_body_inv_mass_gpu: wp.array
@@ -71,6 +32,12 @@ class FixedJointMergeInfo:
     merged_body_mass_gpu: wp.array
     merged_body_inertia_gpu: wp.array
     merged_body_com_gpu: wp.array
+    joint_enabled_effective_gpu: wp.array
+    joint_parent_effective_gpu: wp.array
+    joint_child_effective_gpu: wp.array
+    joint_X_p_effective_gpu: wp.array
+    joint_X_c_effective_gpu: wp.array
+    shape_body_effective_gpu: wp.array
 
 
 def compute_fixed_joint_merge(
@@ -79,18 +46,12 @@ def compute_fixed_joint_merge(
 ) -> FixedJointMergeInfo | None:
     """Compute solver-level fixed-joint merge metadata from a finalized model.
 
-    Reproduces the same DFS algorithm used by
-    :meth:`~newton.ModelBuilder.collapse_fixed_joints` but reads from the
-    finalized :class:`~newton.Model` arrays instead of the builder's Python
-    lists.  The model is never modified.
-
     Args:
-        model: The finalized model to analyse.
-        joints_to_keep: Optional list of joint labels to exempt from collapsing.
+        model: The finalized model to analyse. Never modified.
+        joints_to_keep: Joint labels to exempt from collapsing.
 
     Returns:
-        :class:`FixedJointMergeInfo` when at least one FIXED joint is
-        collapsed, or ``None`` when no merging is needed.
+        Merge metadata, or ``None`` when no FIXED joints are collapsed.
     """
     if joints_to_keep is None:
         joints_to_keep = []
@@ -106,12 +67,17 @@ def compute_fixed_joint_merge(
     joint_parent_np = model.joint_parent.numpy()
     joint_child_np = model.joint_child.numpy()
     joint_enabled_np = model.joint_enabled.numpy()
-    joint_X_p_np = model.joint_X_p.numpy()  # shape [joint_count, 7]
-    joint_X_c_np = model.joint_X_c.numpy()  # shape [joint_count, 7]
+    joint_X_p_np = model.joint_X_p.numpy()
+    joint_X_c_np = model.joint_X_c.numpy()
     body_inv_mass_np = model.body_inv_mass.numpy()
-    body_inertia_np = model.body_inertia.numpy()  # shape [body_count, 3, 3]
-    body_com_np = model.body_com.numpy()  # shape [body_count, 3]
+    body_inertia_np = model.body_inertia.numpy()
+    body_com_np = model.body_com.numpy()
     body_mass_np = model.body_mass.numpy()
+    body_flags_np = model.body_flags.numpy()
+
+    def _is_kinematic(b: int) -> bool:
+        return b >= 0 and bool(int(body_flags_np[b]) & int(BodyFlags.KINEMATIC))
+
     # Collect constraint bodies to avoid merging into world.
     bodies_in_constraints: set[int] = set()
     if model.equality_constraint_count > 0 and model.equality_constraint_body1 is not None:
@@ -120,7 +86,7 @@ def compute_fixed_joint_merge(
         bodies_in_constraints.update(int(x) for x in b1 if x >= 0)
         bodies_in_constraints.update(int(x) for x in b2 if x >= 0)
 
-    # Build body → children adjacency (joint index included for lookup).
+    # Build body → children adjacency.
     body_children: dict[int, list[int]] = {-1: []}
     joint_of: dict[tuple[int, int], int] = {}
     for i in range(body_count):
@@ -131,48 +97,54 @@ def compute_fixed_joint_merge(
         body_children[p].append(c)
         joint_of[(p, c)] = j
 
-    # Sort children so traversal order matches body index order.
     for children in body_children.values():
         children.sort()
 
-    # Initialise per-body working state.
     survivor_of: list[int] = list(range(body_count))
     relative_xform_of: list[wp.transform] = [wp.transform() for _ in range(body_count)]
 
-    merged_body_mass: list[float] = [float(body_mass_np[b]) for b in range(body_count)]
-    merged_body_inertia: list[wp.mat33] = [wp.mat33(*body_inertia_np[b].flatten()) for b in range(body_count)]
-    merged_body_inv_mass: list[float] = [float(body_inv_mass_np[b]) for b in range(body_count)]
-    merged_body_inv_inertia: list[wp.mat33] = [
+    merged_mass: list[float] = [float(body_mass_np[b]) for b in range(body_count)]
+    merged_inertia: list[wp.mat33] = [wp.mat33(*body_inertia_np[b].flatten()) for b in range(body_count)]
+    merged_inv_mass: list[float] = [float(body_inv_mass_np[b]) for b in range(body_count)]
+    merged_inv_inertia: list[wp.mat33] = [
         _safe_inv_mat33(wp.mat33(*body_inertia_np[b].flatten()), float(body_mass_np[b])) for b in range(body_count)
     ]
-    merged_body_com: list[wp.vec3] = [wp.vec3(*body_com_np[b]) for b in range(body_count)]
+    merged_com: list[wp.vec3] = [wp.vec3(*body_com_np[b]) for b in range(body_count)]
 
-    joint_enabled_effective: list[bool] = [bool(joint_enabled_np[j]) for j in range(joint_count)]
+    # Inherit model.joint_enabled so user-disabled joints stay disabled.
+    joint_enabled_eff: list[bool] = [bool(joint_enabled_np[j]) for j in range(joint_count)]
 
     visited: list[bool] = [False] * body_count
 
     def dfs(parent_body: int, child_body: int, incoming_xform: wp.transform, last_dynamic_body: int) -> None:
         j = joint_of[(parent_body, child_body)]
         jtype = int(joint_type_np[j])
+        joint_is_enabled = bool(joint_enabled_np[j])
         should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
+        # Treat kinematic survivors like world: never absorb a dynamic body
+        # into one, since that would erase the joint reaction observable on
+        # state.body_parent_f.
+        survivor_is_kinematic = _is_kinematic(last_dynamic_body)
         joint_in_keep_list = model.joint_label[j] in joints_to_keep
 
-        if jtype == JointType.FIXED and not should_skip_merge and not joint_in_keep_list:
-            # Accumulate this fixed joint's transform.
+        if (
+            jtype == JointType.FIXED
+            and joint_is_enabled
+            and not should_skip_merge
+            and not survivor_is_kinematic
+            and not joint_in_keep_list
+        ):
             X_p = _np_row_to_transform(joint_X_p_np[j])
             X_c = _np_row_to_transform(joint_X_c_np[j])
             joint_xform = X_p * wp.transform_inverse(X_c)
             incoming_xform = incoming_xform * joint_xform
 
-            # Mark joint as collapsed.
-            joint_enabled_effective[j] = False
+            joint_enabled_eff[j] = False
 
             if last_dynamic_body >= 0:
-                # Record which survivor this body belongs to.
                 survivor_of[child_body] = survivor_of[last_dynamic_body]
                 relative_xform_of[child_body] = incoming_xform
 
-                # Accumulate mass, COM and inertia into the survivor.
                 sv = survivor_of[last_dynamic_body]
                 child_m = float(body_mass_np[child_body])
                 child_com = wp.transform_point(incoming_xform, wp.vec3(*body_com_np[child_body]))
@@ -181,20 +153,19 @@ def compute_fixed_joint_merge(
                     child_m, child_inertia, incoming_xform.p, incoming_xform.q
                 )
 
-                sv_m = merged_body_mass[sv]
-                sv_com = merged_body_com[sv]
+                sv_m = merged_mass[sv]
+                sv_com = merged_com[sv]
                 new_m = sv_m + child_m
-                merged_body_inertia[sv] = merged_body_inertia[sv] + child_inertia_transformed
-                merged_body_mass[sv] = new_m
+                merged_inertia[sv] = merged_inertia[sv] + child_inertia_transformed
+                merged_mass[sv] = new_m
                 if new_m > 0.0:
-                    merged_body_com[sv] = (child_m * child_com + sv_m * sv_com) * (1.0 / new_m)
-                    merged_body_inv_mass[sv] = 1.0 / new_m
-                    merged_body_inv_inertia[sv] = _safe_inv_mat33(merged_body_inertia[sv], new_m)
-                # Merged children: zeroed so they don't accumulate contact deltas.
-                merged_body_inv_mass[child_body] = 0.0
-                merged_body_inv_inertia[child_body] = wp.mat33(0.0)
+                    merged_com[sv] = (child_m * child_com + sv_m * sv_com) * (1.0 / new_m)
+                    merged_inv_mass[sv] = 1.0 / new_m
+                    merged_inv_inertia[sv] = _safe_inv_mat33(merged_inertia[sv], new_m)
+                # Child is absorbed; zero its effective inverse mass/inertia.
+                merged_inv_mass[child_body] = 0.0
+                merged_inv_inertia[child_body] = wp.mat33(0.0)
         else:
-            # Non-fixed (or exempted fixed) joint: child is its own survivor.
             last_dynamic_body = child_body
             incoming_xform = wp.transform()
 
@@ -203,12 +174,11 @@ def compute_fixed_joint_merge(
             if not visited[next_child]:
                 dfs(child_body, next_child, incoming_xform, last_dynamic_body)
 
-    # Traverse from world root.
     for root in body_children[-1]:
         if not visited[root]:
             dfs(-1, root, wp.transform(), -1)
 
-    # Handle bodies not reachable from world (disconnected subtrees).
+    # Disconnected subtrees that don't reach world.
     children_in_joints = {c for p, cs in body_children.items() if p >= 0 for c in cs}
     for b in range(body_count):
         if visited[b]:
@@ -224,39 +194,57 @@ def compute_fixed_joint_merge(
     if not has_merges:
         return None
 
-    # Allocate GPU arrays.
-    dev = model.device
-    survivor_indices_gpu = wp.array(survivor_of, dtype=wp.int32, device=dev)
-    relative_xforms_gpu = wp.array(relative_xform_of, dtype=wp.transform, device=dev)
-    merged_body_inv_mass_gpu = wp.array(merged_body_inv_mass, dtype=wp.float32, device=dev)
-    merged_body_inv_inertia_gpu = wp.array(merged_body_inv_inertia, dtype=wp.mat33, device=dev)
-    merged_body_mass_gpu = wp.array(merged_body_mass, dtype=wp.float32, device=dev)
-    merged_body_inertia_gpu = wp.array(merged_body_inertia, dtype=wp.mat33, device=dev)
-    merged_body_com_gpu = wp.array(merged_body_com, dtype=wp.vec3, device=dev)
+    # Effective-index layer: remap shapes/joints onto survivors so kernels
+    # don't have to chase indirections.  Anchors are pre-multiplied by the
+    # parent/child's relative_xform to land in the survivor's frame.
+    joint_parent_eff: list[int] = [int(joint_parent_np[j]) for j in range(joint_count)]
+    joint_child_eff: list[int] = [int(joint_child_np[j]) for j in range(joint_count)]
+    joint_X_p_eff: list[wp.transform] = [_np_row_to_transform(joint_X_p_np[j]) for j in range(joint_count)]
+    joint_X_c_eff: list[wp.transform] = [_np_row_to_transform(joint_X_c_np[j]) for j in range(joint_count)]
+    for j in range(joint_count):
+        p = joint_parent_eff[j]
+        c = joint_child_eff[j]
+        if p >= 0 and survivor_of[p] != p:
+            joint_X_p_eff[j] = relative_xform_of[p] * joint_X_p_eff[j]
+            joint_parent_eff[j] = survivor_of[p]
+        if c >= 0 and survivor_of[c] != c:
+            joint_X_c_eff[j] = relative_xform_of[c] * joint_X_c_eff[j]
+            joint_child_eff[j] = survivor_of[c]
 
+    shape_count = model.shape_count
+    if shape_count > 0 and model.shape_body is not None:
+        shape_body_np = model.shape_body.numpy()
+        shape_body_eff: list[int] = [int(b) for b in shape_body_np]
+        for s in range(shape_count):
+            b = shape_body_eff[s]
+            if b >= 0 and survivor_of[b] != b:
+                shape_body_eff[s] = survivor_of[b]
+    else:
+        shape_body_eff = []
+
+    dev = model.device
     return FixedJointMergeInfo(
         has_merges=has_merges,
         survivor_of=survivor_of,
         relative_xform_of=relative_xform_of,
-        merged_body_mass=merged_body_mass,
-        merged_body_inertia=merged_body_inertia,
-        merged_body_inv_mass=merged_body_inv_mass,
-        merged_body_inv_inertia=merged_body_inv_inertia,
-        merged_body_com=merged_body_com,
-        joint_enabled_effective=joint_enabled_effective,
-        survivor_indices_gpu=survivor_indices_gpu,
-        relative_xforms_gpu=relative_xforms_gpu,
-        merged_body_inv_mass_gpu=merged_body_inv_mass_gpu,
-        merged_body_inv_inertia_gpu=merged_body_inv_inertia_gpu,
-        merged_body_mass_gpu=merged_body_mass_gpu,
-        merged_body_inertia_gpu=merged_body_inertia_gpu,
-        merged_body_com_gpu=merged_body_com_gpu,
+        survivor_indices_gpu=wp.array(survivor_of, dtype=wp.int32, device=dev),
+        relative_xforms_gpu=wp.array(relative_xform_of, dtype=wp.transform, device=dev),
+        merged_body_inv_mass_gpu=wp.array(merged_inv_mass, dtype=wp.float32, device=dev),
+        merged_body_inv_inertia_gpu=wp.array(merged_inv_inertia, dtype=wp.mat33, device=dev),
+        merged_body_mass_gpu=wp.array(merged_mass, dtype=wp.float32, device=dev),
+        merged_body_inertia_gpu=wp.array(merged_inertia, dtype=wp.mat33, device=dev),
+        merged_body_com_gpu=wp.array(merged_com, dtype=wp.vec3, device=dev),
+        joint_enabled_effective_gpu=wp.array(joint_enabled_eff, dtype=wp.bool, device=dev),
+        joint_parent_effective_gpu=wp.array(joint_parent_eff, dtype=wp.int32, device=dev),
+        joint_child_effective_gpu=wp.array(joint_child_eff, dtype=wp.int32, device=dev),
+        joint_X_p_effective_gpu=wp.array(joint_X_p_eff, dtype=wp.transform, device=dev),
+        joint_X_c_effective_gpu=wp.array(joint_X_c_eff, dtype=wp.transform, device=dev),
+        shape_body_effective_gpu=(
+            wp.array(shape_body_eff, dtype=wp.int32, device=dev)
+            if shape_body_eff
+            else wp.empty(0, dtype=wp.int32, device=dev)
+        ),
     )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _np_row_to_transform(row) -> wp.transform:
@@ -274,24 +262,13 @@ def _safe_inv_mat33(m: wp.mat33, mass: float) -> wp.mat33:
     return wp.inverse(m)
 
 
-# ---------------------------------------------------------------------------
-# Warp kernels (called from SolverBase)
-# ---------------------------------------------------------------------------
-
-
 @wp.kernel
 def _propagate_merged_body_poses(
     survivor_indices: wp.array[wp.int32],
     relative_xforms: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
 ):
-    """Scatter survivor pose into each merged child's body_q slot.
-
-    Survivors are left untouched (their thread is a no-op).  Each merged child
-    gets ``body_q[child] = body_q[survivor] * relative_xform[child]``.
-    There is no write-aliasing: each thread writes exactly its own slot, and
-    survivor indices are always distinct from child indices by construction.
-    """
+    """Scatter survivor pose into each merged child's body_q slot."""
     tid = wp.tid()
     s = survivor_indices[tid]
     if s != tid:
@@ -305,22 +282,45 @@ def _propagate_merged_body_velocities(
     relative_xforms: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
 ):
-    """Propagate the survivor's spatial velocity to each merged child.
-
-    Uses the rigid-body formula:
-    ``v_child = v_survivor + omega_survivor x r``
-    where ``r`` is the offset from the survivor's COM to the child's frame
-    origin in world space.
-    """
+    """Propagate survivor spatial velocity to each merged child."""
+    # Newton convention: spatial_vector(linear, angular).
     tid = wp.tid()
     s = survivor_indices[tid]
     if s != tid:
         tw = body_qd[s]
-        w = wp.spatial_top(tw)  # angular velocity
-        v = wp.spatial_bottom(tw)  # linear velocity at survivor COM
+        v = wp.spatial_top(tw)
+        w = wp.spatial_bottom(tw)
         r_local = relative_xforms[tid].p
         r_world = wp.transform_vector(body_q[s], r_local)
-        body_qd[tid] = wp.spatial_vector(w, v + wp.cross(w, r_world))
+        body_qd[tid] = wp.spatial_vector(v + wp.cross(w, r_world), w)
+
+
+@wp.kernel
+def _scatter_body_forces_to_survivors(
+    survivor_indices: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    relative_xforms: wp.array[wp.transform],
+    body_f: wp.array[wp.spatial_vector],
+):
+    """Move merged-child body_f onto the survivor and zero the child slot."""
+    tid = wp.tid()
+    s = survivor_indices[tid]
+    if s == tid:
+        return
+    fc = body_f[tid]
+    f_lin = wp.spatial_top(fc)
+    f_ang = wp.spatial_bottom(fc)
+    sv_q = body_q[s]
+    com_s_world = wp.transform_point(sv_q, body_com[s])
+    # Child body_q may be stale here (propagation runs at end-of-step), so
+    # reconstruct child COM through the rigid relation.
+    rel = relative_xforms[tid]
+    child_q = sv_q * rel
+    com_c_world = wp.transform_point(child_q, body_com[tid])
+    r_world = com_c_world - com_s_world
+    wp.atomic_add(body_f, s, wp.spatial_vector(f_lin, f_ang + wp.cross(r_world, f_lin)))
+    body_f[tid] = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
 
 
 @wp.kernel
@@ -332,12 +332,7 @@ def _update_effective_inv_mass_inertia_merged(
     eff_inv_mass: wp.array[float],
     eff_inv_inertia: wp.array[wp.mat33],
 ):
-    """Compute effective inverse mass/inertia with merged-body accumulation.
-
-    Kinematic bodies and merged children both get zero effective mass so they
-    do not accumulate contact deltas.  Survivor bodies use their accumulated
-    inverse mass/inertia from the merge computation.
-    """
+    """Effective inverse mass/inertia, zeroed for kinematic and merged-child bodies."""
     tid = wp.tid()
     zero_mat = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     if (body_flags[tid] & BodyFlags.KINEMATIC) != 0 or survivor_indices[tid] != tid:

@@ -71,29 +71,25 @@ class SolverSemiImplicit(SolverBase):
     def __init__(
         self,
         model: Model,
-        collapse_fixed_joints: bool = True,
-        joints_to_keep: list[str] | None = None,
         angular_damping: float = 0.05,
         friction_smoothing: float = 1.0,
         joint_attach_ke: float = 1.0e4,
         joint_attach_kd: float = 1.0e2,
         enable_tri_contact: bool = True,
+        *,
+        collapse_fixed_joints: bool = True,
+        joints_to_keep: list[str] | None = None,
     ):
         """
         Args:
             model: The model to be simulated.
-            collapse_fixed_joints: When ``True`` (the default), FIXED joints
-                are internally merged at the solver level for improved stability
-                and efficiency.  The original :class:`~newton.Model` body
-                hierarchy is preserved — only the solver's internal shadow
-                arrays reflect the merge.
-            joints_to_keep: Optional list of joint labels to exempt from
-                collapsing when ``collapse_fixed_joints`` is ``True``.
             angular_damping: Angular damping factor to be used in rigid body integration. Defaults to 0.05.
             friction_smoothing: Huber norm delta used for friction velocity normalization (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`). Defaults to 1.0.
             joint_attach_ke: Joint attachment spring stiffness. Defaults to 1.0e4.
             joint_attach_kd: Joint attachment spring damping. Defaults to 1.0e2.
             enable_tri_contact: Enable triangle contact. Defaults to True.
+            collapse_fixed_joints: Internally merge FIXED joints for stability and efficiency. Defaults to True.
+            joints_to_keep: Joint labels to exempt from ``collapse_fixed_joints``.
         """
         super().__init__(model=model)
         self.angular_damping = angular_damping
@@ -103,13 +99,13 @@ class SolverSemiImplicit(SolverBase):
         self.enable_tri_contact = enable_tri_contact
 
         self._joints_to_keep = joints_to_keep
+        # Always allocate so a later merges→no-merges notify can refresh safely.
+        self._init_kinematic_state()
         merge_info = (
             compute_fixed_joint_merge(model, joints_to_keep=joints_to_keep)
             if collapse_fixed_joints and model.body_count and model.joint_count
             else None
         )
-        if merge_info is not None:
-            self._init_kinematic_state()
         self._init_fixed_joint_merge(merge_info)
 
     @override
@@ -161,10 +157,20 @@ class SolverSemiImplicit(SolverBase):
             if control is None:
                 control = model.control(clone_variables=False)
 
+            _mi = getattr(self, "_merge_info", None)
             body_f_work = body_f
-            if body_f is not None and model.joint_count and control.joint_f is not None:
-                # Avoid accumulating joint_f into the persistent state body_f buffer.
+            # Clone body_f when joint forces, contact forces, or the merged-child
+            # scatter would otherwise leak into the user's state buffer.
+            needs_clone = body_f is not None and (
+                (model.joint_count and control.joint_f is not None)
+                or (contacts is not None and contacts.rigid_contact_max)
+                or _mi is not None
+            )
+            if needs_clone:
                 body_f_work = wp.clone(body_f)
+
+            if _mi is not None:
+                self._scatter_merged_body_forces(state_in, body_f_work)
 
             # damped springs
             eval_spring_forces(model, state_in, particle_f)
@@ -179,7 +185,6 @@ class SolverSemiImplicit(SolverBase):
             eval_tetrahedra_forces(model, state_in, control, particle_f)
 
             # body joints
-            _mi = getattr(self, "_merge_info", None)
             eval_body_joint_forces(
                 model,
                 state_in,
@@ -188,6 +193,11 @@ class SolverSemiImplicit(SolverBase):
                 self.joint_attach_ke,
                 self.joint_attach_kd,
                 joint_enabled_override=self.joint_enabled_effective if _mi is not None else None,
+                body_com_override=_mi.merged_body_com_gpu if _mi is not None else None,
+                joint_parent_override=_mi.joint_parent_effective_gpu if _mi is not None else None,
+                joint_child_override=_mi.joint_child_effective_gpu if _mi is not None else None,
+                joint_X_p_override=_mi.joint_X_p_effective_gpu if _mi is not None else None,
+                joint_X_c_override=_mi.joint_X_c_effective_gpu if _mi is not None else None,
             )
 
             # muscles
@@ -203,17 +213,29 @@ class SolverSemiImplicit(SolverBase):
 
             # body contacts
             eval_body_contact_forces(
-                model, state_in, contacts, friction_smoothing=self.friction_smoothing, body_f_out=body_f_work
+                model,
+                state_in,
+                contacts,
+                friction_smoothing=self.friction_smoothing,
+                body_f_out=body_f_work,
+                body_com_override=_mi.merged_body_com_gpu if _mi is not None else None,
+                shape_body_override=_mi.shape_body_effective_gpu if _mi is not None else None,
             )
 
             # particle shape contact
             eval_particle_body_contact_forces(
-                model, state_in, contacts, particle_f, body_f_work, body_f_in_world_frame=False
+                model,
+                state_in,
+                contacts,
+                particle_f,
+                body_f_work,
+                body_f_in_world_frame=False,
+                body_com_override=_mi.merged_body_com_gpu if _mi is not None else None,
+                shape_body_override=_mi.shape_body_effective_gpu if _mi is not None else None,
             )
 
             self.integrate_particles(model, state_in, state_out, dt)
 
-            _mi = getattr(self, "_merge_info", None)
             _int_kwargs = (
                 {
                     "body_com": _mi.merged_body_com_gpu,

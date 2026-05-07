@@ -9,6 +9,7 @@ from ._fixed_joint_merger import (
     FixedJointMergeInfo,
     _propagate_merged_body_poses,
     _propagate_merged_body_velocities,
+    _scatter_body_forces_to_survivors,
     _update_effective_inv_mass_inertia_merged,
     compute_fixed_joint_merge,
 )
@@ -246,67 +247,50 @@ class SolverBase:
             )
 
     def _init_fixed_joint_merge(self, merge_info: FixedJointMergeInfo | None) -> None:
-        """Initialise shadow arrays for solver-level fixed-joint merging.
-
-        Must be called after :meth:`_init_kinematic_state` when merging is
-        requested.  Sets :attr:`joint_enabled_effective` either to a shadow
-        GPU array (with collapsed FIXED joints disabled) or to the model's own
-        :attr:`~newton.Model.joint_enabled` array when there is nothing to merge.
-
-        Args:
-            merge_info: Merge metadata from
-                :func:`~newton.solvers._fixed_joint_merger.compute_fixed_joint_merge`,
-                or ``None`` when no FIXED joints were collapsed.
-        """
+        """Install merge metadata and seed effective arrays."""
         model = self.model
         if merge_info is None or not merge_info.has_merges:
             self._merge_info = None
             self.joint_enabled_effective = model.joint_enabled
             return
         self._merge_info = merge_info
-        self.joint_enabled_effective = wp.array(merge_info.joint_enabled_effective, dtype=wp.bool, device=model.device)
-        # Refresh effective arrays now that merge_info is set.
+        self.joint_enabled_effective = merge_info.joint_enabled_effective_gpu
         if model.body_count and hasattr(self, "body_inv_mass_effective"):
             self._refresh_kinematic_state()
 
     def _recompute_merged_inertial_properties(self) -> None:
-        """Re-run the merge analysis and refresh GPU shadow arrays.
-
-        Called from :meth:`notify_model_changed` when
-        ``SolverNotifyFlags.BODY_INERTIAL_PROPERTIES`` is set and fixed-joint
-        merging is active.  Re-reads ``model.body_inv_mass`` etc. (which the
-        user has updated), recomputes accumulated values, and writes them into
-        the existing GPU arrays without reallocating.
-
-        Handles the topology change where all fixed joints become exempt (e.g.
-        all are now in ``joints_to_keep``): in that case ``_merge_info`` is
-        cleared and ``joint_enabled_effective`` is reset to ``model.joint_enabled``
-        so stale merged effective-mass data is no longer applied.
-        """
+        """Re-run the merge analysis after model inertial properties change."""
         joints_to_keep = getattr(self, "_joints_to_keep", None)
         new_info = compute_fixed_joint_merge(self.model, joints_to_keep=joints_to_keep)
         if new_info is None:
             self._merge_info = None
             self.joint_enabled_effective = self.model.joint_enabled
-        elif self._merge_info is not None:
-            self._merge_info.merged_body_inv_mass_gpu.assign(new_info.merged_body_inv_mass_gpu)
-            self._merge_info.merged_body_inv_inertia_gpu.assign(new_info.merged_body_inv_inertia_gpu)
-            self._merge_info.merged_body_mass_gpu.assign(new_info.merged_body_mass_gpu)
-            self._merge_info.merged_body_inertia_gpu.assign(new_info.merged_body_inertia_gpu)
-            self._merge_info.merged_body_com_gpu.assign(new_info.merged_body_com_gpu)
+        else:
+            self._merge_info = new_info
+            self.joint_enabled_effective = new_info.joint_enabled_effective_gpu
         self._refresh_kinematic_state()
 
+    def _scatter_merged_body_forces(self, state_in: State, body_f: wp.array | None) -> None:
+        """Move external body_f written to merged-child slots onto their survivors."""
+        merge_info: FixedJointMergeInfo | None = getattr(self, "_merge_info", None)
+        if merge_info is None or body_f is None:
+            return
+        model = self.model
+        wp.launch(
+            kernel=_scatter_body_forces_to_survivors,
+            dim=model.body_count,
+            inputs=[
+                merge_info.survivor_indices_gpu,
+                state_in.body_q,
+                merge_info.merged_body_com_gpu,
+                merge_info.relative_xforms_gpu,
+                body_f,
+            ],
+            device=model.device,
+        )
+
     def _propagate_merged_body_poses_and_velocities(self, state_out: State) -> None:
-        """Scatter survivor pose and velocity into each merged child's slots.
-
-        Must be called at the very end of :meth:`step`, after all constraint
-        iterations and after :meth:`copy_kinematic_body_state`, so the
-        survivor's final corrected pose is propagated to merged children.
-
-        Args:
-            state_out: The output state whose ``body_q`` and ``body_qd``
-                arrays are updated in-place.
-        """
+        """Scatter survivor pose and velocity into each merged child's slots."""
         merge_info: FixedJointMergeInfo | None = getattr(self, "_merge_info", None)
         if merge_info is None:
             return
@@ -354,12 +338,11 @@ class SolverBase:
             state_out: The output state.
             dt: The time step (typically in seconds).
             angular_damping: Angular damping factor. Defaults to 0.0.
-            body_com: Override for ``model.body_com`` [m]. Pass the solver's
-                merged COM array when fixed-joint collapsing is active.
-            body_mass: Override for ``model.body_mass`` [kg].
-            body_inertia: Override for ``model.body_inertia`` [kg·m²].
-            body_inv_mass: Override for ``model.body_inv_mass`` [1/kg].
-            body_inv_inertia: Override for ``model.body_inv_inertia`` [1/(kg·m²)].
+            body_com: Override for ``model.body_com``. Used by fixed-joint collapsing.
+            body_mass: Override for ``model.body_mass``.
+            body_inertia: Override for ``model.body_inertia``.
+            body_inv_mass: Override for ``model.body_inv_mass``.
+            body_inv_inertia: Override for ``model.body_inv_inertia``.
         """
         if model.body_count:
             wp.launch(

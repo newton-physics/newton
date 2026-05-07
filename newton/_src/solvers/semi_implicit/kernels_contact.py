@@ -605,7 +605,15 @@ def eval_body_contact_forces(
     friction_smoothing: float = 1.0,
     force_in_world_frame: bool = False,
     body_f_out: wp.array | None = None,
+    body_com_override: wp.array | None = None,
+    shape_body_override: wp.array | None = None,
 ):
+    """Compute and accumulate rigid contact forces into ``body_f_out``.
+
+    Args:
+        body_com_override: Optional override for :attr:`~newton.Model.body_com`.
+        shape_body_override: Optional override for :attr:`~newton.Model.shape_body`.
+    """
     if contacts is not None and contacts.rigid_contact_max:
         if body_f_out is None:
             body_f_out = state.body_f
@@ -615,13 +623,13 @@ def eval_body_contact_forces(
             inputs=[
                 state.body_q,
                 state.body_qd,
-                model.body_com,
+                body_com_override if body_com_override is not None else model.body_com,
                 model.shape_material_ke,
                 model.shape_material_kd,
                 model.shape_material_kf,
                 model.shape_material_ka,
                 model.shape_material_mu,
-                model.shape_body,
+                shape_body_override if shape_body_override is not None else model.shape_body,
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
@@ -648,7 +656,15 @@ def eval_particle_body_contact_forces(
     particle_f: wp.array,
     body_f: wp.array,
     body_f_in_world_frame: bool = False,
+    body_com_override: wp.array | None = None,
+    shape_body_override: wp.array | None = None,
 ):
+    """Compute particle-shape soft contact forces.
+
+    Args:
+        body_com_override: Optional override for :attr:`~newton.Model.body_com`.
+        shape_body_override: Optional override for :attr:`~newton.Model.shape_body`.
+    """
     if contacts is not None and contacts.soft_contact_max:
         wp.launch(
             kernel=eval_particle_body_contact,
@@ -660,8 +676,8 @@ def eval_particle_body_contact_forces(
                 state.body_qd,
                 model.particle_radius,
                 model.particle_flags,
-                model.body_com,
-                model.shape_body,
+                body_com_override if body_com_override is not None else model.body_com,
+                shape_body_override if shape_body_override is not None else model.shape_body,
                 model.shape_material_ke,
                 model.shape_material_kd,
                 model.shape_material_kf,
