@@ -582,7 +582,7 @@ class Example:
         green_sheave_radius = 0.015
         beige_sheave_radius = 0.025
         segment_length = 0.015
-        cable_wrap_clearance_scale = 1.0
+        cable_wrap_clearance_scale = 1.2
 
         blue = (0.12, 0.34, 0.76)
         green = (0.12, 0.58, 0.28)
@@ -896,23 +896,16 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=sim_iterations,
-            friction_epsilon=1.0e-2,
             rigid_body_contact_buffer_size=256,
-            rigid_contact_hard=False,
-            rigid_joint_linear_ke=1.0e5,
-            rigid_joint_angular_ke=1.0e5,
-            rigid_joint_linear_kd=0.0,
-            rigid_joint_angular_kd=0.0,
-            rigid_avbd_gamma=0.999,
+            rigid_contact_hard=True,
+            rigid_contact_history=True,
         )
-        self.solver.rigid_contact_stick_motion_eps = 0.0
-        self.solver.rigid_contact_stick_freeze_translation_eps = 0.0
-        self.solver.rigid_contact_stick_freeze_angular_eps = 0.0
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        pipeline = newton.CollisionPipeline(self.model, broad_phase="explicit", contact_matching="latest")
+        self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         self.kinematic_body_indices = wp.array(
             kinematic_body_indices,
