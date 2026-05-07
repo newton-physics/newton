@@ -1,0 +1,61 @@
+# clangd configuration for the ChysX subproject.
+#
+# Cursor / VSCode use clangd for C++ IntelliSense, but clangd does not
+# know how to compile .cu / .cuh files out of the box: their syntax is
+# CUDA-extended C++ and they depend on the CUDA runtime headers, which
+# clangd cannot find unless explicitly told.
+#
+# This config keeps the IDE happy *without* requiring the CUDA toolkit
+# on the clangd search path:
+#
+#   * .cu  / .cuh files are treated as plain C++17 translation units.
+#   * __host__ / __device__ / __global__ / __forceinline__ / __align__()
+#     / __restrict__ are macroed away so they look like normal C++.
+#   * `#include <cuda_runtime.h>` and similar CUDA headers may still
+#     be flagged "file not found"; we silence that one diagnostic so it
+#     doesn't drown out real issues.
+#
+# Real builds still go through nvcc via scikit-build-core / CMake; this
+# file only affects what the IDE shows.
+#
+# If you have the CUDA SDK installed and want full CUDA awareness in the
+# IDE, uncomment the `-isystem` line below and adjust the path to your
+# install (e.g. on Windows it's typically
+# `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.x/include`).
+
+If:
+  PathMatch:
+    - ".*\\.cu"
+    - ".*\\.cuh"
+
+CompileFlags:
+  Compiler: clang++
+  Add:
+    - "-xc++"
+    - "-std=c++17"
+    - "-D__CUDACC__"
+    - "-D__CUDA_ARCH__=860"
+    - "-D__host__="
+    - "-D__device__="
+    - "-D__global__="
+    - "-D__forceinline__=inline"
+    - "-D__restrict__="
+    - "-D__align__(x)="
+    # CUDA SDK include path so cuda_runtime.h, cudaError_t, cudaStream_t,
+    # etc. resolve in the IDE.  Adjust the version to match your local
+    # install (`Get-ChildItem 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA'`
+    # to list available versions).
+    - "-isystemC:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0/include"
+    - "-Wno-unknown-attributes"
+    - "-Wno-pragma-once-outside-header"
+    # CUDA 12+ headers use C++17 designated-init / nodiscard heavily; allow them.
+    - "-Wno-c++20-extensions"
+    - "-Wno-c++17-extensions"
+
+Diagnostics:
+  Suppress:
+    - "pp_file_not_found"
+    - "drv_unknown_argument"
+
+Index:
+  Background: Build

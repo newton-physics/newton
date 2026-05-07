@@ -1,0 +1,25 @@
+# scikit-build-core / CMake build outputs
+build/
+_skbuild/
+dist/
+wheels/
+*.egg-info
+
+# Native build artefacts (Windows + Linux + macOS)
+*.pyd
+*.so
+*.dylib
+*.obj
+*.o
+*.pdb
+*.exp
+*.lib
+*.a
+
+# Editor / IDE-only state (the .clangd config itself IS checked in)
+.vs/
+*.user
+
+# Python bytecode
+__pycache__/
+*.py[oc]

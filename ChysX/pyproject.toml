@@ -1,0 +1,21 @@
+[build-system]
+requires = ["scikit-build-core>=0.8", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "chysx"
+version = "0.1.0"
+description = "ChysX: a toy CUDA physics simulator (free-fall integrator) with a UIPC-style device-pointer API."
+requires-python = ">=3.10"
+authors = [{ name = "caixiao" }]
+license = { text = "Apache-2.0" }
+
+[tool.scikit-build]
+cmake.version = ">=3.18"
+cmake.build-type = "Release"
+wheel.packages = ["chysx"]
+build-dir = "build/{wheel_tag}"
+
+[tool.scikit-build.cmake.define]
+# RTX 5090 = sm_120 (Blackwell). Override via env var if you have a different GPU.
+CMAKE_CUDA_ARCHITECTURES = { env = "CHYSX_CUDA_ARCH", default = "120" }
