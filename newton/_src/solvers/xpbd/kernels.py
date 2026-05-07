@@ -469,6 +469,38 @@ def solve_tetrahedra(
     relaxation: float,
     delta: wp.array[wp.vec3],
 ):
+    # Tetrahedral XPBD constraint solve.
+    #
+    # ModelBuilder stores rest_matrix as inv(Dm), where
+    # Dm = [x1_0 - x0_0, x2_0 - x0_0, x3_0 - x0_0] in the rest pose.  Each
+    # iteration rebuilds Ds from the current particle positions and computes the
+    # deformation gradient
+    #
+    #     F = Ds * inv(Dm).
+    #
+    # The material is the same compressible Neo-Hookean-style split used by the
+    # FEM path: a distortional term controlled by the first Lame parameter
+    # k_mu, and a volume term controlled by the second Lame parameter k_lambda.
+    # In XPBD form these are solved as two scalar constraints:
+    #
+    #     C_dev = trace(F^T F) - 3
+    #     C_vol = det(F) - 1 + activation
+    #
+    # Their gradients are dC/dF = 2F for C_dev and cof(F) for C_vol.  The chain
+    # rule dF/dx contributes inv(Dm)^T, giving the per-particle gradients below.
+    #
+    # A tetrahedron's energy scales with rest volume V0, so the XPBD compliance
+    # for a material stiffness k is 1 / (V0 * k).  Since rest_matrix is inv(Dm),
+    # det(rest_matrix) * 6 = 1 / V0.
+    #
+    # Damping uses XPBD's compliant Rayleigh term:
+    #
+    #     gamma = k_damp / (k * dt)
+    #     dlambda = -(C + gamma * dt * grad(C).dot(v))
+    #               / ((1 + gamma) * sum_i(w_i |grad_i C|^2) + alpha)
+    #
+    # The solver does not persist lambdas for this constraint, so each iteration
+    # computes a local multiplier and accumulates relaxed position corrections.
     tid = wp.tid()
 
     i = indices[tid, 0]
