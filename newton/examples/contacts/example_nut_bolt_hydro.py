@@ -116,8 +116,8 @@ class Example:
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 6
-        self.collide_every = 3 if args.solver == "mujoco" else 1  # re-collide every K substeps
+        self.sim_substeps = 4
+        self.collide_every = 2 if args.solver == "mujoco" else 1  # re-collide every K substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
