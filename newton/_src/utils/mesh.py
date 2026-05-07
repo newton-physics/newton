@@ -1405,7 +1405,7 @@ def validate_triangle_mesh(
     indices: np.ndarray,
     *,
     min_area: float = 1e-6,
-    max_aspect_ratio: float = 10.0,
+    max_aspect_ratio: float = 20.0,
     min_angle_deg: float = 5.0,
     label: str | None = None,
     stacklevel: int = 2,
@@ -1427,7 +1427,9 @@ def validate_triangle_mesh(
         indices: Triangle vertex indices, shape ``(F, 3)``.
         min_area: Minimum triangle area [m²]. Default ``1e-6`` (1 mm²).
         max_aspect_ratio: Maximum longest-edge / shortest-altitude ratio.
-            Default ``10.0``.
+            Default ``20.0`` — flags slivers whose worst interior angle
+            is below ~3° while staying quiet on rough-but-fine
+            production meshes.
         min_angle_deg: Minimum interior angle [deg]. Default ``5.0``.
         label: Optional name included in the warning message so callers
             can identify which mesh tripped the warning when validating
