@@ -39,7 +39,7 @@ TABLE_RECT_POINTS = (
     (TABLE_RECT_HALF_X, TABLE_RECT_HALF_Y),
     (-TABLE_RECT_HALF_X, TABLE_RECT_HALF_Y),
 )
-TABLE_RECT_HIT_TOLERANCE = 0.025
+TABLE_RECT_HIT_TOLERANCE = 0.1
 TABLE_RECT_TEST_FRAMES = 2100
 START_RAMP_DURATION = 1.2
 
@@ -279,7 +279,7 @@ def add_kinematic_guided_pulley(
     ke: float = 1.0e6,
     kd: float = 1.0e-1,
     mu: float = 1.0,
-    density: float = 250.0,
+    density: float = 1000.0,
     label: str | None = None,
 ) -> tuple[int, tuple[int, int, int, int]]:
     """Adds a kinematic flanged pulley body used as a moving cable guide."""
@@ -349,7 +349,7 @@ def add_passive_guided_pulley(
     ke: float = 1.0e6,
     kd: float = 1.0e-1,
     mu: float = 0.35,
-    density: float = 250.0,
+    density: float = 1000.0,
     axle_armature: float = 1.0e-4,
     axle_friction: float = 0.0,
     label: str | None = None,
@@ -547,7 +547,7 @@ def add_visual_bar(
     half_extents: tuple[float, float, float],
     color: tuple[float, float, float],
     label: str,
-    density: float = 350.0,
+    density: float = 1000.0,
 ):
     cfg = newton.ModelBuilder.ShapeConfig(
         density=density,
@@ -581,8 +581,8 @@ class Example:
         self.input_pulley_radius = 0.025
         green_sheave_radius = 0.015
         beige_sheave_radius = 0.025
-        segment_length = 0.015
-        cable_wrap_clearance_scale = 1.2
+        initial_segment_length = 0.015
+        cable_wrap_clearance_scale = 1.1
 
         blue = (0.12, 0.34, 0.76)
         green = (0.12, 0.58, 0.28)
@@ -610,7 +610,7 @@ class Example:
             half_extents=(0.205, 0.025, 0.006),
             color=blue,
             label="fixed_blue_base",
-            density=0.0,
+            density=1000.0,
         )
 
         self.slide_body = builder.add_link(
@@ -660,7 +660,7 @@ class Example:
             half_extents=(0.085, 0.052, 0.006),
             color=green,
             label="green_horizontal_carriage",
-            density=45.0,
+            density=1000.0,
         )
         add_visual_bar(
             builder,
@@ -669,7 +669,7 @@ class Example:
             half_extents=(0.013, 0.215, 0.006),
             color=beige,
             label="beige_vertical_carriage",
-            density=65.0,
+            density=1000.0,
         )
         table_marker_cfg = newton.ModelBuilder.ShapeConfig(
             density=0.0,
@@ -761,7 +761,7 @@ class Example:
                 "ke": 1.0e5,
                 "kd": 0.0,
                 "mu": 1.0,
-                "density": 220.0,
+                "density": 1000.0,
                 "label": f"xy_table_{i}_{label}",
             }
             if attach == ATTACH_BASE:
@@ -772,7 +772,7 @@ class Example:
                     builder,
                     parent=parent,
                     axle_armature=1.0e-4,
-                    axle_friction=0.0,
+                    axle_friction=1.0,
                     **pulley_kwargs,
                 )
                 table_articulation_joints.append(pulley_joint)
@@ -807,10 +807,10 @@ class Example:
             pulley_radii=pulley_radii,
             end=right_anchor_world,
             cable_radius=cable_radius,
-            segment_length=segment_length,
+            segment_length=initial_segment_length,
             wrap_clearance_scale=cable_wrap_clearance_scale,
         )
-        cable_points, cable_segment_length = resample_equal_length_segments(cable_route_points, segment_length)
+        cable_points, cable_segment_length = resample_equal_length_segments(cable_route_points, initial_segment_length)
         cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
         cable_segment_count = len(cable_points) - 1
         straight_cable_points, straight_cable_quats = newton.utils.create_straight_cable_points_and_quaternions(
@@ -821,7 +821,7 @@ class Example:
         )
 
         cable_cfg = builder.default_shape_cfg.copy()
-        cable_cfg.density = 20.0
+        cable_cfg.density = 200.0
         cable_cfg.gap = 5.0 * cable_radius
 
         self.cable_bodies, cable_joints = builder.add_rod(
@@ -831,8 +831,8 @@ class Example:
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
             stretch_damping=0.0,
-            bend_stiffness=5.0e-5,
-            bend_damping=1.0e-2,
+            bend_stiffness=1.0e-3,
+            bend_damping=1.0,
             wrap_in_articulation=False,
             label="xy_table_cable",
         )
