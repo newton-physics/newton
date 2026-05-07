@@ -16,6 +16,19 @@ if TYPE_CHECKING:
     from .state import State
 
 
+@wp.kernel
+def _compute_body_q_com_kernel(
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    # output
+    body_q_com: wp.array[wp.transform],
+):
+    """Post-compose ``body_q`` with the local CoM offset to produce the
+    body-CoM-anchored transform consumed by :func:`eval_rigid_id`."""
+    i = wp.tid()
+    body_q_com[i] = body_q[i] * wp.transform(body_com[i], wp.quat_identity())
+
+
 class InverseDynamicsScratchBuffer:
     """Internal scratch buffers reused across calls to :func:`eval_inverse_dynamics`.
 
@@ -64,9 +77,7 @@ class InverseDynamicsScratchBuffer:
         max_links = max_joints_per_articulation
 
         # RNEA scratch (rewritten by every compensation pass).
-        self.body_X_com = wp.empty(bc, dtype=wp.transform, device=device)
         self.body_I_m = wp.empty(bc, dtype=wp.spatial_matrix, device=device)
-        self.body_q = wp.empty(bc, dtype=wp.transform, device=device)
         self.body_q_com = wp.empty(bc, dtype=wp.transform, device=device)
         self.joint_qd_internal = wp.empty(jdc, dtype=wp.float32, device=device)
         self.joint_S_s = wp.empty(jdc, dtype=wp.spatial_vector, device=device)
@@ -176,6 +187,10 @@ def _rnea_compensation_pass(
     manipulator-equation bias term into ``tau_out``, reusing the buffers
     on ``scratch``.
 
+    Requires ``state.body_q`` to be consistent with ``state.joint_q``;
+    callers must invoke :func:`~newton.eval_fk` (or otherwise update
+    ``state.body_q``) before calling this.
+
     With ``qdd = 0`` implicit in :func:`eval_rigid_id` and the result
     sign-flipped to match the standard convention, the output is
     ``g(q) = ∂U/∂q`` when ``joint_qd`` is zero (gravity only),
@@ -186,11 +201,9 @@ def _rnea_compensation_pass(
     # top-level import here would create a circular import during sim package
     # initialization.
     from ..solvers.featherstone.kernels import (  # noqa: PLC0415
-        compute_com_transforms,
         compute_spatial_inertia,
         convert_free_distance_joint_f_internal_to_public,
         convert_free_distance_joint_qd_public_to_internal,
-        eval_rigid_fk,
         eval_rigid_id,
         eval_rigid_tau,
     )
@@ -205,14 +218,10 @@ def _rnea_compensation_pass(
     # need pre-zeroing.
     scratch.body_ft_s.zero_()
 
-    # Body-local CoM transforms and spatial inertias.
-    wp.launch(
-        compute_com_transforms,
-        dim=bc,
-        inputs=[model.body_com],
-        outputs=[scratch.body_X_com],
-        device=device,
-    )
+    # Body spatial inertias and the CoM-anchored body transforms consumed
+    # by ``eval_rigid_id``. ``state.body_q`` is reused directly (already
+    # populated by the caller's eval_fk), so we only need to post-compose
+    # it with the local CoM offset to produce body_q_com.
     wp.launch(
         compute_spatial_inertia,
         dim=bc,
@@ -220,26 +229,11 @@ def _rnea_compensation_pass(
         outputs=[scratch.body_I_m],
         device=device,
     )
-
-    # Forward kinematics into local buffers (don't mutate state.body_q).
     wp.launch(
-        eval_rigid_fk,
-        dim=model.articulation_count,
-        inputs=[
-            model.articulation_start,
-            model.joint_type,
-            model.joint_parent,
-            model.joint_child,
-            model.joint_q_start,
-            model.joint_qd_start,
-            state.joint_q,
-            model.joint_X_p,
-            model.joint_X_c,
-            scratch.body_X_com,
-            model.joint_axis,
-            model.joint_dof_dim,
-        ],
-        outputs=[scratch.body_q, scratch.body_q_com],
+        _compute_body_q_com_kernel,
+        dim=bc,
+        inputs=[state.body_q, model.body_com],
+        outputs=[scratch.body_q_com],
         device=device,
     )
 
@@ -256,7 +250,7 @@ def _rnea_compensation_pass(
             model.joint_child,
             model.joint_qd_start,
             model.joint_X_p,
-            scratch.body_q,
+            state.body_q,
             model.body_com,
             joint_qd,
         ],
@@ -278,7 +272,7 @@ def _rnea_compensation_pass(
             model.joint_axis,
             model.joint_dof_dim,
             scratch.body_I_m,
-            scratch.body_q,
+            state.body_q,
             scratch.body_q_com,
             model.joint_X_p,
             model.body_world,
@@ -344,8 +338,8 @@ def _rnea_compensation_pass(
             model.joint_child,
             model.joint_qd_start,
             model.joint_X_p,
-            scratch.body_q,
-            model.body_com,
+            state.body_q,
+            scratch.body_q_com,
             model.body_mass,
             joint_qd,
         ],
@@ -418,9 +412,14 @@ def eval_inverse_dynamics(
     manipulator-equation convention ``tau = M(q)*qddot + C(q,q_dot)*q_dot
     + g(q)``.
 
+    Requires ``state.body_q`` to be consistent with ``state.joint_q``;
+    callers must invoke :func:`~newton.eval_fk` (or otherwise update
+    ``state.body_q``) before this function.
+
     Args:
         model: Model providing articulation topology and inertial parameters.
         state: State providing the current generalized coordinates and velocities.
+            ``state.body_q`` must already reflect ``state.joint_q``.
         eval_type: Bitmask selecting which quantities to compute.
         inverse_dynamics: Output container whose buffers are written in place.
         scratch: Pre-allocated scratch buffers reused across calls.

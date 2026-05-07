@@ -1036,7 +1036,7 @@ def convert_free_distance_joint_f_internal_to_public(
     joint_qd_start: wp.array[int],
     joint_X_p: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
-    body_com: wp.array[wp.vec3],
+    body_q_com: wp.array[wp.transform],
     body_mass: wp.array[float],
     joint_qd_public: wp.array[float],
     # in/out
@@ -1106,7 +1106,7 @@ def convert_free_distance_joint_f_internal_to_public(
             X_wpj = body_q[parent] * X_wpj
         q_p = wp.transform_get_rotation(X_wpj)
         x_anchor_world = wp.transform_get_translation(X_wpj)
-        x_child_com_world = wp.transform_point(body_q[child], body_com[child])
+        x_child_com_world = wp.transform_get_translation(body_q_com[child])
         r_child_com_parent = wp.quat_rotate_inv(q_p, x_child_com_world - x_anchor_world)
 
         # Velocity-product correction. tau = -f_b_s, so adding to tau is
