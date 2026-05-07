@@ -2244,6 +2244,166 @@ class TestExtremeMeshTriangles(unittest.TestCase):
         self._assert_all_shapes_contact(verts, inds, [5.0, 0.0], 0.15, "shared edge")
 
 
+class TestMeshNonUniformScaling(_NarrowPhaseSetupMixin, unittest.TestCase):
+    """Regression tests for triangle-mesh-vs-convex collisions with non-uniform mesh scale.
+
+    The mesh BVH is built over the *unscaled* ``mesh.points``, while the per-shape
+    ``mesh_scale`` is applied component-wise to vertices on the fly. Prior to the fix in
+    ``mesh_vs_convex_midphase`` the BVH AABB query was performed in the *scaled* mesh-local
+    frame, so non-uniform scales caused most/all triangles to be culled and queries to
+    return zero contacts. These tests cover uniform, axis-aligned non-uniform, and
+    pancake/needle-shaped scales for a tiny unit-quad mesh, exercising every common convex
+    primitive against it.
+    """
+
+    @staticmethod
+    def _unit_quad_mesh():
+        """1x1 quad in the XY plane centered at the origin, normal +Z, two triangles."""
+        verts = np.array(
+            [
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        inds = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+        return verts, inds
+
+    def _run_mesh_vs_sphere(self, mesh_scale, sphere_pos, sphere_radius=0.3, gap=0.02):
+        """Drop a sphere onto a unit quad with the given mesh_scale and return contact count.
+
+        Returns a tuple ``(contact_count, normals, penetrations)`` for further validation.
+        """
+        verts, inds = self._unit_quad_mesh()
+        mesh = newton.Mesh(verts, inds)
+
+        device = self.narrow_phase.device if self.narrow_phase.device is not None else wp.get_device()
+        with wp.ScopedDevice(device):
+            mesh_id = mesh.finalize()
+            geom_list = [
+                {
+                    "type": GeoType.MESH,
+                    "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                    "data": (list(mesh_scale), 0.0),
+                    "source": int(mesh_id),
+                    "cutoff": gap,
+                },
+                {
+                    "type": GeoType.SPHERE,
+                    "transform": (list(sphere_pos), [0.0, 0.0, 0.0, 1.0]),
+                    "data": ([sphere_radius, 0.0, 0.0], 0.0),
+                    "cutoff": gap,
+                },
+            ]
+
+            (
+                geom_types,
+                geom_data,
+                geom_transform,
+                geom_source,
+                shape_gap,
+                geom_collision_radius,
+                shape_sdf_index,
+                shape_flags,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
+                shape_voxel_resolution,
+            ) = self._create_geometry_arrays(geom_list)
+
+            candidate_pair = wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.vec2i)
+            candidate_pair_count = wp.array([1], dtype=wp.int32)
+
+            max_contacts = 32
+            contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
+            contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_penetration = wp.zeros(max_contacts, dtype=float)
+            contact_count = wp.zeros(1, dtype=int)
+
+            self.narrow_phase.launch(
+                candidate_pair=candidate_pair,
+                candidate_pair_count=candidate_pair_count,
+                shape_types=geom_types,
+                shape_data=geom_data,
+                shape_transform=geom_transform,
+                shape_source=geom_source,
+                shape_sdf_index=shape_sdf_index,
+                shape_gap=shape_gap,
+                shape_collision_radius=geom_collision_radius,
+                shape_flags=shape_flags,
+                shape_collision_aabb_lower=shape_collision_aabb_lower,
+                shape_collision_aabb_upper=shape_collision_aabb_upper,
+                shape_voxel_resolution=shape_voxel_resolution,
+                contact_pair=contact_pair,
+                contact_position=contact_position,
+                contact_normal=contact_normal,
+                contact_penetration=contact_penetration,
+                contact_count=contact_count,
+                contact_tangent=wp.zeros(max_contacts, dtype=wp.vec3),
+            )
+
+            count = int(contact_count.numpy()[0])
+            normals = contact_normal.numpy()[:count]
+            penetrations = contact_penetration.numpy()[:count]
+            return count, normals, penetrations
+
+    def _assert_sphere_above_quad_contacts(self, mesh_scale, sphere_xy, label, gap=0.02):
+        """A sphere placed just above the (scaled) quad should overlap and produce contacts."""
+        radius = 0.3
+        # Place sphere so it dips below z=0 by ~0.05: center at z = radius - 0.05 = 0.25.
+        sphere_pos = (sphere_xy[0], sphere_xy[1], radius - 0.05)
+        count, normals, penetrations = self._run_mesh_vs_sphere(mesh_scale, sphere_pos, radius, gap)
+        self.assertGreater(count, 0, f"{label}: expected contacts for mesh_scale={mesh_scale}, got {count}")
+        # Contact normals must be unit-length and point roughly +Z (sphere is above the quad).
+        for j in range(count):
+            n = normals[j]
+            self.assertFalse(np.any(np.isnan(n)), f"{label}: NaN normal {n}")
+            self.assertFalse(np.isnan(penetrations[j]), f"{label}: NaN penetration")
+            n_len = float(np.linalg.norm(n))
+            self.assertGreater(n_len, 0.9, f"{label}: degenerate normal length {n_len}")
+            nz = float(n[2]) / n_len
+            self.assertGreater(nz, 0.5, f"{label}: normal not roughly +Z (nz={nz:.3f})")
+
+    def test_uniform_scale_sanity(self):
+        """Sanity: uniform mesh scale (1, 1, 1) must produce contacts (regression baseline)."""
+        self._assert_sphere_above_quad_contacts((1.0, 1.0, 1.0), (0.0, 0.0), "uniform 1x1x1")
+
+    def test_uniform_large_scale(self):
+        """Uniform scale (10, 10, 10) - sphere over the (now 10x10) quad."""
+        self._assert_sphere_above_quad_contacts((10.0, 10.0, 10.0), (3.0, 3.0), "uniform 10x10x10")
+
+    def test_nonuniform_scale_xy(self):
+        """Non-uniform scale (10, 10, 1): the user's reported pancake case.
+
+        Without the BVH-coords fix this returns 0 contacts because the BVH lives in
+        unscaled space [-0.5, 0.5]² but the AABB query is centered around (3, 3) in
+        scaled space.
+        """
+        self._assert_sphere_above_quad_contacts((10.0, 10.0, 1.0), (3.0, 3.0), "non-uniform 10x10x1")
+
+    def test_nonuniform_scale_xy_off_center(self):
+        """Non-uniform scale (10, 10, 1), sphere near a corner of the scaled quad."""
+        self._assert_sphere_above_quad_contacts((10.0, 10.0, 1.0), (4.5, -4.5), "non-uniform 10x10x1 corner")
+
+    def test_nonuniform_scale_z_thin(self):
+        """Non-uniform scale (1, 1, 0.1): a thin pancake along Z."""
+        self._assert_sphere_above_quad_contacts((1.0, 1.0, 0.1), (0.0, 0.0), "non-uniform 1x1x0.1")
+
+    def test_nonuniform_scale_extreme(self):
+        """Extreme non-uniform scale (50, 0.5, 1): a long thin strip in X."""
+        self._assert_sphere_above_quad_contacts((50.0, 0.5, 1.0), (10.0, 0.1), "extreme 50x0.5x1")
+
+    def test_nonuniform_scale_separated(self):
+        """Sphere placed clearly outside the scaled quad must produce no contacts (no false positives)."""
+        radius = 0.3
+        # Sphere far to the +X side of the (10x10x1) quad: center at x = 100 (way outside).
+        sphere_pos = (100.0, 0.0, 0.0)
+        count, _, _ = self._run_mesh_vs_sphere((10.0, 10.0, 1.0), sphere_pos, radius)
+        self.assertEqual(count, 0, f"expected 0 contacts when far separated, got {count}")
+
+
 class TestMPREnlargeCorrection(_NarrowPhaseSetupMixin, unittest.TestCase):
     """Verify that the anti-flicker enlarge in MPR does not bias returned distances or contact points."""
 
