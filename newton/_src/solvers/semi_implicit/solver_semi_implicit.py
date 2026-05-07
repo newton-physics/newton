@@ -98,6 +98,7 @@ class SolverSemiImplicit(SolverBase):
         self.joint_attach_kd = joint_attach_kd
         self.enable_tri_contact = enable_tri_contact
 
+        self._collapse_fixed_joints = collapse_fixed_joints
         self._joints_to_keep = joints_to_keep
         # Always allocate so a later merges→no-merges notify can refresh safely.
         self._init_kinematic_state()
@@ -110,10 +111,13 @@ class SolverSemiImplicit(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        if getattr(self, "_merge_info", None) is None:
-            return
-        if flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES:
-            self._recompute_merged_inertial_properties()
+        merge_relevant = (
+            SolverNotifyFlags.BODY_INERTIAL_PROPERTIES
+            | SolverNotifyFlags.BODY_PROPERTIES
+            | SolverNotifyFlags.JOINT_PROPERTIES
+        )
+        if flags & merge_relevant:
+            self._recompute_merge_info()
 
     @override
     def step(

@@ -149,6 +149,7 @@ class SolverXPBD(SolverBase):
 
         self.compute_body_velocity_from_position_delta = False
 
+        self._collapse_fixed_joints = collapse_fixed_joints
         self._joints_to_keep = joints_to_keep
         self._init_kinematic_state()
 
@@ -170,11 +171,15 @@ class SolverXPBD(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
-            if getattr(self, "_merge_info", None) is not None and (flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
-                self._recompute_merged_inertial_properties()
-            else:
-                self._refresh_kinematic_state()
+        # Any change to merger inputs (body inertial props, kinematic flags,
+        # joint enablement, or joint anchors) can invalidate the merge map.
+        merge_relevant = (
+            SolverNotifyFlags.BODY_INERTIAL_PROPERTIES
+            | SolverNotifyFlags.BODY_PROPERTIES
+            | SolverNotifyFlags.JOINT_PROPERTIES
+        )
+        if flags & merge_relevant:
+            self._recompute_merge_info()
 
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):
         if model.body_count == 0:
@@ -262,14 +267,15 @@ class SolverXPBD(SolverBase):
                     new_body_qd = state_out.body_qd
                 self._body_delta_counter = 1 - self._body_delta_counter
 
+            _mi = getattr(self, "_merge_info", None)
             wp.launch(
                 kernel=apply_body_deltas,
                 dim=model.body_count,
                 inputs=[
                     body_q,
                     body_qd,
-                    model.body_com,
-                    model.body_inertia,
+                    _mi.merged_body_com_gpu if _mi is not None else model.body_com,
+                    _mi.merged_body_inertia_gpu if _mi is not None else model.body_inertia,
                     self.body_inv_mass_effective,
                     self.body_inv_inertia_effective,
                     body_deltas,
@@ -729,10 +735,16 @@ class SolverXPBD(SolverBase):
                     out_body_qd = state_out.body_qd
 
                 # update body velocities
+                _mi = getattr(self, "_merge_info", None)
                 wp.launch(
                     kernel=update_body_velocities,
                     dim=model.body_count,
-                    inputs=[state_out.body_q, body_q_init, model.body_com, dt],
+                    inputs=[
+                        state_out.body_q,
+                        body_q_init,
+                        _mi.merged_body_com_gpu if _mi is not None else model.body_com,
+                        dt,
+                    ],
                     outputs=[out_body_qd],
                     device=model.device,
                 )

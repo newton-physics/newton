@@ -13,7 +13,6 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from ..geometry.inertia import transform_inertia
 from ..sim import BodyFlags, JointType
 from ..sim.model import Model
 
@@ -25,19 +24,19 @@ class FixedJointMergeInfo:
     has_merges: bool
     survivor_of: list[int]
     relative_xform_of: list[wp.transform]
-    survivor_indices_gpu: wp.array
-    relative_xforms_gpu: wp.array
-    merged_body_inv_mass_gpu: wp.array
-    merged_body_inv_inertia_gpu: wp.array
-    merged_body_mass_gpu: wp.array
-    merged_body_inertia_gpu: wp.array
-    merged_body_com_gpu: wp.array
-    joint_enabled_effective_gpu: wp.array
-    joint_parent_effective_gpu: wp.array
-    joint_child_effective_gpu: wp.array
-    joint_X_p_effective_gpu: wp.array
-    joint_X_c_effective_gpu: wp.array
-    shape_body_effective_gpu: wp.array
+    survivor_indices_gpu: wp.array[wp.int32]
+    relative_xforms_gpu: wp.array[wp.transform]
+    merged_body_inv_mass_gpu: wp.array[float]
+    merged_body_inv_inertia_gpu: wp.array[wp.mat33]
+    merged_body_mass_gpu: wp.array[float]
+    merged_body_inertia_gpu: wp.array[wp.mat33]
+    merged_body_com_gpu: wp.array[wp.vec3]
+    joint_enabled_effective_gpu: wp.array[wp.bool]
+    joint_parent_effective_gpu: wp.array[wp.int32]
+    joint_child_effective_gpu: wp.array[wp.int32]
+    joint_X_p_effective_gpu: wp.array[wp.transform]
+    joint_X_c_effective_gpu: wp.array[wp.transform]
+    shape_body_effective_gpu: wp.array[wp.int32]
 
 
 def compute_fixed_joint_merge(
@@ -146,22 +145,21 @@ def compute_fixed_joint_merge(
                 relative_xform_of[child_body] = incoming_xform
 
                 sv = survivor_of[last_dynamic_body]
-                child_m = float(body_mass_np[child_body])
-                child_com = wp.transform_point(incoming_xform, wp.vec3(*body_com_np[child_body]))
-                child_inertia = wp.mat33(*body_inertia_np[child_body].flatten())
-                child_inertia_transformed = transform_inertia(
-                    child_m, child_inertia, incoming_xform.p, incoming_xform.q
+                new_m, new_com, new_I = _accumulate_child_into_survivor(
+                    merged_mass[sv],
+                    merged_com[sv],
+                    merged_inertia[sv],
+                    float(body_mass_np[child_body]),
+                    wp.vec3(*body_com_np[child_body]),
+                    wp.mat33(*body_inertia_np[child_body].flatten()),
+                    incoming_xform,
                 )
-
-                sv_m = merged_mass[sv]
-                sv_com = merged_com[sv]
-                new_m = sv_m + child_m
-                merged_inertia[sv] = merged_inertia[sv] + child_inertia_transformed
                 merged_mass[sv] = new_m
+                merged_com[sv] = new_com
+                merged_inertia[sv] = new_I
                 if new_m > 0.0:
-                    merged_com[sv] = (child_m * child_com + sv_m * sv_com) * (1.0 / new_m)
                     merged_inv_mass[sv] = 1.0 / new_m
-                    merged_inv_inertia[sv] = _safe_inv_mat33(merged_inertia[sv], new_m)
+                    merged_inv_inertia[sv] = _safe_inv_mat33(new_I, new_m)
                 # Child is absorbed; zero its effective inverse mass/inertia.
                 merged_inv_mass[child_body] = 0.0
                 merged_inv_inertia[child_body] = wp.mat33(0.0)
@@ -262,6 +260,47 @@ def _safe_inv_mat33(m: wp.mat33, mass: float) -> wp.mat33:
     return wp.inverse(m)
 
 
+_I3 = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+
+def _shift_inertia(inertia: wp.mat33, mass: float, offset: wp.vec3) -> wp.mat33:
+    """Shift an inertia tensor by ``offset`` via the parallel-axis theorem."""
+    return inertia + mass * (wp.dot(offset, offset) * _I3 - wp.outer(offset, offset))
+
+
+def _accumulate_child_into_survivor(
+    sv_m: float,
+    sv_com: wp.vec3,
+    sv_I: wp.mat33,
+    child_m: float,
+    child_com_local: wp.vec3,
+    child_I_local: wp.mat33,
+    incoming_xform: wp.transform,
+):
+    """Fuse a child body into the survivor.
+
+    Returns ``(mass, com, inertia)`` in the survivor's body frame, with
+    ``inertia`` parallel-axis-shifted to be expressed about the new combined
+    COM (Newton's convention for ``body_inertia``).
+    """
+    com_c_in_sv = wp.transform_point(incoming_xform, child_com_local)
+    new_m = sv_m + child_m
+    if new_m <= 0.0:
+        return new_m, sv_com, sv_I
+    new_com = (sv_m * sv_com + child_m * com_c_in_sv) * (1.0 / new_m)
+
+    # Survivor's existing inertia (about old sv_com) shifted to new_com.
+    sv_I_at_new = _shift_inertia(sv_I, sv_m, sv_com - new_com)
+
+    # Rotate child's inertia into survivor frame, then shift from child COM
+    # (in survivor frame) to new_com.
+    R = wp.quat_to_matrix(incoming_xform.q)
+    child_I_in_sv = R @ child_I_local @ wp.transpose(R)
+    child_I_at_new = _shift_inertia(child_I_in_sv, child_m, com_c_in_sv - new_com)
+
+    return new_m, new_com, sv_I_at_new + child_I_at_new
+
+
 @wp.kernel
 def _propagate_merged_body_poses(
     survivor_indices: wp.array[wp.int32],
@@ -280,18 +319,24 @@ def _propagate_merged_body_velocities(
     survivor_indices: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     relative_xforms: wp.array[wp.transform],
+    body_com_original: wp.array[wp.vec3],
+    merged_body_com: wp.array[wp.vec3],
     body_qd: wp.array[wp.spatial_vector],
 ):
     """Propagate survivor spatial velocity to each merged child."""
-    # Newton convention: spatial_vector(linear, angular).
+    # body_qd stores linear velocity at COM (Newton convention), so the
+    # lever arm must be the COM-to-COM offset in world, not body-origin to
+    # body-origin.  spatial_vector layout is (linear, angular).
     tid = wp.tid()
     s = survivor_indices[tid]
     if s != tid:
         tw = body_qd[s]
         v = wp.spatial_top(tw)
         w = wp.spatial_bottom(tw)
-        r_local = relative_xforms[tid].p
-        r_world = wp.transform_vector(body_q[s], r_local)
+        com_s_world = wp.transform_point(body_q[s], merged_body_com[s])
+        child_q_world = body_q[s] * relative_xforms[tid]
+        com_c_world = wp.transform_point(child_q_world, body_com_original[tid])
+        r_world = com_c_world - com_s_world
         body_qd[tid] = wp.spatial_vector(v + wp.cross(w, r_world), w)
 
 

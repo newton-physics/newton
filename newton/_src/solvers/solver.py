@@ -258,8 +258,13 @@ class SolverBase:
         if model.body_count and hasattr(self, "body_inv_mass_effective"):
             self._refresh_kinematic_state()
 
-    def _recompute_merged_inertial_properties(self) -> None:
-        """Re-run the merge analysis after model inertial properties change."""
+    def _recompute_merge_info(self) -> None:
+        """Re-run the merge analysis after model inputs change."""
+        # Honor the constructor opt-out: don't resurrect merging if the user
+        # built the solver with collapse_fixed_joints=False.
+        if not getattr(self, "_collapse_fixed_joints", True):
+            self._refresh_kinematic_state()
+            return
         joints_to_keep = getattr(self, "_joints_to_keep", None)
         new_info = compute_fixed_joint_merge(self.model, joints_to_keep=joints_to_keep)
         if new_info is None:
@@ -312,6 +317,8 @@ class SolverBase:
                 merge_info.survivor_indices_gpu,
                 state_out.body_q,
                 merge_info.relative_xforms_gpu,
+                model.body_com,
+                merge_info.merged_body_com_gpu,
                 state_out.body_qd,
             ],
             device=model.device,

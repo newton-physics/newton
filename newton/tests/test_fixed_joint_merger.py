@@ -18,7 +18,10 @@ import warp as wp
 
 import newton
 from newton import ModelBuilder
-from newton._src.solvers._fixed_joint_merger import compute_fixed_joint_merge
+from newton._src.solvers._fixed_joint_merger import (
+    _propagate_merged_body_velocities,
+    compute_fixed_joint_merge,
+)
 from newton.solvers import SolverNotifyFlags, SolverSemiImplicit, SolverXPBD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -290,6 +293,38 @@ class TestComputeFixedJointMerge(unittest.TestCase):
         # No merges should happen — the dynamic child must stay as its own body.
         self.assertIsNone(info)
 
+    def test_merged_inertia_is_about_combined_com(self):
+        """Merged inertia must be expressed about the new combined COM.
+
+        Two equal-mass bodies separated along Y by ``L`` must produce a merged
+        tensor whose ``Ixx``/``Izz`` exceed ``Iyy`` by exactly ``m * L^2 / 2``
+        (the parallel-axis contribution of two point-masses at ``±L/2`` from
+        the combined COM along Y). The earlier accumulator returned the
+        survivor-origin-frame value ``m * L^2``, so this test catches it.
+        """
+        L = 2.0
+        m = 1.0
+        ident = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        b = ModelBuilder(gravity=0.0)
+        b0 = b.add_body(mass=m, inertia=ident)
+        b1 = b.add_body(mass=m, xform=wp.transform(wp.vec3(0, L, 0), wp.quat_identity()), inertia=ident)
+        b.add_joint_free(b0)
+        b.add_joint_fixed(b0, b1, parent_xform=wp.transform(wp.vec3(0, L, 0), wp.quat_identity()))
+        model = b.finalize(device="cpu")
+
+        info = compute_fixed_joint_merge(model)
+        self.assertIsNotNone(info)
+
+        merged_com = info.merged_body_com_gpu.numpy()[b0]
+        merged_I = info.merged_body_inertia_gpu.numpy()[b0]
+        self.assertAlmostEqual(float(merged_com[1]), L / 2.0, places=5)
+
+        # Diagonal cross-term must be m*L^2/2, not m*L^2.
+        cross_xx = float(merged_I[0, 0]) - float(merged_I[1, 1])
+        cross_zz = float(merged_I[2, 2]) - float(merged_I[1, 1])
+        self.assertAlmostEqual(cross_xx, m * L * L / 2.0, places=4)
+        self.assertAlmostEqual(cross_zz, m * L * L / 2.0, places=4)
+
     def test_disabled_fixed_joint_keeps_joint_enabled_effective_false(self):
         """A model-level disabled FIXED joint must remain disabled in joint_enabled_effective."""
         # Use chain A-FIXED-B-FIXED-C, disable the first FIXED joint.  The DFS
@@ -313,6 +348,111 @@ class TestComputeFixedJointMerge(unittest.TestCase):
         eff = info.joint_enabled_effective_gpu.numpy()
         # Disabled joint stays disabled in effective layer.
         self.assertFalse(bool(eff[j_ab]))
+
+    def test_velocity_propagation_uses_com_offset(self):
+        """Propagation must use COM-to-COM offset, not body-origin offset.
+
+        Build a setup where the two are measurably different (heavier child
+        shifts the combined COM far from the survivor's body origin), give the
+        survivor pure angular velocity, run the propagation kernel, and verify
+        body_qd[child].linear == omega x (com_child_world - com_survivor_world).
+        Using the body-origin offset would yield a different number.
+        """
+        device = "cpu"
+        L = 2.0
+        sv_mass = 1.0
+        child_mass = 4.0
+        b = ModelBuilder(gravity=0.0)
+        b0 = b.add_body(mass=sv_mass)
+        b1 = b.add_body(mass=child_mass, xform=wp.transform(wp.vec3(0, L, 0), wp.quat_identity()))
+        b.add_joint_free(b0)
+        b.add_joint_fixed(b0, b1, parent_xform=wp.transform(wp.vec3(0, L, 0), wp.quat_identity()))
+        model = b.finalize(device=device)
+
+        info = compute_fixed_joint_merge(model)
+        self.assertIsNotNone(info)
+
+        # Survivor at world identity, pure angular velocity about Z.
+        omega_z = 0.5
+        body_q = wp.array(
+            [wp.transform_identity(), wp.transform_identity()],
+            dtype=wp.transform,
+            device=device,
+        )
+        body_qd = wp.array(
+            [
+                wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, omega_z),
+                wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            ],
+            dtype=wp.spatial_vector,
+            device=device,
+        )
+
+        wp.launch(
+            kernel=_propagate_merged_body_velocities,
+            dim=model.body_count,
+            inputs=[
+                info.survivor_indices_gpu,
+                body_q,
+                info.relative_xforms_gpu,
+                model.body_com,
+                info.merged_body_com_gpu,
+                body_qd,
+            ],
+            device=device,
+        )
+
+        merged_com = info.merged_body_com_gpu.numpy()[b0]
+        # Survivor identity transform → world COMs equal local COMs.
+        com_s_world = np.array(merged_com)
+        com_c_world = np.array([0.0, L, 0.0])  # child body_com is zero, body origin at +L Y
+        r_world = com_c_world - com_s_world
+        omega_vec = np.array([0.0, 0.0, omega_z])
+        expected_v = np.cross(omega_vec, r_world)
+
+        actual_qd = body_qd.numpy()[b1]
+        for i in range(3):
+            self.assertAlmostEqual(float(actual_qd[i]), float(expected_v[i]), places=5)
+        # Angular velocity must equal survivor's exactly.
+        for i in range(3):
+            self.assertAlmostEqual(float(actual_qd[3 + i]), float(omega_vec[i]), places=6)
+
+    def test_collapse_false_survives_notify(self):
+        """A solver built with collapse_fixed_joints=False stays opted out across notifies."""
+        model, _, _ = _make_two_body_fixed("cpu")
+        solver = SolverXPBD(model, collapse_fixed_joints=False)
+        self.assertIsNone(solver._merge_info)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+        # Must not silently re-enable merging.
+        self.assertIsNone(solver._merge_info)
+        self.assertIs(solver.joint_enabled_effective, model.joint_enabled)
+
+    def test_notify_joint_properties_recomputes_merge(self):
+        """Changing joint_enabled and notifying with JOINT_PROPERTIES must refresh the merge.
+
+        Previously only ``BODY_INERTIAL_PROPERTIES`` triggered a recompute, so a
+        caller that disabled a FIXED joint and notified with the conceptually
+        correct flag would still get the stale collapsed topology.
+        """
+        b = ModelBuilder(gravity=0.0)
+        b0 = b.add_body(mass=1.0)
+        b1 = b.add_body(mass=1.0, xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()))
+        b.add_joint_free(b0)
+        j = b.add_joint_fixed(b0, b1, parent_xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()))
+        model = b.finalize(device="cpu")
+
+        solver = SolverXPBD(model)
+        self.assertIsNotNone(solver._merge_info)
+
+        # Disable the only FIXED joint and notify with JOINT_PROPERTIES.
+        je = model.joint_enabled.numpy()
+        je[j] = False
+        model.joint_enabled.assign(je)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+
+        # Topology now has no collapsible FIXED joint → merge cleared.
+        self.assertIsNone(solver._merge_info)
+        self.assertIs(solver.joint_enabled_effective, model.joint_enabled)
 
 
 # ---------------------------------------------------------------------------
@@ -462,10 +602,59 @@ def test_xpbd_downstream_revolute_joint_works(test, device):
     test.assertTrue(np.all(np.isfinite(state0.body_qd.numpy())))
 
 
+def test_xpbd_com_shifted_cluster_rigid_attachment(test, device):
+    """End-to-end rigid attachment for a cluster whose merged COM is far from sv body origin.
+
+    Uses a 4 times heavier child so the combined COM shifts strongly off the
+    survivor's body origin. Exercises (1) inertia recentered to combined COM,
+    (2) velocity propagation via COM-to-COM offset, (3) ``_apply_body_deltas``
+    using merged ``body_com``/``body_inertia``. Asserts the merged child stays
+    rigidly bonded to the survivor through gravity and contact-free integration.
+    """
+    offset = wp.vec3(0.0, 1.0, 0.0)
+    b = ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+    sv = b.add_body(mass=1.0)
+    ch = b.add_body(mass=4.0, xform=wp.transform(offset, wp.quat_identity()))
+    b.add_joint_free(sv)
+    b.add_joint_fixed(sv, ch, parent_xform=wp.transform(offset, wp.quat_identity()))
+    model = b.finalize(device=device)
+
+    solver = SolverXPBD(model)
+    mi = solver._merge_info
+    test.assertIsNotNone(mi)
+
+    state0, state1 = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state0)
+    contacts = model.contacts()
+
+    for _ in range(20):
+        model.collide(state0, contacts)
+        solver.step(state0, state1, None, contacts, 1.0 / 120.0)
+        state0, state1 = state1, state0
+
+    body_q_np = state0.body_q.numpy()
+    body_qd_np = state0.body_qd.numpy()
+    test.assertTrue(np.all(np.isfinite(body_q_np)))
+    test.assertTrue(np.all(np.isfinite(body_qd_np)))
+
+    # Rigid bond: child pose must equal survivor pose composed with relative xform.
+    rel = mi.relative_xform_of[ch]
+    expected = wp.transform(*body_q_np[sv]) * rel
+    actual = wp.transform(*body_q_np[ch])
+    for i in range(7):
+        test.assertAlmostEqual(float(actual[i]), float(expected[i]), places=4)
+
+
 add_function_test(
     TestSolverXPBDFixedJointCollapse,
     "test_merged_child_pose_follows_survivor",
     test_xpbd_merged_child_pose_follows_survivor,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestSolverXPBDFixedJointCollapse,
+    "test_com_shifted_cluster_rigid_attachment",
+    test_xpbd_com_shifted_cluster_rigid_attachment,
     devices=get_test_devices(),
 )
 add_function_test(
