@@ -3384,6 +3384,8 @@ class SolverMuJoCo(SolverBase):
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
                 contacts.rigid_contact_normal,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
                 contacts.rigid_contact_margin0,
                 contacts.rigid_contact_margin1,
                 contacts.rigid_contact_stiffness,
