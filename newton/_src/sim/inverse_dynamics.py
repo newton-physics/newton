@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from enum import IntEnum
+from enum import IntFlag
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -99,7 +99,7 @@ class InverseDynamicsScratchBuffer:
 class InverseDynamics:
     """Inverse dynamics quantities for a batch of articulated rigid-body systems."""
 
-    class EvalType(IntEnum):
+    class EvalType(IntFlag):
         """Bitmask flags selecting which quantities :class:`~newton.InverseDynamics` should compute.
 
         Flags can be combined with bitwise-or to request multiple quantities
