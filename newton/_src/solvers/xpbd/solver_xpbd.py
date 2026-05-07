@@ -171,8 +171,7 @@ class SolverXPBD(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        # Any change to merger inputs (body inertial props, kinematic flags,
-        # joint enablement, or joint anchors) can invalidate the merge map.
+        # Any change to merger inputs may invalidate the cached merge map.
         merge_relevant = (
             SolverNotifyFlags.BODY_INERTIAL_PROPERTIES
             | SolverNotifyFlags.BODY_PROPERTIES
@@ -368,8 +367,7 @@ class SolverXPBD(SolverBase):
                 body_deltas = wp.empty_like(state_out.body_qd)
 
                 _mi = getattr(self, "_merge_info", None)
-                # Clone state_in.body_f when joint forces or the merged-child
-                # scatter would otherwise leak into the user's state buffer.
+                # Clone before mutating so we don't leak into state_in.body_f.
                 body_f_tmp = state_in.body_f
                 if model.joint_count or _mi is not None:
                     body_f_tmp = wp.clone(state_in.body_f)

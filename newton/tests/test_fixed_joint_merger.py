@@ -273,13 +273,7 @@ class TestComputeFixedJointMerge(unittest.TestCase):
             self.assertAlmostEqual(float(actual[i]), float(expected[i]), places=5)
 
     def test_fixed_joint_to_kinematic_parent_not_collapsed(self):
-        """A dynamic body fixed to a kinematic parent must not be merged.
-
-        Collapsing such a joint would absorb the dynamic body into a kinematic
-        survivor, hiding the constraint reaction users observe via
-        ``state.body_parent_f``.  The merger must treat kinematic bodies the
-        way it treats world (i.e. don't merge into them).
-        """
+        """A dynamic body fixed to a kinematic parent must not be merged."""
         b = ModelBuilder(gravity=0.0)
         # Kinematic root (no inbound joint to world).
         kp = b.add_body(mass=1.0)
@@ -294,14 +288,7 @@ class TestComputeFixedJointMerge(unittest.TestCase):
         self.assertIsNone(info)
 
     def test_merged_inertia_is_about_combined_com(self):
-        """Merged inertia must be expressed about the new combined COM.
-
-        Two equal-mass bodies separated along Y by ``L`` must produce a merged
-        tensor whose ``Ixx``/``Izz`` exceed ``Iyy`` by exactly ``m * L^2 / 2``
-        (the parallel-axis contribution of two point-masses at ``±L/2`` from
-        the combined COM along Y). The earlier accumulator returned the
-        survivor-origin-frame value ``m * L^2``, so this test catches it.
-        """
+        """Merged inertia must be expressed about the new combined COM (parallel-axis identity)."""
         L = 2.0
         m = 1.0
         ident = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
@@ -324,6 +311,26 @@ class TestComputeFixedJointMerge(unittest.TestCase):
         cross_zz = float(merged_I[2, 2]) - float(merged_I[1, 1])
         self.assertAlmostEqual(cross_xx, m * L * L / 2.0, places=4)
         self.assertAlmostEqual(cross_zz, m * L * L / 2.0, places=4)
+
+    def test_constraint_body_nested_under_dynamic_not_merged(self):
+        """A body in an equality constraint must not be merged, even when nested under a dynamic ancestor."""
+        b = ModelBuilder(gravity=0.0)
+        bA = b.add_body(mass=1.0)
+        bB = b.add_body(mass=1.0, xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()))
+        bC = b.add_body(mass=1.0, xform=wp.transform(wp.vec3(0, 2, 0), wp.quat_identity()))
+        bD = b.add_body(mass=1.0, xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity()))
+        b.add_joint_free(bA)
+        b.add_joint_free(bD)
+        # FIXED chain: A -(FIXED)-> B -(FIXED)-> C, with C in an equality.
+        b.add_joint_fixed(bA, bB, parent_xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()))
+        b.add_joint_fixed(bB, bC, parent_xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()))
+        b.add_equality_constraint_connect(body1=bC, body2=bD, anchor=wp.vec3(0.0))
+        model = b.finalize(device="cpu")
+
+        info = compute_fixed_joint_merge(model)
+        # bC participates in an equality constraint and must stay its own body.
+        if info is not None:
+            self.assertEqual(info.survivor_of[bC], bC)
 
     def test_disabled_fixed_joint_keeps_joint_enabled_effective_false(self):
         """A model-level disabled FIXED joint must remain disabled in joint_enabled_effective."""
@@ -350,14 +357,7 @@ class TestComputeFixedJointMerge(unittest.TestCase):
         self.assertFalse(bool(eff[j_ab]))
 
     def test_velocity_propagation_uses_com_offset(self):
-        """Propagation must use COM-to-COM offset, not body-origin offset.
-
-        Build a setup where the two are measurably different (heavier child
-        shifts the combined COM far from the survivor's body origin), give the
-        survivor pure angular velocity, run the propagation kernel, and verify
-        body_qd[child].linear == omega x (com_child_world - com_survivor_world).
-        Using the body-origin offset would yield a different number.
-        """
+        """Velocity propagation must use the COM-to-COM offset, not the body-origin offset."""
         device = "cpu"
         L = 2.0
         sv_mass = 1.0
@@ -428,12 +428,7 @@ class TestComputeFixedJointMerge(unittest.TestCase):
         self.assertIs(solver.joint_enabled_effective, model.joint_enabled)
 
     def test_notify_joint_properties_recomputes_merge(self):
-        """Changing joint_enabled and notifying with JOINT_PROPERTIES must refresh the merge.
-
-        Previously only ``BODY_INERTIAL_PROPERTIES`` triggered a recompute, so a
-        caller that disabled a FIXED joint and notified with the conceptually
-        correct flag would still get the stale collapsed topology.
-        """
+        """notify_model_changed(JOINT_PROPERTIES) must refresh the cached merge."""
         b = ModelBuilder(gravity=0.0)
         b0 = b.add_body(mass=1.0)
         b1 = b.add_body(mass=1.0, xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()))

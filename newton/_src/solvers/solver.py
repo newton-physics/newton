@@ -260,8 +260,7 @@ class SolverBase:
 
     def _recompute_merge_info(self) -> None:
         """Re-run the merge analysis after model inputs change."""
-        # Honor the constructor opt-out: don't resurrect merging if the user
-        # built the solver with collapse_fixed_joints=False.
+        # Don't resurrect merging if the user opted out at construction.
         if not getattr(self, "_collapse_fixed_joints", True):
             self._refresh_kinematic_state()
             return

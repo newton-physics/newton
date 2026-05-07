@@ -61,7 +61,6 @@ def compute_fixed_joint_merge(
     if body_count == 0 or joint_count == 0:
         return None
 
-    # Pull everything to CPU once.
     joint_type_np = model.joint_type.numpy()
     joint_parent_np = model.joint_parent.numpy()
     joint_child_np = model.joint_child.numpy()
@@ -77,7 +76,7 @@ def compute_fixed_joint_merge(
     def _is_kinematic(b: int) -> bool:
         return b >= 0 and bool(int(body_flags_np[b]) & int(BodyFlags.KINEMATIC))
 
-    # Collect constraint bodies to avoid merging into world.
+    # Bodies referenced by equality constraints — never merge.
     bodies_in_constraints: set[int] = set()
     if model.equality_constraint_count > 0 and model.equality_constraint_body1 is not None:
         b1 = model.equality_constraint_body1.numpy()
@@ -85,7 +84,6 @@ def compute_fixed_joint_merge(
         bodies_in_constraints.update(int(x) for x in b1 if x >= 0)
         bodies_in_constraints.update(int(x) for x in b2 if x >= 0)
 
-    # Build body → children adjacency.
     body_children: dict[int, list[int]] = {-1: []}
     joint_of: dict[tuple[int, int], int] = {}
     for i in range(body_count):
@@ -119,10 +117,9 @@ def compute_fixed_joint_merge(
         j = joint_of[(parent_body, child_body)]
         jtype = int(joint_type_np[j])
         joint_is_enabled = bool(joint_enabled_np[j])
-        should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
-        # Treat kinematic survivors like world: never absorb a dynamic body
-        # into one, since that would erase the joint reaction observable on
-        # state.body_parent_f.
+        # Equality constraints index by body and aren't remapped; never absorb.
+        should_skip_merge = child_body in bodies_in_constraints
+        # Kinematic survivors are treated like world: don't absorb dynamic bodies into them.
         survivor_is_kinematic = _is_kinematic(last_dynamic_body)
         joint_in_keep_list = model.joint_label[j] in joints_to_keep
 
@@ -160,7 +157,6 @@ def compute_fixed_joint_merge(
                 if new_m > 0.0:
                     merged_inv_mass[sv] = 1.0 / new_m
                     merged_inv_inertia[sv] = _safe_inv_mat33(new_I, new_m)
-                # Child is absorbed; zero its effective inverse mass/inertia.
                 merged_inv_mass[child_body] = 0.0
                 merged_inv_inertia[child_body] = wp.mat33(0.0)
         else:
@@ -192,9 +188,7 @@ def compute_fixed_joint_merge(
     if not has_merges:
         return None
 
-    # Effective-index layer: remap shapes/joints onto survivors so kernels
-    # don't have to chase indirections.  Anchors are pre-multiplied by the
-    # parent/child's relative_xform to land in the survivor's frame.
+    # Effective-index layer: anchors pre-multiplied so they land in the survivor's frame.
     joint_parent_eff: list[int] = [int(joint_parent_np[j]) for j in range(joint_count)]
     joint_child_eff: list[int] = [int(joint_child_np[j]) for j in range(joint_count)]
     joint_X_p_eff: list[wp.transform] = [_np_row_to_transform(joint_X_p_np[j]) for j in range(joint_count)]
@@ -289,11 +283,8 @@ def _accumulate_child_into_survivor(
         return new_m, sv_com, sv_I
     new_com = (sv_m * sv_com + child_m * com_c_in_sv) * (1.0 / new_m)
 
-    # Survivor's existing inertia (about old sv_com) shifted to new_com.
+    # Shift both sides to the new combined COM so the sum is consistent.
     sv_I_at_new = _shift_inertia(sv_I, sv_m, sv_com - new_com)
-
-    # Rotate child's inertia into survivor frame, then shift from child COM
-    # (in survivor frame) to new_com.
     R = wp.quat_to_matrix(incoming_xform.q)
     child_I_in_sv = R @ child_I_local @ wp.transpose(R)
     child_I_at_new = _shift_inertia(child_I_in_sv, child_m, com_c_in_sv - new_com)
@@ -324,9 +315,7 @@ def _propagate_merged_body_velocities(
     body_qd: wp.array[wp.spatial_vector],
 ):
     """Propagate survivor spatial velocity to each merged child."""
-    # body_qd stores linear velocity at COM (Newton convention), so the
-    # lever arm must be the COM-to-COM offset in world, not body-origin to
-    # body-origin.  spatial_vector layout is (linear, angular).
+    # body_qd is (linear-at-COM, angular); lever arm is the COM-to-COM world offset.
     tid = wp.tid()
     s = survivor_indices[tid]
     if s != tid:
@@ -358,8 +347,7 @@ def _scatter_body_forces_to_survivors(
     f_ang = wp.spatial_bottom(fc)
     sv_q = body_q[s]
     com_s_world = wp.transform_point(sv_q, body_com[s])
-    # Child body_q may be stale here (propagation runs at end-of-step), so
-    # reconstruct child COM through the rigid relation.
+    # Child body_q may be stale (propagation runs at end-of-step); rebuild via the rigid relation.
     rel = relative_xforms[tid]
     child_q = sv_q * rel
     com_c_world = wp.transform_point(child_q, body_com[tid])
