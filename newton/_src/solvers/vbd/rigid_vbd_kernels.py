@@ -580,6 +580,8 @@ def evaluate_rigid_contact_from_collision(
     body_com: wp.array[wp.vec3],
     contact_point_a_local: wp.vec3,
     contact_point_b_local: wp.vec3,
+    contact_offset_a_local: wp.vec3,
+    contact_offset_b_local: wp.vec3,
     contact_normal: wp.vec3,
     penetration_depth: float,
     contact_ke: float,
@@ -598,6 +600,11 @@ def evaluate_rigid_contact_from_collision(
     The tangential constraint is the relative tangential displacement from body_q_prev to body_q,
     which correctly captures kinematic body motion.
     Soft contacts: velocity-based IPC friction with scalar penalty.
+
+    The friction anchor lives on the contact surface, computed as
+    ``contact_point_local + contact_offset_local``. Some narrow-phase contact points
+    lie on a shape skeleton, with the radial extent stored in ``contact_offset``.
+    Tangential slip must use the offset anchor so rigid rotation moves the contact point.
 
     Returns:
         10-tuple: (force_a, torque_a, H_ll_a, H_al_a, H_aa_a,
@@ -643,10 +650,15 @@ def evaluate_rigid_contact_from_collision(
     x_com_a_now = wp.transform_point(X_wa, body_a_com_local)
     x_com_b_now = wp.transform_point(X_wb, body_b_com_local)
 
-    x_c_a_now = wp.transform_point(X_wa, contact_point_a_local)
-    x_c_b_now = wp.transform_point(X_wb, contact_point_b_local)
-    x_c_a_prev = wp.transform_point(X_wa_prev, contact_point_a_local)
-    x_c_b_prev = wp.transform_point(X_wb_prev, contact_point_b_local)
+    # Friction anchor on the contact surface. The offset is body-local, so the same material
+    # point is tracked across all inner-solver iterations within a step. This is required for
+    # the ALM tangent multiplier to accumulate consistently.
+    anchor_a_local = contact_point_a_local + contact_offset_a_local
+    anchor_b_local = contact_point_b_local + contact_offset_b_local
+    x_c_a_now = wp.transform_point(X_wa, anchor_a_local)
+    x_c_b_now = wp.transform_point(X_wb, anchor_b_local)
+    x_c_a_prev = wp.transform_point(X_wa_prev, anchor_a_local)
+    x_c_b_prev = wp.transform_point(X_wb_prev, anchor_b_local)
 
     n_outer = wp.outer(contact_normal, contact_normal)
 
@@ -2476,6 +2488,8 @@ def accumulate_body_body_contacts_per_body(
     rigid_contact_shape1: wp.array[int],
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
     rigid_contact_margin0: wp.array[float],
     rigid_contact_margin1: wp.array[float],
@@ -2533,7 +2547,11 @@ def accumulate_body_body_contacts_per_body(
 
         cp0_local = rigid_contact_point0[contact_idx]
         cp1_local = rigid_contact_point1[contact_idx]
+        cp0_offset_local = rigid_contact_offset0[contact_idx]
+        cp1_offset_local = rigid_contact_offset1[contact_idx]
         contact_normal = rigid_contact_normal[contact_idx]
+        # Normal C_n uses the unprojected (skeleton) points: ``thickness`` already accounts
+        # for the radial extent, so adding the offset here would double-count it.
         cp0_world = wp.transform_point(body_q[b0], cp0_local) if b0 >= 0 else cp0_local
         cp1_world = wp.transform_point(body_q[b1], cp1_local) if b1 >= 0 else cp1_local
         thickness = rigid_contact_margin0[contact_idx] + rigid_contact_margin1[contact_idx]
@@ -2587,6 +2605,8 @@ def accumulate_body_body_contacts_per_body(
             body_com,
             cp0_local,
             cp1_local,
+            cp0_offset_local,
+            cp1_offset_local,
             contact_normal,
             C_eff,
             k,
@@ -2631,6 +2651,8 @@ def compute_rigid_contact_forces(
     rigid_contact_shape1: wp.array[int],
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
     rigid_contact_margin0: wp.array[float],
     rigid_contact_margin1: wp.array[float],
@@ -2685,12 +2707,20 @@ def compute_rigid_contact_forces(
 
     cp0_local = rigid_contact_point0[contact_idx]
     cp1_local = rigid_contact_point1[contact_idx]
+    cp0_offset_local = rigid_contact_offset0[contact_idx]
+    cp1_offset_local = rigid_contact_offset1[contact_idx]
     contact_normal = rigid_contact_normal[contact_idx]
 
+    # Normal C_n uses the unprojected (skeleton) points: ``thickness`` already accounts
+    # for the radial extent, so adding the offset here would double-count it.
     cp0_world = wp.transform_point(body_q[b0], cp0_local) if b0 >= 0 else cp0_local
     cp1_world = wp.transform_point(body_q[b1], cp1_local) if b1 >= 0 else cp1_local
-    out_point0_world[contact_idx] = cp0_world
-    out_point1_world[contact_idx] = cp1_world
+    out_point0_world[contact_idx] = (
+        wp.transform_point(body_q[b0], cp0_local + cp0_offset_local) if b0 >= 0 else cp0_local + cp0_offset_local
+    )
+    out_point1_world[contact_idx] = (
+        wp.transform_point(body_q[b1], cp1_local + cp1_offset_local) if b1 >= 0 else cp1_local + cp1_offset_local
+    )
 
     thickness = rigid_contact_margin0[contact_idx] + rigid_contact_margin1[contact_idx]
     d = cp1_world - cp0_world
@@ -2739,6 +2769,8 @@ def compute_rigid_contact_forces(
         body_com,
         cp0_local,
         cp1_local,
+        cp0_offset_local,
+        cp1_offset_local,
         contact_normal,
         C_eff,
         k,
@@ -3567,6 +3599,8 @@ def update_duals_body_body_contacts(
     rigid_contact_shape1: wp.array[int],
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
     rigid_contact_margin0: wp.array[float],
     rigid_contact_margin1: wp.array[float],
@@ -3608,20 +3642,30 @@ def update_duals_body_body_contacts(
 
     cp0_local = rigid_contact_point0[idx]
     cp1_local = rigid_contact_point1[idx]
+    # Friction anchor on the contact surface; see evaluate_rigid_contact_from_collision.
+    # The skeleton points (p0/p1) drive the normal C_n term so that ``thickness`` accounts
+    # for the radial extent without double-counting; the surface anchors (a0/a1) drive the
+    # tangential rel_disp so that spin about a body's symmetry axis registers as slip.
+    anchor0_local = cp0_local + rigid_contact_offset0[idx]
+    anchor1_local = cp1_local + rigid_contact_offset1[idx]
 
     if body_id_0 >= 0:
         p0_world = wp.transform_point(body_q[body_id_0], cp0_local)
-        p0_prev = wp.transform_point(body_q_prev[body_id_0], cp0_local)
+        a0_world = wp.transform_point(body_q[body_id_0], anchor0_local)
+        a0_prev = wp.transform_point(body_q_prev[body_id_0], anchor0_local)
     else:
         p0_world = cp0_local
-        p0_prev = cp0_local
+        a0_world = anchor0_local
+        a0_prev = anchor0_local
 
     if body_id_1 >= 0:
         p1_world = wp.transform_point(body_q[body_id_1], cp1_local)
-        p1_prev = wp.transform_point(body_q_prev[body_id_1], cp1_local)
+        a1_world = wp.transform_point(body_q[body_id_1], anchor1_local)
+        a1_prev = wp.transform_point(body_q_prev[body_id_1], anchor1_local)
     else:
         p1_world = cp1_local
-        p1_prev = cp1_local
+        a1_world = anchor1_local
+        a1_prev = anchor1_local
 
     n = rigid_contact_normal[idx]
     d = p1_world - p0_world
@@ -3644,7 +3688,7 @@ def update_duals_body_body_contacts(
         lam_n_old = wp.dot(lam_vec, n)
         lam_n_new = wp.max(lam_n_old + k * C_stab_n, 0.0)
 
-        rel_disp = (p0_world - p0_prev) - (p1_world - p1_prev)
+        rel_disp = (a0_world - a0_prev) - (a1_world - a1_prev)
         tangential_disp = rel_disp - n * wp.dot(n, rel_disp)
         C0_t_vec = C0_vec - n * C0_n
         lam_t_old = lam_vec - n * lam_n_old
