@@ -5,6 +5,7 @@
 ### Added
 
 - Add linear HDR color output support to `SensorTiledCamera` via `hdr_color_image`.
+- Add `HydroelasticSDF.Config.mc_edge_clamp` to expose the marching-cubes edge-interpolation clamp that controls how strongly contact-surface vertices are pulled off cube corners; default is `0.0` (no clamp) to favor faithful contact-surface dynamics. Larger values (recommended close to zero) prevent vertex collapse at SDF ridges at the cost of biasing the surface, which can dampen threading-style contacts (#2702)
 - Add composable actuator subsystem with pluggable `Controller` (`ControllerPD`, `ControllerPID`, `ControllerNeuralMLP`, `ControllerNeuralLSTM`), `Clamping` (`ClampingMaxEffort`, `ClampingDCMotor`, `ClampingPositionBased`), and `Delay` components; supports per-DOF delays, CUDA graph capture, and masked environment reset
 - Add heatmap rendering for scalar arrays logged through `ViewerGL.log_array()`
 - Add Blender-style orbit, pan, and dolly controls to the GL viewer using middle-mouse drag combinations

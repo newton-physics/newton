@@ -16,6 +16,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.geometry import HydroelasticSDF
 
 # Assembly type for the nut and bolt
 ASSEMBLY_STR = "m20_loose"
@@ -161,11 +162,19 @@ class Example:
 
         self.model = main_scene.finalize()
 
+        # Disable the marching-cubes edge clamp — threading dynamics on the
+        # M20 helix are sensitive to the contact-surface vertex bias the clamp
+        # introduces (see #2702).
+        sdf_hydroelastic_config = HydroelasticSDF.Config(
+            mc_edge_clamp=0.0,
+        )
+
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
             rigid_contact_max=self.rigid_contact_max,
             broad_phase=self.broad_phase_mode,
+            sdf_hydroelastic_config=sdf_hydroelastic_config,
         )
 
         # Create solver based on user choice
