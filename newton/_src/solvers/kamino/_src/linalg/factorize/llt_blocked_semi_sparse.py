@@ -426,20 +426,30 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         A: np.ndarray,  # 3D array (batch_size, n, n)
         A_reorder_size: np.ndarray,  # 1D array (batch_size)
+        eq_classes: list[list[int]] | None = None,
     ):
         """
         Captures sparsity pattern and computes fill-reducing ordering for batched matrices.
 
         Args:
-            A: Input SPD matrices of shape (batch_size, n, n), as float arrays or directly as binary 0/1 matrices
-            indicating the sparsity pattern (float arrays will be converted to binary automatically).
-            A_reorder_size: Per-batch size of top-left block to reorder for sparsity
+        A (np.ndarray):
+            Input SPD matrices as float arrays or directly as binary 0/1 matrices indicating the sparsity
+            pattern (float arrays are converted to binary automatically).
+            Shape of (batch_size, n, n); or of (num_classes, n, n) if eq_classes is provided.
+        A_reorder_size (np.ndarray):
+            Size of the active top-left block per matrix, to reorder for sparsity.
+            Shape of (batch_size,); or of (num_classes,) if eq_classes is provided.
+        eq_classes (list[list[int]], optional):
+            List of list of matrix indices (along the batch dimension) that form equivalence classes with
+            the same sparsity pattern.
+            If provided, only one sparsity pattern per class should be provided in `A`.
+            The computed ordering will then be broadcast to all matrices in each class.
 
         Computes Cuthill-McKee ordering on top-left block, analyzes symbolic Cholesky factorization,
         and stores tile-level sparsity patterns. Tiles beyond A_reorder_size are treated as dense.
         """
 
-        batch_size = A.shape[0]
+        batch_size = self.num_batches
 
         # Convert to binary
         A = to_binary_matrix(A)
@@ -450,25 +460,28 @@ class SemiSparseBlockCholeskySolverBatched:
         inverse_orderings = np.zeros((batch_size, self.max_num_equations), dtype=np.int32)
         L_tile_patterns = np.zeros((batch_size, self.num_tiles, self.num_tiles), dtype=np.int32)
 
-        # Process each batch independently
-        for batch_id in range(batch_size):
+        # Process each equivalence class independently
+        if eq_classes is None:
+            eq_classes = [[i] for i in range(batch_size)]
+        assert len(A) == len(eq_classes)
+        assert len(A_reorder_size) == len(eq_classes)
+        for class_id, eq_class in enumerate(eq_classes):
             # Call cuthill_mckee_ordering on the binary version of A and store both orderings
-            reorder_size = A_reorder_size[batch_id]
-            ordering = cuthill_mckee_ordering(A[batch_id, :reorder_size, :reorder_size])
+            reorder_size = A_reorder_size[class_id]
+            ordering = cuthill_mckee_ordering(A[class_id, :reorder_size, :reorder_size])
 
             # Append sequential indices for remaining rows/cols
             remaining_indices = np.arange(reorder_size, self.max_num_equations)
             ordering = np.concatenate([ordering, remaining_indices])
-            orderings[batch_id] = ordering
 
+            # Compute inverse ordering
             inverse_ordering = compute_inverse_ordering(ordering)
-            inverse_orderings[batch_id] = inverse_ordering
 
             # Reorder A and then extract the sparsity patterns
             if self.enable_reordering:
-                A_reordered = A[batch_id][ordering][:, ordering]
+                A_reordered = A[class_id][ordering][:, ordering]
             else:
-                A_reordered = A[batch_id]
+                A_reordered = A[class_id]
 
             L_tile_pattern_np = symbolic_cholesky_dense(A_reordered, self.block_size)
 
@@ -478,7 +491,11 @@ class SemiSparseBlockCholeskySolverBatched:
                 for j in range(min(i + 1, self.num_tiles)):  # Only set lower triangular part
                     L_tile_pattern_np[i, j] = 1
 
-            L_tile_patterns[batch_id] = L_tile_pattern_np
+            # Store ordering data for all ids in the equivalence class
+            for batch_id in eq_class:
+                orderings[batch_id] = ordering
+                inverse_orderings[batch_id] = inverse_ordering
+                L_tile_patterns[batch_id] = L_tile_pattern_np
 
         # Convert to warp arrays on the correct device
         self.ordering = wp.array(orderings, dtype=int, device=self.device)

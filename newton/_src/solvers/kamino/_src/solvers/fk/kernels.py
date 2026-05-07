@@ -43,10 +43,11 @@ __all__ = [
     "_reset_state",
     "_reset_state_base_q",
     "_update_cg_tolerance_kernel",
+    "create_1d_tile_based_kernels",
+    "create_2d_tile_based_kernels",
     "create_eval_joint_constraints_jacobian_kernel",
     "create_eval_joint_constraints_kernel",
     "create_eval_joint_constraints_sparse_jacobian_kernel",
-    "create_tile_based_kernels",
     "read_quat_from_array",
 ]
 
@@ -870,13 +871,13 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
 
 
 @cache
-def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
+def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
     """
-    Generates and returns all tile-based kernels in this module, given the tile size to use along the constraints
+    Generates and returns all kernels based on 2d tiles in this module, given the tile size to use along the constraints
     and variables (i.e. body poses) dimensions in the constraint vector, Jacobian, step vector etc.
 
-    These are _eval_pattern_T_pattern, _eval_max_constraint, _eval_jacobian_T_jacobian, eval_jacobian_T_constraints,
-    _eval_merit_function, _eval_merit_function_gradient (returned in this order)
+    These are _eval_pattern_T_pattern, _eval_jacobian_T_jacobian, eval_jacobian_T_constraints
+    (returned in this order)
     """
 
     @wp.func
@@ -937,6 +938,135 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
             tile_out_3d_clipped = wp.tile_map(clip_to_one, tile_out_3d)
             wp.tile_store(pattern_T_pattern, tile_out_3d_clipped, offset=(wd_id, i * TILE_SIZE_VRS, j * TILE_SIZE_VRS))
 
+    @wp.kernel
+    def _eval_jacobian_T_jacobian(
+        # Inputs
+        constraints_jacobian: wp.array3d[wp.float32],
+        tile_sparsity_pattern: wp.array3d[wp.int32],
+        world_mask: wp.array[wp.int32],
+        # Outputs
+        jacobian_T_jacobian: wp.array3d[wp.float32],
+    ):
+        """
+        A kernel computing the matrix product J^T * J given the Jacobian J, in each world
+
+        Inputs:
+            constraints_jacobian: Constraint Jacobian per world
+            tile_sparsity_pattern: Per-tile sparsity pattern of the Jacobian (0 = tile is fully zero)
+            world_mask: Per-world flag to perform the computation (0 = skip)
+        Outputs:
+            jacobian_T_jacobian: Jacobian^T * Jacobian per world
+        """
+        wd_id, i, j = wp.tid()  # Thread indices (= world index, output tile indices)
+
+        if (
+            wd_id < jacobian_T_jacobian.shape[0]
+            and world_mask[wd_id] != 0
+            and i * TILE_SIZE_VRS < jacobian_T_jacobian.shape[1]
+            and j * TILE_SIZE_VRS < jacobian_T_jacobian.shape[2]
+        ):
+            tile_out = wp.tile_zeros(shape=(TILE_SIZE_VRS, TILE_SIZE_VRS), dtype=wp.float32)
+
+            num_cts = constraints_jacobian.shape[1]
+            num_tiles_K = (num_cts + TILE_SIZE_CTS - 1) // TILE_SIZE_CTS  # Equivalent to ceil(num_cts / TILE_SIZE_CTS)
+
+            for k in range(num_tiles_K):
+                if tile_sparsity_pattern[wd_id, k, i] == 0 or tile_sparsity_pattern[wd_id, k, j] == 0:
+                    continue
+                tile_i_3d = wp.tile_load(
+                    constraints_jacobian,
+                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
+                    offset=(wd_id, k * TILE_SIZE_CTS, i * TILE_SIZE_VRS),
+                )
+                tile_i = wp.tile_reshape(tile_i_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
+                tile_i_T = wp.tile_transpose(tile_i)
+                tile_j_3d = wp.tile_load(
+                    constraints_jacobian,
+                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
+                    offset=(wd_id, k * TILE_SIZE_CTS, j * TILE_SIZE_VRS),
+                )
+                tile_j = wp.tile_reshape(tile_j_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
+                wp.tile_matmul(tile_i_T, tile_j, tile_out)
+
+            tile_out_3d = wp.tile_reshape(tile_out, (1, TILE_SIZE_VRS, TILE_SIZE_VRS))
+            wp.tile_store(jacobian_T_jacobian, tile_out_3d, offset=(wd_id, i * TILE_SIZE_VRS, j * TILE_SIZE_VRS))
+
+    @wp.kernel
+    def _eval_jacobian_T_constraints(
+        # Inputs
+        constraints_jacobian: wp.array3d[wp.float32],
+        constraints: wp.array2d[wp.float32],
+        tile_sparsity_pattern: wp.array3d[wp.int32],
+        world_mask: wp.array[wp.int32],
+        # Outputs
+        jacobian_T_constraints: wp.array2d[wp.float32],
+    ):
+        """
+        A kernel computing the matrix product J^T * C given the Jacobian J and the constraints vector C, in each world
+
+        Inputs:
+            constraints_jacobian: Constraint Jacobian per world
+            constraints: Constraint vector per world
+            tile_sparsity_pattern: Per-tile sparsity pattern of the Jacobian (0 = tile is fully zero)
+            world_mask: Per-world flag to perform the computation (0 = skip)
+        Outputs:
+            jacobian_T_constraints: Jacobian^T * Constraints per world
+        """
+        wd_id, i = wp.tid()  # Thread indices (= world index, output tile index)
+
+        if (
+            wd_id < jacobian_T_constraints.shape[0]
+            and world_mask[wd_id] != 0
+            and i * TILE_SIZE_VRS < jacobian_T_constraints.shape[1]
+        ):
+            segment_out = wp.tile_zeros(shape=(TILE_SIZE_VRS, 1), dtype=wp.float32)
+
+            num_cts = constraints_jacobian.shape[1]
+            num_tiles_K = (num_cts + TILE_SIZE_CTS - 1) // TILE_SIZE_CTS  # Equivalent to ceil(num_cts / TILE_SIZE_CTS)
+
+            for k in range(num_tiles_K):
+                if tile_sparsity_pattern[wd_id, k, i] == 0:
+                    continue
+                tile_i_3d = wp.tile_load(
+                    constraints_jacobian,
+                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
+                    offset=(wd_id, k * TILE_SIZE_CTS, i * TILE_SIZE_VRS),
+                )
+                tile_i = wp.tile_reshape(tile_i_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
+                tile_i_T = wp.tile_transpose(tile_i)
+                segment_k_2d = wp.tile_load(constraints, shape=(1, TILE_SIZE_CTS), offset=(wd_id, k * TILE_SIZE_CTS))
+                segment_k = wp.tile_reshape(segment_k_2d, (TILE_SIZE_CTS, 1))  # Technically still 2d...
+                wp.tile_matmul(tile_i_T, segment_k, segment_out)
+
+            segment_out_2d = wp.tile_reshape(
+                segment_out,
+                (
+                    1,
+                    TILE_SIZE_VRS,
+                ),
+            )
+            wp.tile_store(
+                jacobian_T_constraints,
+                segment_out_2d,
+                offset=(
+                    wd_id,
+                    i * TILE_SIZE_VRS,
+                ),
+            )
+
+    return _eval_pattern_T_pattern, _eval_jacobian_T_jacobian, _eval_jacobian_T_constraints
+
+
+@cache
+def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
+    """
+    Generates and returns all kernels based on 1d tiles in this module, given the tile size to use along the constraints
+    and variables (i.e. body poses) dimensions in the constraint vector, Jacobian, step vector etc.
+
+    These are _eval_max_constraint, _eval_merit_function, _eval_merit_function_gradient
+    (returned in this order)
+    """
+
     @wp.func
     def _isnan(x: wp.float32) -> wp.int32:
         """Calls wp.isnan and converts the result to int32"""
@@ -978,114 +1108,6 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
                         check_val = wp.atomic_cas(max_constraint, wd_id, curr_val, wp.max(curr_val, segment_max))
                         if check_val == curr_val:
                             break
-
-    @wp.kernel
-    def _eval_jacobian_T_jacobian(
-        # Inputs
-        constraints_jacobian: wp.array3d[wp.float32],
-        world_mask: wp.array[wp.int32],
-        # Outputs
-        jacobian_T_jacobian: wp.array3d[wp.float32],
-    ):
-        """
-        A kernel computing the matrix product J^T * J given the Jacobian J, in each world
-
-        Inputs:
-            constraints_jacobian: Constraint Jacobian per world
-            world_mask: Per-world flag to perform the computation (0 = skip)
-        Outputs:
-            jacobian_T_jacobian: Jacobian^T * Jacobian per world
-        """
-        wd_id, i, j = wp.tid()  # Thread indices (= world index, output tile indices)
-
-        if (
-            wd_id < jacobian_T_jacobian.shape[0]
-            and world_mask[wd_id] != 0
-            and i * TILE_SIZE_VRS < jacobian_T_jacobian.shape[1]
-            and j * TILE_SIZE_VRS < jacobian_T_jacobian.shape[2]
-        ):
-            tile_out = wp.tile_zeros(shape=(TILE_SIZE_VRS, TILE_SIZE_VRS), dtype=wp.float32)
-
-            num_cts = constraints_jacobian.shape[1]
-            num_tiles_K = (num_cts + TILE_SIZE_CTS - 1) // TILE_SIZE_CTS  # Equivalent to ceil(num_cts / TILE_SIZE_CTS)
-
-            for k in range(num_tiles_K):
-                tile_i_3d = wp.tile_load(
-                    constraints_jacobian,
-                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
-                    offset=(wd_id, k * TILE_SIZE_CTS, i * TILE_SIZE_VRS),
-                )
-                tile_i = wp.tile_reshape(tile_i_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
-                tile_i_T = wp.tile_transpose(tile_i)
-                tile_j_3d = wp.tile_load(
-                    constraints_jacobian,
-                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
-                    offset=(wd_id, k * TILE_SIZE_CTS, j * TILE_SIZE_VRS),
-                )
-                tile_j = wp.tile_reshape(tile_j_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
-                wp.tile_matmul(tile_i_T, tile_j, tile_out)
-
-            tile_out_3d = wp.tile_reshape(tile_out, (1, TILE_SIZE_VRS, TILE_SIZE_VRS))
-            wp.tile_store(jacobian_T_jacobian, tile_out_3d, offset=(wd_id, i * TILE_SIZE_VRS, j * TILE_SIZE_VRS))
-
-    @wp.kernel
-    def _eval_jacobian_T_constraints(
-        # Inputs
-        constraints_jacobian: wp.array3d[wp.float32],
-        constraints: wp.array2d[wp.float32],
-        world_mask: wp.array[wp.int32],
-        # Outputs
-        jacobian_T_constraints: wp.array2d[wp.float32],
-    ):
-        """
-        A kernel computing the matrix product J^T * C given the Jacobian J and the constraints vector C, in each world
-
-        Inputs:
-            constraints_jacobian: Constraint Jacobian per world
-            constraints: Constraint vector per world
-            world_mask: Per-world flag to perform the computation (0 = skip)
-        Outputs:
-            jacobian_T_constraints: Jacobian^T * Constraints per world
-        """
-        wd_id, i = wp.tid()  # Thread indices (= world index, output tile index)
-
-        if (
-            wd_id < jacobian_T_constraints.shape[0]
-            and world_mask[wd_id] != 0
-            and i * TILE_SIZE_VRS < jacobian_T_constraints.shape[1]
-        ):
-            segment_out = wp.tile_zeros(shape=(TILE_SIZE_VRS, 1), dtype=wp.float32)
-
-            num_cts = constraints_jacobian.shape[1]
-            num_tiles_K = (num_cts + TILE_SIZE_CTS - 1) // TILE_SIZE_CTS  # Equivalent to ceil(num_cts / TILE_SIZE_CTS)
-
-            for k in range(num_tiles_K):
-                tile_i_3d = wp.tile_load(
-                    constraints_jacobian,
-                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
-                    offset=(wd_id, k * TILE_SIZE_CTS, i * TILE_SIZE_VRS),
-                )
-                tile_i = wp.tile_reshape(tile_i_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
-                tile_i_T = wp.tile_transpose(tile_i)
-                segment_k_2d = wp.tile_load(constraints, shape=(1, TILE_SIZE_CTS), offset=(wd_id, k * TILE_SIZE_CTS))
-                segment_k = wp.tile_reshape(segment_k_2d, (TILE_SIZE_CTS, 1))  # Technically still 2d...
-                wp.tile_matmul(tile_i_T, segment_k, segment_out)
-
-            segment_out_2d = wp.tile_reshape(
-                segment_out,
-                (
-                    1,
-                    TILE_SIZE_VRS,
-                ),
-            )
-            wp.tile_store(
-                jacobian_T_constraints,
-                segment_out_2d,
-                offset=(
-                    wd_id,
-                    i * TILE_SIZE_VRS,
-                ),
-            )
 
     @wp.kernel
     def _eval_merit_function(
@@ -1140,14 +1162,7 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
             if tid == 0:
                 wp.atomic_add(merit_function_grad, wd_id, tile_dot_prod)
 
-    return (
-        _eval_pattern_T_pattern,
-        _eval_max_constraint,
-        _eval_jacobian_T_jacobian,
-        _eval_jacobian_T_constraints,
-        _eval_merit_function,
-        _eval_merit_function_gradient,
-    )
+    return _eval_max_constraint, _eval_merit_function, _eval_merit_function_gradient
 
 
 @wp.kernel

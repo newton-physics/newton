@@ -9,6 +9,7 @@ See the :mod:`newton._src.solvers.kamino._src.solvers.fk` module for a detailed 
 
 from __future__ import annotations
 
+import math
 import sys
 
 import numpy as np
@@ -27,6 +28,7 @@ from ...linalg.conjugate import BatchedLinearOperator, CGSolver
 from ...linalg.factorize.llt_blocked_semi_sparse import SemiSparseBlockCholeskySolverBatched
 from ...linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ...linalg.sparse_operator import BlockSparseLinearOperators
+from ...utils.world_equivalence import DiscreteSignature, compute_equivalence_classes
 from .kernels import (
     _apply_line_search_step,
     _eval_body_velocities,
@@ -44,10 +46,11 @@ from .kernels import (
     _reset_state,
     _reset_state_base_q,
     _update_cg_tolerance_kernel,
+    create_1d_tile_based_kernels,
+    create_2d_tile_based_kernels,
     create_eval_joint_constraints_jacobian_kernel,
     create_eval_joint_constraints_kernel,
     create_eval_joint_constraints_sparse_jacobian_kernel,
-    create_tile_based_kernels,
 )
 from .types import FKJointDoFType, ForwardKinematicsPreconditionerType, ForwardKinematicsStatus
 
@@ -174,6 +177,10 @@ class ForwardKinematicsSolver:
         # Retrieve / compute dimensions - Actuated coordinates/dofs (main model)
         actuated_coord_offsets_prev = self.model.joints.actuated_coords_offset.numpy().copy()
         actuated_dof_offsets_prev = self.model.joints.actuated_dofs_offset.numpy().copy()
+
+        # Determine which worlds are equivalent for FK (at least discrete data)
+        classes = compute_fk_equivalence_classes(self.model)
+        num_classes = len(classes)
 
         # Create a copy of the model's joints with added joints as needed:
         # - actuated free joints to reset the base position/orientation
@@ -371,7 +378,9 @@ class ForwardKinematicsSolver:
         num_constraints = num_bodies.copy()  # Number of kinematic constraints per world (unit quat. + joints)
         has_universal_joints = False  # Whether the model has a least one passive universal joint
         constraint_full_to_red_map = np.full(6 * self.num_joints_tot, -1, dtype=np.int32)
-        for wd_id in range(self.num_worlds):
+        for eq_class in classes:
+            # Count constraints for first world in equivalence class
+            wd_id = eq_class[0]
             ct_count = num_constraints[wd_id]
             for jt_id_loc in range(num_joints[wd_id]):
                 jt_id_tot = first_joint_id[wd_id] + jt_id_loc  # Joint id among all joints
@@ -426,13 +435,26 @@ class ForwardKinematicsSolver:
                     else:
                         raise RuntimeError("Unknown joint dof type")
             num_constraints[wd_id] = ct_count
+
+            # Copy constraints counts/map data for other worlds in equivalence class
+            for wd_id_1 in eq_class[1:]:
+                constraint_full_to_red_map[6 * first_joint_id[wd_id_1] : 6 * first_joint_id[wd_id_1 + 1]] = (
+                    constraint_full_to_red_map[6 * first_joint_id[wd_id] : 6 * first_joint_id[wd_id + 1]]
+                )
+                num_constraints[wd_id_1] = num_constraints[wd_id]
         self.num_constraints_max = np.max(num_constraints)
 
         # Retrieve / compute dimensions - Number of tiles (for kernels using Tile API)
-        self.num_tiles_constraints = (
-            self.num_constraints_max + self.config.TILE_SIZE_CTS - 1
-        ) // self.config.TILE_SIZE_CTS
-        self.num_tiles_states = (self.num_states_max + self.config.TILE_SIZE_VRS - 1) // self.config.TILE_SIZE_VRS
+        # For 1d reduction kernels, large tiles yield the best performance
+        self.tile_size_cts_1d = min(2048, 2 ** math.ceil(math.log(self.num_constraints_max, 2)))
+        self.num_tiles_cts_1d = (self.num_constraints_max + self.tile_size_cts_1d - 1) // self.tile_size_cts_1d
+        self.tile_size_vrs_1d = min(2048, 2 ** math.ceil(math.log(self.num_states_max, 2)))
+        self.num_tiles_vrs_1d = (self.num_states_max + self.tile_size_vrs_1d - 1) // self.tile_size_vrs_1d
+        # For 2d matrix product kernels, smaller 16x16 tiles give the best tradeoff (also for using sparsity)
+        self.tile_size_cts_2d = 16
+        self.num_tiles_cts_2d = (self.num_constraints_max + self.tile_size_cts_2d - 1) // self.tile_size_cts_2d
+        self.tile_size_vrs_2d = 16
+        self.num_tiles_vrs_2d = (self.num_states_max + self.tile_size_vrs_2d - 1) // self.tile_size_vrs_2d
 
         # Data allocation or transfer from numpy to warp
         with wp.ScopedDevice(self.device):
@@ -546,20 +568,23 @@ class ForwardKinematicsSolver:
         )
         (
             self._eval_pattern_T_pattern_kernel,
-            self._eval_max_constraint_kernel,
             self._eval_jacobian_T_jacobian_kernel,
             self._eval_jacobian_T_constraints_kernel,
+        ) = create_2d_tile_based_kernels(self.tile_size_cts_2d, self.tile_size_vrs_2d)
+        (
+            self._eval_max_constraint_kernel,
             self._eval_merit_function_kernel,
             self._eval_merit_function_gradient_kernel,
-        ) = create_tile_based_kernels(self.config.TILE_SIZE_CTS, self.config.TILE_SIZE_VRS)
+        ) = create_1d_tile_based_kernels(self.tile_size_cts_1d, self.tile_size_vrs_1d)
 
         # Compute sparsity pattern and initialize linear solver for dense (semi-sparse) case
         if not self.config.use_sparsity:
             # Jacobian sparsity pattern
-            sparsity_pattern = np.zeros((self.num_worlds, self.num_constraints_max, self.num_states_max), dtype=int)
-            for wd_id in range(self.num_worlds):
+            sparsity_pattern = np.zeros((num_classes, self.num_constraints_max, self.num_states_max), dtype=int)
+            for class_id in range(num_classes):
+                wd_id = classes[class_id][0]  # Compute sparsity pattern for first world in equivalence class
                 for rb_id_loc in range(num_bodies[wd_id]):
-                    sparsity_pattern[wd_id, rb_id_loc, 7 * rb_id_loc + 3 : 7 * rb_id_loc + 7] = 1
+                    sparsity_pattern[class_id, rb_id_loc, 7 * rb_id_loc + 3 : 7 * rb_id_loc + 7] = 1
                 for jt_id_loc in range(num_joints[wd_id]):
                     jt_id_tot = first_joint_id[wd_id] + jt_id_loc
                     base_id_tot = joints_bid_B[jt_id_tot]
@@ -571,21 +596,21 @@ class ForwardKinematicsSolver:
                         for i in range(3):
                             ct_offset = constraint_full_to_red_map[6 * jt_id_tot + i]  # ith translation constraint
                             if ct_offset >= 0:
-                                sparsity_pattern[wd_id, ct_offset, state_offset : state_offset + 7] = 1
+                                sparsity_pattern[class_id, ct_offset, state_offset : state_offset + 7] = 1
                             ct_offset = constraint_full_to_red_map[6 * jt_id_tot + 3 + i]  # ith rotation constraint
                             if ct_offset >= 0:
-                                sparsity_pattern[wd_id, ct_offset, state_offset + 3 : state_offset + 7] = 1
+                                sparsity_pattern[class_id, ct_offset, state_offset + 3 : state_offset + 7] = 1
 
             # Jacobian^T * Jacobian sparsity pattern
             sparsity_pattern_wp = wp.from_numpy(sparsity_pattern, dtype=wp.float32, device=self.device)
             sparsity_pattern_lhs_wp = wp.zeros(
-                dtype=wp.float32, shape=(self.num_worlds, self.num_states_max, self.num_states_max), device=self.device
+                dtype=wp.float32, shape=(num_classes, self.num_states_max, self.num_states_max), device=self.device
             )
             wp.launch_tiled(
                 self._eval_pattern_T_pattern_kernel,
-                dim=(self.num_worlds, self.num_tiles_states, self.num_tiles_states),
+                dim=(num_classes, self.num_tiles_vrs_2d, self.num_tiles_vrs_2d),
                 inputs=[sparsity_pattern_wp, sparsity_pattern_lhs_wp],
-                block_dim=64,
+                block_dim=32,
                 device=self.device,
             )
             sparsity_pattern_lhs = sparsity_pattern_lhs_wp.numpy().astype("int32")
@@ -598,7 +623,24 @@ class ForwardKinematicsSolver:
                 device=self.device,
                 enable_reordering=True,
             )
-            self.linear_solver_llt.capture_sparsity_pattern(sparsity_pattern_lhs, num_states)
+            num_states_per_class = np.array([num_states[eq_class[0]] for eq_class in classes])
+            self.linear_solver_llt.capture_sparsity_pattern(sparsity_pattern_lhs, num_states_per_class, classes)
+
+            # Compute tile-level Jacobian sparsity pattern, to skip zero tiles in tile-based matrix products
+            tile_sparsity_pattern_np = np.zeros(
+                (self.num_worlds, self.num_tiles_cts_2d, self.num_tiles_vrs_2d), dtype=np.int32
+            )
+            for class_id, eq_class in enumerate(classes):
+                pattern = np.zeros((self.num_tiles_cts_2d, self.num_tiles_vrs_2d), dtype=np.int32)
+                for i in range(self.num_constraints_max):
+                    for j in range(self.num_states_max):
+                        if sparsity_pattern[class_id, i, j] != 0:
+                            tile_row = i // self.tile_size_cts_2d
+                            tile_col = j // self.tile_size_vrs_2d
+                            pattern[tile_row, tile_col] = 1
+                for wd_id in eq_class:
+                    tile_sparsity_pattern_np[wd_id] = pattern
+            self.tile_sparsity_pattern = wp.from_numpy(tile_sparsity_pattern_np, dtype=wp.int32, device=self.device)
 
         # Compute sparsity pattern and initialize linear solver for sparse case
         if self.config.use_sparsity:
@@ -893,9 +935,9 @@ class ForwardKinematicsSolver:
         max_constraint.zero_()
         wp.launch_tiled(
             self._eval_max_constraint_kernel,
-            dim=(self.num_worlds, self.num_tiles_constraints),
+            dim=(self.num_worlds, self.num_tiles_cts_1d),
             inputs=[constraints, max_constraint],
-            block_dim=64,
+            block_dim=max(32, min(256, self.tile_size_cts_1d // 8)),
             device=self.device,
         )
 
@@ -1024,9 +1066,9 @@ class ForwardKinematicsSolver:
         error.zero_()
         wp.launch_tiled(
             self._eval_merit_function_kernel,
-            dim=(self.num_worlds, self.num_tiles_constraints),
+            dim=(self.num_worlds, self.num_tiles_cts_1d),
             inputs=[constraints, error],
-            block_dim=64,
+            block_dim=max(32, min(256, self.tile_size_cts_1d // 8)),
             device=self.device,
         )
 
@@ -1043,9 +1085,9 @@ class ForwardKinematicsSolver:
         error_grad.zero_()
         wp.launch_tiled(
             self._eval_merit_function_gradient_kernel,
-            dim=(self.num_worlds, self.num_tiles_states),
+            dim=(self.num_worlds, self.num_tiles_vrs_1d),
             inputs=[step, grad, error_grad],
-            block_dim=64,
+            block_dim=max(32, min(256, self.tile_size_vrs_1d // 8)),
             device=self.device,
         )
 
@@ -1138,16 +1180,16 @@ class ForwardKinematicsSolver:
         else:
             wp.launch_tiled(
                 self._eval_jacobian_T_jacobian_kernel,
-                dim=(self.num_worlds, self.num_tiles_states, self.num_tiles_states),
-                inputs=[self.jacobian, self.newton_mask, self.lhs],
-                block_dim=64,
+                dim=(self.num_worlds, self.num_tiles_vrs_2d, self.num_tiles_vrs_2d),
+                inputs=[self.jacobian, self.tile_sparsity_pattern, self.newton_mask, self.lhs],
+                block_dim=32,
                 device=self.device,
             )
             wp.launch_tiled(
                 self._eval_jacobian_T_constraints_kernel,
-                dim=(self.num_worlds, self.num_tiles_states),
-                inputs=[self.jacobian, self.constraints, self.newton_mask, self.grad],
-                block_dim=64,
+                dim=(self.num_worlds, self.num_tiles_vrs_2d),
+                inputs=[self.jacobian, self.constraints, self.tile_sparsity_pattern, self.newton_mask, self.grad],
+                block_dim=32,
                 device=self.device,
             )
         wp.launch(
@@ -1287,16 +1329,16 @@ class ForwardKinematicsSolver:
         else:
             wp.launch_tiled(
                 self._eval_jacobian_T_jacobian_kernel,
-                dim=(self.num_worlds, self.num_tiles_states, self.num_tiles_states),
-                inputs=[self.jacobian, world_mask, self.lhs],
-                block_dim=64,
+                dim=(self.num_worlds, self.num_tiles_vrs_2d, self.num_tiles_vrs_2d),
+                inputs=[self.jacobian, self.tile_sparsity_pattern, world_mask, self.lhs],
+                block_dim=32,
                 device=self.device,
             )
             wp.launch_tiled(
                 self._eval_jacobian_T_constraints_kernel,
-                dim=(self.num_worlds, self.num_tiles_states),
-                inputs=[self.jacobian, self.target_cts_u, world_mask, self.rhs],
-                block_dim=64,
+                dim=(self.num_worlds, self.num_tiles_vrs_2d),
+                inputs=[self.jacobian, self.target_cts_u, self.tile_sparsity_pattern, world_mask, self.rhs],
+                block_dim=32,
                 device=self.device,
             )
 
@@ -1663,3 +1705,63 @@ class ForwardKinematicsSolver:
             return ForwardKinematicsSolver.Status(
                 iterations=iterations, max_constraints=max_constraints, success=success
             )
+
+
+###
+# Functions
+###
+
+
+def compute_fk_equivalence_classes(model: ModelKamino) -> list[list[int]]:
+    """Groups world that are equivalent for FK discrete information"""
+    sig_num_bodies = DiscreteSignature(num_worlds=model.size.num_worlds, data=model.info.num_bodies)
+    sig_joint_act_type = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.joints.act_type,
+        world_offset=model.info.joints_offset,
+        world_size=model.info.num_joints,
+    )
+    sig_joint_dof_type = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.joints.dof_type,
+        world_offset=model.info.joints_offset,
+        world_size=model.info.num_joints,
+    )
+    sig_joint_bid_B = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.joints.bid_B,
+        world_offset=model.info.joints_offset,
+        world_size=model.info.num_joints,
+        world_delta=model.info.bodies_offset,
+        ignore_negative=True,
+    )
+    sig_joint_bid_F = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.joints.bid_F,
+        world_offset=model.info.joints_offset,
+        world_size=model.info.num_joints,
+        world_delta=model.info.bodies_offset,
+    )
+    sig_base_body = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.info.base_body_index,
+        world_delta=model.info.bodies_offset,
+        ignore_negative=True,
+    )
+    sig_base_joint = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.info.base_joint_index,
+        world_delta=model.info.joints_offset,
+        ignore_negative=True,
+    )
+    return compute_equivalence_classes(
+        [
+            sig_num_bodies,
+            sig_joint_act_type,
+            sig_joint_dof_type,
+            sig_joint_bid_B,
+            sig_joint_bid_F,
+            sig_base_body,
+            sig_base_joint,
+        ]
+    )

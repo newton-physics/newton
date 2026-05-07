@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add linear HDR color output support to `SensorTiledCamera` via `hdr_color_image`.
 - Add composable actuator subsystem with pluggable `Controller` (`ControllerPD`, `ControllerPID`, `ControllerNeuralMLP`, `ControllerNeuralLSTM`), `Clamping` (`ClampingMaxEffort`, `ClampingDCMotor`, `ClampingPositionBased`), and `Delay` components; supports per-DOF delays, CUDA graph capture, and masked environment reset
 - Add heatmap rendering for scalar arrays logged through `ViewerGL.log_array()`
 - Add Blender-style orbit, pan, and dolly controls to the GL viewer using middle-mouse drag combinations
@@ -38,6 +39,8 @@
 - Add frame-by-frame step support to `ViewerGL`: press `.` while paused to advance one simulation frame
 - Add ViewerBase.should_step() — call once per frame to determine whether the simulation loop should advance; returns True when not paused.
 - Add Kamino-specific simulation examples in `newton/examples/kamino`
+- Add per-mesh `color` override to `ViewerBase.log_mesh()` for tinting individual meshes without authoring per-vertex colors
+- Add per-mesh `roughness` and `metallic` PBR overrides to `ViewerBase.log_mesh()`
 
 ### Changed
 
@@ -80,6 +83,7 @@
 ### Fixed
 
 - Fix `remesh_convex_hull` raising `QhullError` on degenerate (coincident, collinear, or coplanar) point clouds; it now returns a zero-volume fallback mesh with a `UserWarning`, raises `ValueError` on empty input, and retries Qhull with `QJ` joggle as a last resort on the 3D path
+- Fix narrow-phase CPU launches using GPU-sized block dimensions with kernels that observe `wp.block_dim() == 1`, avoiding out-of-bounds tile and strided-loop indexing until Warp GH-1413 is fixed
 - Fix `ViewerGL` Step button remaining clickable while the simulation is running; the button is now greyed out when not paused
 - Fix the example viewer's Reset button discarding user-provided CLI options (e.g. `--world-count`) and rebuilding the example with parser defaults instead
 - Fix `ModelBuilder.finalize()` crashing with 3+ articulations after `collapse_fixed_joints()` reordered `articulation_start` and dropped per-articulation metadata
@@ -94,6 +98,7 @@
 - Fix mesh-convex back-face contacts generating inverted normals that trap shapes inside meshes and cause solver divergence (NaN)
 - Fix finite plane geometry 2x too large in collision, bounding sphere, and raytrace sensor
 - Fix MPR convergence failure on large and extreme-aspect-ratio mesh triangles by projecting the starting point onto the triangle nearest the convex center
+- Fix MPR/GJK reporting wrong contacts for `CONVEX_MESH` shapes whose authoring origin lies outside the hull, and tighten heightfield-vs-convex midphase to use the convex's local AABB instead of an origin-centered bounding sphere
 - Fix O(W²·S²) memory explosion in `CollisionPipeline` shape-pair buffer allocation for NXN and SAP broad phase modes by computing per-world pair counts instead of a global N²
 - Fix `SensorRaycast` ignoring `PLANE` geometry
 - Fix VRAM leak when resetting examples that allocate large GPU state (e.g. `diffsim_bear`)
