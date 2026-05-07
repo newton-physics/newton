@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example Cable XY Table
+# Example Cable Cross-Slide Table
 #
-# Demonstrates a cable-driven cross-base XY table inspired by the Simscape
-# Multibody cable-driven XY table example. The mechanism is laid out on the
-# ground plane: the blue base is fixed, the green carriage moves horizontally,
+# Demonstrates a cable-driven cross-slide table inspired by the Simscape
+# Multibody cable-driven XY table example https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html.
+# The mechanism is laid out on the ground plane: the blue base is fixed, the green carriage moves horizontally,
 # and the beige carriage moves vertically on the green carriage. The cable is
 # driven only by the two blue input pulleys.
 #
