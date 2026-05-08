@@ -12,7 +12,7 @@
 - Add `body_parent_f` extended state attribute support to `SolverFeatherstone` populated directly from the RNEA backward pass (per-body net spatial wrench translated to the body's COM, matching the `SolverMuJoCo` convention)
 - Add public `newton.geometry.build_bvh_shape()`, `build_bvh_particle()`, `refit_bvh_shape()`, and `refit_bvh_particle()` helpers for managing model BVHs
 - Raise process priority automatically in `--benchmark` mode for more stable measurements; add `--realtime` for maximum priority.
-- Add introductory tutorial notebook covering ModelBuilder, solvers, CUDA graphs, IK, and pick-and-place
+- Add robotics tutorial notebook covering ModelBuilder, solvers, CUDA graphs, IK, and pick-and-place
 - Import per-shape authored color from USD stages into `ModelBuilder.shape_color`
 - Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
 - Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
