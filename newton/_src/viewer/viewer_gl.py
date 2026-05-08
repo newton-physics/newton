@@ -2702,7 +2702,7 @@ class ViewerGL(ViewerBase):
             item_height + 60,
         )
         imgui.set_next_window_pos(
-            imgui.ImVec2(io.display_size[0] - window_width - 10, 10),
+            imgui.ImVec2(io.display_size[0] - window_width - 10, io.display_size[1] - window_height - 10),
             imgui.Cond_.appearing,
         )
         imgui.set_next_window_size(
