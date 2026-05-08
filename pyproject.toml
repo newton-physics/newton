@@ -114,7 +114,7 @@ docs = [
     "ipykernel>=6.0.0,<7.0.0",      # required by nbsphinx to execute notebooks (pinned <7 for rerun-sdk compatibility)
     "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
     "pypandoc_binary>=1.11",        # bundled pandoc binary
-    "GitPython>=3.1.47",            # for downloading tutorial assets via newton.utils.download_asset()
+    "GitPython>=3.1.47",            # for downloading tutorial assets via newton.utils.download_asset() (>=3.1.47 for GHSA-x2qx-6953-8485)
     # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
     "viser==1.0.26",
 ]
