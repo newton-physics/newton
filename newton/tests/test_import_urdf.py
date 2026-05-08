@@ -418,31 +418,37 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert_np_equal(builder.joint_effort_limit[-1], np.array([6.78]))
 
     def test_floating_massless_fixed_root_urdf_is_dynamic(self):
-        builder = newton.ModelBuilder()
-        builder.add_urdf(MASSLESS_FIXED_ROOT_URDF, floating=True, up_axis="Z")
+        dt = 1.0 / 60.0
+        step_count = 5
+        expected_drop = 0.5 * 9.81 * (step_count * dt) ** 2
+        min_drop = 0.5 * expected_drop
 
-        self.assertEqual(builder.joint_count, 1)
-        self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
-        self.assertGreater(builder.body_mass[0], 0.0)
+        for urdf in [MASSLESS_FIXED_ROOT_URDF, MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF]:
+            with self.subTest(urdf=urdf.splitlines()[1].strip()):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, floating=True, up_axis="Z")
 
-        model = builder.finalize()
-        state_0 = model.state()
-        state_1 = model.state()
-        control = model.control()
-        contacts = model.contacts()
-        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+                self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
+                self.assertGreater(builder.body_mass[0], 0.0)
 
-        root_body = int(model.joint_child.numpy()[0])
-        start_z = float(state_0.body_q.numpy()[root_body][2])
+                model = builder.finalize()
+                state_0 = model.state()
+                state_1 = model.state()
+                control = model.control()
+                contacts = model.contacts()
+                newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-        solver = newton.solvers.SolverXPBD(model, iterations=2)
-        for _ in range(5):
-            state_0.clear_forces()
-            solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
-            state_0, state_1 = state_1, state_0
+                root_body = int(model.joint_child.numpy()[0])
+                start_z = float(state_0.body_q.numpy()[root_body][2])
 
-        end_z = float(state_0.body_q.numpy()[root_body][2])
-        self.assertLess(end_z, start_z)
+                solver = newton.solvers.SolverXPBD(model, iterations=2)
+                for _ in range(step_count):
+                    state_0.clear_forces()
+                    solver.step(state_0, state_1, control, contacts, dt)
+                    state_0, state_1 = state_1, state_0
+
+                end_z = float(state_0.body_q.numpy()[root_body][2])
+                self.assertGreaterEqual(start_z - end_z, min_drop)
 
     def test_floating_massless_fixed_root_preserves_existing_fixed_joints(self):
         builder = newton.ModelBuilder()
