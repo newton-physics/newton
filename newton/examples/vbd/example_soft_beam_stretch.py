@@ -5,9 +5,9 @@
 # Example Soft Beam Stretch — Volume Preservation
 #
 # A horizontal tetrahedral beam with its left face pinned and right face
-# stretched to 2× its rest length over a linear ramp. The stable
+# stretched to 2x its rest length over a linear ramp. The stable
 # Neo-Hookean material should preserve volume: with high bulk modulus
-# (k_lambda >> k_mu) the volume ratio at 2× stretch should stay close
+# (k_lambda >> k_mu) the volume ratio at 2x stretch should stay close
 # to 1.0. The test measures the total tet volume at equilibrium and
 # compares it to the rest volume.
 #
