@@ -6,6 +6,8 @@ Kamino: A physics back-end for Newton for constrained multi-body body simulation
 """
 
 from .core.bodies import (
+    apply_body_corr_inv_to_body_q,
+    apply_body_corr_to_body_q,
     convert_base_origin_to_com,
     convert_body_com_to_origin,
     convert_body_origin_to_com,
@@ -35,6 +37,8 @@ __all__ = [
     "ModelKamino",
     "SolverKaminoImpl",
     "StateKamino",
+    "apply_body_corr_inv_to_body_q",
+    "apply_body_corr_to_body_q",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
     "convert_body_origin_to_com",
