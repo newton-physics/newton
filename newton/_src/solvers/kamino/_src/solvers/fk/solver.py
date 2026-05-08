@@ -1268,7 +1268,7 @@ class ForwardKinematicsSolver:
         self,
         bodies_q: wp.array[wp.transformf],
         pos_control_transforms: wp.array[wp.transformf],
-        world_mask: wp.array[wp.bool],
+        world_mask: wp.array[wp.int32],
     ):
         """
         Convenience function updating the constraints Jacobian, given body poses and position-control
@@ -1282,7 +1282,7 @@ class ForwardKinematicsSolver:
 
     def _update_lhs(
         self,
-        world_mask: wp.array[wp.bool],
+        world_mask: wp.array[wp.int32],
     ):
         """
         Convenience function updating the system left-hand side (J^T * J + regularization, optionally),
@@ -1310,7 +1310,7 @@ class ForwardKinematicsSolver:
     def _update_gradient(
         self,
         bodies_q: wp.array[wp.transformf],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.int32],
     ):
         """
         Convenience function updating the objective gradient (J^T * constraints + regularization, optionally),
@@ -1349,6 +1349,7 @@ class ForwardKinematicsSolver:
                     world_mask,
                     self.grad,
                 ],
+                device=self.device,
             )
 
     def _eval_lhs_gemv(
@@ -1439,7 +1440,6 @@ class ForwardKinematicsSolver:
                 self._eval_regularizer_kernel,
                 dim=(self.num_worlds, self.num_tiles_vrs_1d),
                 inputs=[
-                    self.model.info.num_bodies,
                     self.first_body_id,
                     self.config.regularization_weight,
                     wp.array(
@@ -1510,7 +1510,7 @@ class ForwardKinematicsSolver:
         self._eval_kinematic_constraints(
             self.bodies_q_alpha, self.pos_control_transforms, self.line_search_mask, self.constraints
         )
-        self._eval_merit_function(self.constraints, self.val_alpha, bodies_q)
+        self._eval_merit_function(self.constraints, self.val_alpha, self.bodies_q_alpha)
 
         # Check decrease and update step
         self.line_search_loop_condition.zero_()

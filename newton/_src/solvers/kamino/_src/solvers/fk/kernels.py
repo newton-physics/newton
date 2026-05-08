@@ -1531,7 +1531,6 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
     @wp.kernel
     def _eval_regularizer(
         # Inputs
-        num_bodies: wp.array[wp.int32],
         first_body_id: wp.array[wp.int32],
         reg_weight: wp.float32,
         bodies_q_flat: wp.array[wp.float32],
@@ -1544,7 +1543,6 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         and adding it to the merit function value.
 
         Inputs:
-            num_bodies: Number of bodies per world.
             first_body_id: First body index per world.
             reg_weight: Regularizer weight.
             bodies_q_flat: Flattened array of current body poses.
