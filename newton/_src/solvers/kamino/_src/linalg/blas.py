@@ -957,15 +957,17 @@ def _make_cwise_inverse_kernel_2d(dtype: FloatType):
     def cwise_inverse_kernel(
         # Inputs
         x: wp.array2d[dtype],
+        offset: float32,
         dim: wp.array[wp.int32],
         mask: wp.array[wp.int32],
     ):
+        """Kernel computing x_i = 1 / (x_i + offset) for an array of scalars x_i"""
         mat_id, coeff_id = wp.tid()
 
         if mat_id >= mask.shape[0] or mask[mat_id] == 0 or coeff_id >= dim[mat_id]:
             return
 
-        x[mat_id, coeff_id] = 1.0 / x[mat_id, coeff_id]
+        x[mat_id, coeff_id] = 1.0 / (x[mat_id, coeff_id] + offset)
 
     return cwise_inverse_kernel
 
@@ -974,30 +976,43 @@ def _make_cwise_inverse_kernel_2d(dtype: FloatType):
 def blockwise_inverse_kernel_3_2d(
     # Inputs
     blocks: wp.array2d[wp.mat33f],
+    diag_offset: float32,
     dim: wp.array[wp.int32],
     mask: wp.array[wp.int32],
 ):
+    """Kernel computing B_i = (B_i + diag_offset * I)^-1 for an array of 3x3 blocks B_i"""
     mat_id, block_id = wp.tid()
 
     if mat_id >= mask.shape[0] or mask[mat_id] == 0 or 7 * block_id >= dim[mat_id]:
         return
 
-    blocks[mat_id, block_id] = wp.inverse(blocks[mat_id, block_id])
+    block = blocks[mat_id, block_id]
+    block[0, 0] += diag_offset
+    block[1, 1] += diag_offset
+    block[2, 2] += diag_offset
+    blocks[mat_id, block_id] = wp.inverse(block)
 
 
 @wp.kernel
 def blockwise_inverse_kernel_4_2d(
     # Inputs
     blocks: wp.array2d[wp.mat44f],
+    diag_offset: float32,
     dim: wp.array[wp.int32],
     mask: wp.array[wp.int32],
 ):
+    """Kernel computing B_i = (B_i + diag_offset * I)^-1 for an array of 4x4 blocks B_i"""
     mat_id, block_id = wp.tid()
 
     if mat_id >= mask.shape[0] or mask[mat_id] == 0 or 7 * block_id >= dim[mat_id]:
         return
 
-    blocks[mat_id, block_id] = wp.inverse(blocks[mat_id, block_id])
+    block = blocks[mat_id, block_id]
+    block[0, 0] += diag_offset
+    block[1, 1] += diag_offset
+    block[2, 2] += diag_offset
+    block[3, 3] += diag_offset
+    blocks[mat_id, block_id] = wp.inverse(block)
 
 
 @wp.kernel
@@ -1399,14 +1414,17 @@ def block_sparse_transpose_gemv(
         )
 
 
-def block_sparse_ATA_inv_diagonal_2d(A: BlockSparseMatrices, inv_diag: wp.array, matrix_mask: wp.array):
+def block_sparse_ATA_inv_diagonal_2d(
+    A: BlockSparseMatrices, inv_diag: wp.array, matrix_mask: wp.array, diag_offset: float32 = 0.0
+):
     """
-    Function computing the inverse of the diagonal of A^T * A given sparse matrix (stack) A.
+    Function computing the inverse of the diagonal of A^T * A + diag_offset * I, given sparse matrix (stack) A.
 
     Args:
         A (BlockSparseMatrices): Sparse matrices.
         inv_diag (wp.array): Stack of output vectors, expects shape (num_matrices, max_of_max_cols).
         matrix_mask (wp.array): Mask vector to skip matrices set to `0` in the mask.
+        diag_offset (float32, optional): Scalar diagonal offset added to A^T * A (defaults to zero).
     """
     wp.launch(
         kernel=_make_masked_zero_kernel_2d(A.nzb_type.dtype),
@@ -1427,20 +1445,13 @@ def block_sparse_ATA_inv_diagonal_2d(A: BlockSparseMatrices, inv_diag: wp.array,
         ],
         device=A.device,
     )
-    int_size_bytes = 4  # Size of wp.int32 in bytes
-    cols = wp.array(
-        dtype=wp.int32,
-        shape=(A.num_matrices,),
-        ptr=A.dims.ptr + int_size_bytes,
-        strides=(2 * int_size_bytes,),
-        copy=False,
-    )
     wp.launch(
         kernel=_make_cwise_inverse_kernel_2d(A.nzb_dtype.dtype),
         dim=(A.num_matrices, A.max_of_max_dims[1]),
         inputs=[
             inv_diag,
-            cols,
+            diag_offset,
+            A.num_cols,
             matrix_mask,
         ],
         device=A.device,
@@ -1448,10 +1459,14 @@ def block_sparse_ATA_inv_diagonal_2d(A: BlockSparseMatrices, inv_diag: wp.array,
 
 
 def block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
-    A: BlockSparseMatrices, inv_blocks_3: wp.array, inv_blocks_4: wp.array, matrix_mask: wp.array
+    A: BlockSparseMatrices,
+    inv_blocks_3: wp.array,
+    inv_blocks_4: wp.array,
+    matrix_mask: wp.array,
+    diag_offset: float32 = 0.0,
 ):
     """
-    Function computing the blockwise inverse of the diagonal of A^T * A given sparse matrix (stack) A,
+    Function computing the blockwise inverse of the diagonal of A^T * A + diag_offset * I given sparse matrix (stack) A,
     with alternating 3x3 and 4x4 blocks
     A must have block size 1x7
 
@@ -1459,6 +1474,7 @@ def block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
         A (BlockSparseMatrices): Sparse matrices.
         inv_blocks (wp.array): Stack of vectors of 3x3 blocks, expects shape (num_matrices, max_of_max_cols / 7).
         matrix_mask (wp.array): Mask vector to skip matrices set to `0` in the mask.
+        diag_offset (float32, optional): Scalar diagonal offset added to A^T * A (defaults to zero).
     """
     wp.launch(
         _make_masked_zero_kernel_2d(wp.mat33f),
@@ -1500,20 +1516,13 @@ def block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
         ],
         device=A.device,
     )
-    int_size_bytes = 4  # Size of wp.int32 in bytes
-    cols = wp.array(
-        dtype=wp.int32,
-        shape=(A.num_matrices,),
-        ptr=A.dims.ptr + int_size_bytes,
-        strides=(2 * int_size_bytes,),
-        copy=False,
-    )
     wp.launch(
         kernel=blockwise_inverse_kernel_3_2d,
         dim=inv_blocks_3.shape,
         inputs=[
             inv_blocks_3,
-            cols,
+            diag_offset,
+            A.num_cols,
             matrix_mask,
         ],
         device=A.device,
@@ -1523,7 +1532,8 @@ def block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
         dim=inv_blocks_4.shape,
         inputs=[
             inv_blocks_4,
-            cols,
+            diag_offset,
+            A.num_cols,
             matrix_mask,
         ],
         device=A.device,

@@ -870,6 +870,9 @@ class ForwardKinematicsSolver:
             def _cg_gemv_flat(x, y, world_active, alpha, beta):
                 self._eval_lhs_gemv(x.reshape((n_wd, n_st)), y.reshape((n_wd, n_st)), world_active, alpha, beta)
 
+            def _cg_matvec_flat(x, y, world_active):
+                self._eval_lhs_matvec(x.reshape((n_wd, n_st)), y.reshape((n_wd, n_st)), world_active)
+
             cg_op = BatchedLinearOperator(
                 n_worlds=self.num_worlds,
                 max_dim=self.num_states_max,
@@ -877,6 +880,7 @@ class ForwardKinematicsSolver:
                 dtype=wp.float32,
                 device=self.device,
                 gemv_fn=_cg_gemv_flat,
+                matvec_fn=_cg_matvec_flat,
                 vio=cg_vio,
                 total_vec_size=cg_total_vec_size,
             )
@@ -1218,7 +1222,7 @@ class ForwardKinematicsSolver:
         and position-control transformations
         """
 
-        self.sparse_jacobian.zero()
+        self.sparse_jacobian.zero(world_mask)
 
         # Evaluate unit norm quaternion constraints Jacobian
         wp.launch(
@@ -1382,6 +1386,34 @@ class ForwardKinematicsSolver:
             inputs=[alpha, self.lhs_times_vector, beta, y, self.num_constraints, world_mask, y],
             device=self.device,
         )
+
+    def _eval_lhs_matvec(
+        self,
+        x: wp.array2d[wp.float32],
+        y: wp.array2d[wp.float32],
+        world_mask: wp.array[wp.int32],
+    ):
+        """
+        Internal evaluator for y = lhs * x, using the assembled sparse Jacobian J,
+        and with lhs = J^T * J (plus optionally the regularizer Hessian reg_weight * I)
+        """
+        self.sparse_jacobian_op.matvec(x, self.jacobian_times_vector, world_mask)
+        self.sparse_jacobian_op.matvec_transpose(self.jacobian_times_vector, y, world_mask)
+        if self.config.use_regularization:
+            wp.launch(
+                _eval_linear_combination,
+                dim=(self.num_worlds, self.num_states_max),
+                inputs=[
+                    1.0,
+                    y,
+                    self.config.regularization_weight,
+                    x,
+                    self.num_constraints,
+                    world_mask,
+                    y,
+                ],
+                device=self.device,
+            )
 
     def _eval_merit_function(
         self,
@@ -1548,12 +1580,16 @@ class ForwardKinematicsSolver:
 
         # Compute step (system solve)
         if self.config.use_sparsity:
+            offset = self.config.regularization_weight if self.config.use_regularization else 0.0
             if self._preconditioner_type == ForwardKinematicsSolver.PreconditionerType.JACOBI_DIAGONAL:
-                block_sparse_ATA_inv_diagonal_2d(self.sparse_jacobian, self.jacobian_diag_inv, self.newton_mask)
+                block_sparse_ATA_inv_diagonal_2d(
+                    self.sparse_jacobian, self.jacobian_diag_inv, self.newton_mask, diag_offset=offset
+                )
             elif self._preconditioner_type == ForwardKinematicsSolver.PreconditionerType.JACOBI_BLOCK_DIAGONAL:
                 block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
-                    self.sparse_jacobian, self.inv_blocks_3, self.inv_blocks_4, self.newton_mask
+                    self.sparse_jacobian, self.inv_blocks_3, self.inv_blocks_4, self.newton_mask, diag_offset=offset
                 )
+
             self.step.zero_()
             if self.config.use_adaptive_cg_tolerance:
                 self._update_cg_tolerance(self.max_residual, self.newton_mask)
@@ -1690,11 +1726,14 @@ class ForwardKinematicsSolver:
 
         # Compute body velocities (system solve)
         if self.config.use_sparsity:
+            offset = self.config.regularization_weight if self.config.use_regularization else 0.0
             if self._preconditioner_type == ForwardKinematicsSolver.PreconditionerType.JACOBI_DIAGONAL:
-                block_sparse_ATA_inv_diagonal_2d(self.sparse_jacobian, self.jacobian_diag_inv, world_mask)
+                block_sparse_ATA_inv_diagonal_2d(
+                    self.sparse_jacobian, self.jacobian_diag_inv, world_mask, diag_offset=offset
+                )
             elif self._preconditioner_type == ForwardKinematicsSolver.PreconditionerType.JACOBI_BLOCK_DIAGONAL:
                 block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
-                    self.sparse_jacobian, self.inv_blocks_3, self.inv_blocks_4, world_mask
+                    self.sparse_jacobian, self.inv_blocks_3, self.inv_blocks_4, world_mask, diag_offset=offset
                 )
             self.bodies_q_dot.zero_()
             self.cg_atol.fill_(1e-8)
