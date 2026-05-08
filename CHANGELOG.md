@@ -68,6 +68,7 @@
 - Restrict `usd-core` to `<26.5` to avoid deprecation warnings introduced in 26.5
 - Require explicit `SensorTiledCamera` BVH lifecycle management instead of implicit camera maintenance: call `newton.geometry.build_bvh_shape()` / `build_bvh_particle()` once after setup, then `refit_bvh_shape()` / `refit_bvh_particle()` before rendering frames that change geometry
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
+- Remove visual-only procedural terrain from `example_robot_anymal_c_walk`
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
 - Disable process reuse in the test runner on multi-GPU systems to prevent CUDA errors from cascading across test suites, keeping process reuse enabled on single-GPU systems for faster throughput
 - Default `python -m newton.examples` with no argument to launch `basic_pendulum`; use `--list` to print available examples
