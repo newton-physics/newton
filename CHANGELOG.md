@@ -55,9 +55,6 @@
 - Adjust grouping of `reset`, `step`, and `pause` controls so they appear together
 - Bump `Pillow` floor to `>=11.3.0`
 - Bump `jupyterlab` lower bound to `>=4.5.7` to pick up the fix for CVE-2026-40171
-- Bump `jupyter-server` lower bound to `>=2.18.0` to pick up the fix for CVE-2026-40110
-- Bump `GitPython` lower bound to `>=3.1.49` to pick up the fix for CVE-2026-44244
-- Bump `mistune` lower bound to `>=3.2.1` to pick up the fix for CVE-2026-33079
 - Replace `ModelBuilder.add_actuator(actuator_class, input_indices=..., output_indices=..., **kwargs)` with `ModelBuilder.add_actuator(controller_class, index=..., clamping=[...], delay_steps=..., pos_index=..., **ctrl_kwargs)` where each call registers a single DOF
 - Change `ArticulationView.get_actuator_parameter(actuator, name)` and `set_actuator_parameter(actuator, name, values)` to require a `component` argument identifying the owning `Controller`, `Clamping`, or `Delay` instance: `get_actuator_parameter(actuator, actuator.controller, "kp")`
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)

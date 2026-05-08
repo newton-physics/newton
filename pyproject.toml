@@ -76,7 +76,7 @@ examples = [
     "newton[sim]",          # include simulation dependencies
     "newton[importers]",    # include import dependencies
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
-    "GitPython>=3.1.49",    # for downloading assets via newton.utils.download_asset()
+    "GitPython>=3.1.47",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0, <6",     # for binary recording format (.bin files) - more efficient than JSON
@@ -111,11 +111,10 @@ docs = [
     "sphinx-design>=0.5.0,<=0.6.1",
     "sphinx-tabs>=3.3.0",
     "nbsphinx>=0.9.0",              # for Jupyter notebook integration
-    "mistune>=3.2.1",               # transitive of nbconver
     "ipykernel>=6.0.0,<7.0.0",      # required by nbsphinx to execute notebooks (pinned <7 for rerun-sdk compatibility)
     "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
     "pypandoc_binary>=1.11",        # bundled pandoc binary
-    "GitPython>=3.1.49",            # for downloading tutorial assets via newton.utils.download_asset()
+    "GitPython>=3.1.47",            # for downloading tutorial assets via newton.utils.download_asset()
     # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
     "viser==1.0.26",
 ]
@@ -125,9 +124,7 @@ notebook = [
     "newton[examples]",
     "rerun-sdk[notebook]>=0.27.1; python_version < '3.14'",
     "jupyterlab>=4.5.7",
-    "jupyter-server>=2.18.0",
     "jupyter-server-proxy>=4.5.0",
-    "mistune>=3.2.1",
     # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
     "viser==1.0.26",
 ]
