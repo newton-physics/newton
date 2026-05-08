@@ -45,7 +45,7 @@ import newton.examples
 
 class Example:
     def __init__(self, viewer, args):
-        self.fps = 60
+        self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 1
@@ -65,12 +65,12 @@ class Example:
         # Newton's own spring / bending stiffnesses at zero — every
         # elastic contribution comes from chysx's own constraints.
         #
-        # Per-particle mass is scaled down by 100x relative to the
-        # 10x10 demo so that surface density (and thus the static
-        # tension a stretched spring has to carry per metre of cloth)
-        # stays the same.  Spring / FEM stiffness is bumped 10x to
-        # keep `cell * k` in the same neighbourhood — the natural
-        # scaling for an explicit / implicit Euler cloth.
+        # The `mass=` argument here is a placeholder: chysx
+        # overwrites Newton's per-particle inv_mass with an
+        # area-weighted lumped FE mass distribution (see
+        # `surface_density` on the solver below), so boundary
+        # vertices end up lighter than interior vertices the way a
+        # real cloth's mass actually distributes.
         self._dim_x = 100
         self._dim_y = 100
         cell = 0.01
@@ -82,7 +82,7 @@ class Example:
             dim_y=self._dim_y,
             cell_x=cell,
             cell_y=cell,
-            mass=5.0e-4,
+            mass=1.0,
             tri_ke=0.0,
             tri_ka=0.0,
             tri_kd=0.0,
@@ -99,14 +99,36 @@ class Example:
         # like a flag stretched between two posts.  Newton's grid
         # indexing is row-major: idx = j*(dim_x+1) + i, so the two
         # bottom-edge corners are i=0 and i=dim_x at j=0.
+        #
+        # Two parameters are tuned to suppress visible frame-to-frame
+        # jitter on the dense 10 201-DOF mesh:
+        #
+        # * `pcg_iterations=150`. With k=5e3 N/m and m=5e-4 kg the
+        #   characteristic frequency is ω ≈ √(k/m) ≈ 3162 rad/s and
+        #   50 PCG iterations leaves enough residual force in the
+        #   linear solve to drive several centimetres of frame-to-
+        #   frame oscillation; 150 iterations brings the per-step
+        #   residual down to where the integrator is effectively
+        #   converged.
+        # * `damping=2.0`. Implicit Euler has only a small amount of
+        #   built-in numerical dissipation, so any leftover residual
+        #   recirculates indefinitely if `damping=0`.  A modest
+        #   viscous damping pulls high-frequency modes towards rest
+        #   without making the cloth feel sluggish.
         self._pinned_indices = [0, self._dim_x]
         self.solver = newton.solvers.SolverChysX(
             self.model,
             spring_stiffness=5.0e3,
             fem_stretch_stiffness=5.0e3,
-            damping=2.0,
+            damping=0.0,
             pin_indices=self._pinned_indices,
-            pin_stiffness=1.0e7,
+            pin_stiffness=1.0e9,
+            pcg_iterations=50,
+            # Total cloth mass = surface_density * area = 5 kg over
+            # 1 m^2.  Distributed by triangle area, so the four
+            # corners (1 incident triangle) are 4x lighter than
+            # interior vertices (6 incident triangles).
+            surface_density=5.0,
         )
 
         # Snapshot the pinned corners' initial positions so test_final

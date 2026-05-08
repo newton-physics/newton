@@ -82,6 +82,16 @@ class SolverChysX(SolverBase):
             ``50`` is the chysx default and works well for the cloth
             scales targeted here; reduce for cheaper-but-less-accurate
             steps, or increase if the solve fails to converge.
+        surface_density: Optional uniform surface density [kg/m^2].
+            When set, chysx overwrites Newton's per-particle
+            ``inv_mass`` with an area-weighted lumped-mass distribution
+            (each triangle contributes ``surface_density * area`` split
+            equally across its three vertices), matching the cuda-
+            cloth finite-element convention.  Requires the model to
+            have a triangle mesh.  When ``None`` (default), per-
+            particle masses are taken from Newton's ``inv_mass`` as-is
+            (typically uniform when the model came from
+            ``add_cloth_grid(mass=...)``).
     """
 
     def __init__(
@@ -94,6 +104,7 @@ class SolverChysX(SolverBase):
         pin_indices: Sequence[int] | None = None,
         pin_stiffness: float = 1.0e6,
         pcg_iterations: int = 50,
+        surface_density: float | None = None,
     ):
         super().__init__(model=model)
 
@@ -145,7 +156,11 @@ class SolverChysX(SolverBase):
         # Mesh + spring + FEM topology — installed once at construction.
         # Newton's `model.tri_indices` is a wp.array of int32 with
         # shape (M, 3); pass straight through to chysx.
-        wants_mesh = (spring_stiffness > 0.0) or (fem_stretch_stiffness > 0.0)
+        wants_mesh = (
+            spring_stiffness > 0.0
+            or fem_stretch_stiffness > 0.0
+            or surface_density is not None
+        )
         if (
             wants_mesh
             and getattr(model, "tri_indices", None) is not None
@@ -155,6 +170,25 @@ class SolverChysX(SolverBase):
                 model.tri_indices.numpy().reshape(-1, 3), dtype=np.int32
             )
             self._sim.set_mesh(tris_np)
+
+            # Area-weighted lumped vertex mass.  Done before the
+            # constraint installs so callers reading particle_inv_mass
+            # downstream of construction see the correct distribution.
+            # Newton's particle_inv_mass storage is overwritten in
+            # place — this is intentional, since boundary particles
+            # genuinely should not have the same lumped mass as
+            # interior ones.
+            if (
+                surface_density is not None
+                and surface_density > 0.0
+                and getattr(model, "particle_inv_mass", None) is not None
+            ):
+                self._sim.redistribute_mass_area_weighted(
+                    surface_density=float(surface_density),
+                    inv_mass_ptr=model.particle_inv_mass.ptr,
+                    particle_count=model.particle_count,
+                )
+
             if spring_stiffness > 0.0:
                 self._sim.build_springs_from_current_positions(
                     stiffness=float(spring_stiffness)

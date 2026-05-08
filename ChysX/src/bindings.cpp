@@ -173,6 +173,37 @@ stiffness : float
                 return self.springs().size();
             },
             "Number of currently installed springs (unique mesh edges).")
+        .def("redistribute_mass_area_weighted",
+             &chysx::cloth::ClothSimulator::redistribute_mass_area_weighted,
+             py::arg("surface_density"),
+             py::arg("inv_mass_ptr"),
+             py::arg("particle_count"),
+             py::arg("cuda_stream") = 0,
+             R"pbdoc(
+Recompute per-particle inverse mass by distributing each triangle's
+``surface_density * area`` equally across its three vertices, matching
+cuda-cloth's lumped finite-element mass model.
+
+Boundary vertices end up lighter than interior vertices (the
+physically correct behaviour) so dense meshes drape naturally instead
+of pulling a heavy uniform-mass corner down.
+
+Parameters
+----------
+surface_density : float
+    Material surface density in kg/m^2 (e.g. 0.3 for cotton).
+inv_mass_ptr : int
+    cudaMalloc'd address of the externally-owned inverse-mass buffer
+    (typically Newton's ``model.particle_inv_mass.ptr``); the routine
+    overwrites it.  Vertices with no incident triangle are written as
+    ``inv_mass = 0`` (treated as kinematic).
+particle_count : int
+    Number of particles in the inverse-mass buffer.
+
+Requires ``set_mesh(...)`` and ``set_external_buffers(...)`` to have
+been called first so ChysX has access to the triangle topology and
+the rest positions used for area computation.
+)pbdoc")
         .def("build_fem_stretch_from_current_positions",
              &chysx::cloth::ClothSimulator::build_fem_stretch_from_current_positions,
              py::arg("stiffness"),

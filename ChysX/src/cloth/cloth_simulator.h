@@ -140,6 +140,35 @@ public:
         return fem_stretch_;
     }
 
+    // ---- area-weighted vertex mass ------------------------------------
+    //
+    // Recompute per-particle inverse mass from the cloth's mesh +
+    // a uniform surface density [kg/m^2].  Each triangle contributes
+    //
+    //     m_t = surface_density * area(t)
+    //
+    // distributed equally across its three vertices, matching the
+    // standard "lumped" finite-element mass model (cuda-cloth
+    // `KernelComputeArea` / `KernelComputeAllDm`).  Vertices on the
+    // boundary therefore end up lighter than interior vertices,
+    // which is the physically correct behaviour and lets dense
+    // meshes hang and drape naturally instead of pulling a heavy
+    // ball of evenly-massed corner points.
+    //
+    // The per-vertex `inv_mass` is written into the externally-owned
+    // buffer pointed to by `inv_mass_ptr` (cast cudaMalloc'd address
+    // to uintptr_t).  Vertices touched by no triangle (e.g. isolated
+    // particles) are written as `inv_mass = 0` (treated as
+    // kinematic), so callers should pre-fill that buffer if they
+    // want a different fallback.
+    //
+    // Requires `set_mesh(...)` and `set_external_buffers(...)` to
+    // have been called first.
+    void redistribute_mass_area_weighted(float surface_density,
+                                         std::uintptr_t inv_mass_ptr,
+                                         int particle_count,
+                                         std::uintptr_t cuda_stream = 0);
+
     // ---- stepping -----------------------------------------------------
 
     // Advance the simulation by `dt` seconds using the currently set

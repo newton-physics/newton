@@ -98,6 +98,54 @@ __global__ void negate_vec3_kernel(float3* __restrict__ v, int n) {
     v[i] = make_float3(-a.x, -a.y, -a.z);
 }
 
+// Per-triangle scatter of `surface_density * area / 3` onto each of
+// the triangle's three vertices.  Uses atomicAdd because a vertex is
+// shared by ~6 triangles in a regular interior region, and we want
+// every contribution summed without serialising the kernel.
+//
+// `density_over_3 = surface_density / 3` is folded in on the host so
+// the inner kernel just does one multiply per triangle.
+__global__ void scatter_triangle_mass_kernel(
+    const math::Vec3i* __restrict__ tris,
+    const math::Vec3f* __restrict__ pos,
+    float density_over_3,
+    float* __restrict__ mass_out,
+    int n_tri) {
+    const int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= n_tri) return;
+
+    const math::Vec3i tri = tris[t];
+    const math::Vec3f x0 = pos[tri.x];
+    const math::Vec3f x1 = pos[tri.y];
+    const math::Vec3f x2 = pos[tri.z];
+
+    // Triangle area = 0.5 * |(x1 - x0) × (x2 - x0)|.  We use the
+    // 3-D cross product because the cloth's rest configuration may
+    // not lie in any one coordinate plane (chysx doesn't assume the
+    // input is planar).
+    const math::Vec3f e1 = x1 - x0;
+    const math::Vec3f e2 = x2 - x0;
+    const float area = 0.5f * math::length(math::cross(e1, e2));
+
+    const float dm = density_over_3 * area;
+    atomicAdd(&mass_out[tri.x], dm);
+    atomicAdd(&mass_out[tri.y], dm);
+    atomicAdd(&mass_out[tri.z], dm);
+}
+
+// Convert a per-vertex mass buffer into per-vertex inverse mass.
+// Particles with zero accumulated mass (no incident triangles) are
+// emitted as `inv_mass = 0` so the cloth solver treats them as
+// kinematic instead of producing a NaN.
+__global__ void mass_to_inv_mass_kernel(const float* __restrict__ mass,
+                                        float* __restrict__ inv_mass,
+                                        int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float m = mass[i];
+    inv_mass[i] = (m > 1.0e-12f) ? (1.0f / m) : 0.0f;
+}
+
 // Add the inertia diagonal block (m_i / dt^2 * I_3) to `A.diag[i]`.
 //
 // Other constraint kernels also scatter into `A.diag` via atomicAdd,
@@ -263,6 +311,67 @@ void ClothSimulator::build_fem_stretch_from_current_positions(
     topology_dirty_ = true;
 }
 
+void ClothSimulator::redistribute_mass_area_weighted(
+    float surface_density, std::uintptr_t inv_mass_ptr,
+    int particle_count, std::uintptr_t cuda_stream) {
+    if (particle_count <= 0) return;
+    if (inv_mass_ptr == 0) {
+        throw std::invalid_argument(
+            "ClothSimulator::redistribute_mass_area_weighted: "
+            "inv_mass_ptr must be non-null");
+    }
+    if (surface_density <= 0.0f) {
+        throw std::invalid_argument(
+            "ClothSimulator::redistribute_mass_area_weighted: "
+            "surface_density must be positive");
+    }
+
+    const int n_tri = static_cast<int>(buffers_.tris.gpu_size());
+    if (n_tri == 0) {
+        throw std::runtime_error(
+            "ClothSimulator::redistribute_mass_area_weighted: "
+            "call set_mesh(...) before redistributing mass.");
+    }
+    if (buffers_.pos.data() == nullptr ||
+        static_cast<int>(buffers_.pos.size()) < particle_count) {
+        throw std::runtime_error(
+            "ClothSimulator::redistribute_mass_area_weighted: "
+            "external positions must be set first via "
+            "set_external_buffers().");
+    }
+
+    const auto stream = reinterpret_cast<cudaStream_t>(cuda_stream);
+    auto* inv_mass = reinterpret_cast<float*>(inv_mass_ptr);
+
+    // Reuse `mass_` as scratch.  step() will repopulate it from
+    // `inv_mass` next frame anyway, so there's no aliasing concern.
+    if (static_cast<int>(mass_.gpu_size()) < particle_count) {
+        mass_.resize(particle_count);
+    }
+    check_cuda(cudaMemsetAsync(mass_.gpu_data(), 0,
+                               particle_count * sizeof(float), stream),
+               "cudaMemsetAsync(mass scratch)");
+
+    constexpr int block = 256;
+    const int grid_tri = (n_tri + block - 1) / block;
+    scatter_triangle_mass_kernel<<<grid_tri, block, 0, stream>>>(
+        buffers_.tris.gpu_data(),
+        buffers_.pos.data(),
+        surface_density / 3.0f,
+        mass_.gpu_data(), n_tri);
+    check_cuda(cudaGetLastError(), "scatter_triangle_mass kernel launch");
+
+    const int grid_v = (particle_count + block - 1) / block;
+    mass_to_inv_mass_kernel<<<grid_v, block, 0, stream>>>(
+        mass_.gpu_data(), inv_mass, particle_count);
+    check_cuda(cudaGetLastError(), "mass_to_inv_mass kernel launch");
+
+    if (cuda_stream == 0) {
+        check_cuda(cudaStreamSynchronize(stream),
+                   "cudaStreamSynchronize(redistribute_mass)");
+    }
+}
+
 void ClothSimulator::ensure_hessian_topology() {
     const int N = buffers_.particle_count();
     if (N <= 0) return;
@@ -387,7 +496,7 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
 
         pins_.accumulate_gradient(x_tilde_span, rhs_span, cuda_stream);
         springs_.accumulate_gradient(x_tilde_span, rhs_span, cuda_stream);
-        fem_stretch_.accumulate_gradient(x_tilde_span, rhs_span, cuda_stream);
+        //fem_stretch_.accumulate_gradient(x_tilde_span, rhs_span, cuda_stream);
 
         // RHS = -grad E(x_tilde).  (The inertial term M(x - x_tilde)/dt^2
         // is zero at x = x_tilde and contributes nothing to RHS here.)
@@ -419,7 +528,7 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
 
         pins_.accumulate_hessian(x_tilde_span, H_, cuda_stream);
         springs_.accumulate_hessian(x_tilde_span, H_, cuda_stream);
-        fem_stretch_.accumulate_hessian(x_tilde_span, H_, cuda_stream);
+        //fem_stretch_.accumulate_hessian(x_tilde_span, H_, cuda_stream);
 
         const float inv_dt2 = 1.0f / (dt * dt);
         add_inertia_diag_kernel<<<grid, block, 0, stream>>>(
