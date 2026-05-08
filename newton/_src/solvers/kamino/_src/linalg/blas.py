@@ -118,6 +118,49 @@ def _mult_left_diag_matrix_with_vector(
 
 
 @functools.cache
+def _make_masked_zero_kernel_1d(dtype: Any):
+    """Factory method producing a kernel for masked zero_() operation on a flattened 2d array"""
+
+    @wp.kernel
+    def masked_zero_kernel_1d(
+        # Inputs:
+        segment_offset: wp.array[int32],
+        segment_size: wp.array[int32],
+        segment_mask: wp.array[int32],
+        # Outputs:
+        x: wp.array[dtype],
+    ):
+        """Kernel resetting to zero segments of input array, based on input mask."""
+        seg_id, coeff_id_loc = wp.tid()
+        if segment_mask[seg_id] == 0 or coeff_id_loc >= segment_size[seg_id]:
+            return
+        coeff_id = segment_offset[seg_id] + coeff_id_loc
+        x[coeff_id] = dtype(0.0)
+
+    return masked_zero_kernel_1d
+
+
+@functools.cache
+def _make_masked_zero_kernel_2d(dtype: Any):
+    """Factory method producing a kernel for masked zero_() operation on a 2d array"""
+
+    @wp.kernel
+    def masked_zero_kernel_2d(
+        # Inputs:
+        row_mask: wp.array[int32],
+        # Outputs:
+        x: wp.array2d[dtype],
+    ):
+        """Kernel resetting to zero rows of input array, based on input mask."""
+        row_id, coeff_id = wp.tid()
+        if row_mask[row_id] == 0:
+            return
+        x[row_id, coeff_id] = dtype(0.0)
+
+    return masked_zero_kernel_2d
+
+
+@functools.cache
 def _make_block_sparse_matvec_kernel(block_type: BlockDType):
     # Determine (static) block size for kernel.
     block_shape = block_type.shape
@@ -1097,9 +1140,13 @@ def block_sparse_matvec(
         version; or shape (num_matrices, max_of_max_rows) for the 2D version.
         matrix_mask (wp.array): Mask vector to skip matrices set to `0` in the mask.
     """
-    y.zero_()
-
     if len(x.shape) == 1:
+        wp.launch(
+            kernel=_make_masked_zero_kernel_1d(A.nzb_dtype.dtype),
+            dim=(A.num_matrices, A.max_of_max_dims[0]),
+            inputs=[A.row_start, A.max_rows, matrix_mask, y],
+            device=A.device,
+        )
         wp.launch(
             kernel=_make_block_sparse_matvec_kernel(A.nzb_dtype),
             dim=(A.num_matrices, A.max_of_num_nzb),
@@ -1117,6 +1164,12 @@ def block_sparse_matvec(
             device=A.device,
         )
     else:
+        wp.launch(
+            kernel=_make_masked_zero_kernel_2d(A.nzb_dtype.dtype),
+            dim=(A.num_matrices, A.max_of_max_dims[0]),
+            inputs=[matrix_mask, y],
+            device=A.device,
+        )
         wp.launch(
             kernel=_make_block_sparse_matvec_kernel_2d(A.nzb_dtype),
             dim=(A.num_matrices, A.max_of_num_nzb),
@@ -1150,9 +1203,13 @@ def block_sparse_transpose_matvec(
         version; or shape (num_matrices, max_of_max_cols) for the 2D version.
         matrix_mask (wp.array): Mask vector to skip matrices set to `0` in the mask.
     """
-    x.zero_()
-
     if len(x.shape) == 1:
+        wp.launch(
+            kernel=_make_masked_zero_kernel_1d(A.nzb_dtype.dtype),
+            dim=(A.num_matrices, A.max_of_max_dims[1]),
+            inputs=[A.col_start, A.max_cols, matrix_mask, x],
+            device=A.device,
+        )
         wp.launch(
             kernel=_make_block_sparse_transpose_matvec_kernel(A.nzb_dtype),
             dim=(A.num_matrices, A.max_of_num_nzb),
@@ -1170,6 +1227,12 @@ def block_sparse_transpose_matvec(
             device=A.device,
         )
     else:
+        wp.launch(
+            kernel=_make_masked_zero_kernel_2d(A.nzb_dtype.dtype),
+            dim=(A.num_matrices, A.max_of_max_dims[1]),
+            inputs=[matrix_mask, x],
+            device=A.device,
+        )
         wp.launch(
             kernel=_make_block_sparse_transpose_matvec_kernel_2d(A.nzb_dtype),
             dim=(A.num_matrices, A.max_of_num_nzb),
@@ -1345,7 +1408,12 @@ def block_sparse_ATA_inv_diagonal_2d(A: BlockSparseMatrices, inv_diag: wp.array,
         inv_diag (wp.array): Stack of output vectors, expects shape (num_matrices, max_of_max_cols).
         matrix_mask (wp.array): Mask vector to skip matrices set to `0` in the mask.
     """
-    inv_diag.zero_()
+    wp.launch(
+        kernel=_make_masked_zero_kernel_2d(A.nzb_type.dtype),
+        dim=(A.num_matrices, A.max_of_max_dims[1]),
+        inputs=[matrix_mask, inv_diag],
+        device=A.device,
+    )
     wp.launch(
         kernel=_make_block_sparse_ATA_diagonal_kernel_2d(A.nzb_dtype),
         dim=(A.num_matrices, A.max_of_num_nzb),
@@ -1392,8 +1460,18 @@ def block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
         inv_blocks (wp.array): Stack of vectors of 3x3 blocks, expects shape (num_matrices, max_of_max_cols / 7).
         matrix_mask (wp.array): Mask vector to skip matrices set to `0` in the mask.
     """
-    inv_blocks_3.zero_()
-    inv_blocks_4.zero_()
+    wp.launch(
+        _make_masked_zero_kernel_2d(wp.mat33f),
+        dim=(A.num_matrices, A.max_of_max_dims[1] // 7),
+        inputs=[matrix_mask, inv_blocks_3],
+        device=A.device,
+    )
+    wp.launch(
+        _make_masked_zero_kernel_2d(wp.mat44f),
+        dim=(A.num_matrices, A.max_of_max_dims[1] // 7),
+        inputs=[matrix_mask, inv_blocks_4],
+        device=A.device,
+    )
     inv_blocks_3_flat = wp.array(
         dtype=wp.float32,
         ptr=inv_blocks_3.ptr,
