@@ -3,7 +3,6 @@
 
 """Tests for Newton actuators."""
 
-import importlib.util
 import json
 import math
 import os
@@ -48,10 +47,29 @@ try:
 except ImportError:
     _HAS_LEGACY_ACTUATORS = False
 
-_HAS_TORCH = importlib.util.find_spec("torch") is not None
+
+def _get_torch_test_support() -> tuple[bool, object | None, str]:
+    """Return torch availability for tests and a skip reason.
+
+    This validates that torch can be imported and, for CUDA Warp test runs,
+    that torch has CUDA support. This prevents hard failures when torch is
+    present but incompatible with the runtime CUDA environment.
+    """
+
+    try:
+        import torch
+    except Exception as exc:
+        return False, None, f"Torch unavailable: {exc}"
+
+    if wp.get_device().is_cuda and not torch.cuda.is_available():
+        return False, None, "Torch not compiled with CUDA support"
+
+    return True, torch, ""
+
+
+_HAS_TORCH, _torch, _TORCH_SKIP_REASON = _get_torch_test_support()
 
 if _HAS_TORCH:
-    import torch as _torch
 
     class _LSTMNet(_torch.nn.Module):
         """Simple LSTM network for testing."""
@@ -187,7 +205,7 @@ class TestControllerPID(unittest.TestCase):
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+@unittest.skipUnless(_HAS_TORCH, _TORCH_SKIP_REASON)
 class TestControllerNeuralMLP(unittest.TestCase):
     """ControllerNeuralMLP — load via model_path, call compute() directly."""
 
@@ -301,7 +319,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
         self.assertAlmostEqual(forces.numpy()[0], 30.0, places=3, msg="bias=10 * effort_scale=3 -> 30")
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+@unittest.skipUnless(_HAS_TORCH, _TORCH_SKIP_REASON)
 class TestControllerNeuralLSTM(unittest.TestCase):
     """ControllerNeuralLSTM — load via model_path, call compute() directly."""
 
@@ -1482,7 +1500,8 @@ class TestDelayGraphCapture(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_USD and _HAS_TORCH, "pxr or torch not installed")
+@unittest.skipUnless(HAS_USD, "pxr not installed")
+@unittest.skipUnless(_HAS_TORCH, _TORCH_SKIP_REASON)
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural controller
     prims with asset-typed ``newton:modelPath`` attributes.
