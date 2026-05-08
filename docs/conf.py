@@ -169,7 +169,7 @@ intersphinx_mapping = {
     "numpy": ("https://numpy.org/doc/stable", None),
     "jax": ("https://docs.jax.dev/en/latest", None),
     "pytorch": ("https://pytorch.org/docs/stable", None),
-    "warp": ("https://nvidia.github.io/warp", None),
+    "warp": ("https://nvidia.github.io/warp/stable", None),
     "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
 }
 
