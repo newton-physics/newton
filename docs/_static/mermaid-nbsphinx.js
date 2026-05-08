@@ -12,6 +12,17 @@
     return document.querySelector("pre.mermaid:not([data-processed])") !== null;
   }
 
+  function normalizeMermaidBlocks() {
+    const nodes = Array.from(document.querySelectorAll("pre.mermaid:not([data-processed])"));
+    for (const node of nodes) {
+      const text = node.textContent;
+      const normalizedText = text.trim();
+      if (text !== normalizedText) {
+        node.textContent = normalizedText;
+      }
+    }
+  }
+
   function loadMermaid() {
     if (window.mermaid) {
       return Promise.resolve(window.mermaid);
@@ -56,6 +67,12 @@
   }
 
   async function renderMermaidBlocks() {
+    normalizeMermaidBlocks();
+
+    if (typeof window.runMermaid === "function") {
+      return;
+    }
+
     if (!hasMermaidBlocks()) {
       return;
     }
