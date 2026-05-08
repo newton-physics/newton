@@ -58,18 +58,35 @@ class SolverChysX(SolverBase):
             world 0.
         damping: Optional velocity damping ``[1/s]`` applied as
             ``v *= exp(-damping * dt)``.  Default 0 (no damping).
-        spring_stiffness: Per-edge Hookean spring stiffness ``k`` [N/m].
-            One spring is installed per unique mesh edge, with rest
-            length taken from the initial particle configuration.
-            Default ``0.0`` disables springs entirely; with a single
-            pinned corner the cloth then free-falls particle-by-particle.
-            Set to ``> 0`` (typical: ``1e3``) to recover the classic
-            hanging-cloth behaviour.
+        spring_stiffness: **Deprecated.**  Per-edge Hookean spring
+            stiffness ``k`` [N/m].  Mass-spring edges are no longer
+            assembled into the solve because BW98 stretch + shear FEM
+            elements already cover that response (and at higher
+            fidelity); leaving them on would just double-count
+            in-plane stiffness.  Pass ``0.0`` (default); any non-zero
+            value triggers a ``DeprecationWarning`` and is ignored.
         fem_stretch_stiffness: Per-area Baraff-Witkin triangle stretch
             stiffness ``k`` [N/m^2].  Default ``0.0`` disables the FEM
-            membrane element; combine with ``spring_stiffness=0`` for a
-            cleaner FEM-only cloth.  ``1e3`` is a reasonable starting
-            value for soft cotton-like cloth.
+            membrane element; ``1e2`` is a reasonable starting value
+            for soft cotton-like cloth.
+        fem_shear_stiffness: Per-area Baraff-Witkin triangle *shear*
+            stiffness ``k`` [N/m^2].  Internally this reuses the same
+            kernels as the stretch element with the material (u, v)
+            axes rotated 45 degrees, matching cuda-cloth's
+            ``KernelComputeStretchShearForceAndHessianFast``.
+            Default ``0.0`` disables shear; set to a value comparable
+            to ``fem_stretch_stiffness`` for a fully BW98-compliant
+            membrane.
+        bending_stiffness: Dihedral bending stiffness ``k_bending``
+            shared by every interior mesh edge (Bridson / BW98
+            discrete bending energy, matching cuda-cloth's
+            ``KernelComputeDihedralForcesAndHessianFast``).  Default
+            ``0.0`` disables bending entirely.  Realistic cloth has
+            ``k_bending`` *six to seven* orders of magnitude smaller
+            than the in-plane stretch / shear stiffness — e.g.
+            ``4e-5`` against ``1e2`` for cotton-like behaviour — which
+            is what gives a real sheet its drape: stiff against
+            stretching, very compliant against bending.
         pin_indices: Optional iterable of particle indices to pin in
             place.  Each pinned particle has its position frozen at
             its initial value (pulled from
@@ -101,12 +118,28 @@ class SolverChysX(SolverBase):
         damping: float = 0.0,
         spring_stiffness: float = 0.0,
         fem_stretch_stiffness: float = 0.0,
+        fem_shear_stiffness: float = 0.0,
+        bending_stiffness: float = 0.0,
         pin_indices: Sequence[int] | None = None,
         pin_stiffness: float = 1.0e6,
         pcg_iterations: int = 50,
         surface_density: float | None = None,
     ):
         super().__init__(model=model)
+
+        if spring_stiffness != 0.0:
+            import warnings  # noqa: PLC0415
+
+            warnings.warn(
+                "SolverChysX(spring_stiffness=...) is deprecated and "
+                "ignored: BW98 fem_stretch + fem_shear already cover "
+                "edge-stretch resistance, so adding springs would "
+                "double-count in-plane stiffness.  Switch to "
+                "`fem_stretch_stiffness` / `fem_shear_stiffness`.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            spring_stiffness = 0.0
 
         # Lazy import so Newton can be imported without chysx installed.
         try:
@@ -153,12 +186,13 @@ class SolverChysX(SolverBase):
                 inv_mass_ptr=inv_mass_ptr,
             )
 
-        # Mesh + spring + FEM topology — installed once at construction.
+        # Mesh + FEM topology — installed once at construction.
         # Newton's `model.tri_indices` is a wp.array of int32 with
         # shape (M, 3); pass straight through to chysx.
         wants_mesh = (
-            spring_stiffness > 0.0
-            or fem_stretch_stiffness > 0.0
+            fem_stretch_stiffness > 0.0
+            or fem_shear_stiffness > 0.0
+            or bending_stiffness > 0.0
             or surface_density is not None
         )
         if (
@@ -189,13 +223,17 @@ class SolverChysX(SolverBase):
                     particle_count=model.particle_count,
                 )
 
-            if spring_stiffness > 0.0:
-                self._sim.build_springs_from_current_positions(
-                    stiffness=float(spring_stiffness)
-                )
             if fem_stretch_stiffness > 0.0:
                 self._sim.build_fem_stretch_from_current_positions(
                     stiffness=float(fem_stretch_stiffness)
+                )
+            if fem_shear_stiffness > 0.0:
+                self._sim.build_fem_shear_from_current_positions(
+                    stiffness=float(fem_shear_stiffness)
+                )
+            if bending_stiffness > 0.0:
+                self._sim.build_bending_from_current_positions(
+                    stiffness=float(bending_stiffness)
                 )
 
         # Pin configuration: targets are read once from the model's

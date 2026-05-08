@@ -28,9 +28,11 @@
 #include <vector_types.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -90,12 +92,40 @@ __global__ void compute_x_tilde_kernel(const float3* __restrict__ pos,
                              p.z + dt * v.z + dt * dt * g.z);
 }
 
-// Negate every Vec3 in place (used to flip grad -> RHS).
-__global__ void negate_vec3_kernel(float3* __restrict__ v, int n) {
+// Assemble the full Newton-step RHS in place.
+//
+// We linearise the implicit-Euler residual r(x) = M*(x - x_tilde)/dt^2
+// + grad E(x) at x_0 = x_n (the previous frame's position), so the
+// RHS for the linear solve becomes
+//
+//     RHS = -r(x_n) = (M/dt^2) * (x_tilde - x_n) - grad E(x_n)
+//                   = M*v/dt + M*g            - grad E(x_n).
+//
+// Linearising at x_n (instead of x_tilde) is a much better choice than
+// the "RHS = -grad E(x_tilde)" trick: at rest, grad E(x_n) is tiny and
+// the Hessian H_E(x_n) is evaluated on a physically valid
+// configuration, whereas H_E(x_tilde) would see the cloth strained by
+// dt^2*g of free-fall extrapolation.  This matches cuda-cloth's
+// `KernelVBDDynamic` (Dynamic.cuh) and the standard implicit-Euler
+// recipe used by Baraff–Witkin.
+//
+// On entry rhs[i] holds grad E(x_n) accumulated by the constraints;
+// on exit rhs[i] holds the full Newton RHS above.
+__global__ void assemble_rhs_kernel(const float3* __restrict__ x_n,
+                                    const float3* __restrict__ x_tilde,
+                                    const float* __restrict__ mass,
+                                    float3* __restrict__ rhs,
+                                    int n,
+                                    float inv_dt2) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    float3 a = v[i];
-    v[i] = make_float3(-a.x, -a.y, -a.z);
+    const float3 xn = x_n[i];
+    const float3 xt = x_tilde[i];
+    const float3 g  = rhs[i];  // = grad E(x_n)
+    const float m_inv_dt2 = mass[i] * inv_dt2;
+    rhs[i] = make_float3(m_inv_dt2 * (xt.x - xn.x) - g.x,
+                         m_inv_dt2 * (xt.y - xn.y) - g.y,
+                         m_inv_dt2 * (xt.z - xn.z) - g.z);
 }
 
 // Per-triangle scatter of `surface_density * area / 3` onto each of
@@ -168,28 +198,28 @@ __global__ void add_inertia_diag_kernel(math::Mat3f* __restrict__ A_diag,
 
 // Final position / velocity update.
 //
-//     x_{n+1} = x_tilde + dx
-//     v_{n+1} = (x_{n+1} - x_n) / dt        (with optional damping)
+//     x_{n+1} = x_n + dx
+//     v_{n+1} = (x_{n+1} - x_n) / dt = dx / dt    (with optional damping)
 //
-// `damping` follows the existing freefall convention: an exponential
-// per-second decay applied as `exp(-damping * dt)`.
+// We linearise the implicit-Euler residual at x_n (see
+// assemble_rhs_kernel above), so dx is the displacement *from x_n*,
+// not a correction to x_tilde.  `damping` follows the existing
+// freefall convention: an exponential per-second decay applied as
+// `exp(-damping * dt)`.
 __global__ void finalize_step_kernel(float3* __restrict__ pos,
                                      float3* __restrict__ vel,
                                      const float3* __restrict__ x_n,
-                                     const float3* __restrict__ x_tilde,
                                      const float3* __restrict__ dx,
                                      int n,
                                      float dt,
                                      float damping) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    const float3 xt = x_tilde[i];
     const float3 d  = dx[i];
     const float3 xn = x_n[i];
-    const float3 xnew = make_float3(xt.x + d.x, xt.y + d.y, xt.z + d.z);
-    float3 vnew = make_float3((xnew.x - xn.x) / dt,
-                              (xnew.y - xn.y) / dt,
-                              (xnew.z - xn.z) / dt);
+    const float3 xnew = make_float3(xn.x + d.x, xn.y + d.y, xn.z + d.z);
+    const float inv_dt = 1.0f / dt;
+    float3 vnew = make_float3(d.x * inv_dt, d.y * inv_dt, d.z * inv_dt);
     if (damping > 0.0f) {
         const float decay = expf(-damping * dt);
         vnew.x *= decay;
@@ -307,7 +337,101 @@ void ClothSimulator::build_fem_stretch_from_current_positions(
 
     fem_stretch_.set_stiffness(stiffness);
     fem_stretch_.set_triangles_from_positions(
-        buffers_.tris.cpu_data(), n_tris, buffers_.pos, cuda_stream);
+        buffers_.tris.cpu_data(), n_tris, buffers_.pos, cuda_stream,
+        /*material_rotation_rad=*/0.0f);
+    topology_dirty_ = true;
+}
+
+void ClothSimulator::build_fem_shear_from_current_positions(
+    float stiffness, std::uintptr_t cuda_stream) {
+    // 45-degree rotation of the material (u, v) axes turns the
+    // stretch energy along the diagonals — i.e. shear.  See the
+    // `material_rotation_rad` notes on TriangleStretchConstraint.
+    constexpr float kQuarterPi = 0.7853981633974483f;  // pi / 4
+
+    const int n_tris = static_cast<int>(buffers_.tris.cpu_size());
+    if (n_tris == 0) {
+        fem_shear_.set_stiffness(stiffness);
+        fem_shear_.set_triangles_from_positions(nullptr, 0, buffers_.pos,
+                                                cuda_stream, kQuarterPi);
+        topology_dirty_ = true;
+        return;
+    }
+    if (buffers_.pos.data() == nullptr) {
+        throw std::runtime_error(
+            "ClothSimulator::build_fem_shear_from_current_positions: "
+            "external positions must be set first via set_external_buffers().");
+    }
+
+    fem_shear_.set_stiffness(stiffness);
+    fem_shear_.set_triangles_from_positions(
+        buffers_.tris.cpu_data(), n_tris, buffers_.pos, cuda_stream,
+        kQuarterPi);
+    topology_dirty_ = true;
+}
+
+void ClothSimulator::build_bending_from_current_positions(
+    float stiffness, std::uintptr_t cuda_stream) {
+    bending_.set_stiffness(stiffness);
+
+    const int n_tris = static_cast<int>(buffers_.tris.cpu_size());
+    if (n_tris == 0) {
+        bending_.set_dihedrals_from_positions(nullptr, 0, buffers_.pos,
+                                              cuda_stream);
+        topology_dirty_ = true;
+        return;
+    }
+    if (buffers_.pos.data() == nullptr) {
+        throw std::runtime_error(
+            "ClothSimulator::build_bending_from_current_positions: "
+            "external positions must be set first via set_external_buffers().");
+    }
+
+    // Auto-detect dihedrals on the host: every directed edge of every
+    // CCW-oriented triangle gets a "third vertex" entry; an interior
+    // edge then has both directions populated and we emit one
+    // dihedral.  Indexing trick: pack (from, to) into a 64-bit key.
+    //
+    // For triangles oriented consistently (e.g. cloth grids from
+    // Newton, where every face is CCW from above), the directed edge
+    // (u -> v) appears in *exactly* one triangle, and its reverse
+    // (v -> u) in *exactly* the opposite triangle on the other side
+    // of the edge — exactly the (v0, v1, v2, v3) labelling our
+    // BendingConstraint expects.
+    const math::Vec3i* tris = buffers_.tris.cpu_data();
+    const auto pack = [](int from, int to) -> std::int64_t {
+        return (static_cast<std::int64_t>(from) << 32) |
+               static_cast<std::int64_t>(static_cast<std::uint32_t>(to));
+    };
+
+    std::unordered_map<std::int64_t, int> third_for_edge;
+    third_for_edge.reserve(static_cast<std::size_t>(3 * n_tris));
+    for (int t = 0; t < n_tris; ++t) {
+        const int v[3] = { tris[t].x, tris[t].y, tris[t].z };
+        third_for_edge[pack(v[0], v[1])] = v[2];
+        third_for_edge[pack(v[1], v[2])] = v[0];
+        third_for_edge[pack(v[2], v[0])] = v[1];
+    }
+
+    std::vector<math::Vec4i> dihedrals;
+    dihedrals.reserve(static_cast<std::size_t>(2 * n_tris));  // worst-case
+    for (const auto& kv : third_for_edge) {
+        const int v0 = static_cast<int>(kv.first >> 32);
+        const int v1 = static_cast<int>(kv.first & 0xffffffff);
+        if (v0 >= v1) continue;  // process each undirected edge once
+
+        auto rev = third_for_edge.find(pack(v1, v0));
+        if (rev == third_for_edge.end()) continue;  // boundary edge
+
+        const int v2 = kv.second;
+        const int v3 = rev->second;
+        dihedrals.push_back(math::Vec4i{ v0, v1, v2, v3 });
+    }
+
+    const int n_dih = static_cast<int>(dihedrals.size());
+    bending_.set_dihedrals_from_positions(
+        n_dih > 0 ? dihedrals.data() : nullptr,
+        n_dih, buffers_.pos, cuda_stream);
     topology_dirty_ = true;
 }
 
@@ -376,36 +500,57 @@ void ClothSimulator::ensure_hessian_topology() {
     const int N = buffers_.particle_count();
     if (N <= 0) return;
 
-    // Collect off-diagonal (i, j) pairs from spring + FEM constraints.
-    // Pin contributes diagonal-only and is skipped here; the diagonal
-    // entries are stored implicitly in `BlockCSR3::diag` and don't
-    // need a CSR slot.
+    // Collect off-diagonal (i, j) pairs from FEM stretch + FEM shear +
+    // bending.  Pin contributes diagonal-only and is skipped here; the
+    // diagonal entries are stored implicitly in `BlockCSR3::diag` and
+    // don't need a CSR slot.
+    //
+    // SpringConstraint is intentionally excluded from the pipeline:
+    // every edge spring has the FEM stretch element covering its
+    // contribution already (and at higher fidelity), so running both
+    // would double-count in-plane stiffness.  See the matching skips
+    // in `step()` for accumulate_gradient / accumulate_hessian.
     std::vector<int> rows;
     std::vector<int> cols;
 
-    const int n_sp = springs_.size();
-    if (n_sp > 0) {
-        const math::Vec2i* sp = springs_.indices().cpu_data();
-        rows.reserve(rows.size() + 2u * static_cast<std::size_t>(n_sp));
-        cols.reserve(cols.size() + 2u * static_cast<std::size_t>(n_sp));
-        for (int e = 0; e < n_sp; ++e) {
-            const int a = sp[e].x;
-            const int b = sp[e].y;
-            if (a == b) continue;  // degenerate spring — diag-only
-            rows.push_back(a); cols.push_back(b);
-            rows.push_back(b); cols.push_back(a);
-        }
-    }
-
-    const int n_fm = fem_stretch_.size();
-    if (n_fm > 0) {
-        const math::Vec3i* tris = fem_stretch_.indices().cpu_data();
-        rows.reserve(rows.size() + 6u * static_cast<std::size_t>(n_fm));
-        cols.reserve(cols.size() + 6u * static_cast<std::size_t>(n_fm));
-        for (int t = 0; t < n_fm; ++t) {
+    // FEM stretch + FEM shear share the same per-triangle (i, j)
+    // off-diagonal pattern; pushing both is redundant because
+    // `BlockCSR3::build_topology` dedupes, but we keep the loop
+    // tolerant of the case where only one of them is installed.
+    auto append_triangle_pairs = [&](const constraint::TriangleStretchConstraint& c) {
+        const int n = c.size();
+        if (n <= 0) return;
+        const math::Vec3i* tris = c.indices().cpu_data();
+        rows.reserve(rows.size() + 6u * static_cast<std::size_t>(n));
+        cols.reserve(cols.size() + 6u * static_cast<std::size_t>(n));
+        for (int t = 0; t < n; ++t) {
             const int v[3] = { tris[t].x, tris[t].y, tris[t].z };
             for (int a = 0; a < 3; ++a) {
                 for (int b = 0; b < 3; ++b) {
+                    if (a != b && v[a] != v[b]) {
+                        rows.push_back(v[a]);
+                        cols.push_back(v[b]);
+                    }
+                }
+            }
+        }
+    };
+    append_triangle_pairs(fem_stretch_);
+    append_triangle_pairs(fem_shear_);
+
+    // Bending dihedrals: 4 verts per element → 12 directed (i, j)
+    // pairs with i != j.  We just enumerate all of them and rely on
+    // BlockCSR3's host-side dedup to merge entries shared with
+    // stretch/shear edges.
+    const int n_bend = bending_.size();
+    if (n_bend > 0) {
+        const math::Vec4i* dih = bending_.indices().cpu_data();
+        rows.reserve(rows.size() + 12u * static_cast<std::size_t>(n_bend));
+        cols.reserve(cols.size() + 12u * static_cast<std::size_t>(n_bend));
+        for (int e = 0; e < n_bend; ++e) {
+            const int v[4] = { dih[e].x, dih[e].y, dih[e].z, dih[e].w };
+            for (int a = 0; a < 4; ++a) {
+                for (int b = 0; b < 4; ++b) {
                     if (a != b && v[a] != v[b]) {
                         rows.push_back(v[a]);
                         cols.push_back(v[b]);
@@ -423,8 +568,10 @@ void ClothSimulator::ensure_hessian_topology() {
     // a binary search per block on the host — fine for cloth-scale
     // problems and amortised across many simulation steps.
     pins_.bind_hessian_layout(H_);
-    springs_.bind_hessian_layout(H_);
+    // springs_.bind_hessian_layout(H_);  // disabled — see comment above
     fem_stretch_.bind_hessian_layout(H_);
+    fem_shear_.bind_hessian_layout(H_);
+    bending_.bind_hessian_layout(H_);
 
     H_num_block_rows_ = N;
     topology_dirty_ = false;
@@ -434,9 +581,19 @@ void ClothSimulator::resize_work_buffers(int n) {
     const auto sz = static_cast<std::size_t>(n);
     if (x_n_.gpu_size()     != sz) x_n_.resize(sz);
     if (x_tilde_.gpu_size() != sz) x_tilde_.resize(sz);
-    if (dx_.gpu_size()      != sz) dx_.resize(sz);
     if (rhs_.gpu_size()     != sz) rhs_.resize(sz);
     if (mass_.gpu_size()    != sz) mass_.resize(sz);
+
+    // `dx_` is fed back into PCG every step as the warm-start initial
+    // guess (see step()'s "PCG solve" section).  Zero it whenever we
+    // grow the buffer so the first solve after a resize gets a clean
+    // cold-start; subsequent solves consume whatever the previous
+    // solve wrote.
+    if (dx_.gpu_size() != sz) {
+        dx_.resize(sz);
+        check_cuda(cudaMemset(dx_.gpu_data(), 0, sz * sizeof(math::Vec3f)),
+                   "cudaMemset(dx_ = 0)");
+    }
 }
 
 void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
@@ -485,7 +642,16 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
         check_cuda(cudaGetLastError(), "mass_from_inv_mass kernel launch");
     }
 
-    // ---- 3) accumulate gradient at x_tilde --------------------------
+    // ---- 3) accumulate gradient at x_n ------------------------------
+    //
+    // We linearise the implicit-Euler residual at x_n (the previous
+    // frame's converged position), not at x_tilde.  See the comment on
+    // `assemble_rhs_kernel` and cuda-cloth's `KernelVBDDynamic` for the
+    // why; the short version is that x_n is a physically valid,
+    // (near-)equilibrium configuration, so grad E(x_n) is small and
+    // H_E(x_n) is well-conditioned, whereas H_E(x_tilde) sits in a
+    // synthetic free-fall-strained state.
+    DeviceSpan<math::Vec3f> x_n_span(x_n_.gpu_data(), static_cast<std::size_t>(n));
     DeviceSpan<math::Vec3f> x_tilde_span(x_tilde_.gpu_data(), static_cast<std::size_t>(n));
     DeviceSpan<math::Vec3f> rhs_span(rhs_.gpu_data(), static_cast<std::size_t>(n));
     {
@@ -494,23 +660,36 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
                                    stream),
                    "memset rhs = 0");
 
-        pins_.accumulate_gradient(x_tilde_span, rhs_span, cuda_stream);
-        springs_.accumulate_gradient(x_tilde_span, rhs_span, cuda_stream);
-        //fem_stretch_.accumulate_gradient(x_tilde_span, rhs_span, cuda_stream);
+        pins_.accumulate_gradient(x_n_span, rhs_span, cuda_stream);
+        // SpringConstraint is intentionally not part of the pipeline:
+        // FEM stretch + shear already cover edge-stretch resistance,
+        // and adding a Hookean spring on top would double-count
+        // in-plane stiffness.  Kept around for diagnostics, but not
+        // accumulated into the solve.
+        // springs_.accumulate_gradient(x_n_span, rhs_span, cuda_stream);
+        fem_stretch_.accumulate_gradient(x_n_span, rhs_span, cuda_stream);
+        fem_shear_.accumulate_gradient(x_n_span, rhs_span, cuda_stream);
+        bending_.accumulate_gradient(x_n_span, rhs_span, cuda_stream);
 
-        // RHS = -grad E(x_tilde).  (The inertial term M(x - x_tilde)/dt^2
-        // is zero at x = x_tilde and contributes nothing to RHS here.)
-        negate_vec3_kernel<<<grid, block, 0, stream>>>(
-            reinterpret_cast<float3*>(rhs_.gpu_data()), n);
-        check_cuda(cudaGetLastError(), "negate rhs kernel launch");
+        // Now rhs[i] = grad E(x_n).  Fold in the inertial RHS to get
+        //   rhs <- (M/dt^2)(x_tilde - x_n) - grad E(x_n)
+        //        = M*v/dt + M*g            - grad E(x_n).
+        const float inv_dt2 = 1.0f / (dt * dt);
+        assemble_rhs_kernel<<<grid, block, 0, stream>>>(
+            reinterpret_cast<const float3*>(x_n_.gpu_data()),
+            reinterpret_cast<const float3*>(x_tilde_.gpu_data()),
+            mass_.gpu_data(),
+            reinterpret_cast<float3*>(rhs_.gpu_data()),
+            n, inv_dt2);
+        check_cuda(cudaGetLastError(), "assemble_rhs kernel launch");
     }
 
     // ---- 4) (re)build Hessian topology if anything changed ----------
     //
-    // Off-diagonal CSR structure depends on the spring + FEM index
-    // tables, which are constant from frame to frame for a fixed
-    // mesh.  We only redo it on changes (set_mesh / build_springs /
-    // build_fem_stretch / pin add-remove) — see `topology_dirty_`.
+    // Off-diagonal CSR structure depends on the FEM stretch / shear /
+    // bending index tables, which are constant from frame to frame
+    // for a fixed mesh.  We only redo it on changes (set_mesh /
+    // build_fem_* / pin add-remove) — see `topology_dirty_`.
     if (topology_dirty_ || H_num_block_rows_ != n) {
         CHYSX_NVTX_RANGE_COLOUR("step::topology_rebuild", 0xfff39c12);
         ensure_hessian_topology();
@@ -526,9 +705,14 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
         CHYSX_NVTX_RANGE_COLOUR("step::hessian", 0xff8e44ad);
         H_.set_zero(cuda_stream);
 
-        pins_.accumulate_hessian(x_tilde_span, H_, cuda_stream);
-        springs_.accumulate_hessian(x_tilde_span, H_, cuda_stream);
-        //fem_stretch_.accumulate_hessian(x_tilde_span, H_, cuda_stream);
+        // Hessian is also evaluated at x_n; same rationale as the
+        // gradient.  M/dt^2 inertial diagonal is added afterwards.
+        pins_.accumulate_hessian(x_n_span, H_, cuda_stream);
+        // springs_ disabled — see comment in the gradient block above.
+        // springs_.accumulate_hessian(x_n_span, H_, cuda_stream);
+        fem_stretch_.accumulate_hessian(x_n_span, H_, cuda_stream);
+        fem_shear_.accumulate_hessian(x_n_span, H_, cuda_stream);
+        bending_.accumulate_hessian(x_n_span, H_, cuda_stream);
 
         const float inv_dt2 = 1.0f / (dt * dt);
         add_inertia_diag_kernel<<<grid, block, 0, stream>>>(
@@ -536,7 +720,16 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
         check_cuda(cudaGetLastError(), "add_inertia_diag kernel launch");
     }
 
-    // ---- 6) PCG solve  (M/dt^2 + H_E) dx = -grad --------------------
+    // ---- 6) PCG solve  (M/dt^2 + H_E) dx = rhs ----------------------
+    //
+    // Warm start: we deliberately do NOT zero `dx_` here.  The buffer
+    // still holds the previous frame's solution, which for cloth (a
+    // smoothly evolving system) is much closer to this frame's answer
+    // than zero would be — typically ~2x fewer iterations to reach
+    // the same residual.  PCGSolver::solve() reads `dx_` as the
+    // initial guess and computes r_0 = b - A * dx_ accordingly.  For
+    // the very first step after construction `dx_` is zero (see
+    // resize_work_buffers).
     {
         CHYSX_NVTX_RANGE_COLOUR("step::pcg", 0xffe74c3c);
         pcg_.initialize(n);
@@ -553,11 +746,97 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
         finalize_step_kernel<<<grid, block, 0, stream>>>(
             pos, vel,
             reinterpret_cast<float3*>(x_n_.gpu_data()),
-            reinterpret_cast<float3*>(x_tilde_.gpu_data()),
             reinterpret_cast<float3*>(dx_.gpu_data()),
             n, dt, material_.damping);
         check_cuda(cudaGetLastError(), "finalize_step kernel launch");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics — synchronous host-side dump of the last solve's state.
+//
+// All four call paths cudaDeviceSynchronize() to make sure any in-
+// flight async work (capture-mode PCG, scatter kernels) is drained
+// before we read GPU memory.  Don't call these from inside step() —
+// they're for offline verification.
+// ---------------------------------------------------------------------------
+
+void ClothSimulator::debug_copy_hessian_diag(float* out) const {
+    const int n = H_num_block_rows_;
+    if (n == 0) return;
+    if (out == nullptr) {
+        throw std::invalid_argument(
+            "ClothSimulator::debug_copy_hessian_diag: out must be non-null");
+    }
+    check_cuda(cudaDeviceSynchronize(),
+               "cudaDeviceSynchronize(debug_copy_hessian_diag)");
+    check_cuda(cudaMemcpy(out, H_.diag.gpu_data(),
+                          n * sizeof(math::Mat3f),
+                          cudaMemcpyDeviceToHost),
+               "cudaMemcpy(H.diag -> host)");
+}
+
+void ClothSimulator::debug_copy_hessian_csr(int* out_row_offsets,
+                                            int* out_col_indices,
+                                            float* out_values) const {
+    const int n = H_num_block_rows_;
+    if (n == 0) return;
+    if (out_row_offsets == nullptr) {
+        throw std::invalid_argument(
+            "ClothSimulator::debug_copy_hessian_csr: out_row_offsets null");
+    }
+    check_cuda(cudaDeviceSynchronize(),
+               "cudaDeviceSynchronize(debug_copy_hessian_csr)");
+    check_cuda(cudaMemcpy(out_row_offsets, H_.row_offsets.gpu_data(),
+                          (n + 1) * sizeof(int),
+                          cudaMemcpyDeviceToHost),
+               "cudaMemcpy(row_offsets -> host)");
+    const int nnz = H_.num_off_diag_blocks();
+    if (nnz > 0) {
+        if (out_col_indices == nullptr || out_values == nullptr) {
+            throw std::invalid_argument(
+                "ClothSimulator::debug_copy_hessian_csr: col_indices/values "
+                "null but nnz_off > 0");
+        }
+        check_cuda(cudaMemcpy(out_col_indices, H_.col_indices.gpu_data(),
+                              nnz * sizeof(int),
+                              cudaMemcpyDeviceToHost),
+                   "cudaMemcpy(col_indices -> host)");
+        check_cuda(cudaMemcpy(out_values, H_.values.gpu_data(),
+                              nnz * sizeof(math::Mat3f),
+                              cudaMemcpyDeviceToHost),
+                   "cudaMemcpy(values -> host)");
+    }
+}
+
+void ClothSimulator::debug_copy_last_rhs(float* out) const {
+    const int n = H_num_block_rows_;
+    if (n == 0) return;
+    if (out == nullptr) {
+        throw std::invalid_argument(
+            "ClothSimulator::debug_copy_last_rhs: out must be non-null");
+    }
+    check_cuda(cudaDeviceSynchronize(),
+               "cudaDeviceSynchronize(debug_copy_last_rhs)");
+    check_cuda(cudaMemcpy(out, rhs_.gpu_data(),
+                          n * sizeof(math::Vec3f),
+                          cudaMemcpyDeviceToHost),
+               "cudaMemcpy(rhs -> host)");
+}
+
+void ClothSimulator::debug_copy_last_dx(float* out) const {
+    const int n = H_num_block_rows_;
+    if (n == 0) return;
+    if (out == nullptr) {
+        throw std::invalid_argument(
+            "ClothSimulator::debug_copy_last_dx: out must be non-null");
+    }
+    check_cuda(cudaDeviceSynchronize(),
+               "cudaDeviceSynchronize(debug_copy_last_dx)");
+    check_cuda(cudaMemcpy(out, dx_.gpu_data(),
+                          n * sizeof(math::Vec3f),
+                          cudaMemcpyDeviceToHost),
+               "cudaMemcpy(dx -> host)");
 }
 
 }  // namespace cloth

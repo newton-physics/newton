@@ -188,13 +188,25 @@ void PCGSolver::submit_solve_ops_(cudaStream_t stream,
     invert_diag_kernel<<<grid, kBlockDim, 0, stream>>>(
         A.diag.gpu_data(), M_inv_.gpu_data(), n);
 
-    check_cuda(cudaMemsetAsync(x.data(), 0, n * sizeof(math::Vec3f), stream),
-               "cudaMemsetAsync(x)");
-
+    // We DO NOT touch `x` here.  Whatever the caller put in `x` is the
+    // initial guess for the CG iteration; the cloth simulator passes
+    // the previous frame's `dx` so that we warm-start from a solution
+    // that was already close to the new one (cloth state changes
+    // smoothly between consecutive timesteps).  This typically halves
+    // the iteration count needed to drive the residual to a given
+    // tolerance compared with the cold-start `x = 0`.
+    //
+    // Initial residual r_0 = b - A x_0.  Implemented as:
+    //   r_0 = b                         (memcpy)
+    //   r_0 = -A x_0 + 1 * r_0          (spmv with alpha=-1, beta=1)
     check_cuda(cudaMemcpyAsync(r_.gpu_data(), b.data(),
                                n * sizeof(math::Vec3f),
                                cudaMemcpyDeviceToDevice, stream),
                "cudaMemcpyAsync(r=b)");
+    sparse::spmv(A, x,
+                 DeviceSpan<math::Vec3f>::from(r_),
+                 -1.0f, 1.0f,
+                 reinterpret_cast<std::uintptr_t>(stream));
 
     apply_jacobi_kernel<<<grid, kBlockDim, 0, stream>>>(
         M_inv_.gpu_data(), r_.gpu_data(), z_.gpu_data(), n);

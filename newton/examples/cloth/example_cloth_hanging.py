@@ -60,14 +60,14 @@ class Example:
 
         # common cloth properties
         common_params = {
-            "pos": wp.vec3(0.0, 0.0, 4.0),
-            "rot": wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5),
+            "pos": wp.vec3(2.0, 0.0, 2.0),
+            "rot": wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.0),
             "vel": wp.vec3(0.0, 0.0, 0.0),
             "dim_x": self.sim_width,
             "dim_y": self.sim_height,
-            "cell_x": 0.1,
-            "cell_y": 0.1,
-            "mass": 0.1,
+            "cell_x": 0.01,
+            "cell_y": 0.01,
+            "mass": 0.01,
             "fix_left": True,
             "edge_ke": 1.0e1,
             "edge_kd": 0.0,
@@ -207,10 +207,10 @@ class Example:
             help="Type of solver",
             type=str,
             choices=["semi_implicit", "style3d", "xpbd", "vbd"],
-            default="vbd",
+            default="style3d",
         )
-        parser.add_argument("--width", type=int, default=64, help="Cloth resolution in x.")
-        parser.add_argument("--height", type=int, default=32, help="Cloth resolution in y.")
+        parser.add_argument("--width", type=int, default=100, help="Cloth resolution in x.")
+        parser.add_argument("--height", type=int, default=100, help="Cloth resolution in y.")
         return parser
 
 

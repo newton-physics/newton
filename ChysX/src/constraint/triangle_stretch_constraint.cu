@@ -12,6 +12,7 @@
 
 #include <cuda_runtime.h>
 
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -51,7 +52,9 @@ __global__ void triangle_rest_shape_kernel(
     const math::Vec3f* __restrict__ positions,
     math::Mat2f*       __restrict__ Dm_inv,
     float*             __restrict__ areas,
-    int n) {
+    int n,
+    float cos_theta,
+    float sin_theta) {
     const int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= n) return;
 
@@ -83,11 +86,27 @@ __global__ void triangle_rest_shape_kernel(
     // Guard the inverse against degenerate triangles by clamping the
     // determinant; the Dm.inverse() else-branch would NaN otherwise.
     const float det = lab * v_c;
-    if (det > kMinNorm) {
-        Dm_inv[t] = math::inverse(Dm);
-    } else {
-        Dm_inv[t] = math::Mat2f::identity();
-    }
+    math::Mat2f Dm_inv_raw = (det > kMinNorm)
+                                 ? math::inverse(Dm)
+                                 : math::Mat2f::identity();
+
+    // Optional rotation of the material (u, v) axes:
+    //
+    //     R       = [[ c, -s],
+    //                [ s,  c]]
+    //     R^{-1}  = R^T = [[ c,  s],
+    //                     [-s,  c]]
+    //
+    // Storing  Dm_inv_eff = Dm_inv * R^{-1}  reuses the original
+    // stretch energy E = (||F·e_u|| - 1)^2 + (||F·e_v|| - 1)^2 but
+    // along (u, v) axes that have been rotated by theta.  theta = 0
+    // recovers BW98 stretch; theta = pi/4 makes (e_u, e_v) point
+    // along the rest triangle's two diagonals so the same energy
+    // becomes BW98 shear (cuda-cloth uses exactly this trick in
+    // `KernelComputeStretchShearForceAndHessianFast`).
+    const math::Mat2f R_inv(cos_theta, sin_theta,
+                            -sin_theta, cos_theta);
+    Dm_inv[t] = Dm_inv_raw * R_inv;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +320,8 @@ void TriangleStretchConstraint::set_triangles_from_positions(
     const math::Vec3i* host_triangles,
     int n,
     DeviceSpan<math::Vec3f> positions,
-    std::uintptr_t cuda_stream) {
+    std::uintptr_t cuda_stream,
+    float material_rotation_rad) {
     if (n < 0) {
         throw std::invalid_argument(
             "TriangleStretchConstraint::set_triangles_from_positions: "
@@ -317,13 +337,17 @@ void TriangleStretchConstraint::set_triangles_from_positions(
     std::memcpy(indices_.cpu_data(), host_triangles, n * sizeof(math::Vec3i));
     indices_.copy_to_device(cuda_stream);
 
+    const float c = std::cos(material_rotation_rad);
+    const float s = std::sin(material_rotation_rad);
+
     const auto stream = reinterpret_cast<cudaStream_t>(cuda_stream);
     triangle_rest_shape_kernel<<<grid_for(n), kBlockDim, 0, stream>>>(
         indices_.gpu_data(),
         positions.data(),
         Dm_inv_.gpu_data(),
         areas_.gpu_data(),
-        n);
+        n,
+        c, s);
 
     if (cuda_stream == 0) {
         check_cuda(cudaStreamSynchronize(stream),

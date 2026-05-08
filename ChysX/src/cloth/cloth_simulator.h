@@ -23,6 +23,7 @@
 
 #include <cstdint>
 
+#include "../constraint/bending_constraint.h"
 #include "../constraint/pin_constraint.h"
 #include "../constraint/spring_constraint.h"
 #include "../constraint/triangle_stretch_constraint.h"
@@ -140,6 +141,46 @@ public:
         return fem_stretch_;
     }
 
+    // ---- FEM triangle shear (Baraff-Witkin) ---------------------------
+    //
+    // Same triangle-FEM machinery as `fem_stretch_`, but the material
+    // (u, v) axes are rotated by 45 degrees before storing `Dm_inv`.
+    // This reuses the stretch energy / gradient / Hessian kernels to
+    // resist *diagonal* stretching of the triangle, which is precisely
+    // BW98 shear (cuda-cloth implements the two as separate kernels;
+    // we share one, parameterised by the rotation).  Install after
+    // `set_mesh(...)` and `set_external_buffers(...)`, just like the
+    // stretch term.
+    void build_fem_shear_from_current_positions(
+        float stiffness,
+        std::uintptr_t cuda_stream = 0);
+
+    constraint::TriangleStretchConstraint& fem_shear() noexcept {
+        return fem_shear_;
+    }
+    const constraint::TriangleStretchConstraint& fem_shear() const noexcept {
+        return fem_shear_;
+    }
+
+    // ---- dihedral bending (Bridson / BW98) ----------------------------
+    //
+    // Auto-detect dihedrals from the currently installed mesh: every
+    // edge that's shared by exactly two triangles becomes one bending
+    // element with rest angle taken from the *current* externally-
+    // bound positions.  Boundary edges (only one incident triangle)
+    // and non-manifold edges (more than two) are skipped.
+    //
+    // Requires `set_mesh(...)` and `set_external_buffers(...)` to have
+    // been called first.
+    void build_bending_from_current_positions(
+        float stiffness,
+        std::uintptr_t cuda_stream = 0);
+
+    constraint::BendingConstraint& bending() noexcept { return bending_; }
+    const constraint::BendingConstraint& bending() const noexcept {
+        return bending_;
+    }
+
     // ---- area-weighted vertex mass ------------------------------------
     //
     // Recompute per-particle inverse mass from the cloth's mesh +
@@ -195,6 +236,39 @@ public:
     void set_graph_enabled(bool enabled) { pcg_.set_graph_enabled(enabled); }
     bool graph_enabled() const noexcept { return pcg_.graph_enabled(); }
 
+    // ---- diagnostics --------------------------------------------------
+    //
+    // Read-only accessors for the linear system that the *last* call
+    // to `step(...)` solved.  Intended for offline verification
+    // (validate symmetry / PSD / PCG residual from Python after a
+    // step), so they cudaMemcpy through host buffers instead of
+    // exposing device pointers — fine at cloth scales but don't
+    // call them in a hot loop.
+
+    // The Hessian (diagonal + CSR off-diagonal) used in the most
+    // recent solve.  All four arrays are written into `diag_out`,
+    // `row_offsets_out`, `col_indices_out`, `values_out` (caller-
+    // sized: pass through ints with the expected lengths).
+    int num_particles() const noexcept { return H_num_block_rows_; }
+    int num_off_diag_blocks() const { return H_.num_off_diag_blocks(); }
+
+    // Copy `H_.diag` (per-particle 3x3) onto `out`. Requires
+    // `out` to point at `num_particles() * 9` floats.  Row-major
+    // per block.
+    void debug_copy_hessian_diag(float* out) const;
+
+    // Copy CSR off-diag arrays.  `out_row_offsets` length =
+    // num_particles() + 1; `out_col_indices`, `out_values` length =
+    // num_off_diag_blocks() (* 9 for `out_values`).
+    void debug_copy_hessian_csr(int* out_row_offsets,
+                                int* out_col_indices,
+                                float* out_values) const;
+
+    // Copy the most recent right-hand side / solution vectors.
+    // Length = num_particles() * 3 floats each (xyz per particle).
+    void debug_copy_last_rhs(float* out) const;
+    void debug_copy_last_dx(float* out) const;
+
 private:
     // Lazy-resize all per-particle work buffers to length `n`.  No-op
     // if every buffer already matches.
@@ -213,6 +287,8 @@ private:
     constraint::PinConstraint pins_;
     constraint::SpringConstraint springs_;
     constraint::TriangleStretchConstraint fem_stretch_;
+    constraint::TriangleStretchConstraint fem_shear_;
+    constraint::BendingConstraint         bending_;
 
     // ---- implicit-Euler PCG step working state ----------------------
     //

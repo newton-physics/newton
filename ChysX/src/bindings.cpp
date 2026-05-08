@@ -226,6 +226,59 @@ stiffness : float
                 return self.fem_stretch().size();
             },
             "Number of currently installed FEM stretch triangles.")
+        .def("build_fem_shear_from_current_positions",
+             &chysx::cloth::ClothSimulator::build_fem_shear_from_current_positions,
+             py::arg("stiffness"),
+             py::arg("cuda_stream") = 0,
+             R"pbdoc(
+Install one Baraff-Witkin triangle *shear* element per face of the
+current mesh.  Internally this uses exactly the same kernels as the
+stretch element, just with the material (u, v) axes rotated 45 degrees
+so the constraint pins the diagonal lengths instead of the U/V edges
+— equivalent to cuda-cloth's
+``KernelComputeStretchShearForceAndHessianFast``.
+
+Parameters
+----------
+stiffness : float
+    Per-area shear stiffness ``k`` [N/m^2]; per-element weight is
+    ``area * k`` (cuda-cloth's ``k_stretch`` convention; the same
+    constant is reused for both stretch and shear in cuda-cloth).
+)pbdoc")
+        .def(
+            "num_fem_shear_triangles",
+            [](const chysx::cloth::ClothSimulator& self) {
+                return self.fem_shear().size();
+            },
+            "Number of currently installed FEM shear triangles.")
+        .def("build_bending_from_current_positions",
+             &chysx::cloth::ClothSimulator::build_bending_from_current_positions,
+             py::arg("stiffness"),
+             py::arg("cuda_stream") = 0,
+             R"pbdoc(
+Auto-detect dihedrals from the currently installed mesh and install
+one Baraff-Witkin / Bridson bending element per interior edge (every
+edge shared by exactly two triangles).  Rest angles are computed from
+the *current* externally-bound positions, so call this once after
+``set_mesh`` and ``set_external_buffers``.
+
+Equivalent to cuda-cloth's
+``KernelComputeDihedralForcesAndHessianFast`` with rest angles
+populated by ``KernelComputeDihedralAngle``.
+
+Parameters
+----------
+stiffness : float
+    Bending stiffness ``k_bending`` shared by every dihedral.
+    Cloth-like values are typically several orders of magnitude
+    smaller than the in-plane stretch / shear stiffness.
+)pbdoc")
+        .def(
+            "num_bending_dihedrals",
+            [](const chysx::cloth::ClothSimulator& self) {
+                return self.bending().size();
+            },
+            "Number of currently installed bending dihedrals.")
         .def("set_pcg_iterations",
              &chysx::cloth::ClothSimulator::set_pcg_iterations,
              py::arg("max_iter"),
@@ -246,6 +299,51 @@ every individual kernel launch in an Nsight Systems timeline.
 )pbdoc")
         .def("graph_enabled", &chysx::cloth::ClothSimulator::graph_enabled,
              "True if the PCG solver is currently in CUDA Graph mode.")
+        // ---- diagnostics: dump the last solve's linear system -------
+        .def("debug_dump_last_solve",
+             [](const chysx::cloth::ClothSimulator& s) {
+                 const int n = s.num_particles();
+                 const int nnz = s.num_off_diag_blocks();
+
+                 py::array_t<float> diag({n, 3, 3});
+                 py::array_t<int>   row_offsets({n + 1});
+                 py::array_t<int>   col_indices({nnz});
+                 py::array_t<float> values({nnz, 3, 3});
+                 py::array_t<float> rhs({n, 3});
+                 py::array_t<float> dx({n, 3});
+
+                 if (n == 0) {
+                     return py::make_tuple(diag, row_offsets, col_indices,
+                                           values, rhs, dx);
+                 }
+
+                 s.debug_copy_hessian_diag(diag.mutable_data());
+                 s.debug_copy_hessian_csr(row_offsets.mutable_data(),
+                                          nnz > 0 ? col_indices.mutable_data() : nullptr,
+                                          nnz > 0 ? values.mutable_data() : nullptr);
+                 s.debug_copy_last_rhs(rhs.mutable_data());
+                 s.debug_copy_last_dx(dx.mutable_data());
+
+                 return py::make_tuple(diag, row_offsets, col_indices,
+                                       values, rhs, dx);
+             },
+             R"pbdoc(
+Return ``(diag, row_offsets, col_indices, values, rhs, dx)`` for the
+linear system solved by the most recent ``step(...)``.
+
+Shapes:
+    diag         : (N, 3, 3)        per-particle 3x3 Hessian diagonal
+    row_offsets  : (N + 1,)         CSR row pointer (off-diagonal)
+    col_indices  : (nnz_off,)       block-column indices
+    values       : (nnz_off, 3, 3)  off-diagonal 3x3 blocks
+    rhs          : (N, 3)           right-hand side b
+    dx           : (N, 3)           solution returned by PCG
+
+This synchronises the device and copies through host buffers, so
+don't call it inside the simulation loop.  The return is a snapshot
+of whatever was in those buffers when ``step()`` finished — perfect
+for verifying matrix symmetry, PSD-ness, and PCG residual offline.
+)pbdoc")
         .def_property_readonly(
             "material",
             [](chysx::cloth::ClothSimulator& s) -> chysx::cloth::ClothMaterial& {

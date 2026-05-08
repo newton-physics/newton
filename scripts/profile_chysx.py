@@ -73,8 +73,8 @@ def main() -> None:
 
     solver = newton.solvers.SolverChysX(
         model,
-        spring_stiffness=5.0e2,
         fem_stretch_stiffness=5.0e2,
+        fem_shear_stiffness=5.0e2,
         damping=1.0,
         pin_indices=[0],
         pin_stiffness=1.0e6,

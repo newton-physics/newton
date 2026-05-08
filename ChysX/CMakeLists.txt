@@ -35,6 +35,7 @@ pybind11_add_module(_chysx_native MODULE
     src/constraint/pin_constraint.cu
     src/constraint/spring_constraint.cu
     src/constraint/triangle_stretch_constraint.cu
+    src/constraint/bending_constraint.cu
     src/cloth/cloth_simulator.cu
     src/bindings.cpp
 )

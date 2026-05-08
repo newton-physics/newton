@@ -118,8 +118,15 @@ class Example:
         self._pinned_indices = [0, self._dim_x]
         self.solver = newton.solvers.SolverChysX(
             self.model,
-            spring_stiffness=5.0e3,
-            fem_stretch_stiffness=5.0e3,
+            # Membrane response comes from BW98 stretch + shear; bending
+            # adds dihedral resistance.  This matches exactly
+            # cuda-cloth's `ComputeHessianAndForceFast` formula.  Bending
+            # is much softer than the in-plane modes (5–7 orders of
+            # magnitude), which is what gives real cloth its drape:
+            # stiff against stretching, very compliant against bending.
+            fem_stretch_stiffness=1.0e2,
+            fem_shear_stiffness=1.0e2,
+            bending_stiffness=5.0e-4,
             damping=0.0,
             pin_indices=self._pinned_indices,
             pin_stiffness=1.0e9,
@@ -128,7 +135,7 @@ class Example:
             # 1 m^2.  Distributed by triangle area, so the four
             # corners (1 incident triangle) are 4x lighter than
             # interior vertices (6 incident triangles).
-            surface_density=5.0,
+            surface_density=0.1,
         )
 
         # Snapshot the pinned corners' initial positions so test_final
@@ -152,6 +159,12 @@ class Example:
             pitch=-15.0,
             yaw=-135.0,
         )
+        # Start paused so the user can inspect the cloth's initial flat
+        # configuration (and the two pinned corners) before letting it
+        # drape.  The null viewer used by `--test` doesn't expose
+        # `_paused`, so guard the attribute access.
+        if hasattr(self.viewer, "_paused"):
+            self.viewer._paused = True
 
     def step(self):
         for _ in range(self.sim_substeps):

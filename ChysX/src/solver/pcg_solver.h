@@ -21,9 +21,12 @@
 //
 // Algorithm
 // ---------
-// Standard right-preconditioned CG (initial guess x = 0):
+// Standard right-preconditioned CG.  The initial guess `x_0` is taken
+// from the contents of the caller's `x` buffer on entry, so callers
+// can warm-start by leaving the previous solve's solution in place.
+// (Pass an explicitly zeroed `x` for the cold-start variant.)
 //
-//     r_0 = b - A x_0 = b
+//     r_0 = b - A x_0
 //     z_0 = M^-1 r_0
 //     p_0 = z_0
 //     rho_0 = <r_0, z_0>
@@ -109,8 +112,11 @@ public:
     //       block) is read every solve and inverted on the fly to
     //       produce the block-Jacobi preconditioner.
     //   b : right-hand side, length = A.num_block_rows().
-    //   x : solution buffer, length = A.num_block_rows().  The
-    //       initial guess is taken to be zero — `x` is overwritten.
+    //   x : solution buffer, length = A.num_block_rows().  Used as
+    //       the initial guess on entry and overwritten with the
+    //       solution on exit.  Pass a zeroed buffer for cold-start
+    //       behaviour, or leave the previous solve's result in place
+    //       to warm-start.
     //
     // Returns the number of iterations actually performed.
     int solve(const sparse::BlockCSR3& A,

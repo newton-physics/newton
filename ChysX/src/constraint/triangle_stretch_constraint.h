@@ -72,11 +72,25 @@ public:
     //               sqrt(|x_c - x_a|^2 - that^2) )
     //
     // and `Dm` is the resulting 2x2 edge matrix [UV(b)-UV(a) | UV(c)-UV(a)].
+    //
+    // `material_rotation_rad` rotates the (u, v) material axes used by
+    // the constraint by that angle before storing `Dm_inv`.  At the
+    // default (theta = 0) the constraint pins the lengths of the U
+    // and V edges, i.e. classical Baraff-Witkin stretch.  Setting
+    // theta = pi/4 reuses the very same energy / gradient / Hessian
+    // kernels but along the diagonal directions, which is exactly the
+    // BW98 shear constraint as implemented in cuda-cloth's
+    // `KernelComputeStretchShearForceAndHessianFast` (the kernel is
+    // identical except for the `Dm_inv * R^-1` substitution applied
+    // here once at setup).  Two instances of this class — one with
+    // theta=0 and one with theta=pi/4 — therefore cover both
+    // in-plane membrane modes.
     void set_triangles_from_positions(
         const math::Vec3i* host_triangles,
         int n,
         DeviceSpan<math::Vec3f> positions,
-        std::uintptr_t cuda_stream = 0);
+        std::uintptr_t cuda_stream = 0,
+        float material_rotation_rad = 0.0f);
 
     // Stiffness shared by every triangle [N/m^2].  Per-element weight
     // `area * stiffness` is applied inside the kernels.
