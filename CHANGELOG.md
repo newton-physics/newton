@@ -112,6 +112,7 @@
 - Fix VRAM leak when resetting examples that allocate large GPU state (e.g. `diffsim_bear`)
 - Fix `SensorRaycast` and viewer picking ignoring `HFIELD` (heightfield) geometry
 - Fix `SensorTiledCamera` textured albedo output rendering flat colors when color and normal outputs are disabled
+- Fix URDF Collada visual meshes dropping diffuse texture bindings
 - Fix `contacts_rj45_plug` example crashing on reset
 - Fix `SolverMuJoCo` dependency version-mismatch warning being silently skipped when Newton is installed from a wheel
 - Fix `ViewerGL.log_image()` windows persisting across example-browser switches and failing to re-open on re-entry after manual close, by clearing the image logger in `ViewerGL.clear_model()`
