@@ -48,44 +48,27 @@ except ImportError:
     _HAS_LEGACY_ACTUATORS = False
 
 
-def _get_torch_test_support() -> tuple[bool, object | None, str]:
-    """Return torch availability for tests and a skip reason.
+def _make_lstm_net_class(torch):
+    """Build the test LSTM ``torch.nn.Module`` class lazily.
 
-    This validates that torch can be imported and, for CUDA Warp test runs,
-    that torch has CUDA support. This prevents hard failures when torch is
-    present but incompatible with the runtime CUDA environment.
+    Defined as a builder so the module can be imported without ``torch``
+    installed; tests that need torch import it inside ``setUp`` and pass
+    it here.
     """
 
-    try:
-        import torch
-    except Exception as exc:
-        return False, None, f"Torch unavailable: {exc}"
-
-    if wp.get_device().is_cuda and not torch.cuda.is_available():
-        return False, None, "Torch not compiled with CUDA support"
-
-    return True, torch, ""
-
-
-_HAS_TORCH, _torch, _TORCH_SKIP_REASON = _get_torch_test_support()
-
-if _HAS_TORCH:
-
-    class _LSTMNet(_torch.nn.Module):
+    class _LSTMNet(torch.nn.Module):
         """Simple LSTM network for testing."""
 
         def __init__(self, hidden: int = 8, layers: int = 1):
             super().__init__()
-            self.lstm = _torch.nn.LSTM(2, hidden, layers, batch_first=True)
-            self.dec = _torch.nn.Linear(hidden, 1)
+            self.lstm = torch.nn.LSTM(2, hidden, layers, batch_first=True)
+            self.dec = torch.nn.Linear(hidden, 1)
 
-        def forward(
-            self,
-            x: _torch.Tensor,
-            hc: tuple[_torch.Tensor, _torch.Tensor],
-        ) -> tuple[_torch.Tensor, tuple[_torch.Tensor, _torch.Tensor]]:
+        def forward(self, x, hc):
             out, (h, c) = self.lstm(x, hc)
             return self.dec(out[:, -1, :]), (h, c)
+
+    return _LSTMNet
 
 
 # ---------------------------------------------------------------------------
@@ -205,14 +188,24 @@ class TestControllerPID(unittest.TestCase):
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
 
-@unittest.skipUnless(_HAS_TORCH, _TORCH_SKIP_REASON)
 class TestControllerNeuralMLP(unittest.TestCase):
     """ControllerNeuralMLP — load via model_path, call compute() directly."""
 
     def setUp(self):
-        self.torch = _torch
+        # Mark the test as skipped if Torch is not installed but required
+        try:
+            import torch
+
+            if wp.get_device().is_cuda and not torch.cuda.is_available():
+                # Ensure torch has CUDA support
+                self.skipTest("Torch not compiled with CUDA support")
+
+        except Exception as e:
+            self.skipTest(f"{e}")
+
+        self.torch = torch
         self.device = wp.get_device()
-        self._torch_dev = _torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
 
     def _save_torchscript(self, net, filename="mlp.pt", metadata=None):
@@ -319,18 +312,29 @@ class TestControllerNeuralMLP(unittest.TestCase):
         self.assertAlmostEqual(forces.numpy()[0], 30.0, places=3, msg="bias=10 * effort_scale=3 -> 30")
 
 
-@unittest.skipUnless(_HAS_TORCH, _TORCH_SKIP_REASON)
 class TestControllerNeuralLSTM(unittest.TestCase):
     """ControllerNeuralLSTM — load via model_path, call compute() directly."""
 
     def setUp(self):
-        self.torch = _torch
+        # Mark the test as skipped if Torch is not installed but required
+        try:
+            import torch
+
+            if wp.get_device().is_cuda and not torch.cuda.is_available():
+                # Ensure torch has CUDA support
+                self.skipTest("Torch not compiled with CUDA support")
+
+        except Exception as e:
+            self.skipTest(f"{e}")
+
+        self.torch = torch
         self.device = wp.get_device()
-        self._torch_dev = _torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
+        self._LSTMNet = _make_lstm_net_class(torch)
 
     def _make_lstm(self, hidden=8, layers=1):
-        return _LSTMNet(hidden=hidden, layers=layers).to(self._torch_dev)
+        return self._LSTMNet(hidden=hidden, layers=layers).to(self._torch_dev)
 
     def _save_torchscript(self, net, filename="lstm.pt", metadata=None):
         path = os.path.join(self._tmp_dir, filename)
@@ -1501,7 +1505,6 @@ class TestDelayGraphCapture(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_USD, "pxr not installed")
-@unittest.skipUnless(_HAS_TORCH, _TORCH_SKIP_REASON)
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural controller
     prims with asset-typed ``newton:modelPath`` attributes.
@@ -1512,8 +1515,20 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """
 
     def setUp(self):
-        self.torch = _torch
+        # Mark the test as skipped if Torch is not installed but required
+        try:
+            import torch
+
+            if wp.get_device().is_cuda and not torch.cuda.is_available():
+                # Ensure torch has CUDA support
+                self.skipTest("Torch not compiled with CUDA support")
+
+        except Exception as e:
+            self.skipTest(f"{e}")
+
+        self.torch = torch
         self._tmp_dir = tempfile.mkdtemp()
+        self._LSTMNet = _make_lstm_net_class(torch)
 
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
@@ -1534,7 +1549,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
     def _make_lstm_checkpoint(self, metadata: dict | None = None) -> str:
         """Create a minimal TorchScript LSTM checkpoint with optional metadata."""
-        net = _LSTMNet(hidden=8, layers=1)
+        net = self._LSTMNet(hidden=8, layers=1)
         path = os.path.join(self._tmp_dir, "lstm.pt")
         scripted = self.torch.jit.script(net)
         extra = {}
