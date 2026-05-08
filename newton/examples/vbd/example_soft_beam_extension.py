@@ -141,11 +141,13 @@ class Example:
                 f"expected {self.EXPECTED_DELTA:.4f} m (error {rel_error:.1%}, tolerance {self.TOLERANCE:.0%})"
             )
 
-        # No lateral drift: X and Y center of mass should stay near zero
+        # No lateral drift: X and Y center of mass should stay near beam center
+        beam_cx = self.DIM_X * self.CELL / 2.0
+        beam_cy = self.DIM_Y * self.CELL / 2.0
         com_x = float(np.mean(q[:, 0]))
         com_y = float(np.mean(q[:, 1]))
-        if abs(com_x) > 0.05 or abs(com_y) > 0.05:
-            raise ValueError(f"Lateral drift: COM_x={com_x:.4f}, COM_y={com_y:.4f}")
+        if abs(com_x - beam_cx) > 0.05 or abs(com_y - beam_cy) > 0.05:
+            raise ValueError(f"Lateral drift: COM=({com_x:.4f}, {com_y:.4f}), expected ~({beam_cx}, {beam_cy})")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
