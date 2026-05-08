@@ -2358,15 +2358,9 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     # while native keeps False when no actuatorfrcrange is specified. Flagged as
     # "no effect" in DEFAULT_MODEL_SKIP_FIELDS, but Cassie's closed-loop dynamics
     # show a measurable divergence without this backfill (qvel step 0 diff ~2e-5).
-    # jnt_solref: Newton's solref standard->direct conversion omits the dmax
-    # (solimp[0]) factor, so its stored direct-mode values are ~11% lower
-    # stiffness/damping than native's internal values for the same MJCF input
-    # (tracked in #2515). Cassie's closed-loop limit constraints amplify this
-    # into measurable qvel divergence; backfill until the conversion is fixed.
     backfill_fields = MODEL_BACKFILL_FIELDS + [  # noqa: RUF005
         "eq_data",
         "jnt_actfrclimited",
-        "jnt_solref",
     ]
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_data"}
 

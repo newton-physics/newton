@@ -31,6 +31,7 @@ class RenderContext:
         render_shape_index: bool = False
         render_normal: bool = False
         render_albedo: bool = False
+        render_hdr_color: bool = False
 
     DEFAULT_CLEAR_DATA = ClearData()
 
@@ -146,6 +147,7 @@ class RenderContext:
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
         clear_data: RenderContext.ClearData | None = DEFAULT_CLEAR_DATA,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
     ):
         """Raytrace the scene into the provided output images.
 
@@ -175,6 +177,7 @@ class RenderContext:
             albedo_image: Output albedo buffer (packed ``uint32``).
             clear_data: Values used to clear output images before
                 rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
+            hdr_color_image: Output linear HDR color buffer.
         """
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
             raise RuntimeError("build_bvh_shape() must be called before rendering shapes.")
@@ -211,6 +214,7 @@ class RenderContext:
             self.state.render_shape_index = shape_index_image is not None
             self.state.render_normal = normal_image is not None
             self.state.render_albedo = albedo_image is not None
+            self.state.render_hdr_color = hdr_color_image is not None
 
             assert camera_transforms.shape == (camera_count, self.world_count), (
                 f"camera_transforms size must match {camera_count} x {self.world_count}"
@@ -244,6 +248,10 @@ class RenderContext:
                 assert albedo_image.shape == (self.world_count, camera_count, height, width), (
                     f"albedo_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
+            if hdr_color_image is not None:
+                assert hdr_color_image.shape == (self.world_count, camera_count, height, width), (
+                    f"hdr_color_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                )
 
             if self.config.render_order == RenderOrder.TILED:
                 assert width % self.config.tile_width == 0, "render width must be a multiple of tile_width"
@@ -260,6 +268,8 @@ class RenderContext:
                 normal_image = normal_image.reshape(self.world_count * camera_count * width * height)
             if albedo_image is not None:
                 albedo_image = albedo_image.reshape(self.world_count * camera_count * width * height)
+            if hdr_color_image is not None:
+                hdr_color_image = hdr_color_image.reshape(self.world_count * camera_count * width * height)
 
             kernel_cache_key = hash((self.config, self.state, clear_data))
             render_kernel = self.kernel_cache.get(kernel_cache_key)
@@ -322,6 +332,7 @@ class RenderContext:
                     shape_index_image,
                     normal_image,
                     albedo_image,
+                    hdr_color_image,
                 ],
                 device=self.device,
             )
@@ -529,3 +540,16 @@ class RenderContext:
             stacklevel=2,
         )
         return self.utils.create_albedo_image_output(width, height, camera_count)
+
+    def create_hdr_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
+        """Create an output array for linear HDR color rendering.
+
+        .. deprecated:: 1.1
+            Use :meth:`SensorTiledCamera.utils.create_hdr_color_image_output`.
+        """
+        warnings.warn(
+            "RenderContext.create_hdr_color_image_output is deprecated, use SensorTiledCamera.utils.create_hdr_color_image_output instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.utils.create_hdr_color_image_output(width, height, camera_count)

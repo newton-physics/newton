@@ -1043,5 +1043,4 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
 
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

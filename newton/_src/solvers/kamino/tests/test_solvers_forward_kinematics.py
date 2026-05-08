@@ -137,17 +137,19 @@ def get_actuators_q_quaternion_first_ids(model: ModelKamino):
     return quat_ids
 
 
-def compute_actuated_coords_and_dofs_offsets(model: ModelKamino):
+def compute_actuated_coords_and_dofs_data(model: ModelKamino):
     """
     Helper function computing the offsets and sizes needed to extract actuated joint coordinates
-    and dofs from all joint coordinates/dofs
-    Returns actuated_coords_offsets, actuated_coords_sizes, actuated_dofs_offsets, actuated_dofs_sizes
+    and dofs from all joint coordinates/dofs, as well as the corresponding dof types.
+    Returns actuated_coords_offsets, actuated_coords_sizes, actuated_dofs_offsets, actuated_dofs_sizes,
+            actuator_dof_types
     """
-    # Retrieve joint coordinates/dofs sizes and offsets (offset arrays include a trailing total)
+    # Retrieve data for all joints (offset arrays include a trailing total)
     coord_offsets = model.joints.coords_offset.numpy()[:-1]
     joint_num_coords = model.joints.num_coords.numpy()
     dof_offsets = model.joints.dofs_offset.numpy()[:-1]
     joint_num_dofs = model.joints.num_dofs.numpy()
+    joint_dof_types = model.joints.dof_type.numpy()
 
     # Filter for actuators only
     joint_is_actuator = model.joints.act_type.numpy() != JointActuationType.PASSIVE
@@ -155,8 +157,42 @@ def compute_actuated_coords_and_dofs_offsets(model: ModelKamino):
     actuated_coords_sizes = joint_num_coords[joint_is_actuator]
     actuated_dof_offsets = dof_offsets[joint_is_actuator]
     actuated_dofs_sizes = joint_num_dofs[joint_is_actuator]
+    actuator_dof_types = joint_dof_types[joint_is_actuator]
 
-    return actuated_coord_offsets, actuated_coords_sizes, actuated_dof_offsets, actuated_dofs_sizes
+    return actuated_coord_offsets, actuated_coords_sizes, actuated_dof_offsets, actuated_dofs_sizes, actuator_dof_types
+
+
+def standardize_actuated_coords(
+    actuators_q: np.ndarray, actuated_coords_sizes: np.ndarray, actuator_dof_types: np.ndarray
+) -> np.ndarray:
+    """
+    Helper function converting actuator coordinates to their canonical, comparable form.
+    More specifically, angles are mapped to the [0, 2 * pi) range, and unit quaternions to their
+    representation with a positive real part.
+    """
+
+    def standardize_angle(angle):
+        return np.mod(angle, 2.0 * np.pi)
+
+    def standardize_quat(quat):
+        return -quat if quat[3] < 0.0 else quat
+
+    res = actuators_q.copy()
+    coord_id = 0
+    for i, dof_type in enumerate(actuator_dof_types):
+        if dof_type == JointDoFType.CYLINDRICAL:
+            res[coord_id + 1] = standardize_angle(res[coord_id + 1])
+        elif dof_type == JointDoFType.FREE:
+            res[coord_id + 3 : coord_id + 7] = standardize_quat(res[coord_id + 3 : coord_id + 7])
+        if dof_type == JointDoFType.REVOLUTE:
+            res[coord_id] = standardize_angle(res[coord_id])
+        elif dof_type == JointDoFType.SPHERICAL:
+            res[coord_id : coord_id + 4] = standardize_quat(res[coord_id : coord_id + 4])
+        if dof_type == JointDoFType.UNIVERSAL:
+            res[coord_id] = standardize_angle(res[coord_id])
+            res[coord_id + 1] = standardize_angle(res[coord_id + 1])
+        coord_id += actuated_coords_sizes[i]
+    return res
 
 
 def extract_segments(array, offsets, sizes):
@@ -179,8 +215,8 @@ def compute_constraint_residual_mask(model: ModelKamino):
     mask = np.array(model.size.sum_of_num_joint_cts * [True])
 
     # Exclude base joints
-    first_joint_ct_id = model.joints.cts_offset.numpy().copy()  # Cts offset per joint
-    num_joint_cts = model.joints.num_cts.numpy()  # Num cts per joint
+    first_joint_ct_id = model.joints.kinematic_cts_offset.numpy().copy()  # Cts offset per joint
+    num_joint_cts = model.joints.num_kinematic_cts.numpy()  # Num cts per joint
     base_joint_index = model.info.base_joint_index.numpy().tolist()
     for wd_id in range(model.size.num_worlds):
         if base_joint_index[wd_id] < 0:
@@ -291,8 +327,8 @@ def simulate_random_poses(
     base_u_np, actuators_u_np = generate_random_inputs_u(model, num_poses, max_base_u, max_actuators_u, rng)
 
     # Precompute offset arrays for extracting actuator coordinates/dofs
-    actuated_coord_offsets, actuated_coords_sizes, actuated_dof_offsets, actuated_dofs_sizes = (
-        compute_actuated_coords_and_dofs_offsets(model)
+    actuated_coord_offsets, actuated_coords_sizes, actuated_dof_offsets, actuated_dofs_sizes, actuator_dof_types = (
+        compute_actuated_coords_and_dofs_data(model)
     )
 
     # Precompute boolean mask for extracting relevant constraint residuals
@@ -314,7 +350,7 @@ def simulate_random_poses(
         base_u = wp.array(shape=(model.size.num_worlds), dtype=vec6f)
         actuators_u = wp.array(shape=(actuators_u_np.shape[1]), dtype=wp.float32)
     data = model.data(device=model.device)
-    epsilon = 1e-2
+    epsilon = 1e-4
     for pose_id in range(num_poses):
         # Run FK solve and check convergence
         base_q.assign(base_q_np[pose_id])
@@ -349,7 +385,11 @@ def simulate_random_poses(
             print(f"Large constraint residual ({residual_ct_pos}) for pose {pose_id}")
             success_flags[-1] = False
         actuators_q_check = extract_segments(data.joints.q_j.numpy(), actuated_coord_offsets, actuated_coords_sizes)
-        residual_actuators_q = np.max(np.abs(actuators_q_check - actuators_q_np[pose_id]))
+        actuators_q_check = standardize_actuated_coords(actuators_q_check, actuated_coords_sizes, actuator_dof_types)
+        actuators_q_ref = standardize_actuated_coords(
+            actuators_q_np[pose_id], actuated_coords_sizes, actuator_dof_types
+        )
+        residual_actuators_q = np.max(np.abs(actuators_q_check - actuators_q_ref))
         if residual_actuators_q > epsilon:
             print(f"Large error on prescribed actuator coordinates ({residual_actuators_q}) for pose {pose_id}")
             success_flags[-1] = False
@@ -401,7 +441,7 @@ class DRTestMechanismRandomPosesCheckForwardKinematics(unittest.TestCase):
         # Simulate random poses
         num_poses = 30
         base_q_max = np.array(3 * [0.2] + 4 * [1.0])
-        actuators_q_max = np.radians([95.0])
+        actuators_q_max = np.radians([360.0])
         base_u_max = np.array(3 * [0.1] + 3 * [0.5])
         actuators_u_max = np.array([0.5])
         success = simulate_random_poses(
@@ -493,7 +533,7 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
 
         # Simulate random poses
         num_poses = 30
-        theta_max_test_mech = np.radians(100.0)
+        theta_max_test_mech = np.radians(360.0)
         theta_max_dr_legs = np.radians(10.0)
         base_q_max = np.array(3 * [0.2] + 4 * [1.0] + 3 * [0.2] + 4 * [1.0])
         actuators_q_max = np.array([theta_max_test_mech] + builder1.num_actuated_joint_coords * [theta_max_dr_legs])
@@ -570,7 +610,7 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
         # Generate random poses
         num_poses = 30
         bodies_q_max = np.array(model.size.sum_of_num_bodies * [0.2, 0.2, 0.2, 1.0, 1.0, 1.0, 1.0])
-        theta_max_test_mech = np.radians(100.0)
+        theta_max_test_mech = np.radians(360.0)
         theta_max_dr_legs = np.radians(10.0)
         base_q_max = np.array(3 * [0.2] + 4 * [1.0] + 3 * [0.2] + 4 * [1.0])
         actuators_q_max = np.array([theta_max_test_mech] + builder1.num_actuated_joint_coords * [theta_max_dr_legs])
