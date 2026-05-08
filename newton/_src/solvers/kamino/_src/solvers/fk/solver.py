@@ -9,7 +9,6 @@ See the :mod:`newton._src.solvers.kamino._src.solvers.fk` module for a detailed 
 
 from __future__ import annotations
 
-import math
 import sys
 
 import numpy as np
@@ -28,6 +27,7 @@ from ...linalg.conjugate import BatchedLinearOperator, CGSolver
 from ...linalg.factorize.llt_blocked_semi_sparse import SemiSparseBlockCholeskySolverBatched
 from ...linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ...linalg.sparse_operator import BlockSparseLinearOperators
+from ...utils.tile import get_block_dim, get_num_tiles, get_tile_size
 from ...utils.world_equivalence import DiscreteSignature, compute_equivalence_classes
 from .kernels import (
     _apply_line_search_step,
@@ -973,7 +973,7 @@ class ForwardKinematicsSolver:
         wp.launch_tiled(
             self._eval_min_num_iterations_kernel,
             dim=(self.num_worlds, self.num_tiles_coords),
-            block_dim=get_block_size(self.tile_size_coords),
+            block_dim=get_block_dim(self.tile_size_coords),
             inputs=[
                 self.world_actuated_coord_offsets,
                 self.actuators_q_prev,
@@ -1105,7 +1105,7 @@ class ForwardKinematicsSolver:
             self._eval_max_constraint_kernel,
             dim=(self.num_worlds, self.num_tiles_cts_1d),
             inputs=[constraints, max_constraint],
-            block_dim=get_block_size(self.tile_size_cts_1d),
+            block_dim=get_block_dim(self.tile_size_cts_1d),
             device=self.device,
         )
 
@@ -1236,7 +1236,7 @@ class ForwardKinematicsSolver:
             self._eval_merit_function_kernel,
             dim=(self.num_worlds, self.num_tiles_cts_1d),
             inputs=[constraints, error],
-            block_dim=get_block_size(self.tile_size_cts_1d),
+            block_dim=get_block_dim(self.tile_size_cts_1d),
             device=self.device,
         )
 
@@ -1255,7 +1255,7 @@ class ForwardKinematicsSolver:
             self._eval_merit_function_gradient_kernel,
             dim=(self.num_worlds, self.num_tiles_vrs_1d),
             inputs=[step, grad, error_grad],
-            block_dim=get_block_size(self.tile_size_vrs_1d),
+            block_dim=get_block_dim(self.tile_size_vrs_1d),
             device=self.device,
         )
 
@@ -1898,23 +1898,6 @@ class ForwardKinematicsSolver:
 ###
 # Functions
 ###
-
-
-def get_tile_size(size: int, max_size: int = 2048):
-    """Rounds up size into a power-of-two tile size, clamping to the [1, max_size] range if needed."""
-    if size < 1:
-        return 1
-    return min(max_size, 2 ** math.ceil(math.log(size, 2)))
-
-
-def get_num_tiles(size: int, tile_size: int):
-    """Computes the number of tiles needed to cover an array of given size, with tiles of given size."""
-    return (size + tile_size - 1) // tile_size
-
-
-def get_block_size(tile_size: int, ratio: int = 8, min_size: int = 32, max_size: int = 256):
-    """Computes the block size as a fixed ratio of the tile size, clamped to a min-max range."""
-    return max(min_size, min(max_size, tile_size // ratio))
 
 
 def compute_fk_equivalence_classes(model: ModelKamino) -> list[list[int]]:

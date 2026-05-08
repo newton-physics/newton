@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast, overload
+from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
@@ -409,6 +410,11 @@ def _extract_trimesh_texture(visual_or_material, base_dir: str) -> np.ndarray | 
         if base_color_texture is not None:
             image = getattr(base_color_texture, "image", None)
             image_path = image_path or getattr(base_color_texture, "image_path", None)
+            if image is None:
+                if isinstance(base_color_texture, (str, os.PathLike)):
+                    image_path = image_path or os.fspath(base_color_texture)
+                else:
+                    image = base_color_texture
 
     if image is not None:
         try:
@@ -497,7 +503,7 @@ def load_meshes_from_file(
 
     def _parse_dae_material_colors(
         path: str,
-    ) -> tuple[list[str], dict[str, dict[str, float | tuple[float, float, float] | None]]]:
+    ) -> tuple[list[str], dict[str, dict[str, float | str | tuple[float, float, float] | None]]]:
         try:
             tree = ET.parse(path)
             root = tree.getroot()
@@ -507,15 +513,64 @@ def load_meshes_from_file(
         def strip(tag: str) -> str:
             return tag.split("}", 1)[-1] if "}" in tag else tag
 
+        image_paths: dict[str, str] = {}
+        for image in root.iter():
+            if strip(image.tag) != "image":
+                continue
+            image_id = image.attrib.get("id")
+            image_name = image.attrib.get("name")
+            image_path = None
+            for child in image.iter():
+                if strip(child.tag) == "init_from" and child.text:
+                    image_path = child.text.strip()
+                    break
+            if image_path:
+                if image_id:
+                    image_paths[image_id] = image_path
+                if image_name:
+                    image_paths[image_name] = image_path
+
+        def resolve_dae_texture_path(texture_path: str | None) -> str | None:
+            if not texture_path:
+                return None
+            texture_path = image_paths.get(texture_path.lstrip("#"), texture_path)
+            parsed = urlparse(texture_path)
+            if parsed.scheme in {"file", "http", "https", "data"}:
+                return texture_path
+            if not os.path.isabs(texture_path):
+                texture_path = os.path.abspath(os.path.join(base_dir, texture_path))
+            return texture_path
+
         # Map effect id -> material properties
-        effect_props: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+        effect_props: dict[str, dict[str, float | str | tuple[float, float, float] | None]] = {}
         for effect in root.iter():
             if strip(effect.tag) != "effect":
                 continue
             effect_id = effect.attrib.get("id")
             if not effect_id:
                 continue
+            surface_images: dict[str, str] = {}
+            sampler_surfaces: dict[str, str] = {}
+            for newparam in effect.iter():
+                if strip(newparam.tag) != "newparam":
+                    continue
+                sid = newparam.attrib.get("sid")
+                if not sid:
+                    continue
+                for child in newparam:
+                    child_tag = strip(child.tag)
+                    if child_tag == "surface":
+                        for init in child.iter():
+                            if strip(init.tag) == "init_from" and init.text:
+                                surface_images[sid] = init.text.strip()
+                                break
+                    elif child_tag == "sampler2D":
+                        for source in child.iter():
+                            if strip(source.tag) == "source" and source.text:
+                                sampler_surfaces[sid] = source.text.strip()
+                                break
             diffuse_color = None
+            diffuse_texture = None
             specular_color = None
             specular_intensity = None
             shininess = None
@@ -530,9 +585,16 @@ def load_meshes_from_file(
                 for node in shader.iter():
                     tag = strip(node.tag)
                     if tag == "diffuse":
-                        for col in node.iter():
-                            if strip(col.tag) == "color" and col.text:
-                                values = [float(x) for x in col.text.strip().split()]
+                        for diffuse_node in node.iter():
+                            diffuse_tag = strip(diffuse_node.tag)
+                            if diffuse_tag == "texture":
+                                sampler_id = diffuse_node.attrib.get("texture")
+                                surface_id = sampler_surfaces.get(sampler_id, sampler_id)
+                                image_id = surface_images.get(surface_id, surface_id)
+                                diffuse_texture = resolve_dae_texture_path(image_id)
+                                break
+                            if diffuse_tag == "color" and diffuse_node.text:
+                                values = [float(x) for x in diffuse_node.text.strip().split()]
                                 if len(values) >= 3:
                                     # DAE diffuse colors are commonly authored in linear space.
                                     # Convert to sRGB for the viewer shader (which converts to linear).
@@ -567,7 +629,7 @@ def load_meshes_from_file(
                                     shininess = None
                                 break
                         continue
-                if diffuse_color is not None:
+                if diffuse_color is not None or diffuse_texture is not None:
                     break
             metallic = None
             if specular_color is not None:
@@ -579,15 +641,16 @@ def load_meshes_from_file(
                 if shininess > 1.0:
                     shininess = min(shininess / 128.0, 1.0)
                 roughness = float(np.clip(1.0 - shininess, 0.0, 1.0))
-            if diffuse_color is not None:
+            if diffuse_color is not None or diffuse_texture is not None:
                 effect_props[effect_id] = {
                     "color": diffuse_color,
+                    "texture": diffuse_texture,
                     "metallic": metallic,
                     "roughness": roughness,
                 }
 
         # Map material id/name -> material properties
-        material_colors: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+        material_colors: dict[str, dict[str, float | str | tuple[float, float, float] | None]] = {}
         for material in root.iter():
             if strip(material.tag) != "material":
                 continue
@@ -620,7 +683,7 @@ def load_meshes_from_file(
         return face_materials, material_colors
 
     dae_face_materials: list[str] = []
-    dae_material_colors: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+    dae_material_colors: dict[str, dict[str, float | str | tuple[float, float, float] | None]] = {}
     if filename.lower().endswith(".dae"):
         dae_face_materials, dae_material_colors = _parse_dae_material_colors(filename)
 
@@ -667,6 +730,8 @@ def load_meshes_from_file(
             if sub_normals is None or force_smooth:
                 sub_normals = smooth_vertex_normals_by_position(sub_vertices, remapped_faces)
             sub_uvs = mesh_uvs[used] if mesh_uvs is not None else None
+            if mesh_texture is not None and mat_color is None:
+                mat_color = (1.0, 1.0, 1.0)
 
             meshes.append(
                 Mesh(
@@ -728,6 +793,7 @@ def load_meshes_from_file(
                 mat_color = mat_props.get("color")
                 mat_roughness = mat_props.get("roughness")
                 mat_metallic = mat_props.get("metallic")
+                mat_texture = mat_props.get("texture", texture)
                 add_mesh_from_faces(
                     mat_faces,
                     mat_color=mat_color,
@@ -736,7 +802,7 @@ def load_meshes_from_file(
                     mesh_vertices=vertices,
                     mesh_normals=normals,
                     mesh_uvs=uvs,
-                    mesh_texture=texture,
+                    mesh_texture=mat_texture,
                 )
             continue
 
