@@ -751,6 +751,7 @@ class ModelKamino:
         shape_transform = converted["shape_transform"]
         joint_X_p = converted["joint_X_p"]
         joint_X_c = converted["joint_X_c"]
+        body_corr = converted["body_corr"]
 
         # Initialize materials manager
         materials_manager = MaterialManager()
@@ -778,7 +779,15 @@ class ModelKamino:
 
             # Bodies
             model_bodies = convert_rigid_bodies(
-                model, model_size, model_info, body_com, body_q, body_qd, body_inertia, body_inv_inertia
+                model,
+                model_size,
+                model_info,
+                body_com,
+                body_q,
+                body_qd,
+                body_inertia,
+                body_inv_inertia,
+                body_corr=body_corr,
             )
 
             # Joints
@@ -795,14 +804,15 @@ class ModelKamino:
         # Post-processing
         ###
 
-        # Modify the model's body COM and shape transform properties in-place to convert from body-frame-relative
-        # NOTE: These are modified only so that the visualizer correctly
-        # shows the shape poses, joints frames and body inertial properties
-        wp.copy(model.body_com, body_com)
-        wp.copy(model.body_inertia, body_inertia)
-        wp.copy(model.shape_transform, shape_transform)
-        wp.copy(model.joint_X_p, joint_X_p)
-        wp.copy(model.joint_X_c, joint_X_c)
+        # If we were to push the rotated arrays back into the Newton model,
+        # those world-pose computations would mix Newton-frame ``body_q``
+        # with Kamino-frame ``shape_transform`` and produce a constant
+        # per-body rotation offset on the rendered meshes
+        # wp.copy(model.body_com, body_com)
+        # wp.copy(model.body_inertia, body_inertia)
+        # wp.copy(model.shape_transform, shape_transform)
+        # wp.copy(model.joint_X_p, joint_X_p)
+        # wp.copy(model.joint_X_c, joint_X_c)
 
         # Convert shape offsets from body-frame-relative to COM-relative
         convert_geom_offset_origin_to_com(

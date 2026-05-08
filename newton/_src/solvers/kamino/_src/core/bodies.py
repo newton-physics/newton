@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 import warp as wp
 
-from .types import Descriptor, int32, mat33f, override, transformf, vec3f, vec6f
+from .types import Descriptor, int32, mat33f, override, quatf, transformf, vec3f, vec6f
 
 ###
 # Module interface
@@ -19,6 +19,8 @@ __all__ = [
     "RigidBodiesData",
     "RigidBodiesModel",
     "RigidBodyDescriptor",
+    "apply_body_corr_inv_to_body_q",
+    "apply_body_corr_to_body_q",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
     "convert_body_origin_to_com",
@@ -211,6 +213,15 @@ class RigidBodiesModel:
     """
     Initial twist of each body.\n
     Shape of ``(num_bodies,)`` and type :class:`vec6`.
+    """
+
+    body_corr: wp.array | None = None
+    """
+    Per-body rotation correction quaternion ``q_corr = q_cj * inv(q_pj)``.
+    Identity for bodies whose incoming joint already has aligned parent/child frames;
+    otherwise the rotation that was right-multiplied into the body's local frame to
+    align Kamino's joint constraints.
+    Shape of ``(num_bodies,)`` and type :class:`quat`.
     """
 
 
@@ -589,6 +600,88 @@ def convert_body_origin_to_com(
         inputs=[world_mask, body_wid, body_com, body_q],
         outputs=[body_q_com],
         device=body_com.device,
+    )
+
+
+@wp.kernel(enable_backward=False)
+def _apply_body_corr_to_body_q(
+    world_mask: wp.array[int32],
+    body_wid: wp.array[int32],
+    body_corr: wp.array[quatf],
+    body_q: wp.array[transformf],
+):
+    bid = wp.tid()
+    if world_mask:
+        if not world_mask[body_wid[bid]]:
+            return
+    qc = body_corr[bid]
+    if wp.abs(qc[3] - 1.0) < 1e-8 and wp.abs(qc[0]) + wp.abs(qc[1]) + wp.abs(qc[2]) < 1e-8:
+        return
+    q = body_q[bid]
+    p = wp.transform_get_translation(q)
+    r = wp.transform_get_rotation(q)
+    body_q[bid] = transformf(p, r * qc)
+
+
+@wp.kernel(enable_backward=False)
+def _apply_body_corr_inv_to_body_q(
+    world_mask: wp.array[int32],
+    body_wid: wp.array[int32],
+    body_corr: wp.array[quatf],
+    body_q: wp.array[transformf],
+):
+    bid = wp.tid()
+    if world_mask:
+        if not world_mask[body_wid[bid]]:
+            return
+    qc = body_corr[bid]
+    if wp.abs(qc[3] - 1.0) < 1e-8 and wp.abs(qc[0]) + wp.abs(qc[1]) + wp.abs(qc[2]) < 1e-8:
+        return
+    q = body_q[bid]
+    p = wp.transform_get_translation(q)
+    r = wp.transform_get_rotation(q)
+    body_q[bid] = transformf(p, r * wp.quat_inverse(qc))
+
+
+def apply_body_corr_to_body_q(
+    body_corr: wp.array,
+    body_q: wp.array,
+    body_wid: wp.array | None = None,
+    world_mask: wp.array | None = None,
+) -> None:
+    """Right-multiply each body's rotation by ``body_corr[bid]``.
+
+    Used by the :class:`SolverKamino` wrapper to bring a Newton-frame body_q
+    into Kamino's rotated frame before each ``solver.step``. The translation
+    component of ``body_q`` is left untouched.
+    """
+    wp.launch(
+        _apply_body_corr_to_body_q,
+        dim=body_q.shape[0],
+        inputs=[world_mask, body_wid, body_corr],
+        outputs=[body_q],
+        device=body_q.device,
+    )
+
+
+def apply_body_corr_inv_to_body_q(
+    body_corr: wp.array,
+    body_q: wp.array,
+    body_wid: wp.array | None = None,
+    world_mask: wp.array | None = None,
+) -> None:
+    """Right-multiply each body's rotation by ``body_corr[bid].inverse()``.
+
+    Used by the :class:`SolverKamino` wrapper to undo the per-body rotation
+    correction applied before ``solver.step``, returning ``body_q`` to
+    Newton's original frame for downstream consumers (visualizer, eval_fk).
+    """
+    wp.launch(
+        _apply_body_corr_inv_to_body_q,
+        dim=body_q.shape[0],
+        inputs=[world_mask, body_wid, body_corr],
+        outputs=[body_q],
+        device=body_q.device,
     )
 
 

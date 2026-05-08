@@ -776,6 +776,7 @@ def convert_entity_local_transforms(model: Model) -> dict[str, wp.array]:
         "shape_transform": shape_transform,
         "joint_X_p": joint_X_p,
         "joint_X_c": joint_X_c,
+        "body_corr": body_corr,
     }
 
 
@@ -905,6 +906,7 @@ def convert_rigid_bodies(
     body_qd: wp.array,
     body_inertia: wp.array,
     body_inv_inertia: wp.array,
+    body_corr: wp.array | None = None,
 ) -> RigidBodiesModel:
     """
     Converts the rigid bodies from a Newton model into Kamino's format. The function
@@ -1025,6 +1027,7 @@ def convert_rigid_bodies(
         inv_i_I_i=body_inv_inertia,
         q_i_0=q_i_0,
         u_i_0=body_qd,
+        body_corr=body_corr,
     )
     return model_bodies
 
