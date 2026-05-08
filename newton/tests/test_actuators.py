@@ -48,27 +48,26 @@ except ImportError:
     _HAS_LEGACY_ACTUATORS = False
 
 
-def _make_lstm_net_class(torch):
-    """Build the test LSTM ``torch.nn.Module`` class lazily.
+try:
+    import torch as _torch
 
-    Defined as a builder so the module can be imported without ``torch``
-    installed; tests that need torch import it inside ``setUp`` and pass
-    it here.
-    """
-
-    class _LSTMNet(torch.nn.Module):
+    class _LSTMNet(_torch.nn.Module):
         """Simple LSTM network for testing."""
 
         def __init__(self, hidden: int = 8, layers: int = 1):
             super().__init__()
-            self.lstm = torch.nn.LSTM(2, hidden, layers, batch_first=True)
-            self.dec = torch.nn.Linear(hidden, 1)
+            self.lstm = _torch.nn.LSTM(2, hidden, layers, batch_first=True)
+            self.dec = _torch.nn.Linear(hidden, 1)
 
-        def forward(self, x, hc):
+        def forward(
+            self,
+            x: _torch.Tensor,
+            hc: tuple[_torch.Tensor, _torch.Tensor],
+        ) -> tuple[_torch.Tensor, tuple[_torch.Tensor, _torch.Tensor]]:
             out, (h, c) = self.lstm(x, hc)
             return self.dec(out[:, -1, :]), (h, c)
-
-    return _LSTMNet
+except ImportError:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -331,10 +330,9 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         self.device = wp.get_device()
         self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
-        self._LSTMNet = _make_lstm_net_class(torch)
 
     def _make_lstm(self, hidden=8, layers=1):
-        return self._LSTMNet(hidden=hidden, layers=layers).to(self._torch_dev)
+        return _LSTMNet(hidden=hidden, layers=layers).to(self._torch_dev)
 
     def _save_torchscript(self, net, filename="lstm.pt", metadata=None):
         path = os.path.join(self._tmp_dir, filename)
@@ -1528,7 +1526,6 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
         self.torch = torch
         self._tmp_dir = tempfile.mkdtemp()
-        self._LSTMNet = _make_lstm_net_class(torch)
 
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
@@ -1549,7 +1546,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
     def _make_lstm_checkpoint(self, metadata: dict | None = None) -> str:
         """Create a minimal TorchScript LSTM checkpoint with optional metadata."""
-        net = self._LSTMNet(hidden=8, layers=1)
+        net = _LSTMNet(hidden=8, layers=1)
         path = os.path.join(self._tmp_dir, "lstm.pt")
         scripted = self.torch.jit.script(net)
         extra = {}
