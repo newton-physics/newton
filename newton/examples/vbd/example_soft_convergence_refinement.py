@@ -87,12 +87,6 @@ def _run_extension(dim_xy: int, dim_z: int, cell: float, n_frames: int) -> float
 
 
 class Example:
-    CONFIGS = [
-        {"name": "coarse", "dim_xy": 2, "dim_z": 10, "cell": 0.10},
-        {"name": "medium", "dim_xy": 4, "dim_z": 20, "cell": 0.05},
-        {"name": "fine", "dim_xy": 8, "dim_z": 40, "cell": 0.025},
-    ]
-
     def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.fps = 60
@@ -102,9 +96,15 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.iterations = 20
 
+        configs = [
+            {"name": "coarse", "dim_xy": 2, "dim_z": 10, "cell": 0.10},
+            {"name": "medium", "dim_xy": 4, "dim_z": 20, "cell": 0.05},
+            {"name": "fine", "dim_xy": 8, "dim_z": 40, "cell": 0.025},
+        ]
+
         self.deltas: list[float] = []
         self.config_names: list[str] = []
-        for cfg in self.CONFIGS:
+        for cfg in configs:
             delta = _run_extension(cfg["dim_xy"], cfg["dim_z"], cfg["cell"], n_frames=300)
             self.deltas.append(delta)
             self.config_names.append(cfg["name"])
@@ -113,10 +113,19 @@ class Example:
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         builder.add_soft_grid(
-            pos=wp.vec3(0.0, 0.0, 2.0), rot=wp.quat_identity(), vel=wp.vec3(0.0, 0.0, 0.0),
-            dim_x=4, dim_y=4, dim_z=20,
-            cell_x=0.05, cell_y=0.05, cell_z=0.05,
-            density=1000.0, k_mu=5e4, k_lambda=5e4, k_damp=0.1,
+            pos=wp.vec3(0.0, 0.0, 2.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=4,
+            dim_y=4,
+            dim_z=20,
+            cell_x=0.05,
+            cell_y=0.05,
+            cell_z=0.05,
+            density=1000.0,
+            k_mu=5e4,
+            k_lambda=5e4,
+            k_damp=0.1,
         )
         builder.color()
         self.model = builder.finalize()
@@ -170,12 +179,12 @@ class Example:
             if delta > 1.0:
                 raise ValueError(f"{name}: excessive displacement {delta:.4f}")
 
-        # All should be same order of magnitude (within 3×)
+        # All should be same order of magnitude (within 3x)
         d_min = min(self.deltas)
         d_max = max(self.deltas)
         if d_max / d_min > 3.0:
             raise ValueError(
-                f"Displacement spread too large: "
+                "Displacement spread too large: "
                 + ", ".join(f"{n}={d:.4f}" for n, d in zip(self.config_names, self.deltas, strict=True))
             )
 
