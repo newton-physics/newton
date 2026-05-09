@@ -130,7 +130,8 @@ def _reset_state_base_q(
     base_joint_id: wp.array[wp.int32],
     base_q: wp.array[wp.transformf],
     joints_bid_F: wp.array[wp.int32],
-    joints_X: wp.array[wp.mat33f],
+    joints_X_p_j: wp.array[wp.mat33f],
+    joints_X_c_j: wp.array[wp.mat33f],
     joints_B_r_B: wp.array[wp.vec3f],
     joints_F_r_F: wp.array[wp.vec3f],
     num_bodies: wp.array[wp.int32],
@@ -148,7 +149,8 @@ def _reset_state_base_q(
         base_joint_id: Base joint id per world (-1 = None)
         base_q: Base body pose per world, in base joint coordinates
         joints_bid_F: Joint follower body id
-        joints_X: Joint frame (local axes, valid both on base and follower)
+        joints_X_p_j: Joint frame (local axes), expressed in base body's frame
+        joints_X_c_j: Joint frame (local axes), expressed in follower body's frame
         joints_B_r_B: Joint local position on base body
         joints_F_r_F: Joint local position on follower body
         num_bodies: Num bodies per world
@@ -171,21 +173,25 @@ def _reset_state_base_q(
         # Read memory
         base_q_wd = base_q[wd_id]
         bid_F = joints_bid_F[base_jt_id]
-        X = joints_X[base_jt_id]
+        X_p = joints_X_p_j[base_jt_id]
+        X_c = joints_X_c_j[base_jt_id]
         x_B = joints_B_r_B[base_jt_id]
         x_F = joints_F_r_F[base_jt_id]
         body_q_F_0 = bodies_q_0[bid_F]
 
-        # Compute pose of the base body (follower of the base joint) given current joint coordinates
-        # Note: the relative transform from base to follower can be written
-        # t_jt = X^T * R_B^T * (c_F + R_F * x_F - c_B - R_B * x_B)
-        # q_jt = X^T * R_B^T * R_F * X
-        # We invert these equations, using R_B = I and c_B = 0 (base body = world)
+        # Compute pose of the base body (follower of the base joint) given current joint coordinates.
+        # The forward-kinematics relation is:
+        #   q_F * q_X_c = q_B * q_X_p * q_jt
+        #   c_F + R_F * x_F = c_B + R_B * x_B + R(q_B * q_X_p) * t_jt
+        # Inverted with R_B = I and c_B = 0 (base body = world):
+        #   q_F = q_X_p * q_jt * inv(q_X_c)
+        #   c_F = R(q_X_p) * t_jt - R_F * x_F + x_B
         t_jt = wp.transform_get_translation(base_q_wd)
         q_jt = wp.transform_get_rotation(base_q_wd)
-        q_X = wp.quat_from_matrix(X)
-        q_F = q_X * q_jt * wp.quat_inverse(q_X)
-        c_F = wp.quat_rotate(q_X, t_jt) - wp.quat_rotate(q_F, x_F) + x_B
+        q_X_p = wp.quat_from_matrix(X_p)
+        q_X_c = wp.quat_from_matrix(X_c)
+        q_F = q_X_p * q_jt * wp.quat_inverse(q_X_c)
+        c_F = wp.quat_rotate(q_X_p, t_jt) - wp.quat_rotate(q_F, x_F) + x_B
         body_q_F = wp.transformf(c_F, q_F)
 
         # Compute the transform that was applied to the base body relative to the base pose,
@@ -284,7 +290,8 @@ def _eval_actuator_coords(
     joints_dof_type: wp.array[wp.int32],
     joints_bid_B: wp.array[wp.int32],
     joints_bid_F: wp.array[wp.int32],
-    joints_X: wp.array[wp.mat33f],
+    joints_X_p_j: wp.array[wp.mat33f],
+    joints_X_c_j: wp.array[wp.mat33f],
     joints_B_r_B: wp.array[wp.vec3f],
     joints_F_r_F: wp.array[wp.vec3f],
     bodies_q: wp.array[wp.transformf],
@@ -300,7 +307,8 @@ def _eval_actuator_coords(
         joints_dof_type: Joint dof type (i.e. revolute, spherical, ...).
         joints_bid_B: Joint base body id.
         joints_bid_F: Joint follower body id.
-        joints_X: Joint frame (local axes, valid both on base and follower).
+        joints_X_p_j: Joint frame (local axes), expressed in base body's frame.
+        joints_X_c_j: Joint frame (local axes), expressed in follower body's frame.
         joints_B_r_B: Joint local position on base body.
         joints_F_r_F: Joint local position on follower body.
         bodies_q: Body poses.
@@ -326,7 +334,8 @@ def _eval_actuator_coords(
     dof_type = joints_dof_type[jt_id]
     x_base = joints_B_r_B[jt_id]
     x_follower = joints_F_r_F[jt_id]
-    q_X = wp.quat_from_matrix(joints_X[jt_id])
+    q_X_p = wp.quat_from_matrix(joints_X_p_j[jt_id])
+    q_X_c = wp.quat_from_matrix(joints_X_c_j[jt_id])
 
     # Get base and follower transformations
     base_id = joints_bid_B[jt_id]
@@ -343,8 +352,8 @@ def _eval_actuator_coords(
     # Compute relative pose of follower body in joint frame of base body
     pos_base = c_base + wp.quat_rotate(q_base, x_base)
     pos_follower = c_follower + wp.quat_rotate(q_follower, x_follower)
-    ori_base_T = wp.quat_inverse(q_base * q_X)
-    ori_follower = q_follower * q_X
+    ori_base_T = wp.quat_inverse(q_base * q_X_p)
+    ori_follower = q_follower * q_X_c
     pos_rel = wp.quat_rotate(ori_base_T, pos_follower - pos_base)
     q_rel = ori_base_T * ori_follower
 
@@ -567,7 +576,8 @@ def _eval_position_control_transformations(
     joints_dof_type: wp.array[wp.int32],
     joints_act_type: wp.array[wp.int32],
     actuated_coords_offset: wp.array[wp.int32],
-    joints_X: wp.array[wp.mat33f],
+    joints_X_p_j: wp.array[wp.mat33f],
+    joints_X_c_j: wp.array[wp.mat33f],
     actuators_q: wp.array[wp.float32],
     normalize_quaternions: wp.bool,
     # Outputs
@@ -576,7 +586,10 @@ def _eval_position_control_transformations(
     """
     A kernel computing a transformation per joint corresponding to position-control parameters
     More specifically, this is the identity (no translation, no rotation) for passive joints
-    and a transformation corresponding to joint generalized coordinates for actuators
+    with aligned base/follower joint frames, and a transformation corresponding to
+    joint generalized coordinates for actuators. For joints with non-aligned base/follower
+    frames the rotation part absorbs the constant offset ``q_X_p_j * inv(q_X_c_j)`` so that
+    downstream constraint kernels can keep using the simple form ``q_F = q_B * q_control_body``.
 
     The translation part is expressed in joint frame (e.g., translation is along [1,0,0] for a prismatic joint)
     The rotation part is expressed in body frame (e.g., rotation is about X[:,0] for a revolute joint)
@@ -585,7 +598,8 @@ def _eval_position_control_transformations(
         joints_dof_type: Joint dof type (i.e. revolute, spherical, ...)
         joints_act_type: Joint actuation type (i.e. passive or actuated)
         actuated_coords_offset: Joint first actuated coordinate id, among all actuated coordinates in all worlds
-        joints_X: Joint frame (local axes, valid both on base and follower)
+        joints_X_p_j: Joint frame (local axes), expressed in base body's frame
+        joints_X_c_j: Joint frame (local axes), expressed in follower body's frame
         actuators_q: Actuated coordinates
         normalize_quaternions: Whether to normalize quaternions in actuators_q (else unit length is assumed)
     Outputs:
@@ -599,7 +613,7 @@ def _eval_position_control_transformations(
         # Retrieve the joint model data
         dof_type_j = joints_dof_type[jt_id]
         act_type_j = joints_act_type[jt_id]
-        X = joints_X[jt_id]
+        X = joints_X_p_j[jt_id]
 
         # Initialize transform to identity (already covers the passive case)
         t = wp.vec3f(0.0, 0.0, 0.0)
@@ -638,6 +652,22 @@ def _eval_position_control_transformations(
                 q = q_x * q_y
             else:
                 assert False, "Unexpected actuator dof type"  # noqa: B011
+
+        # Absorb the constant offset between the parent- and follower-side joint frames
+        # into the rotation part so downstream kernels can keep using
+        # ``q_F = q_B * q_control_body``. For joints whose ``X_p_j == X_c_j``
+        # (the typical case) we skip the multiplication to keep the result
+        # bit-identical to the single-frame implementation.
+        # TODO alternative: Add a per-joint ``q_offset_j: wp.array(dtype=quatf)`` to ``JointsModel``. Compute it once in a new kernel during convert_joints.
+        X_p = joints_X_p_j[jt_id]
+        X_c = joints_X_c_j[jt_id]
+        any_diff = wp.bool(False)
+        for r in range(3):
+            for c in range(3):
+                if X_p[r, c] != X_c[r, c]:
+                    any_diff = wp.bool(True)
+        if any_diff:
+            q = q * wp.quat_from_matrix(X_p) * wp.quat_inverse(wp.quat_from_matrix(X_c))
 
         # Write out transformation
         pos_control_transforms[jt_id] = wp.transformf(t, q)
@@ -694,7 +724,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
         joints_act_type: wp.array[wp.int32],
         joints_bid_B: wp.array[wp.int32],
         joints_bid_F: wp.array[wp.int32],
-        joints_X: wp.array[wp.mat33f],
+        joints_X_p_j: wp.array[wp.mat33f],
         joints_B_r_B: wp.array[wp.vec3f],
         joints_F_r_F: wp.array[wp.vec3f],
         bodies_q: wp.array[wp.transformf],
@@ -720,7 +750,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
             joints_act_type: Joint actuation type (i.e. passive or actuated)
             joints_bid_B: Joint base body id
             joints_bid_F: Joint follower body id
-            joints_X: Joint frame (local axes, valid both on base and follower)
+            joints_X_p_j: Joint frame (local axes), expressed in base body's frame
             joints_B_r_B: Joint local position on base body
             joints_F_r_F: Joint local position on follower body
             bodies_q: Body poses
@@ -754,7 +784,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
             # Get joint local positions and orientation
             x_base = joints_B_r_B[jt_id_tot]
             x_follower = joints_F_r_F[jt_id_tot]
-            X_T = wp.transpose(joints_X[jt_id_tot])
+            X_T = wp.transpose(joints_X_p_j[jt_id_tot])
 
             # Get base and follower transformations
             base_id = joints_bid_B[jt_id_tot]
@@ -909,7 +939,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
         joints_act_type: wp.array[wp.int32],
         joints_bid_B: wp.array[wp.int32],
         joints_bid_F: wp.array[wp.int32],
-        joints_X: wp.array[wp.mat33f],
+        joints_X_p_j: wp.array[wp.mat33f],
         joints_B_r_B: wp.array[wp.vec3f],
         joints_F_r_F: wp.array[wp.vec3f],
         bodies_q: wp.array[wp.transformf],
@@ -932,7 +962,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
             joints_act_type: Joint actuation type (i.e. passive or actuated)
             joints_bid_B: Joint base body id
             joints_bid_F: Joint follower body id
-            joints_X: Joint frame (local axes, valid both on base and follower)
+            joints_X_p_j: Joint frame (local axes), expressed in base body's frame
             joints_B_r_B: Joint local position on base body
             joints_F_r_F: Joint local position on follower body
             bodies_q: Body poses
@@ -965,7 +995,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
 
             # Get joint local positions and orientation
             x_follower = joints_F_r_F[jt_id_tot]
-            X_T = wp.transpose(joints_X[jt_id_tot])
+            X_T = wp.transpose(joints_X_p_j[jt_id_tot])
 
             # Get base and follower transformations
             base_id_tot = joints_bid_B[jt_id_tot]
@@ -1074,7 +1104,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
         joints_act_type: wp.array[wp.int32],
         joints_bid_B: wp.array[wp.int32],
         joints_bid_F: wp.array[wp.int32],
-        joints_X: wp.array[wp.mat33f],
+        joints_X_p_j: wp.array[wp.mat33f],
         joints_B_r_B: wp.array[wp.vec3f],
         joints_F_r_F: wp.array[wp.vec3f],
         bodies_q: wp.array[wp.transformf],
@@ -1098,7 +1128,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
             joints_act_type: Joint actuation type (i.e. passive or actuated)
             joints_bid_B: Joint base body id
             joints_bid_F: Joint follower body id
-            joints_X: Joint frame (local axes, valid both on base and follower)
+            joints_X_p_j: Joint frame (local axes), expressed in base body's frame
             joints_B_r_B: Joint local position on base body
             joints_F_r_F: Joint local position on follower body
             bodies_q: Body poses
@@ -1125,7 +1155,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
 
             # Get joint local positions and orientation
             x_follower = joints_F_r_F[jt_id_tot]
-            X_T = wp.transpose(joints_X[jt_id_tot])
+            X_T = wp.transpose(joints_X_p_j[jt_id_tot])
 
             # Get base and follower transformations
             base_id = joints_bid_B[jt_id_tot]

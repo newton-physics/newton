@@ -166,7 +166,8 @@ def print_model_joints(
     print(f"model.joints.bid_F: {model.joints.bid_F}")
     print(f"model.joints.B_r_Bj:\n{model.joints.B_r_Bj}")
     print(f"model.joints.F_r_Fj:\n{model.joints.F_r_Fj}")
-    print(f"model.joints.X_j:\n{model.joints.X_j}")
+    print(f"model.joints.X_p_j:\n{model.joints.X_p_j}")
+    print(f"model.joints.X_c_j:\n{model.joints.X_c_j}")
     print(f"model.joints.q_j_0: {model.joints.q_j_0}")
     print(f"model.joints.dq_j_0: {model.joints.dq_j_0}")
     if dimensions:
@@ -188,7 +189,8 @@ def print_model_joints(
     if parameters:
         print(f"model.joints.B_r_Bj: {model.joints.B_r_Bj}")
         print(f"model.joints.F_r_Fj: {model.joints.F_r_Fj}")
-        print(f"model.joints.X_j: {model.joints.X_j}")
+        print(f"model.joints.X_p_j: {model.joints.X_p_j}")
+        print(f"model.joints.X_c_j: {model.joints.X_c_j}")
     if limits:
         print(f"model.joints.q_j_min: {model.joints.q_j_min}")
         print(f"model.joints.q_j_max: {model.joints.q_j_max}")

@@ -201,7 +201,8 @@ class ForwardKinematicsSolver:
         joints_bid_F_prev = self.model.joints.bid_F.numpy().copy()
         joints_B_r_Bj_prev = self.model.joints.B_r_Bj.numpy().copy()
         joints_F_r_Fj_prev = self.model.joints.F_r_Fj.numpy().copy()
-        joints_X_j_prev = self.model.joints.X_j.numpy().copy()
+        joints_X_p_j_prev = self.model.joints.X_p_j.numpy().copy()
+        joints_X_c_j_prev = self.model.joints.X_c_j.numpy().copy()
         joints_num_coords_prev = self.model.joints.num_coords.numpy().copy()
         joints_num_dofs_prev = self.model.joints.num_dofs.numpy().copy()
         joints_dof_type = []
@@ -210,7 +211,8 @@ class ForwardKinematicsSolver:
         joints_bid_F = []
         joints_B_r_Bj = []
         joints_F_r_Fj = []
-        joints_X_j = []
+        joints_X_p_j = []
+        joints_X_c_j = []
         joints_num_actuated_coords = []  # Number of actuated coordinates per joint (0 for passive joints)
         joints_num_actuated_dofs = []  # Number of actuated dofs per joint (0 for passive joints)
         num_joints = np.zeros(self.num_worlds, dtype=np.int32)  # Number of joints per world
@@ -239,7 +241,8 @@ class ForwardKinematicsSolver:
                 joints_bid_F.append(joints_bid_F_prev[jt_id_prev])
                 joints_B_r_Bj.append(joints_B_r_Bj_prev[jt_id_prev])
                 joints_F_r_Fj.append(joints_F_r_Fj_prev[jt_id_prev])
-                joints_X_j.append(joints_X_j_prev[jt_id_prev])
+                joints_X_p_j.append(joints_X_p_j_prev[jt_id_prev])
+                joints_X_c_j.append(joints_X_c_j_prev[jt_id_prev])
                 if joints_act_type[-1] != JointActuationType.PASSIVE:
                     num_coords_jt = joints_num_coords_prev[jt_id_prev]
                     joints_num_actuated_coords.append(num_coords_jt)
@@ -313,7 +316,9 @@ class ForwardKinematicsSolver:
                     a_y /= np.linalg.norm(a_y)
                     a_z = np.cross(a_x, a_y)
                     a_z /= np.linalg.norm(a_z)
-                    joints_X_j.append(np.stack((a_x, a_y, a_z), axis=1))
+                    axis_X_j = np.stack((a_x, a_y, a_z), axis=1)
+                    joints_X_p_j.append(axis_X_j)
+                    joints_X_c_j.append(axis_X_j)
 
             # Add joint for base joint / base body
             if base_joint_id >= 0:  # Replace base joint with an actuated free joint
@@ -323,7 +328,8 @@ class ForwardKinematicsSolver:
                 joints_bid_F.append(joints_bid_F_prev[base_joint_id])
                 joints_B_r_Bj.append(joints_B_r_Bj_prev[base_joint_id])
                 joints_F_r_Fj.append(joints_F_r_Fj_prev[base_joint_id])
-                joints_X_j.append(joints_X_j_prev[base_joint_id])
+                joints_X_p_j.append(joints_X_p_j_prev[base_joint_id])
+                joints_X_c_j.append(joints_X_c_j_prev[base_joint_id])
                 joints_num_actuated_coords.append(7)
                 coord_offset = -7 * wd_id - 1  # We encode offsets in base_q negatively with i -> -i - 1
                 actuated_coords_map.extend(range(coord_offset, coord_offset - 7, -1))
@@ -348,7 +354,8 @@ class ForwardKinematicsSolver:
                 joints_bid_F.append(base_body_id)
                 joints_B_r_Bj.append(np.zeros(3, dtype=np.float32))
                 joints_F_r_Fj.append(np.zeros(3, dtype=np.float32))
-                joints_X_j.append(np.eye(3, 3, dtype=np.float32))
+                joints_X_p_j.append(np.eye(3, 3, dtype=np.float32))
+                joints_X_c_j.append(np.eye(3, 3, dtype=np.float32))
                 joints_num_actuated_coords.append(7)
                 # Note: we rely on the initial body orientations being identity
                 # Only then will the corresponding joint coordinates be interpretable as
@@ -546,7 +553,8 @@ class ForwardKinematicsSolver:
             self.joints_bid_F = wp.from_numpy(joints_bid_F, dtype=wp.int32)
             self.joints_B_r_Bj = wp.from_numpy(joints_B_r_Bj, dtype=wp.vec3f)
             self.joints_F_r_Fj = wp.from_numpy(joints_F_r_Fj, dtype=wp.vec3f)
-            self.joints_X_j = wp.from_numpy(joints_X_j, dtype=wp.mat33f)
+            self.joints_X_p_j = wp.from_numpy(joints_X_p_j, dtype=wp.mat33f)
+            self.joints_X_c_j = wp.from_numpy(joints_X_c_j, dtype=wp.mat33f)
             self.base_joint_id = wp.from_numpy(base_joint_ids, dtype=wp.int32)
 
             # Default base state
@@ -920,7 +928,8 @@ class ForwardKinematicsSolver:
                 self.base_joint_id,
                 base_q,
                 self.joints_bid_F,
-                self.joints_X_j,
+                self.joints_X_p_j,
+                self.joints_X_c_j,
                 self.joints_B_r_Bj,
                 self.joints_F_r_Fj,
                 self.model.info.num_bodies,
@@ -947,7 +956,8 @@ class ForwardKinematicsSolver:
                 self.joints_dof_type,
                 self.joints_bid_B,
                 self.joints_bid_F,
-                self.joints_X_j,
+                self.joints_X_p_j,
+                self.joints_X_c_j,
                 self.joints_B_r_Bj,
                 self.joints_F_r_Fj,
                 bodies_q,
@@ -1047,7 +1057,8 @@ class ForwardKinematicsSolver:
                 self.joints_dof_type,
                 self.joints_act_type,
                 self.actuated_coord_offsets,
-                self.joints_X_j,
+                self.joints_X_p_j,
+                self.joints_X_c_j,
                 actuators_q,
                 self.config.use_incremental_solve,  # Incremental solve may result in non-unit quaternions
                 pos_control_transforms,
@@ -1084,7 +1095,7 @@ class ForwardKinematicsSolver:
                 self.joints_act_type,
                 self.joints_bid_B,
                 self.joints_bid_F,
-                self.joints_X_j,
+                self.joints_X_p_j,
                 self.joints_B_r_Bj,
                 self.joints_F_r_Fj,
                 bodies_q,
@@ -1141,7 +1152,7 @@ class ForwardKinematicsSolver:
                 self.joints_act_type,
                 self.joints_bid_B,
                 self.joints_bid_F,
-                self.joints_X_j,
+                self.joints_X_p_j,
                 self.joints_B_r_Bj,
                 self.joints_F_r_Fj,
                 bodies_q,
@@ -1193,7 +1204,7 @@ class ForwardKinematicsSolver:
                 self.joints_act_type,
                 self.joints_bid_B,
                 self.joints_bid_F,
-                self.joints_X_j,
+                self.joints_X_p_j,
                 self.joints_B_r_Bj,
                 self.joints_F_r_Fj,
                 bodies_q,
