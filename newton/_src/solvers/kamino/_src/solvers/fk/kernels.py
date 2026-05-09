@@ -658,7 +658,7 @@ def _eval_position_control_transformations(
         # ``q_F = q_B * q_control_body``. For joints whose ``X_p_j == X_c_j``
         # (the typical case) we skip the multiplication to keep the result
         # bit-identical to the single-frame implementation.
-        # TODO alternative: Add a per-joint ``q_offset_j: wp.array(dtype=quatf)`` to ``JointsModel``. Compute it once in a new kernel during convert_joints.
+        # TODO alternative: Add a per-joint ``q_offset_j: wp.array[quatf]`` to ``JointsModel``. Compute it once in a new kernel during convert_joints.
         X_p = joints_X_p_j[jt_id]
         X_c = joints_X_c_j[jt_id]
         any_diff = wp.bool(False)
