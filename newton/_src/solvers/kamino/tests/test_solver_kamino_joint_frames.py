@@ -25,6 +25,7 @@ import unittest
 
 import numpy as np
 import warp as wp
+
 import newton
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino.solver_kamino import SolverKamino

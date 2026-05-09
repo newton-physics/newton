@@ -551,7 +551,7 @@ class SolverKamino(SolverBase):
         else:
             _detector = self._collision_detector_kamino
 
-        # Convert Newton body-origin poses to Kamino CoM-frame poses using 
+        # Convert Newton body-origin poses to Kamino CoM-frame poses using
         # Kamino's body-com offsets.
         self._kamino.convert_body_origin_to_com(
             body_com=self._model_kamino.bodies.i_r_com_i,
