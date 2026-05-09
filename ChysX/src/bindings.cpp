@@ -368,20 +368,6 @@ past these caps silently drops the newest pairs; size generously
              "Set the maximum number of PCG iterations per step.")
         .def("pcg_iterations", &chysx::cloth::ClothSimulator::pcg_iterations,
              "Currently configured maximum PCG iterations per step.")
-        .def("set_graph_enabled",
-             &chysx::cloth::ClothSimulator::set_graph_enabled,
-             py::arg("enabled"),
-             R"pbdoc(
-Toggle the PCG solver's CUDA Graph capture path.
-
-When enabled (default), the entire 50-iteration PCG solve is captured
-into a single `cudaGraphExec_t` the first time it runs and replayed
-with one `cudaGraphLaunch` on every subsequent step, eliminating ~400
-per-step kernel launch dispatches.  Disable for debugging or to see
-every individual kernel launch in an Nsight Systems timeline.
-)pbdoc")
-        .def("graph_enabled", &chysx::cloth::ClothSimulator::graph_enabled,
-             "True if the PCG solver is currently in CUDA Graph mode.")
         // ---- diagnostics: dump the last solve's linear system -------
         .def("debug_dump_last_solve",
              [](const chysx::cloth::ClothSimulator& s) {

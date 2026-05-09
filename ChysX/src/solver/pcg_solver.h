@@ -44,23 +44,14 @@
 // solver never copies them back to the host inside the iteration so a
 // full solve runs without host-device synchronisation.
 //
-// CUDA Graph mode
-// ---------------
-// At cloth scale the iteration body is dominated by per-kernel launch
-// overhead (50 iterations × 8 small kernels = ~400 launches per solve;
-// on Windows / WDDM that's roughly 1.5 ms of pure dispatch on top of
-// the actual compute).  When `graph_enabled()` is true (default), the
-// solver captures the entire `solve()` into a single `cudaGraphExec_t`
-// the first time it sees a given (matrix layout, b, x, max_iter)
-// configuration and replays it on every subsequent call with one
-// `cudaGraphLaunch`.  The captured graph stays valid as long as the
-// underlying device pointers and dimensions are unchanged; whenever
-// any of them shifts (e.g. topology rebuild resizes A.values, or
-// particle count changes) the solver transparently re-captures.
-//
-// Capture is done on an internally-owned non-default stream because
-// stream capture is not allowed on stream 0; events are used to
-// rendezvous with whatever stream the caller passes to `solve()`.
+// Stream usage
+// ------------
+// Every kernel the solve issues is dispatched onto the
+// caller-supplied `cuda_stream`.  No internal stream is created and
+// no synchronisation is performed against any other stream.  Callers
+// who want CUDA Graph capture should wrap `solve()` in their own
+// `wp.ScopedCapture` / `cudaStreamBeginCapture` block — every PCG
+// kernel will be recorded as a node in that outer graph automatically.
 
 #pragma once
 
@@ -73,13 +64,10 @@
 #include "../memory/device_span.h"
 #include "../sparse/block_csr.h"
 
-// Forward-declare CUDA Runtime types so the header doesn't need
-// <cuda_runtime.h>.  These are all opaque pointer typedefs in the
-// real header, so storing them as `void*` then casting in the .cu
-// keeps the public interface CUDA-toolkit-free.
+// Forward-declare the CUDA Runtime stream type so this header does
+// not need <cuda_runtime.h>; the .cu file casts std::uintptr_t to
+// `cudaStream_t` (which is `CUstream_st*`) at call sites.
 struct CUstream_st;
-struct CUevent_st;
-struct CUgraphExec_st;
 
 namespace chysx {
 namespace solver {
@@ -95,13 +83,10 @@ public:
     PCGSolver(const PCGSolver&) = delete;
     PCGSolver& operator=(const PCGSolver&) = delete;
 
-    // Move-only.  Owned CUDA resources (the capture stream, two
-    // events, and the executable graph) transfer to the destination;
-    // the source becomes empty.
-    PCGSolver(PCGSolver&& other) noexcept;
-    PCGSolver& operator=(PCGSolver&& other) noexcept;
+    PCGSolver(PCGSolver&& other) noexcept = default;
+    PCGSolver& operator=(PCGSolver&& other) noexcept = default;
 
-    ~PCGSolver();
+    ~PCGSolver() = default;
 
     // Allocate (or reuse) workspace for `num_block_rows` particles.
     // Idempotent: if the size already matches no allocation happens.
@@ -140,77 +125,7 @@ public:
     // convergence checks outside the main loop.
     float last_residual();
 
-    // Toggle CUDA Graph capture/replay.  Default is ON.  Disabling
-    // also drops any cached graph; subsequent solves run kernel-by-
-    // kernel directly on the caller's stream.
-    void set_graph_enabled(bool enabled);
-    bool graph_enabled() const noexcept { return graph_enabled_; }
-
-    // Drop the cached graph executable (if any).  The next solve()
-    // re-captures from scratch.  Useful when the caller knows the
-    // device pointers it passes will change but doesn't want to
-    // toggle the graph flag.
-    void invalidate_graph();
-
 private:
-    // Submit the entire solve (prologue + max_iter loop) to `stream`.
-    // Used both as the direct (non-graph) execution path and as the
-    // capture body for graph mode.
-    void submit_solve_ops_(struct CUstream_st* stream,
-                           const sparse::BlockCSR3& A,
-                           DeviceSpan<math::Vec3f> b,
-                           DeviceSpan<math::Vec3f> x,
-                           const PCGParams& params,
-                           const collision::ContactSpMVOp* contact);
-
-    // Capture `submit_solve_ops_` into a fresh `graph_exec_`.  The
-    // previous executable (if any) is destroyed first.  Caller is
-    // responsible for ensuring no work is in flight on
-    // `graph_stream_` at the time of the call.
-    void capture_graph_(const sparse::BlockCSR3& A,
-                        DeviceSpan<math::Vec3f> b,
-                        DeviceSpan<math::Vec3f> x,
-                        const PCGParams& params,
-                        const collision::ContactSpMVOp* contact);
-
-    // Lazy-create graph stream + events.  Called the first time graph
-    // mode is actually used.
-    void ensure_graph_resources_();
-
-    // Cache key — the graph is only valid while every one of these
-    // matches the captured configuration.  Contact-side fields have
-    // to be part of the key because their values (pointers, ints,
-    // floats) are baked into the captured kernel launches; mutating
-    // them after capture would NOT be picked up.
-    struct GraphKey {
-        int n            = 0;
-        int max_iter     = 0;
-        const void* A_diag        = nullptr;
-        const void* A_values      = nullptr;
-        const void* A_row_offsets = nullptr;
-        const void* A_col_indices = nullptr;
-        const void* b             = nullptr;
-        void*       x             = nullptr;
-        // Contact (COO sidecar) — ignored when no contact op is
-        // attached to the solve.
-        const void* C_pairs      = nullptr;
-        const void* C_weights    = nullptr;
-        const void* C_count      = nullptr;
-        int         C_max        = 0;
-        float       C_stiffness  = 0.0f;
-        bool operator==(const GraphKey& o) const noexcept {
-            return n == o.n && max_iter == o.max_iter &&
-                   A_diag == o.A_diag && A_values == o.A_values &&
-                   A_row_offsets == o.A_row_offsets &&
-                   A_col_indices == o.A_col_indices &&
-                   b == o.b && x == o.x &&
-                   C_pairs == o.C_pairs && C_weights == o.C_weights &&
-                   C_count == o.C_count && C_max == o.C_max &&
-                   C_stiffness == o.C_stiffness;
-        }
-        bool operator!=(const GraphKey& o) const noexcept { return !(*this == o); }
-    };
-
     int num_block_rows_ = 0;
 
     CudaArray<math::Vec3f> r_;
@@ -227,19 +142,6 @@ private:
     //   coeff_[2] = <r, z>_new  (rho_{k+1})
     //   coeff_[3] = scratch
     CudaArray<float> coeff_;
-
-    // ---- CUDA Graph state ------------------------------------------
-    bool graph_enabled_ = true;
-
-    // Owned resources, lazily created on first graph-mode solve.
-    // Stored as CUDA Runtime opaque types to keep this header free of
-    // <cuda_runtime.h>.
-    struct CUstream_st*     graph_stream_ = nullptr;
-    struct CUevent_st*      pre_event_    = nullptr;
-    struct CUevent_st*      post_event_   = nullptr;
-    struct CUgraphExec_st*  graph_exec_   = nullptr;
-
-    GraphKey cached_key_{};
 };
 
 }  // namespace solver

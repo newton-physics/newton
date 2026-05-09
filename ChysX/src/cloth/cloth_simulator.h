@@ -237,8 +237,6 @@ public:
         // Topology may need re-binding so the BVH picks up the new
         // ef-candidate cap; defer to next step via topology_dirty_.
         topology_dirty_ = true;
-        // PCG graph baked-in the previous max -- force re-capture.
-        pcg_.invalidate_graph();
     }
     int self_collision_max_contacts() const noexcept {
         return self_collision_detector_.max_contacts();
@@ -314,13 +312,6 @@ public:
         pcg_max_iterations_ = (max_iter > 0) ? max_iter : 1;
     }
     int pcg_iterations() const noexcept { return pcg_max_iterations_; }
-
-    // Toggle the PCG solver's CUDA-Graph capture path.  Default ON;
-    // disable if you want to run kernel-by-kernel for debugging or
-    // for nsys profiles where you'd rather see every individual
-    // kernel launch instead of one fused `cudaGraphLaunch`.
-    void set_graph_enabled(bool enabled) { pcg_.set_graph_enabled(enabled); }
-    bool graph_enabled() const noexcept { return pcg_.graph_enabled(); }
 
     // ---- diagnostics --------------------------------------------------
     //

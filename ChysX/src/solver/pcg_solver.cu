@@ -8,7 +8,6 @@
 
 #include <stdexcept>
 #include <string>
-#include <utility>
 
 #include "../profile/nvtx_range.h"
 
@@ -169,29 +168,42 @@ void PCGSolver::initialize(int num_block_rows) {
     num_block_rows_ = num_block_rows;
 }
 
-// ---------------------------------------------------------------------------
-// PCGSolver — body submission (shared by direct + capture paths)
-// ---------------------------------------------------------------------------
+int PCGSolver::solve(const sparse::BlockCSR3& A,
+                     DeviceSpan<math::Vec3f> b,
+                     DeviceSpan<math::Vec3f> x,
+                     const PCGParams& params,
+                     std::uintptr_t cuda_stream,
+                     const collision::ContactSpMVOp* contact) {
+    const int n = A.num_block_rows();
+    if (n == 0) return 0;
 
-void PCGSolver::submit_solve_ops_(cudaStream_t stream,
-                                  const sparse::BlockCSR3& A,
-                                  DeviceSpan<math::Vec3f> b,
-                                  DeviceSpan<math::Vec3f> x,
-                                  const PCGParams& params,
-                                  const collision::ContactSpMVOp* contact) {
-    const int n = num_block_rows_;
+    if (static_cast<int>(b.size()) < n || static_cast<int>(x.size()) < n) {
+        throw std::invalid_argument("PCGSolver::solve: b/x shorter than A rows");
+    }
+    if (static_cast<int>(A.diag.gpu_size()) < n) {
+        throw std::invalid_argument(
+            "PCGSolver::solve: A.diag has fewer than A.num_block_rows() entries; "
+            "call A.build_topology(...) before solving");
+    }
+
+    if (n != num_block_rows_) {
+        initialize(n);
+    }
+
+    CHYSX_NVTX_RANGE_COLOUR("pcg::solve", 0xfff1c40f);
+
+    auto stream = reinterpret_cast<cudaStream_t>(cuda_stream);
     const int grid = grid_for(n);
-    const auto stream_uintptr = reinterpret_cast<std::uintptr_t>(stream);
+    const auto stream_uintptr = cuda_stream;
 
     // M_inv = inverse(diag).  A.diag's contents are refreshed every
-    // step by the cloth solver before this call; the kernel reads
-    // those latest values whether we run it directly or through a
-    // captured graph.  Note that the preconditioner is built only
-    // from A's diagonal -- contact contributions live in the COO
-    // sidecar and are NOT folded into M_inv.  At large contact
-    // stiffness this can slow convergence; if it becomes a problem
-    // we can build a "contact diag lump" buffer and add it to A.diag
-    // before inverting.  For now elastic-only Jacobi is plenty.
+    // step by the cloth solver before this call.  Note that the
+    // preconditioner is built only from A's diagonal -- contact
+    // contributions live in the COO sidecar and are NOT folded into
+    // M_inv.  At large contact stiffness this can slow convergence;
+    // if it becomes a problem we can build a "contact diag lump"
+    // buffer and add it to A.diag before inverting.  For now
+    // elastic-only Jacobi is plenty.
     invert_diag_kernel<<<grid, kBlockDim, 0, stream>>>(
         A.diag.gpu_data(), M_inv_.gpu_data(), n);
 
@@ -280,234 +292,6 @@ void PCGSolver::submit_solve_ops_(cudaStream_t stream,
         scalar_copy_kernel<<<1, 1, 0, stream>>>(
             &coeff_.gpu_data()[2], &coeff_.gpu_data()[0]);
     }
-}
-
-// ---------------------------------------------------------------------------
-// PCGSolver — graph capture / replay
-// ---------------------------------------------------------------------------
-
-void PCGSolver::ensure_graph_resources_() {
-    if (graph_stream_ != nullptr) return;
-
-    cudaStream_t stream = nullptr;
-    check_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking),
-               "cudaStreamCreateWithFlags(graph_stream)");
-    graph_stream_ = stream;
-
-    cudaEvent_t e_pre = nullptr;
-    cudaEvent_t e_post = nullptr;
-    // `cudaEventDisableTiming` lets the driver use the cheap
-    // synchronisation-only event implementation; we never read these
-    // for timing.
-    check_cuda(cudaEventCreateWithFlags(&e_pre, cudaEventDisableTiming),
-               "cudaEventCreate(pre_event)");
-    check_cuda(cudaEventCreateWithFlags(&e_post, cudaEventDisableTiming),
-               "cudaEventCreate(post_event)");
-    pre_event_ = e_pre;
-    post_event_ = e_post;
-}
-
-void PCGSolver::capture_graph_(const sparse::BlockCSR3& A,
-                               DeviceSpan<math::Vec3f> b,
-                               DeviceSpan<math::Vec3f> x,
-                               const PCGParams& params,
-                               const collision::ContactSpMVOp* contact) {
-    CHYSX_NVTX_RANGE_COLOUR("pcg::graph_capture", 0xfff1c40f);
-
-    if (graph_exec_ != nullptr) {
-        // Drop the previous executable before building a new one.
-        cudaGraphExecDestroy(graph_exec_);
-        graph_exec_ = nullptr;
-    }
-
-    cudaStream_t s = graph_stream_;
-
-    // ThreadLocal mode keeps the capture confined to this stream on
-    // this thread — other Warp / pybind code running concurrently
-    // (e.g. Newton viewer kernels) won't accidentally end up in our
-    // graph.
-    check_cuda(cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal),
-               "cudaStreamBeginCapture");
-
-    submit_solve_ops_(s, A, b, x, params, contact);
-
-    cudaGraph_t graph = nullptr;
-    check_cuda(cudaStreamEndCapture(s, &graph), "cudaStreamEndCapture");
-
-    cudaGraphExec_t exec = nullptr;
-    // 12.x: cudaGraphInstantiate(&exec, graph, 0).  No log-buffer
-    // params required; if the driver rejects a node we let the
-    // exception propagate.
-    cudaError_t inst_err = cudaGraphInstantiate(&exec, graph, 0);
-    cudaGraphDestroy(graph);
-    check_cuda(inst_err, "cudaGraphInstantiate");
-
-    graph_exec_ = exec;
-}
-
-// ---------------------------------------------------------------------------
-// PCGSolver — public entry points
-// ---------------------------------------------------------------------------
-
-PCGSolver::PCGSolver(PCGSolver&& other) noexcept
-    : num_block_rows_(other.num_block_rows_),
-      r_(std::move(other.r_)),
-      p_(std::move(other.p_)),
-      z_(std::move(other.z_)),
-      Ap_(std::move(other.Ap_)),
-      M_inv_(std::move(other.M_inv_)),
-      coeff_(std::move(other.coeff_)),
-      graph_enabled_(other.graph_enabled_),
-      graph_stream_(other.graph_stream_),
-      pre_event_(other.pre_event_),
-      post_event_(other.post_event_),
-      graph_exec_(other.graph_exec_),
-      cached_key_(other.cached_key_) {
-    other.num_block_rows_ = 0;
-    other.graph_stream_ = nullptr;
-    other.pre_event_ = nullptr;
-    other.post_event_ = nullptr;
-    other.graph_exec_ = nullptr;
-    other.cached_key_ = GraphKey{};
-}
-
-PCGSolver& PCGSolver::operator=(PCGSolver&& other) noexcept {
-    if (this == &other) return *this;
-
-    // Tear down our own resources before stealing.
-    invalidate_graph();
-    if (graph_stream_) {
-        cudaStreamDestroy(graph_stream_);
-        graph_stream_ = nullptr;
-    }
-    if (pre_event_)  { cudaEventDestroy(pre_event_);  pre_event_  = nullptr; }
-    if (post_event_) { cudaEventDestroy(post_event_); post_event_ = nullptr; }
-
-    num_block_rows_ = other.num_block_rows_;
-    r_     = std::move(other.r_);
-    p_     = std::move(other.p_);
-    z_     = std::move(other.z_);
-    Ap_    = std::move(other.Ap_);
-    M_inv_ = std::move(other.M_inv_);
-    coeff_ = std::move(other.coeff_);
-    graph_enabled_ = other.graph_enabled_;
-    graph_stream_  = other.graph_stream_;
-    pre_event_     = other.pre_event_;
-    post_event_    = other.post_event_;
-    graph_exec_    = other.graph_exec_;
-    cached_key_    = other.cached_key_;
-
-    other.num_block_rows_ = 0;
-    other.graph_stream_ = nullptr;
-    other.pre_event_ = nullptr;
-    other.post_event_ = nullptr;
-    other.graph_exec_ = nullptr;
-    other.cached_key_ = GraphKey{};
-    return *this;
-}
-
-PCGSolver::~PCGSolver() {
-    // Destructors must not throw — swallow CUDA errors here.  Any
-    // runtime that's already shut down (e.g. process teardown after a
-    // device reset) will return errors that don't matter at this
-    // point.
-    if (graph_exec_)  cudaGraphExecDestroy(graph_exec_);
-    if (graph_stream_) cudaStreamDestroy(graph_stream_);
-    if (pre_event_)   cudaEventDestroy(pre_event_);
-    if (post_event_)  cudaEventDestroy(post_event_);
-}
-
-void PCGSolver::set_graph_enabled(bool enabled) {
-    if (graph_enabled_ == enabled) return;
-    graph_enabled_ = enabled;
-    if (!enabled) invalidate_graph();
-}
-
-void PCGSolver::invalidate_graph() {
-    if (graph_exec_) {
-        cudaGraphExecDestroy(graph_exec_);
-        graph_exec_ = nullptr;
-    }
-    cached_key_ = GraphKey{};
-}
-
-int PCGSolver::solve(const sparse::BlockCSR3& A,
-                     DeviceSpan<math::Vec3f> b,
-                     DeviceSpan<math::Vec3f> x,
-                     const PCGParams& params,
-                     std::uintptr_t cuda_stream,
-                     const collision::ContactSpMVOp* contact) {
-    const int n = A.num_block_rows();
-    if (n == 0) return 0;
-
-    if (static_cast<int>(b.size()) < n || static_cast<int>(x.size()) < n) {
-        throw std::invalid_argument("PCGSolver::solve: b/x shorter than A rows");
-    }
-    if (static_cast<int>(A.diag.gpu_size()) < n) {
-        throw std::invalid_argument(
-            "PCGSolver::solve: A.diag has fewer than A.num_block_rows() entries; "
-            "call A.build_topology(...) before solving");
-    }
-
-    if (n != num_block_rows_) {
-        initialize(n);
-        // r_/p_/z_/Ap_/M_inv_/coeff_ pointers may have moved — drop
-        // the cached graph since it referenced the old ones.
-        invalidate_graph();
-    }
-
-    auto caller_stream = reinterpret_cast<cudaStream_t>(cuda_stream);
-
-    if (!graph_enabled_) {
-        // Legacy path — submit every kernel directly to the caller's
-        // stream.  Useful for debugging or when the caller has already
-        // wrapped solve() inside its own CUDA Graph capture.
-        submit_solve_ops_(caller_stream, A, b, x, params, contact);
-        return params.max_iterations;
-    }
-
-    ensure_graph_resources_();
-
-    GraphKey key{};
-    key.n            = n;
-    key.max_iter     = params.max_iterations;
-    key.A_diag       = A.diag.gpu_data();
-    key.A_values     = A.values.gpu_data();
-    key.A_row_offsets = A.row_offsets.gpu_data();
-    key.A_col_indices = A.col_indices.gpu_data();
-    key.b            = b.data();
-    key.x            = x.data();
-    if (contact != nullptr && contact->active()) {
-        key.C_pairs     = contact->pairs;
-        key.C_weights   = contact->weights;
-        key.C_count     = contact->count_dev;
-        key.C_max       = contact->max_contacts;
-        key.C_stiffness = contact->stiffness;
-    }
-
-    if (graph_exec_ == nullptr || cached_key_ != key) {
-        capture_graph_(A, b, x, params, contact);
-        cached_key_ = key;
-    }
-
-    // Rendezvous: caller_stream → graph_stream_ → caller_stream.
-    //
-    // Without these events the captured graph would race with
-    // upstream work the caller queued on caller_stream (e.g. the
-    // Hessian scatter that just filled `b = rhs_`) and with anything
-    // the caller queues afterwards (e.g. `finalize_step_kernel`).
-    check_cuda(cudaEventRecord(pre_event_, caller_stream),
-               "cudaEventRecord(pre_event)");
-    check_cuda(cudaStreamWaitEvent(graph_stream_, pre_event_, 0),
-               "cudaStreamWaitEvent(graph_stream <- pre)");
-
-    check_cuda(cudaGraphLaunch(graph_exec_, graph_stream_),
-               "cudaGraphLaunch");
-
-    check_cuda(cudaEventRecord(post_event_, graph_stream_),
-               "cudaEventRecord(post_event)");
-    check_cuda(cudaStreamWaitEvent(caller_stream, post_event_, 0),
-               "cudaStreamWaitEvent(caller_stream <- post)");
 
     return params.max_iterations;
 }

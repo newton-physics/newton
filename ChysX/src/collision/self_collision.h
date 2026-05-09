@@ -42,8 +42,8 @@
 #include "../memory/cuda_array.h"
 #include "../memory/device_span.h"
 #include "aabb.cuh"
-#include "lbvh.h"
 #include "mesh_topology.h"
+#include "quant_bvh.h"
 
 namespace chysx {
 namespace collision {
@@ -120,10 +120,17 @@ private:
     const MeshTopology* topology_ = nullptr;
 
     // Per-frame primitive AABBs / centers and the BVH built on top.
+    //
+    // `BvhImpl` is a one-line swap between the two broadphases we
+    // ship: `LinearBvh` (Karras 2012 LBVH with KittenGpuLBVH-style
+    // 64-byte nodes) and `QuantBvh` (cuda-cloth's 16-byte quantized
+    // stackless BVH).  Both expose the same `build / refit /
+    // query_self_ef / query_pairs_dev / query_count_dev` surface, so
+    // the rest of the pipeline doesn't care which one is in use.
+    using BvhImpl = QuantBvh;
     CudaArray<Aabb>        face_aabbs_;
     CudaArray<math::Vec3f> face_centers_;
-    CudaArray<Aabb>        edge_aabbs_;
-    LinearBvh              bvh_;
+    BvhImpl                bvh_;
 
     // Output stream (unified VF + EE 4-particle contacts).
     CudaArray<math::Vec4i>     pairs_;

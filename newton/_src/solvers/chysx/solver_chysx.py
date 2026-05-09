@@ -409,4 +409,12 @@ class SolverChysX(SolverBase):
             particle_count=n,
             inv_mass_ptr=inv_mass_ptr,
         )
-        self._sim.step(dt=float(dt))
+
+        # Issue every chysx kernel onto the current Warp stream so the
+        # whole step joins any wp.ScopedCapture() the user wrapped us
+        # in.  Passing a non-zero stream also disables chysx's
+        # per-kernel `cudaStreamSynchronize` fallbacks (those only
+        # trigger when `cuda_stream == 0`), which is what makes
+        # graph capture viable.
+        stream = wp.get_stream(self._device).cuda_stream
+        self._sim.step(dt=float(dt), cuda_stream=stream)

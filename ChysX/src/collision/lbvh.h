@@ -16,9 +16,46 @@
 //                     "edge incident to face" hits the AABB test
 //                     wouldn't tell us about).
 //
-// Storage layout: 2N-1 nodes.  Leaves live at indices [N-1, 2N-1) and
-// internal nodes at [0, N-1).  This matches cuda-cloth's `bvhNode`
-// layout so the kernels are 1:1 ports modulo the cub-vs-thrust sort.
+// Storage layout (modeled on KittenGpuLBVH for cache-friendly traversal
+// and cheap atomic-light refit):
+//
+//   `nodes_`         : `n_leaves - 1` internal nodes.  Each node fits
+//                      in exactly one 64-byte cache line and embeds the
+//                      AABBs of *both* its children, so a query thread
+//                      sitting on an internal node only needs one cache
+//                      line to decide whether to descend left, right,
+//                      both, or neither.
+//   `leaf_parents_`  : `n_leaves` `uint32_t` slots; `leaf_parents_[i]`
+//                      is the internal-node index that owns leaf i,
+//                      with the MSB set when leaf i is the *right*
+//                      child of that parent.
+//   `sorted_id_`     : `n_leaves` int slots; the post-Morton-sort
+//                      mapping (sorted leaf order -> original primitive
+//                      id).  Used at leaf hits to translate the BVH's
+//                      internal sorted index back to the caller's
+//                      primitive id (e.g. a face index).
+//   `leaf_aabbs`     : *external* pointer (passed into `refit`).  The
+//                      BVH does not own the per-leaf AABB buffer; each
+//                      refit reads from it and pushes those bounds up
+//                      into the per-internal-node `bounds[2]` slots.
+//
+// Index encoding (MSB-tagged uint32_t throughout):
+//
+//   - Internal node child links (`BvhNode::left`, `BvhNode::right`):
+//       MSB = 0 -> internal node index (in `nodes_`)
+//       MSB = 1 -> sorted leaf index   (in `sorted_id_`)
+//   - Internal node parent link (`BvhNode::parent`):
+//       MSB = 0 -> "I am my parent's left child"
+//       MSB = 1 -> "I am my parent's right child"
+//   - Leaf-to-parent link (`leaf_parents_[i]`):
+//       lower 31 bits = internal node index
+//       MSB = 0 / 1 same convention as `BvhNode::parent`
+//
+// `fence` per internal node is the index of the "far end" of the leaf
+// range its subtree covers (the other end is the node's own index when
+// you reinterpret it as a sorted-leaf coordinate).  Plumbed through so
+// future self-queries can dedupe pairs (`max(idx, fence) <= q` skip);
+// the current cross-query EF traversal does not need it.
 
 #pragma once
 
@@ -31,14 +68,44 @@
 namespace chysx {
 namespace collision {
 
-struct BvhNode {
-    int parent;
-    int left;
-    int right;
-
-    // Marker for "uninitialised" (matches cuda-cloth's cudaMemset(-1)).
-    static constexpr int kInvalid = -1;
+// Packed AABB used inside `BvhNode`.  Identical numerical content to
+// `Aabb` but without the `alignas(16)` qualifier, so an array of two
+// of them fits in 48 bytes flat -- the rest of the 64-byte node is the
+// 4 uint32_t link fields.  Cast to/from `Aabb` is a 24-byte memcpy.
+struct AabbPacked {
+    math::Vec3f mn;
+    math::Vec3f mx;
 };
+static_assert(sizeof(AabbPacked) == 24,
+              "AabbPacked must be exactly 24 bytes for BvhNode layout");
+
+// One node per *internal* tree position.  Leaves are stored implicitly
+// through `leaf_parents_` + `sorted_id_`; the leaf's own AABB lives in
+// the external `leaf_aabbs` buffer the caller hands `refit(...)`.
+//
+// Layout (64 bytes, single L1 cache line):
+//
+//   [ 0..3 ]  parent  (uint32: MSB=isRightChild, lower 31 bits=parent index)
+//   [ 4..7 ]  left    (uint32: MSB=isLeaf,       lower 31 bits=child index)
+//   [ 8..11]  right   (uint32: MSB=isLeaf,       lower 31 bits=child index)
+//   [12..15]  fence   (uint32: far end of subtree's leaf range)
+//   [16..39]  bounds[0]  (24-byte AABB of the LEFT child)
+//   [40..63]  bounds[1]  (24-byte AABB of the RIGHT child)
+struct alignas(64) BvhNode {
+    std::uint32_t parent;
+    std::uint32_t left;
+    std::uint32_t right;
+    std::uint32_t fence;
+    AabbPacked    bounds[2];
+
+    // Top-bit tag helpers (kept here so users do not bake the magic
+    // constant 0x80000000 into call sites).
+    static constexpr std::uint32_t kLeafBit  = 0x80000000u;
+    static constexpr std::uint32_t kRightBit = 0x80000000u;
+    static constexpr std::uint32_t kIdxMask  = 0x7FFFFFFFu;
+};
+static_assert(sizeof(BvhNode) == 64,
+              "BvhNode must be 64 bytes (one L1 cache line)");
 
 class LinearBvh {
 public:
@@ -54,7 +121,10 @@ public:
     void build(int n_leaves, int max_query_pairs);
 
     // Per-frame refit driven by `leaf_aabbs` and `leaf_centers`,
-    // both length == n_leaves.  Inputs are read-only.
+    // both length == n_leaves.  Inputs are read-only and only used
+    // during this call; the BVH copies what it needs into its own
+    // node buffers, then `query_self_ef` traverses without going
+    // back to `leaf_aabbs`.
     void refit(const Aabb*       leaf_aabbs,
                const math::Vec3f* leaf_centers,
                std::uintptr_t     cuda_stream = 0);
@@ -63,7 +133,7 @@ public:
     // the tree from root and emit (query_id, leaf_id) pairs whose AABBs
     // overlap, skipping pairs that share at least one vertex (covertex
     // filter, given the edge & face arrays from MeshTopology).  Result
-    // count + flat list live in `query_count_dev_` / `query_pairs_`.
+    // count + flat list live in `query_count_` / `query_pairs_`.
     void query_self_ef(const Aabb*           query_aabbs,
                        int                   n_queries,
                        const math::Vec2i*    edges,
@@ -78,9 +148,8 @@ public:
     // Sorted leaf -> original primitive id.  Length n_leaves.
     const int* sorted_id_dev() const noexcept { return sorted_id_.gpu_data(); }
 
-    // Tree topology + per-node AABB.  Length 2*n_leaves - 1.
+    // Tree topology with embedded child AABBs.  Length n_leaves - 1.
     const BvhNode* nodes_dev() const noexcept { return nodes_.gpu_data(); }
-    const Aabb*    node_aabbs_dev() const noexcept { return node_aabbs_.gpu_data(); }
 
     // Flat list of (query_id, leaf_id) emitted by the last query.
     // The first `*query_count_dev_` entries are valid.
@@ -93,7 +162,14 @@ private:
     int max_query_pairs_ = 0;
     std::size_t cub_temp_bytes_ = 0;
 
-    // Per-frame scratch.
+    // Maximum DFS stack size needed by `query_self_ef`.  Computed
+    // during `refit` (the merge-up kernel writes the answer into
+    // `refit_flag_[0]` when it lands on the root); read back to host
+    // so the templated query kernel can be dispatched with the
+    // smallest sufficient stack size.
+    int max_stack_size_ = 1;
+
+    // Per-frame Morton scratch.
     CudaArray<std::uint64_t> morton_keys_in_;
     CudaArray<std::uint64_t> morton_keys_out_;
     CudaArray<int>           sorted_id_in_;
@@ -106,9 +182,9 @@ private:
     CudaArray<Aabb> scene_bbox_;
     CudaArray<Aabb> scene_partial_;
 
-    // Tree.
-    CudaArray<BvhNode> nodes_;       // length 2 * n_leaves - 1
-    CudaArray<Aabb>    node_aabbs_;  // length 2 * n_leaves - 1
+    // Tree topology (with embedded child AABBs) + per-leaf parent link.
+    CudaArray<BvhNode>      nodes_;          // length n_leaves - 1
+    CudaArray<std::uint32_t> leaf_parents_;  // length n_leaves
 
     // Query result.
     CudaArray<int>         query_count_;     // single int

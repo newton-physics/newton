@@ -4,9 +4,11 @@
 //
 // Pipeline (matches cuda-cloth's SelfCollisionBvhDcd):
 //
-//   build face/edge AABBs   (kernel)
-//   refit face LBVH         (LinearBvh::refit)
-//   self-EF broadphase      (LinearBvh::query_self_ef)
+//   build face AABBs        (kernel; edge AABBs are built on the
+//                            fly inside the BVH query kernel)
+//   refit face BVH          (BvhImpl::refit, fused build+refit)
+//   self-EF broadphase      (BvhImpl::query_self_ef -- reads
+//                            `verts[edge.x/y]` directly)
 //   cull EF -> VF + EE      (cull_ef_to_vfee_kernel)
 //   cull adjacent EE        (cull_ee_adjacent_kernel)
 //
@@ -184,19 +186,12 @@ __global__ void face_aabb_center_kernel(
                                0.5f * (box.mn.z + box.mx.z));
 }
 
-__global__ void edge_aabb_kernel(
-    const math::Vec2i* __restrict__ edges, int n_edges,
-    const math::Vec3f* __restrict__ pos,
-    float thickness,
-    Aabb* __restrict__ aabbs) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n_edges) return;
-    const math::Vec2i e = edges[idx];
-    Aabb box;
-    box.set(pos[e.x], pos[e.y]);
-    box.enlarge(thickness);
-    aabbs[idx] = box;
-}
+// NB: there is no per-edge AABB kernel anymore.  `QuantBvh::
+// query_self_ef` builds each edge's thickness-enlarged box on the
+// fly inside the query kernel, fed straight from `verts[edge.x/y]`,
+// which both saves a kernel launch + n_edges*24B of round-tripped
+// DRAM and lets the edge endpoints stay in registers for the inline
+// covertex test.
 
 __global__ void clear_int_kernel(int* p) { *p = 0; }
 
@@ -406,11 +401,9 @@ void SelfCollisionDetector::bind_topology(const MeshTopology* topology) {
     }
 
     const int n_faces = topology_->n_faces();
-    const int n_edges = topology_->n_edges();
 
     face_aabbs_.resize(static_cast<std::size_t>(n_faces));
     face_centers_.resize(static_cast<std::size_t>(n_faces));
-    edge_aabbs_.resize(static_cast<std::size_t>(n_edges));
 
     bvh_.build(n_faces, max_ef_candidates_);
 }
@@ -429,27 +422,28 @@ void SelfCollisionDetector::detect(DeviceSpan<math::Vec3f> positions,
     // Reset the global contact counter.
     clear_int_kernel<<<1, 1, 0, stream>>>(count_.gpu_data());
 
-    // 1. Build face/edge AABBs and face centers from current positions.
+    // 1. Build face AABBs + centers from current positions.  Edge
+    //    AABBs are *not* materialised here: they live entirely
+    //    inside the BVH query kernel (see `QuantBvh::query_self_ef`).
     face_aabb_center_kernel<<<grid_for(n_faces), kBlockDim, 0, stream>>>(
         topology_->faces().gpu_data(), n_faces,
         positions.data(), thickness,
         face_aabbs_.gpu_data(), face_centers_.gpu_data());
     check_cuda(cudaGetLastError(), "face_aabb_center_kernel");
 
-    edge_aabb_kernel<<<grid_for(n_edges), kBlockDim, 0, stream>>>(
-        topology_->edges().gpu_data(), n_edges,
-        positions.data(), thickness,
-        edge_aabbs_.gpu_data());
-    check_cuda(cudaGetLastError(), "edge_aabb_kernel");
-
-    // 2. LBVH refit on faces.
+    // 2. BVH refit on faces.  The BVH owns its own packed-leaf
+    //    payload (`PackedFace`), populated from `faces` so the
+    //    query kernel can do covertex tests with one 128-bit load
+    //    per leaf.
     bvh_.refit(face_aabbs_.gpu_data(), face_centers_.gpu_data(),
+               topology_->faces().gpu_data(),
                cuda_stream);
 
-    // 3. Self-EF broadphase.
-    bvh_.query_self_ef(edge_aabbs_.gpu_data(), n_edges,
-                       topology_->edges().gpu_data(),
-                       topology_->faces().gpu_data(),
+    // 3. Self-EF broadphase: per-edge AABB is built on the fly
+    //    inside the query kernel from `positions[edge.x/y]`.
+    bvh_.query_self_ef(topology_->edges().gpu_data(),
+                       positions.data(),
+                       n_edges, thickness,
                        cuda_stream);
 
     // 4. Cull EF -> {VF, EE}.

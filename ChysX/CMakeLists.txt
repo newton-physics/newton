@@ -34,6 +34,7 @@ pybind11_add_module(_chysx_native MODULE
     src/solver/pcg_solver.cu
     src/collision/mesh_topology.cu
     src/collision/lbvh.cu
+    src/collision/quant_bvh.cu
     src/collision/self_collision.cu
     src/collision/contact_spmv.cu
     src/constraint/pin_constraint.cu
