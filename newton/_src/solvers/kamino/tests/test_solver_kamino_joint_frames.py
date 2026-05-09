@@ -101,9 +101,7 @@ class TestKaminoNonAlignedJointFrames(unittest.TestCase):
 
         for name, before in snapshot.items():
             after = getattr(model, name).numpy()
-            np.testing.assert_array_equal(
-                after, before, err_msg=f"ModelKamino.from_newton mutated model.{name}"
-            )
+            np.testing.assert_array_equal(after, before, err_msg=f"ModelKamino.from_newton mutated model.{name}")
 
     def test_aligned_joint_frames_are_bit_identical(self):
         """For aligned joint frames, ``X_p_j`` and ``X_c_j`` must be equal.
