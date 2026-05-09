@@ -23,8 +23,11 @@
 
 #include <cstdint>
 
+#include "../collision/mesh_topology.h"
+#include "../collision/self_collision.h"
 #include "../constraint/bending_constraint.h"
 #include "../constraint/pin_constraint.h"
+#include "../constraint/self_collision_constraint.h"
 #include "../constraint/spring_constraint.h"
 #include "../constraint/triangle_stretch_constraint.h"
 #include "../math/matrix.cuh"
@@ -181,6 +184,89 @@ public:
         return bending_;
     }
 
+    // ---- self-collision (DCD) -----------------------------------------
+    //
+    // Brute-force VF (vertex-face) detection ahead of every Newton
+    // iteration: each vertex is tested against every triangle that
+    // does not contain it, and any pair within `thickness` becomes a
+    // contact penalty constraint.
+    //
+    // Hessian contributions are *not* written into `H_`; they live in
+    // a COO sidecar (`chysx::collision::ContactSpMVOp`) the PCG
+    // solver applies during its `A * x` evaluation.  This keeps the
+    // CSR topology of `H_` static across frames even though the
+    // contact set churns every frame -- which in turn lets the PCG
+    // CUDA-graph cache hit without re-capture as long as the contact
+    // buffer pointers don't change.
+    //
+    // The detector's contact buffer is sized lazily on first call to
+    // `set_self_collision_max_contacts(...)`; pass a generous cap
+    // (e.g. 8 * particle_count for typical cloth).
+    void set_self_collision_enabled(bool enabled) noexcept {
+        self_collision_enabled_ = enabled;
+    }
+    bool self_collision_enabled() const noexcept {
+        return self_collision_enabled_;
+    }
+
+    void set_self_collision_thickness(float t) noexcept {
+        self_collision_thickness_ = t;
+    }
+    float self_collision_thickness() const noexcept {
+        return self_collision_thickness_;
+    }
+
+    void set_self_collision_stiffness(float k) noexcept {
+        self_collision_.set_stiffness(k);
+    }
+    float self_collision_stiffness() const noexcept {
+        return self_collision_.stiffness();
+    }
+
+    // Allocate the detector's contact result buffers and the broadphase
+    // EF-candidate list.  Idempotent; re-call only if you want to grow
+    // the caps.  The default `max_ef_candidates = max_contacts` works
+    // for typical cloth where each broadphase candidate yields ~1
+    // narrow-phase contact on average; bump it if you observe many
+    // candidates getting culled.
+    void set_self_collision_max_contacts(int max_contacts,
+                                         int max_ef_candidates = 0) {
+        const int ef_cap = (max_ef_candidates > 0) ? max_ef_candidates
+                                                   : max_contacts;
+        self_collision_detector_.reserve(max_contacts, ef_cap);
+        // Topology may need re-binding so the BVH picks up the new
+        // ef-candidate cap; defer to next step via topology_dirty_.
+        topology_dirty_ = true;
+        // PCG graph baked-in the previous max -- force re-capture.
+        pcg_.invalidate_graph();
+    }
+    int self_collision_max_contacts() const noexcept {
+        return self_collision_detector_.max_contacts();
+    }
+
+    collision::SelfCollisionDetector& self_collision_detector() noexcept {
+        return self_collision_detector_;
+    }
+    const collision::SelfCollisionDetector& self_collision_detector() const noexcept {
+        return self_collision_detector_;
+    }
+
+    // ---- pin target update (no re-bind) -------------------------------
+    //
+    // Cheap per-frame update of the pinned particles' target world
+    // positions, without touching their indices or the Hessian
+    // topology.  `host_targets` is a packed (n_pins, 3) float buffer
+    // whose row count must match the pin set most recently installed
+    // by `set_pins(...)`.
+    //
+    // Use this to drive twist / dragging animations where pin
+    // positions move every frame but the pin set stays the same:
+    // changing indices via `set_pins(...)` would force a Hessian-
+    // topology rebuild and flush the PCG CUDA graph cache.
+    void update_pin_targets(const math::Vec3f* host_targets,
+                            int n_pins,
+                            std::uintptr_t cuda_stream = 0);
+
     // ---- area-weighted vertex mass ------------------------------------
     //
     // Recompute per-particle inverse mass from the cloth's mesh +
@@ -289,6 +375,11 @@ private:
     constraint::TriangleStretchConstraint fem_stretch_;
     constraint::TriangleStretchConstraint fem_shear_;
     constraint::BendingConstraint         bending_;
+    constraint::SelfCollisionConstraint   self_collision_;
+    collision::MeshTopology               mesh_topology_;
+    collision::SelfCollisionDetector      self_collision_detector_;
+    bool                                  self_collision_enabled_ = false;
+    float                                 self_collision_thickness_ = 0.0f;
 
     // ---- implicit-Euler PCG step working state ----------------------
     //

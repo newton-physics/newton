@@ -177,14 +177,21 @@ void PCGSolver::submit_solve_ops_(cudaStream_t stream,
                                   const sparse::BlockCSR3& A,
                                   DeviceSpan<math::Vec3f> b,
                                   DeviceSpan<math::Vec3f> x,
-                                  const PCGParams& params) {
+                                  const PCGParams& params,
+                                  const collision::ContactSpMVOp* contact) {
     const int n = num_block_rows_;
     const int grid = grid_for(n);
+    const auto stream_uintptr = reinterpret_cast<std::uintptr_t>(stream);
 
     // M_inv = inverse(diag).  A.diag's contents are refreshed every
     // step by the cloth solver before this call; the kernel reads
     // those latest values whether we run it directly or through a
-    // captured graph.
+    // captured graph.  Note that the preconditioner is built only
+    // from A's diagonal -- contact contributions live in the COO
+    // sidecar and are NOT folded into M_inv.  At large contact
+    // stiffness this can slow convergence; if it becomes a problem
+    // we can build a "contact diag lump" buffer and add it to A.diag
+    // before inverting.  For now elastic-only Jacobi is plenty.
     invert_diag_kernel<<<grid, kBlockDim, 0, stream>>>(
         A.diag.gpu_data(), M_inv_.gpu_data(), n);
 
@@ -196,9 +203,10 @@ void PCGSolver::submit_solve_ops_(cudaStream_t stream,
     // the iteration count needed to drive the residual to a given
     // tolerance compared with the cold-start `x = 0`.
     //
-    // Initial residual r_0 = b - A x_0.  Implemented as:
+    // Initial residual r_0 = b - (A + C) x_0.  Implemented as:
     //   r_0 = b                         (memcpy)
     //   r_0 = -A x_0 + 1 * r_0          (spmv with alpha=-1, beta=1)
+    //   r_0 += -C x_0                   (apply_contact_spmv, alpha=-1)
     check_cuda(cudaMemcpyAsync(r_.gpu_data(), b.data(),
                                n * sizeof(math::Vec3f),
                                cudaMemcpyDeviceToDevice, stream),
@@ -206,7 +214,11 @@ void PCGSolver::submit_solve_ops_(cudaStream_t stream,
     sparse::spmv(A, x,
                  DeviceSpan<math::Vec3f>::from(r_),
                  -1.0f, 1.0f,
-                 reinterpret_cast<std::uintptr_t>(stream));
+                 stream_uintptr);
+    if (contact != nullptr && contact->active()) {
+        collision::apply_contact_spmv(*contact, x.data(), r_.gpu_data(),
+                                      n, -1.0f, stream_uintptr);
+    }
 
     apply_jacobi_kernel<<<grid, kBlockDim, 0, stream>>>(
         M_inv_.gpu_data(), r_.gpu_data(), z_.gpu_data(), n);
@@ -222,12 +234,17 @@ void PCGSolver::submit_solve_ops_(cudaStream_t stream,
         r_.gpu_data(), z_.gpu_data(), &coeff_.gpu_data()[0], n);
 
     for (int iter = 0; iter < params.max_iterations; ++iter) {
-        // Ap = A * p
+        // Ap = (A + C) * p
         sparse::spmv(A,
                      DeviceSpan<math::Vec3f>::from(p_),
                      DeviceSpan<math::Vec3f>::from(Ap_),
                      1.0f, 0.0f,
-                     reinterpret_cast<std::uintptr_t>(stream));
+                     stream_uintptr);
+        if (contact != nullptr && contact->active()) {
+            collision::apply_contact_spmv(*contact, p_.gpu_data(),
+                                          Ap_.gpu_data(), n, 1.0f,
+                                          stream_uintptr);
+        }
 
         // sigma = <p, Ap>  -> coeff_[1]
         check_cuda(cudaMemsetAsync(&coeff_.gpu_data()[1], 0, sizeof(float),
@@ -293,7 +310,8 @@ void PCGSolver::ensure_graph_resources_() {
 void PCGSolver::capture_graph_(const sparse::BlockCSR3& A,
                                DeviceSpan<math::Vec3f> b,
                                DeviceSpan<math::Vec3f> x,
-                               const PCGParams& params) {
+                               const PCGParams& params,
+                               const collision::ContactSpMVOp* contact) {
     CHYSX_NVTX_RANGE_COLOUR("pcg::graph_capture", 0xfff1c40f);
 
     if (graph_exec_ != nullptr) {
@@ -311,7 +329,7 @@ void PCGSolver::capture_graph_(const sparse::BlockCSR3& A,
     check_cuda(cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal),
                "cudaStreamBeginCapture");
 
-    submit_solve_ops_(s, A, b, x, params);
+    submit_solve_ops_(s, A, b, x, params, contact);
 
     cudaGraph_t graph = nullptr;
     check_cuda(cudaStreamEndCapture(s, &graph), "cudaStreamEndCapture");
@@ -417,7 +435,8 @@ int PCGSolver::solve(const sparse::BlockCSR3& A,
                      DeviceSpan<math::Vec3f> b,
                      DeviceSpan<math::Vec3f> x,
                      const PCGParams& params,
-                     std::uintptr_t cuda_stream) {
+                     std::uintptr_t cuda_stream,
+                     const collision::ContactSpMVOp* contact) {
     const int n = A.num_block_rows();
     if (n == 0) return 0;
 
@@ -443,7 +462,7 @@ int PCGSolver::solve(const sparse::BlockCSR3& A,
         // Legacy path — submit every kernel directly to the caller's
         // stream.  Useful for debugging or when the caller has already
         // wrapped solve() inside its own CUDA Graph capture.
-        submit_solve_ops_(caller_stream, A, b, x, params);
+        submit_solve_ops_(caller_stream, A, b, x, params, contact);
         return params.max_iterations;
     }
 
@@ -458,9 +477,16 @@ int PCGSolver::solve(const sparse::BlockCSR3& A,
     key.A_col_indices = A.col_indices.gpu_data();
     key.b            = b.data();
     key.x            = x.data();
+    if (contact != nullptr && contact->active()) {
+        key.C_pairs     = contact->pairs;
+        key.C_weights   = contact->weights;
+        key.C_count     = contact->count_dev;
+        key.C_max       = contact->max_contacts;
+        key.C_stiffness = contact->stiffness;
+    }
 
     if (graph_exec_ == nullptr || cached_key_ != key) {
-        capture_graph_(A, b, x, params);
+        capture_graph_(A, b, x, params, contact);
         cached_key_ = key;
     }
 

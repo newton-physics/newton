@@ -109,6 +109,49 @@ class SolverChysX(SolverBase):
             particle masses are taken from Newton's ``inv_mass`` as-is
             (typically uniform when the model came from
             ``add_cloth_grid(mass=...)``).
+        self_collision_enabled: When ``True``, run chysx's brute-force
+            vertex-face self-collision detector before each Newton
+            iteration and emit penalty contact contributions into the
+            linear system.  v1 only handles VF (vertex penetrating
+            triangle) -- edge-edge contacts will be added once we
+            replace the broadphase with a spatial hash.  Off by
+            default.
+        self_collision_thickness: Contact distance threshold ``h``
+            (same units as positions).  A vertex within ``h`` of any
+            non-incident triangle becomes a contact with penetration
+            depth ``h - dist``.  cuda-cloth's twist case uses
+            ``h ~ 0.2 * average_edge_length``.
+        self_collision_stiffness: Per-contact penalty stiffness ``k``.
+            Default ``1e3`` matches cuda-cloth's ``m_4_k = 1000``;
+            scale up for stiffer contact response at the cost of PCG
+            conditioning.  Hessian contributions live in a COO
+            sidecar (a ``ContactSpMVOp``) the PCG solver consumes
+            directly, so even very large ``k`` does not pollute the
+            CSR topology between frames.
+        self_collision_max_contacts_factor: Multiplier on
+            ``particle_count`` used to size the device-side
+            *narrow-phase* contact result buffer (the
+            ``(Vec4i, ContactWeights)`` stream emitted by
+            ``cull_ef_to_vfee_kernel`` / ``cull_ee_adjacent_kernel``
+            after geometric filtering).  Default ``8`` is plenty for
+            typical cloth (most particles touch at most a couple of
+            contacts at once).  Increase if you see "contact buffer
+            overflow" warnings or visible self-penetration once the
+            cloth gets densely wrung up.
+        self_collision_max_ef_candidates_factor: Multiplier on
+            ``particle_count`` used to size the *broad-phase*
+            ``(edge_id, face_id)`` candidate buffer the LBVH self-EF
+            query writes into.  Broad-phase output is typically an
+            order of magnitude larger than the narrow-phase contact
+            count -- one edge AABB can overlap dozens of face AABBs
+            in the wrung-up state, but most pairs get rejected by the
+            depth / barycentric filters in
+            ``cull_ef_to_vfee_kernel``.  Default ``32`` (i.e. 4x the
+            narrow-phase factor) keeps the broad-phase from clipping
+            without bloating the per-contact output stream.  If the
+            BVH query saturates this cap (the candidate list silently
+            truncates), narrow-phase will miss real contacts even
+            though its own buffer has room to spare.
     """
 
     def __init__(
@@ -124,6 +167,11 @@ class SolverChysX(SolverBase):
         pin_stiffness: float = 1.0e6,
         pcg_iterations: int = 50,
         surface_density: float | None = None,
+        self_collision_enabled: bool = False,
+        self_collision_thickness: float = 0.0,
+        self_collision_stiffness: float = 1.0e3,
+        self_collision_max_contacts_factor: int = 8,
+        self_collision_max_ef_candidates_factor: int = 32,
     ):
         super().__init__(model=model)
 
@@ -243,6 +291,7 @@ class SolverChysX(SolverBase):
         # the global Hessian (and a k*(target - x_tilde) entry to
         # the RHS), so a sufficiently large `pin_stiffness` produces
         # a hard pin.
+        self._pin_indices_np: np.ndarray | None = None
         if pin_indices is not None and len(pin_indices) > 0 and model.particle_count > 0:
             indices_np = np.asarray(list(pin_indices), dtype=np.int32)
             if indices_np.ndim != 1:
@@ -252,6 +301,72 @@ class SolverChysX(SolverBase):
             q_np = model.particle_q.numpy().reshape(-1, 3)
             targets_np = np.ascontiguousarray(q_np[indices_np], dtype=np.float32)
             self._sim.set_pins(indices_np, targets_np, float(pin_stiffness))
+            self._pin_indices_np = indices_np
+
+        # Self-collision (DCD).  Disabled by default: brute-force VF
+        # broadphase is O(n_verts * n_tris) and only practical for
+        # ~25x25 cloth in the v1 cut; turn it on per-example with
+        # `self_collision_enabled=True` once you've sized things
+        # appropriately.  The contact buffer is allocated up front so
+        # the simulation loop is alloc-free.
+        if self_collision_enabled and model.particle_count > 0:
+            if self_collision_thickness <= 0.0:
+                raise ValueError(
+                    "SolverChysX(self_collision_enabled=True) requires "
+                    "self_collision_thickness > 0; cuda-cloth's twist case "
+                    "uses ~0.2 * average_edge_length."
+                )
+            self._sim.set_self_collision_enabled(True)
+            self._sim.set_self_collision_thickness(float(self_collision_thickness))
+            self._sim.set_self_collision_stiffness(float(self_collision_stiffness))
+            # Narrow-phase cap: actual VF/EE contacts kept after geometric
+            # filtering.  Lower bound 1024 so tiny meshes still get a
+            # workable buffer.
+            narrow_cap = max(
+                int(self_collision_max_contacts_factor) * int(model.particle_count),
+                1024,
+            )
+            # Broad-phase cap: (edge_id, face_id) pairs from the LBVH
+            # self-EF query before any geometric culling.  Sized
+            # independently because in dense / wrung-up configurations
+            # one edge AABB overlaps dozens of face AABBs even though
+            # very few survive the narrow-phase distance & barycentric
+            # tests.  Always >= narrow_cap so we never starve narrow-
+            # phase by truncating its input.
+            ef_cap = max(
+                int(self_collision_max_ef_candidates_factor) * int(model.particle_count),
+                narrow_cap,
+            )
+            self._sim.set_self_collision_max_contacts(narrow_cap, ef_cap)
+
+    # ---- pin animation ------------------------------------------------
+
+    def update_pin_targets(self, targets: np.ndarray) -> None:
+        """Update the world-space targets of the currently installed pins.
+
+        ``targets`` must be a ``(n_pins, 3)`` float32 numpy array whose
+        row ordering matches the ``pin_indices`` passed to the
+        constructor.  This is the cheap per-frame update path -- it
+        only does an H2D memcpy of the target buffer, leaving the pin
+        index set (and therefore the Hessian topology and the cached
+        PCG CUDA Graph) untouched.
+
+        Use this for animations like the twist scene where pin
+        positions move every frame but the pin set itself stays fixed.
+        """
+
+        if self._pin_indices_np is None:
+            raise RuntimeError(
+                "update_pin_targets called but no pin set was installed at "
+                "construction time"
+            )
+        targets = np.ascontiguousarray(targets, dtype=np.float32)
+        if targets.shape != (self._pin_indices_np.shape[0], 3):
+            raise ValueError(
+                f"targets must have shape ({self._pin_indices_np.shape[0]}, 3), "
+                f"got {targets.shape}"
+            )
+        self._sim.update_pin_targets(targets)
 
     @override
     def step(

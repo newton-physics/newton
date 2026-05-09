@@ -32,10 +32,15 @@ pybind11_add_module(_chysx_native MODULE
     src/memory/cuda_array.cu
     src/sparse/block_csr.cu
     src/solver/pcg_solver.cu
+    src/collision/mesh_topology.cu
+    src/collision/lbvh.cu
+    src/collision/self_collision.cu
+    src/collision/contact_spmv.cu
     src/constraint/pin_constraint.cu
     src/constraint/spring_constraint.cu
     src/constraint/triangle_stretch_constraint.cu
     src/constraint/bending_constraint.cu
+    src/constraint/self_collision_constraint.cu
     src/cloth/cloth_simulator.cu
     src/bindings.cpp
 )

@@ -128,6 +128,36 @@ stiffness : float
             },
             "Number of currently installed pins.")
         .def(
+            "update_pin_targets",
+            [](chysx::cloth::ClothSimulator& self,
+               py::array_t<float, py::array::c_style | py::array::forcecast> targets,
+               std::uintptr_t cuda_stream) {
+                if (targets.ndim() != 2 || targets.shape(1) != 3) {
+                    throw std::invalid_argument(
+                        "ClothSimulator.update_pin_targets: targets must "
+                        "have shape (N, 3) and dtype float32");
+                }
+                const int n = static_cast<int>(targets.shape(0));
+                const auto* targets_vec3 =
+                    reinterpret_cast<const chysx::math::Vec3f*>(targets.data());
+                self.update_pin_targets(targets_vec3, n, cuda_stream);
+            },
+            py::arg("targets"),
+            py::arg("cuda_stream") = 0,
+            R"pbdoc(
+Update the world-space target positions of the currently installed
+pins without changing their indices.  Use this for animations where
+pins move every frame (e.g. twisting a cloth around a moving boundary)
+to avoid the Hessian-topology rebuild that ``set_pins(...)`` triggers.
+
+Parameters
+----------
+targets : numpy.ndarray, shape (n_pins, 3), dtype float32
+    New target positions; ``n_pins`` must equal ``num_pins()``.
+cuda_stream : int, optional
+    Stream to issue the host-to-device copy on.
+)pbdoc")
+        .def(
             "set_mesh",
             [](chysx::cloth::ClothSimulator& self,
                py::array_t<int, py::array::c_style | py::array::forcecast> tris) {
@@ -279,6 +309,59 @@ stiffness : float
                 return self.bending().size();
             },
             "Number of currently installed bending dihedrals.")
+        // ---- self-collision (DCD, brute-force VF for v1) ------------
+        .def("set_self_collision_enabled",
+             &chysx::cloth::ClothSimulator::set_self_collision_enabled,
+             py::arg("enabled"),
+             "Toggle the brute-force VF self-collision pipeline.")
+        .def("self_collision_enabled",
+             &chysx::cloth::ClothSimulator::self_collision_enabled,
+             "True if self-collision is currently enabled.")
+        .def("set_self_collision_thickness",
+             &chysx::cloth::ClothSimulator::set_self_collision_thickness,
+             py::arg("thickness"),
+             R"pbdoc(
+Set the contact distance threshold (in world units, same as particle
+positions).  A vertex within ``thickness`` of any non-incident
+triangle becomes a contact.  cuda-cloth's twist case uses
+``thickness ~ 0.2 * average_edge_length``.
+)pbdoc")
+        .def("self_collision_thickness",
+             &chysx::cloth::ClothSimulator::self_collision_thickness,
+             "Currently configured contact distance threshold.")
+        .def("set_self_collision_stiffness",
+             &chysx::cloth::ClothSimulator::set_self_collision_stiffness,
+             py::arg("stiffness"),
+             R"pbdoc(
+Set the per-contact penalty stiffness ``k`` [N/m].  cuda-cloth's
+twist case uses ``k = 1000`` for VF/EE (m_4_k); larger values produce
+stiffer contact response at the cost of PCG conditioning.
+)pbdoc")
+        .def("self_collision_stiffness",
+             &chysx::cloth::ClothSimulator::self_collision_stiffness,
+             "Currently configured contact penalty stiffness.")
+        .def("set_self_collision_max_contacts",
+             &chysx::cloth::ClothSimulator::set_self_collision_max_contacts,
+             py::arg("max_contacts"),
+             py::arg("max_ef_candidates") = 0,
+             R"pbdoc(
+Allocate (or grow) the device-side contact buffer to hold up to
+``max_contacts`` simultaneous contacts plus the LBVH broadphase
+EF-candidate list (default cap = max_contacts).  Detector overflow
+past these caps silently drops the newest pairs; size generously
+(e.g. ``8 * particle_count``) for typical cloth.
+)pbdoc")
+        .def("self_collision_max_contacts",
+             &chysx::cloth::ClothSimulator::self_collision_max_contacts,
+             "Currently allocated contact buffer capacity.")
+        .def(
+            "self_collision_count",
+            [](chysx::cloth::ClothSimulator& s,
+               std::uintptr_t cuda_stream) {
+                return s.self_collision_detector().count(cuda_stream);
+            },
+            py::arg("cuda_stream") = 0,
+            "Number of contacts emitted by the most recent step (synchronous read).")
         .def("set_pcg_iterations",
              &chysx::cloth::ClothSimulator::set_pcg_iterations,
              py::arg("max_iter"),

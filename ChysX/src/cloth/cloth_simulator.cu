@@ -259,6 +259,27 @@ void ClothSimulator::clear_pins() noexcept {
     topology_dirty_ = true;
 }
 
+void ClothSimulator::update_pin_targets(const math::Vec3f* host_targets,
+                                        int n_pins,
+                                        std::uintptr_t cuda_stream) {
+    if (host_targets == nullptr || n_pins <= 0) return;
+
+    auto& targets = pins_.targets();
+    if (static_cast<int>(targets.cpu_size()) != n_pins) {
+        throw std::invalid_argument(
+            "ClothSimulator::update_pin_targets: n_pins does not match the "
+            "currently installed pin set; call set_pins(...) to change the "
+            "pin set instead.");
+    }
+    std::memcpy(targets.cpu_data(), host_targets,
+                n_pins * sizeof(math::Vec3f));
+    targets.copy_to_device(cuda_stream);
+    // Pin indices unchanged -> H_ topology unchanged -> no graph
+    // invalidation needed.  The PCG graph reads `targets_` device
+    // memory through PinConstraint's gradient kernel every iteration,
+    // so the new values flow through automatically on the next solve.
+}
+
 void ClothSimulator::set_mesh(const math::Vec3i* host_triangles,
                               int n_triangles) {
     if (n_triangles < 0) {
@@ -294,6 +315,29 @@ void ClothSimulator::set_mesh(const math::Vec3i* host_triangles,
     if (!tmp.empty()) {
         buffers_.edges.copy_to_device();
     }
+
+    // Build mesh-topology tables for self-collision (edges, edge2face,
+    // vert_in_edge, edge_in_face, adj_ee_pairs) and bind them to the
+    // detector + LBVH.  The detector captures non-owning pointers
+    // into our `mesh_topology_` member, so the simulator must outlive
+    // the detector -- which it does (both are class members).
+    if (n_triangles > 0) {
+        std::vector<math::Vec3i> tri_vec(host_triangles,
+                                         host_triangles + n_triangles);
+        // Determine vertex count: max(triangle index) + 1 unless the
+        // external buffer has a known size already (n() != 0).  The
+        // n_particles is the upper bound we care about.
+        int max_v = 0;
+        for (const auto& f : tri_vec) {
+            max_v = std::max(max_v, std::max(f.x, std::max(f.y, f.z)));
+        }
+        const int n_verts_topology = max_v + 1;
+        mesh_topology_.build(tri_vec, n_verts_topology);
+        self_collision_detector_.bind_topology(&mesh_topology_);
+    } else {
+        self_collision_detector_.bind_topology(nullptr);
+    }
+
     // Mesh changed => topology must be rebuilt next step.
     topology_dirty_ = true;
 }
@@ -671,6 +715,25 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
         fem_shear_.accumulate_gradient(x_n_span, rhs_span, cuda_stream);
         bending_.accumulate_gradient(x_n_span, rhs_span, cuda_stream);
 
+        // Self-collision: detect at x_n (the equilibrium-like
+        // configuration we linearise around -- not at x_tilde, which
+        // would let the inertial extrapolation create spurious
+        // contacts) and scatter penalty gradient onto the RHS.  The
+        // Hessian half of the contact response is *not* added to
+        // `H_`; it lives on `self_collision_constraint_` as a
+        // ContactSpMVOp that the PCG iteration will consume directly.
+        if (self_collision_enabled_ &&
+            self_collision_thickness_ > 0.0f &&
+            self_collision_.stiffness() > 0.0f &&
+            mesh_topology_.valid()) {
+            CHYSX_NVTX_RANGE_COLOUR("step::self_collision_detect",
+                                    0xffd35400);
+            self_collision_detector_.detect(
+                x_n_span, self_collision_thickness_, cuda_stream);
+            self_collision_.accumulate_gradient(
+                self_collision_detector_, rhs_span, cuda_stream);
+        }
+
         // Now rhs[i] = grad E(x_n).  Fold in the inertial RHS to get
         //   rhs <- (M/dt^2)(x_tilde - x_n) - grad E(x_n)
         //        = M*v/dt + M*g            - grad E(x_n).
@@ -718,9 +781,32 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
         add_inertia_diag_kernel<<<grid, block, 0, stream>>>(
             H_.diag.gpu_data(), mass_.gpu_data(), n, inv_dt2);
         check_cuda(cudaGetLastError(), "add_inertia_diag kernel launch");
+
+        // Bake the contact Hessian's DIAGONAL blocks into `H_.diag`
+        // so the block-Jacobi preconditioner the PCG iterates with
+        // becomes contact-aware.  Only the diagonal i==j part lands
+        // here; the off-diagonal cross-particle terms still ride along
+        // through the SpMV sidecar (`apply_contact_spmv` skips i==j).
+        // Mirrors cuda-cloth's split between
+        // `KernelComputeCollisionHessianAndForce_4` (per-step bake)
+        // and `CollisionSpmv_4` (off-diagonal-only sidecar inside the
+        // PCG SpMV).  Without this, stiff penalty contacts converge
+        // unacceptably slowly and the residual lets the cloth
+        // self-penetrate.
+        if (self_collision_enabled_ &&
+            self_collision_thickness_ > 0.0f &&
+            self_collision_.stiffness() > 0.0f &&
+            mesh_topology_.valid()) {
+            const collision::ContactSpMVOp diag_op =
+                self_collision_.make_spmv_op(self_collision_detector_);
+            if (diag_op.active()) {
+                collision::bake_contact_diag(
+                    H_.diag.gpu_data(), n, diag_op, 1.0f, cuda_stream);
+            }
+        }
     }
 
-    // ---- 6) PCG solve  (M/dt^2 + H_E) dx = rhs ----------------------
+    // ---- 6) PCG solve  (M/dt^2 + H_E + C) dx = rhs ------------------
     //
     // Warm start: we deliberately do NOT zero `dx_` here.  The buffer
     // still holds the previous frame's solution, which for cloth (a
@@ -730,6 +816,13 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
     // initial guess and computes r_0 = b - A * dx_ accordingly.  For
     // the very first step after construction `dx_` is zero (see
     // resize_work_buffers).
+    //
+    // Contact Hessian (`C`) is wired in via a COO-style sidecar:
+    // `H_` only carries elastic + pin + inertia, while collision
+    // contributions ride along through `make_spmv_op()`'s POD,
+    // applied additively to every `A * x` inside the iteration.  The
+    // upshot is that `H_`'s topology never changes when contacts come
+    // and go, so the captured PCG graph stays valid across frames.
     {
         CHYSX_NVTX_RANGE_COLOUR("step::pcg", 0xffe74c3c);
         pcg_.initialize(n);
@@ -737,7 +830,14 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
             dx_.gpu_data(), static_cast<std::size_t>(n));
         solver::PCGParams params;
         params.max_iterations = pcg_max_iterations_;
-        pcg_.solve(H_, rhs_span, dx_span, params, cuda_stream);
+        const collision::ContactSpMVOp contact_op =
+            self_collision_.make_spmv_op(self_collision_detector_);
+        const collision::ContactSpMVOp* contact_ptr =
+            (self_collision_enabled_ && contact_op.active())
+                ? &contact_op
+                : nullptr;
+        pcg_.solve(H_, rhs_span, dx_span, params, cuda_stream,
+                   contact_ptr);
     }
 
     // ---- 7) finalize positions / velocities -------------------------
