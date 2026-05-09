@@ -1286,7 +1286,7 @@ class USDImporter:
             bid_F=bid_F,
             B_r_Bj=B_r_Bj,
             F_r_Fj=F_r_Fj,
-            X_j=wp.quat_to_matrix(B_q_Bj) @ X_j,
+            X_p_j=wp.quat_to_matrix(B_q_Bj) @ X_j,
             q_j_min=q_j_min,
             q_j_max=q_j_max,
             tau_j_max=tau_j_max,
@@ -2087,7 +2087,7 @@ class USDImporter:
                     bid_F=root_body_index,
                     B_r_Bj=wp.transform_get_translation(builder.bodies[0][root_body_index].q_i_0),
                     F_r_Fj=vec3f(0.0),
-                    X_j=Axis.X.to_mat33(),
+                    X_p_j=Axis.X.to_mat33(),
                 )
                 msg.debug(
                     f"Adding FREE joint '{joint_desc.name}' to attach articulation "

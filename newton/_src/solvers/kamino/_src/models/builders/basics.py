@@ -183,7 +183,7 @@ def build_box_pendulum(
         bid_F=bid0,
         B_r_Bj=vec3f(0.0, 0.0, 0.5 * h + z_0),
         F_r_Fj=vec3f(-0.5 * d, 0.0, 0.0),
-        X_j=Axis.Y.to_mat33(),
+        X_p_j=Axis.Y.to_mat33(),
         a_j=1.0 if dynamic_joints else None,
         b_j=0.1 if dynamic_joints else None,
         k_p_j=100.0 if implicit_pd else None,
@@ -283,7 +283,7 @@ def build_box_pendulum_vertical(
         bid_F=bid0,
         B_r_Bj=vec3f(0.0, 0.0, 0.0 + z_0),
         F_r_Fj=vec3f(0.0, 0.0, 0.5 * h),
-        X_j=Axis.Y.to_mat33(),
+        X_p_j=Axis.Y.to_mat33(),
         world_index=world_index,
     )
 
@@ -393,7 +393,7 @@ def build_cartpole(
         bid_F=bid0,
         B_r_Bj=vec3f(0.0, 0.0, z_offset),
         F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_j=Axis.Y.to_mat33(),
+        X_p_j=Axis.Y.to_mat33(),
         q_j_min=[-4.0] if limits else [float(FLOAT32_MIN)],
         q_j_max=[4.0] if limits else [float(FLOAT32_MAX)],
         tau_j_max=[1000.0],
@@ -409,7 +409,7 @@ def build_cartpole(
         bid_F=bid1,
         B_r_Bj=vec3f(0.5 * dims_cart[0], 0.0, 0.0),
         F_r_Fj=vec3f(-0.5 * dims_pole[0], 0.0, -0.5 * dims_pole[2]),
-        X_j=Axis.X.to_mat33(),
+        X_p_j=Axis.X.to_mat33(),
         world_index=world_index,
     )
 
@@ -537,7 +537,7 @@ def build_boxes_hinged(
         bid_F=bid1,
         B_r_Bj=vec3f(0.25, 0.05, 0.0),
         F_r_Fj=vec3f(-0.25, -0.05, 0.0),
-        X_j=Axis.Y.to_mat33(),
+        X_p_j=Axis.Y.to_mat33(),
         a_j=1.0 if dynamic_joints else None,
         b_j=0.1 if dynamic_joints else None,
         k_p_j=100.0 if implicit_pd else None,
@@ -676,7 +676,7 @@ def build_boxes_nunchaku(
         bid_F=bid1,
         B_r_Bj=vec3f(0.5 * d, 0.0, 0.0),
         F_r_Fj=vec3f(-r, 0.0, 0.0),
-        X_j=I_3,
+        X_p_j=I_3,
         world_index=world_index,
     )
 
@@ -689,7 +689,7 @@ def build_boxes_nunchaku(
         bid_F=bid2,
         B_r_Bj=vec3f(r, 0.0, 0.0),
         F_r_Fj=vec3f(-0.5 * d, 0.0, 0.0),
-        X_j=I_3,
+        X_p_j=I_3,
         world_index=world_index,
     )
 
@@ -827,7 +827,7 @@ def build_boxes_nunchaku_vertical(
         bid_F=bid1,
         B_r_Bj=vec3f(0.0, 0.0, 0.5 * h),
         F_r_Fj=vec3f(0.0, 0.0, -r),
-        X_j=I_3,
+        X_p_j=I_3,
         world_index=world_index,
     )
 
@@ -840,7 +840,7 @@ def build_boxes_nunchaku_vertical(
         bid_F=bid2,
         B_r_Bj=vec3f(0.0, 0.0, r),
         F_r_Fj=vec3f(0.0, 0.0, -0.5 * h),
-        X_j=I_3,
+        X_p_j=I_3,
         world_index=world_index,
     )
 
@@ -1081,7 +1081,7 @@ def build_boxes_fourbar(
             bid_F=bid1,
             B_r_Bj=vec3f(0.0),
             F_r_Fj=-r_b1,
-            X_j=I_3,
+            X_p_j=I_3,
             world_index=world_index,
         )
 
@@ -1094,7 +1094,7 @@ def build_boxes_fourbar(
             bid_F=bid1,
             B_r_Bj=vec3f(0.0),
             F_r_Fj=-r_b1,
-            X_j=I_3,
+            X_p_j=I_3,
             world_index=world_index,
         )
 
@@ -1108,7 +1108,7 @@ def build_boxes_fourbar(
         bid_F=bid2,
         B_r_Bj=r_j1 - r_b1,
         F_r_Fj=r_j1 - r_b2,
-        X_j=X_j,
+        X_p_j=X_j,
         q_j_min=[qmin],
         q_j_max=[qmax],
         a_j=0.1 if dynamic_joints else None,
@@ -1126,7 +1126,7 @@ def build_boxes_fourbar(
         bid_F=bid3,
         B_r_Bj=r_j2 - r_b2,
         F_r_Fj=r_j2 - r_b3,
-        X_j=X_j,
+        X_p_j=X_j,
         q_j_min=[qmin],
         q_j_max=[qmax],
         world_index=world_index,
@@ -1140,7 +1140,7 @@ def build_boxes_fourbar(
         bid_F=bid4,
         B_r_Bj=r_j3 - r_b3,
         F_r_Fj=r_j3 - r_b4,
-        X_j=X_j,
+        X_p_j=X_j,
         q_j_min=[qmin],
         q_j_max=[qmax],
         world_index=world_index,
@@ -1154,7 +1154,7 @@ def build_boxes_fourbar(
         bid_F=bid1,
         B_r_Bj=r_j4 - r_b4,
         F_r_Fj=r_j4 - r_b1,
-        X_j=X_j,
+        X_p_j=X_j,
         q_j_min=[qmin],
         q_j_max=[qmax],
         world_index=world_index,

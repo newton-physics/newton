@@ -305,7 +305,7 @@ def _build_sphere_on_ground(
         bid_F=bid,
         B_r_Bj=vec3f(0.0, 0.0, sphere_z),
         F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_j=I_3,
+        X_p_j=I_3,
     )
     builder.add_geometry(
         name="sphere",

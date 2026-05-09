@@ -51,7 +51,7 @@ def _set_joint_follower_body_state(
     model_joint_bid_F: wp.array[int32],
     model_joint_B_r_Bj: wp.array[vec3f],
     model_joint_F_r_Fj: wp.array[vec3f],
-    model_joint_X_j: wp.array[mat33f],
+    model_joint_X_p_j: wp.array[mat33f],
     state_body_q_i: wp.array[transformf],
     state_body_u_i: wp.array[vec6f],
 ):
@@ -65,7 +65,7 @@ def _set_joint_follower_body_state(
     bid_F = model_joint_bid_F[jid]
     B_r_Bj = model_joint_B_r_Bj[jid]
     F_r_Fj = model_joint_F_r_Fj[jid]
-    X_j = model_joint_X_j[jid]
+    X_j = model_joint_X_p_j[jid]
 
     # The base body is assumed to be at the origin with no rotation or twist
     p_B = transformf(vec3f(0.0), wp.quat_identity())
@@ -124,7 +124,7 @@ def set_joint_follower_body_state(model: ModelKamino, data: DataKamino):
             model.joints.bid_F,
             model.joints.B_r_Bj,
             model.joints.F_r_Fj,
-            model.joints.X_j,
+            model.joints.X_p_j,
             data.bodies.q_i,
             data.bodies.u_i,
         ],
