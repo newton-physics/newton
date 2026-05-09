@@ -515,10 +515,12 @@ class PADMMState:
             Shape of ``(sum_of_max_total_cts,)`` and type :class:`float32`.
         z_hat (wp.array): The auxiliary PADMM dual variables used with gradient acceleration.\n
             Shape of ``(sum_of_max_total_cts,)`` and type :class:`float32`.
-        a (wp.array): The current PADMM acceleration variables.\n
+        a (wp.array): The per-world current Nesterov acceleration variables.\n
             Shape of ``(sum_of_max_total_cts,)`` and type :class:`float32`.
-        a_p (wp.array): The previous PADMM acceleration variables.\n
+        a_p (wp.array): The per-world previous Nesterov acceleration variables.\n
             Shape of ``(sum_of_max_total_cts,)`` and type :class:`float32`.
+        a_factor (wp.array): The per-world Nesterov factor computed from the previous and current acceleration
+            variables. Shape of ``(num_worlds,)`` and type :class:`float32`.
     """
 
     def __init__(self, size: SizeKamino | None = None, use_acceleration: bool = False):
@@ -618,14 +620,21 @@ class PADMMState:
 
         self.a: wp.array | None = None
         """
-        The current PADMM acceleration variables.\n
+        The per-world current Nesterov acceleration variables.\n
         Only allocated if acceleration is enabled.\n
         Shape of ``(num_worlds,)`` and type :class:`float32`.
         """
 
         self.a_p: wp.array | None = None
         """
-        The previous PADMM acceleration variables.\n
+        The per-world previous Nesterov acceleration variables.\n
+        Only allocated if acceleration is enabled.\n
+        Shape of ``(num_worlds,)`` and type :class:`float32`.
+        """
+
+        self.a_factor: wp.array | None = None
+        """
+        The per-world current Nesterov acceleration factor.\n
         Only allocated if acceleration is enabled.\n
         Shape of ``(num_worlds,)`` and type :class:`float32`.
         """
@@ -661,6 +670,7 @@ class PADMMState:
             self.z_hat = wp.zeros(size.sum_of_max_total_cts, dtype=float32)
             self.a = wp.zeros(size.num_worlds, dtype=float32)
             self.a_p = wp.zeros(size.num_worlds, dtype=float32)
+            self.a_factor = wp.zeros(size.num_worlds, dtype=float32)
 
     def reset(self, use_acceleration: bool = False):
         """
@@ -696,6 +706,7 @@ class PADMMState:
             # Reset acceleration scale variables
             self.a.fill_(1.0)
             self.a_p.fill_(1.0)
+            self.a_factor.zero_()
 
 
 class PADMMResiduals:

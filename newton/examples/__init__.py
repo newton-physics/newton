@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
+import copy
+import gc
 import importlib
 import os
 import warnings
@@ -185,12 +187,16 @@ def test_particle_state(
 class _ExampleBrowser:
     """Manages the example browser UI and switching/reset logic for the run loop."""
 
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.switch_target: str | None = None
         self._reset_requested = False
         self.callback = None
         self._tree: dict[str, list[tuple[str, str]]] = {}
+        # Deep-copy so later mutations to the caller's namespace (or to
+        # nested mutable fields like ``args.warp_config``) do not change
+        # what Reset restores.
+        self._initial_args = copy.deepcopy(args) if args is not None else None
 
         if not hasattr(viewer, "register_ui_callback"):
             return
@@ -231,20 +237,36 @@ class _ExampleBrowser:
         try:
             mod = importlib.import_module(module_path)
             parser = getattr(mod.Example, "create_parser", create_parser)()
-            example = mod.Example(self.viewer, default_args(parser))
+            new_args = default_args(parser)
+            example = mod.Example(self.viewer, new_args)
         except Exception as e:
             warnings.warn(f"Failed to load example {module_path}: {e}", stacklevel=2)
             return None, example_class
+        # Track the args used to launch the current example so a subsequent
+        # Reset reuses the new example's args, not the originally launched
+        # example's args (different parsers expose different fields).
+        self._initial_args = copy.deepcopy(new_args)
         self._register_ui(example)
         return example, type(example)
 
     def reset(self, example_class):
-        """Reset the current example by re-creating it. Returns the new example or None."""
+        """Reset the current example by re-creating it. Returns the new example or None.
+
+        The caller must drop its reference to the old example before calling
+        this method.
+        """
         self._reset_requested = False
         self.viewer.clear_model()
         try:
-            parser = getattr(example_class, "create_parser", create_parser)()
-            new_example = example_class(self.viewer, default_args(parser))
+            if self._initial_args is not None:
+                # Re-create the example with the user's original CLI args so
+                # options like --world-count survive a reset; deep-copy so
+                # the new instance cannot mutate the snapshot.
+                args = copy.deepcopy(self._initial_args)
+            else:
+                parser = getattr(example_class, "create_parser", create_parser)()
+                args = default_args(parser)
+            new_example = example_class(self.viewer, args)
         except Exception as e:
             warnings.warn(f"Failed to reset example: {e}", stacklevel=2)
             return None
@@ -269,7 +291,7 @@ def run(example, args):
     test_post_step = perform_test and hasattr(example, "test_post_step")
     test_final = perform_test and hasattr(example, "test_final")
 
-    browser = _ExampleBrowser(viewer) if not perform_test else None
+    browser = _ExampleBrowser(viewer, args) if not perform_test else None
 
     if hasattr(example, "gui") and hasattr(viewer, "register_ui_callback"):
         viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
@@ -280,6 +302,12 @@ def run(example, args):
             continue
 
         if browser is not None and browser._reset_requested:
+            # Drop our reference and force cycle collection so the old
+            # example's destructors finish before reset() enters the new
+            # CUDA graph capture; otherwise late texture/array __del__
+            # calls could fire mid-capture and CUDA rejects them.
+            example = None
+            gc.collect()
             example = browser.reset(example_class)
             continue
 
@@ -507,6 +535,19 @@ def add_mujoco_contacts_arg(parser):
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Use MuJoCo's native contact solver instead of Newton contacts (default: use Newton contacts).",
+    )
+    return parser
+
+
+def add_kamino_contacts_arg(parser):
+    """Add ``--use-kamino-contacts`` argument to *parser*."""
+    import argparse  # noqa: PLC0415  — needed for BooleanOptionalAction
+
+    parser.add_argument(
+        "--use-kamino-contacts",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use Kamino's collision-detection wrapper instead of Newton contacts (default: use Newton contacts).",
     )
     return parser
 

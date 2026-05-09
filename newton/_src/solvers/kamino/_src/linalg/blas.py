@@ -39,13 +39,13 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _mult_left_right_diag_matrix_with_matrix(
     # Inputs:
-    dim: wp.array(dtype=int32),
-    mio: wp.array(dtype=int32),
-    vio: wp.array(dtype=int32),
-    D: wp.array(dtype=float32),
-    X: wp.array(dtype=float32),
+    dim: wp.array[int32],
+    mio: wp.array[int32],
+    vio: wp.array[int32],
+    D: wp.array[float32],
+    X: wp.array[float32],
     # Outputs:
-    Y: wp.array(dtype=float32),
+    Y: wp.array[float32],
 ):
     # Retrieve the thread indices
     wid, tid = wp.tid()
@@ -84,12 +84,12 @@ def _mult_left_right_diag_matrix_with_matrix(
 @wp.kernel
 def _mult_left_diag_matrix_with_vector(
     # Inputs:
-    dim: wp.array(dtype=int32),
-    vio: wp.array(dtype=int32),
-    D: wp.array(dtype=float32),
-    x: wp.array(dtype=float32),
+    dim: wp.array[int32],
+    vio: wp.array[int32],
+    D: wp.array[float32],
+    x: wp.array[float32],
     # Outputs:
-    y: wp.array(dtype=float32),
+    y: wp.array[float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -131,18 +131,18 @@ def _make_block_sparse_matvec_kernel(block_type: BlockDType):
     @wp.kernel
     def block_sparse_matvec_kernel(
         # Matrix data:
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        nzb_values: wp.array(dtype=block_type.warp_type),
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        nzb_values: wp.array[block_type.warp_type],
         # Vector block offsets:
-        row_start: wp.array(dtype=int32),
-        col_start: wp.array(dtype=int32),
+        row_start: wp.array[int32],
+        col_start: wp.array[int32],
         # Vector:
-        x: wp.array(dtype=block_type.dtype),
-        y: wp.array(dtype=block_type.dtype),
+        x: wp.array[block_type.dtype],
+        y: wp.array[block_type.dtype],
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         mat_id, block_idx = wp.tid()
 
@@ -200,15 +200,15 @@ def _make_block_sparse_matvec_kernel_2d(block_type: BlockDType):
     @wp.kernel
     def block_sparse_matvec_kernel(
         # Matrix data:
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        nzb_values: wp.array(dtype=block_type.warp_type),
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        nzb_values: wp.array[block_type.warp_type],
         # Vector:
-        x: wp.array2d(dtype=block_type.dtype),
-        y: wp.array2d(dtype=block_type.dtype),
+        x: wp.array2d[block_type.dtype],
+        y: wp.array2d[block_type.dtype],
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         mat_id, block_idx = wp.tid()
 
@@ -266,18 +266,18 @@ def _make_block_sparse_transpose_matvec_kernel(block_type: BlockDType):
     @wp.kernel
     def block_sparse_transpose_matvec_kernel(
         # Matrix data:
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        nzb_values: wp.array(dtype=block_type.warp_type),
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        nzb_values: wp.array[block_type.warp_type],
         # Vector block offsets:
-        row_start: wp.array(dtype=int32),
-        col_start: wp.array(dtype=int32),
+        row_start: wp.array[int32],
+        col_start: wp.array[int32],
         # Vector:
-        y: wp.array(dtype=block_type.dtype),
-        x: wp.array(dtype=block_type.dtype),
+        y: wp.array[block_type.dtype],
+        x: wp.array[block_type.dtype],
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         mat_id, block_idx = wp.tid()
 
@@ -333,15 +333,15 @@ def _make_block_sparse_transpose_matvec_kernel_2d(block_type: BlockDType):
     @wp.kernel
     def block_sparse_transpose_matvec_kernel(
         # Matrix data:
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        nzb_values: wp.array(dtype=block_type.warp_type),
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        nzb_values: wp.array[block_type.warp_type],
         # Vector:
-        y: wp.array2d(dtype=block_type.dtype),
-        x: wp.array2d(dtype=block_type.dtype),
+        y: wp.array2d[block_type.dtype],
+        x: wp.array2d[block_type.dtype],
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         mat_id, block_idx = wp.tid()
 
@@ -399,15 +399,15 @@ def _make_scale_vector_kernel(space_dim: int):
     @wp.kernel
     def scale_vector_kernel(
         # Matrix data:
-        matrix_dims: wp.array2d(dtype=int32),
+        matrix_dims: wp.array2d[int32],
         # Vector block offsets:
-        row_start: wp.array(dtype=int32),
-        col_start: wp.array(dtype=int32),
+        row_start: wp.array[int32],
+        col_start: wp.array[int32],
         # Inputs:
-        x: wp.array(dtype=Any),
+        x: wp.array[Any],
         beta: Any,
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         mat_id, entry_id = wp.tid()
 
@@ -441,12 +441,12 @@ def _make_scale_vector_kernel_2d(space_dim: int):
     @wp.kernel
     def scale_vector_kernel(
         # Matrix data:
-        matrix_dims: wp.array2d(dtype=int32),
+        matrix_dims: wp.array2d[int32],
         # Inputs:
-        x: wp.array2d(dtype=Any),
+        x: wp.array2d[Any],
         beta: Any,
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         mat_id, entry_id = wp.tid()
 
@@ -473,20 +473,20 @@ def _make_block_sparse_gemv_kernel(block_type: BlockDType):
     @wp.kernel
     def block_sparse_gemv_kernel(
         # Matrix data:
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        nzb_values: wp.array(dtype=block_type.warp_type),
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        nzb_values: wp.array[block_type.warp_type],
         # Vector block offsets:
-        row_start: wp.array(dtype=int32),
-        col_start: wp.array(dtype=int32),
+        row_start: wp.array[int32],
+        col_start: wp.array[int32],
         # Vector:
-        x: wp.array(dtype=block_type.dtype),
-        y: wp.array(dtype=block_type.dtype),
+        x: wp.array[block_type.dtype],
+        y: wp.array[block_type.dtype],
         # Scaling:
         alpha: block_type.dtype,
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         mat_id, block_idx = wp.tid()
 
@@ -544,17 +544,17 @@ def _make_block_sparse_gemv_kernel_2d(block_type: BlockDType):
     @wp.kernel
     def block_sparse_gemv_kernel(
         # Matrix data:
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        nzb_values: wp.array(dtype=block_type.warp_type),
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        nzb_values: wp.array[block_type.warp_type],
         # Vector:
-        x: wp.array2d(dtype=block_type.dtype),
-        y: wp.array2d(dtype=block_type.dtype),
+        x: wp.array2d[block_type.dtype],
+        y: wp.array2d[block_type.dtype],
         # Scaling:
         alpha: block_type.dtype,
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         mat_id, block_idx = wp.tid()
 
@@ -612,20 +612,20 @@ def _make_block_sparse_transpose_gemv_kernel(block_type: BlockDType):
     @wp.kernel
     def block_sparse_transpose_gemv_kernel(
         # Matrix data:
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        nzb_values: wp.array(dtype=block_type.warp_type),
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        nzb_values: wp.array[block_type.warp_type],
         # Vector block offsets:
-        row_start: wp.array(dtype=int32),
-        col_start: wp.array(dtype=int32),
+        row_start: wp.array[int32],
+        col_start: wp.array[int32],
         # Vector:
-        y: wp.array(dtype=block_type.dtype),
-        x: wp.array(dtype=block_type.dtype),
+        y: wp.array[block_type.dtype],
+        x: wp.array[block_type.dtype],
         # Scaling:
         alpha: block_type.dtype,
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         mat_id, block_idx = wp.tid()
 
@@ -681,17 +681,17 @@ def _make_block_sparse_transpose_gemv_kernel_2d(block_type: BlockDType):
     @wp.kernel
     def block_sparse_transpose_gemv_kernel(
         # Matrix data:
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        nzb_values: wp.array(dtype=block_type.warp_type),
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        nzb_values: wp.array[block_type.warp_type],
         # Vector:
-        y: wp.array2d(dtype=block_type.dtype),
-        x: wp.array2d(dtype=block_type.dtype),
+        y: wp.array2d[block_type.dtype],
+        x: wp.array2d[block_type.dtype],
         # Scaling:
         alpha: block_type.dtype,
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         mat_id, block_idx = wp.tid()
 
@@ -735,11 +735,12 @@ def _make_block_sparse_transpose_gemv_kernel_2d(block_type: BlockDType):
 
 @wp.kernel
 def _diag_gemv_kernel(
-    x: wp.array2d(dtype=Any),
-    y: wp.array2d(dtype=Any),
-    D: wp.array2d(dtype=Any),
-    active_dims: wp.array(dtype=Any),
-    world_active: wp.array(dtype=wp.int32),
+    x: wp.array[Any],
+    y: wp.array[Any],
+    D: wp.array[Any],
+    active_dims: wp.array[Any],
+    world_active: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
     alpha: Any,
     beta: Any,
 ):
@@ -749,26 +750,28 @@ def _diag_gemv_kernel(
     if world_active[world] == 0 or row >= active_dims[world]:
         return
 
+    idx = vio[world] + row
     zero = type(alpha)(0)
     s = y.dtype(0)
 
     if alpha != zero:
-        s += alpha * D[world, row] * x[world, row]
+        s += alpha * D[idx] * x[idx]
     if beta != zero:
-        s += beta * y[world, row]
-    y[world, row] = s
+        s += beta * y[idx]
+    y[idx] = s
 
 
 @wp.kernel
 def _dense_gemv_kernel(
-    x: wp.array2d(dtype=Any),
-    y: wp.array2d(dtype=Any),
-    A: wp.array2d(dtype=Any),
-    active_dims: wp.array(dtype=Any),
-    world_active: wp.array(dtype=wp.int32),
+    x: wp.array[Any],
+    y: wp.array[Any],
+    A: wp.array[Any],
+    active_dims: wp.array[Any],
+    world_active: wp.array[wp.int32],
     alpha: Any,
     beta: Any,
-    matrix_stride: int,
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
     tile_size: int,
 ):
     """Computes y[w] = alpha * (A[w] @ x[w]) + beta * y[w] in-place for each world w."""
@@ -779,15 +782,17 @@ def _dense_gemv_kernel(
         return
 
     row_stride = active_dims[world]
+    a_offset = mio[world]
+    v_offset = vio[world]
     zero = type(alpha)(0)
     s = zero
     if alpha != zero:
         for col in range(lane, dim, tile_size):
-            s += A[world, row * row_stride + col] * x[world, col]
+            s += A[a_offset + row * row_stride + col] * x[v_offset + col]
     row_tile = wp.tile_sum(wp.tile(s * alpha))
     if beta != zero:
-        row_tile += beta * wp.tile_load(y[world], shape=1, offset=row)
-    wp.tile_store(y[world], row_tile, offset=row)
+        row_tile += beta * wp.tile_load(y, shape=1, offset=v_offset + row)
+    wp.tile_store(y, row_tile, offset=v_offset + row)
 
 
 @functools.cache
@@ -804,14 +809,14 @@ def _make_block_sparse_ATA_diagonal_kernel_2d(block_type: BlockDType):
     @wp.kernel
     def block_sparse_ATA_diagonal_kernel(
         # Matrix data:
-        num_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
-        nzb_values: wp.array(dtype=block_type.warp_type),
+        num_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
+        nzb_values: wp.array[block_type.warp_type],
         # Output:
-        diag: wp.array2d(dtype=block_type.dtype),
+        diag: wp.array2d[block_type.dtype],
         # Mask:
-        matrix_mask: wp.array(dtype=int32),
+        matrix_mask: wp.array[int32],
     ):
         """
         For a block sparse matrix (stack) A, computes the diagonal of A^T * A
@@ -856,15 +861,15 @@ class nzb_type_7(BlockDType(dtype=wp.float32, shape=(7,)).warp_type):
 @wp.kernel
 def block_sparse_ATA_diagonal_3_4_blocks_kernel_2d(
     # Matrix data:
-    num_nzb: wp.array(dtype=int32),
-    nzb_start: wp.array(dtype=int32),
-    nzb_coords: wp.array2d(dtype=int32),
-    nzb_values: wp.array(dtype=nzb_type_7),
+    num_nzb: wp.array[int32],
+    nzb_start: wp.array[int32],
+    nzb_coords: wp.array2d[int32],
+    nzb_values: wp.array[nzb_type_7],
     # Output:
-    blocks_3: wp.array2d(dtype=wp.float32),
-    blocks_4: wp.array2d(dtype=wp.float32),
+    blocks_3: wp.array2d[wp.float32],
+    blocks_4: wp.array2d[wp.float32],
     # Mask:
-    matrix_mask: wp.array(dtype=int32),
+    matrix_mask: wp.array[int32],
 ):
     """
     For a block sparse matrix (stack) A with 1x7 blocks, computes the blockwise-diagonal of A^T * A,
@@ -908,9 +913,9 @@ def _make_cwise_inverse_kernel_2d(dtype: FloatType):
     @wp.kernel
     def cwise_inverse_kernel(
         # Inputs
-        x: wp.array2d(dtype=dtype),
-        dim: wp.array(dtype=wp.int32),
-        mask: wp.array(dtype=wp.int32),
+        x: wp.array2d[dtype],
+        dim: wp.array[wp.int32],
+        mask: wp.array[wp.int32],
     ):
         mat_id, coeff_id = wp.tid()
 
@@ -925,9 +930,9 @@ def _make_cwise_inverse_kernel_2d(dtype: FloatType):
 @wp.kernel
 def blockwise_inverse_kernel_3_2d(
     # Inputs
-    blocks: wp.array2d(dtype=wp.mat33f),
-    dim: wp.array(dtype=wp.int32),
-    mask: wp.array(dtype=wp.int32),
+    blocks: wp.array2d[wp.mat33f],
+    dim: wp.array[wp.int32],
+    mask: wp.array[wp.int32],
 ):
     mat_id, block_id = wp.tid()
 
@@ -940,9 +945,9 @@ def blockwise_inverse_kernel_3_2d(
 @wp.kernel
 def blockwise_inverse_kernel_4_2d(
     # Inputs
-    blocks: wp.array2d(dtype=wp.mat44f),
-    dim: wp.array(dtype=wp.int32),
-    mask: wp.array(dtype=wp.int32),
+    blocks: wp.array2d[wp.mat44f],
+    dim: wp.array[wp.int32],
+    mask: wp.array[wp.int32],
 ):
     mat_id, block_id = wp.tid()
 
@@ -954,12 +959,12 @@ def blockwise_inverse_kernel_4_2d(
 
 @wp.kernel
 def _blockwise_diag_3_4_gemv_kernel_2d(
-    x: wp.array2d(dtype=wp.float32),
-    y: wp.array2d(dtype=wp.float32),
-    blocks_3: wp.array2d(dtype=wp.mat33f),
-    blocks_4: wp.array2d(dtype=wp.mat44f),
-    active_dims: wp.array(dtype=wp.int32),
-    world_active: wp.array(dtype=wp.int32),
+    x: wp.array2d[wp.float32],
+    y: wp.array2d[wp.float32],
+    blocks_3: wp.array2d[wp.mat33f],
+    blocks_4: wp.array2d[wp.mat44f],
+    active_dims: wp.array[wp.int32],
+    world_active: wp.array[wp.int32],
     alpha: wp.float32,
     beta: wp.float32,
 ):
@@ -999,69 +1004,77 @@ def _blockwise_diag_3_4_gemv_kernel_2d(
 
 
 def diag_gemv(
-    D: wp.array2d,
-    x: wp.array2d,
-    y: wp.array2d,
+    D: wp.array,
+    x: wp.array,
+    y: wp.array,
     active_dims: wp.array,
     world_active: wp.array,
+    vio: wp.array,
     alpha: float,
     beta: float,
+    max_dim: int,
 ):
     """
     Launch kernel for diagonal matrix gemv: y = alpha * D * x + beta * y
 
     Args:
-        D: Diagonal matrices stored as 2D array (n_worlds, max_dim).
-        x: Input vectors (n_worlds, max_dim).
-        y: Output vectors (n_worlds, max_dim), modified in-place.
+        D: Diagonal entries stored as flat 1D array.
+        x: Input vectors, flat 1D.
+        y: Output vectors, flat 1D, modified in-place.
         active_dims: Active dimension per world.
         world_active: Boolean mask for active worlds.
+        vio: Vector index offsets per world.
         alpha: Scalar multiplier for D * x.
         beta: Scalar multiplier for y.
+        max_dim: Maximum dimension over all worlds (for launch grid).
     """
-    n_worlds, max_dim = x.shape
+    n_worlds = active_dims.shape[0]
     dtype = x.dtype
     wp.launch(
         _diag_gemv_kernel,
         dim=(n_worlds, max_dim),
-        inputs=[x, y, D, active_dims, world_active, dtype(alpha), dtype(beta)],
+        inputs=[x, y, D, active_dims, world_active, vio, dtype(alpha), dtype(beta)],
         device=x.device,
     )
 
 
 def dense_gemv(
-    A: wp.array2d,
-    x: wp.array2d,
-    y: wp.array2d,
+    A: wp.array,
+    x: wp.array,
+    y: wp.array,
     active_dims: wp.array,
     world_active: wp.array,
     alpha: float,
     beta: float,
-    matrix_stride: int,
+    max_dim: int,
+    mio: wp.array,
+    vio: wp.array,
     block_dim: int = 64,
 ):
     """
     Launch kernel for dense matrix gemv: y = alpha * A @ x + beta * y
 
     Args:
-        A: Dense matrices stored as 2D array (n_worlds, max_dim * max_dim).
-        x: Input vectors (n_worlds, max_dim).
-        y: Output vectors (n_worlds, max_dim), modified in-place.
+        A: Dense matrices stored as flat 1D array.
+        x: Input vectors, flat 1D.
+        y: Output vectors, flat 1D, modified in-place.
         active_dims: Active dimension per world.
         world_active: Boolean mask for active worlds.
         alpha: Scalar multiplier for A * x.
         beta: Scalar multiplier for y.
-        matrix_stride: Stride for matrix row indexing.
+        max_dim: Maximum dimension over all worlds (for launch grid).
+        mio: Matrix index offsets per world.
+        vio: Vector index offsets per world.
         block_dim: Block dimension for tiled computation.
     """
-    n_worlds, max_dim = x.shape
+    n_worlds = active_dims.shape[0]
     dtype = x.dtype
     if not x.device.is_cuda:
         block_dim = 1
     wp.launch(
         _dense_gemv_kernel,
         dim=(n_worlds, max_dim, block_dim),
-        inputs=[x, y, A, active_dims, world_active, dtype(alpha), dtype(beta), matrix_stride, block_dim],
+        inputs=[x, y, A, active_dims, world_active, dtype(alpha), dtype(beta), mio, vio, block_dim],
         device=x.device,
         block_dim=block_dim,
     )
@@ -1440,14 +1453,14 @@ def block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
 
 
 def get_blockwise_diag_3_4_gemv_2d(
-    blocks_3: wp.array2d(dtype=wp.mat33f),
-    blocks_4: wp.array2d(dtype=wp.mat44f),
-    active_dims: wp.array(dtype=wp.int32),
+    blocks_3: wp.array2d[wp.mat33f],
+    blocks_4: wp.array2d[wp.mat44f],
+    active_dims: wp.array[wp.int32],
 ):
     def gemv(
-        x: wp.array2d(dtype=wp.float32),
-        y: wp.array2d(dtype=wp.float32),
-        world_active: wp.array(dtype=wp.int32),
+        x: wp.array2d[wp.float32],
+        y: wp.array2d[wp.float32],
+        world_active: wp.array[wp.int32],
         alpha: wp.float32,
         beta: wp.float32,
     ):

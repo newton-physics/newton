@@ -492,6 +492,13 @@ class ViewerGL(ViewerBase):
         self._array_dirty.clear()
         self._clear_array_textures()
 
+        # Drop image-logger entries so example-switch removes any image
+        # windows the previous example opened, and a re-entry into the same
+        # example creates a fresh entry (re-triggering the auto-select that
+        # opens the window after the user manually closed it).
+        if getattr(self, "_image_logger", None) is not None:
+            self._image_logger.clear()
+
         super().clear_model()
 
     @override
@@ -721,6 +728,9 @@ class ViewerGL(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        color: tuple[float, float, float] | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
     ):
         """
         Log a mesh for rendering.
@@ -734,6 +744,12 @@ class ViewerGL(ViewerBase):
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Enable backface culling.
+            color: Optional base color as an RGB tuple with values in
+                [0, 1]. Used when no texture is provided.
+            roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
+                smooth, ``1`` is fully rough.
+            metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
+                is metal.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -748,6 +764,17 @@ class ViewerGL(ViewerBase):
         self.objects[name].update(points, indices, normals, uvs, texture)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+
+        if color is not None:
+            self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
+
+        if roughness is not None or metallic is not None:
+            r, m, c, t = self.objects[name].material
+            if roughness is not None:
+                r = float(roughness)
+            if metallic is not None:
+                m = float(metallic)
+            self.objects[name].material = (r, m, c, t)
 
     @override
     def log_instances(
@@ -2675,7 +2702,7 @@ class ViewerGL(ViewerBase):
             item_height + 60,
         )
         imgui.set_next_window_pos(
-            imgui.ImVec2(io.display_size[0] - window_width - 10, 10),
+            imgui.ImVec2(io.display_size[0] - window_width - 10, io.display_size[1] - window_height - 10),
             imgui.Cond_.appearing,
         )
         imgui.set_next_window_size(

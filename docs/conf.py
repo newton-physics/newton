@@ -168,8 +168,8 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
     "jax": ("https://docs.jax.dev/en/latest", None),
-    "pytorch": ("https://docs.pytorch.org/docs/2.10", None),
-    "warp": ("https://nvidia.github.io/warp", None),
+    "pytorch": ("https://pytorch.org/docs/stable", None),
+    "warp": ("https://nvidia.github.io/warp/stable", None),
     "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
 }
 
@@ -247,6 +247,7 @@ html_title = "Newton Physics"
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
+html_js_files = [*globals().get("html_js_files", []), "mermaid-nbsphinx.js"]
 html_show_sourcelink = False
 
 # PyData theme configuration
@@ -422,30 +423,20 @@ def _copy_viser_client_into_output_static(*, outdir: Path) -> None:
     """Ensure the Viser web client assets are available at `{outdir}/_static/viser/`.
 
     This avoids relying on repo-relative `html_static_path` entries (which can break under `uv`),
-    and avoids writing generated assets into `docs/_static` in the working tree.
+    avoids writing generated assets into `docs/_static` in the working tree, and
+    keeps the copied client aligned with the installed `viser` package.
     """
 
     dest_dir = outdir / "_static" / "viser"
 
-    src_candidates: list[Path] = []
-
-    # Repo checkout layout (most common for local builds).
-    src_candidates.append(project_root / "newton" / "_src" / "viewer" / "viser" / "static")
-
-    # Installed package layout (e.g. building docs from an environment where `newton` is installed).
     try:
-        import newton  # noqa: PLC0415
+        from newton.viewer import ViewerViser  # noqa: PLC0415
 
-        src_candidates.append(Path(newton.__file__).resolve().parent / "_src" / "viewer" / "viser" / "static")
-    except Exception:
-        pass
-
-    src_dir = next((p for p in src_candidates if (p / "index.html").is_file()), None)
-    if src_dir is None:
+        src_dir = ViewerViser.get_viser_client_dir()
+    except Exception as e:
         # Don't hard-fail doc builds; the viewer docs can still build without the embedded client.
-        expected = ", ".join(str(p) for p in src_candidates)
         print(
-            f"Warning: could not find Viser client assets to copy. Expected `index.html` under one of: {expected}",
+            f"Warning: could not find installed Viser client assets to copy: {e}",
             file=sys.stderr,
         )
         return
