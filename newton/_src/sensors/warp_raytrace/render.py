@@ -20,7 +20,12 @@ def create_kernel(
 ) -> wp.kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state)
 
-    if state.render_color or state.render_normal:
+    if (
+        state.render_color
+        or state.render_hdr_color
+        or state.render_normal
+        or (state.render_albedo and config.enable_textures)
+    ):
         raytrace_closest_hit = raytrace.create_closest_hit_function(config, state)
     else:
         raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
@@ -76,6 +81,7 @@ def create_kernel(
         out_shape_index: wp.array[wp.uint32],
         out_normal: wp.array[wp.vec3f],
         out_albedo: wp.array[wp.uint32],
+        out_hdr_color: wp.array[wp.vec3f],
     ):
         tid = wp.tid()
 
@@ -104,6 +110,7 @@ def create_kernel(
         camera_transform = camera_transforms[camera_index, world_index]
         ray_origin_world = wp.transform_point(camera_transform, camera_rays[camera_index, py, px, 0])
         ray_dir_world = wp.transform_vector(camera_transform, camera_rays[camera_index, py, px, 1])
+        camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
         closest_hit = raytrace_closest_hit(
             bvh_shapes_size,
@@ -127,6 +134,7 @@ def create_kernel(
             gaussians_data,
             ray_origin_world,
             ray_dir_world,
+            camera_forward,
         )
 
         if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
@@ -134,6 +142,8 @@ def create_kernel(
                 out_color[out_index] = wp.uint32(wp.static(clear_data.clear_color))
             if wp.static(state.render_albedo):
                 out_albedo[out_index] = wp.uint32(wp.static(clear_data.clear_albedo))
+            if wp.static(state.render_hdr_color):
+                out_hdr_color[out_index] = wp.vec3f(0.0)
             if wp.static(state.render_depth):
                 out_depth[out_index] = wp.float32(wp.static(clear_data.clear_depth))
             if wp.static(state.render_normal):
@@ -155,7 +165,11 @@ def create_kernel(
         if wp.static(state.render_shape_index):
             out_shape_index[out_index] = closest_hit.shape_index
 
-        if not wp.static(state.render_color) and not wp.static(state.render_albedo):
+        if (
+            not wp.static(state.render_color)
+            and not wp.static(state.render_albedo)
+            and not wp.static(state.render_hdr_color)
+        ):
             return
 
         is_gaussian = wp.bool(False)
@@ -194,7 +208,7 @@ def create_kernel(
         if wp.static(state.render_albedo):
             out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo_color, 1.0)
 
-        if not wp.static(state.render_color):
+        if not wp.static(state.render_color) and not wp.static(state.render_hdr_color):
             return
 
         shaded_color = closest_hit.color
@@ -241,6 +255,10 @@ def create_kernel(
                 )
                 shaded_color = shaded_color + albedo_color * light_contribution
 
-        out_color[out_index] = tiling.pack_rgba_to_uint32(shaded_color, 1.0)
+        if wp.static(state.render_hdr_color):
+            out_hdr_color[out_index] = shaded_color
+
+        if wp.static(state.render_color):
+            out_color[out_index] = tiling.pack_rgba_to_uint32(shaded_color, 1.0)
 
     return render_megakernel

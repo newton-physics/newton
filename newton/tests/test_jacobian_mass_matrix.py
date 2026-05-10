@@ -14,6 +14,109 @@ import newton
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
+def _build_translated_prismatic_chain(device):
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+    base = builder.add_link(mass=1.5)
+    slider = builder.add_link(mass=0.9)
+
+    builder.add_shape_box(base, hx=0.2, hy=0.1, hz=0.1)
+    builder.add_shape_box(slider, hx=0.15, hy=0.1, hz=0.08)
+
+    builder.body_com[base] = wp.vec3(0.2, 0.0, 0.0)
+    builder.body_com[slider] = wp.vec3(0.35, 0.0, -0.1)
+
+    j0 = builder.add_joint_revolute(
+        parent=-1,
+        child=base,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    j1 = builder.add_joint_prismatic(
+        parent=base,
+        child=slider,
+        axis=newton.Axis.X,
+        parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.4), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.2, 0.0, -0.15), wp.quat_identity()),
+    )
+    builder.add_articulation([j0, j1], label="translated_slider")
+
+    return builder.finalize(device=device), base, slider
+
+
+def _build_free_body_with_com(device):
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+    body = builder.add_body(
+        xform=wp.transform(
+            wp.vec3(1.0, -0.5, 2.0),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.35),
+        ),
+        mass=1.7,
+    )
+    builder.add_shape_box(body, hx=0.2, hy=0.1, hz=0.15)
+    builder.body_com[body] = wp.vec3(0.4, -0.15, 0.2)
+
+    return builder.finalize(device=device), body
+
+
+def _build_descendant_free_with_rotated_parent(device):
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+
+    base = builder.add_link(is_kinematic=True, mass=1.0)
+    child = builder.add_link(mass=1.8)
+
+    builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(child, hx=0.18, hy=0.12, hz=0.09)
+    builder.body_com[child] = wp.vec3(0.25, -0.1, 0.2)
+
+    j0 = builder.add_joint_fixed(
+        parent=-1,
+        child=base,
+        parent_xform=wp.transform(
+            wp.vec3(),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5),
+        ),
+        child_xform=wp.transform_identity(),
+    )
+    j1 = builder.add_joint_free(
+        parent=base,
+        child=child,
+        child_xform=wp.transform(
+            wp.vec3(0.15, 0.0, -0.1),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.35),
+        ),
+    )
+    builder.add_articulation([j0, j1], label="descendant_free")
+
+    return builder.finalize(device=device), base, child
+
+
+def _kinetic_energy_from_body_twists(model, state, bodies):
+    body_q = state.body_q.numpy()
+    body_qd = state.body_qd.numpy()
+    body_inertia = model.body_inertia.numpy()
+    body_mass = model.body_mass.numpy()
+
+    kinetic = 0.0
+    for body in bodies:
+        quat = wp.quat(
+            float(body_q[body, 3]),
+            float(body_q[body, 4]),
+            float(body_q[body, 5]),
+            float(body_q[body, 6]),
+        )
+        R = np.array(wp.quat_to_matrix(quat), dtype=np.float64).reshape(3, 3)
+        I_world = R @ body_inertia[body].astype(np.float64) @ R.T
+        v_com = body_qd[body, :3].astype(np.float64)
+        omega = body_qd[body, 3:6].astype(np.float64)
+        kinetic += 0.5 * float(body_mass[body]) * float(v_com @ v_com)
+        kinetic += 0.5 * float(omega @ (I_world @ omega))
+
+    return kinetic
+
+
 def test_jacobian_simple_pendulum(test, device):
     """Test Jacobian computation for a simple 2-link pendulum."""
     builder = newton.ModelBuilder()
@@ -538,6 +641,127 @@ def test_floating_base_jacobian(test, device):
     np.linalg.cholesky(H_valid)
 
 
+def test_jacobian_matches_body_qd_com(test, device):
+    """`J @ joint_qd` should match COM-referenced `state.body_qd` per link."""
+    model, base, slider = _build_translated_prismatic_chain(device)
+    state = model.state()
+
+    q = state.joint_q.numpy()
+    qd = state.joint_qd.numpy()
+    q[0] = 0.55
+    q[1] = 0.8
+    qd[0] = 1.1
+    qd[1] = -0.35
+
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    J = newton.eval_jacobian(model, state).numpy()
+    body_qd = state.body_qd.numpy()
+
+    base_block = J[0, 0:6, : model.joint_dof_count]
+    slider_block = J[0, 6:12, : model.joint_dof_count]
+    base_twist = base_block @ qd
+    slider_twist = slider_block @ qd
+
+    np.testing.assert_allclose(base_twist, body_qd[base], atol=1.0e-5, rtol=1.0e-6)
+    np.testing.assert_allclose(slider_twist, body_qd[slider], atol=1.0e-5, rtol=1.0e-6)
+
+
+def test_mass_matrix_matches_com_kinetic_energy(test, device):
+    """`0.5 * qd^T H qd` should equal kinetic energy from COM twists."""
+    model, base, slider = _build_translated_prismatic_chain(device)
+    state = model.state()
+
+    q = state.joint_q.numpy()
+    qd = state.joint_qd.numpy()
+    q[0] = 0.4
+    q[1] = 0.6
+    qd[0] = 0.9
+    qd[1] = -0.25
+
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    H = newton.eval_mass_matrix(model, state).numpy()[0, : model.joint_dof_count, : model.joint_dof_count]
+    kinetic_from_h = 0.5 * float(qd @ H @ qd)
+    kinetic_from_bodies = _kinetic_energy_from_body_twists(model, state, (base, slider))
+    np.testing.assert_allclose(kinetic_from_h, kinetic_from_bodies, atol=1.0e-5, rtol=1.0e-6)
+
+
+def test_floating_free_jacobian_matches_body_qd_com(test, device):
+    """Floating-base Jacobian should match COM-referenced body twists."""
+    model, body = _build_free_body_with_com(device)
+    state = model.state()
+
+    qd = state.joint_qd.numpy()
+    qd[:] = np.array([0.35, -0.2, 0.15, 0.25, -0.4, 0.7], dtype=np.float32)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    J = newton.eval_jacobian(model, state).numpy()[0, :6, : model.joint_dof_count]
+    body_qd = state.body_qd.numpy()[body]
+
+    np.testing.assert_allclose(J @ qd, body_qd, atol=1.0e-5, rtol=1.0e-6)
+
+
+def test_floating_free_mass_matrix_matches_com_kinetic_energy(test, device):
+    """Floating-base mass matrix should match kinetic energy from COM twists."""
+    model, body = _build_free_body_with_com(device)
+    state = model.state()
+
+    qd = state.joint_qd.numpy()
+    qd[:] = np.array([0.3, -0.1, 0.2, 0.45, -0.25, 0.6], dtype=np.float32)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    H = newton.eval_mass_matrix(model, state).numpy()[0, : model.joint_dof_count, : model.joint_dof_count]
+    kinetic_from_h = 0.5 * float(qd @ H @ qd)
+    kinetic_from_body = _kinetic_energy_from_body_twists(model, state, (body,))
+    np.testing.assert_allclose(kinetic_from_h, kinetic_from_body, atol=1.0e-5, rtol=1.0e-6)
+
+
+def test_descendant_free_jacobian_matches_body_qd_com(test, device):
+    """A rotated-parent descendant FREE chain should satisfy `J @ joint_qd == body_qd[child]` at the child COM."""
+    model, _base, child = _build_descendant_free_with_rotated_parent(device)
+    state = model.state()
+
+    q = state.joint_q.numpy()
+    qd = state.joint_qd.numpy()
+    q[:] = np.array([0.35, -0.25, 0.45, *wp.quat_rpy(0.3, -0.2, 0.4)], dtype=np.float32)
+    qd[:] = np.array([0.7, -0.15, 0.25, 0.35, -0.4, 0.5], dtype=np.float32)
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    J = newton.eval_jacobian(model, state).numpy()[0, 6:12, : model.joint_dof_count]
+    body_qd = state.body_qd.numpy()[child]
+
+    np.testing.assert_allclose(J @ qd, body_qd, atol=1.0e-5, rtol=1.0e-6)
+
+
+def test_descendant_free_mass_matrix_matches_com_kinetic_energy(test, device):
+    """A rotated-parent descendant FREE chain should match COM-based kinetic energy under the public body_qd contract."""
+    model, _base, child = _build_descendant_free_with_rotated_parent(device)
+    state = model.state()
+
+    q = state.joint_q.numpy()
+    qd = state.joint_qd.numpy()
+    q[:] = np.array([-0.15, 0.4, 0.3, *wp.quat_rpy(-0.25, 0.15, 0.5)], dtype=np.float32)
+    qd[:] = np.array([0.25, -0.45, 0.3, 0.55, -0.2, 0.35], dtype=np.float32)
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    H = newton.eval_mass_matrix(model, state).numpy()[0, : model.joint_dof_count, : model.joint_dof_count]
+    kinetic_from_h = 0.5 * float(qd @ H @ qd)
+
+    kinetic_from_body = _kinetic_energy_from_body_twists(model, state, (child,))
+    np.testing.assert_allclose(kinetic_from_h, kinetic_from_body, atol=1.0e-5, rtol=1.0e-6)
+
+
 class TestJacobianMassMatrix(unittest.TestCase):
     pass
 
@@ -571,6 +795,39 @@ add_function_test(
 add_function_test(TestJacobianMassMatrix, "test_empty_model", test_empty_model, devices=devices)
 add_function_test(TestJacobianMassMatrix, "test_articulation_view_api", test_articulation_view_api, devices=devices)
 add_function_test(TestJacobianMassMatrix, "test_floating_base_jacobian", test_floating_base_jacobian, devices=devices)
+add_function_test(
+    TestJacobianMassMatrix, "test_jacobian_matches_body_qd_com", test_jacobian_matches_body_qd_com, devices=devices
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_mass_matrix_matches_com_kinetic_energy",
+    test_mass_matrix_matches_com_kinetic_energy,
+    devices=devices,
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_floating_free_jacobian_matches_body_qd_com",
+    test_floating_free_jacobian_matches_body_qd_com,
+    devices=devices,
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_descendant_free_jacobian_matches_body_qd_com",
+    test_descendant_free_jacobian_matches_body_qd_com,
+    devices=devices,
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_floating_free_mass_matrix_matches_com_kinetic_energy",
+    test_floating_free_mass_matrix_matches_com_kinetic_energy,
+    devices=devices,
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_descendant_free_mass_matrix_matches_com_kinetic_energy",
+    test_descendant_free_mass_matrix_matches_com_kinetic_energy,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":

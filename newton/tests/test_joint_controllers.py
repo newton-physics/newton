@@ -1,10 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-# TODO:
-# - Fix Featherstone solver for floating body
-# - Fix linear force application to floating body for SolverMuJoCo
-
 import unittest
 
 import numpy as np

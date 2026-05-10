@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import warp as wp
@@ -32,7 +31,7 @@ from ..geometry.collision_primitive import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
-from ..geometry.contact_data import SHAPE_PAIR_HFIELD_BIT, ContactData, contact_passes_gap_check
+from ..geometry.contact_data import SHAPE_PAIR_HFIELD_BIT, ContactData, contact_passes_gap_check, make_contact_sort_key
 from ..geometry.contact_reduction_global import (
     GlobalContactReducer,
     create_export_reduced_contacts_kernel,
@@ -40,8 +39,10 @@ from ..geometry.contact_reduction_global import (
     reduce_buffered_contacts_kernel,
     write_contact_to_reducer,
 )
+from ..geometry.contact_sort import ContactSorter
 from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import (
+    MESH_SDF_BLOCK_DIM,
     compute_block_counts_from_weights,
     compute_mesh_mesh_block_offsets_scan,
     create_narrow_phase_process_mesh_mesh_contacts_kernel,
@@ -49,6 +50,7 @@ from ..geometry.sdf_contact import (
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_texture import TextureSDFData
 from ..geometry.support_function import (
+    GeoTypeEx,
     SupportMapDataProvider,
     extract_shape_data,
     support_map_lean,
@@ -70,6 +72,7 @@ class ContactWriterData:
     contact_normal: wp.array[wp.vec3]
     contact_penetration: wp.array[float]
     contact_tangent: wp.array[wp.vec3]
+    contact_sort_key: wp.array[wp.int64]
 
 
 @wp.func
@@ -124,6 +127,11 @@ def write_contact_simple(
             world_x = wp.vec3(0.0, 1.0, 0.0)
         writer_data.contact_tangent[index] = wp.normalize(world_x - wp.dot(world_x, normal) * normal)
 
+    if writer_data.contact_sort_key.shape[0] > 0:
+        writer_data.contact_sort_key[index] = make_contact_sort_key(
+            contact_data.shape_a, contact_data.shape_b, contact_data.sort_sub_key
+        )
+
 
 def create_narrow_phase_primitive_kernel(writer_func: Any):
     """
@@ -140,8 +148,9 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
     Returns:
         A warp kernel for primitive collision detection
     """
+    _module = f"narrow_phase_primitive_{writer_func.__name__}"
 
-    @wp.kernel(enable_backward=False, module="unique")
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_primitive_kernel(
         candidate_pair: wp.array[wp.vec2i],
         candidate_pair_count: wp.array[int],
@@ -557,6 +566,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                     if contact_0_valid:
                         contact_data.contact_point_center = contact_pos_0
                         contact_data.contact_distance = contact_dist_0
+                        contact_data.sort_sub_key = 0
                         writer_func(contact_data, writer_data, base_index)
                         base_index += 1
 
@@ -564,6 +574,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                     if contact_1_valid:
                         contact_data.contact_point_center = contact_pos_1
                         contact_data.contact_distance = contact_dist_1
+                        contact_data.sort_sub_key = 1
                         writer_func(contact_data, writer_data, base_index)
                         base_index += 1
 
@@ -571,6 +582,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                     if contact_2_valid:
                         contact_data.contact_point_center = contact_pos_2
                         contact_data.contact_distance = contact_dist_2
+                        contact_data.sort_sub_key = 2
                         writer_func(contact_data, writer_data, base_index)
                         base_index += 1
 
@@ -578,6 +590,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                     if contact_3_valid:
                         contact_data.contact_point_center = contact_pos_3
                         contact_data.contact_distance = contact_dist_3
+                        contact_data.sort_sub_key = 3
                         writer_func(contact_data, writer_data, base_index)
 
                 continue
@@ -607,8 +620,11 @@ def create_narrow_phase_kernel_gjk_mpr(
     The remaining pairs are complex convex-convex (plane-box, plane-cylinder,
     plane-cone, box-box, cylinder-cylinder, etc.) that need GJK/MPR.
     """
+    _sf = support_func.__name__ if support_func is not None else "default"
+    _ppc = post_process_contact.__name__ if post_process_contact is not None else "default"
+    _module = f"narrow_phase_gjk_mpr_{external_aabb}_{writer_func.__name__}_{_sf}_{_ppc}"
 
-    @wp.kernel(enable_backward=False, module="unique")
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_kernel_gjk_mpr(
         candidate_pair: wp.array[wp.vec2i],
         candidate_pair_count: wp.array[int],
@@ -770,6 +786,8 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
     shape_gap: wp.array[float],  # Per-shape contact gaps
     shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
     shape_collision_radius: wp.array[float],
+    shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
+    shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
     shape_pairs_mesh: wp.array[wp.vec2i],
@@ -814,7 +832,8 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
                 shape_b,
                 hfd,
                 shape_transform,
-                shape_collision_radius,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
                 shape_gap,
                 triangle_pairs,
                 triangle_pairs_count,
@@ -871,7 +890,9 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
 
 
 def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
-    @wp.kernel(enable_backward=False, module="unique")
+    _module = f"narrow_phase_mesh_tri_{writer_func.__name__}"
+
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_process_mesh_triangle_contacts_kernel(
         shape_types: wp.array[int],
         shape_data: wp.array[wp.vec4],
@@ -928,9 +949,25 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
                 shape_source,
             )
 
-            # Set pos_a to be vertex A (origin of triangle in local frame)
+            # Triangle position is vertex A in world space.
+            # For heightfield prisms, edges are in heightfield-local space
+            # so we pass the heightfield rotation to let MPR/GJK work in
+            # that frame (where -Z is always the down axis).
             pos_a = v0_world
-            quat_a = wp.quat_identity()  # Triangle has no orientation, use identity
+            if type_a == GeoType.HFIELD:
+                quat_a = wp.transform_get_rotation(X_ws_a)
+            else:
+                quat_a = wp.quat_identity()
+
+            # Back-face culling: skip when the entire convex shape is behind
+            # the triangle face.  TRIANGLE_PRISM (heightfields) handles
+            # this via its extruded support function.
+            if shape_data_a.shape_type == int(GeoTypeEx.TRIANGLE):
+                face_normal = wp.cross(shape_data_a.scale, shape_data_a.auxiliary)
+                # Signed distance of shape B's center from triangle plane
+                center_dist = wp.dot(face_normal, pos_b - pos_a)
+                if center_dist < 0.0:
+                    continue
 
             # Extract margin offset for shape A (signed distance padding)
             margin_offset_a = shape_data[shape_a][3]
@@ -954,6 +991,7 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
                 margin_offset_a,
                 margin_offset_b,
                 writer_data,
+                (tri_idx << 1) | 1,
             )
 
     return narrow_phase_process_mesh_triangle_contacts_kernel
@@ -1046,8 +1084,9 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
     Returns:
         A warp kernel that processes mesh-plane collisions
     """
+    _module = f"narrow_phase_mesh_plane_{writer_func.__name__}_{reduce_contacts}"
 
-    @wp.kernel(enable_backward=False, module="unique")
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_process_mesh_plane_contacts_kernel(
         shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
@@ -1144,6 +1183,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                     contact_data.shape_a = mesh_shape
                     contact_data.shape_b = plane_shape
                     contact_data.gap_sum = gap_sum
+                    contact_data.sort_sub_key = vertex_idx
 
                     if writer_data.contact_count[0] < writer_data.contact_max:
                         writer_func(contact_data, writer_data, -1)
@@ -1152,7 +1192,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
     if not reduce_contacts:
         return narrow_phase_process_mesh_plane_contacts_kernel
 
-    @wp.kernel(enable_backward=False, module="unique")
+    @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_process_mesh_plane_contacts_reduce_kernel(
         shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
@@ -1279,6 +1319,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                         contact_data.shape_a = mesh_shape
                         contact_data.shape_b = plane_shape
                         contact_data.gap_sum = gap_sum
+                        contact_data.sort_sub_key = vertex_idx
 
                         writer_func(contact_data, writer_data, -1)
 
@@ -1390,6 +1431,9 @@ class NarrowPhase:
         has_meshes: bool = True,
         has_heightfields: bool = False,
         use_lean_gjk_mpr: bool = False,
+        deterministic: bool = False,
+        contact_max: int | None = None,
+        verify_buffers: bool = True,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -1413,6 +1457,28 @@ class NarrowPhase:
                 Defaults to True for safety. Set to False when constructing from a model with no meshes.
             has_heightfields: Whether the scene contains any heightfield shapes (GeoType.HFIELD). When True,
                 heightfield collision buffers and kernels are allocated. Defaults to False.
+            deterministic: Sort contacts after the narrow phase so that results are
+                independent of GPU thread scheduling.  Adds a radix sort + gather
+                pass.  Hydroelastic contacts are not yet covered.
+            contact_max: Maximum number of contacts for the deterministic sort buffer.
+                Must match the ``contact_pair`` array size passed to :meth:`launch`.
+                Defaults to ``max_candidate_pairs``.  Set this to a larger value when
+                a single candidate pair can emit multiple contacts (e.g. up to 4 for
+                primitive multi-contact paths).
+            verify_buffers: When True (the default), launch a ``dim=[1]``
+                diagnostic kernel (:func:`verify_narrow_phase_buffers`) at the
+                end of :meth:`launch` that compares each public counter on this
+                class (``gjk_candidate_pairs_count``, ``shape_pairs_mesh_count``,
+                ``triangle_pairs_count``, ``shape_pairs_mesh_plane_count``,
+                ``shape_pairs_mesh_mesh_count``, ``shape_pairs_sdf_sdf_count``)
+                and the output ``contact_count`` against the capacity of its
+                backing array, printing ``wp.printf`` warnings on overflow.
+                Users who want a programmatic overflow hook can disable this and
+                read those counters themselves.  Overhead is one extra kernel
+                launch per collision pass (roughly a few µs of launch latency on
+                CUDA; the kernel body is a handful of scalar comparisons on one
+                thread).  Disable in hot loops or CUDA graph capture once buffer
+                sizes are known to be adequate.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -1420,19 +1486,14 @@ class NarrowPhase:
         self.reduce_contacts = reduce_contacts
         self.has_meshes = has_meshes
         self.has_heightfields = has_heightfields
+        self.deterministic = deterministic
+        self.verify_buffers = verify_buffers
+        device_obj = wp.get_device(device)
 
-        # Warn when running on CPU with meshes: mesh-mesh SDF contacts require CUDA
-        is_gpu_device = wp.get_device(device).is_cuda
-        if has_meshes and not is_gpu_device:
-            warnings.warn(
-                "NarrowPhase running on CPU: mesh-mesh contacts will be skipped "
-                "(SDF-based mesh-mesh collision requires CUDA). "
-                "Use a CUDA device for full mesh-mesh contact support.",
-                stacklevel=2,
-            )
-
-        # Contact reduction requires GPU and meshes
-        if reduce_contacts and not (is_gpu_device and has_meshes):
+        # Contact reduction requires either meshes or heightfields (the
+        # mesh/heightfield-triangle path feeds the global reducer, so
+        # heightfield-only scenes still benefit from reduction).
+        if reduce_contacts and not (has_meshes or has_heightfields):
             self.reduce_contacts = False
 
         # Determine if we're using external AABBs
@@ -1455,10 +1516,30 @@ class NarrowPhase:
         else:
             writer_func = contact_writer_warp_func
 
-        self.tile_size_mesh_convex = 128
-        self.tile_size_mesh_mesh = 256
+        # CPU kernels currently observe ``wp.block_dim() == 1`` regardless
+        # of the plain ``wp.launch(..., block_dim=N)`` parameter (Warp
+        # GH-1413). Keep the mesh-convex midphase launch grid, tile shape,
+        # and kernel-side ``wp.block_dim()`` in sync on CPU.
+        self.tile_size_mesh_convex = 1 if device_obj.is_cpu else 128
+        # Must match ``MESH_SDF_BLOCK_DIM`` in sdf_contact.py: the mesh-SDF
+        # kernels assume ``wp.block_dim()`` equals that constant so the
+        # tile-stack overflow margin (``STACK_CAPACITY = 2 *
+        # MESH_SDF_BLOCK_DIM``) is correctly sized. Re-use the constant
+        # rather than duplicating the value so the two can't drift.
+        self.tile_size_mesh_mesh = MESH_SDF_BLOCK_DIM
+        assert self.tile_size_mesh_mesh == MESH_SDF_BLOCK_DIM, (
+            "mesh-SDF tile launches must use block_dim == MESH_SDF_BLOCK_DIM"
+        )
         self.tile_size_mesh_plane = 512
-        self.block_dim = 128
+        # Generic block dim for non-tile-stack kernels (primitive /
+        # GJK-MPR / export). Not used for the mesh-SDF tile launches,
+        # which use ``self.tile_size_mesh_mesh`` above.
+        #
+        # Plain ``wp.launch`` does not auto-clamp ``block_dim`` on CPU like
+        # ``wp.launch_tiled`` does. Match the kernel-observed value so
+        # strided-loop and tile-index calculations cannot run past the CPU
+        # launch geometry.
+        self.block_dim = 1 if device_obj.is_cpu else 128
 
         # Create the appropriate kernel variants
         # Primitive kernel handles lightweight primitives and routes remaining pairs
@@ -1495,32 +1576,32 @@ class NarrowPhase:
                 self.mesh_plane_contacts_kernel = create_narrow_phase_process_mesh_plane_contacts_kernel(
                     writer_func,
                 )
-            # Only create mesh-mesh SDF kernel on CUDA (uses __shared__ memory via func_native)
-            if is_gpu_device:
-                if self.reduce_contacts:
-                    self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                        write_contact_to_reducer,
-                        enable_heightfields=has_heightfields,
-                        reduce_contacts=True,
-                    )
-                else:
-                    self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                        writer_func,
-                        enable_heightfields=has_heightfields,
-                    )
+            if self.reduce_contacts:
+                self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                    write_contact_to_reducer,
+                    enable_heightfields=has_heightfields,
+                    reduce_contacts=True,
+                )
             else:
-                self.mesh_mesh_contacts_kernel = None
+                self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                    writer_func,
+                    enable_heightfields=has_heightfields,
+                )
         else:
             self.mesh_plane_contacts_kernel = None
             self.mesh_mesh_contacts_kernel = None
 
-        # Create global contact reduction kernels for mesh-triangle contacts (only if has_meshes and reduce_contacts)
-        if self.reduce_contacts and has_meshes:
+        # Create global contact reduction kernels for mesh/heightfield-triangle
+        # contacts (mirror the predicate used to gate ``self.reduce_contacts``
+        # above so heightfield-only scenes also get the reducer allocated).
+        if self.reduce_contacts and (has_meshes or has_heightfields):
             # Global contact reducer uses hardcoded BETA_THRESHOLD (0.1mm) same as shared-memory reduction
             # Slot layout: NUM_SPATIAL_DIRECTIONS spatial + 1 max-depth = VALUES_PER_KEY slots per key
             self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(writer_func)
             # Global contact reducer for all mesh contact types
-            self.global_contact_reducer = GlobalContactReducer(max_triangle_pairs, device=device)
+            self.global_contact_reducer = GlobalContactReducer(
+                max_triangle_pairs, device=device, deterministic=deterministic
+            )
         else:
             self.export_reduced_contacts_kernel = None
             self.global_contact_reducer = None
@@ -1571,6 +1652,20 @@ class NarrowPhase:
             )
 
             self.empty_tangent = None
+            self._empty_sort_key = wp.zeros(0, dtype=wp.int64, device=device)
+            det_capacity = contact_max if contact_max is not None else max_candidate_pairs
+            if deterministic:
+                self._sort_key_array = wp.zeros(det_capacity, dtype=wp.int64, device=device)
+                self._contact_sorter = ContactSorter(det_capacity, device=device)
+            else:
+                self._sort_key_array = wp.zeros(0, dtype=wp.int64, device=device)
+                self._contact_sorter = None
+            # Sentinel edge buffers used when no edge data is provided.
+            # _empty_edge_range is indexed by shape id, so it must have one
+            # slot per shape (not per candidate pair).
+            num_shapes = shape_aabb_lower.shape[0] if shape_aabb_lower is not None else max_candidate_pairs
+            self._empty_edge_indices = wp.zeros(1, dtype=wp.vec2i, device=device)
+            self._empty_edge_range = wp.full(max(num_shapes, 1), (-1, 0), dtype=wp.vec2i, device=device)
 
             if hydroelastic_sdf is not None:
                 self.shape_pairs_sdf_sdf = wp.zeros(hydroelastic_sdf.max_num_shape_pairs, dtype=wp.vec2i, device=device)
@@ -1584,7 +1679,6 @@ class NarrowPhase:
         # 256 blocks provides good occupancy on most GPUs (2-4 blocks per SM).
 
         # Query GPU properties to compute appropriate thread limits
-        device_obj = wp.get_device(device)
         if device_obj.is_cuda:
             # Use 4 blocks per SM as a reasonable upper bound for occupancy
             # This balances parallelism with resource utilization
@@ -1599,9 +1693,13 @@ class NarrowPhase:
         self.total_num_threads = self.block_dim * num_blocks
         self.num_tile_blocks = num_blocks
 
-        # Dynamic block allocation for mesh-mesh and mesh-plane contacts
-        if device_obj.is_cuda and self.reduce_contacts:
-            target_blocks = device_obj.sm_count * 4
+        # Dynamic block allocation for mesh-mesh and mesh-plane contacts.
+        # On CUDA we target ~4 blocks per SM for good occupancy; on CPU
+        # there is no SM notion so we pick 64 as a modest parallelism
+        # target that splits pair work across OpenMP threads without
+        # over-subscribing on small scenes.
+        if self.reduce_contacts:
+            target_blocks = device_obj.sm_count * 4 if device_obj.is_cuda else 64
             n = max_candidate_pairs + 1
             # Mesh-mesh
             self.num_mesh_mesh_blocks = target_blocks
@@ -1647,6 +1745,8 @@ class NarrowPhase:
         shape_heightfield_index: wp.array[wp.int32] | None = None,
         heightfield_data: wp.array[HeightfieldData] | None = None,
         heightfield_elevations: wp.array[wp.float32] | None = None,
+        mesh_edge_indices: wp.array[wp.vec2i] | None = None,
+        shape_edge_range: wp.array[wp.vec2i] | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
     ) -> None:
@@ -1671,6 +1771,8 @@ class NarrowPhase:
             shape_collision_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
+            mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
+            shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -1779,6 +1881,8 @@ class NarrowPhase:
                     shape_gap,
                     shape_data,
                     shape_collision_radius,
+                    shape_collision_aabb_lower,
+                    shape_collision_aabb_upper,
                     shape_heightfield_index,
                     heightfield_data,
                     self.shape_pairs_mesh,
@@ -1901,19 +2005,23 @@ class NarrowPhase:
                     record_tape=False,
                 )
 
-            # Launch mesh-mesh contact processing kernel on CUDA.
+            # Launch mesh-mesh contact processing kernel.
             # The kernel uses texture SDF for fast sampling, with BVH fallback via shape_sdf_index,
             # as well as on-the-fly heightfield evaluation via heightfield_data.
             if texture_sdf_data is None:
                 texture_sdf_data = wp.zeros(0, dtype=TextureSDFData, device=device)
+            if mesh_edge_indices is None:
+                mesh_edge_indices = self._empty_edge_indices
+            if shape_edge_range is None:
+                shape_edge_range = self._empty_edge_range
 
-            if wp.get_device(device).is_cuda and self.mesh_mesh_contacts_kernel is not None:
+            if self.mesh_mesh_contacts_kernel is not None:
                 if self.reduce_contacts and self.mesh_mesh_block_offsets is not None:
                     # Mesh-mesh contacts → buffer + inline hashtable registration
                     compute_mesh_mesh_block_offsets_scan(
                         shape_pairs_mesh_mesh=self.shape_pairs_mesh_mesh,
                         shape_pairs_mesh_mesh_count=self.shape_pairs_mesh_mesh_count,
-                        shape_source=shape_source,
+                        shape_edge_range=shape_edge_range,
                         shape_heightfield_index=shape_heightfield_index,
                         heightfield_data=heightfield_data,
                         target_blocks=self.mesh_mesh_target_blocks,
@@ -1942,6 +2050,8 @@ class NarrowPhase:
                             shape_heightfield_index,
                             heightfield_data,
                             heightfield_elevations,
+                            mesh_edge_indices,
+                            shape_edge_range,
                             self.mesh_mesh_block_offsets,
                             reducer_data,
                             self.num_mesh_mesh_blocks,
@@ -1970,6 +2080,8 @@ class NarrowPhase:
                             shape_heightfield_index,
                             heightfield_data,
                             heightfield_elevations,
+                            mesh_edge_indices,
+                            shape_edge_range,
                             writer_data,
                             self.num_tile_blocks,
                         ],
@@ -1992,12 +2104,14 @@ class NarrowPhase:
                         self.global_contact_reducer.position_depth,
                         self.global_contact_reducer.normal,
                         self.global_contact_reducer.shape_pairs,
+                        self.global_contact_reducer.contact_fingerprints,
                         self.global_contact_reducer.exported_flags,
                         shape_types,
                         shape_data,
                         shape_gap,
                         writer_data,
                         self.total_num_threads,
+                        int(self.global_contact_reducer.deterministic),
                     ],
                     device=device,
                     block_dim=self.block_dim,
@@ -2018,30 +2132,31 @@ class NarrowPhase:
             )
 
         # Verify no collision pipeline buffers overflowed
-        wp.launch(
-            kernel=verify_narrow_phase_buffers,
-            dim=[1],
-            inputs=[
-                candidate_pair_count,
-                candidate_pair.shape[0],
-                self.gjk_candidate_pairs_count,
-                self.gjk_candidate_pairs.shape[0],
-                self.shape_pairs_mesh_count,
-                self.shape_pairs_mesh.shape[0] if self.shape_pairs_mesh is not None else 0,
-                self.triangle_pairs_count,
-                self.triangle_pairs.shape[0] if self.triangle_pairs is not None else 0,
-                self.shape_pairs_mesh_plane_count,
-                self.shape_pairs_mesh_plane.shape[0] if self.shape_pairs_mesh_plane is not None else 0,
-                self.shape_pairs_mesh_mesh_count,
-                self.shape_pairs_mesh_mesh.shape[0] if self.shape_pairs_mesh_mesh is not None else 0,
-                self.shape_pairs_sdf_sdf_count,
-                self.shape_pairs_sdf_sdf.shape[0] if self.shape_pairs_sdf_sdf is not None else 0,
-                writer_data.contact_count,
-                writer_data.contact_max,
-            ],
-            device=device,
-            record_tape=False,
-        )
+        if self.verify_buffers:
+            wp.launch(
+                kernel=verify_narrow_phase_buffers,
+                dim=[1],
+                inputs=[
+                    candidate_pair_count,
+                    candidate_pair.shape[0],
+                    self.gjk_candidate_pairs_count,
+                    self.gjk_candidate_pairs.shape[0],
+                    self.shape_pairs_mesh_count,
+                    self.shape_pairs_mesh.shape[0] if self.shape_pairs_mesh is not None else 0,
+                    self.triangle_pairs_count,
+                    self.triangle_pairs.shape[0] if self.triangle_pairs is not None else 0,
+                    self.shape_pairs_mesh_plane_count,
+                    self.shape_pairs_mesh_plane.shape[0] if self.shape_pairs_mesh_plane is not None else 0,
+                    self.shape_pairs_mesh_mesh_count,
+                    self.shape_pairs_mesh_mesh.shape[0] if self.shape_pairs_mesh_mesh is not None else 0,
+                    self.shape_pairs_sdf_sdf_count,
+                    self.shape_pairs_sdf_sdf.shape[0] if self.shape_pairs_sdf_sdf is not None else 0,
+                    writer_data.contact_count,
+                    writer_data.contact_max,
+                ],
+                device=device,
+                record_tape=False,
+            )
 
     def launch(
         self,
@@ -2104,6 +2219,8 @@ class NarrowPhase:
         # shape_local_aabb_lower/upper.
         shape_local_aabb_lower = kwargs.pop("shape_local_aabb_lower", None)
         shape_local_aabb_upper = kwargs.pop("shape_local_aabb_upper", None)
+        mesh_edge_indices = kwargs.pop("mesh_edge_indices", None)
+        shape_edge_range = kwargs.pop("shape_edge_range", None)
         if kwargs:
             unknown_keys = sorted(kwargs.keys())
             if len(unknown_keys) == 1:
@@ -2133,7 +2250,20 @@ class NarrowPhase:
         # Clear external contact count (internal counters are cleared in launch_custom_write)
         contact_count.zero_()
 
+        # Verify sort-key buffer and sorter match the contact output capacity.
+        # Raising instead of silently reallocating keeps this path
+        # CUDA-graph-capturable and consistent with CollisionPipeline.collide().
+        if self.deterministic and self._sort_key_array.shape[0] != contact_max:
+            raise ValueError(
+                f"Contact output capacity ({contact_max}) does not match the "
+                f"deterministic sort buffer size ({self._sort_key_array.shape[0]}). "
+                f"The sorter operates over fixed-capacity buffers for CUDA graph capture "
+                f"compatibility, so the sizes must match exactly."
+            )
+
         # Create ContactWriterData struct
+        sort_key_arr = self._sort_key_array if self.deterministic else self._empty_sort_key
+
         writer_data = ContactWriterData()
         writer_data.contact_max = contact_max
         writer_data.contact_count = contact_count
@@ -2142,6 +2272,7 @@ class NarrowPhase:
         writer_data.contact_normal = contact_normal
         writer_data.contact_penetration = contact_penetration
         writer_data.contact_tangent = contact_tangent
+        writer_data.contact_sort_key = sort_key_arr
 
         # Delegate to launch_custom_write
         self.launch_custom_write(
@@ -2159,6 +2290,20 @@ class NarrowPhase:
             shape_collision_aabb_lower=shape_collision_aabb_lower,
             shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
+            mesh_edge_indices=mesh_edge_indices,
+            shape_edge_range=shape_edge_range,
             writer_data=writer_data,
             device=device,
         )
+
+        if self.deterministic:
+            self._contact_sorter.sort_simple(
+                sort_key_arr,
+                contact_count,
+                contact_pair=contact_pair,
+                contact_position=contact_position,
+                contact_normal=contact_normal,
+                contact_penetration=contact_penetration,
+                contact_tangent=contact_tangent,
+                device=device,
+            )

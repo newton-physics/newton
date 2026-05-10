@@ -536,9 +536,13 @@ class IKOptimizerLM:
             dim=[batch, self.model.joint_count],
             inputs=[
                 self.model.joint_type,
+                self.model.joint_parent,
+                self.model.joint_child,
                 self.model.joint_q_start,
                 self.model.joint_qd_start,
                 self.model.joint_dof_dim,
+                self.model.joint_X_c,
+                self.model.body_com,
                 joint_q,
                 dq_in,
                 joint_qd_out,
@@ -732,9 +736,13 @@ class IKOptimizerLM:
         def _integrate_dq_dof(
             # model-wide
             joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_parent: wp.array[wp.int32],  # (n_joints)
+            joint_child: wp.array[wp.int32],  # (n_joints)
             joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)  → (lin, ang)
+            joint_X_c: wp.array[wp.transform],  # (n_joints)
+            body_com: wp.array[wp.vec3],  # (n_bodies)
             # per-row
             joint_q_curr: wp.array2d[wp.float32],  # (n_batch, n_coords)
             joint_qd_curr: wp.array2d[wp.float32],  # (n_batch, n_dofs)  (typically all-zero)
@@ -758,6 +766,8 @@ class IKOptimizerLM:
 
             # Static joint metadata
             t = joint_type[joint_idx]
+            parent = joint_parent[joint_idx]
+            child = joint_child[joint_idx]
             coord_start = joint_q_start[joint_idx]
             dof_start = joint_qd_start[joint_idx]
             lin_axes = joint_dof_dim[joint_idx, 0]
@@ -775,6 +785,9 @@ class IKOptimizerLM:
             #   qd_new = 0 + delta           (qd ← delta)
             #   q_new  = q + qd_new * dt     (q ← q + delta)
             jcalc_integrate(
+                parent,
+                joint_X_c[joint_idx],
+                body_com[child],
                 t,
                 q_row,
                 qd_row,

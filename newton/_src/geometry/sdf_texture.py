@@ -24,7 +24,8 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
-from .sdf_utils import get_distance_to_mesh
+from .sdf_mc import MC_EDGE_CLAMP_MAX, MC_EDGE_CLAMP_MIN, MC_EDGE_VAL_DIFF_EPS
+from .sdf_utils import get_distance_to_mesh, get_distance_to_mesh_parity
 
 # Sentinel values for subgrid indirection slots.
 # Plain int so wp.static() works in kernels; numpy casts on assignment.
@@ -101,118 +102,226 @@ def _id_to_xyz(idx: int, size_x: int, size_y: int) -> wp.vec3i:
     return wp.vec3i(x, y, z)
 
 
+@wp.func
+def _query_mesh_sdf(
+    mesh: wp.uint64,
+    point: wp.vec3,
+    max_dist: wp.float32,
+    winding_threshold: wp.float32,
+    use_parity: wp.int32,
+) -> float:
+    """Dispatch to winding-number or parity sign query based on *use_parity*."""
+    if use_parity != 0:
+        return get_distance_to_mesh_parity(mesh, point, max_dist)
+    return get_distance_to_mesh(mesh, point, max_dist, winding_threshold)
+
+
+@wp.func
+def _interp_coarse_sdf(
+    background_sdf: wp.array[float],
+    block_x: int,
+    block_y: int,
+    block_z: int,
+    lx: int,
+    ly: int,
+    lz: int,
+    inv_cells_per_subgrid: float,
+    bg_size_x: int,
+    bg_size_y: int,
+    bg_size_z: int,
+) -> float:
+    """Trilinear interpolation of the coarse/background SDF at a fine sample."""
+    coarse_fx = float(block_x) + float(lx) * inv_cells_per_subgrid
+    coarse_fy = float(block_y) + float(ly) * inv_cells_per_subgrid
+    coarse_fz = float(block_z) + float(lz) * inv_cells_per_subgrid
+
+    x0 = wp.clamp(int(wp.floor(coarse_fx)), 0, bg_size_x - 2)
+    y0 = wp.clamp(int(wp.floor(coarse_fy)), 0, bg_size_y - 2)
+    z0 = wp.clamp(int(wp.floor(coarse_fz)), 0, bg_size_z - 2)
+
+    tx = wp.clamp(coarse_fx - float(x0), 0.0, 1.0)
+    ty = wp.clamp(coarse_fy - float(y0), 0.0, 1.0)
+    tz = wp.clamp(coarse_fz - float(z0), 0.0, 1.0)
+
+    v000 = background_sdf[_idx3d(x0, y0, z0, bg_size_x, bg_size_y)]
+    v100 = background_sdf[_idx3d(x0 + 1, y0, z0, bg_size_x, bg_size_y)]
+    v010 = background_sdf[_idx3d(x0, y0 + 1, z0, bg_size_x, bg_size_y)]
+    v110 = background_sdf[_idx3d(x0 + 1, y0 + 1, z0, bg_size_x, bg_size_y)]
+    v001 = background_sdf[_idx3d(x0, y0, z0 + 1, bg_size_x, bg_size_y)]
+    v101 = background_sdf[_idx3d(x0 + 1, y0, z0 + 1, bg_size_x, bg_size_y)]
+    v011 = background_sdf[_idx3d(x0, y0 + 1, z0 + 1, bg_size_x, bg_size_y)]
+    v111 = background_sdf[_idx3d(x0 + 1, y0 + 1, z0 + 1, bg_size_x, bg_size_y)]
+
+    c00 = v000 * (1.0 - tx) + v100 * tx
+    c10 = v010 * (1.0 - tx) + v110 * tx
+    c01 = v001 * (1.0 - tx) + v101 * tx
+    c11 = v011 * (1.0 - tx) + v111 * tx
+    c0 = c00 * (1.0 - ty) + c10 * ty
+    c1 = c01 * (1.0 - ty) + c11 * ty
+    return c0 * (1.0 - tz) + c1 * tz
+
+
+@wp.func
+def _is_in_narrow_band(signed_distance: float, threshold: wp.vec2f) -> wp.bool:
+    """Check if a signed distance lies within the narrow band."""
+    if wp.sign(signed_distance) > 0.0:
+        return signed_distance < threshold[1]
+    return signed_distance > threshold[0]
+
+
+@wp.func
+def _write_subgrid_slot(
+    subgrid_start_slots: wp.array3d[wp.uint32],
+    address: int,
+    tex_blocks_per_dim: int,
+    block_x: int,
+    block_y: int,
+    block_z: int,
+    local_sample: int,
+) -> wp.vec3i:
+    """Resolve texture block address to 3D offset and write the indirection slot.
+
+    Returns the block address as ``(addr_x, addr_y, addr_z)`` for the caller
+    to combine with the local sample offset.
+    """
+    addr_coords = _id_to_xyz(address, tex_blocks_per_dim, tex_blocks_per_dim)
+    if local_sample == 0:
+        start_slot = (
+            wp.uint32(addr_coords[0])
+            | (wp.uint32(addr_coords[1]) << wp.uint32(10))
+            | (wp.uint32(addr_coords[2]) << wp.uint32(20))
+        )
+        subgrid_start_slots[block_x, block_y, block_z] = start_slot
+    return addr_coords
+
+
 @wp.kernel
 def _check_subgrid_occupied_kernel(
     mesh: wp.uint64,
-    subgrid_centers: wp.array[wp.vec3],
     threshold: wp.vec2f,
     winding_threshold: float,
+    use_parity: wp.int32,
     subgrid_required: wp.array[wp.int32],
+    cells_per_subgrid: int,
+    num_subgrids_x: int,
+    num_subgrids_y: int,
+    min_corner: wp.vec3,
+    cell_size: wp.vec3,
 ):
     """Mark subgrids that overlap the narrow band by checking mesh SDF at center."""
     tid = wp.tid()
-    sample_pos = subgrid_centers[tid]
+    coords = _id_to_xyz(tid, num_subgrids_x, num_subgrids_y)
+    sample_pos = min_corner + wp.vec3(
+        (float(coords[0] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[0],
+        (float(coords[1] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[1],
+        (float(coords[2] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[2],
+    )
 
-    signed_distance = get_distance_to_mesh(mesh, sample_pos, 10000.0, winding_threshold)
-    is_occupied = wp.bool(False)
-    if wp.sign(signed_distance) > 0.0:
-        is_occupied = signed_distance < threshold[1]
-    else:
-        is_occupied = signed_distance > threshold[0]
-
-    if is_occupied:
+    signed_distance = _query_mesh_sdf(mesh, sample_pos, 10000.0, winding_threshold, use_parity)
+    if _is_in_narrow_band(signed_distance, threshold):
         subgrid_required[tid] = 1
     else:
         subgrid_required[tid] = 0
 
 
 @wp.kernel
-def _check_subgrid_linearity_kernel(
+def _accumulate_subgrid_linearity_error_kernel(
     mesh: wp.uint64,
     background_sdf: wp.array[float],
     subgrid_required: wp.array[wp.int32],
-    subgrid_is_linear: wp.array[wp.int32],
+    linearity_errors: wp.array[float],
     cells_per_subgrid: int,
     min_corner: wp.vec3,
     cell_size: wp.vec3,
     winding_threshold: float,
+    use_parity: wp.int32,
     num_subgrids_x: int,
     num_subgrids_y: int,
+    num_subgrids_z: int,
     bg_size_x: int,
     bg_size_y: int,
     bg_size_z: int,
+):
+    """Sample mesh SDF at every fine-grid point of every occupied subgrid and
+    accumulate the maximum absolute deviation from the trilinearly interpolated
+    coarse SDF via ``wp.atomic_max``.
+
+    Launched over ``total_subgrids * samples_per_subgrid`` threads so the 9^3
+    inner loop is parallelized across the GPU — a per-subgrid launch would
+    serialize the inner sampling loop on SM occupancy when mesh BVH queries
+    dominate throughput.
+    """
+    tid = wp.tid()
+
+    total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
+    samples_per_dim = cells_per_subgrid + 1
+    samples_per_subgrid = samples_per_dim * samples_per_dim * samples_per_dim
+
+    subgrid_idx = tid // samples_per_subgrid
+    local_sample = tid - subgrid_idx * samples_per_subgrid
+
+    if subgrid_idx >= total_subgrids:
+        return
+    if subgrid_required[subgrid_idx] == 0:
+        return
+
+    subgrid_coords = _id_to_xyz(subgrid_idx, num_subgrids_x, num_subgrids_y)
+    block_x = subgrid_coords[0]
+    block_y = subgrid_coords[1]
+    block_z = subgrid_coords[2]
+
+    local_coords = _id_to_xyz(local_sample, samples_per_dim, samples_per_dim)
+    lx = local_coords[0]
+    ly = local_coords[1]
+    lz = local_coords[2]
+
+    gx = block_x * cells_per_subgrid + lx
+    gy = block_y * cells_per_subgrid + ly
+    gz = block_z * cells_per_subgrid + lz
+
+    pos = min_corner + wp.vec3(
+        float(gx) * cell_size[0],
+        float(gy) * cell_size[1],
+        float(gz) * cell_size[2],
+    )
+    mesh_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+
+    inv_cpsg = 1.0 / float(cells_per_subgrid)
+    coarse_val = _interp_coarse_sdf(
+        background_sdf,
+        block_x,
+        block_y,
+        block_z,
+        lx,
+        ly,
+        lz,
+        inv_cpsg,
+        bg_size_x,
+        bg_size_y,
+        bg_size_z,
+    )
+
+    wp.atomic_max(linearity_errors, subgrid_idx, wp.abs(mesh_val - coarse_val))
+
+
+@wp.kernel
+def _apply_subgrid_linearity_kernel(
+    subgrid_required: wp.array[wp.int32],
+    linearity_errors: wp.array[float],
+    subgrid_is_linear: wp.array[wp.int32],
     error_threshold: float,
 ):
-    """Demote occupied subgrids whose SDF is well-approximated by the coarse grid.
+    """Demote occupied subgrids whose max linearity error is below threshold.
 
-    For each occupied subgrid, queries the mesh SDF at every fine-grid sample
-    and compares against the trilinearly interpolated coarse/background SDF.
-    Subgrids where the maximum absolute error is below *error_threshold* are
-    marked as linear (``subgrid_is_linear[tid] = 1``) and removed from
-    ``subgrid_required`` so no subgrid texture data is allocated for them.
+    Consumes the per-subgrid maxima produced by
+    :func:`_accumulate_subgrid_linearity_error_kernel` and clears the
+    corresponding ``subgrid_required`` entries, so linear subgrids occupy no
+    slot in the high-resolution texture.
     """
     tid = wp.tid()
     if subgrid_required[tid] == 0:
         return
-
-    coords = _id_to_xyz(tid, num_subgrids_x, num_subgrids_y)
-    block_x = coords[0]
-    block_y = coords[1]
-    block_z = coords[2]
-
-    s = 1.0 / float(cells_per_subgrid)
-    samples_per_dim = cells_per_subgrid + 1
-    max_abs_error = float(0.0)
-
-    for lz in range(samples_per_dim):
-        for ly in range(samples_per_dim):
-            for lx in range(samples_per_dim):
-                gx = block_x * cells_per_subgrid + lx
-                gy = block_y * cells_per_subgrid + ly
-                gz = block_z * cells_per_subgrid + lz
-
-                pos = min_corner + wp.vec3(
-                    float(gx) * cell_size[0],
-                    float(gy) * cell_size[1],
-                    float(gz) * cell_size[2],
-                )
-                mesh_val = get_distance_to_mesh(mesh, pos, 10000.0, winding_threshold)
-
-                coarse_fx = float(block_x) + float(lx) * s
-                coarse_fy = float(block_y) + float(ly) * s
-                coarse_fz = float(block_z) + float(lz) * s
-
-                x0 = int(wp.floor(coarse_fx))
-                y0 = int(wp.floor(coarse_fy))
-                z0 = int(wp.floor(coarse_fz))
-                x0 = wp.clamp(x0, 0, bg_size_x - 2)
-                y0 = wp.clamp(y0, 0, bg_size_y - 2)
-                z0 = wp.clamp(z0, 0, bg_size_z - 2)
-
-                tx = wp.clamp(coarse_fx - float(x0), 0.0, 1.0)
-                ty = wp.clamp(coarse_fy - float(y0), 0.0, 1.0)
-                tz = wp.clamp(coarse_fz - float(z0), 0.0, 1.0)
-
-                v000 = background_sdf[_idx3d(x0, y0, z0, bg_size_x, bg_size_y)]
-                v100 = background_sdf[_idx3d(x0 + 1, y0, z0, bg_size_x, bg_size_y)]
-                v010 = background_sdf[_idx3d(x0, y0 + 1, z0, bg_size_x, bg_size_y)]
-                v110 = background_sdf[_idx3d(x0 + 1, y0 + 1, z0, bg_size_x, bg_size_y)]
-                v001 = background_sdf[_idx3d(x0, y0, z0 + 1, bg_size_x, bg_size_y)]
-                v101 = background_sdf[_idx3d(x0 + 1, y0, z0 + 1, bg_size_x, bg_size_y)]
-                v011 = background_sdf[_idx3d(x0, y0 + 1, z0 + 1, bg_size_x, bg_size_y)]
-                v111 = background_sdf[_idx3d(x0 + 1, y0 + 1, z0 + 1, bg_size_x, bg_size_y)]
-
-                c00 = v000 * (1.0 - tx) + v100 * tx
-                c10 = v010 * (1.0 - tx) + v110 * tx
-                c01 = v001 * (1.0 - tx) + v101 * tx
-                c11 = v011 * (1.0 - tx) + v111 * tx
-                c0 = c00 * (1.0 - ty) + c10 * ty
-                c1 = c01 * (1.0 - ty) + c11 * ty
-                coarse_val = c0 * (1.0 - tz) + c1 * tz
-
-                max_abs_error = wp.max(max_abs_error, wp.abs(mesh_val - coarse_val))
-
-    if max_abs_error < error_threshold:
+    if linearity_errors[tid] < error_threshold:
         subgrid_is_linear[tid] = 1
         subgrid_required[tid] = 0
 
@@ -228,6 +337,7 @@ def _build_coarse_sdf_from_mesh_kernel(
     bg_size_y: int,
     bg_size_z: int,
     winding_threshold: float,
+    use_parity: wp.int32,
 ):
     """Populate background SDF by querying mesh at subgrid corner positions."""
     tid = wp.tid()
@@ -247,7 +357,7 @@ def _build_coarse_sdf_from_mesh_kernel(
         float(z_block * cells_per_subgrid) * cell_size[2],
     )
 
-    background_sdf[tid] = get_distance_to_mesh(mesh, pos, 10000.0, winding_threshold)
+    background_sdf[tid] = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
 
 
 @wp.kernel
@@ -261,6 +371,7 @@ def _populate_subgrid_texture_float32_kernel(
     min_corner: wp.vec3,
     cell_size: wp.vec3,
     winding_threshold: float,
+    use_parity: wp.int32,
     num_subgrids_x: int,
     num_subgrids_y: int,
     num_subgrids_z: int,
@@ -301,26 +412,16 @@ def _populate_subgrid_texture_float32_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    sdf_val = get_distance_to_mesh(mesh, pos, 10000.0, winding_threshold)
+    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
 
     address = subgrid_addresses[subgrid_idx]
     if address < 0:
         return
 
-    addr_coords = _id_to_xyz(address, tex_blocks_per_dim, tex_blocks_per_dim)
-    addr_x = addr_coords[0]
-    addr_y = addr_coords[1]
-    addr_z = addr_coords[2]
-
-    if local_sample == 0:
-        start_slot = wp.uint32(addr_x) | (wp.uint32(addr_y) << wp.uint32(10)) | (wp.uint32(addr_z) << wp.uint32(20))
-        subgrid_start_slots[block_x, block_y, block_z] = start_slot
-
-    tex_x = addr_x * samples_per_dim + lx
-    tex_y = addr_y * samples_per_dim + ly
-    tex_z = addr_z * samples_per_dim + lz
-
-    tex_idx = _idx3d(tex_x, tex_y, tex_z, tex_size, tex_size)
+    ac = _write_subgrid_slot(subgrid_start_slots, address, tex_blocks_per_dim, block_x, block_y, block_z, local_sample)
+    tex_idx = _idx3d(
+        ac[0] * samples_per_dim + lx, ac[1] * samples_per_dim + ly, ac[2] * samples_per_dim + lz, tex_size, tex_size
+    )
     subgrid_texture[tex_idx] = sdf_val
 
 
@@ -335,6 +436,7 @@ def _populate_subgrid_texture_uint16_kernel(
     min_corner: wp.vec3,
     cell_size: wp.vec3,
     winding_threshold: float,
+    use_parity: wp.int32,
     num_subgrids_x: int,
     num_subgrids_y: int,
     num_subgrids_z: int,
@@ -377,30 +479,18 @@ def _populate_subgrid_texture_uint16_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    sdf_val = get_distance_to_mesh(mesh, pos, 10000.0, winding_threshold)
+    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
 
     address = subgrid_addresses[subgrid_idx]
     if address < 0:
         return
 
-    addr_coords = _id_to_xyz(address, tex_blocks_per_dim, tex_blocks_per_dim)
-    addr_x = addr_coords[0]
-    addr_y = addr_coords[1]
-    addr_z = addr_coords[2]
-
-    if local_sample == 0:
-        start_slot = wp.uint32(addr_x) | (wp.uint32(addr_y) << wp.uint32(10)) | (wp.uint32(addr_z) << wp.uint32(20))
-        subgrid_start_slots[block_x, block_y, block_z] = start_slot
-
-    tex_x = addr_x * samples_per_dim + lx
-    tex_y = addr_y * samples_per_dim + ly
-    tex_z = addr_z * samples_per_dim + lz
-
+    ac = _write_subgrid_slot(subgrid_start_slots, address, tex_blocks_per_dim, block_x, block_y, block_z, local_sample)
+    tex_idx = _idx3d(
+        ac[0] * samples_per_dim + lx, ac[1] * samples_per_dim + ly, ac[2] * samples_per_dim + lz, tex_size, tex_size
+    )
     v_normalized = wp.clamp((sdf_val - sdf_min) * sdf_range_inv, 0.0, 1.0)
-    quantized = wp.uint16(v_normalized * 65535.0)
-
-    tex_idx = _idx3d(tex_x, tex_y, tex_z, tex_size, tex_size)
-    subgrid_texture[tex_idx] = quantized
+    subgrid_texture[tex_idx] = wp.uint16(v_normalized * 65535.0)
 
 
 @wp.kernel
@@ -414,6 +504,7 @@ def _populate_subgrid_texture_uint8_kernel(
     min_corner: wp.vec3,
     cell_size: wp.vec3,
     winding_threshold: float,
+    use_parity: wp.int32,
     num_subgrids_x: int,
     num_subgrids_y: int,
     num_subgrids_z: int,
@@ -456,30 +547,18 @@ def _populate_subgrid_texture_uint8_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    sdf_val = get_distance_to_mesh(mesh, pos, 10000.0, winding_threshold)
+    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
 
     address = subgrid_addresses[subgrid_idx]
     if address < 0:
         return
 
-    addr_coords = _id_to_xyz(address, tex_blocks_per_dim, tex_blocks_per_dim)
-    addr_x = addr_coords[0]
-    addr_y = addr_coords[1]
-    addr_z = addr_coords[2]
-
-    if local_sample == 0:
-        start_slot = wp.uint32(addr_x) | (wp.uint32(addr_y) << wp.uint32(10)) | (wp.uint32(addr_z) << wp.uint32(20))
-        subgrid_start_slots[block_x, block_y, block_z] = start_slot
-
-    tex_x = addr_x * samples_per_dim + lx
-    tex_y = addr_y * samples_per_dim + ly
-    tex_z = addr_z * samples_per_dim + lz
-
+    ac = _write_subgrid_slot(subgrid_start_slots, address, tex_blocks_per_dim, block_x, block_y, block_z, local_sample)
+    tex_idx = _idx3d(
+        ac[0] * samples_per_dim + lx, ac[1] * samples_per_dim + ly, ac[2] * samples_per_dim + lz, tex_size, tex_size
+    )
     v_normalized = wp.clamp((sdf_val - sdf_min) * sdf_range_inv, 0.0, 1.0)
-    quantized = wp.uint8(v_normalized * 255.0)
-
-    tex_idx = _idx3d(tex_x, tex_y, tex_z, tex_size, tex_size)
-    subgrid_texture[tex_idx] = quantized
+    subgrid_texture[tex_idx] = wp.uint8(v_normalized * 255.0)
 
 
 # ============================================================================
@@ -503,20 +582,6 @@ def _sample_volume_at_positions_kernel(
 # ============================================================================
 # Texture Sampling Functions (wp.func, used by collision kernels)
 # ============================================================================
-
-
-@wp.func
-def apply_subgrid_start(start_slot: wp.uint32, local_f: wp.vec3, subgrid_samples_f: float) -> wp.vec3:
-    """Apply subgrid block offset to local coordinates."""
-    block_x = float(start_slot & wp.uint32(0x3FF))
-    block_y = float((start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
-    block_z = float((start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
-
-    return wp.vec3(
-        local_f[0] + block_x * subgrid_samples_f,
-        local_f[1] + block_y * subgrid_samples_f,
-        local_f[2] + block_z * subgrid_samples_f,
-    )
 
 
 @wp.func
@@ -904,15 +969,20 @@ def build_sparse_sdf_from_mesh(
     quantization_mode: int = QuantizationMode.UINT16,
     winding_threshold: float = 0.5,
     linearization_error_threshold: float | None = None,
+    use_parity: bool = False,
     device: str = "cuda",
 ) -> dict:
     """Build sparse SDF texture representation by querying mesh directly.
 
     Mirrors the NanoVDB sparse-volume construction pattern: check subgrid
-    occupancy at centers, then populate only occupied subgrids.
+    occupancy at centers, then populate only occupied subgrids.  Linearity
+    is evaluated before texture allocation so that subgrids whose SDF is
+    well-approximated by the coarse grid consume no high-resolution
+    texture memory.
 
     Args:
-        mesh: Warp mesh with ``support_winding_number=True``.
+        mesh: Warp mesh.  Must have ``support_winding_number=True`` unless
+            *use_parity* is ``True``.
         grid_size_x: fine grid X dimension [sample].
         grid_size_y: fine grid Y dimension [sample].
         grid_size_z: fine grid Z dimension [sample].
@@ -927,6 +997,10 @@ def build_sparse_sdf_from_mesh(
             which an occupied subgrid is considered linear and its high-res
             data is omitted.  ``None`` auto-computes from domain extents,
             ``0.0`` disables the optimization.
+        use_parity: when ``True``, use parity-based inside/outside
+            classification (:func:`wp.mesh_query_point_sign_parity`) instead
+            of winding numbers. Cheaper per sample but requires a closed,
+            manifold mesh; results on open meshes are undefined.
         device: Warp device string.
 
     Returns:
@@ -947,14 +1021,24 @@ def build_sparse_sdf_from_mesh(
     min_corner_wp = wp.vec3(float(min_corner[0]), float(min_corner[1]), float(min_corner[2]))
     cell_size_wp = wp.vec3(float(cell_size[0]), float(cell_size[1]), float(cell_size[2]))
 
-    # Build background SDF (coarse grid) by querying mesh at subgrid corners
     bg_size_x = w + 1
     bg_size_y = h + 1
     bg_size_z = d + 1
     total_bg = bg_size_x * bg_size_y * bg_size_z
 
-    background_sdf = wp.zeros(total_bg, dtype=float, device=device)
+    half_subgrid = subgrid_size * 0.5 * cell_size
+    subgrid_radius = float(np.linalg.norm(half_subgrid))
 
+    # -------------------------------------------------------------------
+    # Unified build: *use_parity* selects the cheaper parity-based sign
+    # query (for watertight meshes), otherwise winding numbers are used.
+    # Linearity is evaluated before the texture is sized so that subgrids
+    # whose SDF is well-approximated by the coarse grid consume no
+    # high-resolution texture memory.
+    # -------------------------------------------------------------------
+    parity_flag = wp.int32(1 if use_parity else 0)
+
+    background_sdf = wp.zeros(total_bg, dtype=float, device=device)
     wp.launch(
         _build_coarse_sdf_from_mesh_kernel,
         dim=total_bg,
@@ -968,80 +1052,95 @@ def build_sparse_sdf_from_mesh(
             bg_size_y,
             bg_size_z,
             winding_threshold,
+            parity_flag,
         ],
         device=device,
     )
 
-    # Check subgrid occupancy by querying mesh SDF at subgrid centers
-    subgrid_centers = np.empty((total_subgrids, 3), dtype=np.float32)
-    for idx in range(total_subgrids):
-        bz = idx // (w * h)
-        rem = idx - bz * w * h
-        by = rem // w
-        bx = rem - by * w
-        subgrid_centers[idx, 0] = (bx * subgrid_size + subgrid_size * 0.5) * cell_size[0] + min_corner[0]
-        subgrid_centers[idx, 1] = (by * subgrid_size + subgrid_size * 0.5) * cell_size[1] + min_corner[1]
-        subgrid_centers[idx, 2] = (bz * subgrid_size + subgrid_size * 0.5) * cell_size[2] + min_corner[2]
-
-    subgrid_centers_gpu = wp.array(subgrid_centers, dtype=wp.vec3, device=device)
-
-    # Expand threshold by subgrid half-diagonal (same pattern as NanoVDB tiles)
-    half_subgrid = subgrid_size * 0.5 * cell_size
-    subgrid_radius = float(np.linalg.norm(half_subgrid))
-    threshold = wp.vec2f(-narrow_band_thickness - subgrid_radius, narrow_band_thickness + subgrid_radius)
-
     subgrid_required = wp.zeros(total_subgrids, dtype=wp.int32, device=device)
-
+    threshold = wp.vec2f(-narrow_band_thickness - subgrid_radius, narrow_band_thickness + subgrid_radius)
     wp.launch(
         _check_subgrid_occupied_kernel,
         dim=total_subgrids,
-        inputs=[mesh.id, subgrid_centers_gpu, threshold, winding_threshold, subgrid_required],
+        inputs=[
+            mesh.id,
+            threshold,
+            winding_threshold,
+            parity_flag,
+            subgrid_required,
+            subgrid_size,
+            w,
+            h,
+            min_corner_wp,
+            cell_size_wp,
+        ],
         device=device,
     )
-    wp.synchronize()
 
-    # Snapshot the full narrow-band occupancy before linearization demotes
-    # some subgrids.  The hydroelastic broadphase needs block coordinates
-    # for ALL occupied subgrids (including linear ones) so the octree
-    # explores the full contact surface.
-    subgrid_occupied = subgrid_required.numpy().copy()
+    # GPU-side snapshot of occupancy before linearity kernel zeroes entries.
+    # block_coords_from_subgrid_required() uses this pre-linearity mask so
+    # that flat subgrids demoted to linear interpolation still contribute
+    # to the broadphase contact surface.
+    subgrid_occupied_gpu = wp.clone(subgrid_required)
 
-    # Demote occupied subgrids whose SDF is well-approximated by the coarse
-    # grid (linear field).  Demoted subgrids get 0xFFFFFFFE instead of a
-    # subgrid address, saving texture memory while preserving narrow-band
-    # membership information.
     if linearization_error_threshold is None:
         extents = max_corner - min_corner
         linearization_error_threshold = float(1e-6 * np.linalg.norm(extents))
     subgrid_is_linear = wp.zeros(total_subgrids, dtype=wp.int32, device=device)
     if linearization_error_threshold > 0.0:
+        # Per-sample launch so the 9^3 inner loop is parallelized across
+        # threads; atomic_max accumulates the per-subgrid linearity error.
+        # We deliberately do NOT cache the mesh samples for reuse in the
+        # populate pass: an empirical test showed the cache (one float32
+        # per sample, total_subgrids * 9^3 bytes transient) costs more in
+        # global-memory traffic than re-querying the mesh BVH, both for
+        # small meshes (cube: 12 tris) and medium meshes (icosphere:
+        # 5120 tris) at resolutions up to 256.
+        samples_per_dim = subgrid_size + 1
+        samples_per_subgrid = samples_per_dim**3
+        total_work = total_subgrids * samples_per_subgrid
+
+        linearity_errors = wp.zeros(total_subgrids, dtype=float, device=device)
         wp.launch(
-            _check_subgrid_linearity_kernel,
-            dim=total_subgrids,
+            _accumulate_subgrid_linearity_error_kernel,
+            dim=total_work,
             inputs=[
                 mesh.id,
                 background_sdf,
                 subgrid_required,
-                subgrid_is_linear,
+                linearity_errors,
                 subgrid_size,
                 min_corner_wp,
                 cell_size_wp,
                 winding_threshold,
+                parity_flag,
                 w,
                 h,
+                d,
                 bg_size_x,
                 bg_size_y,
                 bg_size_z,
+            ],
+            device=device,
+        )
+        wp.launch(
+            _apply_subgrid_linearity_kernel,
+            dim=total_subgrids,
+            inputs=[
+                subgrid_required,
+                linearity_errors,
+                subgrid_is_linear,
                 linearization_error_threshold,
             ],
             device=device,
         )
-        wp.synchronize()
 
-    # Exclusive scan to assign sequential addresses to required subgrids
+    # Exclusive prefix-sum gives each required subgrid a sequential address.
+    # Total count = prefix[-1] + input[-1]; single-element readback is enough
+    # but .numpy() on the full array is fine — the sync is unavoidable because
+    # we need num_required on the host to size the texture allocation.
     subgrid_addresses = wp.zeros(total_subgrids, dtype=wp.int32, device=device)
     wp._src.utils.array_scan(subgrid_required, subgrid_addresses, inclusive=False)
-    wp.synchronize()
 
     required_np = subgrid_required.numpy()
     num_required = int(np.sum(required_np))
@@ -1092,6 +1191,7 @@ def build_sparse_sdf_from_mesh(
                     min_corner_wp,
                     cell_size_wp,
                     winding_threshold,
+                    parity_flag,
                     w,
                     h,
                     d,
@@ -1102,7 +1202,6 @@ def build_sparse_sdf_from_mesh(
             )
             final_sdf_min = 0.0
             final_sdf_range = 1.0
-            subgrid_texture_data = subgrid_texture_gpu.numpy().reshape((tex_size, tex_size, tex_size))
 
         elif quantization_mode == QuantizationMode.UINT16:
             subgrid_texture_gpu = wp.zeros(total_tex_samples, dtype=wp.uint16, device=device)
@@ -1119,6 +1218,7 @@ def build_sparse_sdf_from_mesh(
                     min_corner_wp,
                     cell_size_wp,
                     winding_threshold,
+                    parity_flag,
                     w,
                     h,
                     d,
@@ -1131,7 +1231,6 @@ def build_sparse_sdf_from_mesh(
             )
             final_sdf_min = global_sdf_min
             final_sdf_range = sdf_range
-            subgrid_texture_data = subgrid_texture_gpu.numpy().reshape((tex_size, tex_size, tex_size))
 
         elif quantization_mode == QuantizationMode.UINT8:
             subgrid_texture_gpu = wp.zeros(total_tex_samples, dtype=wp.uint8, device=device)
@@ -1148,6 +1247,7 @@ def build_sparse_sdf_from_mesh(
                     min_corner_wp,
                     cell_size_wp,
                     winding_threshold,
+                    parity_flag,
                     w,
                     h,
                     d,
@@ -1160,29 +1260,33 @@ def build_sparse_sdf_from_mesh(
             )
             final_sdf_min = global_sdf_min
             final_sdf_range = sdf_range
-            subgrid_texture_data = subgrid_texture_gpu.numpy().reshape((tex_size, tex_size, tex_size))
 
         else:
             raise ValueError(f"Unknown quantization mode: {quantization_mode}")
 
-        wp.synchronize()
+        subgrid_texture_data = subgrid_texture_gpu.numpy().reshape((tex_size, tex_size, tex_size))
         subgrid_start_slots = subgrid_start_slots_gpu.numpy()
 
-    # Write SLOT_LINEAR for subgrids that overlap the narrow band but were
-    # demoted because their SDF is well-approximated by the coarse grid.
+    # --- Single batch of host readbacks (all GPU work is complete) ---
+    subgrid_occupied = subgrid_occupied_gpu.numpy()
+
+    # Tag subgrids demoted by the linearity pass with the sentinel SLOT_LINEAR
+    # so samplers fall back to coarse-grid interpolation and skip the (now
+    # absent) packed subgrid texture slot. Vectorized index math mirrors the
+    # row-major layout used when laying out subgrid_start_slots (bz outer,
+    # by middle, bx inner).
     is_linear_np = subgrid_is_linear.numpy()
-    if np.any(is_linear_np):
-        for idx in range(total_subgrids):
-            if is_linear_np[idx]:
-                bz = idx // (w * h)
-                rem = idx - bz * w * h
-                by = rem // w
-                bx = rem - by * w
-                subgrid_start_slots[bx, by, bz] = SLOT_LINEAR
+    linear_mask = is_linear_np.astype(bool)
+    if np.any(linear_mask):
+        linear_idx = np.where(linear_mask)[0]
+        bz_l = linear_idx // (w * h)
+        rem_l = linear_idx - bz_l * w * h
+        by_l = rem_l // w
+        bx_l = rem_l - by_l * w
+        subgrid_start_slots[bx_l, by_l, bz_l] = SLOT_LINEAR
 
     background_sdf_np = background_sdf.numpy().reshape((bg_size_z, bg_size_y, bg_size_x))
 
-    # Padded max covers the full ceiling-divided subgrid grid.
     padded_max = min_corner + np.array([w, h, d], dtype=float) * subgrid_size * cell_size
 
     return {
@@ -1268,31 +1372,58 @@ def create_texture_sdf_from_mesh(
     *,
     margin: float = 0.05,
     narrow_band_range: tuple[float, float] = (-0.1, 0.1),
-    max_resolution: int = 64,
+    max_resolution: int | None = None,
+    target_voxel_size: float | None = None,
     subgrid_size: int = 8,
     quantization_mode: int = QuantizationMode.UINT16,
     winding_threshold: float = 0.5,
     scale_baked: bool = False,
+    use_parity: bool = False,
     device: str | None = None,
-) -> tuple[TextureSDFData, wp.Texture3D, wp.Texture3D, list]:
+    return_sparse_data: bool = False,
+) -> (
+    tuple[TextureSDFData, wp.Texture3D, wp.Texture3D, list]
+    | tuple[TextureSDFData, wp.Texture3D, wp.Texture3D, list, dict | None]
+):
     """Create texture SDF from a Warp mesh.
 
     This is the main entry point for texture SDF construction. It mirrors the
     parameters of :func:`~newton._src.geometry.sdf_utils._compute_sdf_from_shape_impl`.
 
     Args:
-        mesh: Warp mesh with ``support_winding_number=True``.
+        mesh: Warp mesh.  Must have ``support_winding_number=True`` unless
+            *use_parity* is ``True``.
         margin: extra AABB padding [m].
         narrow_band_range: signed narrow-band distance range [m] as ``(inner, outer)``.
-        max_resolution: maximum grid dimension [voxel].
+        max_resolution: maximum grid dimension [voxel]. Used when
+            ``target_voxel_size`` is not provided. Defaults to 64 when both
+            ``max_resolution`` and ``target_voxel_size`` are ``None``.
+        target_voxel_size: target voxel size [m] along the longest padded-AABB
+            axis. When provided, takes precedence over ``max_resolution`` and
+            ``max_resolution`` is derived as
+            ``ceil(max_padded_extent / target_voxel_size)`` then rounded up to
+            a multiple of 8 to match the sparse SDF path.
         subgrid_size: cells per subgrid.
         quantization_mode: :class:`QuantizationMode` value.
         winding_threshold: winding number threshold for inside/outside classification.
         scale_baked: whether shape scale was baked into the mesh vertices.
+        use_parity: when ``True``, use parity-based inside/outside
+            classification (:func:`wp.mesh_query_point_sign_parity`).
+            Cheaper per sample than winding numbers; requires a closed,
+            manifold mesh.
         device: Warp device string. ``None`` uses the mesh's device.
+        return_sparse_data: when ``True``, also return the raw cooked
+            ``sparse_data`` dict produced by
+            :func:`build_sparse_sdf_from_mesh` (or ``None`` for degenerate
+            meshes). Intended for callers that want to persist the cook
+            output (e.g. an on-disk SDF cache) before it is consumed by
+            the GPU upload. The default ``False`` preserves the original
+            return signature.
 
     Returns:
         Tuple of ``(texture_sdf, coarse_texture, subgrid_texture, block_coords)``.
+        When ``return_sparse_data`` is ``True``, an additional trailing
+        ``sparse_data`` element is included.
         Caller must keep texture references alive to prevent GC.
         ``block_coords`` is a list of ``wp.vec3us`` block coordinates for
         hydroelastic broadphase.
@@ -1311,7 +1442,28 @@ def create_texture_sdf_from_mesh(
     ext = max_ext - min_ext
     max_ext_scalar = np.max(ext)
     if max_ext_scalar < 1e-10:
-        return create_empty_texture_sdf_data(), None, None, []
+        empty = (create_empty_texture_sdf_data(), None, None, [])
+        return (*empty, None) if return_sparse_data else empty
+
+    # Resolve max_resolution, honoring target_voxel_size when provided.
+    # Mirrors the sparse SDF path in sdf_utils._compute_sdf_from_shape_impl
+    # so texture and sparse grids agree on resolution.
+    if target_voxel_size is not None:
+        if target_voxel_size <= 0.0:
+            raise ValueError("target_voxel_size must be > 0")
+        derived_res = int(np.ceil(max_ext_scalar / float(target_voxel_size)))
+        # Keep alignment with tiled SDF builders that operate on 8-voxel chunks.
+        derived_res = max(8, ((derived_res + 7) // 8) * 8)
+        max_resolution = derived_res
+    elif max_resolution is None:
+        max_resolution = 64
+
+    max_resolution = int(max_resolution)
+    if max_resolution <= 0:
+        raise ValueError("max_resolution must be > 0")
+    if max_resolution >= (1 << 16):
+        raise ValueError(f"max_resolution must be less than {1 << 16}")
+
     cell_size_scalar = max_ext_scalar / max_resolution
     dims = np.ceil(ext / cell_size_scalar).astype(int) + 1
     grid_x, grid_y, grid_z = int(dims[0]), int(dims[1]), int(dims[2])
@@ -1331,6 +1483,7 @@ def create_texture_sdf_from_mesh(
         narrow_band_thickness=narrow_band_thickness,
         quantization_mode=quantization_mode,
         winding_threshold=winding_threshold,
+        use_parity=use_parity,
         device=device,
     )
 
@@ -1347,6 +1500,8 @@ def create_texture_sdf_from_mesh(
         subgrid_occupied=sparse_data["subgrid_occupied"],
     )
 
+    if return_sparse_data:
+        return sdf_params, coarse_tex, subgrid_tex, block_coords, sparse_data
     return sdf_params, coarse_tex, subgrid_tex, block_coords
 
 
@@ -1455,7 +1610,6 @@ def create_texture_sdf_from_volume(
         inputs=[sparse_volume.id, center_positions_gpu, center_sdf_gpu],
         device=device,
     )
-    wp.synchronize()
 
     center_sdf_np = center_sdf_gpu.numpy()
     threshold_inner = -narrow_band_thickness - subgrid_radius
@@ -1513,7 +1667,6 @@ def create_texture_sdf_from_volume(
                 inputs=[sparse_volume.id, all_positions_gpu, all_sdf_gpu],
                 device=device,
             )
-            wp.synchronize()
             all_sdf_np = all_sdf_gpu.numpy()
 
             samples_per_subgrid = samples_per_dim_lin**3
@@ -1645,7 +1798,6 @@ def create_texture_sdf_from_volume(
             inputs=[sparse_volume.id, texel_positions_gpu, texel_sdf_gpu],
             device=device,
         )
-        wp.synchronize()
 
         texel_sdf_np = texel_sdf_gpu.numpy()
 
@@ -1665,14 +1817,11 @@ def create_texture_sdf_from_volume(
                 inputs=[coarse_volume.id, outlier_gpu, outlier_sdf_gpu],
                 device=device,
             )
-            wp.synchronize()
             texel_sdf_np[outlier_mask] = outlier_sdf_gpu.numpy()
         flat_texture = subgrid_texture_data.ravel()
         for i in range(total_texel_work):
             flat_texture[texel_tex_indices[i]] = texel_sdf_np[i]
         subgrid_texture_data = flat_texture.reshape((tex_size, tex_size, tex_size))
-
-    wp.synchronize()
 
     # Write SLOT_LINEAR for subgrids that overlap the narrow band but were
     # demoted because their SDF is well-approximated by the coarse grid.
@@ -1866,10 +2015,10 @@ def _generate_isomesh_texture_kernel(
             p_0 = wp.vec3f(corner_offsets_table[v_from])
             p_1 = wp.vec3f(corner_offsets_table[v_to])
             val_diff = val_1 - val_0
-            if wp.abs(val_diff) < 1e-8:
+            if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
                 p = 0.5 * (p_0 + p_1)
             else:
-                t = (isovalue - val_0) / val_diff
+                t = wp.clamp((isovalue - val_0) / val_diff, wp.static(MC_EDGE_CLAMP_MIN), wp.static(MC_EDGE_CLAMP_MAX))
                 p = p_0 + t * (p_1 - p_0)
             vol_idx = p + wp.vec3(float(x_id), float(y_id), float(z_id))
             local_pos = sdf.sdf_box_lower + wp.cw_mul(vol_idx, sdf.voxel_size)

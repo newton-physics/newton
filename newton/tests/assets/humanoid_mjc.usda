@@ -1,0 +1,1878 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "MuJoCo USD Converter v0.1.0a5"
+    }
+    defaultPrim = "humanoid"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\eric-\\AppData\\Local\\Temp\\tmpowzafb7r\\humanoid.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\eric-\\source\\repos\\mujoco-usd-converter\\humanoid.usda\\humanoid.usdc
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "humanoid" (
+    apiSchemas = ["GeomModelAPI"]
+    assetInfo = {
+        string name = "humanoid"
+    }
+    kind = "component"
+)
+{
+    float3[] extentsHint = [(-100, -100, -1.2882077), (100, 100, 0.28), (3.4028235e38, 3.4028235e38, 3.4028235e38), (-3.4028235e38, -3.4028235e38, -3.4028235e38), (3.4028235e38, 3.4028235e38, 3.4028235e38), (-3.4028235e38, -3.4028235e38, -3.4028235e38), (-0.12106484, -0.3955004, -1.2915409), (0.40130424, 0.3955004, 0.1318431)]
+
+    def Scope "Geometry"
+    {
+        def Plane "floor" (
+            apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-100, -100, -0), (100, 100, 0)]
+            double length = 200
+            rel material:binding:physics = </humanoid/Physics/PhysicsMaterial>
+            color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                interpolation = "constant"
+            )
+            int[] primvars:displayColor:indices = None
+            float[] primvars:displayOpacity = [1] (
+                interpolation = "constant"
+            )
+            int[] primvars:displayOpacity:indices = None
+            double width = 200
+            quatf xformOp:orient = (1, 0, 0, 0)
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Xform "torso" (
+            apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI"]
+        )
+        {
+            quatf xformOp:orient = (1, 0, 0, 0)
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Capsule "torso" (
+                apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                uniform token axis = "Z"
+                float3[] extent = [(-0.07, -0.07, -0.14), (0.07, 0.07, 0.14)]
+                double height = 0.14
+                rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                uniform int mjc:condim = 1
+                uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                uniform double[] mjc:solref = [0.015, 1]
+                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayColor:indices = None
+                float[] primvars:displayOpacity = [1] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayOpacity:indices = None
+                double radius = 0.07
+                quatf xformOp:orient = (0.7071068, -0.7071067, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Capsule "upper_waist" (
+                apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                uniform token axis = "Z"
+                float3[] extent = [(-0.06, -0.06, -0.12), (0.06, 0.06, 0.12)]
+                double height = 0.12
+                rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                uniform int mjc:condim = 1
+                uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                uniform double[] mjc:solref = [0.015, 1]
+                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayColor:indices = None
+                float[] primvars:displayOpacity = [1] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayOpacity:indices = None
+                double radius = 0.06
+                quatf xformOp:orient = (0.7071068, -0.7071067, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.01, 0, -0.12)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Sphere "head" (
+                apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                float3[] extent = [(-0.09, -0.09, -0.09), (0.09, 0.09, 0.09)]
+                rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                uniform int mjc:condim = 1
+                uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                uniform double[] mjc:solref = [0.015, 1]
+                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayColor:indices = None
+                float[] primvars:displayOpacity = [1] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayOpacity:indices = None
+                double radius = 0.09
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0.19)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Cube "root" (
+                apiSchemas = ["MjcSiteAPI"]
+            )
+            {
+                float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                uniform int mjc:group = 3
+                color3f[] primvars:displayColor = [(1, 0, 0)] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayColor:indices = None
+                float[] primvars:displayOpacity = [1] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayOpacity:indices = None
+                uniform token purpose = "guide"
+                double size = 2
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (0.01, 0.01, 0.02)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Cube "torso_1" (
+                apiSchemas = ["MjcSiteAPI"]
+                displayName = "torso"
+            )
+            {
+                float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                uniform int mjc:group = 3
+                color3f[] primvars:displayColor = [(0, 0, 1)] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayColor:indices = None
+                float[] primvars:displayOpacity = [0.3] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayOpacity:indices = None
+                uniform token purpose = "guide"
+                double size = 2
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (0.075, 0.14, 0.13)
+                double3 xformOp:translate = (0, 0, -0.05)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Xform "lower_waist" (
+                apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                quatf xformOp:orient = (0.999998, 0, -0.0020132342, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.01, 0, -0.26)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Capsule "lower_waist" (
+                    apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.06, -0.06, -0.12), (0.06, 0.06, 0.12)]
+                    double height = 0.12
+                    rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                    uniform int mjc:condim = 1
+                    uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                    uniform double[] mjc:solref = [0.015, 1]
+                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayColor:indices = None
+                    float[] primvars:displayOpacity = [1] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayOpacity:indices = None
+                    double radius = 0.06
+                    quatf xformOp:orient = (0.7071068, -0.7071067, 0, 0)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Capsule "lower_waist_1" (
+                    apiSchemas = ["MjcSiteAPI"]
+                    displayName = "lower_waist"
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.061, -0.061, -0.121), (0.061, 0.061, 0.121)]
+                    double height = 0.12
+                    uniform int mjc:group = 3
+                    color3f[] primvars:displayColor = [(0, 0, 1)] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayColor:indices = None
+                    float[] primvars:displayOpacity = [0.3] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayOpacity:indices = None
+                    uniform token purpose = "guide"
+                    double radius = 0.061
+                    quatf xformOp:orient = (0.7071068, -0.7071067, 0, 0)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Xform "pelvis" (
+                    apiSchemas = ["PhysicsRigidBodyAPI"]
+                )
+                {
+                    quatf xformOp:orient = (0.999998, 0, -0.0020132342, 0)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0, 0, -0.165)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                    def Capsule "butt" (
+                        apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.09, -0.09, -0.16), (0.09, 0.09, 0.16)]
+                        double height = 0.14
+                        rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                        uniform int mjc:condim = 1
+                        uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                        uniform double[] mjc:solref = [0.015, 1]
+                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [1] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        double radius = 0.09
+                        quatf xformOp:orient = (0.7071068, -0.7071067, 0, 0)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (-0.02, 0, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Capsule "butt_1" (
+                        apiSchemas = ["MjcSiteAPI"]
+                        displayName = "butt"
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.091, -0.091, -0.161), (0.091, 0.091, 0.161)]
+                        double height = 0.14
+                        uniform int mjc:group = 3
+                        color3f[] primvars:displayColor = [(0, 0, 1)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [0.3] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        uniform token purpose = "guide"
+                        double radius = 0.091
+                        quatf xformOp:orient = (0.7071068, -0.7071067, 0, 0)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (-0.02, 0, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Xform "right_thigh" (
+                        apiSchemas = ["PhysicsRigidBodyAPI"]
+                    )
+                    {
+                        quatf xformOp:orient = (1, 0, 0, 0)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0, -0.1, -0.04)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                        def Capsule "right_thigh" (
+                            apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                        )
+                        {
+                            uniform token axis = "Z"
+                            float3[] extent = [(-0.06, -0.06, -0.23007351), (0.06, 0.06, 0.23007351)]
+                            double height = 0.340147027033899
+                            rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                            uniform int mjc:condim = 1
+                            uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                            uniform double[] mjc:solref = [0.015, 1]
+                            color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayColor:indices = None
+                            float[] primvars:displayOpacity = [1] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayOpacity:indices = None
+                            double radius = 0.06
+                            quatf xformOp:orient = (-0.014701115, 0.99989194, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, 0.005, -0.17)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                        }
+
+                        def Cube "right_hip" (
+                            apiSchemas = ["MjcSiteAPI"]
+                        )
+                        {
+                            float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                            uniform int mjc:group = 3
+                            color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayColor:indices = None
+                            float[] primvars:displayOpacity = [1] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayOpacity:indices = None
+                            uniform token purpose = "guide"
+                            double size = 2
+                            quatf xformOp:orient = (1, 0, 0, 0)
+                            float3 xformOp:scale = (0.01, 0.01, 0.02)
+                            double3 xformOp:translate = (0, 0, 0)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                        }
+
+                        def Capsule "right_thigh_1" (
+                            apiSchemas = ["MjcSiteAPI"]
+                            displayName = "right_thigh"
+                        )
+                        {
+                            uniform token axis = "Z"
+                            float3[] extent = [(-0.061, -0.061, -0.231), (0.061, 0.061, 0.231)]
+                            double height = 0.34
+                            uniform int mjc:group = 3
+                            color3f[] primvars:displayColor = [(0, 0, 1)] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayColor:indices = None
+                            float[] primvars:displayOpacity = [0.3] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayOpacity:indices = None
+                            uniform token purpose = "guide"
+                            double radius = 0.061
+                            quatf xformOp:orient = (0.99989194, 0.014700842, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, 0.005, -0.17)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                        }
+
+                        def Xform "right_shin" (
+                            apiSchemas = ["PhysicsRigidBodyAPI"]
+                        )
+                        {
+                            quatf xformOp:orient = (1, 0, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, 0.01, -0.403)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                            def Capsule "right_shin" (
+                                apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.049, -0.049, -0.199), (0.049, 0.049, 0.199)]
+                                double height = 0.3
+                                rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                                uniform int mjc:condim = 1
+                                uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                                uniform double[] mjc:solref = [0.015, 1]
+                                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                double radius = 0.049
+                                quatf xformOp:orient = (6.123234e-17, 1, 0, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0, 0, -0.15)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Cube "right_knee" (
+                                apiSchemas = ["MjcSiteAPI"]
+                            )
+                            {
+                                float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                                uniform int mjc:group = 3
+                                color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                uniform token purpose = "guide"
+                                double size = 2
+                                quatf xformOp:orient = (1, 0, 0, 0)
+                                float3 xformOp:scale = (0.01, 0.01, 0.02)
+                                double3 xformOp:translate = (0, 0, 0.02)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Capsule "right_shin_1" (
+                                apiSchemas = ["MjcSiteAPI"]
+                                displayName = "right_shin"
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.05, -0.05, -0.2), (0.05, 0.05, 0.2)]
+                                double height = 0.3
+                                uniform int mjc:group = 3
+                                color3f[] primvars:displayColor = [(0, 0, 1)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [0.3] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                uniform token purpose = "guide"
+                                double radius = 0.05
+                                quatf xformOp:orient = (1, 0, 0, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0, 0, -0.15)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Xform "right_foot" (
+                                apiSchemas = ["PhysicsRigidBodyAPI"]
+                            )
+                            {
+                                quatf xformOp:orient = (1, 0, 0, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0, 0, -0.39)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                def Capsule "right_right_foot" (
+                                    apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.027, -0.027, -0.13247512), (0.027, 0.027, 0.13247512)]
+                                    double height = 0.2109502310972899
+                                    rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                                    uniform int mjc:condim = 1
+                                    uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.027
+                                    quatf xformOp:orient = (0.70710677, 0.06704015, 0.7039216, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.035, -0.03, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Capsule "left_right_foot" (
+                                    apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.027, -0.027, -0.13247512), (0.027, 0.027, 0.13247512)]
+                                    double height = 0.2109502310972899
+                                    rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                                    uniform int mjc:condim = 1
+                                    uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.027
+                                    quatf xformOp:orient = (0.70710677, -0.06704015, 0.7039216, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.035, 0.01, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Cube "right_ankle" (
+                                    apiSchemas = ["MjcSiteAPI"]
+                                )
+                                {
+                                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                                    uniform int mjc:group = 3
+                                    color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    uniform token purpose = "guide"
+                                    double size = 2
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (0.01, 0.01, 0.02)
+                                    double3 xformOp:translate = (0, 0, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Capsule "right_right_foot_1" (
+                                    apiSchemas = ["MjcSiteAPI"]
+                                    displayName = "right_right_foot"
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.03, -0.03, -0.14), (0.03, 0.03, 0.14)]
+                                    double height = 0.22
+                                    uniform int mjc:group = 3
+                                    color3f[] primvars:displayColor = [(0, 0, 1)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [0.3] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    uniform token purpose = "guide"
+                                    double radius = 0.03
+                                    quatf xformOp:orient = (0.70710677, 0.06704015, 0.7039216, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.035, -0.03, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Capsule "left_right_foot_1" (
+                                    apiSchemas = ["MjcSiteAPI"]
+                                    displayName = "left_right_foot"
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.03, -0.03, -0.14), (0.03, 0.03, 0.14)]
+                                    double height = 0.22
+                                    uniform int mjc:group = 3
+                                    color3f[] primvars:displayColor = [(0, 0, 1)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [0.3] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    uniform token purpose = "guide"
+                                    double radius = 0.03
+                                    quatf xformOp:orient = (0.70710677, -0.06704015, 0.7039216, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.035, 0.01, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def PhysicsRevoluteJoint "right_ankle_y" (
+                                    apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.006
+                                    uniform double mjc:damping = 1
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 2
+                                    uniform token physics:axis = "Y"
+                                    rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_shin>
+                                    rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_shin/right_foot>
+                                    point3f physics:localPos0 = (0, 0, -0.31)
+                                    point3f physics:localPos1 = (0, 0, 0.08)
+                                    quatf physics:localRot0 = (1, 0, 0, 0)
+                                    quatf physics:localRot1 = (1, 0, 0, 0)
+                                    float physics:lowerLimit = -50
+                                    float physics:upperLimit = 50
+                                }
+
+                                def PhysicsRevoluteJoint "right_ankle_x" (
+                                    apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.006
+                                    uniform double mjc:damping = 1
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 2
+                                    uniform token physics:axis = "X"
+                                    rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_shin>
+                                    rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_shin/right_foot>
+                                    point3f physics:localPos0 = (0, 0, -0.31)
+                                    point3f physics:localPos1 = (0, 0, 0.08)
+                                    quatf physics:localRot0 = (0.97324896, 0, -0.22975293, 0)
+                                    quatf physics:localRot1 = (0.97324896, 0, -0.22975293, 0)
+                                    float physics:lowerLimit = -50
+                                    float physics:upperLimit = 50
+                                }
+                            }
+
+                            def PhysicsRevoluteJoint "right_knee_1" (
+                                apiSchemas = ["MjcJointAPI"]
+                                displayName = "right_knee"
+                            )
+                            {
+                                uniform double mjc:armature = 0.007
+                                uniform double mjc:damping = 0.1
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 5
+                                uniform token physics:axis = "Y"
+                                rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh>
+                                rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_shin>
+                                point3f physics:localPos0 = (0, 0.01, -0.383)
+                                point3f physics:localPos1 = (0, 0, 0.02)
+                                quatf physics:localRot0 = (0, -1, 0, 0)
+                                quatf physics:localRot1 = (0, -1, 0, 0)
+                                float physics:lowerLimit = -160
+                                float physics:upperLimit = 2
+                            }
+                        }
+
+                        def PhysicsRevoluteJoint "right_hip_x" (
+                            apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 5
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 10
+                            uniform token physics:axis = "X"
+                            rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis>
+                            rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh>
+                            point3f physics:localPos0 = (-1.7347235e-18, -0.1, -0.04)
+                            point3f physics:localPos1 = (0, 0, 0)
+                            quatf physics:localRot0 = (1, 0, 0, 0)
+                            quatf physics:localRot1 = (1, 0, 0, 0)
+                            float physics:lowerLimit = -25
+                            float physics:upperLimit = 5
+                        }
+
+                        def PhysicsRevoluteJoint "right_hip_z" (
+                            apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 5
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 10
+                            uniform token physics:axis = "Z"
+                            rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis>
+                            rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh>
+                            point3f physics:localPos0 = (-1.7347235e-18, -0.1, -0.04)
+                            point3f physics:localPos1 = (0, 0, 0)
+                            quatf physics:localRot0 = (1, 0, 0, 0)
+                            quatf physics:localRot1 = (1, 0, 0, 0)
+                            float physics:lowerLimit = -60
+                            float physics:upperLimit = 35
+                        }
+
+                        def PhysicsRevoluteJoint "right_hip_y" (
+                            apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 5
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 20
+                            uniform token physics:axis = "Y"
+                            rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis>
+                            rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh>
+                            point3f physics:localPos0 = (-1.7347235e-18, -0.1, -0.04)
+                            point3f physics:localPos1 = (0, 0, 0)
+                            quatf physics:localRot0 = (1, 0, 0, 0)
+                            quatf physics:localRot1 = (1, 0, 0, 0)
+                            float physics:lowerLimit = -80
+                            float physics:upperLimit = 20
+                        }
+                    }
+
+                    def Xform "left_thigh" (
+                        apiSchemas = ["PhysicsRigidBodyAPI"]
+                    )
+                    {
+                        quatf xformOp:orient = (1, 0, 0, 0)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0, 0.1, -0.04)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                        def Capsule "left_thigh" (
+                            apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                        )
+                        {
+                            uniform token axis = "Z"
+                            float3[] extent = [(-0.06, -0.06, -0.23007351), (0.06, 0.06, 0.23007351)]
+                            double height = 0.340147027033899
+                            rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                            uniform int mjc:condim = 1
+                            uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                            uniform double[] mjc:solref = [0.015, 1]
+                            color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayColor:indices = None
+                            float[] primvars:displayOpacity = [1] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayOpacity:indices = None
+                            double radius = 0.06
+                            quatf xformOp:orient = (0.014701115, 0.99989194, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, -0.005, -0.17)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                        }
+
+                        def Cube "left_hip" (
+                            apiSchemas = ["MjcSiteAPI"]
+                        )
+                        {
+                            float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                            uniform int mjc:group = 3
+                            color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayColor:indices = None
+                            float[] primvars:displayOpacity = [1] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayOpacity:indices = None
+                            uniform token purpose = "guide"
+                            double size = 2
+                            quatf xformOp:orient = (1, 0, 0, 0)
+                            float3 xformOp:scale = (0.01, 0.01, 0.02)
+                            double3 xformOp:translate = (0, 0, 0)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                        }
+
+                        def Capsule "left_thigh_1" (
+                            apiSchemas = ["MjcSiteAPI"]
+                            displayName = "left_thigh"
+                        )
+                        {
+                            uniform token axis = "Z"
+                            float3[] extent = [(-0.061, -0.061, -0.231), (0.061, 0.061, 0.231)]
+                            double height = 0.34
+                            uniform int mjc:group = 3
+                            color3f[] primvars:displayColor = [(0, 0, 1)] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayColor:indices = None
+                            float[] primvars:displayOpacity = [0.3] (
+                                interpolation = "constant"
+                            )
+                            int[] primvars:displayOpacity:indices = None
+                            uniform token purpose = "guide"
+                            double radius = 0.061
+                            quatf xformOp:orient = (0.99989194, -0.014700842, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, -0.005, -0.17)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                        }
+
+                        def Xform "left_shin" (
+                            apiSchemas = ["PhysicsRigidBodyAPI"]
+                        )
+                        {
+                            quatf xformOp:orient = (1, 0, 0, 0)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0, -0.01, -0.403)
+                            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                            def Capsule "left_shin" (
+                                apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.049, -0.049, -0.199), (0.049, 0.049, 0.199)]
+                                double height = 0.3
+                                rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                                uniform int mjc:condim = 1
+                                uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                                uniform double[] mjc:solref = [0.015, 1]
+                                color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                double radius = 0.049
+                                quatf xformOp:orient = (6.123234e-17, 1, 0, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0, 0, -0.15)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Cube "left_knee" (
+                                apiSchemas = ["MjcSiteAPI"]
+                            )
+                            {
+                                float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                                uniform int mjc:group = 3
+                                color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [1] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                uniform token purpose = "guide"
+                                double size = 2
+                                quatf xformOp:orient = (1, 0, 0, 0)
+                                float3 xformOp:scale = (0.01, 0.01, 0.02)
+                                double3 xformOp:translate = (0, 0, 0.02)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Capsule "left_shin_1" (
+                                apiSchemas = ["MjcSiteAPI"]
+                                displayName = "left_shin"
+                            )
+                            {
+                                uniform token axis = "Z"
+                                float3[] extent = [(-0.05, -0.05, -0.2), (0.05, 0.05, 0.2)]
+                                double height = 0.3
+                                uniform int mjc:group = 3
+                                color3f[] primvars:displayColor = [(0, 0, 1)] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayColor:indices = None
+                                float[] primvars:displayOpacity = [0.3] (
+                                    interpolation = "constant"
+                                )
+                                int[] primvars:displayOpacity:indices = None
+                                uniform token purpose = "guide"
+                                double radius = 0.05
+                                quatf xformOp:orient = (1, 0, 0, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0, 0, -0.15)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                            }
+
+                            def Xform "left_foot" (
+                                apiSchemas = ["PhysicsRigidBodyAPI"]
+                            )
+                            {
+                                quatf xformOp:orient = (1, 0, 0, 0)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0, 0, -0.39)
+                                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                def Capsule "left_left_foot" (
+                                    apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.027, -0.027, -0.13247512), (0.027, 0.027, 0.13247512)]
+                                    double height = 0.2109502310972899
+                                    rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                                    uniform int mjc:condim = 1
+                                    uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.027
+                                    quatf xformOp:orient = (0.70710677, -0.06704015, 0.7039216, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.035, 0.03, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Capsule "right_left_foot" (
+                                    apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.027, -0.027, -0.13247512), (0.027, 0.027, 0.13247512)]
+                                    double height = 0.2109502310972899
+                                    rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                                    uniform int mjc:condim = 1
+                                    uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                                    uniform double[] mjc:solref = [0.015, 1]
+                                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    double radius = 0.027
+                                    quatf xformOp:orient = (0.70710677, 0.06704015, 0.7039216, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.035, -0.01, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Cube "left_ankle" (
+                                    apiSchemas = ["MjcSiteAPI"]
+                                )
+                                {
+                                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                                    uniform int mjc:group = 3
+                                    color3f[] primvars:displayColor = [(1, 0, 0)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [1] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    uniform token purpose = "guide"
+                                    double size = 2
+                                    quatf xformOp:orient = (1, 0, 0, 0)
+                                    float3 xformOp:scale = (0.01, 0.01, 0.02)
+                                    double3 xformOp:translate = (0, 0, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Capsule "right_left_foot_1" (
+                                    apiSchemas = ["MjcSiteAPI"]
+                                    displayName = "right_left_foot"
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.03, -0.03, -0.14), (0.03, 0.03, 0.14)]
+                                    double height = 0.22
+                                    uniform int mjc:group = 3
+                                    color3f[] primvars:displayColor = [(0, 0, 1)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [0.3] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    uniform token purpose = "guide"
+                                    double radius = 0.03
+                                    quatf xformOp:orient = (0.70710677, 0.06704015, 0.7039216, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.035, -0.01, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def Capsule "left_left_foot_1" (
+                                    apiSchemas = ["MjcSiteAPI"]
+                                    displayName = "left_left_foot"
+                                )
+                                {
+                                    uniform token axis = "Z"
+                                    float3[] extent = [(-0.03, -0.03, -0.14), (0.03, 0.03, 0.14)]
+                                    double height = 0.22
+                                    uniform int mjc:group = 3
+                                    color3f[] primvars:displayColor = [(0, 0, 1)] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayColor:indices = None
+                                    float[] primvars:displayOpacity = [0.3] (
+                                        interpolation = "constant"
+                                    )
+                                    int[] primvars:displayOpacity:indices = None
+                                    uniform token purpose = "guide"
+                                    double radius = 0.03
+                                    quatf xformOp:orient = (0.70710677, -0.06704015, 0.7039216, 0)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.035, 0.03, 0)
+                                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                }
+
+                                def PhysicsRevoluteJoint "left_ankle_y" (
+                                    apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.006
+                                    uniform double mjc:damping = 1
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 2
+                                    uniform token physics:axis = "Y"
+                                    rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_shin>
+                                    rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_shin/left_foot>
+                                    point3f physics:localPos0 = (0, 0, -0.31)
+                                    point3f physics:localPos1 = (0, 0, 0.08)
+                                    quatf physics:localRot0 = (1, 0, 0, 0)
+                                    quatf physics:localRot1 = (1, 0, 0, 0)
+                                    float physics:lowerLimit = -50
+                                    float physics:upperLimit = 50
+                                }
+
+                                def PhysicsRevoluteJoint "left_ankle_x" (
+                                    apiSchemas = ["MjcJointAPI"]
+                                )
+                                {
+                                    uniform double mjc:armature = 0.006
+                                    uniform double mjc:damping = 1
+                                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                    uniform double mjc:stiffness = 2
+                                    uniform token physics:axis = "X"
+                                    rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_shin>
+                                    rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_shin/left_foot>
+                                    point3f physics:localPos0 = (0, 0, -0.31)
+                                    point3f physics:localPos1 = (0, 0, 0.08)
+                                    quatf physics:localRot0 = (0.97324896, 0, -0.22975293, 0)
+                                    quatf physics:localRot1 = (0.97324896, 0, -0.22975293, 0)
+                                    float physics:lowerLimit = -50
+                                    float physics:upperLimit = 50
+                                }
+                            }
+
+                            def PhysicsRevoluteJoint "left_knee_1" (
+                                apiSchemas = ["MjcJointAPI"]
+                                displayName = "left_knee"
+                            )
+                            {
+                                uniform double mjc:armature = 0.007
+                                uniform double mjc:damping = 0.1
+                                uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                                uniform double mjc:stiffness = 5
+                                uniform token physics:axis = "Y"
+                                rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh>
+                                rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_shin>
+                                point3f physics:localPos0 = (0, -0.01, -0.383)
+                                point3f physics:localPos1 = (0, 0, 0.02)
+                                quatf physics:localRot0 = (0, -1, 0, 0)
+                                quatf physics:localRot1 = (0, -1, 0, 0)
+                                float physics:lowerLimit = -160
+                                float physics:upperLimit = 2
+                            }
+                        }
+
+                        def PhysicsRevoluteJoint "left_hip_x" (
+                            apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 5
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 10
+                            uniform token physics:axis = "X"
+                            rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis>
+                            rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh>
+                            point3f physics:localPos0 = (-1.7347235e-18, 0.1, -0.04)
+                            point3f physics:localPos1 = (0, 0, 0)
+                            quatf physics:localRot0 = (0, 0, -1, 0)
+                            quatf physics:localRot1 = (0, 0, -1, 0)
+                            float physics:lowerLimit = -25
+                            float physics:upperLimit = 5
+                        }
+
+                        def PhysicsRevoluteJoint "left_hip_z" (
+                            apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 5
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 10
+                            uniform token physics:axis = "Z"
+                            rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis>
+                            rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh>
+                            point3f physics:localPos0 = (-1.7347235e-18, 0.1, -0.04)
+                            point3f physics:localPos1 = (0, 0, 0)
+                            quatf physics:localRot0 = (0, -1, 0, 0)
+                            quatf physics:localRot1 = (0, -1, 0, 0)
+                            float physics:lowerLimit = -60
+                            float physics:upperLimit = 35
+                        }
+
+                        def PhysicsRevoluteJoint "left_hip_y" (
+                            apiSchemas = ["MjcJointAPI"]
+                        )
+                        {
+                            uniform double mjc:armature = 0.01
+                            uniform double mjc:damping = 5
+                            uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                            uniform double mjc:stiffness = 20
+                            uniform token physics:axis = "Y"
+                            rel physics:body0 = </humanoid/Geometry/torso/lower_waist/pelvis>
+                            rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh>
+                            point3f physics:localPos0 = (-1.7347235e-18, 0.1, -0.04)
+                            point3f physics:localPos1 = (0, 0, 0)
+                            quatf physics:localRot0 = (1, 0, 0, 0)
+                            quatf physics:localRot1 = (1, 0, 0, 0)
+                            float physics:lowerLimit = -80
+                            float physics:upperLimit = 20
+                        }
+                    }
+
+                    def PhysicsRevoluteJoint "abdomen_x" (
+                        apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.01
+                        uniform double mjc:damping = 5
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 10
+                        uniform token physics:axis = "X"
+                        rel physics:body0 = </humanoid/Geometry/torso/lower_waist>
+                        rel physics:body1 = </humanoid/Geometry/torso/lower_waist/pelvis>
+                        point3f physics:localPos0 = (-0.00040264602, 0, -0.06500081)
+                        point3f physics:localPos1 = (0, 0, 0.1)
+                        quatf physics:localRot0 = (0.999998, 0, -0.0020132342, 0)
+                        quatf physics:localRot1 = (1, 0, 0, 0)
+                        float physics:lowerLimit = -35
+                        float physics:upperLimit = 35
+                    }
+                }
+
+                def PhysicsRevoluteJoint "abdomen_z" (
+                    apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:armature = 0.02
+                    uniform double mjc:damping = 5
+                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                    uniform double mjc:stiffness = 20
+                    uniform token physics:axis = "Z"
+                    rel physics:body0 = </humanoid/Geometry/torso>
+                    rel physics:body1 = </humanoid/Geometry/torso/lower_waist>
+                    point3f physics:localPos0 = (-0.01026172, 0, -0.19500053)
+                    point3f physics:localPos1 = (0, 0, 0.065)
+                    quatf physics:localRot0 = (0.999998, 0, -0.0020132342, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+                    float physics:lowerLimit = -45
+                    float physics:upperLimit = 45
+                }
+
+                def PhysicsRevoluteJoint "abdomen_y" (
+                    apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:armature = 0.01
+                    uniform double mjc:damping = 5
+                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                    uniform double mjc:stiffness = 20
+                    uniform token physics:axis = "Y"
+                    rel physics:body0 = </humanoid/Geometry/torso>
+                    rel physics:body1 = </humanoid/Geometry/torso/lower_waist>
+                    point3f physics:localPos0 = (-0.01026172, 0, -0.19500053)
+                    point3f physics:localPos1 = (0, 0, 0.065)
+                    quatf physics:localRot0 = (0.999998, 0, -0.0020132342, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+                    float physics:lowerLimit = -75
+                    float physics:upperLimit = 30
+                }
+            }
+
+            def Xform "right_upper_arm" (
+                apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, -0.17, 0.06)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Capsule "right_upper_arm" (
+                    apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.04, -0.04, -0.17856407), (0.04, 0.04, 0.17856407)]
+                    double height = 0.27712812921102037
+                    rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                    uniform int mjc:condim = 1
+                    uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                    uniform double[] mjc:solref = [0.015, 1]
+                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayColor:indices = None
+                    float[] primvars:displayOpacity = [1] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayOpacity:indices = None
+                    double radius = 0.04
+                    quatf xformOp:orient = (0.45970088, 0.627963, 0.627963, -4.419938e-17)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.08, -0.08, -0.08)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Capsule "right_upper_arm_1" (
+                    apiSchemas = ["MjcSiteAPI"]
+                    displayName = "right_upper_arm"
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.041, -0.041, -0.181), (0.041, 0.041, 0.181)]
+                    double height = 0.28
+                    uniform int mjc:group = 3
+                    color3f[] primvars:displayColor = [(0, 0, 1)] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayColor:indices = None
+                    float[] primvars:displayOpacity = [0.3] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayOpacity:indices = None
+                    uniform token purpose = "guide"
+                    double radius = 0.041
+                    quatf xformOp:orient = (0.45970088, 0.627963, 0.627963, -4.419938e-17)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.08, -0.08, -0.08)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Xform "right_lower_arm" (
+                    apiSchemas = ["PhysicsRigidBodyAPI"]
+                )
+                {
+                    quatf xformOp:orient = (1, 0, 0, 0)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.18, -0.18, -0.18)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                    def Capsule "right_lower_arm" (
+                        apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.031, -0.031, -0.16956407), (0.031, 0.031, 0.16956407)]
+                        double height = 0.27712812921102037
+                        rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                        uniform int mjc:condim = 1
+                        uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                        uniform double[] mjc:solref = [0.015, 1]
+                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [1] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        double radius = 0.031
+                        quatf xformOp:orient = (0.88807386, -0.32505754, 0.32505754, -3.125368e-17)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.09000000000000001, 0.09000000000000001, 0.09000000000000001)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Sphere "right_hand" (
+                        apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        float3[] extent = [(-0.04, -0.04, -0.04), (0.04, 0.04, 0.04)]
+                        rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                        uniform int mjc:condim = 1
+                        uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                        uniform double[] mjc:solref = [0.015, 1]
+                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [1] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        double radius = 0.04
+                        quatf xformOp:orient = (1, 0, 0, 0)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.18, 0.18, 0.18)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Capsule "right_lower_arm_1" (
+                        apiSchemas = ["MjcSiteAPI"]
+                        displayName = "right_lower_arm"
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.032, -0.032, -0.172), (0.032, 0.032, 0.172)]
+                        double height = 0.28
+                        uniform int mjc:group = 3
+                        color3f[] primvars:displayColor = [(0, 0, 1)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [0.3] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        uniform token purpose = "guide"
+                        double radius = 0.032
+                        quatf xformOp:orient = (0.88807386, -0.32505754, 0.32505754, -3.125368e-17)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.09, 0.09, 0.09)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def PhysicsRevoluteJoint "right_elbow" (
+                        apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.006
+                        uniform double mjc:damping = 1
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 2
+                        uniform token physics:axis = "X"
+                        rel physics:body0 = </humanoid/Geometry/torso/right_upper_arm>
+                        rel physics:body1 = </humanoid/Geometry/torso/right_upper_arm/right_lower_arm>
+                        point3f physics:localPos0 = (0.18, -0.18, -0.18)
+                        point3f physics:localPos1 = (0, 0, 0)
+                        quatf physics:localRot0 = (0.70710677, 0, -0.50000006, -0.50000006)
+                        quatf physics:localRot1 = (0.70710677, 0, -0.50000006, -0.50000006)
+                        float physics:lowerLimit = -90
+                        float physics:upperLimit = 50
+                    }
+                }
+
+                def PhysicsRevoluteJoint "right_shoulder1" (
+                    apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:armature = 0.01
+                    uniform double mjc:damping = 5
+                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                    uniform double mjc:stiffness = 10
+                    uniform token physics:axis = "X"
+                    rel physics:body0 = </humanoid/Geometry/torso>
+                    rel physics:body1 = </humanoid/Geometry/torso/right_upper_arm>
+                    point3f physics:localPos0 = (0, -0.17, 0.06)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (0.95302063, 0, -0.2141865, 0.2141865)
+                    quatf physics:localRot1 = (0.95302063, 0, -0.2141865, 0.2141865)
+                    float physics:lowerLimit = -60
+                    float physics:upperLimit = 60
+                }
+
+                def PhysicsRevoluteJoint "right_shoulder2" (
+                    apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:armature = 0.01
+                    uniform double mjc:damping = 5
+                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                    uniform double mjc:stiffness = 10
+                    uniform token physics:axis = "X"
+                    rel physics:body0 = </humanoid/Geometry/torso>
+                    rel physics:body1 = </humanoid/Geometry/torso/right_upper_arm>
+                    point3f physics:localPos0 = (0, -0.17, 0.06)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (0.70710677, 0, -0.50000006, -0.50000006)
+                    quatf physics:localRot1 = (0.70710677, 0, -0.50000006, -0.50000006)
+                    float physics:lowerLimit = -60
+                    float physics:upperLimit = 60
+                }
+            }
+
+            def Xform "left_upper_arm" (
+                apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0.17, 0.06)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Capsule "left_upper_arm" (
+                    apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.04, -0.04, -0.17856407), (0.04, 0.04, 0.17856407)]
+                    double height = 0.27712812921102037
+                    rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                    uniform int mjc:condim = 1
+                    uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                    uniform double[] mjc:solref = [0.015, 1]
+                    color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayColor:indices = None
+                    float[] primvars:displayOpacity = [1] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayOpacity:indices = None
+                    double radius = 0.04
+                    quatf xformOp:orient = (0.45970088, -0.627963, 0.627963, 4.419938e-17)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.08, 0.08, -0.08)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Capsule "left_upper_arm_1" (
+                    apiSchemas = ["MjcSiteAPI"]
+                    displayName = "left_upper_arm"
+                )
+                {
+                    uniform token axis = "Z"
+                    float3[] extent = [(-0.041, -0.041, -0.181), (0.041, 0.041, 0.181)]
+                    double height = 0.28
+                    uniform int mjc:group = 3
+                    color3f[] primvars:displayColor = [(0, 0, 1)] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayColor:indices = None
+                    float[] primvars:displayOpacity = [0.3] (
+                        interpolation = "constant"
+                    )
+                    int[] primvars:displayOpacity:indices = None
+                    uniform token purpose = "guide"
+                    double radius = 0.041
+                    quatf xformOp:orient = (0.45970088, -0.627963, 0.627963, 4.419938e-17)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.08, 0.08, -0.08)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+
+                def Xform "left_lower_arm" (
+                    apiSchemas = ["PhysicsRigidBodyAPI"]
+                )
+                {
+                    quatf xformOp:orient = (1, 0, 0, 0)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.18, 0.18, -0.18)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                    def Capsule "left_lower_arm" (
+                        apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.031, -0.031, -0.16956407), (0.031, 0.031, 0.16956407)]
+                        double height = 0.27712812921102037
+                        rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                        uniform int mjc:condim = 1
+                        uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                        uniform double[] mjc:solref = [0.015, 1]
+                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [1] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        double radius = 0.031
+                        quatf xformOp:orient = (0.88807386, 0.32505754, 0.32505754, -1.562684e-17)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.09000000000000001, -0.09000000000000001, 0.09000000000000001)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Sphere "left_hand" (
+                        apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        float3[] extent = [(-0.04, -0.04, -0.04), (0.04, 0.04, 0.04)]
+                        rel material:binding:physics = </humanoid/Physics/PhysicsMaterial_1>
+                        uniform int mjc:condim = 1
+                        uniform double[] mjc:solimp = [0.9, 0.99, 0.003, 0.5, 2]
+                        uniform double[] mjc:solref = [0.015, 1]
+                        color3f[] primvars:displayColor = [(0.5, 0.5, 0.5)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [1] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        double radius = 0.04
+                        quatf xformOp:orient = (1, 0, 0, 0)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.18, -0.18, 0.18)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def Capsule "left_lower_arm_1" (
+                        apiSchemas = ["MjcSiteAPI"]
+                        displayName = "left_lower_arm"
+                    )
+                    {
+                        uniform token axis = "Z"
+                        float3[] extent = [(-0.032, -0.032, -0.172), (0.032, 0.032, 0.172)]
+                        double height = 0.28
+                        uniform int mjc:group = 3
+                        color3f[] primvars:displayColor = [(0, 0, 1)] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayColor:indices = None
+                        float[] primvars:displayOpacity = [0.3] (
+                            interpolation = "constant"
+                        )
+                        int[] primvars:displayOpacity:indices = None
+                        uniform token purpose = "guide"
+                        double radius = 0.032
+                        quatf xformOp:orient = (0.88807386, 0.32505754, 0.32505754, -1.562684e-17)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.09, -0.09, 0.09)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+
+                    def PhysicsRevoluteJoint "left_elbow" (
+                        apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:armature = 0.006
+                        uniform double mjc:damping = 1
+                        uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                        uniform double mjc:stiffness = 2
+                        uniform token physics:axis = "X"
+                        rel physics:body0 = </humanoid/Geometry/torso/left_upper_arm>
+                        rel physics:body1 = </humanoid/Geometry/torso/left_upper_arm/left_lower_arm>
+                        point3f physics:localPos0 = (0.18, 0.18, -0.18)
+                        point3f physics:localPos1 = (0, 0, 0)
+                        quatf physics:localRot0 = (0.70710677, 0, 0.50000006, -0.50000006)
+                        quatf physics:localRot1 = (0.70710677, 0, 0.50000006, -0.50000006)
+                        float physics:lowerLimit = -90
+                        float physics:upperLimit = 50
+                    }
+                }
+
+                def PhysicsRevoluteJoint "left_shoulder1" (
+                    apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:armature = 0.01
+                    uniform double mjc:damping = 5
+                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                    uniform double mjc:stiffness = 10
+                    uniform token physics:axis = "X"
+                    rel physics:body0 = </humanoid/Geometry/torso>
+                    rel physics:body1 = </humanoid/Geometry/torso/left_upper_arm>
+                    point3f physics:localPos0 = (0, 0.17, 0.06)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (0.30290547, 0, 0.6738873, 0.6738873)
+                    quatf physics:localRot1 = (0.30290547, 0, 0.6738873, 0.6738873)
+                    float physics:lowerLimit = -60
+                    float physics:upperLimit = 60
+                }
+
+                def PhysicsRevoluteJoint "left_shoulder2" (
+                    apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:armature = 0.01
+                    uniform double mjc:damping = 5
+                    uniform double[] mjc:solimplimit = [0, 0.99, 0.01, 0.5, 2]
+                    uniform double mjc:stiffness = 10
+                    uniform token physics:axis = "X"
+                    rel physics:body0 = </humanoid/Geometry/torso>
+                    rel physics:body1 = </humanoid/Geometry/torso/left_upper_arm>
+                    point3f physics:localPos0 = (0, 0.17, 0.06)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (0.70710677, 0, 0.50000006, -0.50000006)
+                    quatf physics:localRot1 = (0.70710677, 0, 0.50000006, -0.50000006)
+                    float physics:lowerLimit = -60
+                    float physics:upperLimit = 60
+                }
+            }
+        }
+    }
+
+    def Scope "Physics"
+    {
+        def Material "PhysicsMaterial" (
+            apiSchemas = ["PhysicsMaterialAPI", "MjcMaterialAPI"]
+        )
+        {
+            float physics:dynamicFriction = 1
+        }
+
+        def Material "PhysicsMaterial_1" (
+            apiSchemas = ["PhysicsMaterialAPI", "MjcMaterialAPI"]
+        )
+        {
+            uniform double mjc:rollingfriction = 0.05
+            uniform double mjc:torsionalfriction = 0.05
+            float physics:dynamicFriction = 1
+        }
+
+        def MjcActuator "abdomen_y"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [67.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/abdomen_y>
+        }
+
+        def MjcActuator "abdomen_z"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [67.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/abdomen_z>
+        }
+
+        def MjcActuator "abdomen_x"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [67.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/abdomen_x>
+        }
+
+        def MjcActuator "right_hip_x"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [45, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_hip_x>
+        }
+
+        def MjcActuator "right_hip_z"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [45, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_hip_z>
+        }
+
+        def MjcActuator "right_hip_y"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [135, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_hip_y>
+        }
+
+        def MjcActuator "right_knee"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [90, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_shin/right_knee_1>
+        }
+
+        def MjcActuator "right_ankle_x"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [22.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_shin/right_foot/right_ankle_x>
+        }
+
+        def MjcActuator "right_ankle_y"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [22.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/right_thigh/right_shin/right_foot/right_ankle_y>
+        }
+
+        def MjcActuator "left_hip_x"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [45, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_hip_x>
+        }
+
+        def MjcActuator "left_hip_z"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [45, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_hip_z>
+        }
+
+        def MjcActuator "left_hip_y"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [135, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_hip_y>
+        }
+
+        def MjcActuator "left_knee"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [90, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_shin/left_knee_1>
+        }
+
+        def MjcActuator "left_ankle_x"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [22.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_shin/left_foot/left_ankle_x>
+        }
+
+        def MjcActuator "left_ankle_y"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [22.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/lower_waist/pelvis/left_thigh/left_shin/left_foot/left_ankle_y>
+        }
+
+        def MjcActuator "right_shoulder1"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [67.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/right_upper_arm/right_shoulder1>
+        }
+
+        def MjcActuator "right_shoulder2"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [67.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/right_upper_arm/right_shoulder2>
+        }
+
+        def MjcActuator "right_elbow"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [45, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/right_upper_arm/right_lower_arm/right_elbow>
+        }
+
+        def MjcActuator "left_shoulder1"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [67.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/left_upper_arm/left_shoulder1>
+        }
+
+        def MjcActuator "left_shoulder2"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [67.5, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/left_upper_arm/left_shoulder2>
+        }
+
+        def MjcActuator "left_elbow"
+        {
+            uniform token mjc:ctrlLimited = "true"
+            uniform double mjc:ctrlRange:max = 1
+            uniform double mjc:ctrlRange:min = -1
+            uniform double[] mjc:gear = [45, 0, 0, 0, 0, 0]
+            rel mjc:target = </humanoid/Geometry/torso/left_upper_arm/left_lower_arm/left_elbow>
+        }
+    }
+}
+
+def PhysicsScene "PhysicsScene" (
+    apiSchemas = ["MjcSceneAPI", "PhysxSceneAPI"]
+)
+{
+    uniform double mjc:option:timestep = 0.00555
+    vector3f physics:gravityDirection = (0, 0, -1)
+    float physics:gravityMagnitude = 9.81
+}
+
+def "Render" (
+    hide_in_stage_window = true
+    no_delete = true
+)
+{
+    def "OmniverseKit"
+    {
+        def "HydraTextures" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            def RenderProduct "omni_kit_widget_viewport_ViewportTexture_0" (
+                apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </OmniverseKit_Persp>
+                token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
+                token omni:rtx:background:source:type = "domeLight"
+                bool omni:rtx:dlss:frameGeneration = 0
+                string omni:rtx:material:db:rtSensorNameToIdMap = "DefaultMaterial:0;AsphaltStandardMaterial:1;AsphaltWeatheredMaterial:2;VegetationGrassMaterial:3;WaterStandardMaterial:4;GlassStandardMaterial:5;FiberGlassMaterial:6;MetalAlloyMaterial:7;MetalAluminumMaterial:8;MetalAluminumOxidizedMaterial:9;PlasticStandardMaterial:10;RetroMarkingsMaterial:11;RetroSignMaterial:12;RubberStandardMaterial:13;SoilClayMaterial:14;ConcreteRoughMaterial:15;ConcreteSmoothMaterial:16;OakTreeBarkMaterial:17;FabricStandardMaterial:18;PlexiGlassStandardMaterial:19;MetalSilverMaterial:20"
+                bool omni:rtx:material:db:syncLoads = 1
+                bool omni:rtx:post:registeredCompositing:invertColorCorrection = 1
+                bool omni:rtx:post:registeredCompositing:invertToneMap = 1
+                bool omni:rtx:pt:lightcache:cached:dontResolveConflicts = 1
+                int omni:rtx:pt:maxSamplesPerLaunch = 2073600
+                int omni:rtx:pt:mgpu:maxPixelsPerRegionExponent = 12
+                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
+                bool omni:rtx:rt:demoire = 0
+                bool omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts = 1
+                bool omni:rtx:scene:hydra:materialSyncLoads = 1
+                bool omni:rtx:scene:hydra:mdlMaterialWarmup = 1
+                uint omni:rtx:viewTile:limit = 4294967295
+                rel orderedVars = </Render/Vars/LdrColor>
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (1920, 1080)
+            }
+        }
+    }
+
+    def RenderSettings "OmniverseGlobalRenderSettings" (
+        apiSchemas = ["OmniRtxSettingsGlobalRtAdvancedAPI_1", "OmniRtxSettingsGlobalPtAdvancedAPI_1"]
+        no_delete = true
+    )
+    {
+        rel products = </Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0>
+    }
+
+    def "Vars"
+    {
+        def RenderVar "LdrColor" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            uniform string sourceName = "LdrColor"
+        }
+    }
+}
+

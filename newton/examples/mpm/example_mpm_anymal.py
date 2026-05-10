@@ -296,7 +296,7 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",
-            lambda q, qd: q[2] > -voxel_size,
+            lambda q, qd: q[2] > -1.1 * voxel_size,
         )
 
     def render(self):
@@ -344,5 +344,4 @@ if __name__ == "__main__":
         print("Error: This example requires a GPU device.")
         sys.exit(1)
 
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

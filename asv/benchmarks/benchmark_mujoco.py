@@ -82,12 +82,12 @@ ROBOT_CONFIGS = {
         "cone": "elliptic",
     },
     "kitchen": {
-        "setup_builder": lambda x: _setup_kitchen(x),
+        "setup_builder": lambda x: _setup_kitchen(x),  # noqa: PLW0108  # lambda defers lookup
         "njmax": 3800,
         "nconmax": 900,
     },
     "tabletop": {
-        "setup_builder": lambda x: _setup_tabletop(x),
+        "setup_builder": lambda x: _setup_tabletop(x),  # noqa: PLW0108  # lambda defers lookup
         "njmax": 100,
         "nconmax": 20,
     },

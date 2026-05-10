@@ -20,6 +20,32 @@ from newton._src.core.types import MAXVAL
 #: Corner values for a single voxel (8 corners)
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
 
+# Marching cubes edge-interpolation constants.  Shared by sdf_mc.py and
+# sdf_hydroelastic.py — import from here to keep values in one place.
+
+MC_EDGE_VAL_DIFF_EPS = 1.0e-10
+"""Minimum |val_diff| below which the edge midpoint is used instead of
+interpolation.  Well below float32 ULP for typical SDF magnitudes, so this
+branch only fires for nearly-identical corner values."""
+
+MC_EDGE_CLAMP_MIN = 0.02
+"""Lower t-clamp for edge interpolation.  Prevents vertex collapse when
+corner values are near zero (e.g. at SDF ridge boundaries where both
+shapes share the same nearest face).  Without the clamp, t close to 0 or 1
+places multiple vertices at the same corner, producing degenerate
+(zero-area) triangles."""
+
+MC_EDGE_CLAMP_MAX = 0.98
+"""Upper t-clamp (``1 - MC_EDGE_CLAMP_MIN``)."""
+
+MC_DEGENERATE_N_SQ_EPS = 1.0e-20
+"""Squared-length threshold below which a triangle cross-product is treated
+as degenerate.  With t-clamping producing minimum edge lengths of ~0.02
+voxel edges, near-collinear triangles can have n_sq in the 1e-20..1e-14
+range and still yield an unreliable normal after division.  A threshold of
+1e-20 is conservative with negligible false-positive risk (affected
+triangles contribute near-zero area anyway)."""
+
 
 def get_mc_tables(device):
     """Create marching cubes lookup tables on the specified device.
@@ -169,10 +195,14 @@ def mc_calc_face(
         p_0 = wp.vec3f(corner_offsets_table[v_idx_from])
         p_1 = wp.vec3f(corner_offsets_table[v_idx_to])
         val_diff = wp.float32(val_1 - val_0)
-        if wp.abs(val_diff) < 1e-8:
+        if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
             p = 0.5 * (p_0 + p_1)
         else:
-            t = (isovalue - val_0) / val_diff
+            # Clamp t away from cube corners to prevent vertex collapse when
+            # corner values are near zero (e.g. at SDF ridge boundaries).
+            # Without the clamp, t close to 0 or 1 places multiple vertices
+            # at the same corner, producing degenerate (zero-area) triangles.
+            t = wp.clamp((isovalue - val_0) / val_diff, wp.static(MC_EDGE_CLAMP_MIN), wp.static(MC_EDGE_CLAMP_MAX))
             p = p_0 + t * (p_1 - p_0)
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         p_scaled = wp.volume_index_to_world(sdf_a, vol_idx)
@@ -185,8 +215,15 @@ def mc_calc_face(
             num_inside += 1
 
     n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
-    normal = wp.normalize(n)
-    area = wp.length(n) / 2.0
+    n_sq = wp.dot(n, n)
+    if n_sq < wp.static(MC_DEGENERATE_N_SQ_EPS):
+        # Degenerate triangle — return zero area with a valid (non-NaN) normal.
+        area = 0.0
+        normal = wp.vec3(0.0, 0.0, 1.0)
+    else:
+        n_len = wp.sqrt(n_sq)
+        normal = n / n_len
+        area = n_len / 2.0
     center = (face_verts[0] + face_verts[1] + face_verts[2]) / 3.0
     pen_depth = (vert_depths[0] + vert_depths[1] + vert_depths[2]) / 3.0
     area *= get_triangle_fraction(vert_depths, num_inside)

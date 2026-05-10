@@ -67,6 +67,9 @@ class ViewerNull(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        color: tuple[float, float, float] | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
     ):
         """
         No-op implementation for logging a mesh.
@@ -80,6 +83,12 @@ class ViewerNull(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling.
+            color: Optional base color as an RGB tuple with values in
+                [0, 1]. Used when no texture is provided.
+            roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
+                smooth, ``1`` is fully rough.
+            metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
+                is metal.
         """
         pass
 
@@ -233,13 +242,15 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_scalar(self, name: str, value: int | float | bool | np.number, *, clear: bool = False, smoothing: int = 1):
         """
         No-op implementation for logging a scalar value.
 
         Args:
             name: Name of the scalar.
             value: The scalar value.
+            clear: Ignored by this backend.
+            smoothing: Ignored by this backend.
         """
         pass
 

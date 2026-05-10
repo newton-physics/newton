@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import warp as wp
@@ -41,6 +42,7 @@ def is_discrete_shape(shape_type: int) -> bool:
         shape_type == GeoType.BOX
         or shape_type == GeoType.CONVEX_MESH
         or shape_type == GeoTypeEx.TRIANGLE
+        or shape_type == GeoTypeEx.TRIANGLE_PRISM
         or shape_type == GeoType.PLANE
     )
 
@@ -253,7 +255,7 @@ def post_process_axial_on_discrete_contact(
                 is_rolling = True
         else:
             # For cylinder: axis should be perpendicular to normal (dot product ≈ 0)
-            perpendicular_threshold = wp.static(wp.sin(2.0 * wp.pi / 180.0))
+            perpendicular_threshold = wp.static(math.sin(2.0 * math.pi / 180.0))
             if axis_normal_dot <= perpendicular_threshold:
                 is_rolling = True
 
@@ -306,6 +308,7 @@ def create_compute_gjk_mpr_contacts(
         margin_a: float,
         margin_b: float,
         writer_data: Any,
+        sort_sub_key: int = 0,
     ):
         """
         Compute contacts between two shapes using GJK/MPR algorithm and write them.
@@ -323,6 +326,7 @@ def create_compute_gjk_mpr_contacts(
             margin_a: Per-shape margin offset for shape A (signed distance padding)
             margin_b: Per-shape margin offset for shape B (signed distance padding)
             writer_data: Data structure for contact writer
+            sort_sub_key: Sub-key for deterministic contact sorting (e.g. triangle/edge index)
         """
         data_provider = SupportMapDataProvider()
 
@@ -353,6 +357,7 @@ def create_compute_gjk_mpr_contacts(
         contact_template.shape_a = shape_a
         contact_template.shape_b = shape_b
         contact_template.gap_sum = rigid_gap
+        contact_template.sort_sub_key = sort_sub_key
 
         if wp.static(ENABLE_MULTI_CONTACT):
             wp.static(create_solve_convex_multi_contact(support_func, writer_func, post_process_contact))(
@@ -362,7 +367,6 @@ def create_compute_gjk_mpr_contacts(
                 rot_b,
                 pos_a_adjusted,
                 pos_b_adjusted,
-                0.0,  # combined_margin
                 data_provider,
                 rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 type_a == GeoType.SPHERE
@@ -380,7 +384,6 @@ def create_compute_gjk_mpr_contacts(
                 rot_b,
                 pos_a_adjusted,
                 pos_b_adjusted,
-                0.0,  # combined_margin
                 data_provider,
                 rigid_gap + radius_eff_a + radius_eff_b + margin_a + margin_b,
                 writer_data,
@@ -852,6 +855,73 @@ def pre_contact_check(
 
 
 @wp.func
+def aabb_to_unscaled(
+    aabb_lower: wp.vec3,
+    aabb_upper: wp.vec3,
+    scale: wp.vec3,
+) -> tuple[wp.vec3, wp.vec3]:
+    """Convert an axis-aligned bounding box from scaled local space to unscaled local space.
+
+    Given an AABB ``[aabb_lower, aabb_upper]`` expressed in a frame where geometry has been
+    pre-multiplied component-wise by ``scale``, return the equivalent AABB in the unscaled
+    frame (i.e. divided component-wise). Negative scale components flip the axis, so per-axis
+    min/max are swapped to keep ``lower <= upper``. Zero/near-zero components are guarded with
+    a small epsilon, but in practice ``scale`` should be non-zero whenever this is called.
+    """
+    eps = float(1.0e-12)
+    inv_x = 1.0 / wp.where(wp.abs(scale[0]) > eps, scale[0], wp.where(scale[0] >= 0.0, eps, -eps))
+    inv_y = 1.0 / wp.where(wp.abs(scale[1]) > eps, scale[1], wp.where(scale[1] >= 0.0, eps, -eps))
+    inv_z = 1.0 / wp.where(wp.abs(scale[2]) > eps, scale[2], wp.where(scale[2] >= 0.0, eps, -eps))
+
+    lx0 = aabb_lower[0] * inv_x
+    lx1 = aabb_upper[0] * inv_x
+    ly0 = aabb_lower[1] * inv_y
+    ly1 = aabb_upper[1] * inv_y
+    lz0 = aabb_lower[2] * inv_z
+    lz1 = aabb_upper[2] * inv_z
+
+    out_lower = wp.vec3(wp.min(lx0, lx1), wp.min(ly0, ly1), wp.min(lz0, lz1))
+    out_upper = wp.vec3(wp.max(lx0, lx1), wp.max(ly0, ly1), wp.max(lz0, lz1))
+    return out_lower, out_upper
+
+
+@wp.func
+def transform_normal_with_scale(
+    transform: wp.transform,
+    scale: wp.vec3,
+    normal_local: wp.vec3,
+) -> wp.vec3:
+    """Transform a unit normal from a (translated, rotated, component-wise scaled) local frame
+    to world space.
+
+    Under a non-uniform component-wise scale ``S = diag(scale)``, surface normals do **not**
+    transform like vectors: the correct rule is ``n_world ∝ R · S^{-T} · n_local`` which, for a
+    diagonal scale, reduces to ``R · (n_local / scale)``. The translation component of
+    ``transform`` is irrelevant for normals. The returned normal is normalized; if the scaled
+    normal is degenerate (zero length), the rotation-only transform of ``normal_local`` is
+    returned as a fallback.
+
+    This is the analog of ``wp.transform_vector`` for normals when the local frame includes a
+    non-uniform scale (e.g. a triangle mesh shape with ``shape_data.scale = (sx, sy, sz)``).
+    """
+    eps = float(1.0e-12)
+    sx = wp.where(wp.abs(scale[0]) > eps, scale[0], wp.where(scale[0] >= 0.0, eps, -eps))
+    sy = wp.where(wp.abs(scale[1]) > eps, scale[1], wp.where(scale[1] >= 0.0, eps, -eps))
+    sz = wp.where(wp.abs(scale[2]) > eps, scale[2], wp.where(scale[2] >= 0.0, eps, -eps))
+
+    n_scaled = wp.vec3(normal_local[0] / sx, normal_local[1] / sy, normal_local[2] / sz)
+    len_n = wp.length(n_scaled)
+    if len_n > eps:
+        n_scaled = n_scaled / len_n
+    else:
+        # Degenerate (e.g. a normal aligned with an axis collapsed to zero scale): fall
+        # back to rotating the unscaled local normal so the result is still well-defined.
+        n_scaled = normal_local
+
+    return wp.transform_vector(transform, n_scaled)
+
+
+@wp.func
 def mesh_vs_convex_midphase(
     idx_in_thread_block: int,
     mesh_shape: int,
@@ -911,26 +981,39 @@ def mesh_vs_convex_midphase(
 
     data_provider = SupportMapDataProvider()
 
-    # Compute tight AABB directly in mesh local space for optimal fit
+    # Compute tight AABB in the mesh's *scaled* local frame (the same frame in which
+    # ``pos_in_mesh`` lives, i.e. the frame in which scaled mesh triangles are placed
+    # before being transformed by ``X_mesh_ws``).
     aabb_lower, aabb_upper = compute_tight_aabb_from_support(
         generic_shape_data, orientation_in_mesh, pos_in_mesh, data_provider
     )
 
-    # Add small margin for contact detection
-    margin_vec = wp.vec3(rigid_gap, rigid_gap, rigid_gap)
-    aabb_lower = aabb_lower - margin_vec
-    aabb_upper = aabb_upper + margin_vec
+    # The mesh's own BVH was built over the *unscaled* ``mesh.points``: the world
+    # position of vertex v is ``X_mesh_ws * (mesh_scale ⊙ v)``. Therefore we must
+    # convert both the AABB and the contact gap from scaled mesh-local space to
+    # unscaled (BVH) space before querying. With non-uniform scale this is a
+    # per-axis division; the gap, isotropic in world space, becomes anisotropic.
+    mesh_scale_vec4 = shape_data[mesh_shape]
+    mesh_scale = wp.vec3(mesh_scale_vec4[0], mesh_scale_vec4[1], mesh_scale_vec4[2])
+    aabb_lower_bvh, aabb_upper_bvh = aabb_to_unscaled(aabb_lower, aabb_upper, mesh_scale)
+
+    # Per-axis margin in BVH (unscaled) units. ``rigid_gap`` is a world-space
+    # distance; in unscaled mesh-local space that is ``rigid_gap / |mesh_scale_i|``
+    # along each axis.
+    margin_vec = wp.vec3(
+        rigid_gap / wp.max(wp.abs(mesh_scale[0]), 1.0e-12),
+        rigid_gap / wp.max(wp.abs(mesh_scale[1]), 1.0e-12),
+        rigid_gap / wp.max(wp.abs(mesh_scale[2]), 1.0e-12),
+    )
+    aabb_lower = aabb_lower_bvh - margin_vec
+    aabb_upper = aabb_upper_bvh + margin_vec
 
     if wp.static(ENABLE_TILE_BVH_QUERY):
         # Query mesh BVH for overlapping triangles in mesh local space using tiled version
         query = wp.tile_mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
 
-        result_tile = wp.tile_mesh_query_aabb_next(query)
-
-        # Continue querying while we have results
-        # Each iteration, each thread in the block gets one result (or -1)
-        while wp.tile_max(result_tile)[0] >= 0:
-            # Each thread processes its result from the tile
+        while wp.tile_query_valid(query):
+            result_tile = wp.tile_mesh_query_aabb_next(query)
             tri_index = wp.untile(result_tile)
 
             # Add this triangle pair to the output buffer if valid
@@ -947,12 +1030,9 @@ def mesh_vs_convex_midphase(
             offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
 
             if tri_index >= 0:
-                # out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
                 out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
                 if out_idx < triangle_pairs.shape[0]:
                     triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
-
-            result_tile = wp.tile_mesh_query_aabb_next(query)
     else:
         query = wp.mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
         tri_index = wp.int32(0)

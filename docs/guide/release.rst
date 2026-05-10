@@ -64,7 +64,7 @@ Pre-release planning
      - Determine target version (``X.Y.Z``).
    * - ☐
      - Confirm dependency versions and availability: warp-lang, mujoco,
-       mujoco-warp, newton-usd-schemas, newton-actuators.
+       mujoco-warp, newton-usd-schemas.
    * - ☐
      - Set timeline: code freeze → RC1 → testing window → GA.
    * - ☐
@@ -75,7 +75,11 @@ Pre-release planning
        - Verify deprecated symbols carry proper deprecation warnings and
          migration guidance (see :ref:`deprecation-timeline`).
        - Confirm new public API has complete docstrings and is included in
-         Sphinx docs (run ``docs/generate_api.py``).
+         Sphinx docs (run ``uv run docs/generate_api.py``).
+
+       Run the ``release-audit`` Claude Code skill
+       (``.claude/skills/release-audit``) in **pre-release mode** to automate
+       this audit.
    * - ☐
      - Communicate the timeline to the community.
 
@@ -91,14 +95,34 @@ Code freeze and release branch creation
      - Create ``release-X.Y`` branch from ``main`` and push it.
    * - ☐
      - On **main**: bump the version in ``pyproject.toml`` to ``X.(Y+1).0.dev0`` and run
-       ``docs/generate_api.py``.
+       ``uv run docs/generate_api.py``.
    * - ☐
      - On **release-X.Y**: bump the version in ``pyproject.toml`` to ``X.Y.ZrcN`` and
-       run ``docs/generate_api.py``.
+       run ``uv run docs/generate_api.py``.
    * - ☐
      - On **release-X.Y**: update dependencies in ``pyproject.toml`` from dev
-       to RC versions where applicable, then regenerate ``uv.lock``
-       (``uv lock``) and commit it.
+       to RC versions where applicable and remove the NVIDIA package index
+       (``[[tool.uv.index]]`` entry for ``nvidia`` **and** the
+       ``warp-lang`` entry in ``[tool.uv.sources]`` that references it) so
+       the release wheel installs purely from PyPI, then regenerate
+       ``uv.lock`` (``uv lock``) and commit.
+   * - ☐
+     - Run the ``release-audit`` skill in **release-candidate mode** against
+       ``release-X.Y``; address or acknowledge flagged entries before
+       tagging.
+   * - ☐
+     - Manually trigger the **minimum-dependency** and **multi-GPU** CI
+       workflows on the ``release-X.Y`` branch (the nightly orchestrator
+       only runs on ``main``).  Verify both pass before tagging.
+
+       .. code-block:: bash
+
+          # Minimum-dependency tests (lowest compatible PyPI versions)
+          gh workflow run minimum_deps_tests.yml --ref release-X.Y
+
+          # Multi-GPU tests (g7e.12xlarge = 4× L40S GPUs)
+          gh workflow run aws_gpu_tests.yml --ref release-X.Y \
+              -f instance-type=g7e.12xlarge
    * - ☐
      - Push tag ``vX.Y.Zrc1``.  This triggers the ``release.yml`` workflow
        (build wheel → PyPI publish with manual approval).
@@ -115,7 +139,7 @@ branch and open a pull request targeting ``release-X.Y`` — never push
 directly to the release branch.
 
 For each new RC (``rc2``, ``rc3``, …) bump the version in
-``pyproject.toml`` and run ``docs/generate_api.py``, then tag and push.
+``pyproject.toml`` and run ``uv run docs/generate_api.py``, then tag and push.
 Resolve any cherry-pick conflicts or missing dependent cherry-picks that
 cause CI failures before tagging.
 
@@ -148,6 +172,9 @@ As a guideline, an RC is typically ready for GA when:
 
    * - ☐
      - All release-targeted fixes cherry-picked from ``main``.
+   * - ☐
+     - Re-run the ``release-audit`` skill after final cherry-picks; confirm
+       no new flags since the last RC.
    * - ☐
      - :ref:`Testing criteria <testing-criteria>` satisfied.
    * - ☐
@@ -183,6 +210,9 @@ otherwise.
          within the same release period (e.g. a bug fix for a feature added
          in the same cycle should not appear as both an "Added" and a "Fixed"
          entry).
+
+       The ``release-audit`` skill's CHANGELOG language review is a useful
+       first pass before this manual sweep.
    * - ☐
      - Update ``README.md`` documentation links to point to versioned URLs
        (e.g. ``/X.Y.Z/guide.html`` instead of ``/latest/``).
@@ -194,7 +224,7 @@ otherwise.
        dependencies remain in the lock file.
    * - ☐
      - Bump the version in ``pyproject.toml`` to ``X.Y.Z`` (remove the RC suffix) and
-       run ``docs/generate_api.py``.
+       run ``uv run docs/generate_api.py``.
    * - ☐
      - Commit and push tag ``vX.Y.Z``.  Automated workflows trigger:
 

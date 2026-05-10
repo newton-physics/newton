@@ -95,6 +95,34 @@ def has_attribute(prim: Usd.Prim, name: str) -> bool:
     return attr and attr.HasAuthoredValue()
 
 
+def _get_raw_api_schemas(prim: Usd.Prim) -> list[str]:
+    """Return API schema tokens from raw ``apiSchemas`` list-op metadata."""
+    listop = prim.GetMetadata("apiSchemas")
+    if listop is None:
+        return []
+    return (
+        list(getattr(listop, "prependedItems", []))
+        + list(getattr(listop, "appendedItems", []))
+        + list(getattr(listop, "explicitItems", []))
+    )
+
+
+def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
+    """Return the API schema tokens applied to *prim*.
+
+    Falls back to raw ``apiSchemas`` list-op metadata when the schema plugin
+    is not loaded and :meth:`pxr.Usd.Prim.GetAppliedSchemas` returns nothing.
+
+    Args:
+        prim: Prim to query.
+
+    Returns:
+        Applied API schema tokens (e.g. ``["NewtonPDControlAPI"]``).
+    """
+    schemas = list(prim.GetAppliedSchemas())
+    return schemas if schemas else _get_raw_api_schemas(prim)
+
+
 def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
     """
     Check if a USD prim has an applied API schema, even if the schema is not
@@ -113,19 +141,7 @@ def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
     Returns:
         True if the schema is applied to the prim, False otherwise.
     """
-    if prim.HasAPI(schema_name):
-        return True
-
-    schemas_listop = prim.GetMetadata("apiSchemas")
-    if schemas_listop:
-        all_schemas = (
-            list(schemas_listop.prependedItems)
-            + list(schemas_listop.appendedItems)
-            + list(schemas_listop.explicitItems)
-        )
-        return schema_name in all_schemas
-
-    return False
+    return prim.HasAPI(schema_name) or schema_name in _get_raw_api_schemas(prim)
 
 
 @overload
@@ -1718,11 +1734,9 @@ def _get_bound_material(target_prim: Usd.Prim) -> UsdShade.Material | None:
     if not rels:
         return None
     rels.sort(
-        key=lambda rel: 0
-        if rel.GetName() == "material:binding"
-        else 1
-        if rel.GetName() == "material:binding:preview"
-        else 2
+        key=lambda rel: (
+            0 if rel.GetName() == "material:binding" else 1 if rel.GetName() == "material:binding:preview" else 2
+        )
     )
     for rel in rels:
         targets = rel.GetTargets()
@@ -1767,8 +1781,8 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
             return material_props
         return None
 
-    # Always call _extract_shader_properties even if shader_id is None (e.g., for MDL shaders like OmniPBR)
-    # because _extract_shader_properties has fallback logic for common input names
+    # Always call _extract_shader_properties even if shader_id is None because
+    # it has fallback logic for common shader input names.
     properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
     for key in ("texture", "color", "metallic", "roughness"):
@@ -1866,6 +1880,17 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     if positions is None:
         raise ValueError("USD Gaussian prim is missing required 'positions' attribute")
 
+    sorting_mode = Gaussian.SortingMode.RAY_HIT_DISTANCE
+    if usd_sorting_mode := get_attribute(prim, "sortingModeHint"):
+        if usd_sorting_mode == "zDepth":
+            sorting_mode = Gaussian.SortingMode.Z_DEPTH
+        elif usd_sorting_mode == "cameraDistance":
+            sorting_mode = Gaussian.SortingMode.CAMERA_DISTANCE
+        elif usd_sorting_mode == "rayHitDistance":
+            sorting_mode = Gaussian.SortingMode.RAY_HIT_DISTANCE
+        else:
+            raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
+
     return Gaussian(
         positions=positions,
         rotations=_get_float_array_attr("orientations"),
@@ -1874,4 +1899,5 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
         sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
         min_response=min_response,
+        sorting_mode=sorting_mode,
     )

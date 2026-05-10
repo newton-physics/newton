@@ -139,11 +139,6 @@ cd newton-usd-schemas
 pip install -e .[dev,docs,notebook]
 ```
 ```bash
-git clone git@github.com:newton-physics/newton-actuators.git
-cd newton-actuators
-pip install -e .[dev,docs,notebook]
-```
-```bash
 git clone git@github.com:newton-physics/newton.git
 cd newton
 pip install -e .[dev,docs,notebook]

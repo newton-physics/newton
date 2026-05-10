@@ -101,6 +101,68 @@ def _build_free_plus_revolute(device) -> newton.Model:
     return model
 
 
+def _add_free_distance_joint(builder, joint_type, parent, child, parent_xform, child_xform):
+    if joint_type == newton.JointType.FREE:
+        return builder.add_joint_free(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+    if joint_type == newton.JointType.DISTANCE:
+        return builder.add_joint_distance(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            min_distance=-1.0,
+            max_distance=-1.0,
+        )
+    raise AssertionError(f"Unsupported joint type: {joint_type}")
+
+
+def _joint_type_name(joint_type):
+    if joint_type == newton.JointType.FREE:
+        return "free"
+    if joint_type == newton.JointType.DISTANCE:
+        return "distance"
+    raise AssertionError(f"Unsupported joint type: {joint_type}")
+
+
+def _build_descendant_free_distance(device, joint_type) -> tuple[newton.Model, int]:
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    base = builder.add_link(mass=1.0)
+    child = builder.add_link(mass=1.0)
+    builder.body_com[child] = wp.vec3(0.21, -0.07, 0.16)
+
+    root = builder.add_joint_revolute(
+        parent=-1,
+        child=base,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform(
+            wp.vec3(0.2, -0.1, 0.3),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, -0.2, 1.0)), 0.55),
+        ),
+        child_xform=wp.transform_identity(),
+    )
+    child_joint = _add_free_distance_joint(
+        builder=builder,
+        joint_type=joint_type,
+        parent=base,
+        child=child,
+        parent_xform=wp.transform(
+            wp.vec3(0.7, -0.2, 0.4),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, 1.0, -0.3)), 0.7),
+        ),
+        child_xform=wp.transform(
+            wp.vec3(0.15, -0.05, 0.2),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -0.2, 0.4)), -0.9),
+        ),
+    )
+    builder.add_articulation([root, child_joint])
+    return builder.finalize(device=device, requires_grad=True), child
+
+
 # ----------------------------------------------------------------------------
 # helpers - D6
 # ----------------------------------------------------------------------------
@@ -311,6 +373,79 @@ def test_convergence_mixed_d6(test, device):
     _convergence_test_d6(test, device, ik.IKJacobianType.MIXED)
 
 
+def test_convergence_analytic_descendant_free_distance(test, device, joint_type):
+    with wp.ScopedDevice(device):
+        n_problems = 2
+        model, ee_link = _build_descendant_free_distance(device, joint_type)
+        joint_q_2d = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=False)
+        joint_qd_2d = wp.zeros((n_problems, model.joint_dof_count), dtype=wp.float32)
+        body_q_2d = wp.zeros((n_problems, model.body_count), dtype=wp.transform)
+        body_qd_2d = wp.zeros((n_problems, model.body_count), dtype=wp.spatial_vector)
+
+        q_np = joint_q_2d.numpy()
+        q_start = model.joint_q_start.numpy()
+        child_start = q_start[1]
+        root_angles = [0.35, -0.28]
+        child_translations = [
+            np.array([0.24, -0.17, 0.12], dtype=np.float32),
+            np.array([-0.18, 0.11, 0.16], dtype=np.float32),
+        ]
+        child_axes = [wp.normalize(wp.vec3(1.0, 0.3, -0.2)), wp.normalize(wp.vec3(-0.4, 0.8, 0.5))]
+        child_angles = [0.42, -0.31]
+        for prob in range(n_problems):
+            q_np[prob, 0] = root_angles[prob]
+            q_np[prob, child_start : child_start + 3] = child_translations[prob]
+            child_rot = wp.quat_from_axis_angle(child_axes[prob], child_angles[prob])
+            q_np[prob, child_start + 3 : child_start + 7] = np.array(
+                [child_rot[0], child_rot[1], child_rot[2], child_rot[3]],
+                dtype=np.float32,
+            )
+        joint_q_2d.assign(q_np)
+
+        ee_off = wp.vec3(0.08, -0.04, 0.06)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        initial_pos = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
+        body_q_np = body_q_2d.numpy()
+
+        pos_targets = initial_pos + np.array([[0.16, -0.09, 0.12], [-0.11, 0.08, -0.07]], dtype=np.float32)
+        rot_targets = np.zeros((n_problems, 4), dtype=np.float32)
+        rot_axes = [wp.normalize(wp.vec3(0.5, -0.1, 0.8)), wp.normalize(wp.vec3(-0.2, 0.9, 0.3))]
+        rot_angles = [0.33, -0.27]
+        initial_rot = []
+        for prob in range(n_problems):
+            q_init = wp.quat(*body_q_np[prob, ee_link, 3:7])
+            initial_rot.append(np.array([q_init[0], q_init[1], q_init[2], q_init[3]], dtype=np.float32))
+            q_target = wp.normalize(wp.quat_from_axis_angle(rot_axes[prob], rot_angles[prob]) * q_init)
+            rot_targets[prob] = np.array([q_target[0], q_target[1], q_target[2], q_target[3]], dtype=np.float32)
+
+        pos_obj = ik.IKObjectivePosition(ee_link, ee_off, wp.array(pos_targets, dtype=wp.vec3))
+        rot_obj = ik.IKObjectiveRotation(ee_link, wp.quat_identity(), wp.array(rot_targets, dtype=wp.vec4))
+        solver = ik.IKSolver(
+            model,
+            n_problems,
+            [pos_obj, rot_obj],
+            lambda_initial=1e-3,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
+        )
+
+        solver.step(joint_q_2d, joint_q_2d, iterations=70, step_size=1.0)
+
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        final_pos = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
+        final_q_np = body_q_2d.numpy()
+        for prob in range(n_problems):
+            pos_err_0 = np.linalg.norm(initial_pos[prob] - pos_targets[prob])
+            pos_err_1 = np.linalg.norm(final_pos[prob] - pos_targets[prob])
+            rot_err_0 = 2.0 * math.acos(np.clip(abs(np.dot(initial_rot[prob], rot_targets[prob])), 0.0, 1.0))
+            rot_err_1 = 2.0 * math.acos(
+                np.clip(abs(np.dot(final_q_np[prob, ee_link, 3:7], rot_targets[prob])), 0.0, 1.0)
+            )
+            test.assertLess(pos_err_1, pos_err_0, f"[{joint_type}] problem {prob} position did not improve")
+            test.assertLess(rot_err_1, rot_err_0, f"[{joint_type}] problem {prob} rotation did not improve")
+            test.assertLess(pos_err_1, 5e-3, f"[{joint_type}] problem {prob} final position error too high")
+            test.assertLess(rot_err_1, 2e-2, f"[{joint_type}] problem {prob} final rotation error too high")
+
+
 # ----------------------------------------------------------------------------
 # 2.  Jacobian equality helpers
 # ----------------------------------------------------------------------------
@@ -444,6 +579,14 @@ add_function_test(TestIKModes, "test_convergence_mixed", test_convergence_mixed,
 add_function_test(TestIKModes, "test_convergence_autodiff_free", test_convergence_autodiff_free, devices)
 add_function_test(TestIKModes, "test_convergence_analytic_free", test_convergence_analytic_free, devices)
 add_function_test(TestIKModes, "test_convergence_mixed_free", test_convergence_mixed_free, devices)
+for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
+    add_function_test(
+        TestIKModes,
+        f"test_convergence_analytic_descendant_{_joint_type_name(joint_type)}",
+        test_convergence_analytic_descendant_free_distance,
+        devices,
+        joint_type=joint_type,
+    )
 
 # D6-joint convergence
 add_function_test(TestIKModes, "test_convergence_autodiff_d6", test_convergence_autodiff_d6, cuda_devices)

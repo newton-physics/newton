@@ -52,7 +52,7 @@ class Example:
             hide_collision_shapes=True,
         )
 
-        articulation_builder.joint_q[:3] = [0.0, 0.0, 0.62]
+        articulation_builder.joint_q[:3] = [0.0, 0.0, 0.68]
         if len(articulation_builder.joint_q) > 6:
             articulation_builder.joint_q[3:7] = [0.0, 0.0, 0.0, 1.0]
 
@@ -148,6 +148,7 @@ class Example:
         # Only check velocities on CUDA where we run 500 frames (enough time to settle)
         # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
         if self.device.is_cuda:
+            # fmt: off
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
@@ -155,6 +156,7 @@ class Example:
                 lambda q, qd: max(abs(qd))
                 < 0.25,  # Relaxed from 0.1 - collision pipeline has residual velocities up to ~0.2
             )
+            # fmt: on
 
     @staticmethod
     def create_parser():
@@ -169,6 +171,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

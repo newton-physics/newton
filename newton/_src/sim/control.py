@@ -22,16 +22,12 @@ class Control:
         Array of generalized joint forces [N or N·m, depending on joint type] with shape ``(joint_dof_count,)``
         and type ``float``.
 
-        The degrees of freedom for free joints are included in this array and have the same
+        The degrees of freedom for FREE and DISTANCE joints are included in this array and have the same
         convention as the :attr:`newton.State.body_f` array where the 6D wrench is defined as
         ``(f_x, f_y, f_z, t_x, t_y, t_z)``, where ``f_x``, ``f_y``, and ``f_z`` are the components
         of the force vector (linear) [N] and ``t_x``, ``t_y``, and ``t_z`` are the
-        components of the torque vector (angular) [N·m]. For free joints, the wrench is applied in world frame with the
-        body's center of mass (COM) as reference point.
-
-        .. note::
-            The Featherstone solver currently applies free-joint forces in the body-origin frame instead of the
-            center-of-mass frame, which can lead to unexpected rotation when applying linear force to a body with a non-zero COM offset.
+        components of the torque vector (angular) [N·m]. For FREE and DISTANCE joints, the wrench is applied in world
+        frame with the child body's center of mass (COM) as reference point.
         """
         self.joint_target_pos: wp.array | None = None
         """Per-DOF position targets [m or rad, depending on joint type], shape ``(joint_dof_count,)``, type ``float`` (optional)."""

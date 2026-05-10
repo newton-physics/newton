@@ -55,7 +55,12 @@ from .contact_reduction_hydroelastic import (
     export_hydroelastic_contact_to_buffer,
 )
 from .hashtable import hashtable_find_or_insert
-from .sdf_mc import get_mc_tables, get_triangle_fraction
+from .sdf_mc import (
+    MC_DEGENERATE_N_SQ_EPS,
+    MC_EDGE_VAL_DIFF_EPS,
+    get_mc_tables,
+    get_triangle_fraction,
+)
 from .sdf_texture import TextureSDFData, texture_sample_sdf, texture_sample_sdf_at_voxel
 from .utils import scan_with_total
 
@@ -107,6 +112,8 @@ def mc_calc_face_texture(
     x_id: wp.int32,
     y_id: wp.int32,
     z_id: wp.int32,
+    edge_clamp_min: wp.float32,
+    edge_clamp_max: wp.float32,
 ) -> tuple[float, wp.vec3, wp.vec3, float, wp.mat33f]:
     """Extract a triangle face from a marching cubes voxel using texture SDF.
 
@@ -116,6 +123,11 @@ def mc_calc_face_texture(
     just enough to classify touching-surface vertices as penetrating.  The
     resulting phantom force is negligible (< 0.1 % of typical contact forces)
     but prevents zero-area contacts at exactly-touching surfaces.
+
+    ``edge_clamp_min`` / ``edge_clamp_max`` clamp the edge-interpolation
+    parameter ``t`` to ``[edge_clamp_min, edge_clamp_max]``.  Pass
+    ``(0.0, 1.0)`` to disable.  See
+    :attr:`HydroelasticSDF.Config.mc_edge_clamp_min`.
     """
     thickness = sdf_a.voxel_radius * 1.0e-4
 
@@ -132,10 +144,15 @@ def mc_calc_face_texture(
         p_0 = wp.vec3f(corner_offsets_table[v_idx_from])
         p_1 = wp.vec3f(corner_offsets_table[v_idx_to])
         val_diff = wp.float32(val_1 - val_0)
-        if wp.abs(val_diff) < 1e-8:
+        if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
             t = float(0.5)
         else:
-            t = (0.0 - val_0) / val_diff
+            # Clamp t away from cube corners to prevent vertex collapse when
+            # corner values are near zero (e.g. at SDF ridge boundaries where
+            # both shapes share the same nearest face).  Without the clamp,
+            # t close to 0 or 1 places multiple vertices at the same corner,
+            # producing degenerate (zero-area) triangles.
+            t = wp.clamp((0.0 - val_0) / val_diff, edge_clamp_min, edge_clamp_max)
         p = p_0 + t * (p_1 - p_0)
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         local_pos = sdf_a.sdf_box_lower + wp.cw_mul(vol_idx, sdf_a.voxel_size)
@@ -149,8 +166,15 @@ def mc_calc_face_texture(
             num_inside += 1
 
     n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
-    normal = wp.normalize(n)
-    area = wp.length(n) / 2.0
+    n_sq = wp.dot(n, n)
+    if n_sq < wp.static(MC_DEGENERATE_N_SQ_EPS):
+        # Degenerate triangle — return zero area with a valid (non-NaN) normal.
+        area = 0.0
+        normal = wp.vec3(0.0, 0.0, 1.0)
+    else:
+        n_len = wp.sqrt(n_sq)
+        normal = n / n_len
+        area = n_len / 2.0
     center = (face_verts[0] + face_verts[1] + face_verts[2]) / 3.0
     pen_depth = (vert_depths[0] + vert_depths[1] + vert_depths[2]) / 3.0
     area *= get_triangle_fraction(vert_depths, num_inside)
@@ -252,6 +276,23 @@ class HydroelasticSDF:
         Only active when reduce_contacts is True."""
         margin_contact_area: float = 1e-2
         """Contact area used for non-penetrating contacts at the margin."""
+        mc_edge_clamp_min: float = 0.02
+        """Lower bound for the marching-cubes edge interpolation parameter
+        (``t`` clamped to ``[mc_edge_clamp_min, 1 - mc_edge_clamp_min]``).
+
+        Range: ``[0.0, 0.5]``.  The default of ``0.02`` prevents vertex
+        collapse at SDF ridge boundaries, where multiple triangle vertices
+        would otherwise land on the same cube corner.  Set to ``0.0`` for
+        the most faithful contact-surface dynamics — recommended for
+        threading-style scenarios like ``nut_bolt_hydro`` where the surface
+        bias measurably damps the contact response."""
+
+        def __post_init__(self):
+            # NaN fails both bounds (NaN comparisons return False) and lands here too.
+            if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
+                raise ValueError(
+                    f"HydroelasticSDF.Config.mc_edge_clamp_min must be in [0.0, 0.5], got {self.mc_edge_clamp_min}"
+                )
 
     @dataclass
     class ContactSurfaceData:
@@ -384,6 +425,7 @@ class HydroelasticSDF:
             self.generate_contacts_kernel = get_generate_contacts_kernel(
                 output_vertices=self.config.output_contact_surface,
                 pre_prune=self.config.reduce_contacts and self.config.pre_prune_contacts,
+                mc_edge_clamp_min=self.config.mc_edge_clamp_min,
             )
 
             if self.config.reduce_contacts:
@@ -658,13 +700,14 @@ class HydroelasticSDF:
 
         wp.launch(
             kernel=broadphase_collision_pairs_scatter,
-            dim=[self.max_num_shape_pairs],
+            dim=[self.grid_size],
             inputs=[
-                self.num_blocks_per_pair,
-                shape_sdf_data,
+                self.grid_size,
+                self.block_broad_collide_count,
                 self.block_start_prefix,
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
+                shape_sdf_data,
                 self.shape_sdf_shape2blocks,
                 self.max_num_blocks_broad,
             ],
@@ -928,51 +971,52 @@ def broadphase_collision_pairs_count(
 
 @wp.kernel(enable_backward=False)
 def broadphase_collision_pairs_scatter(
-    thread_num_blocks: wp.array[wp.int32],
-    shape_sdf_data: wp.array[TextureSDFData],
+    grid_size: int,
+    block_broad_collide_count: wp.array[wp.int32],
     block_start_prefix: wp.array[wp.int32],
     shape_pairs_sdf_sdf: wp.array[wp.vec2i],
     shape_pairs_sdf_sdf_count: wp.array[wp.int32],
+    shape_sdf_data: wp.array[TextureSDFData],
     shape2blocks: wp.array[wp.vec2i],
     max_num_blocks_broad: int,
     # outputs
     block_broad_collide_shape_pair: wp.array[wp.vec2i],
     block_broad_idx: wp.array[wp.int32],
 ):
-    tid = wp.tid()
-    if tid >= shape_pairs_sdf_sdf_count[0]:
+    offset = wp.tid()
+    total_blocks = wp.min(block_broad_collide_count[0], max_num_blocks_broad)
+    pair_count = wp.min(shape_pairs_sdf_sdf_count[0], block_start_prefix.shape[0])
+    if pair_count == 0:
         return
 
-    num_blocks = thread_num_blocks[tid]
-    if num_blocks == 0:
-        return
+    for block_tid in range(offset, total_blocks, grid_size):
+        # Binary search: find rightmost pair_idx where prefix[pair_idx] <= block_tid
+        lo = int(0)
+        hi = int(pair_count - 1)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if block_start_prefix[mid] <= block_tid:
+                lo = mid
+            else:
+                hi = mid - 1
+        pair_idx = lo
 
-    pair = shape_pairs_sdf_sdf[tid]
-    shape_a = pair[0]
-    shape_b = pair[1]
+        pair = shape_pairs_sdf_sdf[pair_idx]
+        shape_a = pair[0]
+        shape_b = pair[1]
 
-    # sort shapes such that the shape with the smaller voxel size is in second place
-    # NOTE: Confirm that this is OK to do for downstream code
-    voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
-    voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
+        # Sort shapes so the one with smaller voxel size is shape_b
+        voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
+        voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
+        if voxel_radius_b > voxel_radius_a:
+            shape_b, shape_a = shape_a, shape_b
 
-    if voxel_radius_b > voxel_radius_a:
-        shape_b, shape_a = shape_a, shape_b
+        shape_b_idx = shape2blocks[shape_b]
+        shape_b_block_start = shape_b_idx[0]
+        block_in_pair = block_tid - block_start_prefix[pair_idx]
 
-    shape_b_idx = shape2blocks[shape_b]
-    shape_b_block_start = shape_b_idx[0]
-
-    block_start = block_start_prefix[tid]
-
-    remaining = max_num_blocks_broad - block_start
-    if remaining <= 0:
-        return
-    num_blocks = wp.min(num_blocks, remaining)
-
-    pair = wp.vec2i(shape_a, shape_b)
-    for i in range(num_blocks):
-        block_broad_collide_shape_pair[block_start + i] = pair
-        block_broad_idx[block_start + i] = shape_b_block_start + i
+        block_broad_collide_shape_pair[block_tid] = wp.vec2i(shape_a, shape_b)
+        block_broad_idx[block_tid] = shape_b_block_start + block_in_pair
 
 
 @wp.kernel(enable_backward=False)
@@ -1363,6 +1407,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
 def get_generate_contacts_kernel(
     output_vertices: bool,
     pre_prune: bool = False,
+    mc_edge_clamp_min: float = 0.02,
 ):
     """Create kernel for hydroelastic contact generation.
 
@@ -1385,10 +1430,16 @@ def get_generate_contacts_kernel(
     Args:
         output_vertices: Whether to output contact surface vertices for visualization.
         pre_prune: Whether to perform local-first face compaction.
+        mc_edge_clamp_min: Lower bound for the marching-cubes edge
+            interpolation parameter; see
+            :attr:`HydroelasticSDF.Config.mc_edge_clamp_min`.
 
     Returns:
         generate_contacts_kernel: Warp kernel for contact generation.
     """
+
+    edge_clamp_min = float(mc_edge_clamp_min)
+    edge_clamp_max = float(1.0 - mc_edge_clamp_min)
 
     @wp.kernel(enable_backward=False)
     def generate_contacts_kernel(
@@ -1517,7 +1568,11 @@ def get_generate_contacts_kernel(
                     x_id,
                     y_id,
                     z_id,
+                    wp.static(edge_clamp_min),
+                    wp.static(edge_clamp_max),
                 )
+                if area <= 0.0:
+                    continue
                 # Accumulate stats per normal bin
                 if pen_depth < 0.0:
                     bin_id = get_slot(normal)

@@ -5,7 +5,7 @@
 KAMINO: Geometry Model Types & Containers
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import warp as wp
 
@@ -190,6 +190,11 @@ class GeometryDescriptor(Descriptor):
             f")"
         )
 
+    @staticmethod
+    def copy_without_shape(geom: "GeometryDescriptor") -> "GeometryDescriptor":
+        """Returns a copy of a descriptor, but with the shape field set to None"""
+        return replace(geom, shape=None)
+
 
 @dataclass
 class GeometriesModel:
@@ -277,7 +282,7 @@ class GeometriesModel:
     params: wp.array | None = None
     """
     Shape parameters of each geometry entity if they are shape primitives.\n
-    Shape of ``(num_geoms,)`` and type :class:`vec4f`.
+    Shape of ``(num_geoms,)`` and type :class:`vec3f`.
     """
 
     offset: wp.array | None = None
@@ -331,6 +336,31 @@ class GeometriesModel:
     Shape of ``(num_excluded_geom_pairs,)`` and type :class:`vec2i`.
     """
 
+    ###
+    # Mesh / Heightfield Data
+    ###
+
+    heightfield_index: wp.array | None = None
+    """Per-shape heightfield index (``-1`` for non-heightfield shapes)."""
+
+    heightfield_data: wp.array | None = None
+    """Concatenated :class:`HeightfieldData` structs for all heightfields."""
+
+    heightfield_elevations: wp.array | None = None
+    """Concatenated elevation samples for all heightfields."""
+
+    collision_aabb_lower: wp.array | None = None
+    """Per-shape local-space collision AABB lower bounds."""
+
+    collision_aabb_upper: wp.array | None = None
+    """Per-shape local-space collision AABB upper bounds."""
+
+    collision_radius: wp.array | None = None
+    """Per-shape bounding-sphere radius for broadphase AABB computation."""
+
+    voxel_resolution: wp.array | None = None
+    """Per-shape voxel resolution for mesh contact reduction."""
+
 
 @dataclass
 class GeometriesData:
@@ -361,11 +391,11 @@ class GeometriesData:
 @wp.kernel
 def _update_geometries_state(
     # Inputs:
-    geom_bid: wp.array(dtype=int32),
-    geom_offset: wp.array(dtype=transformf),
-    body_pose: wp.array(dtype=transformf),
+    geom_bid: wp.array[int32],
+    geom_offset: wp.array[transformf],
+    body_pose: wp.array[transformf],
     # Outputs:
-    geom_pose: wp.array(dtype=transformf),
+    geom_pose: wp.array[transformf],
 ):
     """
     A kernel to update poses of geometry entities in world

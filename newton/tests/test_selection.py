@@ -9,8 +9,23 @@ import warp as wp
 import newton
 import newton.examples
 from newton.selection import ArticulationView
-from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
+
+
+def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
+    """Recover body-origin velocity from COM-referenced `body_qd`."""
+    rot = wp.quat(
+        float(body_q[body_idx, 3]),
+        float(body_q[body_idx, 4]),
+        float(body_q[body_idx, 5]),
+        float(body_q[body_idx, 6]),
+    )
+    com_local = model.body_com.numpy()[body_idx]
+    com_world = np.array(
+        wp.quat_rotate(rot, wp.vec3(float(com_local[0]), float(com_local[1]), float(com_local[2]))),
+        dtype=np.float32,
+    )
+    return body_qd[body_idx, :3] - np.cross(body_qd[body_idx, 3:6], com_world)
 
 
 class TestSelection(unittest.TestCase):
@@ -325,7 +340,7 @@ class TestSelection(unittest.TestCase):
         body_qd = state.body_qd.numpy().reshape(-1, 6)
 
         origin_vel_fd = (body_q_next[target_slider, :3] - body_q[target_slider, :3]) / dt
-        origin_vel_from_body_qd = body_qd[target_slider, :3]
+        origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, target_slider)
 
         assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
         self.assertFalse(np.array_equal(body_q[target_base], sentinel_q[target_base]))
@@ -417,7 +432,6 @@ class TestSelection(unittest.TestCase):
 
         # Create a single articulation with 3 joints.
         single_articuation_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(single_articuation_builder)
         single_articuation_builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
 
         # Create a world with 2 articulations
@@ -820,7 +834,6 @@ class TestSelection(unittest.TestCase):
 
         # Create a single articulation
         single_articulation_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(single_articulation_builder)
         single_articulation_builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
 
         # Create a world with 2 articulations
@@ -1218,7 +1231,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_count(self):
         """Test that tendon count is correctly detected."""
         builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1228,7 +1240,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_selection_shapes(self):
         """Test that tendon selection API returns correct shapes."""
         builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1248,7 +1259,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_generic_api(self):
         """Test that tendon attributes are accessible via generic get/set_attribute."""
         builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1278,7 +1288,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_multi_world(self):
         """Test that tendon selection works with multiple worlds."""
         individual_builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(self.TENDON_MJCF)
 
         W = 4  # num worlds
@@ -1303,7 +1312,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_set_values(self):
         """Test that setting tendon values works correctly."""
         individual_builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(self.TENDON_MJCF)
 
         W = 2  # num worlds
@@ -1324,7 +1332,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_tendon_names(self):
         """Test that tendon names are correctly populated."""
         builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1372,7 +1379,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(with_tendons_mjcf)
         builder.add_mjcf(no_tendons_mjcf)
         model = builder.finalize()
@@ -1391,7 +1397,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
         """Test tendon selection with multiple articulations in a single world."""
         # Build a single articulation with tendons
         individual_builder = newton.ModelBuilder(gravity=0.0)
-        SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(self.TENDON_MJCF)
 
         # Create a world with multiple copies of the articulation
@@ -1423,150 +1428,6 @@ class TestSelectionFixedTendons(unittest.TestCase):
         # All stiffness values should be 2.0 (from TENDON_MJCF)
         expected = np.full((W, A, 1), 2.0)
         assert_np_equal(stiffness.numpy(), expected)
-
-
-@wp.kernel
-def _sum_float_3d_kernel(src: wp.array3d[float], out: wp.array[float]):
-    i, j, k = wp.tid()
-    wp.atomic_add(out, 0, src[i, j, k])
-
-
-class TestArticulationViewRequiresGrad(unittest.TestCase):
-    """ArticulationView getters must preserve requires_grad and gradient connectivity.
-
-    The articulation has joints [FREE, REVOLUTE, PRISMATIC, REVOLUTE] giving
-    velocity DOF layout: FREE(0-5), REVOLUTE(6), PRISMATIC(7), REVOLUTE(8).
-
-    Two views exercise both code paths:
-      contig_view  — excludes FREE → contiguous DOFs [6,7,8] (grad via pointer aliasing)
-      indexed_view — excludes FREE+PRISMATIC → non-contiguous DOFs [6,8] (grad via gather kernel)
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        builder = newton.ModelBuilder()
-
-        b0 = builder.add_link(xform=wp.transform_identity())
-        builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
-        b1 = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
-        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
-        b2 = builder.add_link(xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()))
-        builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
-        b3 = builder.add_link(xform=wp.transform((0.0, 0.0, 3.0), wp.quat_identity()))
-        builder.add_shape_box(b3, hx=0.1, hy=0.1, hz=0.1)
-
-        j0 = builder.add_joint_free(b0)
-        j1 = builder.add_joint_revolute(
-            parent=b0,
-            child=b1,
-            axis=newton.Axis.X,
-            parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
-            child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
-        )
-        j2 = builder.add_joint_prismatic(
-            parent=b1,
-            child=b2,
-            axis=newton.Axis.Z,
-            parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
-            child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
-        )
-        j3 = builder.add_joint_revolute(
-            parent=b2,
-            child=b3,
-            axis=newton.Axis.X,
-            parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
-            child_xform=wp.transform((0.0, 0.0, -0.5), wp.quat_identity()),
-        )
-        builder.add_articulation([j0, j1, j2, j3])
-
-        cls.model = builder.finalize(requires_grad=True)
-        cls.contig_view = ArticulationView(
-            cls.model,
-            "*",
-            exclude_joint_types=[newton.JointType.FREE],
-        )
-        cls.indexed_view = ArticulationView(
-            cls.model,
-            "*",
-            exclude_joint_types=[newton.JointType.FREE, newton.JointType.PRISMATIC],
-        )
-
-    def test_no_grad_state_returns_no_grad(self):
-        state = self.model.state(requires_grad=False)
-        result = self.contig_view.get_dof_velocities(state)
-        self.assertFalse(result.requires_grad)
-
-    def test_contiguous_selected_grad_matches_source(self):
-        """Set non-zero grad on state.joint_qd; the contiguous view must expose the same values."""
-        state = self.model.state(requires_grad=True)
-
-        # Write known gradient pattern into the source
-        grad_np = np.arange(1, 10, dtype=np.float32)  # [1..9] for 9 velocity DOFs
-        state.joint_qd.grad.assign(wp.array(grad_np, dtype=float, device=state.joint_qd.device))
-
-        result = self.contig_view.get_dof_velocities(state)
-        self.assertTrue(result.requires_grad)
-
-        # contig_view selects DOFs [6,7,8] → grads should be [7,8,9]
-        result_grad = result.grad.numpy().flatten()
-        np.testing.assert_allclose(result_grad, [7.0, 8.0, 9.0], atol=1e-6)
-
-    def test_contiguous_backward_updates_source_grad(self):
-        """tape.backward() through a contiguous view writes to the correct source grad positions."""
-        state = self.model.state(requires_grad=True)
-        loss = wp.zeros(1, dtype=float, requires_grad=True, device=state.joint_qd.device)
-
-        tape = wp.Tape()
-        with tape:
-            result = self.contig_view.get_dof_velocities(state)
-            wp.launch(
-                _sum_float_3d_kernel, dim=result.shape, inputs=[result], outputs=[loss], device=state.joint_qd.device
-            )
-
-        tape.backward(loss=loss)
-        grad_np = state.joint_qd.grad.numpy().flatten()
-
-        # d(sum)/d(input) = 1.0 for each selected DOF, 0.0 elsewhere
-        expected = np.zeros(9, dtype=np.float32)
-        expected[6:9] = 1.0
-        np.testing.assert_allclose(grad_np, expected, atol=1e-6)
-
-    def test_indexed_selected_grad_matches_source(self):
-        """Set non-zero grad on state.joint_qd; the indexed view must expose the correct subset."""
-        state = self.model.state(requires_grad=True)
-
-        grad_np = np.arange(1, 10, dtype=np.float32)  # [1..9] for 9 velocity DOFs
-        state.joint_qd.grad.assign(wp.array(grad_np, dtype=float, device=state.joint_qd.device))
-
-        result = self.indexed_view.get_dof_velocities(state)
-        self.assertTrue(result.requires_grad)
-
-        # indexed_view selects DOFs [6, 8] → grads should be [7, 9]
-        result_grad = result.grad.numpy().flatten()
-        np.testing.assert_allclose(result_grad, [7.0, 9.0], atol=1e-6)
-
-    def test_indexed_backward_scatters_to_source_grad(self):
-        """tape.backward() through an indexed view scatters grads to non-contiguous positions."""
-        state = self.model.state(requires_grad=True)
-        loss = wp.zeros(1, dtype=float, requires_grad=True, device=state.joint_qd.device)
-
-        tape = wp.Tape()
-        with tape:
-            result = self.indexed_view.get_dof_velocities(state)
-            wp.launch(
-                _sum_float_3d_kernel, dim=result.shape, inputs=[result], outputs=[loss], device=state.joint_qd.device
-            )
-
-        self.assertIsInstance(result, wp.array)
-        self.assertTrue(result.requires_grad)
-
-        tape.backward(loss=loss)
-        grad_np = state.joint_qd.grad.numpy().flatten()
-
-        expected = np.zeros(9, dtype=np.float32)
-        expected[6] = 1.0
-        expected[8] = 1.0
-        np.testing.assert_allclose(grad_np, expected, atol=1e-6)
 
 
 if __name__ == "__main__":

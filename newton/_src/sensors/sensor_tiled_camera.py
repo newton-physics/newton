@@ -9,6 +9,12 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
+from ..geometry import (
+    build_bvh_particle,
+    build_bvh_shape,
+    refit_bvh_particle,
+    refit_bvh_shape,
+)
 from ..sim import Model, State
 from .warp_raytrace import (
     ClearData,
@@ -35,9 +41,10 @@ class _SensorTiledCameraMeta(type):
 class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     """Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
 
-    Renders up to five image channels per (world, camera) pair:
+    Renders up to six image channels per (world, camera) pair:
 
     - **color** -- RGBA shaded image (``uint32``).
+    - **hdr_color** -- linear shaded RGB image (``vec3f``).
     - **depth** -- ray-hit distance [m] (``float32``); negative means no hit.
     - **normal** -- surface normal at hit point (``vec3f``).
     - **albedo** -- unshaded surface color (``uint32``).
@@ -55,7 +62,14 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
             color = sensor.utils.create_color_image_output(width, height)
 
-            # each step
+            # After setup, build BVHs once for the initial state.
+            state = model.state()
+            newton.geometry.build_bvh_shape(model, state)
+            newton.geometry.build_bvh_particle(model, state)
+
+            # Before each later frame that changes geometry, refit BVHs.
+            newton.geometry.refit_bvh_shape(model, state)
+            newton.geometry.refit_bvh_particle(model, state)
             sensor.update(state, camera_transforms, rays, color_image=color)
 
     See :class:`RenderConfig` for optional rendering settings and :attr:`ClearData` / :attr:`DEFAULT_CLEAR_DATA` /
@@ -76,36 +90,36 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     class Config:
         """Sensor configuration.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use :class:`RenderConfig` and ``SensorTiledCamera.utils.*`` instead.
         """
 
         checkerboard_texture: bool = False
-        """.. deprecated:: Use ``SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes()`` instead."""
+        """.. deprecated:: 1.1 Use ``SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes()`` instead."""
 
         default_light: bool = False
-        """.. deprecated:: Use ``SensorTiledCamera.utils.create_default_light()`` instead."""
+        """.. deprecated:: 1.1 Use ``SensorTiledCamera.utils.create_default_light()`` instead."""
 
         default_light_shadows: bool = False
-        """.. deprecated:: Use ``SensorTiledCamera.utils.create_default_light(enable_shadows=True)`` instead."""
+        """.. deprecated:: 1.1 Use ``SensorTiledCamera.utils.create_default_light(enable_shadows=True)`` instead."""
 
         enable_ambient_lighting: bool = True
-        """.. deprecated:: Use ``render_config.enable_ambient_lighting`` instead."""
+        """.. deprecated:: 1.1 Use ``render_config.enable_ambient_lighting`` instead."""
 
         colors_per_world: bool = False
-        """.. deprecated:: Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``)."""
+        """.. deprecated:: 1.1 Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``)."""
 
         colors_per_shape: bool = False
-        """.. deprecated:: Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``)."""
+        """.. deprecated:: 1.1 Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``)."""
 
         backface_culling: bool = True
-        """.. deprecated:: Use ``render_config.enable_backface_culling`` instead."""
+        """.. deprecated:: 1.1 Use ``render_config.enable_backface_culling`` instead."""
 
         enable_textures: bool = False
-        """.. deprecated:: Use ``render_config.enable_textures`` instead."""
+        """.. deprecated:: 1.1 Use ``render_config.enable_textures`` instead."""
 
         enable_particles: bool = True
-        """.. deprecated:: Use ``render_config.enable_particles`` instead."""
+        """.. deprecated:: 1.1 Use ``render_config.enable_particles`` instead."""
 
     def __init__(self, model: Model, *, config: Config | RenderConfig | None = None, load_textures: bool = True):
         """Initialize the tiled camera sensor from a simulation model.
@@ -162,28 +176,37 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 self.utils.assign_random_colors_per_shape()
 
     def sync_transforms(self, state: State):
-        """Synchronize shape transforms from the simulation state.
+        """Synchronize triangle-mesh points from the simulation state.
 
         :meth:`update` calls this automatically when *state* is not None.
 
+        Shape and particle BVHs on :attr:`model` must be built once via
+        :func:`~newton.geometry.build_bvh_shape` and
+        :func:`~newton.geometry.build_bvh_particle` before first use. Before
+        later frames that change geometry, refit them via
+        :func:`~newton.geometry.refit_bvh_shape` and
+        :func:`~newton.geometry.refit_bvh_particle` prior to calling
+        :meth:`update`.
+
         Args:
-            state: The current simulation state containing body transforms.
+            state: The current simulation state containing particle positions.
         """
         self.__render_context.update(self.model, state)
 
     def update(
         self,
-        state: State | None,
-        camera_transforms: wp.array2d[wp.transformf],
-        camera_rays: wp.array4d[wp.vec3f],
+        state: State | None = None,
+        camera_transforms: wp.array2d[wp.transformf] | None = None,
+        camera_rays: wp.array4d[wp.vec3f] | None = None,
         *,
         color_image: wp.array4d[wp.uint32] | None = None,
         depth_image: wp.array4d[wp.float32] | None = None,
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
-        refit_bvh: bool = True,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
+        refit_bvh: bool | None = None,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
     ):
         """Render output images for all worlds and cameras.
 
@@ -191,8 +214,16 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         ``[world_id, camera_id, y, x]`` corresponds to the ray in ``camera_rays[camera_id, y, x]``. Each output
         channel is optional -- pass None to skip that channel's rendering entirely.
 
+        Shape and particle BVHs on :attr:`model` must be built once for the
+        initial state via :func:`~newton.geometry.build_bvh_shape` and
+        :func:`~newton.geometry.build_bvh_particle` before first use. Before
+        later frames that change geometry, refit them for *state* via
+        :func:`~newton.geometry.refit_bvh_shape` and
+        :func:`~newton.geometry.refit_bvh_particle` before calling this method.
+
         Args:
-            state: Simulation state with body transforms. If not None, calls :meth:`sync_transforms` first.
+            state: Simulation state with body and particle transforms.
+                Passing ``None`` is deprecated and will be removed in a future release.
             camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
                 ``(camera_count, height, width, 2)``.
@@ -201,14 +232,48 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
             albedo_image: Output for unshaded surface color. None to skip.
-            refit_bvh: Refit the BVH before rendering.
             clear_data: Values to clear output buffers with.
                 See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
+            refit_bvh: Refit the BVH before rendering. This is deprecated, use
+                :func:`~newton.geometry.build_bvh_shape`,
+                :func:`~newton.geometry.refit_bvh_shape`,
+                :func:`~newton.geometry.build_bvh_particle`, and
+                :func:`~newton.geometry.refit_bvh_particle` explicitly
+                before calling this method instead.
+            hdr_color_image: Output for linear HDR color. None to skip.
         """
-        if state is not None:
-            self.sync_transforms(state)
+
+        # TODO: Remove this deprecation behaviour in the next release.
+        # state will be required and refit_bvh will be removed.
+        render_state = state if state is not None else self.model.state()
+
+        if state is None or refit_bvh is not None:
+            warnings.warn(
+                "Passing state=None or refit_bvh to SensorTiledCamera.update() is deprecated. "
+                "Call SensorTiledCamera.sync_transforms(state) and manage BVHs explicitly with "
+                "newton.geometry.build_bvh_*() / refit_bvh_*() before update().",
+                category=DeprecationWarning,
+                stacklevel=2,
+            )
+            should_refit = True if refit_bvh is None else refit_bvh
+
+            if self.model.shape_count:
+                if self.model.bvh_shapes is None:
+                    build_bvh_shape(self.model, render_state)
+                elif should_refit:
+                    refit_bvh_shape(self.model, render_state)
+
+            if render_state.particle_q is not None and render_state.particle_count:
+                if self.model.bvh_particles is None:
+                    build_bvh_particle(self.model, render_state)
+                elif should_refit:
+                    refit_bvh_particle(self.model, render_state)
+
+        self.sync_transforms(render_state)
 
         self.__render_context.render(
+            self.model,
+            render_state,
             camera_transforms,
             camera_rays,
             color_image,
@@ -216,8 +281,8 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             shape_index_image,
             normal_image,
             albedo_image,
-            refit_bvh=refit_bvh,
             clear_data=clear_data,
+            hdr_color_image=hdr_color_image,
         )
 
     def compute_pinhole_camera_rays(
@@ -228,7 +293,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         Generates rays in camera space (origin at the camera center, direction normalized) for each pixel based on the
         vertical field of view.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.compute_pinhole_camera_rays`` instead.
 
         Args:
@@ -257,7 +322,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.flatten_color_image_to_rgba`` instead.
 
         Args:
@@ -282,7 +347,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
         Arranges ``(world_count * camera_count)`` tiles in a grid. Each tile shows one camera's view of one world.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.flatten_normal_image_to_rgba`` instead.
 
         Args:
@@ -309,7 +374,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         Encodes depth as grayscale: inverts values (closer = brighter) and normalizes to the ``[50, 255]``
         range. Background pixels (no hit) remain black.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.flatten_depth_image_to_rgba`` instead.
 
         Args:
@@ -328,7 +393,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     def assign_random_colors_per_world(self, seed: int = 100):
         """Assign each world a random color, applied to all its shapes.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
 
         Args:
@@ -344,7 +409,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     def assign_random_colors_per_shape(self, seed: int = 100):
         """Assign a random color to each shape.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
 
         Args:
@@ -360,7 +425,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     def create_default_light(self, enable_shadows: bool = True):
         """Create a default directional light oriented at ``(-1, 1, -1)``.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.create_default_light`` instead.
 
         Args:
@@ -379,7 +444,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         Creates a gray checkerboard pattern texture and applies it to all shapes
         in the scene.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes`` instead.
 
         Args:
@@ -396,7 +461,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a color output array for :meth:`update`.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.create_color_image_output`` instead.
 
         Args:
@@ -417,7 +482,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.float32]:
         """Create a depth output array for :meth:`update`.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.create_depth_image_output`` instead.
 
         Args:
@@ -438,7 +503,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a shape-index output array for :meth:`update`.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.create_shape_index_image_output`` instead.
 
         Args:
@@ -459,7 +524,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
         """Create a normal output array for :meth:`update`.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.create_normal_image_output`` instead.
 
         Args:
@@ -480,7 +545,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create an albedo output array for :meth:`update`.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Use ``SensorTiledCamera.utils.create_albedo_image_output`` instead.
 
         Args:
@@ -502,7 +567,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
     def render_context(self) -> RenderContext:
         """Internal Warp raytracing context used by :meth:`update` and buffer helpers.
 
-        .. deprecated::
+        .. deprecated:: 1.1
             Direct access is deprecated and will be removed. Prefer this
             class's public methods, or :attr:`render_config` for
             :class:`RenderConfig` access.

@@ -462,7 +462,7 @@ class RobotComposerSim:
     def run(self):
         if self.do_rendering:
             if hasattr(self.viewer, "register_ui_callback"):
-                self.viewer.register_ui_callback(lambda ui: self.gui(ui), position="side")
+                self.viewer.register_ui_callback(self.gui, position="side")
             while self.viewer.is_running():
                 if not self.viewer.is_paused():
                     self.step()
