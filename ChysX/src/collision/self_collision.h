@@ -112,6 +112,28 @@ public:
     int*       count_device_ptr()       noexcept { return count_.gpu_data(); }
     const int* count_device_ptr() const noexcept { return count_.gpu_data(); }
 
+    // ---- broadphase EF candidates (read-only view on `bvh_`) ---------
+    //
+    // Exposed so that `chysx::collision::UntangleDetector` (or any
+    // future second narrow-phase pass) can reuse the BVH's edge-vs-
+    // face candidate list without re-running the broadphase.  Pointers
+    // are valid after the most recent `detect()` call and remain so
+    // until the next `bind_topology(...)` / `reserve(...)` invalidates
+    // the BVH allocation.
+    int                ef_candidates_max() const noexcept { return max_ef_candidates_; }
+    const math::Vec2i* ef_candidates_pairs_dev() const noexcept {
+        return bvh_.query_pairs_dev();
+    }
+    math::Vec2i*       ef_candidates_pairs_dev() noexcept {
+        return bvh_.query_pairs_dev();
+    }
+    const int*         ef_candidates_count_dev() const noexcept {
+        return bvh_.query_count_dev();
+    }
+    int*               ef_candidates_count_dev() noexcept {
+        return bvh_.query_count_dev();
+    }
+
 private:
     int max_contacts_ = 0;
     int max_ef_candidates_ = 0;

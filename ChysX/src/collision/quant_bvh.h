@@ -149,7 +149,8 @@ public:
     int n_leaves() const noexcept { return n_leaves_; }
     int max_query_pairs() const noexcept { return max_query_pairs_; }
 
-    int*  query_count_dev() noexcept { return query_count_.gpu_data(); }
+    int*       query_count_dev() noexcept       { return query_count_.gpu_data(); }
+    const int* query_count_dev() const noexcept { return query_count_.gpu_data(); }
     const math::Vec2i* query_pairs_dev() const noexcept { return query_pairs_.gpu_data(); }
     math::Vec2i* query_pairs_dev() noexcept { return query_pairs_.gpu_data(); }
 

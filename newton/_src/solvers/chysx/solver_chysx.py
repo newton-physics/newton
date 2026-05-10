@@ -44,6 +44,29 @@ from ...sim import Contacts, Control, Model, State
 from ..solver import SolverBase
 
 
+def _quat_to_matrix(q: np.ndarray) -> np.ndarray:
+    """Convert a Newton-style ``(x, y, z, w)`` quaternion into a 3x3
+    rotation matrix.
+
+    Used by the static-shape contact registration path to pull the
+    world-space orientation of a Newton ``shape_transform`` into the
+    three orthonormal column vectors chysx's ``BoxShape`` expects.
+    """
+
+    x, y, z, w = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+    xx, yy, zz = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+    return np.array(
+        [
+            [1.0 - 2.0 * (yy + zz),       2.0 * (xy - wz),       2.0 * (xz + wy)],
+            [      2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz),       2.0 * (yz - wx)],
+            [      2.0 * (xz - wy),       2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
+        ],
+        dtype=np.float32,
+    )
+
+
 class SolverChysX(SolverBase):
     """Plug the toy ``chysx`` CUDA backend into Newton.
 
@@ -152,6 +175,76 @@ class SolverChysX(SolverBase):
             BVH query saturates this cap (the candidate list silently
             truncates), narrow-phase will miss real contacts even
             though its own buffer has room to spare.
+        static_contact_enabled: When ``True``, scan ``model`` for
+            world-static plane (``GeoType.PLANE``) and box
+            (``GeoType.BOX``) shapes (``shape_body == -1``) at
+            construction time and register each one with chysx's
+            static-shape contact set.  Each step the simulator runs
+            a per-particle DCD against every registered primitive,
+            picks the deepest penetration, and adds the resulting
+            penalty contribution directly to the diagonal of the
+            implicit-Euler Hessian and to the right-hand side of the
+            linear system.  No off-diagonal sidecar is needed, so
+            adding ground / table primitives does not invalidate the
+            captured PCG graph.
+        static_contact_thickness: Contact distance threshold ``h``
+            for static-shape contacts (same units as positions).  A
+            particle within ``h`` of any registered plane / box
+            becomes a contact with penetration depth ``h - dist``.
+            Use a small value comparable to the cloth's typical edge
+            length (e.g. ``5e-3`` m for a 1 m square cloth at
+            21x21 resolution).  Required when
+            ``static_contact_enabled=True``.
+        static_contact_stiffness: Per-contact penalty stiffness ``k``
+            [N/m] for static-shape contacts.  Default ``1e4`` is a
+            reasonable starting value for a stiff ground that
+            shouldn't visibly compress; raise for an even harder
+            response at the cost of PCG conditioning.
+        static_contact_friction: Viscous tangential friction
+            coefficient ``μ_v`` [N·s/m] for static-shape contacts.
+            For every active contact the implicit-Euler Hessian
+            picks up an extra block ``(μ_v / dt) * (I - n n^T)``
+            that drives the tangential velocity towards zero --
+            visually equivalent to dry friction without the cost of
+            a Coulomb-cone projection.  Zero (default) disables
+            friction; values around ``surface_density * area``
+            give visibly "grippy" cloth.
+        untangle_enabled: When ``True``, run the 5-vertex
+            edge-face tangle pass after proximity self-collision.
+            For every (edge, face) pair where the edge has actually
+            crossed through the face -- detected via a per-pair
+            ray-triangle intersection -- a 5-vertex penalty contact
+            (two edge endpoints + three face vertices) is emitted
+            and pushes the edge back to the un-crossed side along
+            the cross-product of the two face normals.  Reuses the
+            BVH the proximity pass already built for its broadphase,
+            so requires ``self_collision_enabled=True``.  Off by
+            default; cuda-cloth uses it for the ``Untangle`` case
+            where the rest pose is intentionally tangled.  Diagonal-
+            only contribution to the implicit-Euler linear system,
+            so toggling this on / off never invalidates the captured
+            PCG graph.
+        untangle_thickness: Per-tangle restoring depth (world units)
+            applied as a constant penalty for every detected EF
+            crossing.  Larger values produce stronger restoring
+            forces; cuda-cloth's Untangle case uses ``1e-2`` for a
+            1 m cloth.  Required when ``untangle_enabled=True``.
+        untangle_stiffness: Per-tangle penalty stiffness ``k`` [N/m].
+            Defaults to ``2 * self_collision_stiffness`` default
+            (``2e3``) to mirror style3d's ``stiff_ef / stiff_vf = 2.0``
+            ratio (see ``newton/_src/solvers/style3d/collision/
+            collision.py``).  The 2x split matters: an EF / proximity
+            ratio < 1 lets the proximity term hold the cloth in the
+            tangled equilibrium and untangle never recovers.
+            cuda-cloth's UntangleCase uses ``k = 100`` for both -- a
+            1:1 ratio is OK only when the proximity branch sees no
+            real contacts (which is the case for that scene) and is
+            unsafe for general drape / drop scenarios.
+        untangle_max_contacts_factor: Multiplier on ``particle_count``
+            used to size the device-side untangle 5-vertex contact
+            buffer.  Default ``8`` matches the proximity narrow-phase
+            cap, which is a loose-but-safe upper bound (the typical
+            steady-state tangle count is much lower).
     """
 
     def __init__(
@@ -172,6 +265,14 @@ class SolverChysX(SolverBase):
         self_collision_stiffness: float = 1.0e3,
         self_collision_max_contacts_factor: int = 8,
         self_collision_max_ef_candidates_factor: int = 32,
+        static_contact_enabled: bool = False,
+        static_contact_thickness: float = 0.0,
+        static_contact_stiffness: float = 1.0e4,
+        static_contact_friction: float = 0.0,
+        untangle_enabled: bool = False,
+        untangle_thickness: float = 0.0,
+        untangle_stiffness: float = 2.0e3,
+        untangle_max_contacts_factor: int = 8,
     ):
         super().__init__(model=model)
 
@@ -338,6 +439,136 @@ class SolverChysX(SolverBase):
                 narrow_cap,
             )
             self._sim.set_self_collision_max_contacts(narrow_cap, ef_cap)
+
+        # Untangle (5-vertex EF tangle) -- consumes the BVH the
+        # proximity pass just built, so requires
+        # ``self_collision_enabled=True``.  Same allocation pattern as
+        # the proximity narrow-phase: cap defaults to 8 * particle
+        # count which is loose but safe.
+        if untangle_enabled and model.particle_count > 0:
+            if not self_collision_enabled:
+                raise ValueError(
+                    "SolverChysX(untangle_enabled=True) requires "
+                    "self_collision_enabled=True; the untangle pass "
+                    "reuses the BVH built by the proximity self-"
+                    "collision detector."
+                )
+            if untangle_thickness <= 0.0:
+                raise ValueError(
+                    "SolverChysX(untangle_enabled=True) requires "
+                    "untangle_thickness > 0; cuda-cloth's Untangle "
+                    "case uses ~1e-2 for a 1 m cloth."
+                )
+            self._sim.set_untangle_enabled(True)
+            self._sim.set_untangle_thickness(float(untangle_thickness))
+            self._sim.set_untangle_stiffness(float(untangle_stiffness))
+            untangle_cap = max(
+                int(untangle_max_contacts_factor) * int(model.particle_count),
+                1024,
+            )
+            self._sim.set_untangle_max_contacts(untangle_cap)
+
+        # Static-shape contact: scan the model for world-static (body == -1)
+        # plane / box shapes and register them with chysx.  This wires
+        # cloth ⇄ ground / table contact straight into the implicit-Euler
+        # linear system (penalty contributions land on A's diagonal block
+        # and on the RHS — no off-diagonal sidecar, so the captured PCG
+        # graph stays valid frame-to-frame).
+        if static_contact_enabled and model.particle_count > 0:
+            if static_contact_thickness <= 0.0:
+                raise ValueError(
+                    "SolverChysX(static_contact_enabled=True) requires "
+                    "static_contact_thickness > 0; pick a value comparable "
+                    "to the cloth's typical edge length (e.g. 5e-3 for a "
+                    "1 m square cloth at 21x21 resolution)."
+                )
+            self._sim.set_static_contact_thickness(float(static_contact_thickness))
+            self._sim.set_static_contact_stiffness(float(static_contact_stiffness))
+            self._sim.set_static_contact_friction(float(static_contact_friction))
+            self._register_static_shapes_from_model()
+
+    def _register_static_shapes_from_model(self) -> None:
+        """Walk ``self.model.shape_*`` and push every world-static plane /
+        box shape into chysx's :class:`StaticContactSet`.
+
+        Newton encodes a plane as ``GeoType.PLANE`` with the surface
+        normal stored along the local +Z axis of ``shape_transform``;
+        the world-space normal is therefore ``rotate(quat, +Z)`` and
+        the offset ``d`` such that ``dot(n, x) + d == 0`` is
+        ``-dot(n, pos)``.
+
+        Boxes (``GeoType.BOX``) carry their world-space transform in
+        ``shape_transform`` (position + quaternion) and their
+        half-extents in ``shape_scale``.  We extract the rotation
+        matrix's three columns as the chysx ``ex / ey / ez`` axes.
+        """
+
+        from ...geometry.types import GeoType  # noqa: PLC0415
+
+        model = self.model
+        if model.shape_count == 0:
+            return
+
+        shape_type = model.shape_type.numpy()
+        shape_body = (
+            model.shape_body.numpy()
+            if getattr(model, "shape_body", None) is not None
+            else np.full(model.shape_count, -1, dtype=np.int32)
+        )
+        shape_transform = model.shape_transform.numpy().reshape(model.shape_count, 7)
+        shape_scale = model.shape_scale.numpy().reshape(model.shape_count, 3)
+
+        n_planes = 0
+        n_boxes = 0
+        for s in range(model.shape_count):
+            if int(shape_body[s]) != -1:
+                # Skip dynamic shapes: chysx's StaticContactSet only
+                # handles primitives whose pose is constant across the
+                # simulation.  Moving rigid bodies would require us to
+                # re-upload the shape table every step, which we don't
+                # support yet.
+                continue
+            t = int(shape_type[s])
+            xform = shape_transform[s]
+            pos = xform[:3].astype(np.float32)
+            quat = xform[3:7].astype(np.float32)  # (x, y, z, w)
+            R = _quat_to_matrix(quat)
+            if t == int(GeoType.PLANE):
+                # Newton: plane normal is the local +Z axis of
+                # shape_transform.  World-space n = R · (0, 0, 1) =
+                # R[:, 2].  Plane equation dot(n, x) + d == 0 with
+                # x = pos on the plane gives d = -dot(n, pos).
+                n = R[:, 2]
+                d = float(-np.dot(n, pos))
+                self._sim.add_static_plane(
+                    n=np.ascontiguousarray(n, dtype=np.float32),
+                    d=d,
+                )
+                n_planes += 1
+            elif t == int(GeoType.BOX):
+                self._sim.add_static_box(
+                    center=np.ascontiguousarray(pos, dtype=np.float32),
+                    half_ext=np.ascontiguousarray(shape_scale[s], dtype=np.float32),
+                    ex=np.ascontiguousarray(R[:, 0], dtype=np.float32),
+                    ey=np.ascontiguousarray(R[:, 1], dtype=np.float32),
+                    ez=np.ascontiguousarray(R[:, 2], dtype=np.float32),
+                )
+                n_boxes += 1
+            # Other shape types (sphere / capsule / mesh / ...) are
+            # silently skipped for now — chysx's StaticContactSet only
+            # supports plane + box primitives.
+
+        if n_planes == 0 and n_boxes == 0:
+            import warnings  # noqa: PLC0415
+
+            warnings.warn(
+                "SolverChysX(static_contact_enabled=True) found no "
+                "world-static plane / box shapes in the model; cloth "
+                "will fall through any other geometry.  Use "
+                "ModelBuilder.add_ground_plane() / add_shape_box(body=-1, "
+                "...) to register obstacles.",
+                stacklevel=2,
+            )
 
     # ---- pin animation ------------------------------------------------
 

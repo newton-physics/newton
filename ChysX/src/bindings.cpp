@@ -9,6 +9,7 @@
 
 #include "cloth/cloth_material.h"
 #include "cloth/cloth_simulator.h"
+#include "collision/static_contact.h"
 #include "math/vec.cuh"
 
 namespace py = pybind11;
@@ -362,6 +363,64 @@ past these caps silently drops the newest pairs; size generously
             },
             py::arg("cuda_stream") = 0,
             "Number of contacts emitted by the most recent step (synchronous read).")
+        // ---- untangle (5-vertex EF tangle, ray-tri intersection) ----
+        .def("set_untangle_enabled",
+             &chysx::cloth::ClothSimulator::set_untangle_enabled,
+             py::arg("enabled"),
+             R"pbdoc(
+Toggle the 5-vertex EF tangle / untangle pass.  Reuses the BVH built
+by the proximity self-collision pass, so requires
+``self_collision_enabled = True`` to do anything.  Pushes apart edges
+that have already pierced through faces; complements the proximity
+pass which only fires for not-yet-crossed pairs.
+)pbdoc")
+        .def("untangle_enabled",
+             &chysx::cloth::ClothSimulator::untangle_enabled,
+             "True if the untangle pass is currently enabled.")
+        .def("set_untangle_thickness",
+             &chysx::cloth::ClothSimulator::set_untangle_thickness,
+             py::arg("thickness"),
+             R"pbdoc(
+Set the per-tangle restoring depth (world units).  Applied as a
+constant penalty depth for every (edge, face) pair that intersects.
+Larger values produce a stronger untangle force per crossing; the
+proximity self-collision thickness is what controls *when* a pair
+becomes a contact, so it's fine to use a larger untangle thickness
+than the proximity thickness.
+)pbdoc")
+        .def("untangle_thickness",
+             &chysx::cloth::ClothSimulator::untangle_thickness,
+             "Currently configured untangle restoring depth.")
+        .def("set_untangle_stiffness",
+             &chysx::cloth::ClothSimulator::set_untangle_stiffness,
+             py::arg("stiffness"),
+             R"pbdoc(
+Set the untangle penalty stiffness ``k`` [N/m].  cuda-cloth's
+Untangle case uses ``k = 100`` for the EF (5-vertex) path.
+)pbdoc")
+        .def("untangle_stiffness",
+             &chysx::cloth::ClothSimulator::untangle_stiffness,
+             "Currently configured untangle penalty stiffness.")
+        .def("set_untangle_max_contacts",
+             &chysx::cloth::ClothSimulator::set_untangle_max_contacts,
+             py::arg("max_contacts"),
+             R"pbdoc(
+Allocate (or grow) the untangle 5-vertex contact buffer to hold up
+to ``max_contacts`` simultaneous tangles.  Pass ``0`` to default to
+the proximity-self-collision cap (typical worst case is
+"every proximity contact also tangled", which is loose but safe).
+)pbdoc")
+        .def("untangle_max_contacts",
+             &chysx::cloth::ClothSimulator::untangle_max_contacts,
+             "Currently allocated untangle contact buffer capacity.")
+        .def(
+            "untangle_count",
+            [](chysx::cloth::ClothSimulator& s,
+               std::uintptr_t cuda_stream) {
+                return s.untangle_detector().count(cuda_stream);
+            },
+            py::arg("cuda_stream") = 0,
+            "Number of tangle contacts emitted by the most recent step (synchronous read).")
         .def("set_pcg_iterations",
              &chysx::cloth::ClothSimulator::set_pcg_iterations,
              py::arg("max_iter"),
@@ -413,6 +472,100 @@ don't call it inside the simulation loop.  The return is a snapshot
 of whatever was in those buffers when ``step()`` finished — perfect
 for verifying matrix symmetry, PSD-ness, and PCG residual offline.
 )pbdoc")
+        // ---- static-shape contact (cloth ⇄ planes / boxes) ----------
+        .def(
+            "add_static_plane",
+            [](chysx::cloth::ClothSimulator& s,
+               py::array_t<float, py::array::c_style | py::array::forcecast> n,
+               float d) {
+                if (n.ndim() != 1 || n.shape(0) != 3) {
+                    throw std::invalid_argument(
+                        "ClothSimulator.add_static_plane: n must be a "
+                        "(3,) float32 vector");
+                }
+                chysx::collision::PlaneShape p;
+                p.n = chysx::math::Vec3f(n.at(0), n.at(1), n.at(2));
+                p.d = d;
+                s.add_static_plane(p);
+            },
+            py::arg("n"),
+            py::arg("d"),
+            R"pbdoc(
+Add a static plane primitive ``dot(n, x) + d == 0`` to the contact
+set.  ``n`` must point into the half-space the cloth should stay in
+(the "outside"); for a ground at ``z = h`` use ``n = (0, 0, 1)`` and
+``d = -h``.
+)pbdoc")
+        .def(
+            "add_static_box",
+            [](chysx::cloth::ClothSimulator& s,
+               py::array_t<float, py::array::c_style | py::array::forcecast> center,
+               py::array_t<float, py::array::c_style | py::array::forcecast> half_ext,
+               py::array_t<float, py::array::c_style | py::array::forcecast> ex,
+               py::array_t<float, py::array::c_style | py::array::forcecast> ey,
+               py::array_t<float, py::array::c_style | py::array::forcecast> ez) {
+                auto check_v3 = [](auto& a, const char* name) {
+                    if (a.ndim() != 1 || a.shape(0) != 3) {
+                        throw std::invalid_argument(
+                            std::string("ClothSimulator.add_static_box: ") +
+                            name + " must be a (3,) float32 vector");
+                    }
+                };
+                check_v3(center,   "center");
+                check_v3(half_ext, "half_ext");
+                check_v3(ex,       "ex");
+                check_v3(ey,       "ey");
+                check_v3(ez,       "ez");
+                chysx::collision::BoxShape b;
+                b.center   = chysx::math::Vec3f(center.at(0), center.at(1), center.at(2));
+                b.half_ext = chysx::math::Vec3f(half_ext.at(0), half_ext.at(1), half_ext.at(2));
+                b.ex       = chysx::math::Vec3f(ex.at(0), ex.at(1), ex.at(2));
+                b.ey       = chysx::math::Vec3f(ey.at(0), ey.at(1), ey.at(2));
+                b.ez       = chysx::math::Vec3f(ez.at(0), ez.at(1), ez.at(2));
+                s.add_static_box(b);
+            },
+            py::arg("center"),
+            py::arg("half_ext"),
+            py::arg("ex"),
+            py::arg("ey"),
+            py::arg("ez"),
+            R"pbdoc(
+Add a static oriented box primitive.  ``(ex, ey, ez)`` are the three
+unit columns of the box's world-space rotation; an axis-aligned box
+uses identity (``ex=(1,0,0)``, ``ey=(0,1,0)``, ``ez=(0,0,1)``).
+``half_ext`` are the half-extents along ``(ex, ey, ez)``.
+)pbdoc")
+        .def("clear_static_shapes",
+             &chysx::cloth::ClothSimulator::clear_static_shapes,
+             "Drop every previously added static plane / box.")
+        .def("set_static_contact_thickness",
+             &chysx::cloth::ClothSimulator::set_static_contact_thickness,
+             py::arg("thickness"),
+             "Contact distance threshold ``h`` in world units.")
+        .def("static_contact_thickness",
+             &chysx::cloth::ClothSimulator::static_contact_thickness,
+             "Currently configured static-shape contact thickness.")
+        .def("set_static_contact_stiffness",
+             &chysx::cloth::ClothSimulator::set_static_contact_stiffness,
+             py::arg("stiffness"),
+             "Per-contact penalty stiffness ``k`` [N/m].")
+        .def("static_contact_stiffness",
+             &chysx::cloth::ClothSimulator::static_contact_stiffness,
+             "Currently configured static-shape contact stiffness.")
+        .def("set_static_contact_friction",
+             &chysx::cloth::ClothSimulator::set_static_contact_friction,
+             py::arg("mu_v"),
+             "Viscous tangential friction coefficient ``μ_v`` [N·s/m].  "
+             "Zero disables friction.")
+        .def("static_contact_friction",
+             &chysx::cloth::ClothSimulator::static_contact_friction,
+             "Currently configured static-shape viscous friction coefficient.")
+        .def("static_plane_count",
+             &chysx::cloth::ClothSimulator::static_plane_count,
+             "Number of registered static planes.")
+        .def("static_box_count",
+             &chysx::cloth::ClothSimulator::static_box_count,
+             "Number of registered static boxes.")
         .def_property_readonly(
             "material",
             [](chysx::cloth::ClothSimulator& s) -> chysx::cloth::ClothMaterial& {

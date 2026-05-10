@@ -221,6 +221,11 @@ __global__ void cull_ef_to_vfee_kernel(
     const int n_raw = *ef_count;
     const int n = (n_raw < ef_max) ? n_raw : ef_max;
     if (idx >= n) return;
+    if (idx ==0 && ef_count[0] > ef_max){
+        printf("ef_count[0] > ef_max\n");
+        printf("ef_count[0]: %d\n", ef_count[0]);
+        printf("ef_max: %d\n", ef_max);
+    }
 
     const math::Vec2i ef = ef_pairs[idx];
     const int eid = ef.x;

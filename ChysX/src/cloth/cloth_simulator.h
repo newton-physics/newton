@@ -25,11 +25,14 @@
 
 #include "../collision/mesh_topology.h"
 #include "../collision/self_collision.h"
+#include "../collision/static_contact.h"
+#include "../collision/untangle.h"
 #include "../constraint/bending_constraint.h"
 #include "../constraint/pin_constraint.h"
 #include "../constraint/self_collision_constraint.h"
 #include "../constraint/spring_constraint.h"
 #include "../constraint/triangle_stretch_constraint.h"
+#include "../constraint/untangle_constraint.h"
 #include "../math/matrix.cuh"
 #include "../math/vec.cuh"
 #include "../memory/cuda_array.h"
@@ -249,6 +252,128 @@ public:
         return self_collision_detector_;
     }
 
+    // ---- untangle (5-vertex EF tangle) -------------------------------
+    //
+    // Penalty constraint that pushes apart edge-face pairs that have
+    // already crossed (the proximity self-collision above only fires
+    // for not-yet-crossed pairs at distance < thickness; once an edge
+    // pokes all the way through a face, the proximity test sees zero
+    // distance to anything and gives up).  Reuses the BVH the
+    // proximity detector already built for its broadphase, then runs
+    // a per-EF-candidate ray-triangle intersection inside its own
+    // kernel; emit-on-pierce contacts have arity 5 (two edge endpoints
+    // + three face vertices) and contribute only to the diagonal of
+    // the implicit-Euler Hessian and to the RHS, never to the off-
+    // diagonal SpMV sidecar.  Captured PCG graphs therefore stay
+    // valid even as the tangle set churns frame-to-frame.
+    //
+    // Untangle requires the proximity detector to be enabled in the
+    // same step (it consumes the BVH's EF-candidate stream).  When
+    // `self_collision_enabled() == false` the untangle pass is
+    // silently skipped.
+    void set_untangle_enabled(bool enabled) noexcept {
+        untangle_enabled_ = enabled;
+    }
+    bool untangle_enabled() const noexcept { return untangle_enabled_; }
+
+    void set_untangle_thickness(float t) noexcept {
+        untangle_thickness_ = t;
+    }
+    float untangle_thickness() const noexcept { return untangle_thickness_; }
+
+    void set_untangle_stiffness(float k) noexcept {
+        untangle_.set_stiffness(k);
+    }
+    float untangle_stiffness() const noexcept { return untangle_.stiffness(); }
+
+    // Allocate the untangle detector's 5-vertex contact buffers.
+    // Defaults to the same cap as `self_collision_max_contacts()`
+    // when called with `max_contacts <= 0` (the typical worst case
+    // is "every proximity contact is also tangled", which is loose
+    // but safe).
+    void set_untangle_max_contacts(int max_contacts) {
+        if (max_contacts <= 0)
+            max_contacts = self_collision_detector_.max_contacts();
+        if (max_contacts > 0) untangle_detector_.reserve(max_contacts);
+    }
+    int untangle_max_contacts() const noexcept {
+        return untangle_detector_.max_contacts();
+    }
+
+    collision::UntangleDetector& untangle_detector() noexcept {
+        return untangle_detector_;
+    }
+    const collision::UntangleDetector& untangle_detector() const noexcept {
+        return untangle_detector_;
+    }
+
+    // ---- static-shape contact (cloth ⇄ planes / boxes) ---------------
+    //
+    // Penalty contact between cloth particles and a small set of
+    // *static* rigid primitives (oriented planes + oriented boxes,
+    // think ground / table / wall).  Contributions land on the
+    // diagonal of the implicit-Euler Hessian and on the RHS only —
+    // see `chysx::collision::StaticContactSet` for the math.  No
+    // off-diagonal SpMV sidecar (every contact is single-particle),
+    // so adding / removing primitives never invalidates the captured
+    // PCG graph.
+    //
+    // Usage:
+    //
+    //     sim.add_static_plane({{0, 0, 1}, 0.0f});  // ground at z=0
+    //     sim.add_static_box({{0, 0, 0.5f}, {1, 1, 0.05f},
+    //                        {1,0,0}, {0,1,0}, {0,0,1}});
+    //     sim.set_static_contact_thickness(0.005f);
+    //     sim.set_static_contact_stiffness(1.0e4f);
+    //
+    // Set thickness / stiffness once; call add_static_plane /
+    // add_static_box at setup time (or between scenes).
+    void add_static_plane(const collision::PlaneShape& p) {
+        static_contacts_.add_plane(p);
+    }
+    void add_static_box(const collision::BoxShape& b) {
+        static_contacts_.add_box(b);
+    }
+    void clear_static_shapes() { static_contacts_.clear(); }
+
+    void set_static_contact_thickness(float t) noexcept {
+        static_contacts_.set_thickness(t);
+    }
+    float static_contact_thickness() const noexcept {
+        return static_contacts_.thickness();
+    }
+    void set_static_contact_stiffness(float k) noexcept {
+        static_contacts_.set_stiffness(k);
+    }
+    float static_contact_stiffness() const noexcept {
+        return static_contacts_.stiffness();
+    }
+    // Viscous tangential friction coefficient `μ_v` [N·s/m].  Adds
+    // `(μ_v / dt) * (I - n n^T)` to the per-particle Hessian block of
+    // every active static contact, producing implicit-Euler velocity-
+    // proportional friction without needing to solve the full Coulomb
+    // cone.  Zero (default) disables friction.
+    void set_static_contact_friction(float mu_v) noexcept {
+        static_contacts_.set_friction(mu_v);
+    }
+    float static_contact_friction() const noexcept {
+        return static_contacts_.friction();
+    }
+
+    int static_plane_count() const noexcept {
+        return static_contacts_.n_planes();
+    }
+    int static_box_count() const noexcept {
+        return static_contacts_.n_boxes();
+    }
+
+    collision::StaticContactSet& static_contacts() noexcept {
+        return static_contacts_;
+    }
+    const collision::StaticContactSet& static_contacts() const noexcept {
+        return static_contacts_;
+    }
+
     // ---- pin target update (no re-bind) -------------------------------
     //
     // Cheap per-frame update of the pinned particles' target world
@@ -371,6 +496,11 @@ private:
     collision::SelfCollisionDetector      self_collision_detector_;
     bool                                  self_collision_enabled_ = false;
     float                                 self_collision_thickness_ = 0.0f;
+    constraint::UntangleConstraint        untangle_;
+    collision::UntangleDetector           untangle_detector_;
+    bool                                  untangle_enabled_ = false;
+    float                                 untangle_thickness_ = 0.0f;
+    collision::StaticContactSet           static_contacts_;
 
     // ---- implicit-Euler PCG step working state ----------------------
     //

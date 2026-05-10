@@ -334,8 +334,10 @@ void ClothSimulator::set_mesh(const math::Vec3i* host_triangles,
         const int n_verts_topology = max_v + 1;
         mesh_topology_.build(tri_vec, n_verts_topology);
         self_collision_detector_.bind_topology(&mesh_topology_);
+        untangle_detector_.bind_topology(&mesh_topology_);
     } else {
         self_collision_detector_.bind_topology(nullptr);
+        untangle_detector_.bind_topology(nullptr);
     }
 
     // Mesh changed => topology must be rebuilt next step.
@@ -734,6 +736,42 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
                 self_collision_detector_, rhs_span, cuda_stream);
         }
 
+        // Untangle (5-vertex EF tangle).  Reuses the BVH that
+        // self-collision just built/queried for its broadphase --
+        // the EF candidate list lives on
+        // `self_collision_detector_.ef_candidates_*` and we hand
+        // those device pointers straight into the cull kernel.
+        // Diagonal-only, so no SpMV-sidecar registration; the
+        // gradient half lands here, the Hessian half in step block 5.
+        if (untangle_enabled_ &&
+            self_collision_enabled_ &&
+            untangle_thickness_ > 0.0f &&
+            untangle_.stiffness() > 0.0f &&
+            mesh_topology_.valid()) {
+            CHYSX_NVTX_RANGE_COLOUR("step::untangle_detect", 0xffe67e22);
+            untangle_detector_.detect(
+                x_n_span,
+                self_collision_detector_.ef_candidates_pairs_dev(),
+                self_collision_detector_.ef_candidates_count_dev(),
+                self_collision_detector_.ef_candidates_max(),
+                untangle_thickness_,
+                cuda_stream);
+            untangle_.accumulate_gradient(
+                untangle_detector_, rhs_span, cuda_stream);
+        }
+
+        // Static-shape contact (cloth ⇄ planes / boxes).  Detect at
+        // x_n (same rationale as self-collision) and scatter the
+        // penalty gradient onto the RHS now; the diagonal half is
+        // baked later in step block 5, after H_.set_zero().
+        if (static_contacts_.active()) {
+            CHYSX_NVTX_RANGE_COLOUR("step::static_contact_detect",
+                                    0xffc0392b);
+            static_contacts_.detect(x_n_.gpu_data(), n, cuda_stream);
+            static_contacts_.accumulate_gradient(
+                rhs_.gpu_data(), n, cuda_stream);
+        }
+
         // Now rhs[i] = grad E(x_n).  Fold in the inertial RHS to get
         //   rhs <- (M/dt^2)(x_tilde - x_n) - grad E(x_n)
         //        = M*v/dt + M*g            - grad E(x_n).
@@ -803,6 +841,33 @@ void ClothSimulator::step(float dt, std::uintptr_t cuda_stream) {
                 collision::bake_contact_diag(
                     H_.diag.gpu_data(), n, diag_op, 1.0f, cuda_stream);
             }
+        }
+
+        // Untangle Hessian diagonal: 5-vertex tangles only land on
+        // the per-particle diagonal block (no off-diagonal sidecar by
+        // design — see `UntangleConstraint`'s class header).  Skipped
+        // silently when untangle is disabled or stiffness == 0; the
+        // detector run in step block 3 has already populated the
+        // device-side counter and result buffers.
+        if (untangle_enabled_ &&
+            self_collision_enabled_ &&
+            untangle_thickness_ > 0.0f &&
+            untangle_.stiffness() > 0.0f &&
+            mesh_topology_.valid()) {
+            CHYSX_NVTX_RANGE_COLOUR("step::untangle_diag", 0xffe67e22);
+            untangle_.bake_diag(
+                untangle_detector_, H_.diag.gpu_data(), n, cuda_stream);
+        }
+
+        // Static-shape contact diagonal: baked here so the per-particle
+        // 3x3 block of A becomes contact-aware and the block-Jacobi
+        // preconditioner the PCG iterates with handles stiff
+        // ground / table contacts cleanly.  Skipped silently if no
+        // primitives were registered or stiffness == 0.
+        if (static_contacts_.active()) {
+            CHYSX_NVTX_RANGE_COLOUR("step::static_contact_diag",
+                                    0xffc0392b);
+            static_contacts_.bake_diag(H_.diag.gpu_data(), n, dt, cuda_stream);
         }
     }
 
