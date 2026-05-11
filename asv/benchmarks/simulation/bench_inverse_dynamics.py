@@ -108,7 +108,9 @@ class _InverseDynamicsBenchmark:
 
 
 class FastInverseDynamics(_InverseDynamicsBenchmark):
-    """Time ``eval_inverse_dynamics(EvalType.ALL)`` on a single Franka arm."""
+    """Time ``eval_inverse_dynamics(EvalType.ALL)`` and
+    ``eval_inverse_dynamics_force`` on a model replicating the Franka arm
+    across ``WORLD_COUNT`` worlds (default 1024)."""
 
     repeat = 6
 
