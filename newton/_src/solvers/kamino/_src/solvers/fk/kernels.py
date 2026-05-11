@@ -7,11 +7,13 @@ from functools import cache
 
 import warp as wp
 
-from ...core.joints import JointActuationType
+from ...core.joints import JointActuationType, JointDoFType
 from ...core.math import (
+    TWO_PI,
     G_of,
     quat_left_jacobian_inverse,
     quat_log,
+    squared_norm,
     unit_quat_apply,
     unit_quat_apply_jacobian,
     unit_quat_conj_apply,
@@ -19,6 +21,7 @@ from ...core.math import (
     unit_quat_conj_to_rotation_matrix,
 )
 from ...core.types import vec6f
+from ...kinematics.joints import get_joint_coords_mapping_function
 from ...linalg.sparse_matrix import BlockDType
 from .types import FKJointDoFType
 
@@ -28,8 +31,11 @@ from .types import FKJointDoFType
 
 __all__ = [
     "_apply_line_search_step",
+    "_correct_actuator_coords",
+    "_eval_actuator_coords",
     "_eval_body_velocities",
     "_eval_fk_actuated_dofs_or_coords",
+    "_eval_incremental_target_actuator_coords",
     "_eval_linear_combination",
     "_eval_position_control_transformations",
     "_eval_rhs",
@@ -43,10 +49,12 @@ __all__ = [
     "_reset_state",
     "_reset_state_base_q",
     "_update_cg_tolerance_kernel",
+    "create_1d_tile_based_kernels",
+    "create_2d_tile_based_kernels",
     "create_eval_joint_constraints_jacobian_kernel",
     "create_eval_joint_constraints_kernel",
     "create_eval_joint_constraints_sparse_jacobian_kernel",
-    "create_tile_based_kernels",
+    "create_eval_min_num_iterations_kernel",
     "read_quat_from_array",
 ]
 
@@ -73,11 +81,14 @@ class block_type(BlockDType(dtype=wp.float32, shape=(7,)).warp_type):
 
 
 @wp.func
-def read_quat_from_array(array: wp.array[wp.float32], offset: int) -> wp.quatf:
+def read_quat_from_array(array: wp.array[wp.float32], offset: int, normalize: bool) -> wp.quatf:
     """
     Utility function to read a quaternion from a flat array
     """
-    return wp.quatf(array[offset], array[offset + 1], array[offset + 2], array[offset + 3])
+    q = wp.quatf(array[offset], array[offset + 1], array[offset + 2], array[offset + 3])
+    if normalize:
+        return wp.normalize(q)
+    return q
 
 
 ###
@@ -118,8 +129,10 @@ def _reset_state_base_q(
     # Inputs
     base_joint_id: wp.array[wp.int32],
     base_q: wp.array[wp.transformf],
+    joints_bid_F: wp.array[wp.int32],
     joints_X: wp.array[wp.mat33f],
     joints_B_r_B: wp.array[wp.vec3f],
+    joints_F_r_F: wp.array[wp.vec3f],
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q_0: wp.array[wp.transformf],
@@ -134,8 +147,10 @@ def _reset_state_base_q(
     Inputs:
         base_joint_id: Base joint id per world (-1 = None)
         base_q: Base body pose per world, in base joint coordinates
+        joints_bid_F: Joint follower body id
         joints_X: Joint frame (local axes, valid both on base and follower)
         joints_B_r_B: Joint local position on base body
+        joints_F_r_F: Joint local position on follower body
         num_bodies: Num bodies per world
         first_body_id: First body id per world
         bodies_q_0: Reference body poses
@@ -155,20 +170,27 @@ def _reset_state_base_q(
 
         # Read memory
         base_q_wd = base_q[wd_id]
+        bid_F = joints_bid_F[base_jt_id]
         X = joints_X[base_jt_id]
-        x = joints_B_r_B[base_jt_id]
+        x_B = joints_B_r_B[base_jt_id]
+        x_F = joints_F_r_F[base_jt_id]
+        body_q_F_0 = bodies_q_0[bid_F]
 
-        # Compute transformation that maps the reference pose of the base body (follower of the base joint)
-        # to the pose corresponding by base_q. Note: we make use of the fact that initial body orientations
-        # are the identity (a more complex formula would needed otherwise)
+        # Compute pose of the base body (follower of the base joint) given current joint coordinates
+        # Note: the relative transform from base to follower can be written
+        # t_jt = X^T * R_B^T * (c_F + R_F * x_F - c_B - R_B * x_B)
+        # q_jt = X^T * R_B^T * R_F * X
+        # We invert these equations, using R_B = I and c_B = 0 (base body = world)
         t_jt = wp.transform_get_translation(base_q_wd)
         q_jt = wp.transform_get_rotation(base_q_wd)
         q_X = wp.quat_from_matrix(X)
-        q_tot = q_X * q_jt * wp.quat_inverse(q_X)
-        t_tot = x - wp.quat_rotate(q_tot, x) + wp.quat_rotate(q_X, t_jt)
-        transform_tot = wp.transformf(t_tot, q_tot)
+        q_F = q_X * q_jt * wp.quat_inverse(q_X)
+        c_F = wp.quat_rotate(q_X, t_jt) - wp.quat_rotate(q_F, x_F) + x_B
+        body_q_F = wp.transformf(c_F, q_F)
 
-        # Apply to body pose
+        # Compute the transform that was applied to the base body relative to the base pose,
+        # and apply that transform to all rigid bodies
+        transform_tot = wp.transform_multiply(body_q_F, wp.transform_inverse(body_q_F_0))
         bodies_q[rb_id_tot] = wp.transform_multiply(transform_tot, body_q_0)
 
 
@@ -212,6 +234,333 @@ def _eval_fk_actuated_dofs_or_coords(
             fk_actuated_dofs[fk_dof_id] = model_base_dofs[base_dof_id]
 
 
+def _make_typed_joint_transform_to_coords_func(dof_type: JointDoFType):
+    """Factory returning a function extracting joint coords from joint transform, for a single joint type."""
+    num_coords = dof_type.num_coords
+
+    @wp.func
+    def _typed_joint_transform_to_coords(
+        pos_rel: wp.vec3f,
+        q_rel: wp.quatf,
+        offset: wp.int32,
+        output: wp.array[wp.float32],
+    ):
+        coords = wp.static(get_joint_coords_mapping_function(dof_type))(pos_rel, q_rel)
+        for i in range(num_coords):
+            output[offset + i] = coords[i]
+
+    return _typed_joint_transform_to_coords
+
+
+@wp.func
+def _joint_transform_to_coords(
+    dof_type: wp.int32,
+    pos_rel: wp.vec3f,
+    q_rel: wp.quatf,
+    offset: wp.int32,
+    output: wp.array[wp.float32],
+):
+    """Function extracting joint coordinates from the joint transform, and writing them out in an array."""
+    if dof_type == FKJointDoFType.CARTESIAN:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.CARTESIAN))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.CYLINDRICAL:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.CYLINDRICAL))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.FREE:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.FREE))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.PRISMATIC:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.PRISMATIC))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.REVOLUTE:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.REVOLUTE))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.SPHERICAL:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.SPHERICAL))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.UNIVERSAL:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.UNIVERSAL))(pos_rel, q_rel, offset, output)
+
+
+@wp.kernel
+def _eval_actuator_coords(
+    num_joints: wp.array[wp.int32],
+    first_joint_id: wp.array[wp.int32],
+    joints_dof_type: wp.array[wp.int32],
+    joints_bid_B: wp.array[wp.int32],
+    joints_bid_F: wp.array[wp.int32],
+    joints_X: wp.array[wp.mat33f],
+    joints_B_r_B: wp.array[wp.vec3f],
+    joints_F_r_F: wp.array[wp.vec3f],
+    bodies_q: wp.array[wp.transformf],
+    actuated_coord_offsets: wp.array[wp.int32],
+    actuators_q: wp.array[wp.float32],
+):
+    """
+    A kernel evaluating effective actuator coordinates based on body poses.
+
+    Inputs:
+        num_joints: Num joints per world.
+        first_joint_id: First joint id per world.
+        joints_dof_type: Joint dof type (i.e. revolute, spherical, ...).
+        joints_bid_B: Joint base body id.
+        joints_bid_F: Joint follower body id.
+        joints_X: Joint frame (local axes, valid both on base and follower).
+        joints_B_r_B: Joint local position on base body.
+        joints_F_r_F: Joint local position on follower body.
+        bodies_q: Body poses.
+        actuated_coord_offsets: Joint first actuated coordinate id, among all actuated coordinates in all worlds.
+    Outputs:
+        actuators_q: Actuator coordinates.
+    """
+    # Retrieve the thread index (= world index, joint index within world)
+    wd_id, jt_id_loc = wp.tid()
+
+    # Get global joint index
+    if jt_id_loc >= num_joints[wd_id]:
+        return
+    jt_id = first_joint_id[wd_id] + jt_id_loc
+
+    # Get joint actuated coords size and offset
+    coord_id = actuated_coord_offsets[jt_id]
+    num_coords = actuated_coord_offsets[jt_id + 1] - coord_id
+    if num_coords == 0:
+        return
+
+    # Get joint dof type, local positions and local orientation
+    dof_type = joints_dof_type[jt_id]
+    x_base = joints_B_r_B[jt_id]
+    x_follower = joints_F_r_F[jt_id]
+    q_X = wp.quat_from_matrix(joints_X[jt_id])
+
+    # Get base and follower transformations
+    base_id = joints_bid_B[jt_id]
+    if base_id < 0:
+        c_base = wp.vec3f(0.0, 0.0, 0.0)
+        q_base = wp.quatf(0.0, 0.0, 0.0, 1.0)
+    else:
+        c_base = wp.transform_get_translation(bodies_q[base_id])
+        q_base = wp.transform_get_rotation(bodies_q[base_id])
+    follower_id = joints_bid_F[jt_id]
+    c_follower = wp.transform_get_translation(bodies_q[follower_id])
+    q_follower = wp.transform_get_rotation(bodies_q[follower_id])
+
+    # Compute relative pose of follower body in joint frame of base body
+    pos_base = c_base + wp.quat_rotate(q_base, x_base)
+    pos_follower = c_follower + wp.quat_rotate(q_follower, x_follower)
+    ori_base_T = wp.quat_inverse(q_base * q_X)
+    ori_follower = q_follower * q_X
+    pos_rel = wp.quat_rotate(ori_base_T, pos_follower - pos_base)
+    q_rel = ori_base_T * ori_follower
+
+    # Extract joint coordinates from relative pose
+    _joint_transform_to_coords(dof_type, pos_rel, q_rel, coord_id, actuators_q)
+
+
+@wp.func
+def _correct_joint_angle(angle: wp.float32, angle_ref: wp.float32) -> wp.float32:
+    """Function adding multiples of 2 pi to an angle, so that it is the closest to a reference."""
+    return angle + wp.round((angle_ref - angle) / TWO_PI) * TWO_PI
+
+
+@wp.func
+def _correct_joint_quaternion(quat: wp.vec4f, quat_ref: wp.vec4f) -> wp.vec4f:
+    """Function flipping the sign of a quaternion if needed, so it is the closest to a reference."""
+    if squared_norm(quat + quat_ref) < squared_norm(quat - quat_ref):
+        return -quat
+    return quat
+
+
+@wp.kernel
+def _correct_actuator_coords(
+    # Inputs
+    actuated_coord_offsets: wp.array[wp.int32],
+    joints_dof_type: wp.array[wp.int32],
+    actuators_q_ref: wp.array[wp.float32],
+    # Outputs
+    actuators_q: wp.array[wp.float32],
+):
+    """
+    A kernel correcting actuator coordinates w.r.t. reference coordinates, ensuring that
+    angles are within +/- 2 pi of the reference, and quaternions are closer to the reference
+    than to its opposite.
+
+    Inputs:
+        actuated_coord_offsets: Joint first actuated coordinate id, among all actuated coordinates in all worlds.
+        joints_dof_type: Joint dof type (i.e. revolute, spherical, ...).
+        actuators_q_ref: Reference actuator coordinates.
+    Outputs:
+        actuators_q: Actuator coordinates to correct w.r.t. the reference.
+    """
+    # Retrieve the thread index (= joint index)
+    joint_id = wp.tid()
+
+    # Get joint actuated coords size and offset
+    coord_id = actuated_coord_offsets[joint_id]
+    num_coords = actuated_coord_offsets[joint_id + 1] - coord_id
+    if num_coords == 0:
+        return
+
+    # Apply correction based on DoFs
+    dof_type = joints_dof_type[joint_id]
+    if (
+        dof_type == FKJointDoFType.CARTESIAN or dof_type == FKJointDoFType.FIXED or dof_type == FKJointDoFType.PRISMATIC
+    ):  # No correction needed
+        return
+    elif dof_type == FKJointDoFType.CYLINDRICAL:  # Correct angle up to +/- 2 pi
+        angle = actuators_q[coord_id + 1]
+        angle_ref = actuators_q_ref[coord_id + 1]
+        actuators_q[coord_id + 1] = _correct_joint_angle(angle, angle_ref)
+    elif dof_type == FKJointDoFType.FREE:  # Correct quaternion up to sign
+        quat = wp.vec4f(
+            actuators_q[coord_id + 3], actuators_q[coord_id + 4], actuators_q[coord_id + 5], actuators_q[coord_id + 6]
+        )
+        quat_ref = wp.vec4f(
+            actuators_q_ref[coord_id + 3],
+            actuators_q_ref[coord_id + 4],
+            actuators_q_ref[coord_id + 5],
+            actuators_q_ref[coord_id + 6],
+        )
+        quat_corrected = _correct_joint_quaternion(quat, quat_ref)
+        for i in range(4):
+            actuators_q[coord_id + 3 + i] = quat_corrected[i]
+    elif dof_type == FKJointDoFType.REVOLUTE:  # Correct angle up to +/- 2 pi
+        angle = actuators_q[coord_id]
+        angle_ref = actuators_q_ref[coord_id]
+        actuators_q[coord_id] = _correct_joint_angle(angle, angle_ref)
+    elif dof_type == FKJointDoFType.SPHERICAL:  # Correct quaternion up to sign
+        quat = wp.vec4f(
+            actuators_q[coord_id], actuators_q[coord_id + 1], actuators_q[coord_id + 2], actuators_q[coord_id + 3]
+        )
+        quat_ref = wp.vec4f(
+            actuators_q_ref[coord_id],
+            actuators_q_ref[coord_id + 1],
+            actuators_q_ref[coord_id + 2],
+            actuators_q_ref[coord_id + 3],
+        )
+        quat_corrected = _correct_joint_quaternion(quat, quat_ref)
+        for i in range(4):
+            actuators_q[coord_id + i] = quat_corrected[i]
+    elif dof_type == FKJointDoFType.UNIVERSAL:  # Correct angles up to +/- 2 pi
+        angle = actuators_q[coord_id]
+        angle_ref = actuators_q_ref[coord_id]
+        actuators_q[coord_id] = _correct_joint_angle(angle, angle_ref)
+        angle = actuators_q[coord_id + 1]
+        angle_ref = actuators_q_ref[coord_id + 1]
+        actuators_q[coord_id + 1] = _correct_joint_angle(angle, angle_ref)
+    else:
+        assert False, "Unexpected actuator dof type"  # noqa: B011
+
+
+@wp.kernel
+def _eval_incremental_target_actuator_coords(
+    # Inputs
+    world_actuated_coord_offsets: wp.array[wp.int32],
+    actuators_q_prev: wp.array[wp.float32],
+    actuators_q_next: wp.array[wp.float32],
+    delta_q_max: wp.array[wp.float32],
+    iteration: wp.array[wp.int32],
+    world_mask: wp.array[wp.int32],
+    # Outputs
+    actuators_q_curr: wp.array[wp.float32],
+):
+    """
+    A kernel evaluating the actuator coordinates to solve for given the Newton iteration
+    number and the target actuator coordinates, by interpolating between initial and target
+    coordinates if necessary to avoid too large jumps per iteration.
+
+    Inputs:
+        world_actuated_coord_offsets: World first actuated coordinate id, among all actuated coordinates in all worlds.
+        actuators_q_prev: Previous actuator coordinates.
+        actuators_q_next: Next actuator coordinates (= target).
+        delta_q_max: Maximal allowed step per coordinate, for one Newton iteration.
+        iteration: Current Newton iteration per world.
+        world_mask: Per-world flag to perform the computation (0 = skip).
+    Outputs:
+        actuators_q_curr: Actuator coordinates to use as target for the current iteration (= incremental target).
+    """
+    # Retrieve the thread index (= world index, coordinate index in world)
+    wd_id, coord_id_loc = wp.tid()
+
+    # Early return based on world mask
+    if world_mask[wd_id] == 0:
+        return
+
+    # Read data
+    coord_id = world_actuated_coord_offsets[wd_id] + coord_id_loc
+    if coord_id >= world_actuated_coord_offsets[wd_id + 1]:
+        return
+    q_prev = actuators_q_prev[coord_id]
+    q_next = actuators_q_next[coord_id]
+    delta = delta_q_max[coord_id]
+    it = iteration[wd_id]
+
+    # Interpolate coordinate
+    sign = wp.where(q_prev > q_next, -1.0, 1.0)
+    actuators_q_curr[coord_id] = sign * wp.min(sign * q_prev + wp.float32(it + 1) * delta, sign * q_next)
+
+
+@wp.func
+def min_iteration_op(v0: wp.float32, v1: wp.float32, d: wp.float32) -> wp.int32:
+    """Function returning the floor of the absolute division of (v1 - v0) by d."""
+    eps = 1e-7  # Epsilon to ensure that we round down if |v1 - v0| = d
+    return wp.int32(wp.floor((wp.abs(v1 - v0) - eps) / d))
+
+
+@wp.func
+def less_than_op(i: wp.int32, threshold: wp.int32) -> wp.int32:
+    """Thresholding operation."""
+    return wp.where(i < threshold, 1, 0)
+
+
+@wp.func
+def mul_mask(mask: wp.int32, value: wp.int32):
+    """Return value if mask is positive, else 0"""
+    return wp.where(mask > 0, value, 0)
+
+
+@cache
+def create_eval_min_num_iterations_kernel(TILE_SIZE: int):
+    @wp.kernel
+    def _eval_min_num_iterations(
+        # Inputs
+        world_actuated_coord_offsets: wp.array[wp.int32],
+        actuators_q_prev: wp.array[wp.float32],
+        actuators_q_next: wp.array[wp.float32],
+        delta_q_max: wp.array[wp.float32],
+        # Outputs
+        min_iterations: wp.array[wp.int32],
+    ):
+        """
+        A kernel evaluating the minimal number of Newton iterations needed per world, for incremental steps
+        in actuator coordinates to have converged to the target coordinates.
+
+        Inputs:
+            world_actuated_coord_offsets: World first actuated coordinate id, among all actuated coordinates in all worlds.
+            actuators_q_prev: Previous actuator coordinates.
+            actuators_q_next: Next actuator coordinates (= target).
+            delta_q_max: Maximal allowed step per coordinate, for one Newton iteration.
+        Outputs:
+            min_iterations: Minimum iterations needed per world.
+        """
+        # Retrieve the thread index (= world index, input tile index, thread index in block)
+        wd_id, i, tid = wp.tid()
+
+        # Read data
+        world_offset = world_actuated_coord_offsets[wd_id]
+        next_world_offset = world_actuated_coord_offsets[wd_id + 1]
+        offset = world_offset + i * TILE_SIZE
+        q_prev = wp.tile_load(actuators_q_prev, shape=TILE_SIZE, offset=offset)
+        q_next = wp.tile_load(actuators_q_next, shape=TILE_SIZE, offset=offset)
+        delta = wp.tile_load(delta_q_max, shape=TILE_SIZE, offset=offset)
+
+        # Compute min iterations count per coordinate, and take the maximum per world
+        min_it = wp.tile_map(min_iteration_op, q_prev, q_next, delta)
+        if offset + TILE_SIZE > next_world_offset:  # Mask out values from next world if needed
+            mask = wp.tile_map(less_than_op, wp.tile_arange(TILE_SIZE, dtype=wp.int32), next_world_offset - offset)
+            min_it = wp.tile_map(mul_mask, mask, min_it)
+        min_it_max = wp.tile_max(min_it)[0]
+        if tid == 0:
+            wp.atomic_max(min_iterations, wd_id, min_it_max)
+
+    return _eval_min_num_iterations
+
+
 @wp.kernel
 def _eval_position_control_transformations(
     # Inputs
@@ -220,6 +569,7 @@ def _eval_position_control_transformations(
     actuated_coords_offset: wp.array[wp.int32],
     joints_X: wp.array[wp.mat33f],
     actuators_q: wp.array[wp.float32],
+    normalize_quaternions: wp.bool,
     # Outputs
     pos_control_transforms: wp.array[wp.transformf],
 ):
@@ -237,6 +587,7 @@ def _eval_position_control_transformations(
         actuated_coords_offset: Joint first actuated coordinate id, among all actuated coordinates in all worlds
         joints_X: Joint frame (local axes, valid both on base and follower)
         actuators_q: Actuated coordinates
+        normalize_quaternions: Whether to normalize quaternions in actuators_q (else unit length is assumed)
     Outputs:
         pos_control_transforms: Joint position-control transformation
     """
@@ -271,7 +622,7 @@ def _eval_position_control_transformations(
                 t[1] = actuators_q[offset_q_j + 1]
                 t[2] = actuators_q[offset_q_j + 2]
                 q_X = wp.quat_from_matrix(X)
-                q_loc = read_quat_from_array(actuators_q, offset_q_j + 3)
+                q_loc = read_quat_from_array(actuators_q, offset_q_j + 3, normalize_quaternions)
                 q = q_X * q_loc * wp.quat_inverse(q_X)
             elif dof_type_j == FKJointDoFType.PRISMATIC:
                 t[0] = actuators_q[offset_q_j]
@@ -279,7 +630,7 @@ def _eval_position_control_transformations(
                 q = wp.quat_from_axis_angle(wp.vec3f(X[0, 0], X[1, 0], X[2, 0]), actuators_q[offset_q_j])
             elif dof_type_j == FKJointDoFType.SPHERICAL:
                 q_X = wp.quat_from_matrix(X)
-                q_loc = read_quat_from_array(actuators_q, offset_q_j)
+                q_loc = read_quat_from_array(actuators_q, offset_q_j, normalize_quaternions)
                 q = q_X * q_loc * wp.quat_inverse(q_X)
             elif dof_type_j == FKJointDoFType.UNIVERSAL:
                 q_x = wp.quat_from_axis_angle(wp.vec3f(X[0, 0], X[1, 0], X[2, 0]), actuators_q[offset_q_j])
@@ -870,13 +1221,13 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
 
 
 @cache
-def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
+def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
     """
-    Generates and returns all tile-based kernels in this module, given the tile size to use along the constraints
+    Generates and returns all kernels based on 2d tiles in this module, given the tile size to use along the constraints
     and variables (i.e. body poses) dimensions in the constraint vector, Jacobian, step vector etc.
 
-    These are _eval_pattern_T_pattern, _eval_max_constraint, _eval_jacobian_T_jacobian, eval_jacobian_T_constraints,
-    _eval_merit_function, _eval_merit_function_gradient (returned in this order)
+    These are _eval_pattern_T_pattern, _eval_jacobian_T_jacobian, eval_jacobian_T_constraints
+    (returned in this order)
     """
 
     @wp.func
@@ -937,6 +1288,135 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
             tile_out_3d_clipped = wp.tile_map(clip_to_one, tile_out_3d)
             wp.tile_store(pattern_T_pattern, tile_out_3d_clipped, offset=(wd_id, i * TILE_SIZE_VRS, j * TILE_SIZE_VRS))
 
+    @wp.kernel
+    def _eval_jacobian_T_jacobian(
+        # Inputs
+        constraints_jacobian: wp.array3d[wp.float32],
+        tile_sparsity_pattern: wp.array3d[wp.int32],
+        world_mask: wp.array[wp.int32],
+        # Outputs
+        jacobian_T_jacobian: wp.array3d[wp.float32],
+    ):
+        """
+        A kernel computing the matrix product J^T * J given the Jacobian J, in each world
+
+        Inputs:
+            constraints_jacobian: Constraint Jacobian per world
+            tile_sparsity_pattern: Per-tile sparsity pattern of the Jacobian (0 = tile is fully zero)
+            world_mask: Per-world flag to perform the computation (0 = skip)
+        Outputs:
+            jacobian_T_jacobian: Jacobian^T * Jacobian per world
+        """
+        wd_id, i, j = wp.tid()  # Thread indices (= world index, output tile indices)
+
+        if (
+            wd_id < jacobian_T_jacobian.shape[0]
+            and world_mask[wd_id] != 0
+            and i * TILE_SIZE_VRS < jacobian_T_jacobian.shape[1]
+            and j * TILE_SIZE_VRS < jacobian_T_jacobian.shape[2]
+        ):
+            tile_out = wp.tile_zeros(shape=(TILE_SIZE_VRS, TILE_SIZE_VRS), dtype=wp.float32)
+
+            num_cts = constraints_jacobian.shape[1]
+            num_tiles_K = (num_cts + TILE_SIZE_CTS - 1) // TILE_SIZE_CTS  # Equivalent to ceil(num_cts / TILE_SIZE_CTS)
+
+            for k in range(num_tiles_K):
+                if tile_sparsity_pattern[wd_id, k, i] == 0 or tile_sparsity_pattern[wd_id, k, j] == 0:
+                    continue
+                tile_i_3d = wp.tile_load(
+                    constraints_jacobian,
+                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
+                    offset=(wd_id, k * TILE_SIZE_CTS, i * TILE_SIZE_VRS),
+                )
+                tile_i = wp.tile_reshape(tile_i_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
+                tile_i_T = wp.tile_transpose(tile_i)
+                tile_j_3d = wp.tile_load(
+                    constraints_jacobian,
+                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
+                    offset=(wd_id, k * TILE_SIZE_CTS, j * TILE_SIZE_VRS),
+                )
+                tile_j = wp.tile_reshape(tile_j_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
+                wp.tile_matmul(tile_i_T, tile_j, tile_out)
+
+            tile_out_3d = wp.tile_reshape(tile_out, (1, TILE_SIZE_VRS, TILE_SIZE_VRS))
+            wp.tile_store(jacobian_T_jacobian, tile_out_3d, offset=(wd_id, i * TILE_SIZE_VRS, j * TILE_SIZE_VRS))
+
+    @wp.kernel
+    def _eval_jacobian_T_constraints(
+        # Inputs
+        constraints_jacobian: wp.array3d[wp.float32],
+        constraints: wp.array2d[wp.float32],
+        tile_sparsity_pattern: wp.array3d[wp.int32],
+        world_mask: wp.array[wp.int32],
+        # Outputs
+        jacobian_T_constraints: wp.array2d[wp.float32],
+    ):
+        """
+        A kernel computing the matrix product J^T * C given the Jacobian J and the constraints vector C, in each world
+
+        Inputs:
+            constraints_jacobian: Constraint Jacobian per world
+            constraints: Constraint vector per world
+            tile_sparsity_pattern: Per-tile sparsity pattern of the Jacobian (0 = tile is fully zero)
+            world_mask: Per-world flag to perform the computation (0 = skip)
+        Outputs:
+            jacobian_T_constraints: Jacobian^T * Constraints per world
+        """
+        wd_id, i = wp.tid()  # Thread indices (= world index, output tile index)
+
+        if (
+            wd_id < jacobian_T_constraints.shape[0]
+            and world_mask[wd_id] != 0
+            and i * TILE_SIZE_VRS < jacobian_T_constraints.shape[1]
+        ):
+            segment_out = wp.tile_zeros(shape=(TILE_SIZE_VRS, 1), dtype=wp.float32)
+
+            num_cts = constraints_jacobian.shape[1]
+            num_tiles_K = (num_cts + TILE_SIZE_CTS - 1) // TILE_SIZE_CTS  # Equivalent to ceil(num_cts / TILE_SIZE_CTS)
+
+            for k in range(num_tiles_K):
+                if tile_sparsity_pattern[wd_id, k, i] == 0:
+                    continue
+                tile_i_3d = wp.tile_load(
+                    constraints_jacobian,
+                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
+                    offset=(wd_id, k * TILE_SIZE_CTS, i * TILE_SIZE_VRS),
+                )
+                tile_i = wp.tile_reshape(tile_i_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
+                tile_i_T = wp.tile_transpose(tile_i)
+                segment_k_2d = wp.tile_load(constraints, shape=(1, TILE_SIZE_CTS), offset=(wd_id, k * TILE_SIZE_CTS))
+                segment_k = wp.tile_reshape(segment_k_2d, (TILE_SIZE_CTS, 1))  # Technically still 2d...
+                wp.tile_matmul(tile_i_T, segment_k, segment_out)
+
+            segment_out_2d = wp.tile_reshape(
+                segment_out,
+                (
+                    1,
+                    TILE_SIZE_VRS,
+                ),
+            )
+            wp.tile_store(
+                jacobian_T_constraints,
+                segment_out_2d,
+                offset=(
+                    wd_id,
+                    i * TILE_SIZE_VRS,
+                ),
+            )
+
+    return _eval_pattern_T_pattern, _eval_jacobian_T_jacobian, _eval_jacobian_T_constraints
+
+
+@cache
+def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
+    """
+    Generates and returns all kernels based on 1d tiles in this module, given the tile size to use along the constraints
+    and variables (i.e. body poses) dimensions in the constraint vector, Jacobian, step vector etc.
+
+    These are _eval_max_constraint, _eval_merit_function, _eval_merit_function_gradient
+    (returned in this order)
+    """
+
     @wp.func
     def _isnan(x: wp.float32) -> wp.int32:
         """Calls wp.isnan and converts the result to int32"""
@@ -978,114 +1458,6 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
                         check_val = wp.atomic_cas(max_constraint, wd_id, curr_val, wp.max(curr_val, segment_max))
                         if check_val == curr_val:
                             break
-
-    @wp.kernel
-    def _eval_jacobian_T_jacobian(
-        # Inputs
-        constraints_jacobian: wp.array3d[wp.float32],
-        world_mask: wp.array[wp.int32],
-        # Outputs
-        jacobian_T_jacobian: wp.array3d[wp.float32],
-    ):
-        """
-        A kernel computing the matrix product J^T * J given the Jacobian J, in each world
-
-        Inputs:
-            constraints_jacobian: Constraint Jacobian per world
-            world_mask: Per-world flag to perform the computation (0 = skip)
-        Outputs:
-            jacobian_T_jacobian: Jacobian^T * Jacobian per world
-        """
-        wd_id, i, j = wp.tid()  # Thread indices (= world index, output tile indices)
-
-        if (
-            wd_id < jacobian_T_jacobian.shape[0]
-            and world_mask[wd_id] != 0
-            and i * TILE_SIZE_VRS < jacobian_T_jacobian.shape[1]
-            and j * TILE_SIZE_VRS < jacobian_T_jacobian.shape[2]
-        ):
-            tile_out = wp.tile_zeros(shape=(TILE_SIZE_VRS, TILE_SIZE_VRS), dtype=wp.float32)
-
-            num_cts = constraints_jacobian.shape[1]
-            num_tiles_K = (num_cts + TILE_SIZE_CTS - 1) // TILE_SIZE_CTS  # Equivalent to ceil(num_cts / TILE_SIZE_CTS)
-
-            for k in range(num_tiles_K):
-                tile_i_3d = wp.tile_load(
-                    constraints_jacobian,
-                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
-                    offset=(wd_id, k * TILE_SIZE_CTS, i * TILE_SIZE_VRS),
-                )
-                tile_i = wp.tile_reshape(tile_i_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
-                tile_i_T = wp.tile_transpose(tile_i)
-                tile_j_3d = wp.tile_load(
-                    constraints_jacobian,
-                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
-                    offset=(wd_id, k * TILE_SIZE_CTS, j * TILE_SIZE_VRS),
-                )
-                tile_j = wp.tile_reshape(tile_j_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
-                wp.tile_matmul(tile_i_T, tile_j, tile_out)
-
-            tile_out_3d = wp.tile_reshape(tile_out, (1, TILE_SIZE_VRS, TILE_SIZE_VRS))
-            wp.tile_store(jacobian_T_jacobian, tile_out_3d, offset=(wd_id, i * TILE_SIZE_VRS, j * TILE_SIZE_VRS))
-
-    @wp.kernel
-    def _eval_jacobian_T_constraints(
-        # Inputs
-        constraints_jacobian: wp.array3d[wp.float32],
-        constraints: wp.array2d[wp.float32],
-        world_mask: wp.array[wp.int32],
-        # Outputs
-        jacobian_T_constraints: wp.array2d[wp.float32],
-    ):
-        """
-        A kernel computing the matrix product J^T * C given the Jacobian J and the constraints vector C, in each world
-
-        Inputs:
-            constraints_jacobian: Constraint Jacobian per world
-            constraints: Constraint vector per world
-            world_mask: Per-world flag to perform the computation (0 = skip)
-        Outputs:
-            jacobian_T_constraints: Jacobian^T * Constraints per world
-        """
-        wd_id, i = wp.tid()  # Thread indices (= world index, output tile index)
-
-        if (
-            wd_id < jacobian_T_constraints.shape[0]
-            and world_mask[wd_id] != 0
-            and i * TILE_SIZE_VRS < jacobian_T_constraints.shape[1]
-        ):
-            segment_out = wp.tile_zeros(shape=(TILE_SIZE_VRS, 1), dtype=wp.float32)
-
-            num_cts = constraints_jacobian.shape[1]
-            num_tiles_K = (num_cts + TILE_SIZE_CTS - 1) // TILE_SIZE_CTS  # Equivalent to ceil(num_cts / TILE_SIZE_CTS)
-
-            for k in range(num_tiles_K):
-                tile_i_3d = wp.tile_load(
-                    constraints_jacobian,
-                    shape=(1, TILE_SIZE_CTS, TILE_SIZE_VRS),
-                    offset=(wd_id, k * TILE_SIZE_CTS, i * TILE_SIZE_VRS),
-                )
-                tile_i = wp.tile_reshape(tile_i_3d, (TILE_SIZE_CTS, TILE_SIZE_VRS))
-                tile_i_T = wp.tile_transpose(tile_i)
-                segment_k_2d = wp.tile_load(constraints, shape=(1, TILE_SIZE_CTS), offset=(wd_id, k * TILE_SIZE_CTS))
-                segment_k = wp.tile_reshape(segment_k_2d, (TILE_SIZE_CTS, 1))  # Technically still 2d...
-                wp.tile_matmul(tile_i_T, segment_k, segment_out)
-
-            segment_out_2d = wp.tile_reshape(
-                segment_out,
-                (
-                    1,
-                    TILE_SIZE_VRS,
-                ),
-            )
-            wp.tile_store(
-                jacobian_T_constraints,
-                segment_out_2d,
-                offset=(
-                    wd_id,
-                    i * TILE_SIZE_VRS,
-                ),
-            )
 
     @wp.kernel
     def _eval_merit_function(
@@ -1140,14 +1512,7 @@ def create_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
             if tid == 0:
                 wp.atomic_add(merit_function_grad, wd_id, tile_dot_prod)
 
-    return (
-        _eval_pattern_T_pattern,
-        _eval_max_constraint,
-        _eval_jacobian_T_jacobian,
-        _eval_jacobian_T_constraints,
-        _eval_merit_function,
-        _eval_merit_function_gradient,
-    )
+    return _eval_max_constraint, _eval_merit_function, _eval_merit_function_gradient
 
 
 @wp.kernel
@@ -1310,6 +1675,7 @@ def _newton_check(
     max_constraint: wp.array[wp.float32],
     tolerance: wp.array[wp.float32],
     iteration: wp.array[wp.int32],
+    min_iterations: wp.array[wp.int32],
     max_iterations: wp.array[wp.int32],
     line_search_success: wp.array[wp.int32],
     # Outputs
@@ -1325,6 +1691,7 @@ def _newton_check(
         max_constraint: Max absolute constraint per world
         tolerance: Tolerance on max constraint (size 1 array)
         iteration: Iteration count, per world
+        min_iterations: Min iterations per world (may be > 0 if incremental solve is enabled)
         max_iterations: Max iterations (size 1 array)
         line_search_success: Per-world line search success flag
     Outputs
@@ -1334,12 +1701,16 @@ def _newton_check(
     """
     wd_id = wp.tid()  # Thread index (= world index)
     if wd_id < max_constraint.shape[0] and newton_mask[wd_id] != 0:
-        iteration[wd_id] += 1
+        iteration_prev = iteration[wd_id]  # Index of the iteration that just ran
+        iteration_next = iteration_prev + 1  # Index of the iteration that is about to run
+        min_iterations_wd = min_iterations[wd_id]
+        iteration[wd_id] = iteration_next
+        reached_min_it = iteration_prev >= min_iterations_wd
         max_constraint_wd = max_constraint[wd_id]
         is_finite = wp.isfinite(max_constraint_wd)
-        newton_success[wd_id] = int(is_finite and max_constraint_wd <= tolerance[0])
+        newton_success[wd_id] = int(is_finite and reached_min_it and max_constraint_wd <= tolerance[0])
         newton_continue_world = int(
-            iteration[wd_id] < max_iterations[0]
+            iteration_next < max_iterations[0]
             and not newton_success[wd_id]
             and is_finite  # Abort when encountering NaN / Inf values
             and line_search_success[wd_id]  # Abort in case of line search failure
@@ -1434,7 +1805,7 @@ def _eval_body_velocities(
 ):
     """
     A kernel computing the body velocities (twists) from the time derivative of body poses,
-    computing in particular angular velocities omega = G(q)q_dot
+    computing in particular angular velocities omega = 2G(q)q_dot
 
     Inputs:
         num_bodies: Number of bodies per world

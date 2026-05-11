@@ -362,6 +362,23 @@ class Utils:
             device=self.__render_context.device,
         )
 
+    def create_hdr_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
+        """Create a linear HDR color output array for :meth:`~SensorTiledCamera.update`.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
+
+        Returns:
+            Array of shape ``(world_count, camera_count, height, width)``, dtype ``vec3f``.
+        """
+        return wp.zeros(
+            (self.__render_context.world_count, camera_count, height, width),
+            dtype=wp.vec3f,
+            device=self.__render_context.device,
+        )
+
     def compute_pinhole_camera_rays(
         self, width: int, height: int, camera_fovs: float | list[float] | np.ndarray | wp.array[wp.float32]
     ) -> wp.array4d[wp.vec3f]:

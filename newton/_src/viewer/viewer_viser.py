@@ -137,6 +137,8 @@ class ViewerViser(ViewerBase):
         self._plot_handles: dict[str, Any] = {}
         self._plot_folder: Any = None
         self._plot_history_size = plot_history_size
+        self._plane_meshes = {}
+        self._plane_handles = {}
 
         super().__init__()
 
@@ -147,6 +149,8 @@ class ViewerViser(ViewerBase):
         self._meshes = {}
         self._instances = {}
         self._scene_handles = {}  # Track viser scene node handles
+        self._line_segment_counts = {}
+        self._line_versions = {}
 
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
@@ -154,6 +158,10 @@ class ViewerViser(ViewerBase):
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
+
+        # Store configuration before any URL generation.
+        self._port = port
+        self.is_jupyter_notebook = is_jupyter_notebook()
 
         if share:
             self._share_url = self._server.request_share_url()
@@ -163,13 +171,7 @@ class ViewerViser(ViewerBase):
             self._share_url = None
 
         if verbose:
-            print(f"Viser server running at: http://localhost:{port}")
-
-        # Store configuration
-        self._port = port
-
-        # Track if running in Jupyter
-        self.is_jupyter_notebook = is_jupyter_notebook()
+            print(f"Viser server running at: {self.url}")
 
         # Recording state
         self._frame_dt = 0.0
@@ -185,6 +187,11 @@ class ViewerViser(ViewerBase):
     @override
     def clear_model(self):
         """Reset model-dependent state, including scalar plot buffers."""
+        for plane_name in list(self._plane_handles.keys()):
+            self._remove_plane_handles(plane_name)
+        self._plane_handles.clear()
+        self._plane_meshes.clear()
+
         # Remove plot handles from the GUI.
         for handle in self._plot_handles.values():
             try:
@@ -225,12 +232,97 @@ class ViewerViser(ViewerBase):
 
     @property
     def url(self) -> str:
-        """Get the URL of the viser server.
+        """Get the browser URL of the viser server.
 
         Returns:
-            str: Local HTTP URL for the running viser server.
+            str: Browser URL for the running viser server.
         """
+        if self.is_jupyter_notebook:
+            return self._build_browser_url(self._port)
         return f"http://localhost:{self._port}"
+
+    @staticmethod
+    def _normalize_jupyter_base_url(base_url: str) -> str:
+        """Normalize a Jupyter base URL for proxy path construction."""
+        if not base_url:
+            return ""
+        if not base_url.startswith("/"):
+            base_url = "/" + base_url
+        if base_url != "/":
+            return base_url.rstrip("/")
+        return ""
+
+    @classmethod
+    def _get_jupyter_proxy_base_url(cls) -> str | None:
+        """Return the Jupyter base URL when notebook proxying is available."""
+        try:
+            from importlib.util import find_spec  # noqa: PLC0415
+
+            if find_spec("jupyter_server_proxy") is None:
+                return None
+        except Exception:
+            return None
+
+        # JUPYTER_BASE_URL is not always exported (e.g. CLI --NotebookApp.base_url).
+        for env_name in ("JUPYTER_BASE_URL", "JUPYTERHUB_SERVICE_PREFIX", "NB_PREFIX"):
+            candidate = os.environ.get(env_name)
+            if candidate:
+                return cls._normalize_jupyter_base_url(candidate)
+
+        try:
+            from jupyter_server.serverapp import list_running_servers  # noqa: PLC0415
+
+            for server in list_running_servers():
+                candidate = server.get("base_url")
+                if candidate:
+                    return cls._normalize_jupyter_base_url(candidate)
+        except Exception:
+            pass
+
+        return None
+
+    @classmethod
+    def _build_browser_url(
+        cls,
+        port: int,
+        *,
+        path: str = "/",
+        query: str = "",
+        local_host: str = "localhost",
+    ) -> str:
+        """Build a browser URL, preferring Jupyter proxy routes when available."""
+        normalized_path = "/" if path in ("", "/") else "/" + path.lstrip("/")
+
+        jupyter_base_url = cls._get_jupyter_proxy_base_url()
+        if jupyter_base_url is not None:
+            return f"{jupyter_base_url}/proxy/{port}{normalized_path}{query}"
+
+        return f"http://{local_host}:{port}{normalized_path}{query}"
+
+    @classmethod
+    def get_viser_client_dir(cls) -> Path:
+        """Return the installed Viser client build for notebook playback."""
+        viser = cls._get_viser()
+
+        try:
+            viser_package_dir = Path(inspect.getfile(viser)).resolve().parent
+        except Exception:
+            viser_package_dir = None
+
+        if viser_package_dir is not None:
+            # Prefer the client build shipped with the installed viser package so
+            # the playback UI matches the serializer that generated the .viser file.
+            for candidate in (
+                viser_package_dir / "client" / "build",
+                viser_package_dir / "static",
+            ):
+                if (candidate / "index.html").exists():
+                    return candidate.resolve()
+
+        raise FileNotFoundError(
+            "Viser client files not found in the installed viser package. "
+            "The notebook playback feature requires a Viser client build."
+        )
 
     @staticmethod
     def _is_client_camera_ready(client: Any) -> bool:
@@ -410,6 +502,9 @@ class ViewerViser(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        color: tuple[float, float, float] | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
     ):
         """
         Log a mesh to viser for visualization.
@@ -423,6 +518,12 @@ class ViewerViser(ViewerBase):
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling.
+            color: Optional base color as an RGB tuple with values in
+                [0, 1]. Used when no texture is provided.
+            roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
+                smooth, ``1`` is fully rough.
+            metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
+                is metal.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -488,11 +589,128 @@ class ViewerViser(ViewerBase):
                 name=name,
                 vertices=points_np,
                 faces=indices_np,
-                color=(180, 180, 180),  # Default gray color
+                color=(180, 180, 180) if color is None else color,
                 wireframe=False,
                 side="double" if not backface_culling else "front",
             )
         self._scene_handles[name] = handle
+
+    @staticmethod
+    def _quats_xyzw_to_wxyz(quats_xyzw: np.ndarray) -> np.ndarray:
+        """Convert quaternions from Warp's XYZW layout to viser's WXYZ layout."""
+        quats_xyzw = np.asarray(quats_xyzw, dtype=np.float32)
+        was_1d = quats_xyzw.ndim == 1
+        if was_1d:
+            quats_xyzw = quats_xyzw.reshape(1, 4)
+        if quats_xyzw.ndim != 2 or quats_xyzw.shape[1] != 4:
+            raise ValueError(f"Expected quaternion array with shape (4,) or (N, 4), got {quats_xyzw.shape}")
+
+        quats_wxyz = np.empty_like(quats_xyzw)
+        quats_wxyz[:, 0] = quats_xyzw[:, 3]
+        quats_wxyz[:, 1] = quats_xyzw[:, 0]
+        quats_wxyz[:, 2] = quats_xyzw[:, 1]
+        quats_wxyz[:, 3] = quats_xyzw[:, 2]
+        return quats_wxyz[0] if was_1d else quats_wxyz
+
+    def _remove_plane_handles(self, name: str):
+        """Remove any plane-grid handles associated with an instance batch."""
+        handle = self._plane_handles.pop(name, None)
+        if handle is None:
+            return
+        handles = handle if isinstance(handle, (list, tuple)) else (handle,)
+        for handle in handles:
+            try:
+                handle.remove()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _build_plane_grid_points(width: float, length: float) -> np.ndarray:
+        """Create a finite grid of line segments in the local XY plane."""
+        width = max(float(width), 0.1)
+        length = max(float(length), 0.1)
+
+        spacing = max(min(width, length) / 10.0, 0.25)
+        spacing = min(spacing, 2.0)
+
+        nx = max(int(np.ceil(width / spacing)), 1)
+        ny = max(int(np.ceil(length / spacing)), 1)
+
+        xs = np.linspace(-width * 0.5, width * 0.5, nx + 1, dtype=np.float32)
+        ys = np.linspace(-length * 0.5, length * 0.5, ny + 1, dtype=np.float32)
+
+        segments = []
+        for x in xs:
+            segments.append([[x, -length * 0.5, 0.0], [x, length * 0.5, 0.0]])
+        for y in ys:
+            segments.append([[-width * 0.5, y, 0.0], [width * 0.5, y, 0.0]])
+
+        return np.asarray(segments, dtype=np.float32)
+
+    @staticmethod
+    def _rotate_points_wxyz(points: np.ndarray, quat_wxyz: np.ndarray) -> np.ndarray:
+        """Rotate points by a unit quaternion stored in WXYZ order."""
+        quat_wxyz = np.asarray(quat_wxyz, dtype=np.float32)
+        norm = np.linalg.norm(quat_wxyz)
+        if norm > 0.0:
+            quat_wxyz = quat_wxyz / norm
+
+        qvec = quat_wxyz[1:4]
+        flat_points = points.reshape(-1, 3)
+        uv = np.cross(qvec, flat_points)
+        uuv = np.cross(qvec, uv)
+        rotated = flat_points + 2.0 * (quat_wxyz[0] * uv + uuv)
+        return rotated.reshape(points.shape).astype(np.float32, copy=False)
+
+    def _log_plane_instances(
+        self,
+        name: str,
+        plane_info: dict[str, float | bool],
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        hidden: bool = False,
+    ):
+        """Render plane instances as finite line grids instead of opaque meshes."""
+        self._remove_plane_handles(name)
+
+        if hidden or xforms is None:
+            return
+
+        xforms_np = self._to_numpy(xforms)
+        if xforms_np is None or len(xforms_np) == 0:
+            return
+
+        xforms_np = np.asarray(xforms_np, dtype=np.float32)
+        positions = xforms_np[:, :3]
+        quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
+        scales_np = self._to_numpy(scales) if scales is not None else None
+        if scales_np is not None:
+            scales_np = np.asarray(scales_np, dtype=np.float32)
+
+        width = float(plane_info["width"])
+        length = float(plane_info["length"])
+        grid_points = self._build_plane_grid_points(width, length)
+
+        all_points = []
+        for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
+            instance_points = grid_points
+            if scales_np is not None:
+                plane_scale = np.array([scales_np[idx][0], scales_np[idx][1], 1.0], dtype=np.float32)
+                instance_points = grid_points * plane_scale
+            instance_points = self._rotate_points_wxyz(instance_points, quat_wxyz) + position
+            all_points.append(instance_points)
+
+        if not all_points:
+            return
+
+        handle = self._server.scene.add_line_segments(
+            name=f"{name}/grid",
+            points=np.concatenate(all_points, axis=0),
+            colors=(150, 150, 150),
+            line_width=1.5,
+        )
+
+        self._plane_handles[name] = handle
 
     @override
     def log_instances(
@@ -520,6 +738,12 @@ class ViewerViser(ViewerBase):
             materials: Instance materials.
             hidden: Whether the instances are hidden.
         """
+        if mesh in self._plane_meshes:
+            self._log_plane_instances(name, self._plane_meshes[mesh], xforms, scales, hidden=hidden)
+            return
+
+        self._remove_plane_handles(name)
+
         # Check that mesh exists
         if mesh not in self._meshes:
             raise RuntimeError(f"Mesh {mesh} not found. Call log_mesh first.")
@@ -557,13 +781,7 @@ class ViewerViser(ViewerBase):
         # Warp transform format: [x, y, z, qx, qy, qz, qw]
         positions = xforms_np[:, :3].astype(np.float32)
 
-        # Convert quaternions from Warp format (x, y, z, w) to viser format (w, x, y, z)
-        quats_xyzw = xforms_np[:, 3:7]
-        quats_wxyz = np.zeros((num_instances, 4), dtype=np.float32)
-        quats_wxyz[:, 0] = quats_xyzw[:, 3]  # w
-        quats_wxyz[:, 1] = quats_xyzw[:, 0]  # x
-        quats_wxyz[:, 2] = quats_xyzw[:, 1]  # y
-        quats_wxyz[:, 3] = quats_xyzw[:, 2]  # z
+        quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
 
         # Prepare scales
         if scales_np is not None:
@@ -802,23 +1020,31 @@ class ViewerViser(ViewerBase):
             width: Line width.
             hidden: Whether the lines are hidden.
         """
-        # Remove existing lines if present
-        if name in self._scene_handles:
-            try:
-                self._scene_handles[name].remove()
-            except Exception:
-                pass
+
+        def remove_existing_line(reset_version: bool = True):
+            handle = self._scene_handles.pop(name, None)
+            if handle is not None:
+                try:
+                    handle.remove()
+                except Exception:
+                    pass
+            self._line_segment_counts.pop(name, None)
+            if reset_version:
+                self._line_versions.pop(name, None)
 
         if hidden:
+            remove_existing_line()
             return
 
         if starts is None or ends is None:
+            remove_existing_line()
             return
 
         starts_np = self._to_numpy(starts)
         ends_np = self._to_numpy(ends)
 
         if starts_np is None or ends_np is None or len(starts_np) == 0:
+            remove_existing_line()
             return
 
         starts_np = np.asarray(starts_np, dtype=np.float32)
@@ -835,15 +1061,17 @@ class ViewerViser(ViewerBase):
                 rgb = rgb * 255.0
             return np.clip(rgb, 0, 255).astype(np.uint8)
 
-        # Process colors
-        color_rgb: tuple[int, int, int] | np.ndarray = (0, 255, 0)
+        # Process colors. Keep this as a NumPy array because Viser handle
+        # property updates require the normalized array form, even though
+        # add_line_segments() also accepts RGB tuples on initial creation.
+        color_rgb: np.ndarray = np.array((0, 255, 0), dtype=np.uint8)
         if colors is not None:
             colors_np = self._to_numpy(colors)
             if colors_np is not None:
                 colors_np = np.asarray(colors_np)
                 if colors_np.ndim == 1 and colors_np.shape[0] == 3:
                     # Single color for all lines.
-                    color_rgb = tuple(_rgb_to_uint8_array(colors_np).tolist())
+                    color_rgb = _rgb_to_uint8_array(colors_np)
                 elif colors_np.ndim == 2 and colors_np.shape == (num_lines, 3):
                     # Per-line colors: repeat each line color for [start, end].
                     line_colors = _rgb_to_uint8_array(colors_np)
@@ -852,14 +1080,32 @@ class ViewerViser(ViewerBase):
                     # Already per-point-per-segment colors.
                     color_rgb = _rgb_to_uint8_array(colors_np)
 
-        # Add line segments to viser
+        line_width = width * 100  # Scale for visibility
+        if name in self._scene_handles:
+            handle = self._scene_handles[name]
+            if self._line_segment_counts.get(name) == num_lines:
+                try:
+                    handle.points = line_points
+                    handle.colors = color_rgb
+                    handle.line_width = line_width
+                    return
+                except Exception:
+                    remove_existing_line()
+            else:
+                self._line_versions[name] = self._line_versions.get(name, 0) + 1
+                remove_existing_line(reset_version=False)
+
+        version = self._line_versions.get(name, 0)
+        scene_name = name if version == 0 else f"{name}__line_{version}"
+
         handle = self._server.scene.add_line_segments(
-            name=name,
+            name=scene_name,
             points=line_points,
             colors=color_rgb,
-            line_width=width * 100,  # Scale for visibility
+            line_width=line_width,
         )
         self._scene_handles[name] = handle
+        self._line_segment_counts[name] = num_lines
 
     @override
     def log_geo(
@@ -890,18 +1136,16 @@ class ViewerViser(ViewerBase):
                 if extents is None:
                     width, length = 10.0, 10.0
                 else:
-                    max_extent = max(extents) * 1.5
+                    max_extent = max(max(extents) * 1.5, 8.0)
                     width = max_extent
                     length = max_extent
             else:
                 width = geo_scale[0]
                 length = geo_scale[1] if len(geo_scale) > 1 else 10.0
-            mesh = newton.Mesh.create_plane(width, length, compute_inertia=False)
-            points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
-            normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
-            uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
-            indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
-            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+            self._plane_meshes[name] = {
+                "width": float(width),
+                "length": float(length),
+            }
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
 
@@ -1144,33 +1388,17 @@ class ViewerViser(ViewerBase):
         Returns:
             URL of the player.
         """
-        import socket  # noqa: PLC0415
         import threading  # noqa: PLC0415
         from http.server import HTTPServer, SimpleHTTPRequestHandler  # noqa: PLC0415
 
-        # Get viser client directory (bundled with package at newton/_src/viewer/static/viser)
         recording_path = Path(recording_path).resolve()
         if not recording_path.exists():
             raise FileNotFoundError(f"Recording file not found: {recording_path}")
 
-        viser_client_dir = Path(__file__).parent / "viser" / "static"
-
-        if not viser_client_dir.exists():
-            raise FileNotFoundError(
-                f"Viser client files not found at {viser_client_dir}. "
-                "The notebook playback feature requires the viser client assets."
-            )
+        viser_client_dir = ViewerViser.get_viser_client_dir()
 
         # Read the recording file content
         recording_bytes = recording_path.read_bytes()
-
-        # Find an available port
-        def find_free_port():
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("", 0))
-                return s.getsockname()[1]
-
-        port = find_free_port()
 
         # Create a custom HTTP handler factory that serves both viser client and the recording
         def make_handler(recording_data: bytes, client_dir: str):
@@ -1221,8 +1449,8 @@ class ViewerViser(ViewerBase):
             return RecordingHandler
 
         handler_class = make_handler(recording_bytes, str(viser_client_dir))
-        # Bind to all interfaces so IFrame can access it
-        server = HTTPServer(("", port), handler_class)
+        server = HTTPServer(("127.0.0.1", 0), handler_class)
+        port = server.server_address[1]
 
         # Start server in background thread
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1231,47 +1459,10 @@ class ViewerViser(ViewerBase):
         # Keep playbackPath relative so notebook proxy prefixes (e.g. /lab/proxy/<port>/)
         # are preserved. Each viewer instance uses a different port, so paths stay distinct.
         playback_path = "recording.viser"
-        base_url = f"http://127.0.0.1:{port}"
-        player_url = f"{base_url}/?playbackPath={playback_path}"
-
-        # Route through Jupyter's proxy only when jupyter-server-proxy is installed.
-        # Without that package, proxy URLs may be unavailable and break playback.
-        jupyter_base_url = None
-        try:
-            from importlib.util import find_spec  # noqa: PLC0415
-
-            has_jupyter_server_proxy = find_spec("jupyter_server_proxy") is not None
-        except Exception:
-            has_jupyter_server_proxy = False
-
-        if has_jupyter_server_proxy:
-            # JUPYTER_BASE_URL is not always exported (e.g. CLI --NotebookApp.base_url).
-            # In that case, fall back to common env vars and running server metadata.
-            for env_name in ("JUPYTER_BASE_URL", "JUPYTERHUB_SERVICE_PREFIX", "NB_PREFIX"):
-                candidate = os.environ.get(env_name)
-                if candidate:
-                    jupyter_base_url = candidate
-                    break
-
-            if not jupyter_base_url:
-                try:
-                    from jupyter_server.serverapp import list_running_servers  # noqa: PLC0415
-
-                    for server in list_running_servers():
-                        candidate = server.get("base_url")
-                        if candidate:
-                            jupyter_base_url = candidate
-                            break
-                except Exception:
-                    pass
-
-            if jupyter_base_url:
-                if not jupyter_base_url.startswith("/"):
-                    jupyter_base_url = "/" + jupyter_base_url
-                if jupyter_base_url != "/":
-                    jupyter_base_url = jupyter_base_url.rstrip("/")
-                else:
-                    jupyter_base_url = ""
-                player_url = f"{jupyter_base_url}/proxy/{port}/?playbackPath={playback_path}"
+        player_url = ViewerViser._build_browser_url(
+            port,
+            query=f"?playbackPath={playback_path}",
+            local_host="127.0.0.1",
+        )
 
         return player_url + ViewerViser._camera_query_from_request(camera_request)

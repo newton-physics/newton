@@ -19,19 +19,14 @@ from newton.solvers import style3d
 
 
 class Example:
-    def __init__(
-        self,
-        viewer,
-        args=None,
-        solver_type: str = "vbd",
-        height=32,
-        width=64,
-    ):
-        # setup simulation parameters first
-        self.solver_type = solver_type
+    def __init__(self, viewer, args):
+        self.args = args
 
-        self.sim_height = height
-        self.sim_width = width
+        # setup simulation parameters first
+        self.solver_type = args.solver
+
+        self.sim_height = args.height
+        self.sim_width = args.width
         self.sim_time = 0.0
 
         self.fps = 60
@@ -204,32 +199,23 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--solver",
+            help="Type of solver",
+            type=str,
+            choices=["semi_implicit", "style3d", "xpbd", "vbd"],
+            default="vbd",
+        )
+        parser.add_argument("--width", type=int, default=64, help="Cloth resolution in x.")
+        parser.add_argument("--height", type=int, default=32, help="Cloth resolution in y.")
+        return parser
+
 
 if __name__ == "__main__":
-    # Create parser with base arguments
-    parser = newton.examples.create_parser()
-
-    # Add solver-specific arguments
-    parser.add_argument(
-        "--solver",
-        help="Type of solver",
-        type=str,
-        choices=["semi_implicit", "style3d", "xpbd", "vbd"],
-        default="vbd",
-    )
-    parser.add_argument("--width", type=int, default=64, help="Cloth resolution in x.")
-    parser.add_argument("--height", type=int, default=32, help="Cloth resolution in y.")
-
-    # Parse arguments and initialize viewer
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
-    example = Example(
-        viewer=viewer,
-        args=args,
-        solver_type=args.solver,
-        height=args.height,
-        width=args.width,
-    )
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

@@ -226,12 +226,11 @@ class MeshGL:
         #   column 3  (0,0,0,1)
         gl.glVertexAttrib4f(6, 0.0, 0.0, 0.0, 1.0)
 
-        # albedo
-        gl.glVertexAttrib3f(7, 0.7, 0.5, 0.3)
-        # material = (roughness, metallic, checker, texture_enable)
-        gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 0.0)
-
         gl.glBindVertexArray(0)
+
+        # Per-mesh albedo and material (applied in render()).
+        self.color = (0.7, 0.5, 0.3)
+        self.material = (0.5, 0.0, 0.0, 0.0)
 
         # Create CUDA-GL interop buffer for efficient updates
         if ENABLE_CUDA_INTEROP and self.device.is_cuda:
@@ -362,6 +361,10 @@ class MeshGL:
                 gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
             else:
                 gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
+
+            # Set per-mesh albedo and material (global state, not per-VAO).
+            gl.glVertexAttrib3f(7, *self.color)
+            gl.glVertexAttrib4f(8, *self.material)
 
             gl.glBindVertexArray(self.vao)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)

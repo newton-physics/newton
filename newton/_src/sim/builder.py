@@ -7783,6 +7783,7 @@ class ModelBuilder:
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
+        label: str | None = None,
     ):
         """Helper to create a regular planar cloth grid
 
@@ -7803,6 +7804,9 @@ class ModelBuilder:
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
+            label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
+                via :meth:`add_cloth_mesh` so a mesh-quality warning can identify
+                this cloth.
         """
 
         def grid_index(x, y, dim_x):
@@ -7853,6 +7857,7 @@ class ModelBuilder:
             custom_attributes_particles=custom_attributes_particles,
             custom_attributes_triangles=custom_attributes_triangles,
             custom_attributes_edges=custom_attributes_edges,
+            label=label,
         )
 
         vertex_id = 0
@@ -7898,6 +7903,8 @@ class ModelBuilder:
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
         custom_attributes_springs: dict[str, Any] | None = None,
+        validate_mesh: bool = False,
+        label: str | None = None,
     ) -> None:
         """Helper to create a cloth model from a regular triangle mesh
 
@@ -7916,6 +7923,17 @@ class ModelBuilder:
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
             custom_attributes_springs: Dictionary of custom attribute names to values for the springs.
+            validate_mesh: If True, run quality checks on the input mesh and
+                emit warnings for degenerate or sliver triangles and
+                extreme interior angles. See
+                :func:`newton.utils.validate_triangle_mesh`. (Non-manifold
+                edges are reported separately by :class:`MeshAdjacency`,
+                which is built unconditionally for the bending-edge
+                pipeline.)
+            label: Optional name forwarded to
+                :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
+                warning emitted with ``validate_mesh=True`` can identify
+                this cloth.
 
         Note:
             The mesh should be two-manifold.
@@ -7930,6 +7948,15 @@ class ModelBuilder:
         spring_ke = spring_ke if spring_ke is not None else self.default_spring_ke
         spring_kd = spring_kd if spring_kd is not None else self.default_spring_kd
         particle_radius = particle_radius if particle_radius is not None else self.default_particle_radius
+
+        if validate_mesh:
+            from ..utils.mesh import validate_triangle_mesh  # noqa: PLC0415
+
+            verts_np = np.array(vertices, dtype=float) * scale
+            inds_np = np.asarray(indices, dtype=np.intp)
+            validate_triangle_mesh(verts_np, inds_np, label=label, stacklevel=3)
+            if inds_np.size > 0 and inds_np.size % 3 != 0:
+                return
 
         num_verts = int(len(vertices))
         num_tris = int(len(indices) / 3)
@@ -8137,6 +8164,7 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        label: str | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
 
@@ -8172,6 +8200,10 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
+            label: Optional name reserved for forwarding to mesh-quality
+                diagnostics. Currently unused by ``add_soft_grid`` (the
+                generated grid is degenerate-free by construction); kept
+                for signature consistency with the other ``add_*`` helpers.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -8179,6 +8211,7 @@ class ModelBuilder:
             elastic forces. Set the triangle stiffness parameters above to non-zero values if you
             want the surface to behave like a thin skin.
         """
+        del label  # currently unused; kept on the signature for API parity
         start_vertex = len(self.particle_q)
 
         mass = cell_x * cell_y * cell_z * density
@@ -8294,6 +8327,8 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        validate_mesh: bool = False,
+        label: str | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh.
 
@@ -8332,6 +8367,13 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
+            validate_mesh: If True, check for inverted or small-volume
+                tetrahedra, sliver tetrahedra, and non-manifold faces, and
+                emit warnings. See :func:`newton.utils.validate_tet_mesh`.
+            label: Optional name forwarded to
+                :func:`newton.utils.validate_tet_mesh` so a mesh-quality
+                warning emitted with ``validate_mesh=True`` can identify
+                this soft body.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -8365,6 +8407,16 @@ class ModelBuilder:
 
         if vertices is None or indices is None:
             raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
+
+        if validate_mesh:
+            from ..utils.mesh import validate_tet_mesh  # noqa: PLC0415
+
+            verts_np = np.array(vertices, dtype=float) * scale
+            inds_np = np.asarray(indices, dtype=np.intp)
+            validate_tet_mesh(verts_np, inds_np, label=label, stacklevel=3)
+            if inds_np.size > 0 and inds_np.size % 4 != 0:
+                return
+
         if density is None:
             density = self.default_tet_density
         if k_mu is None:
