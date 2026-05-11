@@ -2702,13 +2702,19 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
             # non-trivial g(q) (mass sweeps vertically in the XZ plane).
             b1 = builder.add_link(xform=identity_xform, mass=m_first, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
             j1 = builder.add_joint_revolute(
-                parent=-1, child=b1, axis=y_axis,
-                parent_xform=identity_xform, child_xform=neg_half,
+                parent=-1,
+                child=b1,
+                axis=y_axis,
+                parent_xform=identity_xform,
+                child_xform=neg_half,
             )
             b2 = builder.add_link(xform=identity_xform, mass=m_second, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
             j2 = builder.add_joint_revolute(
-                parent=b1, child=b2, axis=y_axis,
-                parent_xform=pos_half, child_xform=neg_half,
+                parent=b1,
+                child=b2,
+                axis=y_axis,
+                parent_xform=pos_half,
+                child_xform=neg_half,
             )
             builder.add_articulation([j1, j2], label=label)
 
@@ -2734,16 +2740,14 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         state.joint_qd.assign(joint_qd)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        # Layout: 2 worlds × [A, B] with 2 DOFs each →
+        # Layout: 2 worlds, 2 articulations [A, B] per world, 2 DOFs per articulation. →
         #   articulation index  0    1    2    3
         #   label               A    B    A    B
         #   DOF range           0,1  2,3  4,5  6,7
 
         # Reference: unmasked run → full-model M, g, C.
         reference_id, reference_scratch = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(
-            model, state, newton.InverseDynamics.EvalType.ALL, reference_id, reference_scratch
-        )
+        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.ALL, reference_id, reference_scratch)
         H_ref = reference_id.mass_matrix.numpy()
         g_ref = reference_id.gravity_compensation_force.numpy()
         c_ref = reference_id.coriolis_compensation_force.numpy()
@@ -2763,22 +2767,18 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         # View pattern is shared across cases; the per-world submask and
         # the resulting selected articulations / DOFs differ per case.
         view = newton.selection.ArticulationView(model, "A", verbose=False)
-        np.testing.assert_array_equal(
-            view.articulation_mask.numpy(), [True, False, True, False]
-        )
+        np.testing.assert_array_equal(view.articulation_mask.numpy(), [True, False, True, False])
 
         # Parallel per-case data: row `i` describes case `i`.
         per_world_masks = [
             None,
-            wp.array(
-                np.asarray([True, False], dtype=bool), dtype=bool, device=self.device
-            ),
+            wp.array(np.asarray([True, False], dtype=bool), dtype=bool, device=self.device),
         ]
         # (n_cases, articulation_count): True at articulations expected to match
         # the unmasked reference; False ones must come back as zero.
         articulation_selected = np.array(
             [
-                [True, False, True, False],   # no submask → A in both worlds
+                [True, False, True, False],  # no submask → A in both worlds
                 [True, False, False, False],  # per-world [T, F] → A in world 0 only
             ]
         )
@@ -2810,21 +2810,15 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
                     for i in range(model.max_dofs_per_articulation):
                         for j in range(model.max_dofs_per_articulation):
                             if articulation_selected[case_idx, art_id]:
-                                self.assertAlmostEqual(
-                                    float(H[art_id, i, j]), float(H_ref[art_id, i, j]), delta=1e-5
-                                )
+                                self.assertAlmostEqual(float(H[art_id, i, j]), float(H_ref[art_id, i, j]), delta=1e-5)
                             else:
                                 self.assertAlmostEqual(float(H[art_id, i, j]), 0.0, delta=1e-6)
 
                 # Per-DOF bias buffers: selected DOFs match reference; the rest are zero.
                 for dof_idx in range(model.joint_dof_count):
                     if dof_selected[case_idx, dof_idx]:
-                        self.assertAlmostEqual(
-                            float(g[dof_idx]), float(g_ref[dof_idx]), delta=1e-5
-                        )
-                        self.assertAlmostEqual(
-                            float(c[dof_idx]), float(c_ref[dof_idx]), delta=1e-5
-                        )
+                        self.assertAlmostEqual(float(g[dof_idx]), float(g_ref[dof_idx]), delta=1e-5)
+                        self.assertAlmostEqual(float(c[dof_idx]), float(c_ref[dof_idx]), delta=1e-5)
                     else:
                         self.assertAlmostEqual(float(g[dof_idx]), 0.0, delta=1e-6)
                         self.assertAlmostEqual(float(c[dof_idx]), 0.0, delta=1e-6)

@@ -1687,9 +1687,7 @@ class ArticulationView:
                 articulations per world.
         """
         articulation_mask = self.get_model_articulation_mask(mask=mask)
-        eval_inverse_dynamics(
-            self.model, state, eval_type, inverse_dynamics, scratch, mask=articulation_mask
-        )
+        eval_inverse_dynamics(self.model, state, eval_type, inverse_dynamics, scratch, mask=articulation_mask)
 
     # ========================================================================================
     # Actuator parameter access
