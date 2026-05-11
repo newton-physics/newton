@@ -157,9 +157,7 @@ class InverseDynamics:
         jdc = joint_dof_count
         max_dofs = max_dofs_per_articulation
 
-        self.mass_matrix: wp.array3d[wp.float32] = wp.zeros(
-            (ac, max_dofs, max_dofs), dtype=wp.float32, device=device
-        )
+        self.mass_matrix: wp.array3d[wp.float32] = wp.zeros((ac, max_dofs, max_dofs), dtype=wp.float32, device=device)
         """Joint-space mass matrix M(q) [kg, kg·m, or kg·m^2, depending on the joint types of the row/column DOFs], shape (articulation_count, max_dofs_per_articulation, max_dofs_per_articulation), dtype float."""
 
         self.gravity_compensation_force: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)

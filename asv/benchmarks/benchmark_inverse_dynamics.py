@@ -15,7 +15,6 @@ import numpy as np
 import newton
 import newton.utils
 
-
 # Franka "ready" pose: arm bent at the elbow, end-effector pointing forward.
 # Indexed against the FR3's seven arm joints; any extra joint coordinates
 # (e.g. gripper fingers) stay at zero.

@@ -109,6 +109,8 @@ class TestInverseDynamicsBase:
         builder.add_articulation([j1, j2], label="pendulum")
 
         return builder
+
+
 class TestGravCompForce(TestInverseDynamicsBase):
     """Gravity-compensation-force tests for the two-link pendulum harness."""
 
@@ -240,7 +242,8 @@ class TestGravCompForce(TestInverseDynamicsBase):
             model=model,
             state=state,
             eval_type=newton.InverseDynamics.EvalType.GRAVITY_COMPENSATION_FORCE,
-            inverse_dynamics=inverse_dynamics, scratch=scratch,
+            inverse_dynamics=inverse_dynamics,
+            scratch=scratch,
         )
 
         measured_gravity_comp_force = inverse_dynamics.gravity_compensation_force.numpy()
@@ -849,7 +852,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
             0.0,
             # angular z about root CoM: child (offset from root CoM by
             # (-0.5, 0, 0)) carries gravity force (0, -40, 0); the torque
-            # gravity exerts about root CoM is r × F = (-0.5, 0, 0) ×
+            # gravity exerts about root CoM is r X F = (-0.5, 0, 0) X
             # (0, -40, 0) = (0, 0, +20). g(q) = ∂U/∂q is the joint-space
             # force needed to hold static, i.e. the counter-torque: -20.
             -20.0,
@@ -1241,7 +1244,8 @@ class TestGravCompForce(TestInverseDynamicsBase):
                     model=model,
                     state=state,
                     eval_type=newton.InverseDynamics.EvalType.GRAVITY_COMPENSATION_FORCE,
-                    inverse_dynamics=inverse_dynamics, scratch=scratch,
+                    inverse_dynamics=inverse_dynamics,
+                    scratch=scratch,
                 )
                 tau = inverse_dynamics.gravity_compensation_force.numpy()
 
@@ -1319,7 +1323,8 @@ class TestGravCompForce(TestInverseDynamicsBase):
             model=model,
             state=state,
             eval_type=newton.InverseDynamics.EvalType.GRAVITY_COMPENSATION_FORCE,
-            inverse_dynamics=inverse_dynamics, scratch=scratch,
+            inverse_dynamics=inverse_dynamics,
+            scratch=scratch,
         )
 
         measured = inverse_dynamics.gravity_compensation_force.numpy()
@@ -1335,12 +1340,8 @@ class TestGravCompForce(TestInverseDynamicsBase):
             with self.subTest(world=w, gravity=g):
                 expected_linear = -m * np.asarray(g, dtype=np.float64)
                 expected_angular = np.zeros(3)
-                np.testing.assert_allclose(
-                    measured[w * 6 : w * 6 + 3], expected_linear, atol=1e-5, rtol=1e-5
-                )
-                np.testing.assert_allclose(
-                    measured[w * 6 + 3 : w * 6 + 6], expected_angular, atol=1e-5, rtol=1e-5
-                )
+                np.testing.assert_allclose(measured[w * 6 : w * 6 + 3], expected_linear, atol=1e-5, rtol=1e-5)
+                np.testing.assert_allclose(measured[w * 6 + 3 : w * 6 + 6], expected_angular, atol=1e-5, rtol=1e-5)
 
 
 class TestCoriolisCompForce(TestInverseDynamicsBase):
@@ -1761,7 +1762,6 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
             v_com_values = v_com_cases[i]
             omega_values = omega_cases[i]
             with self.subTest(v_com=v_com_values, omega=omega_values):
-
                 # Set the initial pos.
                 joint_q = state.joint_q.numpy()
                 joint_q[:] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)  # pose = identity
@@ -2005,13 +2005,9 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 # Step with zero applied force and zero gravity:
                 # M * qddot = -C(q, qd) * qd = -coriolis_compensation_force.
                 solver.step(state, state_next, control, contacts, dt)
-                qddot_observed = (
-                    state_next.joint_qd.numpy() - np.asarray(joint_qd[:], dtype=np.float64)
-                ) / dt
+                qddot_observed = (state_next.joint_qd.numpy() - np.asarray(joint_qd[:], dtype=np.float64)) / dt
 
-                qddot_arr = wp.array(
-                    qddot_observed.astype(np.float32), dtype=wp.float32, device=self.device
-                )
+                qddot_arr = wp.array(qddot_observed.astype(np.float32), dtype=wp.float32, device=self.device)
                 newton.eval_inverse_dynamics_force(
                     model,
                     inverse_dynamics.mass_matrix,
@@ -2053,7 +2049,9 @@ class TestMassMatrix(TestInverseDynamicsBase):
         H_reference = newton.eval_mass_matrix(model, state).numpy()
 
         inverse_dynamics, scratch = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics, scratch)
+        newton.eval_inverse_dynamics(
+            model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics, scratch
+        )
 
         np.testing.assert_allclose(inverse_dynamics.mass_matrix.numpy(), H_reference, rtol=1e-6, atol=1e-6)
 
@@ -2220,9 +2218,15 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         #        = (1/12) * mass * diag(8, 20, 20) for full extents (4, 2, 2).
         def box_inertia(mass: float) -> wp.mat33:
             return wp.mat33(
-                mass * 8.0 / 12.0, 0.0, 0.0,
-                0.0, mass * 20.0 / 12.0, 0.0,
-                0.0, 0.0, mass * 20.0 / 12.0,
+                mass * 8.0 / 12.0,
+                0.0,
+                0.0,
+                0.0,
+                mass * 20.0 / 12.0,
+                0.0,
+                0.0,
+                0.0,
+                mass * 20.0 / 12.0,
             )
 
         # A non-identity joint-frame rotation makes the revolute axis no longer
@@ -2449,7 +2453,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             eval_type |= newton.InverseDynamics.EvalType.CORIOLIS_COMPENSATION_FORCE
 
         for joint_q_values, joint_qd_values, joint_qdd_values in zip(
-            initial_joint_positions, initial_joint_speeds, initial_joint_accelerations
+            initial_joint_positions, initial_joint_speeds, initial_joint_accelerations, strict=True
         ):
             with self.subTest(joint_q=joint_q_values, joint_qd=joint_qd_values, joint_qdd=joint_qdd_values):
                 q_pieces: list[float] = []

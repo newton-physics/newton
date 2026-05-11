@@ -101,10 +101,7 @@ class _InverseDynamicsBenchmark:
         c = self.inverse_dynamics.coriolis_compensation_force.numpy()
         tau = self.inverse_dynamics.tau.numpy()
         finite = (
-            np.all(np.isfinite(H))
-            and np.all(np.isfinite(g))
-            and np.all(np.isfinite(c))
-            and np.all(np.isfinite(tau))
+            np.all(np.isfinite(H)) and np.all(np.isfinite(g)) and np.all(np.isfinite(c)) and np.all(np.isfinite(tau))
         )
         if not finite:
             raise RuntimeError("Inverse-dynamics output contains non-finite values.")
