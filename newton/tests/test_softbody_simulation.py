@@ -89,6 +89,7 @@ def _assert_finite_state(test, q, qd):
 
 
 def test_soft_grid_free_fall(test, device, solver_name):
+    """Check that an unconstrained tet grid falls as a coherent soft body."""
     with wp.ScopedDevice(device):
         model = _build_soft_grid(device)
         solver = _make_solver(model, solver_name)
@@ -119,6 +120,7 @@ def test_soft_grid_free_fall(test, device, solver_name):
 
 
 def test_soft_grid_anchored_deforms(test, device, solver_name):
+    """Check that an anchored tet grid deforms while keeping fixed vertices pinned."""
     with wp.ScopedDevice(device):
         model = _build_soft_grid(device, fix_left=True)
         solver = _make_solver(model, solver_name)
@@ -175,5 +177,4 @@ for solver in ("semi_implicit", "xpbd", "vbd"):
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2)
