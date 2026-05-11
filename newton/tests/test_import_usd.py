@@ -7022,7 +7022,12 @@ def Xform "BodyWithoutVisuals" (
 
         mesh = builder.shape_source[collision_shape]
         self.assertIsNotNone(mesh)
-        np.testing.assert_allclose(np.array(mesh.color), np.array([0.2, 0.4, 0.6]), atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(
+            np.array(mesh.color),
+            np.array(newton.utils.color_linear_to_srgb((0.2, 0.4, 0.6))),
+            atol=1e-6,
+            rtol=1e-6,
+        )
         self.assertAlmostEqual(mesh.roughness, 0.35, places=6)
         self.assertAlmostEqual(mesh.metallic, 0.75, places=6)
 
