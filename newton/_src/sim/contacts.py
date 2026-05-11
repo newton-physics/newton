@@ -318,6 +318,14 @@ class Contacts:
             record_tape=False,
         )
 
+        # Reset per-frame new/broken report counts. These live outside
+        # ``contact_counters`` but are overwritten fresh by ``build_report``
+        # on every collision pass, so mirror that semantics in ``clear()``.
+        if self.rigid_contact_new_count is not None:
+            self.rigid_contact_new_count.zero_()
+        if self.rigid_contact_broken_count is not None:
+            self.rigid_contact_broken_count.zero_()
+
         if self.clear_buffers:
             # Conservative path: clear all buffers with sentinel values and zeros.
             # Slower than the fast path but may be useful for debugging or special cases.
@@ -342,6 +350,11 @@ class Contacts:
 
             if self.rigid_contact_match_index is not None:
                 self.rigid_contact_match_index.fill_(-1)
+
+            if self.rigid_contact_new_indices is not None:
+                self.rigid_contact_new_indices.zero_()
+            if self.rigid_contact_broken_indices is not None:
+                self.rigid_contact_broken_indices.zero_()
 
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
