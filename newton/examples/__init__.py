@@ -225,9 +225,25 @@ class _ExampleBrowser:
         if hasattr(example, "gui") and hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
 
+    def _show_splash(self, text):
+        # Raise the splash and pump a couple of frames so it actually paints
+        # before the upcoming blocking work (importlib + Example construction
+        # can take several seconds when Warp kernels recompile).
+        if not hasattr(self.viewer, "show_loading_splash"):
+            return
+        self.viewer.show_loading_splash(text)
+        for _ in range(2):
+            self.viewer.begin_frame(0.0)
+            self.viewer.end_frame()
+
+    def _hide_splash(self):
+        if hasattr(self.viewer, "hide_loading_splash"):
+            self.viewer.hide_loading_splash()
+
     def switch(self, example_class):
         """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
         module_path, self.switch_target = self.switch_target, None
+        self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
         self.viewer.clear_model()
         try:
             mod = importlib.import_module(module_path)
@@ -235,21 +251,26 @@ class _ExampleBrowser:
             example = mod.Example(self.viewer, default_args(parser))
         except Exception as e:
             warnings.warn(f"Failed to load example {module_path}: {e}", stacklevel=2)
+            self._hide_splash()
             return None, example_class
         self._register_ui(example)
+        self._hide_splash()
         return example, type(example)
 
     def reset(self, example_class):
         """Reset the current example by re-creating it. Returns the new example or None."""
         self._reset_requested = False
+        self._show_splash("Resetting...")
         self.viewer.clear_model()
         try:
             parser = getattr(example_class, "create_parser", create_parser)()
             new_example = example_class(self.viewer, default_args(parser))
         except Exception as e:
             warnings.warn(f"Failed to reset example: {e}", stacklevel=2)
+            self._hide_splash()
             return None
         self._register_ui(new_example)
+        self._hide_splash()
         return new_example
 
 
