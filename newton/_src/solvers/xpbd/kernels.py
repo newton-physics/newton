@@ -1466,6 +1466,7 @@ def solve_body_joints(
     linear_relaxation: float,
     dt: float,
     deltas: wp.array[wp.spatial_vector],
+    joint_impulse: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     type = joint_type[tid]
@@ -1933,6 +1934,13 @@ def solve_body_joints(
     if id_c >= 0:
         wp.atomic_add(deltas, id_c, wp.spatial_vector(lin_delta_c, ang_delta_c))
 
+    # Optionally accumulate the child-side spatial impulse for this joint.
+    # The convention matches `body_parent_f`: incoming joint wrench in world
+    # frame, referenced to the child body's COM (see `r_c` above which is
+    # measured from the child COM).
+    if joint_impulse:
+        wp.atomic_add(joint_impulse, tid, wp.spatial_vector(lin_delta_c, ang_delta_c))
+
 
 @wp.func
 def compute_contact_constraint_delta(
@@ -2383,6 +2391,46 @@ def convert_contact_impulse_to_force(
     f = wp.spatial_top(impulse) * inv_dt
     tau = wp.spatial_bottom(impulse) * inv_dt
     contact_force[tid] = wp.spatial_vector(f, tau)
+
+
+@wp.kernel
+def convert_joint_impulse_to_parent_f(
+    joint_impulse: wp.array[wp.spatial_vector],
+    joint_enabled: wp.array[bool],
+    joint_type: wp.array[int],
+    joint_child: wp.array[int],
+    dt: float,
+    # output
+    body_parent_f: wp.array[wp.spatial_vector],
+):
+    """Convert accumulated child-side joint impulse to ``state.body_parent_f``.
+
+    The XPBD lambda convention used by ``solve_body_joints`` already absorbs
+    one power of ``dt`` (see ``compute_positional_correction`` /
+    ``compute_angular_correction``), so dividing the accumulated spatial
+    impulse by the substep ``dt`` yields the incoming joint wrench in
+    ``[N, N·m]`` in world frame, referenced to the child body's COM --
+    matching the :attr:`State.body_parent_f` convention.
+
+    Free joints and disabled joints contribute zero (their bodies inherit
+    the zero-init from the caller).
+    """
+    tid = wp.tid()
+
+    if not joint_enabled[tid]:
+        return
+    if joint_type[tid] == JointType.FREE:
+        return
+
+    id_c = joint_child[tid]
+    if id_c < 0:
+        return
+
+    inv_dt = 1.0 / dt
+    impulse = joint_impulse[tid]
+    f = wp.spatial_top(impulse) * inv_dt
+    tau = wp.spatial_bottom(impulse) * inv_dt
+    body_parent_f[id_c] = wp.spatial_vector(f, tau)
 
 
 @wp.kernel

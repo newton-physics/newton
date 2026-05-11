@@ -125,6 +125,8 @@ jobs:
         run: df -h
 
       - name: Run Tests
+        env:
+          PYTHONFAULTHANDLER: "1"
         run: uv run --extra dev --extra torch-cu13 -m newton.tests --junit-report-xml rspec.xml
 
       - name: Check disk space (post-test)

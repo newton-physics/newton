@@ -25,7 +25,7 @@ class SimulationRunner:
         device: wp.DeviceLike = None,
         max_steps: int = 0,
         max_time: float = 0.0,
-        viewer_fps: float = 60.0,
+        viewer_fps: float = 50.0,
         sim_dt: float = 0.001,
         gravity: bool = True,
         ground: bool = True,
@@ -38,9 +38,10 @@ class SimulationRunner:
 
         # Initialize target frames per second and corresponding time-steps
         self.fps = viewer_fps
-        self.sim_dt = sim_dt
         self.frame_dt = 1.0 / self.fps
-        self.substeps = max(1, round(self.frame_dt / self.sim_dt))
+        self.substeps = max(1, round(self.frame_dt / sim_dt))
+        self.sim_dt = self.frame_dt / self.substeps
+        msg.info(f"Using sim_dt = {self.sim_dt} ({self.substeps} substeps per frame)")
 
         # Cache the device and other internal flags
         self.device = device
@@ -73,14 +74,14 @@ class SimulationRunner:
         self.reset_graph = None
         self.step_graph = None
 
-        # Capture CUDA graph if requested and available
-        self._capture()
-
         # Warm-start the simulator before rendering
         # NOTE: This compiles and loads the warp kernels prior to execution
         msg.notif("Warming up simulation...")
         self.step()
         self.reset()
+
+        # Capture CUDA graph if requested and available
+        self._capture()
 
     ###
     # Simulation API

@@ -7,7 +7,11 @@ import warnings
 import numpy as np
 import warp as wp
 
-from ..geometry.raycast import sensor_raycast_kernel, sensor_raycast_particles_kernel
+from ..geometry.raycast import (
+    sensor_raycast_kernel,
+    sensor_raycast_kernel_no_hfield,
+    sensor_raycast_particles_kernel,
+)
 from ..sim import Model, State
 
 
@@ -26,6 +30,38 @@ MAX_PARTICLE_RAY_MARCH_STEPS = 1 << 20
 
 class SensorRaycast:
     """Raycast-based depth sensor for generating depth images.
+
+    .. deprecated:: 1.2
+
+        Use :class:`~newton.sensors.SensorTiledCamera` for single-camera depth rendering.
+        Migration example for a single-world model::
+
+            import numpy as np
+            import warp as wp
+            import newton
+            from newton.sensors import SensorTiledCamera
+
+            sensor = SensorTiledCamera(model)
+            rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov_radians)
+            depth = sensor.utils.create_depth_image_output(width, height)
+
+            # Build camera-to-world transform from position / direction / up.
+            # SensorTiledCamera uses -Z as the camera forward axis.
+            d = np.asarray(camera_direction, np.float32)
+            d /= np.linalg.norm(d)
+            r = np.cross(d, np.asarray(camera_up, np.float32))
+            r /= np.linalg.norm(r)
+            u = np.cross(r, d)
+            R = np.column_stack([r, u, -d]).astype(np.float32)
+            t = wp.transformf(wp.vec3f(*camera_position), wp.quat_from_matrix(wp.mat33f(R)))
+            camera_transforms = wp.array([[t] * model.world_count], dtype=wp.transformf)
+
+            # Build BVH once; refit before frames where geometry changes.
+            newton.geometry.build_bvh_shape(model, state)
+            sensor.update(state, camera_transforms, rays, depth_image=depth)
+            # depth[0, 0] has shape (height, width) with 0.0 for no-hit by default.
+            # Pass clear_data=SensorTiledCamera.ClearData(clear_depth=-1.0) to use
+            # -1.0 as the no-hit sentinel, matching SensorRaycast's convention.
 
     The SensorRaycast simulates a depth camera by casting rays from a virtual camera through each pixel
     in an image. For each pixel, it finds the closest intersection with the scene geometry and records
@@ -84,6 +120,12 @@ class SensorRaycast:
             height: Image height in pixels
             max_distance: Maximum ray distance; rays beyond this return no hit
         """
+        warnings.warn(
+            "SensorRaycast is deprecated; use SensorTiledCamera instead. "
+            "See the SensorRaycast class docstring for a migration example.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.model = model
         self.device = model.device
         self.width = width
@@ -176,8 +218,12 @@ class SensorRaycast:
         # Launch raycast kernel for each pixel-shape combination
         # We use 3D launch with dimensions (width, height, num_shapes)
         if num_shapes > 0:
+            # Pick the lean (no-HFIELD) kernel variant when the scene has no
+            # heightfields, so non-HFIELD scenes don't pay the per-thread
+            # HeightfieldData overhead in the kernel body.
+            kernel = sensor_raycast_kernel if self.model.has_heightfields else sensor_raycast_kernel_no_hfield
             wp.launch(
-                kernel=sensor_raycast_kernel,
+                kernel=kernel,
                 dim=(self.width, self.height, num_shapes),
                 inputs=[
                     # Model data
@@ -187,6 +233,9 @@ class SensorRaycast:
                     self.model.shape_type,
                     self.model.shape_scale,
                     self.model.shape_source_ptr,
+                    self.model.shape_heightfield_index,
+                    self.model.heightfield_data,
+                    self.model.heightfield_elevations,
                     # Camera parameters
                     camera_position,
                     camera_direction,

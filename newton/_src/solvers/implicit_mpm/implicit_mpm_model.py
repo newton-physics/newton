@@ -35,6 +35,13 @@ _DEFAULT_ADHESION = 0.0
 """Default adhesion coefficient for colliders (Pa)"""
 
 
+def _reuse_or_allocate(arr: wp.array | None, num_particles: int, dtype=float) -> wp.array:
+    """Return ``arr`` if it is already sized for ``num_particles``, else allocate a fresh buffer."""
+    if arr is not None and arr.shape == (num_particles,):
+        return arr
+    return wp.empty(num_particles, dtype=dtype)
+
+
 def _particle_parameter(
     num_particles, model_value: float | wp.array | None = None, default_value=None, model_scale: wp.array | None = None
 ):
@@ -174,6 +181,20 @@ def _apply_shape_transforms(
     points[v] = p
 
 
+@wp.kernel
+def _compute_particle_volume_density(
+    particle_radius: wp.array[float],
+    particle_mass: wp.array[float],
+    particle_volume: wp.array[float],
+    particle_density: wp.array[float],
+):
+    i = wp.tid()
+    r = particle_radius[i]
+    v = 8.0 * r * r * r
+    particle_volume[i] = v
+    particle_density[i] = particle_mass[i] / v
+
+
 def _get_body_collision_shapes(model: newton.Model, body_index: int):
     """Returns the ids of the shapes of a body with active collision flags."""
 
@@ -291,38 +312,58 @@ class ImplicitMPMModel:
         self.collider_body_inv_inertia = None
         self.collider_body_q = None
 
-        self.setup_particle_material()
+        self.notify_particle_material_changed()
         self.setup_collider()
 
     def notify_particle_material_changed(self):
-        """Refresh cached extrema for material parameters.
+        """Rebind per-particle material arrays and refresh derived state.
 
-        Tracks the minimum Young's modulus and maximum hardening across
-        particles to quickly toggle code paths (e.g., compliant particles or
-        hardening enabled) without recomputing per step.
+        Called once during ``__init__`` and whenever particle counts, masses,
+        radii, or any ``model.mpm.*`` material array are reassigned. Binds
+        references from the ``model.mpm.*`` namespace (registered via
+        :meth:`SolverImplicitMPM.register_custom_attributes`) into
+        ``self.material_parameters``, then recomputes:
+
+        - ``particle_radius``, ``particle_volume``, and ``particle_density``,
+          from ``model.particle_radius`` and ``model.particle_mass``.
+        - Cached extrema (``min_young_modulus``, ``max_hardening``) and feature
+          flags (``has_viscosity``, ``has_dilatancy``) used to toggle code
+          paths without rescanning every step.
         """
         model = self.model
-        mpm_ns = getattr(model, "mpm", None)
 
-        if mpm_ns is not None and hasattr(mpm_ns, "young_modulus"):
-            self.min_young_modulus = float(np.min(mpm_ns.young_modulus.numpy()))
-        else:
-            self.min_young_modulus = _INFINITY
+        self.material_parameters.young_modulus = model.mpm.young_modulus
+        self.material_parameters.poisson_ratio = model.mpm.poisson_ratio
+        self.material_parameters.damping = model.mpm.damping
+        self.material_parameters.friction = model.mpm.friction
+        self.material_parameters.yield_pressure = model.mpm.yield_pressure
+        self.material_parameters.tensile_yield_ratio = model.mpm.tensile_yield_ratio
+        self.material_parameters.yield_stress = model.mpm.yield_stress
+        self.material_parameters.hardening = model.mpm.hardening
+        self.material_parameters.hardening_rate = model.mpm.hardening_rate
+        self.material_parameters.softening_rate = model.mpm.softening_rate
+        self.material_parameters.dilatancy = model.mpm.dilatancy
+        self.material_parameters.viscosity = model.mpm.viscosity
 
-        if mpm_ns is not None and hasattr(mpm_ns, "hardening"):
-            self.max_hardening = float(np.max(mpm_ns.hardening.numpy()))
-        else:
-            self.max_hardening = 0.0
+        self.min_young_modulus = float(np.min(self.material_parameters.young_modulus.numpy()))
+        self.max_hardening = float(np.max(self.material_parameters.hardening.numpy()))
+        self.has_viscosity = bool(np.any(self.material_parameters.viscosity.numpy() > 0))
+        self.has_dilatancy = bool(np.any(self.material_parameters.dilatancy.numpy() > 0))
 
-        if mpm_ns is not None and hasattr(mpm_ns, "viscosity"):
-            self.has_viscosity = bool(np.any(mpm_ns.viscosity.numpy() > 0))
-        else:
-            self.has_viscosity = False
-
-        if mpm_ns is not None and hasattr(mpm_ns, "dilatancy"):
-            self.has_dilatancy = bool(np.any(mpm_ns.dilatancy.numpy() > 0))
-        else:
-            self.has_dilatancy = False
+        # Recompute particle volume and density from available particle data.
+        # Assume that particles represent a cuboid volume of space, i.e., V = 8 r**3
+        # (particles are typically laid out in a grid, and represent a uniform material).
+        with wp.ScopedDevice(model.device):
+            num_particles = model.particle_q.shape[0]
+            self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
+            self.particle_volume = _reuse_or_allocate(getattr(self, "particle_volume", None), num_particles)
+            self.particle_density = _reuse_or_allocate(getattr(self, "particle_density", None), num_particles)
+            wp.launch(
+                _compute_particle_volume_density,
+                dim=num_particles,
+                inputs=[self.particle_radius, model.particle_mass],
+                outputs=[self.particle_volume, self.particle_density],
+            )
 
     def notify_collider_changed(self):
         """Refresh cached extrema for collider parameters.
@@ -339,41 +380,6 @@ class ImplicitMPMModel:
         self.min_collider_mass = np.min(dynamic_body_masses, initial=np.inf)
         self.collider.query_max_dist = self.voxel_size * math.sqrt(3.0)
         self.collider_body_count = int(np.max(body_ids + 1, initial=0))
-
-    def setup_particle_material(self):
-        """Initialize derived per-particle fields from the model.
-
-        Computes particle volumes and densities from the model's particle mass and radius.
-        Also caches extrema used by the solver for fast feature toggles.
-
-        Per-particle material parameters are read directly from the ``model.mpm.*`` namespace
-        (registered via :meth:`SolverImplicitMPM.register_custom_attributes`).
-        """
-        model = self.model
-
-        num_particles = model.particle_q.shape[0]
-
-        with wp.ScopedDevice(model.device):
-            # Assume that particles represent a cuboid volume of space, i.e, V = 8 r**3
-            # (particles are typically laid out in a grid, and represent an uniform material)
-            self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
-            self.particle_volume = wp.array(8.0 * self.particle_radius.numpy() ** 3)
-            self.particle_density = model.particle_mass / self.particle_volume
-
-        self.material_parameters.young_modulus = model.mpm.young_modulus
-        self.material_parameters.poisson_ratio = model.mpm.poisson_ratio
-        self.material_parameters.damping = model.mpm.damping
-        self.material_parameters.friction = model.mpm.friction
-        self.material_parameters.yield_pressure = model.mpm.yield_pressure
-        self.material_parameters.tensile_yield_ratio = model.mpm.tensile_yield_ratio
-        self.material_parameters.yield_stress = model.mpm.yield_stress
-        self.material_parameters.hardening = model.mpm.hardening
-        self.material_parameters.hardening_rate = model.mpm.hardening_rate
-        self.material_parameters.softening_rate = model.mpm.softening_rate
-        self.material_parameters.dilatancy = model.mpm.dilatancy
-        self.material_parameters.viscosity = model.mpm.viscosity
-
-        self.notify_particle_material_changed()
 
     def setup_collider(
         self,

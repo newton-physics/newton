@@ -125,7 +125,8 @@ class FastBuildSdf:
             wp.synchronize_device()
             del warm_mesh
 
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    # Disabled, see #2534.
+    @skip_benchmark_if(True)
     def time_build_sdf(self, max_resolution):
         mesh = newton.Mesh(self._vertices, self._indices, compute_inertia=False)
         mesh.build_sdf(max_resolution=max_resolution)

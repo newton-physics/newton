@@ -41,6 +41,7 @@ sys.path.insert(0, str(REPO_ROOT))
 # Modules for which we want API pages.  Feel free to modify.
 MODULES: list[str] = [
     "newton",
+    "newton.actuators",
     "newton.geometry",
     "newton.ik",
     "newton.math",
@@ -259,7 +260,7 @@ def write_module_page(mod_name: str) -> None:
 
             # unpack the warp scalar value, we can remove this
             # when the warp.types.scalar_base supports __str__()
-            if type(value) in wp.types.scalar_types:
+            if wp.types.is_scalar(value):
                 value = getattr(value, "value", value)
 
             lines.extend(

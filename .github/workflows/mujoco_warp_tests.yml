@@ -130,6 +130,8 @@ jobs:
         run: df -h
 
       - name: Run Tests
+        env:
+          PYTHONFAULTHANDLER: "1"
         run: uv run --no-sync -m newton.tests --junit-report-xml rspec.xml
 
       - name: Check disk space (post-test)

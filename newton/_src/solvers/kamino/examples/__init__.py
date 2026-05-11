@@ -68,8 +68,9 @@ def print_progress_bar(iteration, total, start_time, length=40, prefix="", suffi
         eta_str = "Calculating..."
         fps_str = "-- fps"
 
-    line_reset = " " * 120
-    sys.stdout.write(f"\r{line_reset}")
+    if sys.platform != "win32":
+        line_reset = " " * 120
+        sys.stdout.write(f"\r{line_reset}")
     sys.stdout.write(f"\r{prefix} |{bar}| {iteration}/{total} ETA: {eta_str} ({fps_str}) {suffix}")
     sys.stdout.flush()
 
