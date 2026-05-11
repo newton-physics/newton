@@ -1436,6 +1436,22 @@ def _resolve_asset_path(
     return asset_path
 
 
+def _get_attribute_color_space(attr: Usd.Attribute | None) -> str:
+    """Return directly authored or inherited USD color-space metadata."""
+    color_space = None
+    if attr is not None:
+        try:
+            color_space = attr.GetColorSpace()
+        except Exception:
+            color_space = None
+        if not color_space and Usd is not None:
+            try:
+                color_space = Usd.ColorSpaceAPI.ComputeColorSpaceName(attr, None)
+            except Exception:
+                color_space = None
+    return str(color_space or "")
+
+
 def _get_texture_source_color_space(shader: UsdShade.Shader | None, file_attr: Usd.Attribute | None = None) -> str:
     source_color_space = None
     if shader is not None:
@@ -1460,15 +1476,7 @@ def _get_texture_source_color_space(shader: UsdShade.Shader | None, file_attr: U
         source_color_space = None
 
     if source_color_space is None and file_attr is not None:
-        try:
-            source_color_space = file_attr.GetColorSpace()
-        except Exception:
-            source_color_space = None
-        if not source_color_space and Usd is not None:
-            try:
-                source_color_space = Usd.ColorSpaceAPI.ComputeColorSpaceName(file_attr, None)
-            except Exception:
-                source_color_space = None
+        source_color_space = _get_attribute_color_space(file_attr)
 
     return str(source_color_space or "")
 
@@ -1476,6 +1484,17 @@ def _get_texture_source_color_space(shader: UsdShade.Shader | None, file_attr: U
 def _texture_source_is_linear(color_space: str) -> bool:
     token = color_space.strip().lower()
     return token in ("identity", "raw", "data", "linear", "lin_rec709_scene") or token.startswith("lin_")
+
+
+def _color_to_display_space(
+    color: tuple[float, float, float],
+    attr: Usd.Attribute | None,
+) -> tuple[float, float, float]:
+    """Normalize a USD scalar color to Newton's display/sRGB model color space."""
+    color_space = _get_attribute_color_space(attr)
+    if not color_space or _texture_source_is_linear(color_space):
+        return color_linear_to_srgb(color)
+    return color
 
 
 def _resolve_color_texture_asset(
@@ -1535,15 +1554,18 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
     return None
 
 
-def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> Any | None:
-    """Fetch the effective input value from a shader, following connections."""
+def _get_input_value_and_attr(
+    shader: UsdShade.Shader | None,
+    names: tuple[str, ...],
+) -> tuple[Any | None, Usd.Attribute | None]:
+    """Fetch the effective input value and producing attribute from a shader."""
     if shader is None:
-        return None
+        return None, None
     try:
         if not shader.GetPrim().IsValid():
-            return None
+            return None, None
     except Exception:
-        return None
+        return None, None
 
     for name in names:
         inp = shader.GetInput(name)
@@ -1556,8 +1578,13 @@ def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> 
         if attrs:
             value = attrs[0].Get()
             if value is not None:
-                return value
-    return None
+                return value, attrs[0]
+    return None, None
+
+
+def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> Any | None:
+    """Fetch the effective input value from a shader, following connections."""
+    return _get_input_value_and_attr(shader, names)[0]
 
 
 def _empty_material_properties() -> dict[str, Any]:
@@ -1609,7 +1636,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
             source_shader = UsdShade.Shader(source[0].GetPrim())
             properties["texture"] = _find_texture_in_shader(source_shader, prim)
             if properties["texture"] is None:
-                color_value = _get_input_value(
+                color_value, color_attr = _get_input_value_and_attr(
                     source_shader,
                     (
                         "diffuseColor",
@@ -1622,11 +1649,11 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
                 )
                 coerced_color = _coerce_color(color_value)
                 if coerced_color is not None:
-                    properties["color"] = color_linear_to_srgb(coerced_color)
+                    properties["color"] = _color_to_display_space(coerced_color, color_attr)
         else:
             coerced_color = _coerce_color(color_input.Get())
             if coerced_color is not None:
-                properties["color"] = color_linear_to_srgb(coerced_color)
+                properties["color"] = _color_to_display_space(coerced_color, color_input.GetAttr())
 
     metallic_input = shader.GetInput("metallic")
     if metallic_input:
@@ -1695,7 +1722,7 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         return properties
 
     if properties["color"] is None:
-        color_value = _get_input_value(
+        color_value, color_attr = _get_input_value_and_attr(
             shader,
             (
                 "diffuse_color_constant",
@@ -1706,7 +1733,9 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
                 "displayColor",
             ),
         )
-        properties["color"] = _coerce_color(color_value)
+        color = _coerce_color(color_value)
+        if color is not None:
+            properties["color"] = _color_to_display_space(color, color_attr)
     if properties["metallic"] is None:
         metallic_value = _get_input_value(shader, ("metallic_constant", "metallic"))
         properties["metallic"] = _coerce_float(metallic_value)
@@ -1770,7 +1799,7 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
         ):
             color = _coerce_color(value)
             if color is not None:
-                properties["color"] = color
+                properties["color"] = _color_to_display_space(color, inp.GetAttr())
                 continue
 
         if properties["metallic"] is None and name_lower in ("metallic", "metallic_constant"):
@@ -1862,7 +1891,9 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     if properties["color"] is None and properties["texture"] is None:
         display_color = UsdGeom.PrimvarsAPI(target_prim).GetPrimvar("displayColor")
         if display_color:
-            properties["color"] = _coerce_color(display_color.Get())
+            color = _coerce_color(display_color.Get())
+            if color is not None:
+                properties["color"] = _color_to_display_space(color, display_color.GetAttr())
 
     return properties
 
