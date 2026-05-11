@@ -13,6 +13,11 @@ import warp as wp
 import newton
 from newton import BodyFlags, JointType, Mesh
 from newton._src.core.types import vec5
+from newton._src.solvers.mujoco.constants import (
+    KINEMATIC_ARMATURE,
+    SOLREF_MODE_MJCF_DEFAULT,
+    SOLREF_MODE_RAW,
+)
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 
@@ -1902,8 +1907,6 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
 
 class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
-    KINEMATIC_ARMATURE = 1.0e10
-
     @staticmethod
     def _build_model(*, root_kinematic: bool) -> tuple[newton.Model, int]:
         builder = newton.ModelBuilder()
@@ -1951,7 +1954,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
                 body_idx = int(dof_to_body[newton_dof])
                 is_kinematic = body_idx >= 0 and (int(body_flags[body_idx]) & int(BodyFlags.KINEMATIC)) != 0
-                expected_armature = float(self.KINEMATIC_ARMATURE if is_kinematic else joint_armature[newton_dof])
+                expected_armature = float(KINEMATIC_ARMATURE if is_kinematic else joint_armature[newton_dof])
                 actual_armature = float(dof_armature[world_idx, mjc_dof])
 
                 self.assertAlmostEqual(
@@ -9046,7 +9049,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             model.mujoco.solreflimit.assign(
                 wp.array(np.array([solref], dtype=np.float32), dtype=wp.vec2, device=model.device)
             )
-            model.mujoco.solreflimit_mode.assign(np.array([SolverMuJoCo._SOLREF_MODE_RAW], dtype=np.int32))
+            model.mujoco.solreflimit_mode.assign(np.array([SOLREF_MODE_RAW], dtype=np.int32))
 
         return SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
 
@@ -9219,7 +9222,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         model = builder.finalize()
 
         np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], [0.0, 0.0], rtol=0.0, atol=0.0)
-        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SolverMuJoCo._SOLREF_MODE_MJCF_DEFAULT)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         initial_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
@@ -9262,7 +9265,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
 
         expected_solref = np.array([0.03, 0.7], dtype=np.float64)
         np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], expected_solref, rtol=1e-6, atol=1e-6)
-        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SolverMuJoCo._SOLREF_MODE_RAW)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_RAW)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         np.testing.assert_allclose(solver.mjw_model.jnt_solref.numpy()[0, 0], expected_solref, rtol=1e-6, atol=1e-6)
@@ -9289,7 +9292,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
 
         expected_solref = np.array([0.0, 0.0], dtype=np.float64)
         np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], expected_solref, rtol=0.0, atol=0.0)
-        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SolverMuJoCo._SOLREF_MODE_RAW)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_RAW)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         np.testing.assert_allclose(solver.mjw_model.jnt_solref.numpy()[0, 0], expected_solref, rtol=0.0, atol=0.0)

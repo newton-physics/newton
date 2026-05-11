@@ -32,6 +32,17 @@ from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
+from .constants import (
+    DEFAULT_LIMIT_GAIN_ATOL,
+    DEFAULT_LIMIT_KD,
+    DEFAULT_LIMIT_KE,
+    DEFAULT_LIMIT_SOLREF,
+    HINGE_CONNECT_AXIS_OFFSET,
+    KINEMATIC_ARMATURE,
+    SOLREF_MODE_FORCE_SPACE,
+    SOLREF_MODE_MJCF_DEFAULT,
+    SOLREF_MODE_RAW,
+)
 from .kernels import (
     _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
@@ -75,9 +86,6 @@ from .kernels import (
     update_solver_options_kernel,
     update_tendon_properties_kernel,
 )
-
-HINGE_CONNECT_AXIS_OFFSET = 0.1
-"""Distance [m] along the hinge axis for the second CONNECT constraint point of a revolute loop joint."""
 
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
@@ -159,14 +167,6 @@ class SolverMuJoCo(SolverBase):
 
             solver.render_mujoco_viewer()
     """
-
-    _KINEMATIC_ARMATURE = 1.0e10
-    _DEFAULT_LIMIT_SOLREF = np.array((0.02, 1.0), dtype=np.float64)
-    _DEFAULT_LIMIT_KE = 2500.0
-    _DEFAULT_LIMIT_KD = 100.0
-    _SOLREF_MODE_FORCE_SPACE = 0
-    _SOLREF_MODE_RAW = 1
-    _SOLREF_MODE_MJCF_DEFAULT = 2
 
     class CtrlSource(IntEnum):
         """Control source for MuJoCo actuators.
@@ -531,13 +531,13 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.int32,
                 # ``mujoco.solreflimit`` needs out-of-band state because a
                 # vec2 value alone cannot distinguish all required cases:
-                # 0 = Newton force-space gains from joint_limit_ke/kd,
-                # 1 = raw MuJoCo solreflimit authored/imported exactly,
-                # 2 = implicit MJCF default (0.02, 1.0) until gains change.
+                # SOLREF_MODE_FORCE_SPACE = Newton force-space gains from joint_limit_ke/kd,
+                # SOLREF_MODE_RAW = raw MuJoCo solreflimit authored/imported exactly,
+                # SOLREF_MODE_MJCF_DEFAULT = implicit MJCF default until gains change.
                 # The mode also lets MJCF import preserve authored
                 # solreflimit="0 0", which collides with the solreflimit
                 # attribute's legacy zero sentinel.
-                default=0,
+                default=SOLREF_MODE_FORCE_SPACE,
                 namespace="mujoco",
             )
         )
@@ -4198,7 +4198,7 @@ class SolverMuJoCo(SolverBase):
             raw_solref_is_set = bool(np.any(raw_solref != 0.0))
             if joint_solref_limit_mode is not None:
                 solref_mode = int(joint_solref_limit_mode[dof_idx])
-                return solref_mode == self._SOLREF_MODE_RAW or raw_solref_is_set
+                return solref_mode == SOLREF_MODE_RAW or raw_solref_is_set
             return raw_solref_is_set
 
         def joint_uses_mjcf_default_limit_solref(dof_idx: int) -> bool:
@@ -4208,9 +4208,9 @@ class SolverMuJoCo(SolverBase):
             # ``mujoco.solreflimit`` without shadowing later Newton gain
             # edits. The mode carries the missing "implicit default" bit.
             return (
-                int(joint_solref_limit_mode[dof_idx]) == self._SOLREF_MODE_MJCF_DEFAULT
-                and np.isclose(joint_limit_ke[dof_idx], self._DEFAULT_LIMIT_KE)
-                and np.isclose(joint_limit_kd[dof_idx], self._DEFAULT_LIMIT_KD)
+                int(joint_solref_limit_mode[dof_idx]) == SOLREF_MODE_MJCF_DEFAULT
+                and np.isclose(joint_limit_ke[dof_idx], DEFAULT_LIMIT_KE, rtol=0.0, atol=DEFAULT_LIMIT_GAIN_ATOL)
+                and np.isclose(joint_limit_kd[dof_idx], DEFAULT_LIMIT_KD, rtol=0.0, atol=DEFAULT_LIMIT_GAIN_ATOL)
             )
 
         eq_constraint_type = model.equality_constraint_type.numpy()
@@ -4747,7 +4747,7 @@ class SolverMuJoCo(SolverBase):
                     "axis": wp.quat_rotate(joint_rot, wp.vec3(1.0, 0.0, 0.0)),
                     "pos": joint_pos,
                     "limited": False,
-                    "armature": self._KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start],
+                    "armature": KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start],
                     "frictionloss": joint_friction[qd_start],
                 }
                 if joint_stiffness is not None:
@@ -4817,7 +4817,7 @@ class SolverMuJoCo(SolverBase):
                     axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
 
                     joint_params = {
-                        "armature": self._KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start + i],
+                        "armature": KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start + i],
                         "pos": joint_pos,
                     }
                     # Set friction
@@ -4921,7 +4921,7 @@ class SolverMuJoCo(SolverBase):
                     axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
 
                     joint_params = {
-                        "armature": self._KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start + i],
+                        "armature": KINEMATIC_ARMATURE if child_is_kinematic else joint_armature[qd_start + i],
                         "pos": joint_pos,
                     }
                     # Set friction
@@ -5901,7 +5901,7 @@ class SolverMuJoCo(SolverBase):
                 self.newton_dof_to_body,
                 self.model.body_flags,
                 self.model.joint_armature,
-                self._KINEMATIC_ARMATURE,
+                KINEMATIC_ARMATURE,
             ],
             outputs=[self.mjw_model.dof_armature],
             device=self.model.device,
@@ -6580,22 +6580,22 @@ class SolverMuJoCo(SolverBase):
                 if joint_limit_solref_np is not None:
                     raw_solref = joint_limit_solref_np[newton_dof]
                     raw_solref_is_set = np.any(raw_solref != 0.0)
-                    if solref_mode == self._SOLREF_MODE_RAW or raw_solref_is_set:
+                    if solref_mode == SOLREF_MODE_RAW or raw_solref_is_set:
                         jnt_solref[mjc_jnt] = raw_solref
                         continue
 
                 ke = float(joint_limit_ke[newton_dof])
                 kd = float(joint_limit_kd[newton_dof])
                 if (
-                    solref_mode == self._SOLREF_MODE_MJCF_DEFAULT
-                    and np.isclose(ke, self._DEFAULT_LIMIT_KE)
-                    and np.isclose(kd, self._DEFAULT_LIMIT_KD)
+                    solref_mode == SOLREF_MODE_MJCF_DEFAULT
+                    and np.isclose(ke, DEFAULT_LIMIT_KE, rtol=0.0, atol=DEFAULT_LIMIT_GAIN_ATOL)
+                    and np.isclose(kd, DEFAULT_LIMIT_KD, rtol=0.0, atol=DEFAULT_LIMIT_GAIN_ATOL)
                 ):
-                    jnt_solref[mjc_jnt] = self._DEFAULT_LIMIT_SOLREF
+                    jnt_solref[mjc_jnt] = DEFAULT_LIMIT_SOLREF
                     continue
 
                 if ke <= 0.0:
-                    jnt_solref[mjc_jnt] = self._DEFAULT_LIMIT_SOLREF
+                    jnt_solref[mjc_jnt] = DEFAULT_LIMIT_SOLREF
                     continue
 
                 dof_idx = int(self.mj_model.jnt_dofadr[mjc_jnt])

@@ -12,6 +12,18 @@ import warp as wp
 from ...core.types import vec5
 from ...sim import BodyFlags, EqType, JointTargetMode, JointType
 from ...sim.articulation import com_twist_to_point_velocity, origin_twist_to_com_twist
+from .constants import (
+    DEFAULT_LIMIT_GAIN_ATOL,
+    DEFAULT_LIMIT_KD,
+    DEFAULT_LIMIT_KE,
+    DEFAULT_LIMIT_SOLREF_DAMPRATIO,
+    DEFAULT_LIMIT_SOLREF_TIMECONST,
+    MJ_MINMU,
+    MJ_MINVAL,
+    SOLREF_MODE_FORCE_SPACE,
+    SOLREF_MODE_MJCF_DEFAULT,
+    SOLREF_MODE_RAW,
+)
 
 
 def _import_contact_force_fn():
@@ -23,11 +35,6 @@ def _import_contact_force_fn():
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
 vec11 = wp.types.vector(length=11, dtype=wp.float32)
-
-
-# Constants
-MJ_MINVAL = 2.220446049250313e-16
-MJ_MINMU = 1e-5
 
 
 # Utility functions
@@ -192,8 +199,8 @@ def convert_solref(ke: float, kd: float, d_width: float, d_r: float) -> wp.vec2:
         timeconst = 2.0 / (kd * d_width)
         dampratio = kd / 2.0 * wp.sqrt(d_r / ke)
     else:
-        timeconst = 0.02
-        dampratio = 1.0
+        timeconst = DEFAULT_LIMIT_SOLREF_TIMECONST
+        dampratio = DEFAULT_LIMIT_SOLREF_DAMPRATIO
     # see https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
 
     return wp.vec2(timeconst, dampratio)
@@ -2379,33 +2386,35 @@ def update_jnt_solref_from_invweight0_kernel(
     if newton_dof < 0:
         return
 
-    solref_mode = int(0)
+    solref_mode = SOLREF_MODE_FORCE_SPACE
     if joint_limit_solref_mode:
-        # Mode values mirror SolverMuJoCo._SOLREF_MODE_*; kernels keep the
-        # numeric values so they can run independently of the Python class.
         solref_mode = joint_limit_solref_mode[newton_dof]
 
     if joint_limit_solref:
         raw_solref = joint_limit_solref[newton_dof]
         raw_solref_is_set = raw_solref[0] != 0.0 or raw_solref[1] != 0.0
-        if solref_mode == 1 or raw_solref_is_set:
+        if solref_mode == SOLREF_MODE_RAW or raw_solref_is_set:
             jnt_solref[world, mjc_jnt] = raw_solref
             return
 
     ke = joint_limit_ke[newton_dof]
     kd = joint_limit_kd[newton_dof]
-    if solref_mode == 2 and wp.abs(ke - 2500.0) <= 1.0e-4 and wp.abs(kd - 100.0) <= 1.0e-4:
+    if (
+        solref_mode == SOLREF_MODE_MJCF_DEFAULT
+        and wp.abs(ke - DEFAULT_LIMIT_KE) <= DEFAULT_LIMIT_GAIN_ATOL
+        and wp.abs(kd - DEFAULT_LIMIT_KD) <= DEFAULT_LIMIT_GAIN_ATOL
+    ):
         # MJCF import converts MuJoCo's implicit default solreflimit to
         # Newton's default ke/kd. Preserve the native MuJoCo default until the
         # user edits those Newton gains, then fall through to force-space
         # scaling below.
-        jnt_solref[world, mjc_jnt] = wp.vec2(0.02, 1.0)
+        jnt_solref[world, mjc_jnt] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
         return
 
     if ke <= 0.0:
         # Restore MuJoCo's compiled default so runtime ``ke -> 0`` updates
         # behave the same as a fresh model built without a custom limit solref.
-        jnt_solref[world, mjc_jnt] = wp.vec2(0.02, 1.0)
+        jnt_solref[world, mjc_jnt] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
         return
 
     dof_idx = jnt_dofadr[mjc_jnt]
