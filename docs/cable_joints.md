@@ -12,7 +12,8 @@ Implemented:
 
 - Rolling pulley links with per-iteration tangent updates and no-slip surface
   transfer.
-- Pinhole links that transfer rest length between their two adjacent spans.
+- Pinhole links that transfer rest length between their two adjacent spans
+  subject to a local capstan ratio from their bend angle and `mu`.
 - Fixed attachment links.
 - Auto-computed initial rest lengths.
 - Dynamic pulley bodies with revolute joints.
@@ -36,7 +37,7 @@ Not implemented in the current baseline:
 |------|----------|
 | `ROLLING` | Cable wraps around a circular body. Tangent points are recomputed from current geometry, route update applies `mu`-scaled surface-distance transfer, stretch constraints solve the free spans, and the separate rolling slip row applies capstan-limited spin-axis torque. |
 | `ATTACHMENT` | Cable endpoint fixed to a body-local point. |
-| `PINHOLE` | Zero-radius waypoint. Taut excess transfers between the two adjacent spans, preserving their rest-length sum. |
+| `PINHOLE` | Zero-radius waypoint. Taut excess transfers between the two adjacent spans, preserving their rest-length sum while enforcing `T_tight / T_slack <= exp(mu * theta)` from the local bend angle. |
 
 ## Solver Pipeline
 
@@ -47,7 +48,8 @@ The XPBD tendon path currently has three kernel entry points:
    - Recomputes rolling tangent points.
    - Applies the paper's `surfaceDist(old, new)` rest-length transfer, scaled
      continuously by the capstan coefficient for rolling links.
-   - Applies pinhole rest transfer between adjacent spans.
+   - Applies pinhole rest transfer between adjacent spans using the same local
+     capstan tension-ratio bound as rolling links.
    - Applies rolling capstan rest transfer by projecting adjacent tension
      estimates onto `T_tight / T_slack <= exp(mu * theta)`.
 
@@ -100,16 +102,22 @@ inside each XPBD iteration, matching Algorithm 1's ordering from the paper.
 No separate pulley-angle state is tracked.  The only rolling state is the
 body-local contact point stored per segment endpoint.
 
-Pinhole links are frictionless slip points.  A pinhole preserves the sum of the
-two adjacent rest lengths and transfers only taut excess from current span
-geometry:
+Pinhole links are zero-radius slip points attached to a body-local position. A
+pinhole preserves the sum of the two adjacent rest lengths and transfers only
+taut excess from current span geometry. The transfer is clamped by the local
+capstan ratio from the angle between incoming and outgoing cable directions:
 
 ```text
 excess_left  = max(length_left  - rest_left,  0)
 excess_right = max(length_right - rest_right, 0)
-rest_left  += excess_left - excess_right
-rest_right -= excess_left - excess_right
+T_left  = excess_left  / compliance_left
+T_right = excess_right / compliance_right
+T_tight / T_slack <= exp(mu * theta)
 ```
+
+`mu = 0` recovers a frictionless pinhole; finite `mu` reduces rest-length
+transfer; high `mu` locks the cable against a kinematic pinhole except for
+ordinary segment compliance.
 
 The stretch row remains unilateral, so slack cable is allowed.  Example tests
 still track geometric total cable length as straight spans plus rolling wrap
@@ -131,6 +139,9 @@ first finite-slip capstan criteria:
 
 - Pinhole Atwood: the heavy side descends and the light side rises through a
   pinhole.
+- Frictional pinhole `mu` sweep: zero friction slips freely, mid friction
+  reduces through-pinhole transfer, and high friction locks more than the mid
+  case.
 - Dynamic rolling pulley Atwood: the heavy side descends, the light side rises,
   and the pulley rotates from the capstan-limited rolling row.
 - Dynamic capstan `mu` sweep: zero friction does not rotate the pulley, mid
@@ -155,7 +166,60 @@ uv run --extra examples python -m unittest \
 
 Result: focused tendon capstan/equilibrium run passed 26 tests on CPU and CUDA.
 
-Additional example regressions exercise the larger routed-cable scenes:
+The VBD routed-tendon path is covered by `newton.tests.test_tendon_vbd`:
+
+- Single-span routed tendon stretch pulls a dynamic endpoint toward the
+  anchored rest length.
+- Pinhole, dynamic capstan, kinematic capstan, motorized rolling pulley,
+  high-inertia no-slip, exhausted-span saturation, and equal-weight Atwood
+  regressions mirror the XPBD physical assertions.
+- Dynamic capstan VBD also tracks the pre-contact trajectory prefix so mid
+  friction cannot overtake high friction, high friction cannot reverse
+  direction, and the light payloads cannot crest over the pulleys.
+- Compound-pulley VBD now runs the same 220-frame balanced-scene assertions as
+  the render path and hard-fails while the current VBD route is visibly
+  unstable.
+- VBD also reuses each larger routed-tendon example's `test_post_step()` and
+  `test_final()` hooks on CUDA for the pulley, pinhole, rolling pulley,
+  equilibrium, cable machine, 3D routing, and capstan scenes.  The full
+  600-frame XY-table VBD run is not used as a routine unit test because it
+  timed out after six minutes; the CUDA prefix regression now calls the same
+  example hooks.
+- Gear-pulley VBD direction is currently a known expected failure: the free
+  counterweight rises instead of falling.  The regression is in place so this
+  cannot be presented as a VBD pass again before the solver behavior is fixed.
+- VBD uses the shared routed-tendon stretch/slip projection rows inside the
+  rigid iteration; rigid joints/contacts remain on the VBD path.
+- Rolling-pulley VBD stiffness regression keeps the dynamic pulley's revolute
+  anchor drift below 5 mm with the current routed-tendon VBD tuning.
+
+Latest VBD run:
+
+```bash
+uv run --extra dev --extra examples python -m unittest \
+  newton.tests.test_tendon_vbd.TestTendonVBD \
+  -k example_assertions -q
+uv run --extra dev --extra examples python -m unittest \
+  newton.tests.test_tendon_vbd.TestTendonVBD \
+  -k vbd_compound_pulley_stays_balanced_cuda -q
+uv run --extra dev --extra examples python -m unittest \
+  newton.tests.test_tendon_vbd.TestTendonVBD \
+  -k vbd_xy_table_tracks_reference_prefix_cuda -q
+```
+
+Current result: VBD no longer passes the routed-tendon example assertions just
+because the lower-level unit kernels pass.  The compound-pulley balanced-scene
+regression is a hard failure on CPU and CUDA until that instability is fixed;
+the CUDA run reports roughly one meter of drift in a balanced scene that should
+stay within 4 cm.  The grouped CUDA example-hook run also hard-fails the
+equilibrium example (`0.0604 m` drift against a `0.05 m` limit) and kinematic
+capstan smooth-motion check (`0.101 m` and `0.071 m` steps against a `0.035 m`
+limit).  The XY-table CUDA prefix now hard-fails the example `test_final()`
+hook with `0.00752` RMS tracking error against the `0.006` example limit.  The
+gear-pulley direction/mechanical-advantage regression remains tracked as a
+CUDA expected failure.
+
+Additional XPBD example regressions exercise the larger routed-cable scenes:
 
 ```bash
 uv run --extra examples python -m unittest \

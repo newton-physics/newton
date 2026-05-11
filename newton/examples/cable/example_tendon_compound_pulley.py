@@ -18,8 +18,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.sim.builder import Axis
-from newton._src.sim.tendon import TendonLinkType
+from newton import Axis, TendonLinkType
 from newton.examples.cable.cable import assert_tendon_total_length, get_tendon_attachment_worlds, get_tendon_cable_lines
 
 
@@ -197,7 +196,9 @@ class Example:
         self.right_idx = right = builder.add_link(
             xform=wp.transform(p=self.right_pos, q=wp.quat_identity()),
             mass=self.mass_heavy,
-            inertia=box_inertia(self.mass_heavy, self.right_half_extent, self.right_half_extent, self.right_half_extent),
+            inertia=box_inertia(
+                self.mass_heavy, self.right_half_extent, self.right_half_extent, self.right_half_extent
+            ),
             lock_inertia=True,
         )
         builder.add_shape_box(
@@ -339,10 +340,7 @@ class Example:
 
     def _left_center_of_mass_z(self, body_q):
         return float(
-            (
-                self.mass_left_each * body_q[self.left_idx][2]
-                + self.mass_left_each * body_q[self.left_lower_idx][2]
-            )
+            (self.mass_left_each * body_q[self.left_idx][2] + self.mass_left_each * body_q[self.left_lower_idx][2])
             / self.mass_left_total
         )
 
@@ -511,8 +509,7 @@ class Example:
         )
         expected_accel = self._expected_no_slip_acceleration()
         assert abs(expected_accel) < 0.005, (
-            f"Compound pulley balanced setup should have near-zero no-slip acceleration: "
-            f"expected={expected_accel:.6f}"
+            f"Compound pulley balanced setup should have near-zero no-slip acceleration: expected={expected_accel:.6f}"
         )
         max_left_drift = float(np.max(np.abs(left_prefix - self._initial_left_z)))
         max_right_drift = float(np.max(np.abs(right_prefix - self._initial_right_z)))
@@ -523,14 +520,11 @@ class Example:
         )
         body_q = self.state_0.body_q.numpy()
         left_gap = float(
-            body_q[self.left_idx][2]
-            - self.left_half_extent
-            - (body_q[self.left_lower_idx][2] + self.left_half_extent)
+            body_q[self.left_idx][2] - self.left_half_extent - (body_q[self.left_lower_idx][2] + self.left_half_extent)
         )
         initial_gap = float(self.left_upper_pos[2] - self.left_lower_pos[2] - 2.0 * self.left_half_extent)
         assert abs(left_gap - initial_gap) < 0.02, (
-            f"Short cable between equal left weights should remain taut: "
-            f"gap={left_gap:.4f}, expected={initial_gap:.4f}"
+            f"Short cable between equal left weights should remain taut: gap={left_gap:.4f}, expected={initial_gap:.4f}"
         )
         for attachment in self._left_attachment_history:
             self._assert_light_attachment_stays_below_p1(attachment, body_q)

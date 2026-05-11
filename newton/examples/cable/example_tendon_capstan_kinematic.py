@@ -25,8 +25,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.sim.builder import Axis
-from newton._src.sim.tendon import TendonLinkType
+from newton import Axis, TendonLinkType
 from newton.examples.cable.cable import assert_tendon_total_length, get_tendon_cable_lines
 
 
@@ -70,8 +69,10 @@ class Example:
                 is_kinematic=True,
             )
             builder.add_shape_cylinder(
-                pulley, xform=wp.transform(q=q_cyl),
-                radius=self.pulley_radius, half_height=0.04,
+                pulley,
+                xform=wp.transform(q=q_cyl),
+                radius=self.pulley_radius,
+                half_height=0.04,
             )
             self.pulley_indices.append(pulley)
 
@@ -82,8 +83,10 @@ class Example:
             )
             builder.add_shape_box(left, hx=0.06, hy=0.06, hz=0.06)
             j1 = builder.add_joint_d6(
-                parent=-1, child=left,
-                linear_axes=planar_lin, angular_axes=planar_ang,
+                parent=-1,
+                child=left,
+                linear_axes=planar_lin,
+                angular_axes=planar_ang,
                 parent_xform=wp.transform(p=left_pos),
                 child_xform=wp.transform(),
             )
@@ -97,8 +100,10 @@ class Example:
             )
             builder.add_shape_box(right, hx=0.09, hy=0.09, hz=0.09)
             j2 = builder.add_joint_d6(
-                parent=-1, child=right,
-                linear_axes=planar_lin, angular_axes=planar_ang,
+                parent=-1,
+                child=right,
+                linear_axes=planar_lin,
+                angular_axes=planar_ang,
                 parent_xform=wp.transform(p=right_pos),
                 child_xform=wp.transform(),
             )
@@ -187,12 +192,10 @@ class Example:
                 pulley_z = body_q[p_idx][2]
                 seg = i * 2
                 assert att_r[seg][2] > pulley_z, (
-                    f"Atwood {i}: arrival tangent z={att_r[seg][2]:.3f} "
-                    f"<= center z={pulley_z:.3f}"
+                    f"Atwood {i}: arrival tangent z={att_r[seg][2]:.3f} <= center z={pulley_z:.3f}"
                 )
                 assert att_l[seg + 1][2] > pulley_z, (
-                    f"Atwood {i}: departure tangent z={att_l[seg + 1][2]:.3f} "
-                    f"<= center z={pulley_z:.3f}"
+                    f"Atwood {i}: departure tangent z={att_l[seg + 1][2]:.3f} <= center z={pulley_z:.3f}"
                 )
 
     def test_final(self):
@@ -239,8 +242,11 @@ class Example:
             self.viewer.log_state(self.state_0)
             starts, ends = get_tendon_cable_lines(self.solver, self.model, self.state_0)
             self.viewer.log_lines(
-                "cable", starts, ends,
-                colors=(0.8, 0.5, 0.2), width=0.008,
+                "cable",
+                starts,
+                ends,
+                colors=(0.8, 0.5, 0.2),
+                width=0.008,
             )
             self.viewer.end_frame()
 

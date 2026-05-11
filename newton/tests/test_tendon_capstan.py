@@ -42,7 +42,7 @@ def _box_on_planar_joint(builder, pos, mass, half_extent):
     return body
 
 
-def build_pinhole_atwood(mass_left=1.0, mass_right=3.0):
+def build_pinhole_atwood(mass_left=1.0, mass_right=3.0, mu=0.0):
     builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=-9.81)
 
     pin = builder.add_body(
@@ -66,6 +66,7 @@ def build_pinhole_atwood(mass_left=1.0, mass_right=3.0):
     builder.add_tendon_link(
         body=pin,
         link_type=int(TendonLinkType.PINHOLE),
+        mu=mu,
         offset=(0.0, 0.0, 0.0),
         axis=axis,
         compliance=1.0e-5,
@@ -127,9 +128,15 @@ def build_dynamic_pulley_atwood(mu=10.0, mass_left=1.0, mass_right=3.0, pulley_m
     inertia_y = 0.5 * pulley_mass * pulley_radius * pulley_radius
     inertia_xz = (1.0 / 12.0) * pulley_mass * (3.0 * pulley_radius * pulley_radius + (2.0 * pulley_half_height) ** 2)
     inertia = wp.mat33(
-        inertia_xz, 0.0, 0.0,
-        0.0, inertia_y, 0.0,
-        0.0, 0.0, inertia_xz,
+        inertia_xz,
+        0.0,
+        0.0,
+        0.0,
+        inertia_y,
+        0.0,
+        0.0,
+        0.0,
+        inertia_xz,
     )
     pulley = builder.add_body(
         xform=wp.transform(p=pulley_pos),
@@ -262,9 +269,15 @@ def build_motorized_pulley_drive(mu=0.0):
     inertia_z = 0.5 * pulley_mass * radius * radius
     inertia_xy = (1.0 / 12.0) * pulley_mass * (3.0 * radius * radius + (2.0 * pulley_half_height) ** 2)
     inertia = wp.mat33(
-        inertia_xy, 0.0, 0.0,
-        0.0, inertia_xy, 0.0,
-        0.0, 0.0, inertia_z,
+        inertia_xy,
+        0.0,
+        0.0,
+        0.0,
+        inertia_xy,
+        0.0,
+        0.0,
+        0.0,
+        inertia_z,
     )
     pulley = builder.add_link(
         xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0)),
@@ -442,6 +455,45 @@ def test_pinhole_slip_atwood(test, device):
         test.assertLess(right_z, 1.95, f"Heavy side should descend through pinhole slip: z={right_z:.4f}")
 
 
+def _pinhole_friction_metrics(mu, num_frames=80):
+    model, left_idx, right_idx = build_pinhole_atwood(mass_left=1.0, mass_right=3.0, mu=mu)
+    state = run_model(model, num_frames=num_frames)
+    body_q = state.body_q.numpy()
+    left_travel = float(body_q[left_idx][2]) - 2.0
+    right_travel = 2.0 - float(body_q[right_idx][2])
+    return body_q, left_travel, right_travel
+
+
+def test_frictional_pinhole_mu_controls_slip_and_locking(test, device):
+    """Pinhole friction should interpolate between free slip and locked cable transfer."""
+    with wp.ScopedDevice(device):
+        low = _pinhole_friction_metrics(mu=0.0)
+        mid = _pinhole_friction_metrics(mu=0.1)
+        high = _pinhole_friction_metrics(mu=10.0)
+
+        for label, metrics in [("low", low), ("mid", mid), ("high", high)]:
+            body_q, _left_travel, right_travel = metrics
+            test.assertTrue(np.isfinite(body_q).all(), f"Non-finite pinhole state for {label} mu")
+            test.assertGreater(right_travel, 0.03, f"Heavy side should descend for {label} mu: {right_travel:.5f}")
+
+        _, left_low, right_low = low
+        _, left_mid, right_mid = mid
+        _, _left_high, right_high = high
+
+        test.assertGreater(right_low, 0.25, f"Zero-mu pinhole should freely slip: dz={right_low:.5f}")
+        test.assertGreater(left_low, 0.20, f"Zero-mu light side should rise through pinhole: dz={left_low:.5f}")
+        test.assertGreater(
+            left_mid, 0.08, f"Mid-mu light side should still rise through partial slip: dz={left_mid:.5f}"
+        )
+        test.assertGreater(
+            right_low, right_mid + 0.10, f"Mid mu should slip less than zero mu: {right_low:.5f} vs {right_mid:.5f}"
+        )
+        test.assertGreater(
+            right_mid, right_high + 0.05, f"High mu should lock more than mid mu: {right_mid:.5f} vs {right_high:.5f}"
+        )
+        test.assertLess(right_high, 0.10, f"High-mu pinhole should lock cable transfer: dz={right_high:.5f}")
+
+
 def test_slack_pinhole_does_not_redistribute(test, device):
     """Pinholes should transfer only taut excess, not proportionally repartition slack."""
     with wp.ScopedDevice(device):
@@ -527,11 +579,23 @@ def test_dynamic_capstan_mu_controls_pulley_rotation(test, device):
         _, _, _, cable_high, theta_high, rim_high, slip_high = high
 
         test.assertLess(abs(theta_low), 0.035, f"Zero-mu dynamic pulley should not rotate: theta={theta_low:.5f}")
-        test.assertGreater(theta_mid, theta_low + 0.02, f"Mid-mu pulley should rotate in cable direction: {theta_mid:.5f}")
-        test.assertGreater(theta_high, theta_mid + 0.03, f"High-mu pulley should rotate more than mid mu: {theta_high:.5f}")
-        test.assertLess(abs(cable_high - rim_high), 0.06, f"High-mu dynamic capstan should approach no-slip: cable={cable_high:.5f}, rim={rim_high:.5f}")
-        test.assertGreater(slip_low, slip_mid, f"Dynamic slip should decrease from low to mid mu: {slip_low:.5f} <= {slip_mid:.5f}")
-        test.assertGreater(slip_mid, slip_high, f"Dynamic slip should decrease from mid to high mu: {slip_mid:.5f} <= {slip_high:.5f}")
+        test.assertGreater(
+            theta_mid, theta_low + 0.02, f"Mid-mu pulley should rotate in cable direction: {theta_mid:.5f}"
+        )
+        test.assertGreater(
+            theta_high, theta_mid + 0.03, f"High-mu pulley should rotate more than mid mu: {theta_high:.5f}"
+        )
+        test.assertLess(
+            abs(cable_high - rim_high),
+            0.06,
+            f"High-mu dynamic capstan should approach no-slip: cable={cable_high:.5f}, rim={rim_high:.5f}",
+        )
+        test.assertGreater(
+            slip_low, slip_mid, f"Dynamic slip should decrease from low to mid mu: {slip_low:.5f} <= {slip_mid:.5f}"
+        )
+        test.assertGreater(
+            slip_mid, slip_high, f"Dynamic slip should decrease from mid to high mu: {slip_mid:.5f} <= {slip_high:.5f}"
+        )
         test.assertGreater(rim_mid, 0.0, f"Mid-mu rim travel should be positive: {rim_mid:.5f}")
 
 
@@ -572,8 +636,12 @@ def test_kinematic_capstan_mu_controls_slip_and_locking(test, device):
 
         test.assertGreater(right_low, 0.18, f"Zero-mu kinematic capstan should freely slip: dz={right_low:.5f}")
         test.assertGreater(left_low, 0.08, f"Zero-mu light side should rise through slip: dz={left_low:.5f}")
-        test.assertGreater(right_low, right_mid + 0.03, f"Mid mu should slip less than zero mu: {right_low:.5f} vs {right_mid:.5f}")
-        test.assertGreater(right_mid, right_high + 0.03, f"High mu should lock more than mid mu: {right_mid:.5f} vs {right_high:.5f}")
+        test.assertGreater(
+            right_low, right_mid + 0.03, f"Mid mu should slip less than zero mu: {right_low:.5f} vs {right_mid:.5f}"
+        )
+        test.assertGreater(
+            right_mid, right_high + 0.03, f"High mu should lock more than mid mu: {right_mid:.5f} vs {right_high:.5f}"
+        )
         test.assertLess(right_high, 0.06, f"High-mu kinematic capstan should lock cable motion: dz={right_high:.5f}")
 
 
@@ -719,17 +787,35 @@ if wp.is_cuda_available():
     devices.append("cuda:0")
 
 add_test(TestTendonCapstan, "pinhole_slip_atwood", devices, test_pinhole_slip_atwood)
+add_test(
+    TestTendonCapstan,
+    "frictional_pinhole_mu_controls_slip_and_locking",
+    devices,
+    test_frictional_pinhole_mu_controls_slip_and_locking,
+)
 add_test(TestTendonCapstan, "slack_pinhole_does_not_redistribute", devices, test_slack_pinhole_does_not_redistribute)
 add_test(TestTendonCapstan, "dynamic_pulley_uses_angular_jacobian", devices, test_dynamic_pulley_uses_angular_jacobian)
-add_test(TestTendonCapstan, "pulley_inertia_limit_locks_cable_travel", devices, test_pulley_inertia_limit_locks_cable_travel)
-add_test(TestTendonCapstan, "dynamic_capstan_mu_controls_pulley_rotation", devices, test_dynamic_capstan_mu_controls_pulley_rotation)
+add_test(
+    TestTendonCapstan, "pulley_inertia_limit_locks_cable_travel", devices, test_pulley_inertia_limit_locks_cable_travel
+)
+add_test(
+    TestTendonCapstan,
+    "dynamic_capstan_mu_controls_pulley_rotation",
+    devices,
+    test_dynamic_capstan_mu_controls_pulley_rotation,
+)
 add_test(
     TestTendonCapstan,
     "dynamic_capstan_example_mid_mu_stays_below_high_mu",
     devices,
     test_dynamic_capstan_example_mid_mu_stays_below_high_mu,
 )
-add_test(TestTendonCapstan, "kinematic_capstan_mu_controls_slip_and_locking", devices, test_kinematic_capstan_mu_controls_slip_and_locking)
+add_test(
+    TestTendonCapstan,
+    "kinematic_capstan_mu_controls_slip_and_locking",
+    devices,
+    test_kinematic_capstan_mu_controls_slip_and_locking,
+)
 add_test(TestTendonCapstan, "motorized_pulley_drives_slider", devices, test_motorized_pulley_drives_slider)
 add_test(
     TestTendonCapstan,
@@ -737,9 +823,18 @@ add_test(
     devices,
     test_frictionless_motorized_pulley_does_not_drive_slider,
 )
-add_test(TestTendonCapstan, "motorized_pulley_couples_without_delay", devices, test_motorized_pulley_couples_without_delay)
-add_test(TestTendonCapstan, "motorized_pulley_updates_rest_in_first_step", devices, test_motorized_pulley_updates_rest_in_first_step)
-add_test(TestTendonCapstan, "rolling_transfer_saturates_at_zero_span", devices, test_rolling_transfer_saturates_at_zero_span)
+add_test(
+    TestTendonCapstan, "motorized_pulley_couples_without_delay", devices, test_motorized_pulley_couples_without_delay
+)
+add_test(
+    TestTendonCapstan,
+    "motorized_pulley_updates_rest_in_first_step",
+    devices,
+    test_motorized_pulley_updates_rest_in_first_step,
+)
+add_test(
+    TestTendonCapstan, "rolling_transfer_saturates_at_zero_span", devices, test_rolling_transfer_saturates_at_zero_span
+)
 
 
 if __name__ == "__main__":

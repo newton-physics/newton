@@ -4302,7 +4302,7 @@ class ModelBuilder:
 
         Args:
             body: Rigid body index this link is attached to.
-            link_type: :class:`~newton._src.sim.tendon.TendonLinkType` value
+            link_type: :class:`~newton.TendonLinkType` value
                 (0 = ROLLING, 1 = ATTACHMENT, 2 = PINHOLE).
             radius: Contact radius [m] for ROLLING links (pulley radius).
             orientation: Winding direction, +1 or -1.
@@ -10147,7 +10147,7 @@ class ModelBuilder:
             seg_count = len(self.tendon_seg_rest_length)
 
             if tendon_count > 0:
-                tendon_start = self.tendon_start + [link_count]
+                tendon_start = [*self.tendon_start, link_count]
                 m.tendon_start = wp.array(tendon_start, dtype=wp.int32)
                 m.tendon_link_body = wp.array(self.tendon_link_body, dtype=wp.int32)
                 m.tendon_link_type = wp.array(self.tendon_link_type, dtype=wp.int32)

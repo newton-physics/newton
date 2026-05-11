@@ -19,8 +19,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.sim.builder import Axis
-from newton._src.sim.tendon import TendonLinkType
+from newton import Axis, TendonLinkType
 from newton.examples.cable.cable import assert_tendon_total_length, get_tendon_cable_lines
 
 
@@ -439,12 +438,8 @@ class Example:
         early_rim_travel = np.abs(rotations[early_sample] * self._pulley_radii)
         final_rim_travel = np.abs(rotations[sample] * self._pulley_radii)
         max_frame_rotation = float(np.max(np.abs(np.diff(rotations, axis=0))))
-        inactive_early = [
-            self._pulley_names[i] for i, travel in enumerate(early_rim_travel) if float(travel) <= 0.003
-        ]
-        inactive_final = [
-            self._pulley_names[i] for i, travel in enumerate(final_rim_travel) if float(travel) <= 0.025
-        ]
+        inactive_early = [self._pulley_names[i] for i, travel in enumerate(early_rim_travel) if float(travel) <= 0.003]
+        inactive_final = [self._pulley_names[i] for i, travel in enumerate(final_rim_travel) if float(travel) <= 0.025]
         assert not inactive_early, (
             "All five gear pulleys should be coupled by the same cable early in the motion; "
             f"inactive={inactive_early}, rim_travel={early_rim_travel}"

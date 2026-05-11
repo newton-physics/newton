@@ -19,8 +19,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.sim.builder import Axis
-from newton._src.sim.tendon import TendonLinkType
+from newton import Axis, TendonLinkType
 from newton.examples.cable.cable import (
     assert_tendon_total_length,
     get_tendon_cable_lines,
@@ -276,9 +275,15 @@ class Example:
             inertia_z = 0.5 * mass * radius * radius
             inertia_xy = (1.0 / 12.0) * mass * (3.0 * radius * radius + (2.0 * half_height) ** 2)
             return wp.mat33(
-                inertia_xy, 0.0, 0.0,
-                0.0, inertia_xy, 0.0,
-                0.0, 0.0, inertia_z,
+                inertia_xy,
+                0.0,
+                0.0,
+                0.0,
+                inertia_xy,
+                0.0,
+                0.0,
+                0.0,
+                inertia_z,
             )
 
         base = builder.add_body(xform=wp.transform(), mass=0.0, is_kinematic=True, label="base")
@@ -728,9 +733,7 @@ class Example:
         )
 
         table_travel = float(np.max(np.linalg.norm(table_xy - table_xy[0], axis=1)))
-        assert table_travel > 0.01, (
-            f"No-slip rolling drive should generate table sliding: travel={table_travel:.5f}"
-        )
+        assert table_travel > 0.01, f"No-slip rolling drive should generate table sliding: travel={table_travel:.5f}"
 
         sample_times = (np.arange(len(table_xy), dtype=np.float64) + 1.0) * self.frame_dt
         reference_xy = np.array([_desired_table_xy(float(t)) for t in sample_times], dtype=np.float64)
@@ -765,7 +768,12 @@ class Example:
         )
 
         lower_mirror_error = float(
-            np.max(np.abs(pulley_rot[:, self.lower_guide_rotation_indices[0]] + pulley_rot[:, self.lower_guide_rotation_indices[1]]))
+            np.max(
+                np.abs(
+                    pulley_rot[:, self.lower_guide_rotation_indices[0]]
+                    + pulley_rot[:, self.lower_guide_rotation_indices[1]]
+                )
+            )
         )
         assert lower_mirror_error < 0.035, (
             f"Mirrored lower guide pulleys should rotate equal and opposite: error={lower_mirror_error:.5f}"

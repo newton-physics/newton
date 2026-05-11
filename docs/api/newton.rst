@@ -56,6 +56,7 @@ newton
    SDF
    ShapeFlags
    State
+   TendonLinkType
    TetMesh
 
 .. rubric:: Functions

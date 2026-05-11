@@ -10,8 +10,10 @@ Each tendon is an ordered sequence of waypoints on rigid bodies. Between
 adjacent waypoints, a unilateral distance constraint enforces the cable
 length. Rolling links use the Cable Joints tangent update and can apply finite
 capstan slip through their ``mu`` value; high ``mu`` recovers the no-slip
-baseline. Pinholes transfer rest length between their two adjacent spans as
-frictionless slip waypoints.
+baseline. Pinholes are zero-radius waypoints on a rigid body and transfer rest
+length between their adjacent spans subject to the same local capstan tension
+ratio. ``mu=0`` gives a frictionless pinhole, while higher ``mu`` increasingly
+resists slip through the point.
 """
 
 from __future__ import annotations
@@ -31,5 +33,8 @@ class TendonLinkType(IntEnum):
     length changes."""
 
     PINHOLE = 2
-    """Cable passes through a fixed point on the body. Attachment does not
-    move, but rest length transfers between adjacent segments."""
+    """Cable passes through a fixed point on the body.
+
+    Attachment follows the body point, while rest length transfers between
+    adjacent segments subject to ``mu`` and the local bend angle.
+    """

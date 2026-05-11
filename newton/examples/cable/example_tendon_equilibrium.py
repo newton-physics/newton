@@ -18,8 +18,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.sim.builder import Axis
-from newton._src.sim.tendon import TendonLinkType
+from newton import Axis, TendonLinkType
 from newton.examples.cable.cable import assert_tendon_total_length, get_tendon_cable_lines
 
 
@@ -45,9 +44,7 @@ class Example:
             mass=pulley_mass,
         )
         q_cyl = wp.quat(np.sin(np.pi / 4.0), 0.0, 0.0, np.cos(np.pi / 4.0))
-        builder.add_shape_cylinder(
-            pulley, xform=wp.transform(q=q_cyl), radius=self.pulley_radius, half_height=0.04
-        )
+        builder.add_shape_cylinder(pulley, xform=wp.transform(q=q_cyl), radius=self.pulley_radius, half_height=0.04)
 
         Dof = newton.ModelBuilder.JointDofConfig
 

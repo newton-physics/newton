@@ -19,7 +19,10 @@ from ...sim import (
 )
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
-from ..xpbd.kernels import apply_joint_forces
+from ..tendon_kernels import update_tendon_attachments
+from ..tendon_state import TendonStateMixin
+from ..xpbd.kernels import apply_body_deltas, apply_joint_forces
+from ..xpbd.tendon_kernels import solve_tendon_slip, solve_tendon_stretch
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -85,7 +88,7 @@ from .tri_mesh_collision import (
 __all__ = ["SolverVBD"]
 
 
-class SolverVBD(SolverBase):
+class SolverVBD(TendonStateMixin, SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
     This unified solver supports:
@@ -102,13 +105,12 @@ class SolverVBD(SolverBase):
         - :attr:`~newton.Model.joint_enabled` is supported for all joint types.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
           for REVOLUTE, PRISMATIC, D6 (as drives), and CABLE (as stretch/bend stiffness and damping).
-          VBD interprets ``kd`` as a dimensionless Rayleigh coefficient (``D = kd * ke``).
+          VBD drive rows interpret ``joint_target_kd`` as the authored physical damping coefficient.
         - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints. The default ``limit_kd`` in
-          :class:`~newton.ModelBuilder.JointDofConfig` is ``1e1``, which under VBD's Rayleigh
-          convention (``D = kd * ke``) can produce excessive damping. When using joint limits
-          with VBD, explicitly set ``limit_kd`` to a small value.
+          :class:`~newton.ModelBuilder.JointDofConfig` is ``1e1``. When using joint limits
+          with VBD, explicitly set ``limit_kd`` to a value appropriate for the timestep and stiffness.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_target_mode`, equality constraints, mimic constraints.
@@ -187,6 +189,7 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable angular joint constraints (FIXED/REVOLUTE/PRISMATIC/D6)
         rigid_joint_linear_kd: float = 1.0e-2,  # AVBD: Rayleigh damping coefficient for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable angular joint constraints
+        rigid_tendon_relaxation: float = 0.7,
         rigid_body_contact_buffer_size: int = 64,
         rigid_body_particle_contact_buffer_size: int = 256,
         rigid_enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
@@ -256,6 +259,8 @@ class SolverVBD(SolverBase):
                 ``rigid_joint_linear_ke``).
             rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints (paired with
                 ``rigid_joint_angular_ke``).
+            rigid_tendon_relaxation: Fixed relaxation factor for routed-tendon XPBD projection rows in each
+                VBD rigid iteration.
             rigid_body_contact_buffer_size: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
             rigid_body_particle_contact_buffer_size: Max body-particle (rigid-particle) contacts per rigid body for per-body soft-contact lists (tune based on expected body-particle contact density).
             rigid_enable_dahl_friction: Enable Dahl hysteresis friction model for cable bending (default: False).
@@ -279,6 +284,7 @@ class SolverVBD(SolverBase):
         # Common parameters
         self.iterations = iterations
         self.friction_epsilon = friction_epsilon
+        self.rigid_tendon_relaxation = max(0.0, min(1.0, rigid_tendon_relaxation))
 
         # Rigid integration mode: when True, rigid bodies are integrated by an external
         # solver (one-way coupling). SolverVBD will not move rigid bodies, but can still
@@ -302,6 +308,10 @@ class SolverVBD(SolverBase):
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
         )
+
+        # Routed tendon geometry/state is shared with XPBD. VBD uses the same
+        # stretch and slip projection rows inside the rigid AVBD iteration.
+        self._init_tendon_state(model, allocate_xpbd_lambdas=True)
 
         # Initialize rigid body system and rigid-particle (body-particle) interaction state
         self._init_rigid_system(
@@ -480,7 +490,6 @@ class SolverVBD(SolverBase):
 
             # Adjacency and dimensions
             self.rigid_adjacency = self._compute_rigid_force_element_adjacency(model).to(self.device)
-
             # Force accumulation arrays
             self.body_torques = wp.zeros(self.model.body_count, dtype=wp.vec3, device=self.device)
             self.body_forces = wp.zeros(self.model.body_count, dtype=wp.vec3, device=self.device)
@@ -489,6 +498,7 @@ class SolverVBD(SolverBase):
             self.body_hessian_aa = wp.zeros(self.model.body_count, dtype=wp.mat33, device=self.device)
             self.body_hessian_al = wp.zeros(self.model.body_count, dtype=wp.mat33, device=self.device)
             self.body_hessian_ll = wp.zeros(self.model.body_count, dtype=wp.mat33, device=self.device)
+            self.tendon_body_deltas = wp.zeros(self.model.body_count, dtype=wp.spatial_vector, device=self.device)
 
             # Per-body contact lists
             # Body-body (rigid-rigid) contact adjacency (CSR-like: per-body counts and flat index array)
@@ -1372,6 +1382,8 @@ class SolverVBD(SolverBase):
 
         self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid_history)
         self._initialize_particles(state_in, state_out, dt)
+        if self.tendon_seg_lambda is not None and state_in.body_q is not None:
+            self.tendon_seg_lambda.zero_()
 
         for iter_num in range(self.iterations):
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
@@ -1889,6 +1901,130 @@ class SolverVBD(SolverBase):
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 
+    def _update_tendon_routing(self, state_in: State) -> None:
+        """Update VBD routed-tendon geometry and rolling rest transfer for this iteration."""
+        model = self.model
+        if model.tendon_segment_count == 0 or state_in.body_q is None:
+            return
+
+        wp.launch(
+            kernel=update_tendon_attachments,
+            dim=model.tendon_count,
+            inputs=[
+                state_in.body_q,
+                model.tendon_start,
+                model.tendon_link_body,
+                model.tendon_link_type,
+                model.tendon_link_radius,
+                model.tendon_link_orientation,
+                model.tendon_link_mu,
+                model.tendon_link_offset,
+                model.tendon_link_axis,
+                self.tendon_seg_rest_length,
+                model.tendon_seg_compliance,
+                self.tendon_seg_attachment_l,
+                self.tendon_seg_attachment_r,
+                self.tendon_seg_attachment_l_local,
+                self.tendon_seg_attachment_r_local,
+                self.tendon_seg_rolling_delta_l,
+                self.tendon_seg_rolling_delta_r,
+                1,
+                1,
+            ],
+            device=self.device,
+        )
+
+    def _apply_tendon_body_deltas(self, state_in: State, state_out: State, dt: float) -> None:
+        """Apply routed-tendon XPBD deltas back into VBD's current rigid state."""
+        model = self.model
+        wp.launch(
+            kernel=apply_body_deltas,
+            dim=model.body_count,
+            inputs=[
+                state_in.body_q,
+                state_in.body_qd,
+                model.body_com,
+                model.body_inertia,
+                self.body_inv_mass_effective,
+                self.body_inv_inertia_effective,
+                self.tendon_body_deltas,
+                None,
+                dt,
+            ],
+            outputs=[
+                state_out.body_q,
+                state_out.body_qd,
+            ],
+            device=self.device,
+        )
+        wp.copy(state_in.body_q, state_out.body_q)
+        wp.copy(state_in.body_qd, state_out.body_qd)
+
+    def _project_tendon_constraints(self, state_in: State, state_out: State, dt: float) -> None:
+        """Run the same routed-tendon stretch and capstan slip rows as XPBD."""
+        model = self.model
+        if model.tendon_segment_count == 0 or state_in.body_q is None:
+            return
+
+        self._update_tendon_routing(state_in)
+
+        self.tendon_body_deltas.zero_()
+        wp.launch(
+            kernel=solve_tendon_stretch,
+            dim=model.tendon_segment_count,
+            inputs=[
+                state_in.body_q,
+                state_in.body_qd,
+                model.body_com,
+                self.body_inv_mass_effective,
+                self.body_inv_inertia_effective,
+                model.tendon_link_body,
+                model.tendon_link_type,
+                model.tendon_link_axis,
+                self.tendon_seg_rest_length,
+                self.tendon_seg_attachment_l,
+                self.tendon_seg_attachment_r,
+                self.tendon_seg_attachment_l_local,
+                self.tendon_seg_attachment_r_local,
+                model.tendon_seg_compliance,
+                model.tendon_seg_damping,
+                self.tendon_seg_lambda,
+                self.tendon_seg_delta_lambda,
+                self.tendon_seg_link_l,
+                self.rigid_tendon_relaxation,
+                dt,
+            ],
+            outputs=[self.tendon_body_deltas],
+            device=self.device,
+        )
+        self._apply_tendon_body_deltas(state_in, state_out, dt)
+
+        self.tendon_body_deltas.zero_()
+        wp.launch(
+            kernel=solve_tendon_slip,
+            dim=model.tendon_count,
+            inputs=[
+                state_in.body_q,
+                model.body_com,
+                model.tendon_start,
+                model.tendon_link_body,
+                model.tendon_link_type,
+                model.tendon_link_radius,
+                model.tendon_link_mu,
+                model.tendon_link_offset,
+                model.tendon_link_axis,
+                self.tendon_seg_rest_length,
+                self.tendon_seg_attachment_l,
+                self.tendon_seg_attachment_r,
+                model.tendon_seg_compliance,
+                self.tendon_seg_delta_lambda,
+                self.rigid_tendon_relaxation,
+            ],
+            outputs=[self.tendon_body_deltas],
+            device=self.device,
+        )
+        self._apply_tendon_body_deltas(state_in, state_out, dt)
+
     def _solve_rigid_body_iteration(
         self, state_in: State, state_out: State, control: Control, contacts: Contacts | None, dt: float
     ):
@@ -1939,12 +2075,13 @@ class SolverVBD(SolverBase):
                 )
             return
 
-        # Zero out forces and hessians
         self.body_torques.zero_()
         self.body_forces.zero_()
         self.body_hessian_aa.zero_()
         self.body_hessian_al.zero_()
         self.body_hessian_ll.zero_()
+
+        self._project_tendon_constraints(state_in, state_out, dt)
 
         body_color_groups = model.body_color_groups
 
@@ -2099,6 +2236,8 @@ class SolverVBD(SolverBase):
                 dim=color_group.size,
                 device=self.device,
             )
+
+        self._project_tendon_constraints(state_in, state_out, dt)
 
         if contacts is not None:
             # AVBD dual update: update adaptive penalties based on constraint violation

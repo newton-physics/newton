@@ -108,9 +108,7 @@ def add_test(cls, name, devices):
             model, left_idx, right_idx, pulley_idx = build_atwood_equal_weights()
             dt = 1.0 / 60.0 / 16
 
-            solver = newton.solvers.SolverXPBD(
-                model, iterations=8, joint_linear_relaxation=0.8
-            )
+            solver = newton.solvers.SolverXPBD(model, iterations=8, joint_linear_relaxation=0.8)
             s0 = model.state()
             s1 = model.state()
             control = model.control()
@@ -129,11 +127,13 @@ def add_test(cls, name, devices):
             att_l = solver.tendon_seg_attachment_l.numpy()
             pulley_z = float(s0.body_q.numpy()[pulley_idx][2])
             test.assertGreater(
-                att_r[0][2], pulley_z,
+                att_r[0][2],
+                pulley_z,
                 f"Cable should wrap over pulley: left tangent z={att_r[0][2]:.3f} <= center z={pulley_z:.3f}",
             )
             test.assertGreater(
-                att_l[1][2], pulley_z,
+                att_l[1][2],
+                pulley_z,
                 f"Cable should wrap over pulley: right tangent z={att_l[1][2]:.3f} <= center z={pulley_z:.3f}",
             )
 

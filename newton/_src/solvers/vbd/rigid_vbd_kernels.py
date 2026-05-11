@@ -1262,11 +1262,11 @@ def evaluate_joint_force_hessian(
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                lim_d = lim_kd * lim_ke
+                lim_d = 0.5 * lim_kd
                 f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
                 H_scalar = lim_ke + lim_d * inv_dt
             elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                drive_d = drive_kd * drive_ke
+                drive_d = 0.5 * drive_kd
                 vel_err = dtheta_dt - target_vel
                 f_scalar = drive_ke * err_pos + drive_d * vel_err
                 H_scalar = drive_ke + drive_d * inv_dt
@@ -1367,11 +1367,11 @@ def evaluate_joint_force_hessian(
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                lim_d = lim_kd * lim_ke
+                lim_d = 0.5 * lim_kd
                 f_scalar = lim_ke * err_pos + lim_d * dd_dt
                 H_scalar = lim_ke + lim_d * inv_dt
             elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                drive_d = drive_kd * drive_ke
+                drive_d = 0.5 * drive_kd
                 vel_err = dd_dt - target_vel
                 f_scalar = drive_ke * err_pos + drive_d * vel_err
                 H_scalar = drive_ke + drive_d * inv_dt
@@ -1520,11 +1520,11 @@ def evaluate_joint_force_hessian(
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
                         if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            lim_d = lim_kd * lim_ke
+                            lim_d = 0.5 * lim_kd
                             f_scalar = lim_ke * err_pos + lim_d * dd_dt
                             H_scalar = lim_ke + lim_d * inv_dt
                         elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                            drive_d = drive_kd * drive_ke
+                            drive_d = 0.5 * drive_kd
                             vel_err = dd_dt - target_vel
                             f_scalar = drive_ke * err_pos + drive_d * vel_err
                             H_scalar = drive_ke + drive_d * inv_dt
@@ -1585,11 +1585,11 @@ def evaluate_joint_force_hessian(
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
                         if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            lim_d = lim_kd * lim_ke
+                            lim_d = 0.5 * lim_kd
                             f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
                             H_scalar = lim_ke + lim_d * inv_dt
                         elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                            drive_d = drive_kd * drive_ke
+                            drive_d = 0.5 * drive_kd
                             vel_err = dtheta_dt - target_vel
                             f_scalar = drive_ke * err_pos + drive_d * vel_err
                             H_scalar = drive_ke + drive_d * inv_dt

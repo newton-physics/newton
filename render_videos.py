@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Render tendon/cable example scenes as MP4 videos via headless ViewerGL."""
 
+import functools
 import os
 
-os.environ["DISPLAY"] = ":99"
-
+import imageio
 import numpy as np
 import warp as wp
 
-wp.init()
-
-import imageio
 import newton
 from newton._src.sim.builder import Axis
 from newton._src.sim.tendon import TendonLinkType
 from newton.viewer import ViewerGL
+
+os.environ["DISPLAY"] = ":99"
+wp.init()
 
 OUTPUT_DIR = os.path.expanduser("~/reports/cable-sim-research")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -39,7 +39,6 @@ def get_cable_lines(solver, model, state):
     link_body = model.tendon_link_body.numpy()
     link_offset = model.tendon_link_offset.numpy()
     link_axis = model.tendon_link_axis.numpy()
-    link_radius = model.tendon_link_radius.numpy()
     body_q = state.body_q.numpy()
 
     seg = 0
@@ -59,7 +58,6 @@ def get_cable_lines(solver, model, state):
                 center = off + q[3] * t2 + np.cross(q[:3], t2) + p
                 t2n = 2.0 * np.cross(q[:3], ax)
                 normal = ax + q[3] * t2n + np.cross(q[:3], t2n)
-                radius = link_radius[i]
 
                 seg_left = seg + (i - start) - 1
                 seg_right = seg + (i - start)
@@ -100,17 +98,14 @@ def render_frame(viewer, solver, model, state, sim_time, cable_color):
     viewer.end_frame()
 
 
-_viewer = None
-
+@functools.cache
 def get_viewer():
-    global _viewer
-    if _viewer is None:
-        _viewer = ViewerGL(width=WIDTH, height=HEIGHT, headless=True)
-    return _viewer
+    return ViewerGL(width=WIDTH, height=HEIGHT, headless=True)
 
 
-def simulate_and_record(name, model, cam_pos, cam_pitch, cam_yaw,
-                        duration_s=3.0, substeps=16, cable_color=(1.0, 0.3, 0.1)):
+def simulate_and_record(
+    name, model, cam_pos, cam_pitch, cam_yaw, duration_s=3.0, substeps=16, cable_color=(1.0, 0.3, 0.1)
+):
     print(f"\n=== {name} ===")
     solver = newton.solvers.SolverXPBD(model, iterations=8, joint_linear_relaxation=0.8)
     state_0 = model.state()
@@ -130,7 +125,9 @@ def simulate_and_record(name, model, cam_pos, cam_pitch, cam_yaw,
     frame_buf = None
     out_path = os.path.join(OUTPUT_DIR, f"{name}.mp4")
     writer = imageio.get_writer(
-        out_path, fps=FPS, codec="libx264",
+        out_path,
+        fps=FPS,
+        codec="libx264",
         output_params=["-crf", "20", "-pix_fmt", "yuv420p"],
     )
 
@@ -160,11 +157,13 @@ def simulate_and_record(name, model, cam_pos, cam_pitch, cam_yaw,
 # Scene builders (same as render_examples.py)
 # ─────────────────────────────────────────────────────────────────────
 
+
 def build_pendulum():
     builder = newton.ModelBuilder(up_axis=Axis.Y, gravity=-9.81)
     anchor = builder.add_body(
         xform=wp.transform(p=wp.vec3(0.0, 2.5, 0.0), q=wp.quat_identity()),
-        mass=0.0, is_kinematic=True,
+        mass=0.0,
+        is_kinematic=True,
     )
     builder.add_shape_sphere(anchor, radius=0.04)
     weight = builder.add_body(
@@ -175,11 +174,16 @@ def build_pendulum():
 
     axis = (0.0, 0.0, 1.0)
     builder.add_tendon()
-    builder.add_tendon_link(body=anchor, link_type=int(TendonLinkType.ATTACHMENT),
-                            offset=(0.0, 0.0, 0.0), axis=axis)
-    builder.add_tendon_link(body=weight, link_type=int(TendonLinkType.ATTACHMENT),
-                            offset=(0.0, 0.1, 0.0), axis=axis,
-                            compliance=1.0e-5, damping=0.1, rest_length=-1.0)
+    builder.add_tendon_link(body=anchor, link_type=int(TendonLinkType.ATTACHMENT), offset=(0.0, 0.0, 0.0), axis=axis)
+    builder.add_tendon_link(
+        body=weight,
+        link_type=int(TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.1, 0.0),
+        axis=axis,
+        compliance=1.0e-5,
+        damping=0.1,
+        rest_length=-1.0,
+    )
     return builder.finalize()
 
 
@@ -188,7 +192,8 @@ def build_atwood():
     pulley_radius = 0.15
     pulley = builder.add_body(
         xform=wp.transform(p=wp.vec3(0.0, 2.5, 0.0), q=wp.quat_identity()),
-        mass=0.0, is_kinematic=True,
+        mass=0.0,
+        is_kinematic=True,
     )
     builder.add_shape_cylinder(pulley, radius=pulley_radius, half_height=0.04)
 
@@ -206,15 +211,28 @@ def build_atwood():
 
     axis = (0.0, 0.0, 1.0)
     builder.add_tendon()
-    builder.add_tendon_link(body=left, link_type=int(TendonLinkType.ATTACHMENT),
-                            offset=(0.0, 0.08, 0.0), axis=axis)
-    builder.add_tendon_link(body=pulley, link_type=int(TendonLinkType.ROLLING),
-                            radius=pulley_radius, orientation=-1, mu=0.0,
-                            offset=(0.0, 0.0, 0.0), axis=axis,
-                            compliance=1.0e-5, damping=0.1, rest_length=-1.0)
-    builder.add_tendon_link(body=right, link_type=int(TendonLinkType.ATTACHMENT),
-                            offset=(0.0, 0.12, 0.0), axis=axis,
-                            compliance=1.0e-5, damping=0.1, rest_length=-1.0)
+    builder.add_tendon_link(body=left, link_type=int(TendonLinkType.ATTACHMENT), offset=(0.0, 0.08, 0.0), axis=axis)
+    builder.add_tendon_link(
+        body=pulley,
+        link_type=int(TendonLinkType.ROLLING),
+        radius=pulley_radius,
+        orientation=-1,
+        mu=0.0,
+        offset=(0.0, 0.0, 0.0),
+        axis=axis,
+        compliance=1.0e-5,
+        damping=0.1,
+        rest_length=-1.0,
+    )
+    builder.add_tendon_link(
+        body=right,
+        link_type=int(TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.12, 0.0),
+        axis=axis,
+        compliance=1.0e-5,
+        damping=0.1,
+        rest_length=-1.0,
+    )
     return builder.finalize()
 
 
@@ -223,12 +241,14 @@ def build_compound():
     r1, r2 = 0.12, 0.10
     pulley1 = builder.add_body(
         xform=wp.transform(p=wp.vec3(-0.4, 2.8, 0.0), q=wp.quat_identity()),
-        mass=0.0, is_kinematic=True,
+        mass=0.0,
+        is_kinematic=True,
     )
     builder.add_shape_cylinder(pulley1, radius=r1, half_height=0.04)
     pulley2 = builder.add_body(
         xform=wp.transform(p=wp.vec3(0.4, 2.4, 0.0), q=wp.quat_identity()),
-        mass=0.0, is_kinematic=True,
+        mass=0.0,
+        is_kinematic=True,
     )
     builder.add_shape_cylinder(pulley2, radius=r2, half_height=0.04)
 
@@ -245,39 +265,72 @@ def build_compound():
 
     axis = (0.0, 0.0, 1.0)
     builder.add_tendon()
-    builder.add_tendon_link(body=left, link_type=int(TendonLinkType.ATTACHMENT),
-                            offset=(0.0, 0.09, 0.0), axis=axis)
-    builder.add_tendon_link(body=pulley1, link_type=int(TendonLinkType.ROLLING),
-                            radius=r1, orientation=-1, mu=0.0,
-                            offset=(0.0, 0.0, 0.0), axis=axis,
-                            compliance=1.0e-5, damping=0.1, rest_length=-1.0)
-    builder.add_tendon_link(body=pulley2, link_type=int(TendonLinkType.ROLLING),
-                            radius=r2, orientation=-1, mu=0.0,
-                            offset=(0.0, 0.0, 0.0), axis=axis,
-                            compliance=1.0e-5, damping=0.1, rest_length=-1.0)
-    builder.add_tendon_link(body=right, link_type=int(TendonLinkType.ATTACHMENT),
-                            offset=(0.0, 0.13, 0.0), axis=axis,
-                            compliance=1.0e-5, damping=0.1, rest_length=-1.0)
+    builder.add_tendon_link(body=left, link_type=int(TendonLinkType.ATTACHMENT), offset=(0.0, 0.09, 0.0), axis=axis)
+    builder.add_tendon_link(
+        body=pulley1,
+        link_type=int(TendonLinkType.ROLLING),
+        radius=r1,
+        orientation=-1,
+        mu=0.0,
+        offset=(0.0, 0.0, 0.0),
+        axis=axis,
+        compliance=1.0e-5,
+        damping=0.1,
+        rest_length=-1.0,
+    )
+    builder.add_tendon_link(
+        body=pulley2,
+        link_type=int(TendonLinkType.ROLLING),
+        radius=r2,
+        orientation=-1,
+        mu=0.0,
+        offset=(0.0, 0.0, 0.0),
+        axis=axis,
+        compliance=1.0e-5,
+        damping=0.1,
+        rest_length=-1.0,
+    )
+    builder.add_tendon_link(
+        body=right,
+        link_type=int(TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.13, 0.0),
+        axis=axis,
+        compliance=1.0e-5,
+        damping=0.1,
+        rest_length=-1.0,
+    )
     return builder.finalize()
 
 
 if __name__ == "__main__":
     simulate_and_record(
-        "pendulum", build_pendulum(),
-        cam_pos=wp.vec3(0.0, 1.5, 5.0), cam_pitch=-5.0, cam_yaw=-90.0,
-        duration_s=4.0, cable_color=(1.0, 0.4, 0.1),
+        "pendulum",
+        build_pendulum(),
+        cam_pos=wp.vec3(0.0, 1.5, 5.0),
+        cam_pitch=-5.0,
+        cam_yaw=-90.0,
+        duration_s=4.0,
+        cable_color=(1.0, 0.4, 0.1),
     )
 
     simulate_and_record(
-        "atwood", build_atwood(),
-        cam_pos=wp.vec3(0.0, 1.5, 4.0), cam_pitch=-5.0, cam_yaw=-90.0,
-        duration_s=4.0, cable_color=(0.9, 0.2, 0.2),
+        "atwood",
+        build_atwood(),
+        cam_pos=wp.vec3(0.0, 1.5, 4.0),
+        cam_pitch=-5.0,
+        cam_yaw=-90.0,
+        duration_s=4.0,
+        cable_color=(0.9, 0.2, 0.2),
     )
 
     simulate_and_record(
-        "compound", build_compound(),
-        cam_pos=wp.vec3(0.0, 1.8, 4.5), cam_pitch=-5.0, cam_yaw=-90.0,
-        duration_s=4.0, cable_color=(0.2, 0.7, 1.0),
+        "compound",
+        build_compound(),
+        cam_pos=wp.vec3(0.0, 1.8, 4.5),
+        cam_pitch=-5.0,
+        cam_yaw=-90.0,
+        duration_s=4.0,
+        cable_color=(0.2, 0.7, 1.0),
     )
 
     print(f"\nAll videos saved to {OUTPUT_DIR}/")

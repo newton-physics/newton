@@ -28,16 +28,18 @@ class FakeArgs:
 
 
 def render_example(name, module_path, viewer):
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Rendering: {name}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     mod = importlib.import_module(module_path)
     example = mod.Example(viewer, FakeArgs())
 
     mp4_path = os.path.join(REPORT_DIR, f"{name}.mp4")
     writer = imageio.get_writer(
-        mp4_path, fps=FPS, codec="libx264",
+        mp4_path,
+        fps=FPS,
+        codec="libx264",
         output_params=["-crf", "20", "-pix_fmt", "yuv420p"],
     )
 
@@ -60,12 +62,14 @@ def render_example(name, module_path, viewer):
 
 def run_slip_sweep():
     """Sweep mu values and measure heavy-mass displacement after 5 seconds."""
-    mu_values = np.concatenate([
-        np.linspace(0.0, 0.1, 5),
-        np.linspace(0.15, 0.5, 8),
-        np.linspace(0.6, 1.0, 3),
-        np.array([2.0, 5.0, 10.0]),
-    ])
+    mu_values = np.concatenate(
+        [
+            np.linspace(0.0, 0.1, 5),
+            np.linspace(0.15, 0.5, 8),
+            np.linspace(0.6, 1.0, 3),
+            np.array([2.0, 5.0, 10.0]),
+        ]
+    )
     mu_values = np.sort(np.unique(mu_values))
 
     fps = 60
@@ -101,14 +105,17 @@ def run_slip_sweep():
 
             q_cyl = wp.quat(np.sin(np.pi / 4.0), 0.0, 0.0, np.cos(np.pi / 4.0))
             builder.add_shape_cylinder(
-                pulley, xform=wp.transform(q=q_cyl),
-                radius=pulley_radius, half_height=0.04,
+                pulley,
+                xform=wp.transform(q=q_cyl),
+                radius=pulley_radius,
+                half_height=0.04,
             )
 
             if mode == "dynamic":
                 Dof = newton.ModelBuilder.JointDofConfig
                 j_pulley = builder.add_joint_d6(
-                    parent=-1, child=pulley,
+                    parent=-1,
+                    child=pulley,
                     linear_axes=[],
                     angular_axes=[Dof(axis=Axis.Y)],
                     parent_xform=wp.transform(p=pulley_pos),
@@ -127,8 +134,10 @@ def run_slip_sweep():
             )
             builder.add_shape_box(left, hx=0.06, hy=0.06, hz=0.06)
             j1 = builder.add_joint_d6(
-                parent=-1, child=left,
-                linear_axes=planar_lin, angular_axes=planar_ang,
+                parent=-1,
+                child=left,
+                linear_axes=planar_lin,
+                angular_axes=planar_ang,
                 parent_xform=wp.transform(p=left_pos),
                 child_xform=wp.transform(),
             )
@@ -141,8 +150,10 @@ def run_slip_sweep():
             )
             builder.add_shape_box(right, hx=0.09, hy=0.09, hz=0.09)
             j2 = builder.add_joint_d6(
-                parent=-1, child=right,
-                linear_axes=planar_lin, angular_axes=planar_ang,
+                parent=-1,
+                child=right,
+                linear_axes=planar_lin,
+                angular_axes=planar_ang,
                 parent_xform=wp.transform(p=right_pos),
                 child_xform=wp.transform(),
             )
@@ -221,6 +232,7 @@ def run_slip_sweep():
 def generate_graph(results_kin, results_dyn):
     """Generate slip-vs-mu graph as PNG."""
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -239,19 +251,24 @@ def generate_graph(results_kin, results_dyn):
     else:
         norm_dyn = disp_dyn
 
-    ax.plot(mu_kin, norm_kin, "o-", color="#2196F3", linewidth=2, markersize=5,
-            label="Kinematic pulley (fixed)")
-    ax.plot(mu_dyn, norm_dyn, "s-", color="#FF5722", linewidth=2, markersize=5,
-            label="Dynamic pulley (m=5 kg)")
+    ax.plot(mu_kin, norm_kin, "o-", color="#2196F3", linewidth=2, markersize=5, label="Kinematic pulley (fixed)")
+    ax.plot(mu_dyn, norm_dyn, "s-", color="#FF5722", linewidth=2, markersize=5, label="Dynamic pulley (m=5 kg)")
 
     mu_crit_kin = np.log(3.0) / np.pi
-    ax.axvline(mu_crit_kin, color="#2196F3", linestyle="--", alpha=0.5,
-               label=f"$\\mu_{{crit}}$ kinematic = ln(3)/$\\pi$ = {mu_crit_kin:.3f}")
+    ax.axvline(
+        mu_crit_kin,
+        color="#2196F3",
+        linestyle="--",
+        alpha=0.5,
+        label=f"$\\mu_{{crit}}$ kinematic = ln(3)/$\\pi$ = {mu_crit_kin:.3f}",
+    )
 
     ax.set_xlabel("Friction coefficient $\\mu$", fontsize=13)
     ax.set_ylabel("Normalized peak displacement\n(1.0 = frictionless)", fontsize=13)
-    ax.set_title("Capstan Friction: Heavy-Mass Peak Displacement vs. $\\mu$\n"
-                 "(3:1 Atwood machine, half-wrap, 1.5s simulation)", fontsize=14)
+    ax.set_title(
+        "Capstan Friction: Heavy-Mass Peak Displacement vs. $\\mu$\n(3:1 Atwood machine, half-wrap, 1.5s simulation)",
+        fontsize=14,
+    )
     ax.legend(fontsize=11)
     ax.set_xlim(-0.02, 1.1)
     ax.set_ylim(-0.05, 1.15)
@@ -289,7 +306,7 @@ def main():
     # p3 = generate_graph(results_kin, results_dyn)
     p3 = None
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("Done. Outputs:")
     base = "https://reports.mmacklin.com/cable-sim-research"
     for p in [p1, p2, p3] if p3 else [p1, p2]:
