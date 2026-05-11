@@ -4,6 +4,7 @@
 import importlib.util
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -51,6 +52,9 @@ class TestChangedTestDurationCheck(unittest.TestCase):
 
         self.assertEqual(failures, [("TestChanged", "test_slow", 31.0, "ubuntu-latest")])
         self.assertEqual(warnings, [])
+
+    def test_intentional_duration_gate_probe(self):
+        time.sleep(31.0)
 
 
 if __name__ == "__main__":
