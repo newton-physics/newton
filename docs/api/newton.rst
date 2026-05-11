@@ -48,6 +48,7 @@ newton
    GeoType
    Heightfield
    InverseDynamics
+   InverseDynamicsScratchBuffer
    JointTargetMode
    JointType
    Mesh
@@ -69,6 +70,7 @@ newton
    eval_fk
    eval_ik
    eval_inverse_dynamics
+   eval_inverse_dynamics_force
    eval_jacobian
    eval_mass_matrix
 
