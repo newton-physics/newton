@@ -53,9 +53,6 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs: run-newton-tests
-    permissions:
-      contents: read
-      pull-requests: read
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
@@ -66,6 +63,10 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version-file: ".python-version"
       - name: Download test timing results
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
@@ -74,15 +75,7 @@ jobs:
       - name: Check changed test durations
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha }}
-          HEAD_REF: ${{ github.sha }}
-        run: |
-          python scripts/ci/check_test_durations.py \
-            --junit-root test-results \
-            --base-ref "$BASE_REF" \
-            --head-ref "$HEAD_REF" \
-            --warn-seconds 10 \
-            --fail-seconds 30 \
-            --summary-file "$GITHUB_STEP_SUMMARY"
+        run: python scripts/ci/check_test_durations.py
 
   pull-request-docs:
     runs-on: ubuntu-latest
