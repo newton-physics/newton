@@ -763,6 +763,61 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     <td align="center" width="33%">
     </td>
   </tr>
+  <tr>
+    <td colspan="3"><h3>Kamino Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_basic_dr_testmech.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_basic_dr_testmech.jpg" alt="Kamino DR Testmech">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_basic_fourbar.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_basic_fourbar.jpg" alt="Kamino Fourbar">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_basic_heterogeneous.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_basic_heterogeneous.jpg" alt="Kamino Heterogeneous">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_basic_dr_testmech</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_basic_fourbar</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_basic_heterogeneous</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_robot_anymal_d.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_robot_anymal_d.jpg" alt="Kamino Anymal D">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_robot_dr_legs.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_robot_dr_legs.jpg" alt="Kamino DR Legs">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_robot_anymal_d</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_robot_dr_legs</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
 </table>
 
 ### Example Options
