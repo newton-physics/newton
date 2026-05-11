@@ -326,7 +326,7 @@ def sync_index_toctree(modules: list[str]) -> None:
     body_lines.append("")
     body_lines.append(TOCTREE_MARKER_END)
     new_block = "\n".join(body_lines)
-    new_text = text[:start] + new_block + text[end + len(TOCTREE_MARKER_END):]
+    new_text = text[:start] + new_block + text[end + len(TOCTREE_MARKER_END) :]
     if new_text != text:
         INDEX_RST.write_text(new_text)
         print(f"Updated API Reference toctree in {INDEX_RST.relative_to(REPO_ROOT)} ({len(modules)} entries)")
