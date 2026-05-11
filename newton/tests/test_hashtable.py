@@ -76,7 +76,6 @@ def test_insert_single_slot(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Find the entry
     keys_np = ht.keys.numpy()
@@ -116,7 +115,6 @@ def test_atomic_max_behavior(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Find the entry
     keys_np = ht.keys.numpy()
@@ -154,7 +152,6 @@ def test_multiple_keys(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Check that we have 100 entries
     keys_np = ht.keys.numpy()
@@ -189,7 +186,6 @@ def test_clear(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Verify data exists
     keys_np = ht.keys.numpy()
@@ -230,7 +226,6 @@ def test_clear_active(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Verify data exists
     active_count = ht.active_slots.numpy()[ht.capacity]
@@ -278,7 +273,6 @@ def test_high_collision(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Should have exactly 10 unique keys
     keys_np = ht.keys.numpy()
@@ -318,7 +312,6 @@ def test_early_exit_optimization(test, device):
         inputs=[ht.keys, values, ht.active_slots],
         device=device,
     )
-    wp.synchronize()
 
     # Find the entry
     keys_np = ht.keys.numpy()

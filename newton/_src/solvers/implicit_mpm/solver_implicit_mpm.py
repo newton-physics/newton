@@ -4,6 +4,7 @@
 """Implicit MPM solver."""
 
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -15,6 +16,7 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
+from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .rasterized_collisions import (
@@ -118,6 +120,40 @@ def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
         max_points_per_cell = -1
 
     return fem.PointBasisSpace(pic, max_nodes_per_element=max_points_per_cell, use_evaluation_point_index=True)
+
+
+_RheologySolverName = Literal[
+    "auto",
+    "gs",
+    "gauss-seidel",
+    "gs-soa",
+    "gauss-seidel-soa",
+    "gs-batched",
+    "gauss-seidel-batched",
+    "jacobi",
+    "cg",
+    "cr",
+    "gmres",
+]
+_MPMVelocityBasisName = Literal["Q1", "B2", "B3"]
+# Python typing cannot express the accepted ``"pic"`` / ``"picN"`` basis family.
+_MPMColliderBasisName = Literal["Q1", "S2", "pic", "pic8", "pic27"] | str
+_MPMStrainBasisName = Literal["P0", "P1d", "Q1", "Q1d", "pic", "pic8", "pic27"] | str
+
+
+def _resolve_solver_spec(
+    solver: _RheologySolverName | Sequence[_RheologySolverName], velocity_basis: str
+) -> tuple[str, ...]:
+    solvers = (solver,) if isinstance(solver, str) else tuple(solver)
+    if len(solvers) == 0:
+        raise ValueError("Solver sequence must contain at least one solver.")
+
+    def resolve_auto(solver_name: _RheologySolverName) -> str:
+        if solver_name == "auto":
+            return "gs-batched" if velocity_basis in ("B2", "B3") else "gs"
+        return solver_name
+
+    return tuple(resolve_auto(solver_name) for solver_name in solvers)
 
 
 class ImplicitMPMScratchpad:
@@ -616,8 +652,15 @@ class SolverImplicitMPM(SolverBase):
         """Maximum number of iterations for the rheology solver."""
         tolerance: float = 1.0e-4
         """Tolerance for the rheology solver."""
-        solver: Literal["gauss-seidel", "jacobi", "cg"] = "gauss-seidel"
-        """Solver to use for the rheology solver."""
+        solver: _RheologySolverName | Sequence[_RheologySolverName] = "auto"
+        """Solver to use for the rheology solver. ``"auto"`` selects ``"gs"``
+        for Q1 velocity basis and ``"gs-batched"`` for higher-order bases
+        (B2, B3).  Accepted values: ``"auto"``, ``"gs"`` (or
+        ``"gauss-seidel"``), ``"gs-soa"`` (or ``"gauss-seidel-soa"``),
+        ``"gs-batched"`` (or ``"gauss-seidel-batched"``), ``"jacobi"``,
+        ``"cg"``, ``"cr"``, ``"gmres"``.  Pass an ordered sequence to
+        warmstart solvers left-to-right, e.g. ``("cr", "gs")`` or
+        ``("cg", "jacobi", "gs")``."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
         """Warmstart mode to use for the rheology solver."""
         collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
@@ -652,12 +695,20 @@ class SolverImplicitMPM(SolverBase):
         # experimental
         collider_normal_from_sdf_gradient: bool = False
         """Compute collider normals from sdf gradient rather than closest point"""
-        collider_basis: str = "Q1"
-        """Collider basis function string. Examples: P0 (piecewise constant), Q1 (trilinear), S2 (quadratic serendipity), pic8 (particle-based with max 8 points per cell)"""
-        strain_basis: str = "P0"
-        """Strain basis functions. May be one of P0, P1d, Q1, Q1d, or pic[n]."""
-        velocity_basis: str = "Q1"
-        """Velocity basis function string. Examples: B2 (quadratic b-spline), Q1 (trilinear)"""
+        collider_basis: _MPMColliderBasisName = "S2"
+        """Collider basis function. Defaults to ``"S2"``; pass ``"Q1"``
+        to restore the previous trilinear collider basis. Common values are
+        ``"Q1"`` (trilinear), ``"S2"`` (quadratic serendipity), or
+        ``"pic"``, ``"pic8"``, ``"pic27"``
+        (particle-based with optional max points per cell). Any ``"picN"``
+        form with integer ``N`` is accepted."""
+        strain_basis: _MPMStrainBasisName = "P0"
+        """Strain basis function. Common values are ``"P0"``, ``"P1d"``,
+        ``"Q1"``, ``"Q1d"``, or particle-based ``"pic"``, ``"pic8"``,
+        ``"pic27"``. Any ``"picN"`` form with integer ``N`` is accepted."""
+        velocity_basis: _MPMVelocityBasisName = "Q1"
+        """Velocity basis function. Common values are ``"Q1"``, ``"B2"``,
+        or ``"B3"``."""
 
     @classmethod
     def register_custom_attributes(cls, builder: newton.ModelBuilder) -> None:
@@ -887,8 +938,8 @@ class SolverImplicitMPM(SolverBase):
 
         self.grid_padding = config.grid_padding
         self.grid_type = config.grid_type
-        self.solver = config.solver
-        self.coloring = "gauss-seidel" in self.solver
+        self.solver = _resolve_solver_spec(config.solver, self.velocity_basis)
+        self.coloring = any("gauss-seidel" in solver or "gs" in solver for solver in self.solver)
         self.apic = config.transfer_scheme == "apic"
         self.gimp = config.integration_scheme == "gimp"
         self.max_active_cell_count = config.max_active_cell_count
@@ -1035,7 +1086,8 @@ class SolverImplicitMPM(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        self._mpm_model.notify_particle_material_changed()
+        if flags & SolverNotifyFlags.MODEL_PROPERTIES:
+            self._mpm_model.notify_particle_material_changed()
 
     def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
@@ -1843,6 +1895,7 @@ class SolverImplicitMPM(SolverBase):
                 fields={"phi": scratch.divergence_test},
                 values={"inv_cell_volume": inv_cell_volume},
                 output=scratch.strain_node_particle_volume,
+                temporary_store=self.temporary_store,
             )
 
         # Void fraction (unilateral incompressibility offset)
@@ -1925,11 +1978,11 @@ class SolverImplicitMPM(SolverBase):
     ):
         if self.strain_basis in ("Q1", "S2"):
             scratch.strain_node_particle_volume += EPSILON
-            return None
+            return None, None
         elif self.strain_basis[:3] == "pic":
             M_diag = scratch.strain_node_particle_volume
             M_diag.assign(self._mpm_model.particle_volume * inv_cell_volume)
-            return None
+            return None, None
 
         # build mass matrix of PIC integration
         M = fem.integrate(
@@ -1951,6 +2004,7 @@ class SolverImplicitMPM(SolverBase):
 
         M_ev = wp.empty(shape=(M_elt_wise.nrow, *M_elt_wise.block_shape), dtype=M_elt_wise.scalar_type)
         M_diag = scratch.strain_node_particle_volume.reshape((-1, nodes_per_elt))
+        rotated_volume = wp.empty_like(M_diag)
 
         wp.launch(
             compute_eigenvalues,
@@ -1959,20 +2013,23 @@ class SolverImplicitMPM(SolverBase):
                 M_elt_wise.offsets,
                 M_elt_wise.columns,
                 M_values,
+                M_diag,
                 scratch.strain_yield_parameters_field.dof_values,
             ],
             outputs=[
                 M_diag,
                 M_ev,
+                rotated_volume,
             ],
         )
 
-        return M_ev
+        return M_ev, rotated_volume.reshape((-1,))
 
     def _apply_strain_eigenbasis(
         self,
         scratch: ImplicitMPMScratchpad,
         M_ev: wp.array3d[float],
+        rotated_volume=None,
     ):
         node_count = scratch.strain_node_count
 
@@ -2022,11 +2079,13 @@ class SolverImplicitMPM(SolverBase):
                 inputs=[M_diag, scratch.stress_field.dof_values],
             )
 
-        # Yield parameters are integrated, need scale with inverse node volume
+        # Yield parameters are integrated, scale with inverse rotated volume
+        # to correctly recover uniform parameters after eigenbasis rotation
+        yield_volume = rotated_volume if rotated_volume is not None else M_diag
         wp.launch(
             inverse_scale_vector,
             dim=node_count,
-            inputs=[M_diag, scratch.strain_yield_parameters_field.dof_values],
+            inputs=[yield_volume, scratch.strain_yield_parameters_field.dof_values],
         )
 
     def _unapply_strain_eigenbasis(
@@ -2078,9 +2137,9 @@ class SolverImplicitMPM(SolverBase):
         last_step_data: LastStepData,
         inv_cell_volume: float,
     ):
-        M_ev = self._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
+        M_ev, rotated_volume = self._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
 
-        self._apply_strain_eigenbasis(scratch, M_ev)
+        self._apply_strain_eigenbasis(scratch, M_ev, rotated_volume)
 
         with self._timer("Strain solve"):
             momentum_data = MomentumData(
@@ -2112,9 +2171,10 @@ class SolverImplicitMPM(SolverBase):
                 collider_velocities=scratch.collider_velocity,
                 rigidity_operator=rigidity_operator,
                 collider_impulse=scratch.impulse_field.dof_values,
+                has_colliders=self._mpm_model.collider.collider_mesh.shape[0] > 0,
             )
 
-            # Retain graph to avoid immediate CPU synch
+            # Retain graph to avoid immediate CPU sync
             solve_graph = solve_rheology(
                 self.solver,
                 self.max_iterations,

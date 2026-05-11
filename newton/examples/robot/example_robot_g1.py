@@ -143,6 +143,7 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > 0.0,
         )
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -150,6 +151,7 @@ class Example:
             lambda q, qd: max(abs(qd))
             < 0.015,  # Relaxed from 0.005 - G1 has higher residual velocities with collision pipeline
         )
+        # fmt: on
 
     @staticmethod
     def create_parser():
@@ -164,6 +166,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

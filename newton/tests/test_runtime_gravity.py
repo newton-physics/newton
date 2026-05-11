@@ -7,7 +7,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverSemiImplicit, SolverXPBD
+from newton.solvers import SolverKamino, SolverSemiImplicit, SolverXPBD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -595,15 +595,16 @@ devices = get_test_devices()
 
 # Test with different solvers
 solvers_particles = {
-    "xpbd": lambda model: SolverXPBD(model),
-    "semi_implicit": lambda model: SolverSemiImplicit(model),
+    "xpbd": SolverXPBD,
+    "semi_implicit": SolverSemiImplicit,
 }
 
 solvers_bodies = {
-    "xpbd": lambda model: SolverXPBD(model),
-    "semi_implicit": lambda model: SolverSemiImplicit(model),
+    "xpbd": SolverXPBD,
+    "semi_implicit": SolverSemiImplicit,
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0),
+    "kamino": SolverKamino,
 }
 
 # Add tests for each device and solver combination

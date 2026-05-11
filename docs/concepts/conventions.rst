@@ -116,7 +116,7 @@ in the world frame.
 .. code-block:: python
 
   @wp.kernel
-  def get_body_twist(body_qd: wp.array(dtype=wp.spatial_vector)):
+  def get_body_twist(body_qd: wp.array[wp.spatial_vector]):
     body_id = wp.tid()
     # body_qd is a 6D wp.spatial_vector in world frame
     twist = body_qd[body_id]
@@ -461,7 +461,7 @@ Newton defines collision primitives with consistent conventions across all shape
    * - **Mesh**
      - User-defined
      - Vertex and triangle arrays
-     - General triangle mesh (can be non-convex)
+     - General triangle mesh (can be non-convex); CCW winding defines outward face normal
 
 **Shape Orientation and Alignment**
 

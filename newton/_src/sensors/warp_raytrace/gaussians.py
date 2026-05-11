@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian
+from ...geometry.bvh import compute_ellipsoid_bounds
+from ...geometry.raycast import map_ray_to_local_scaled
 from ...math import safe_div
-from . import bvh
-from .ray_intersect import GeomHit, map_ray_to_local_scaled
 from .types import GaussianRenderMode
 
 if TYPE_CHECKING:
@@ -30,7 +30,7 @@ def compute_gaussian_bounds(gaussians_data: Gaussian.Data, tid: wp.int32) -> tup
     ks = wp.sqrt(wp.log(min_response) / wp.float32(-0.5))
     scale = wp.vec3f(scale[0] * ks, scale[1] * ks, scale[2] * ks)
 
-    return bvh.compute_ellipsoid_bounds(transform, scale)
+    return compute_ellipsoid_bounds(transform, scale)
 
 
 @wp.kernel
@@ -135,11 +135,9 @@ def create_shade_function(config: RenderContext.Config, state: RenderContext.Sta
         camera_forward: wp.vec3f,
         gaussian_data: Gaussian.Data,
         max_distance: wp.float32,
-    ) -> tuple[GeomHit, wp.vec3f]:
-        result_hit = GeomHit()
-        result_hit.hit = False
-        result_hit.normal = wp.vec3f(0.0)
-        result_hit.distance = max_distance
+    ) -> tuple[wp.float32, wp.vec3f, wp.vec3f]:
+        tracked_distance = max_distance
+        result_normal = wp.vec3f(0.0)
         result_color = wp.vec3f(0.0)
 
         ray_origin_local, ray_direction_local = map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
@@ -207,17 +205,18 @@ def create_shade_function(config: RenderContext.Config, state: RenderContext.Sta
                 ray_transmittance *= 1.0 - opacity
 
                 if ray_transmittance < wp.static(config.gaussians_min_transmittance):
-                    result_hit.distance = wp.min(hit_distances[hit], result_hit.distance)
+                    tracked_distance = wp.min(hit_distances[hit], tracked_distance)
 
             min_distance = hit_distances[-1] + wp.float32(1e-06)
 
             if wp.static(config.gaussians_mode) == GaussianRenderMode.FAST:
                 break
 
+        result_distance = wp.float32(-1.0)
         if ray_transmittance < wp.static(config.gaussians_min_transmittance):
-            result_hit.hit = True
+            result_distance = tracked_distance
             result_color /= 1.0 - ray_transmittance
 
-        return result_hit, result_color
+        return result_distance, result_normal, result_color
 
     return shade

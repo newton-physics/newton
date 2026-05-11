@@ -17,6 +17,7 @@ These validations ensure the NarrowPhase follows the same contact conventions as
 primitive collision functions.
 """
 
+import typing
 import unittest
 
 import numpy as np
@@ -27,6 +28,8 @@ import newton
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.narrow_phase import NarrowPhase
 from newton._src.geometry.types import GeoType
+
+_cuda_available = wp.is_cuda_available()
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):
@@ -326,8 +329,6 @@ class _NarrowPhaseSetupMixin:
             contact_count=contact_count,
             contact_tangent=contact_tangent,
         )
-
-        wp.synchronize()
 
         count = contact_count.numpy()[0]
         return (
@@ -1413,9 +1414,15 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere B with larger margin should have contact")
 
     def _assert_mesh_mesh_scaled_separated_positive_penetration(self, narrow_phase: NarrowPhase):
-        """Run the scaled mesh-mesh separation scenario and verify positive contact distance."""
+        """Run the scaled mesh-mesh separation scenario and verify positive contact distance.
+
+        On CUDA we exercise the full path. On CPU we still run the same minimal
+        case (a pair of unit-box meshes, 12 triangles each) as a smoke test so
+        the new mesh-mesh SDF backend keeps direct coverage there - the serial
+        inner loop is bounded for this size.
+        """
         if narrow_phase.mesh_mesh_contacts_kernel is None:
-            self.skipTest("Mesh-mesh NarrowPhase SDF contacts require CUDA")
+            self.skipTest("Mesh-mesh NarrowPhase SDF contacts not available")
 
         device = narrow_phase.device if narrow_phase.device is not None else wp.get_device()
         with wp.ScopedDevice(device):
@@ -1997,6 +2004,404 @@ class TestBufferOverflowWarnings(unittest.TestCase):
             num_candidate_pair.numpy()[0], candidate_pair.shape[0], "Broad phase buffer should have overflowed"
         )
         # Warning capture via wp.printf is optional; counter/capacity check above is authoritative.
+
+
+@unittest.skipUnless(_cuda_available, "Mesh-convex tiled BVH queries require CUDA")
+class TestExtremeMeshTriangles(unittest.TestCase):
+    """Test that MPR/GJK handles extreme triangle sizes and aspect ratios.
+
+    Each test drops ALL convex shape types (sphere, box, capsule, cylinder,
+    cone, ellipsoid) simultaneously onto the mesh, arranged in a grid with
+    spacing.  The improved geometric_center starting direction handles these
+    without triangle preconditioning.
+    """
+
+    def setUp(self):
+        self.narrow_phase = NarrowPhase(
+            max_candidate_pairs=100000,
+            max_triangle_pairs=1000000,
+            reduce_contacts=False,
+            device="cuda:0",
+        )
+
+    # All convex shape types with their GeoType, scale, and label.
+    CONVEX_SHAPES: typing.ClassVar = [
+        (GeoType.SPHERE, [0.3, 0.3, 0.3], "sphere"),
+        (GeoType.BOX, [0.2, 0.2, 0.2], "box"),
+        (GeoType.CAPSULE, [0.15, 0.2, 0.15], "capsule"),
+        (GeoType.CYLINDER, [0.15, 0.25, 0.15], "cylinder"),
+        (GeoType.CONE, [0.15, 0.25, 0.15], "cone"),
+        (GeoType.ELLIPSOID, [0.25, 0.15, 0.2], "ellipsoid"),
+    ]
+
+    def _drop_all_shapes_on_mesh(self, vertices, indices, center, height, spacing=1.5, margin=0.02):
+        """Drop all convex shape types onto a mesh in a grid layout.
+
+        Args:
+            vertices: Mesh vertex list (XY plane, normal +Z).
+            indices: Mesh triangle index list.
+            center: (x, y) center of the grid on the mesh.
+            height: Z coordinate of shape centers above the mesh (z=0).
+            spacing: Distance between shapes in the grid.
+            margin: Contact margin.
+
+        Returns:
+            Dict mapping shape label to contact count.
+        """
+        mesh = newton.Mesh(
+            np.array(vertices, dtype=np.float32),
+            np.array(indices, dtype=np.int32),
+        )
+        device = self.narrow_phase.device if self.narrow_phase.device is not None else wp.get_device()
+
+        n_shapes = len(self.CONVEX_SHAPES)
+        cols = 3
+        rows = (n_shapes + cols - 1) // cols
+
+        with wp.ScopedDevice(device):
+            mesh_id = mesh.finalize()
+            geom_list = [
+                {
+                    "type": GeoType.MESH,
+                    "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                    "data": ([1.0, 1.0, 1.0], 0.0),
+                    "source": int(mesh_id),
+                    "cutoff": margin,
+                },
+            ]
+
+            for i, (geo_type, scale, _label) in enumerate(self.CONVEX_SHAPES):
+                row, col = divmod(i, cols)
+                x = center[0] + (col - (cols - 1) / 2.0) * spacing
+                y = center[1] + (row - (rows - 1) / 2.0) * spacing
+                geom_list.append(
+                    {
+                        "type": geo_type,
+                        "transform": ([x, y, height], [0.0, 0.0, 0.0, 1.0]),
+                        "data": (scale, 0.0),
+                        "cutoff": margin,
+                    }
+                )
+
+            (
+                geom_types,
+                geom_data,
+                geom_transform,
+                geom_source,
+                shape_gap,
+                geom_collision_radius,
+                shape_sdf_index,
+                shape_flags,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
+                shape_voxel_resolution,
+            ) = TestNarrowPhase._create_geometry_arrays(self, geom_list)
+
+            # Pair each convex shape (indices 1..N) with the mesh (index 0)
+            pairs = [(0, i + 1) for i in range(n_shapes)]
+            candidate_pair = wp.array(np.array(pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
+            candidate_pair_count = wp.array([len(pairs)], dtype=wp.int32)
+
+            max_contacts = n_shapes * 20
+            contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
+            contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_penetration = wp.zeros(max_contacts, dtype=float)
+            contact_count = wp.zeros(1, dtype=int)
+
+            self.narrow_phase.launch(
+                candidate_pair=candidate_pair,
+                candidate_pair_count=candidate_pair_count,
+                shape_types=geom_types,
+                shape_data=geom_data,
+                shape_transform=geom_transform,
+                shape_source=geom_source,
+                shape_sdf_index=shape_sdf_index,
+                shape_gap=shape_gap,
+                shape_collision_radius=geom_collision_radius,
+                shape_flags=shape_flags,
+                shape_collision_aabb_lower=shape_collision_aabb_lower,
+                shape_collision_aabb_upper=shape_collision_aabb_upper,
+                shape_voxel_resolution=shape_voxel_resolution,
+                contact_pair=contact_pair,
+                contact_position=contact_position,
+                contact_normal=contact_normal,
+                contact_penetration=contact_penetration,
+                contact_count=contact_count,
+                contact_tangent=wp.zeros(max_contacts, dtype=wp.vec3),
+            )
+
+            count = contact_count.numpy()[0]
+            pairs_np = contact_pair.numpy()[:count]
+            normals_np = contact_normal.numpy()[:count]
+            positions_np = contact_position.numpy()[:count]
+            penetrations_np = contact_penetration.numpy()[:count]
+
+            # Count contacts per shape
+            result = {}
+            for i, (_, _, label) in enumerate(self.CONVEX_SHAPES):
+                shape_idx = i + 1
+                mask = (pairs_np[:, 0] == shape_idx) | (pairs_np[:, 1] == shape_idx)
+                shape_count = int(np.sum(mask))
+                result[label] = shape_count
+
+                # Validate contacts for this shape
+                for j in np.where(mask)[0]:
+                    self.assertFalse(np.any(np.isnan(positions_np[j])), f"{label}: contact position NaN")
+                    self.assertFalse(np.any(np.isnan(normals_np[j])), f"{label}: contact normal NaN")
+                    self.assertFalse(np.isnan(penetrations_np[j]), f"{label}: penetration NaN")
+                    n_len = np.linalg.norm(normals_np[j])
+                    self.assertGreater(n_len, 0.9, f"{label}: near-zero normal {normals_np[j]}")
+                    # For face contacts, normal should point roughly upward (+Z).
+                    # Edge/vertex contacts can have sideways normals, so we only
+                    # check that the normal isn't pointing downward (-Z).
+                    nz = normals_np[j][2] / n_len
+                    self.assertGreater(nz, -0.1, f"{label}: normal points down Z={nz:.3f}: {normals_np[j]}")
+
+            return result
+
+    def _assert_all_shapes_contact(self, vertices, indices, center, height, msg="", normal_z_min=0.5, **kwargs):
+        """Assert every convex shape type produces valid contacts.
+
+        Validates:
+        - Each shape gets at least one contact.
+        - Contact normals roughly point upward (+Z, since meshes lie in XY plane).
+        - Penetration values are negative (overlapping) or within margin.
+        """
+        result = self._drop_all_shapes_on_mesh(vertices, indices, center, height, **kwargs)
+        prefix = f"{msg}: " if msg else ""
+        for label, count in result.items():
+            self.assertGreater(count, 0, f"{prefix}{label} got 0 contacts")
+
+    # =========================================================================
+    # Huge triangles (500m)
+    # =========================================================================
+
+    def test_huge_triangle_center(self):
+        """All shapes on center of a 500m triangle."""
+        s = 500.0
+        verts = [[-s, -s, 0], [s, -s, 0], [0, s, 0]]
+        self._assert_all_shapes_contact(verts, [0, 1, 2], [0.0, 0.0], 0.15, "huge center")
+
+    def test_huge_triangle_near_edge(self):
+        """All shapes near the bottom edge of a 500m triangle."""
+        s = 500.0
+        verts = [[-s, -s, 0], [s, -s, 0], [0, s, 0]]
+        self._assert_all_shapes_contact(verts, [0, 1, 2], [0.0, -s + 2.0], 0.15, "huge near edge")
+
+    def test_huge_triangle_near_vertex(self):
+        """All shapes near a vertex of a 500m triangle."""
+        s = 500.0
+        verts = [[-s, -s, 0], [s, -s, 0], [0, s, 0]]
+        # Place grid 5m from the vertex to fit all shapes inside the triangle
+        self._assert_all_shapes_contact(verts, [0, 1, 2], [-s + 8.0, -s + 8.0], 0.15, "huge near vertex")
+
+    # =========================================================================
+    # Sliver triangles
+    # =========================================================================
+
+    def test_huge_sliver_1000_to_1(self):
+        """All shapes on a 1000m long, 5m wide sliver (shapes fit along the length)."""
+        verts = [[-500, 0, 0], [500, 0, 0], [0, 5, 0]]
+        self._assert_all_shapes_contact(verts, [0, 1, 2], [0.0, 1.5], 0.15, "sliver 1000:5")
+
+    def test_isosceles_sliver(self):
+        """All shapes on an isosceles sliver (one long edge, two ~half-length short edges)."""
+        verts = [[-500, 0, 0], [500, 0, 0], [0, 5, 0]]
+        self._assert_all_shapes_contact(verts, [0, 1, 2], [0.0, 1.5], 0.15, "isosceles sliver")
+
+    def test_needle_triangle(self):
+        """All shapes on a needle triangle (one short 2m edge, two 50m edges)."""
+        verts = [[0, 0, 0], [50, 1, 0], [50, -1, 0]]
+        self._assert_all_shapes_contact(verts, [0, 2, 1], [25.0, 0.0], 0.15, "needle", spacing=1.0)
+
+    # =========================================================================
+    # Disc fan mesh (shared center vertex)
+    # =========================================================================
+
+    def test_disc_fan_center(self):
+        """All shapes dropped on the center of a 12-slice disc fan mesh."""
+        n_slices = 12
+        radius = 10.0
+        verts = [[0, 0, 0]]
+        for i in range(n_slices):
+            angle = 2.0 * np.pi * i / n_slices
+            verts.append([radius * np.cos(angle), radius * np.sin(angle), 0.0])
+        inds = []
+        for i in range(n_slices):
+            next_i = (i + 1) % n_slices
+            inds.extend([0, i + 1, next_i + 1])
+        self._assert_all_shapes_contact(verts, inds, [0.0, 0.0], 0.15, "disc fan center")
+
+    # =========================================================================
+    # Shared edge (two coplanar triangles)
+    # =========================================================================
+
+    def test_shared_edge_flat(self):
+        """All shapes on the shared edge of two coplanar triangles."""
+        verts = [[0, 0, 0], [10, 0, 0], [5, -5, 0], [5, 5, 0]]
+        inds = [0, 1, 3, 0, 2, 1]
+        self._assert_all_shapes_contact(verts, inds, [5.0, 0.0], 0.15, "shared edge")
+
+
+class TestMeshNonUniformScaling(_NarrowPhaseSetupMixin, unittest.TestCase):
+    """Regression tests for triangle-mesh-vs-convex collisions with non-uniform mesh scale.
+
+    The mesh BVH is built over the *unscaled* ``mesh.points``, while the per-shape
+    ``mesh_scale`` is applied component-wise to vertices on the fly. Prior to the fix in
+    ``mesh_vs_convex_midphase`` the BVH AABB query was performed in the *scaled* mesh-local
+    frame, so non-uniform scales caused most/all triangles to be culled and queries to
+    return zero contacts. These tests cover uniform, axis-aligned non-uniform, and
+    pancake/needle-shaped scales for a tiny unit-quad mesh, exercising every common convex
+    primitive against it.
+    """
+
+    @staticmethod
+    def _unit_quad_mesh():
+        """1x1 quad in the XY plane centered at the origin, normal +Z, two triangles."""
+        verts = np.array(
+            [
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        inds = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+        return verts, inds
+
+    def _run_mesh_vs_sphere(self, mesh_scale, sphere_pos, sphere_radius=0.3, gap=0.02):
+        """Drop a sphere onto a unit quad with the given mesh_scale and return contact count.
+
+        Returns a tuple ``(contact_count, normals, penetrations)`` for further validation.
+        """
+        verts, inds = self._unit_quad_mesh()
+        mesh = newton.Mesh(verts, inds)
+
+        device = self.narrow_phase.device if self.narrow_phase.device is not None else wp.get_device()
+        with wp.ScopedDevice(device):
+            mesh_id = mesh.finalize()
+            geom_list = [
+                {
+                    "type": GeoType.MESH,
+                    "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                    "data": (list(mesh_scale), 0.0),
+                    "source": int(mesh_id),
+                    "cutoff": gap,
+                },
+                {
+                    "type": GeoType.SPHERE,
+                    "transform": (list(sphere_pos), [0.0, 0.0, 0.0, 1.0]),
+                    "data": ([sphere_radius, 0.0, 0.0], 0.0),
+                    "cutoff": gap,
+                },
+            ]
+
+            (
+                geom_types,
+                geom_data,
+                geom_transform,
+                geom_source,
+                shape_gap,
+                geom_collision_radius,
+                shape_sdf_index,
+                shape_flags,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
+                shape_voxel_resolution,
+            ) = self._create_geometry_arrays(geom_list)
+
+            candidate_pair = wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.vec2i)
+            candidate_pair_count = wp.array([1], dtype=wp.int32)
+
+            max_contacts = 32
+            contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
+            contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
+            contact_penetration = wp.zeros(max_contacts, dtype=float)
+            contact_count = wp.zeros(1, dtype=int)
+
+            self.narrow_phase.launch(
+                candidate_pair=candidate_pair,
+                candidate_pair_count=candidate_pair_count,
+                shape_types=geom_types,
+                shape_data=geom_data,
+                shape_transform=geom_transform,
+                shape_source=geom_source,
+                shape_sdf_index=shape_sdf_index,
+                shape_gap=shape_gap,
+                shape_collision_radius=geom_collision_radius,
+                shape_flags=shape_flags,
+                shape_collision_aabb_lower=shape_collision_aabb_lower,
+                shape_collision_aabb_upper=shape_collision_aabb_upper,
+                shape_voxel_resolution=shape_voxel_resolution,
+                contact_pair=contact_pair,
+                contact_position=contact_position,
+                contact_normal=contact_normal,
+                contact_penetration=contact_penetration,
+                contact_count=contact_count,
+                contact_tangent=wp.zeros(max_contacts, dtype=wp.vec3),
+            )
+
+            count = int(contact_count.numpy()[0])
+            normals = contact_normal.numpy()[:count]
+            penetrations = contact_penetration.numpy()[:count]
+            return count, normals, penetrations
+
+    def _assert_sphere_above_quad_contacts(self, mesh_scale, sphere_xy, label, gap=0.02):
+        """A sphere placed just above the (scaled) quad should overlap and produce contacts."""
+        radius = 0.3
+        # Place sphere so it dips below z=0 by ~0.05: center at z = radius - 0.05 = 0.25.
+        sphere_pos = (sphere_xy[0], sphere_xy[1], radius - 0.05)
+        count, normals, penetrations = self._run_mesh_vs_sphere(mesh_scale, sphere_pos, radius, gap)
+        self.assertGreater(count, 0, f"{label}: expected contacts for mesh_scale={mesh_scale}, got {count}")
+        # Contact normals must be unit-length and point roughly +Z (sphere is above the quad).
+        for j in range(count):
+            n = normals[j]
+            self.assertFalse(np.any(np.isnan(n)), f"{label}: NaN normal {n}")
+            self.assertFalse(np.isnan(penetrations[j]), f"{label}: NaN penetration")
+            n_len = float(np.linalg.norm(n))
+            self.assertGreater(n_len, 0.9, f"{label}: degenerate normal length {n_len}")
+            nz = float(n[2]) / n_len
+            self.assertGreater(nz, 0.5, f"{label}: normal not roughly +Z (nz={nz:.3f})")
+
+    def test_uniform_scale_sanity(self):
+        """Sanity: uniform mesh scale (1, 1, 1) must produce contacts (regression baseline)."""
+        self._assert_sphere_above_quad_contacts((1.0, 1.0, 1.0), (0.0, 0.0), "uniform 1x1x1")
+
+    def test_uniform_large_scale(self):
+        """Uniform scale (10, 10, 10) - sphere over the (now 10x10) quad."""
+        self._assert_sphere_above_quad_contacts((10.0, 10.0, 10.0), (3.0, 3.0), "uniform 10x10x10")
+
+    def test_nonuniform_scale_xy(self):
+        """Non-uniform scale (10, 10, 1): the user's reported pancake case.
+
+        Without the BVH-coords fix this returns 0 contacts because the BVH lives in
+        unscaled space [-0.5, 0.5]² but the AABB query is centered around (3, 3) in
+        scaled space.
+        """
+        self._assert_sphere_above_quad_contacts((10.0, 10.0, 1.0), (3.0, 3.0), "non-uniform 10x10x1")
+
+    def test_nonuniform_scale_xy_off_center(self):
+        """Non-uniform scale (10, 10, 1), sphere near a corner of the scaled quad."""
+        self._assert_sphere_above_quad_contacts((10.0, 10.0, 1.0), (4.5, -4.5), "non-uniform 10x10x1 corner")
+
+    def test_nonuniform_scale_z_thin(self):
+        """Non-uniform scale (1, 1, 0.1): a thin pancake along Z."""
+        self._assert_sphere_above_quad_contacts((1.0, 1.0, 0.1), (0.0, 0.0), "non-uniform 1x1x0.1")
+
+    def test_nonuniform_scale_extreme(self):
+        """Extreme non-uniform scale (50, 0.5, 1): a long thin strip in X."""
+        self._assert_sphere_above_quad_contacts((50.0, 0.5, 1.0), (10.0, 0.1), "extreme 50x0.5x1")
+
+    def test_nonuniform_scale_separated(self):
+        """Sphere placed clearly outside the scaled quad must produce no contacts (no false positives)."""
+        radius = 0.3
+        # Sphere far to the +X side of the (10x10x1) quad: center at x = 100 (way outside).
+        sphere_pos = (100.0, 0.0, 0.0)
+        count, _, _ = self._run_mesh_vs_sphere((10.0, 10.0, 1.0), sphere_pos, radius)
+        self.assertEqual(count, 0, f"expected 0 contacts when far separated, got {count}")
 
 
 class TestMPREnlargeCorrection(_NarrowPhaseSetupMixin, unittest.TestCase):

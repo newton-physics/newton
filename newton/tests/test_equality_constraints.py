@@ -169,9 +169,6 @@ class TestEqualityConstraints(unittest.TestCase):
             solver.mj_model.neq, 2, f"Expected 2 equality constraints in MuJoCo model, got {solver.mj_model.neq}"
         )
 
-        print(f"Test passed: MuJoCo model has {solver.mj_model.neq} equality constraints (expected 2)")
-        print(f"Newton model has {model.equality_constraint_count} total constraints across {world_count} worlds")
-
         # Verify that indices are correctly remapped for each world
         # Each world adds 3 bodies, so body indices should be offset by 3 * world_index
         # The first world's base body should be at index 0, second at 3, third at 6

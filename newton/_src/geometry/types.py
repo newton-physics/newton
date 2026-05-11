@@ -79,6 +79,24 @@ class GeoType(enum.IntEnum):
     GAUSSIAN = 11
     """Gaussian splat."""
 
+    @property
+    def is_primitive(self) -> bool:
+        """Return whether this is a primitive (analytically defined) shape type."""
+        return self in {
+            GeoType.SPHERE,
+            GeoType.CYLINDER,
+            GeoType.CONE,
+            GeoType.CAPSULE,
+            GeoType.BOX,
+            GeoType.ELLIPSOID,
+            GeoType.PLANE,
+        }
+
+    @property
+    def is_explicit(self) -> bool:
+        """Return whether this is an explicit (data-driven) shape type."""
+        return self in {GeoType.MESH, GeoType.CONVEX_MESH, GeoType.HFIELD}
+
 
 class Mesh:
     """
@@ -87,6 +105,11 @@ class Mesh:
     This class encapsulates a triangle mesh, including its geometry, physical properties,
     and utility methods for simulation. Meshes are typically used for collision detection,
     visualization, and inertia computation in physics simulation.
+
+    Triangle indices must use counter-clockwise (CCW) winding when viewed from
+    the outside of the surface. The collision pipeline derives face normals from
+    the winding order and culls back-face contacts, so incorrect winding may
+    cause convex shapes to pass through the mesh.
 
     Attributes:
         mass [kg]: Mesh mass in local coordinates, computed with density 1.0 when
@@ -170,6 +193,7 @@ class Mesh:
         self._cached_hash = None
         self._texture_hash = None
         self._edges = None
+        self._is_watertight: bool | None = None
         self.sdf = sdf
 
         if compute_inertia:
@@ -703,6 +727,7 @@ class Mesh:
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
         texture_format: str = "uint16",
+        cache_dir: str | os.PathLike[str] | None = None,
     ) -> "SDF":
         """Build and attach an SDF for this mesh.
 
@@ -732,6 +757,16 @@ class Mesh:
                 normalized textures (half the memory of float32).
                 ``"float32"`` stores full-precision values. ``"uint8"`` uses
                 8-bit textures for minimum memory at lower precision.
+            cache_dir: Optional directory used to cache cooked SDF data on
+                disk. When provided, the cooked sparse SDF (the data that
+                backs the GPU 3D textures) is keyed by mesh content +
+                build parameters and persisted as a single
+                ``{hash}.sdf.npz`` file (an uncompressed ``np.savez``
+                bundle of typed numpy arrays). Subsequent calls with
+                identical inputs reload from disk and skip the expensive
+                mesh-SDF cook. ``shape_margin`` is applied at sample
+                time and is *not* part of the cache key. Defaults to
+                ``None`` (cache disabled).
 
         Returns:
             The attached :class:`SDF` instance.
@@ -758,6 +793,7 @@ class Mesh:
             shape_margin=shape_margin,
             scale=scale,
             texture_format=texture_format,
+            cache_dir=cache_dir,
         )
         return self.sdf
 
@@ -778,6 +814,7 @@ class Mesh:
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
         self._cached_hash = None
         self._edges = None
+        self._is_watertight = None
 
     @property
     def indices(self):
@@ -787,7 +824,8 @@ class Mesh:
     def indices(self, value):
         self._indices = np.array(value, dtype=np.int32).flatten()
         self._cached_hash = None
-        self._edges = None  # invalidate cached edges
+        self._edges = None
+        self._is_watertight = None
 
     @property
     def edges(self) -> np.ndarray:
@@ -825,6 +863,48 @@ class Mesh:
             first_idx.sort()
             self._edges = orig_edges[first_idx]
         return self._edges
+
+    @property
+    def is_watertight(self) -> bool:
+        """``True`` if every geometric edge is shared by exactly two triangles.
+
+        A mesh satisfying this condition is closed (has no boundary edges) and
+        is suitable for the fast unsigned-distance SDF construction path.
+        Computed lazily on first access and cached.  Invalidated when
+        :attr:`vertices` or :attr:`indices` change.
+
+        .. note::
+
+           Vertex coincidence is tested on quantized float32 coordinates
+           rounded to the nearest 1e-7 m (100 nm fixed tolerance). Vertices
+           that differ by less than this bucket width are treated as the
+           same geometric vertex; sub-100 nm numerical noise is therefore
+           tolerated, but vertices split by a larger gap are reported as
+           distinct and can cause a topologically closed mesh to be flagged
+           non-watertight. This is an approximate check — false negatives
+           are safe (they fall back to the slower winding-number SDF path),
+           but callers relying on a strict guarantee should weld their
+           mesh vertices beforehand at the desired tolerance.
+        """
+        if self._is_watertight is None:
+            if self._indices.size == 0 or self._vertices.size == 0:
+                self._is_watertight = False
+                return self._is_watertight
+            tris = self._indices.reshape(-1, 3)
+            q = np.round(self._vertices * 1e7).astype(np.int64)
+            q_contig = np.ascontiguousarray(q)
+            void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
+            _, canonical = np.unique(void_verts, return_inverse=True)
+            c = canonical.ravel()[tris]
+            pairs = np.empty((len(tris) * 3, 2), dtype=np.int64)
+            for k, (a, b) in enumerate(((0, 1), (1, 2), (0, 2))):
+                pairs[k::3, 0] = np.minimum(c[:, a], c[:, b])
+                pairs[k::3, 1] = np.maximum(c[:, a], c[:, b])
+            pairs_contig = np.ascontiguousarray(pairs)
+            void_edges = pairs_contig.view(np.dtype((np.void, pairs_contig.dtype.itemsize * 2)))
+            _, counts = np.unique(void_edges, return_counts=True)
+            self._is_watertight = bool(np.all(counts == 2))
+        return self._is_watertight
 
     @property
     def normals(self):

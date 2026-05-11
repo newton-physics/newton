@@ -19,8 +19,8 @@ class SlowExampleRobotAnymal:
     timeout = 600
 
     def setup(self):
-        wp.build.clear_lto_cache()
-        wp.build.clear_kernel_cache()
+        wp.clear_lto_cache()
+        wp.clear_kernel_cache()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_load(self):
@@ -47,8 +47,8 @@ class SlowExampleRobotCartpole:
     timeout = 600
 
     def setup(self):
-        wp.build.clear_lto_cache()
-        wp.build.clear_kernel_cache()
+        wp.clear_lto_cache()
+        wp.clear_kernel_cache()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_load(self):
@@ -74,8 +74,8 @@ class SlowExampleClothFranka:
     number = 1
 
     def setup(self):
-        wp.build.clear_lto_cache()
-        wp.build.clear_kernel_cache()
+        wp.clear_lto_cache()
+        wp.clear_kernel_cache()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_load(self):
@@ -101,8 +101,8 @@ class SlowExampleClothTwist:
     number = 1
 
     def setup(self):
-        wp.build.clear_lto_cache()
-        wp.build.clear_kernel_cache()
+        wp.clear_lto_cache()
+        wp.clear_kernel_cache()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_load(self):
@@ -129,8 +129,8 @@ class SlowExampleBasicUrdf:
     timeout = 600
 
     def setup(self):
-        wp.build.clear_lto_cache()
-        wp.build.clear_kernel_cache()
+        wp.clear_lto_cache()
+        wp.clear_kernel_cache()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_load(self):
@@ -165,7 +165,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
-        "-b", "--bench", default=None, action="append", choices=benchmark_list.keys(), help="Run a single benchmark."
+        "-b",
+        "--bench",
+        default=None,
+        action="append",
+        choices=benchmark_list.keys(),
+        help="Run a specific benchmark; may be repeated to run multiple (e.g., --bench A --bench B).",
     )
     args = parser.parse_known_args()[0]
 

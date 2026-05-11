@@ -186,8 +186,9 @@ class TestMenagerieUsdImport(unittest.TestCase):
     def test_import_robotiq_2f85_v4(self):
         builder, model = self._load_robot("robotiq_2f85_v4")
         self.assertEqual(builder.body_count, 11)
-        self.assertEqual(builder.joint_count, 13)
+        self.assertEqual(builder.joint_count, 11)
         self.assertEqual(builder.shape_count, 28)
+        self.assertEqual(model.equality_constraint_count, 3)
         self._assert_no_nan(model, "robotiq_2f85_v4")
 
     def test_import_apptronik_apollo(self):
@@ -907,6 +908,57 @@ def compare_tendon_jacobian_structure_mapped(
     )
 
 
+def compare_qD_structure_mapped(
+    newton_mjw: Any,
+    native_mjw: Any,
+    dof_map: dict[int, int],
+) -> None:
+    """Compare sparse RNE derivative D-structure under DOF reordering.
+
+    qD_fullm_i and qD_fullm_j are flat arrays of (row, col) DOF indices
+    enumerating the D-structure (full square sparsity used by RNE
+    derivatives). When DOF ordering differs the indices are permuted but
+    the underlying (row, col) set is structurally equivalent: each native
+    (i, j) entry should map to a Newton entry at (dof_map[i], dof_map[j]).
+
+    Gracefully skips if the fields are absent (older mujoco_warp without
+    RNE derivative support).
+
+    Args:
+        dof_map: native_dof_idx -> newton_dof_idx.
+    """
+    if not hasattr(native_mjw, "qD_fullm_i") or not hasattr(newton_mjw, "qD_fullm_i"):
+        return
+
+    nD = int(getattr(native_mjw, "nD", 0))
+    assert int(getattr(newton_mjw, "nD", 0)) == nD, (
+        f"nD mismatch: newton={getattr(newton_mjw, 'nD', None)} vs native={nD}"
+    )
+
+    if nD == 0:
+        return
+
+    newton_i = newton_mjw.qD_fullm_i.numpy().flatten()
+    newton_j = newton_mjw.qD_fullm_j.numpy().flatten()
+    native_i = native_mjw.qD_fullm_i.numpy().flatten()
+    native_j = native_mjw.qD_fullm_j.numpy().flatten()
+
+    inv_dof_map = {v: k for k, v in dof_map.items()}
+
+    native_pairs = {(int(native_i[k]), int(native_j[k])) for k in range(nD)}
+    newton_pairs = {(inv_dof_map.get(int(newton_i[k]), -1), inv_dof_map.get(int(newton_j[k]), -1)) for k in range(nD)}
+
+    missing = native_pairs - newton_pairs
+    extra = newton_pairs - native_pairs
+    if missing or extra:
+        parts = []
+        if missing:
+            parts.append(f"missing in newton (remapped): {sorted(missing)[:10]}")
+        if extra:
+            parts.append(f"extra in newton (remapped): {sorted(extra)[:10]}")
+        raise AssertionError("qD_fullm sparsity mismatch:\n" + "\n".join(parts))
+
+
 ACTUATOR_SKIP_FIELDS: set[str] = {
     "actuator_plugin",
     "actuator_user",
@@ -916,6 +968,23 @@ ACTUATOR_SKIP_FIELDS: set[str] = {
     "actuator_trntype_body_adr",
     "actuator_actadr",
     "actuator_actnum",
+    # Position/velocity-shortcut MjcActuator rows targeting single-DOF joints are
+    # promoted to CtrlSource.JOINT_TARGET on import (matching MJCF behavior).
+    # _init_actuators rebuilds the compiled MuJoCo actuators from joint_target_*,
+    # so these low-level fields differ from the native MJCF model and are not
+    # meaningful to compare. The same fields are also skipped by the MJCF
+    # menagerie tests in test_menagerie_mujoco.py for the same reason.
+    "actuator_dynprm",
+    "actuator_gainprm",
+    "actuator_biasprm",
+    "actuator_ctrlrange",
+    "actuator_ctrllimited",
+    "actuator_forcerange",
+    "actuator_forcelimited",
+    "actuator_actrange",
+    "actuator_actlimited",
+    "actuator_gear",
+    "actuator_cranklength",
 }
 
 
@@ -1035,6 +1104,8 @@ class TestMenagerieUSD(TestMenagerieBase):
         "jnt_",
         # Sparse mass matrix structure: DOF-indexed, compared via _compare_mass_matrix_structure
         "M_",
+        # Sparse RNE derivative D-structure: DOF-indexed, compared via _compare_qD_structure
+        "qD_fullm_",
         # Sparse tendon Jacobian structure: DOF-indexed, compared via _compare_tendon_jacobian_structure
         "ten_J_",
         "nJten",
@@ -1133,6 +1204,10 @@ class TestMenagerieUSD(TestMenagerieBase):
     def _compare_tendon_jacobian_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare sparse tendon Jacobian structure using DOF index mapping."""
         compare_tendon_jacobian_structure_mapped(newton_mjw, native_mjw, self._dof_map)
+
+    def _compare_qD_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare sparse RNE derivative D-structure using DOF index mapping."""
+        compare_qD_structure_mapped(newton_mjw, native_mjw, self._dof_map)
 
     def _compare_actuator_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare actuator fields using name-based index mapping."""
@@ -1279,8 +1354,9 @@ class TestMenagerieUSD_H1(TestMenagerieUSD):
     usd_asset_folder = "unitree_h1"
     usd_scene_file = "usd_structured/h1.usda"
 
-    num_worlds = 2
-    num_steps = 0  # USD dynamics not yet tested with step-response
+    num_steps = 20
+    fk_enabled = True
+    backfill_model = True
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1294,6 +1370,7 @@ class TestMenagerieUSD_G1WithHands(TestMenagerieUSD):
 
     num_worlds = 2
     num_steps = 0  # USD dynamics not yet tested with step-response
+    fk_enabled = False  # xpos diff 0.109 — USD import issue (#2420)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1307,6 +1384,7 @@ class TestMenagerieUSD_ShadowHand(TestMenagerieUSD):
 
     num_worlds = 2
     num_steps = 0  # USD dynamics not yet tested with step-response
+    fk_enabled = False  # xpos diff 0.146 — USD import issue (#2420)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1335,6 +1413,7 @@ class TestMenagerieUSD_ApptronikApollo(TestMenagerieUSD):
 
     num_worlds = 2
     num_steps = 0  # USD dynamics not yet tested with step-response
+    fk_enabled = False  # xpos diff 1.56 — USD import issue (#2420)
     njmax = 398
 
     # Apollo's USD has no collision geoms, so geom/collision counts differ.
@@ -1356,6 +1435,7 @@ class TestMenagerieUSD_BoosterT1(TestMenagerieUSD):
 
     num_worlds = 2
     num_steps = 0  # USD dynamics not yet tested with step-response
+    fk_enabled = False  # xpos diff 0.509 — USD import issue (#2420)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1369,6 +1449,7 @@ class TestMenagerieUSD_WonikAllegro(TestMenagerieUSD):
 
     num_worlds = 2
     num_steps = 0  # USD dynamics not yet tested with step-response
+    fk_enabled = False  # xpos diff 0.106 — USD import issue (#2420)
 
     def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
         # TODO: USD asset has different mass/inertia values than the original MJCF.
@@ -1389,8 +1470,20 @@ class TestMenagerieUSD_UR5e(TestMenagerieUSD):
     usd_asset_folder = "universal_robots_ur5e"
     usd_scene_file = "usd_structured/ur5e.usda"
 
-    num_worlds = 2
-    num_steps = 0  # USD dynamics not yet tested with step-response
+    # TODO(#2420): re-enable step-response dynamics. UR5e USD MjcActuator rows
+    # match the position-shortcut pattern, so they're imported as JOINT_TARGET
+    # (see parse_usd's MjcActuator post-process). _init_actuators rebuilds
+    # JOINT_TARGET actuators with no per-actuator forcerange and instead clamps
+    # at the joint via jnt_actfrcrange. Native MJCF UR5e uses per-actuator
+    # forcerange. Both clip at the same magnitude, but mujoco-warp routes them
+    # through different code paths (joint-level becomes a solver constraint),
+    # producing small qpos diffs (~1e-3) at step 0 that exceed the 1e-6
+    # tolerance. The fix is to also set actuator_forcerange on JOINT_TARGET-
+    # built actuators in _init_actuators so the clipping path matches native;
+    # that affects the MJCF JOINT_TARGET path too and is out of scope here.
+    num_steps = 0
+    fk_enabled = True
+    backfill_model = True
 
 
 # =============================================================================

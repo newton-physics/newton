@@ -316,6 +316,7 @@ class BroadPhaseAllPairs:
         device: Devicelike | None = None,  # Device to launch on
         filter_pairs: wp.array[wp.vec2i] | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
+        skip_count_zero: bool = False,  # Skip candidate_pair_count.zero_() if already zeroed by the caller
     ) -> None:
         """Launch the N x N broad phase collision detection.
 
@@ -337,6 +338,10 @@ class BroadPhaseAllPairs:
             candidate_pair: Output array to store overlapping shape pairs
             candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
+            skip_count_zero: If True, skip the internal ``candidate_pair_count.zero_()``.
+                The caller guarantees ``candidate_pair_count[0] == 0`` on entry (e.g. when
+                the counter was zeroed by a preceding fused kernel).  Defaults to False so
+                the launch remains self-contained.
 
         The method will populate candidate_pair with the indices of shape pairs (i,j) where i < j whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose world indices are
@@ -345,7 +350,8 @@ class BroadPhaseAllPairs:
         """
         max_candidate_pair = candidate_pair.shape[0]
 
-        candidate_pair_count.zero_()
+        if not skip_count_zero:
+            candidate_pair_count.zero_()
 
         if device is None:
             device = shape_lower.device
@@ -410,6 +416,7 @@ class BroadPhaseExplicit:
         candidate_pair: wp.array[wp.vec2i],  # Array to store overlapping shape pairs
         candidate_pair_count: wp.array[int],
         device: Devicelike | None = None,  # Device to launch on
+        skip_count_zero: bool = False,  # Skip candidate_pair_count.zero_() if already zeroed
     ) -> None:
         """Launch the explicit pairs broad phase collision detection.
 
@@ -427,6 +434,10 @@ class BroadPhaseExplicit:
             candidate_pair: Output array to store overlapping shape pairs
             candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
+            skip_count_zero: If True, skip the internal ``candidate_pair_count.zero_()``.
+                The caller guarantees ``candidate_pair_count[0] == 0`` on entry (e.g. when
+                the counter was zeroed by a preceding fused kernel).  Defaults to False so
+                the launch remains self-contained.
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
         (with optional margin expansion), but only checking the explicitly provided pairs.
@@ -434,7 +445,8 @@ class BroadPhaseExplicit:
 
         max_candidate_pair = candidate_pair.shape[0]
 
-        candidate_pair_count.zero_()
+        if not skip_count_zero:
+            candidate_pair_count.zero_()
 
         if device is None:
             device = shape_lower.device

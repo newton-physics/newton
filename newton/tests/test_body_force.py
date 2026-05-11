@@ -554,7 +554,7 @@ com_solvers = {
         True,
     ),
     "featherstone": (
-        lambda model: newton.solvers.SolverFeatherstone(model),
+        newton.solvers.SolverFeatherstone,
         1e-3,
         True,
     ),

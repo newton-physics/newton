@@ -36,11 +36,15 @@ class Example:
 
         builder = newton.ModelBuilder()
 
+        builder.default_shape_cfg.mu = 0.5  # Friction coefficient
+
         if self.solver_type == "vbd":
             # VBD: Higher stiffness for stable rigid body contacts
             builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
             builder.default_shape_cfg.kd = 1.0e1  # Contact damping
-            builder.default_shape_cfg.mu = 0.5  # Friction coefficient
+        else:
+            builder.default_shape_cfg.mu_torsional = 0.01  # Contact stiffness
+            builder.default_shape_cfg.mu_rolling = 3e-3  # Contact stiffness
 
         # add ground plane
         builder.add_ground_plane()
@@ -186,6 +190,7 @@ class Example:
         # Custom test for cylinder: allow 0.01 error for X and Y, strict for Z and rotation
         self.cylinder_pos[2] = 0.6
         cylinder_q = wp.transform(self.cylinder_pos, wp.quat_identity())
+        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -199,6 +204,7 @@ class Example:
             and abs(q[6] - cylinder_q[6]) < 1e-4,
             [3],
         )
+        # fmt: on
         self.box_pos[2] = 0.25
         box_q = wp.transform(self.box_pos, wp.quat_identity())
         newton.examples.test_body_state(
@@ -238,6 +244,4 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

@@ -128,12 +128,12 @@ class SolverStyle3D(SolverBase):
         self.nonlinear_iterations = iterations
         self.drag_spring_stiff = drag_spring_stiff
         self.enable_mouse_dragging = enable_mouse_dragging
-        self.pd_matrix_builder = PDMatrixBuilder(model.particle_count)
         self.linear_solver = PcgSolver(model.particle_count, self.device)
 
         # Fixed PD matrix
         self.pd_non_diags = SparseMatrixELL()
         self.pd_diags = wp.zeros(model.particle_count, dtype=float, device=self.device)
+        self._precompute(model)
 
         # Non-linear equation variables
         self.dx = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
@@ -385,36 +385,37 @@ class SolverStyle3D(SolverBase):
             )
         )
 
-    def _precompute(self, builder: ModelBuilder):
+    def _precompute(self, model: Model):
         with wp.ScopedTimer("SolverStyle3D::precompute()"):
-            tri_aniso_attr = builder.custom_attributes.get("style3d:tri_aniso_ke")
-            edge_rest_area_attr = builder.custom_attributes.get("style3d:edge_rest_area")
-            edge_bending_cot_attr = builder.custom_attributes.get("style3d:edge_bending_cot")
-
-            if tri_aniso_attr is None or edge_rest_area_attr is None or edge_bending_cot_attr is None:
+            if (
+                not hasattr(model, "style3d")
+                or not hasattr(model.style3d, "tri_aniso_ke")
+                or not hasattr(model.style3d, "edge_rest_area")
+                or not hasattr(model.style3d, "edge_bending_cot")
+            ):
                 raise AttributeError(
-                    "Style3D custom attributes are missing from the builder. "
+                    "Style3D custom attributes are missing from the model. "
                     "Call SolverStyle3D.register_custom_attributes() before building the model."
                 )
 
-            tri_aniso_ke = tri_aniso_attr.build_array(len(builder.tri_indices), device="cpu").numpy().tolist()
-            edge_rest_area = edge_rest_area_attr.build_array(len(builder.edge_indices), device="cpu").numpy().tolist()
-            edge_bending_cot = (
-                edge_bending_cot_attr.build_array(len(builder.edge_indices), device="cpu").numpy().tolist()
-            )
+            pd_matrix_builder = PDMatrixBuilder(model.particle_count)
+            tri_indices = model.tri_indices.numpy().tolist()
+            tri_poses = model.tri_poses.numpy().tolist()
+            tri_areas = model.tri_areas.numpy().tolist()
+            edge_indices = model.edge_indices.numpy().tolist()
+            edge_bending_properties = model.edge_bending_properties.numpy().tolist()
+            tri_aniso_ke = model.style3d.tri_aniso_ke.numpy().tolist()
+            edge_rest_area = model.style3d.edge_rest_area.numpy().tolist()
+            edge_bending_cot = model.style3d.edge_bending_cot.numpy().tolist()
 
-            self.pd_matrix_builder.add_stretch_constraints(
-                builder.tri_indices, builder.tri_poses, tri_aniso_ke, builder.tri_areas
-            )
-            self.pd_matrix_builder.add_bend_constraints(
-                builder.edge_indices,
-                builder.edge_bending_properties,
+            pd_matrix_builder.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
+            pd_matrix_builder.add_bend_constraints(
+                edge_indices,
+                edge_bending_properties,
                 edge_rest_area,
                 edge_bending_cot,
             )
-            self.pd_diags, self.pd_non_diags.num_nz, self.pd_non_diags.nz_ell = self.pd_matrix_builder.finalize(
-                self.device
-            )
+            self.pd_diags, self.pd_non_diags.num_nz, self.pd_non_diags.nz_ell = pd_matrix_builder.finalize(self.device)
 
     def _update_drag_info(self, index: int, pos: wp.vec3, bary_coord: wp.vec3):
         """Should be invoked when state changed."""

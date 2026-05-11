@@ -13,7 +13,7 @@ import warp as wp
 
 from .....core.types import Vec2, Vec3
 from .....geometry.types import GeoType, Heightfield, Mesh
-from .types import Descriptor, override, vec4f
+from .types import Descriptor, override, vec3f
 
 ###
 # Module interface
@@ -30,7 +30,9 @@ __all__ = [
     "MeshShape",
     "PlaneShape",
     "ShapeDescriptor",
+    "ShapeDescriptorType",
     "SphereShape",
+    "max_contacts_for_shape_pair",
 ]
 
 
@@ -45,47 +47,27 @@ wp.set_module_options({"enable_backward": False})
 # Containers
 ###
 
+ShapeParamsLike = None | float | Sequence[float]
+"""A type union that can represent any shape parameters, including None, single float, or sequence of floats."""
 
 ShapeDataLike = None | Mesh | Heightfield
 """A type union that can represent any shape data, including None, Mesh, and Heightfield."""
 
 
-def is_primitive_geo_type(geo_type: GeoType) -> bool:
-    """Returns whether the geo type is a primitive shape."""
-    return geo_type in {
-        GeoType.SPHERE,
-        GeoType.CYLINDER,
-        GeoType.CONE,
-        GeoType.CAPSULE,
-        GeoType.BOX,
-        GeoType.ELLIPSOID,
-        GeoType.PLANE,
-    }
-
-
-def is_explicit_geo_type(geo_type: GeoType) -> bool:
-    """Returns whether the geo type is an explicit shape (mesh, convex, heightfield)."""
-    return geo_type in {
-        GeoType.MESH,
-        GeoType.CONVEX_MESH,
-        GeoType.HFIELD,
-    }
-
-
 class ShapeDescriptor(ABC, Descriptor):
     """Abstract base class for all shape descriptors."""
 
-    def __init__(self, geo_type: GeoType, name: str = "", uid: str | None = None):
+    def __init__(self, type: GeoType, name: str = "", uid: str | None = None):
         """
         Initialize the shape descriptor.
 
         Args:
-            geo_type: The geometry type from Newton's :class:`GeoType`.
+            type: The geometry type from Newton's :class:`GeoType`.
             name: The name of the shape descriptor.
             uid: Optional unique identifier of the shape descriptor.
         """
         super().__init__(name, uid)
-        self._type: GeoType = geo_type
+        self._type: GeoType = type
 
     @override
     def __hash__(self) -> int:
@@ -105,12 +87,13 @@ class ShapeDescriptor(ABC, Descriptor):
     @property
     def is_solid(self) -> bool:
         """Returns whether the shape is solid (i.e., not empty)."""
+        # TODO: Fix this since `is_solid` is meant to represent hollow shells.
         return self._type != GeoType.NONE
 
     @property
     @abstractmethod
-    def paramsvec(self) -> vec4f:
-        return vec4f(0.0)
+    def paramsvec(self) -> vec3f:
+        return vec3f(0.0)
 
     @property
     @abstractmethod
@@ -143,8 +126,8 @@ class EmptyShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec4f:
-        return vec4f(0.0)
+    def paramsvec(self) -> vec3f:
+        return vec3f(0.0)
 
     @property
     @override
@@ -176,8 +159,8 @@ class SphereShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec4f:
-        return vec4f(self.radius, 0.0, 0.0, 0.0)
+    def paramsvec(self) -> vec3f:
+        return vec3f(self.radius, 0.0, 0.0)
 
     @property
     @override
@@ -211,8 +194,8 @@ class CylinderShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec4f:
-        return vec4f(self.radius, self.half_height, 0.0, 0.0)
+    def paramsvec(self) -> vec3f:
+        return vec3f(self.radius, self.half_height, 0.0)
 
     @property
     @override
@@ -246,8 +229,8 @@ class ConeShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec4f:
-        return vec4f(self.radius, self.half_height, 0.0, 0.0)
+    def paramsvec(self) -> vec3f:
+        return vec3f(self.radius, self.half_height, 0.0)
 
     @property
     @override
@@ -281,8 +264,8 @@ class CapsuleShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec4f:
-        return vec4f(self.radius, self.half_height, 0.0, 0.0)
+    def paramsvec(self) -> vec3f:
+        return vec3f(self.radius, self.half_height, 0.0)
 
     @property
     @override
@@ -318,8 +301,8 @@ class BoxShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec4f:
-        return vec4f(self.hx, self.hy, self.hz, 0.0)
+    def paramsvec(self) -> vec3f:
+        return vec3f(self.hx, self.hy, self.hz)
 
     @property
     @override
@@ -337,31 +320,33 @@ class EllipsoidShape(ShapeDescriptor):
     A shape descriptor for ellipsoids.
 
     Attributes:
-        a (float): The semi-axis length along the X-axis.
-        b (float): The semi-axis length along the Y-axis.
-        c (float): The semi-axis length along the Z-axis.
+        rx: The semi-axis length along the X-axis [m].
+        ry: The semi-axis length along the Y-axis [m].
+        rz: The semi-axis length along the Z-axis [m].
     """
 
-    def __init__(self, a: float, b: float, c: float, name: str = "ellipsoid", uid: str | None = None):
+    def __init__(self, rx: float, ry: float, rz: float, name: str = "ellipsoid", uid: str | None = None):
         super().__init__(GeoType.ELLIPSOID, name, uid)
-        self.a: float = a
-        self.b: float = b
-        self.c: float = c
+        self.rx: float = rx
+        self.ry: float = ry
+        self.rz: float = rz
 
     @override
     def __repr__(self):
         """Returns a human-readable string representation of the EllipsoidShape."""
-        return f"EllipsoidShape(\nname: {self.name},\nuid: {self.uid},\na: {self.a},\nb: {self.b},\nc: {self.c}\n)"
+        return (
+            f"EllipsoidShape(\nname: {self.name},\nuid: {self.uid},\nrx: {self.rx},\nry: {self.ry},\nrz: {self.rz}\n)"
+        )
 
     @property
     @override
-    def paramsvec(self) -> vec4f:
-        return vec4f(self.a, self.b, self.c, 0.0)
+    def paramsvec(self) -> vec3f:
+        return vec3f(self.rx, self.ry, self.rz)
 
     @property
     @override
     def params(self) -> tuple[float, float, float]:
-        return (self.a, self.b, self.c)
+        return (self.rx, self.ry, self.rz)
 
     @property
     @override
@@ -374,31 +359,45 @@ class PlaneShape(ShapeDescriptor):
     A shape descriptor for planes.
 
     Attributes:
-        normal (Vec3): The normal vector of the plane.
-        distance (float): The distance from the origin to the plane along its normal.
+        normal:
+            The normal vector of the plane in world coordinates.
+            Defaults to (0, 0, 1) for a horizontal plane.
+        distance: The distance from the origin to the plane along its normal [m].
+        width: The width of the plane [m]. Defaults to 0, which represents an infinite plane.
+        length: The length of the plane [m]. Defaults to 0, which represents an infinite plane.
+        name: Optional name of the shape descriptor.
+        uid: Optional unique identifier of the shape descriptor.
     """
 
-    def __init__(self, normal: Vec3, distance: float, name: str = "plane", uid: str | None = None):
+    def __init__(
+        self,
+        normal: Vec3 = (0.0, 0.0, 1.0),
+        distance: float = 0.0,
+        width: float = 0.0,
+        length: float = 0.0,
+        name: str = "plane",
+        uid: str | None = None,
+    ):
         super().__init__(GeoType.PLANE, name, uid)
         self.normal: Vec3 = normal
         self.distance: float = distance
+        self.width: float = width
+        self.length: float = length
 
     @override
     def __repr__(self):
         """Returns a human-readable string representation of the PlaneShape."""
-        return (
-            f"PlaneShape(\nname: {self.name},\nuid: {self.uid},\nnormal: {self.normal},\ndistance: {self.distance}\n)"
-        )
+        return f"PlaneShape(\nname: {self.name},\nuid: {self.uid},\nnormal: {self.normal},\ndistance: {self.distance},\nwidth: {self.width},\nlength: {self.length}\n)"
 
     @property
     @override
-    def paramsvec(self) -> vec4f:
-        return vec4f(self.normal[0], self.normal[1], self.normal[2], self.distance)
+    def paramsvec(self) -> vec3f:
+        return vec3f(self.width, self.length, 0.0)
 
     @property
     @override
-    def params(self) -> tuple[float, float, float, float]:
-        return (self.normal[0], self.normal[1], self.normal[2], self.distance)
+    def params(self) -> tuple[float, float]:
+        return (self.width, self.length)
 
     @property
     @override
@@ -505,8 +504,8 @@ class MeshShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec4f:
-        return vec4f(1.0, 1.0, 1.0, 0.0)
+    def paramsvec(self) -> vec3f:
+        return vec3f(1.0, 1.0, 1.0)
 
     @property
     @override
@@ -546,16 +545,22 @@ class MeshShape(ShapeDescriptor):
 
 
 class HFieldShape(ShapeDescriptor):
-    """
-    A shape descriptor for height-field shapes.
+    """A shape descriptor for height-field (terrain) shapes.
 
-    WARNING: This class is not yet implemented.
+    Attributes:
+        heightfield: The underlying :class:`Heightfield` data.
     """
 
-    def __init__(self, name: str = "hfield", uid: str | None = None):
+    def __init__(self, heightfield: Heightfield, name: str = "hfield", uid: str | None = None):
+        """Initialize the height-field shape descriptor.
+
+        Args:
+            heightfield: A :class:`Heightfield` instance containing elevation data.
+            name: The name of the shape descriptor.
+            uid: Optional unique identifier of the shape descriptor.
+        """
         super().__init__(GeoType.HFIELD, name, uid)
-        # TODO: Remove this when HFieldShape is implemented
-        raise NotImplementedError("HFieldShape is not yet implemented.")
+        self._data: Heightfield = heightfield
 
     @override
     def __repr__(self):
@@ -563,14 +568,19 @@ class HFieldShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec4f:
-        return vec4f(1.0, 1.0, 1.0, 0.0)
+    def paramsvec(self) -> vec3f:
+        return vec3f(1.0, 1.0, 1.0)
 
     @property
     @override
     def params(self) -> tuple[float, float, float]:
         """Returns the XYZ scaling of the height-field."""
         return 1.0, 1.0, 1.0
+
+    @property
+    @override
+    def data(self) -> Heightfield:
+        return self._data
 
 
 ###
@@ -597,7 +607,14 @@ ShapeDescriptorType = (
 # Utilities
 ###
 
+# Contact counts for mesh/heightfield pairs are dynamic (bounded by the
+# pipeline's max_contacts_per_pair setting).  The values below are
+# conservative upper-bound estimates used for capacity allocation.
+_MESH_CONVEX_MAX = 32
+_MESH_MESH_MAX = 64
 
+
+@wp.func
 def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
     """
     Count the number of potential contact points for a collision pair in both
@@ -629,7 +646,7 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
         elif type_b == GeoType.BOX:
             return 8, 8
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
             return 4, 4
         elif type_b == GeoType.PLANE:
@@ -643,7 +660,7 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
         elif type_b == GeoType.BOX:
             return 8, 8
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
             return 8, 8
         elif type_b == GeoType.PLANE:
@@ -655,7 +672,7 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
         elif type_b == GeoType.BOX:
             return 8, 8
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
             return 4, 4
         elif type_b == GeoType.PLANE:
@@ -665,7 +682,7 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
         if type_b == GeoType.BOX:
             return 12, 12
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
             return 8, 8
         elif type_b == GeoType.PLANE:
@@ -673,13 +690,17 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
 
     elif type_a == GeoType.MESH or type_a == GeoType.CONVEX_MESH:
         if type_b == GeoType.HFIELD:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_MESH_MAX, 0
         elif type_b == GeoType.CONE:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.PLANE:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_CONVEX_MAX, 0
         else:
-            pass  # TODO: WHAT TO RETURN WHEN MESH SUPPORT IS ADDED?
+            return _MESH_MESH_MAX, 0
+
+    elif type_a == GeoType.HFIELD:
+        # Heightfield vs convex primitives
+        return _MESH_CONVEX_MAX, 0
 
     elif type_a == GeoType.CONE:
         if type_b == GeoType.CONE:

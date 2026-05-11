@@ -110,12 +110,12 @@ def add_example_test(
         # a known third-party or asset issue that still needs follow-up.
         allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
 
-        # Find the current Warp cache
+        # Pass the parent dir; the subprocess's init_kernel_cache appends the version.
         warp_cache_path = wp.config.kernel_cache_dir
 
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
-            env_vars["WARP_CACHE_PATH"] = warp_cache_path
+            env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
         if not allow_deprecation_warnings:
             env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
         else:
@@ -230,7 +230,21 @@ add_example_test(
 
 add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
 
-add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_joints",
+    devices=test_devices,
+    use_viewer=True,
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_joints",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"solver": "vbd"},
+    test_suffix="vbd",
+)
 
 add_example_test(
     TestBasicExamples,
@@ -769,6 +783,47 @@ class TestSoftbodyExamples(unittest.TestCase):
 add_example_test(
     TestSoftbodyExamples,
     name="softbody.example_softbody_hanging",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+
+
+class TestKaminoExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_basic_fourbar",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_basic_heterogeneous",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_basic_dr_testmech",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_robot_dr_legs",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_robot_anymal_d",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
