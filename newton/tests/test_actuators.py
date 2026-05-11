@@ -3,7 +3,6 @@
 
 """Tests for Newton actuators."""
 
-import importlib.util
 import json
 import math
 import os
@@ -12,6 +11,7 @@ import tempfile
 import types
 import unittest
 import warnings
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -47,9 +47,8 @@ try:
 except ImportError:
     _HAS_LEGACY_ACTUATORS = False
 
-_HAS_TORCH = importlib.util.find_spec("torch") is not None
 
-if _HAS_TORCH:
+try:
     import torch as _torch
 
     class _LSTMNet(_torch.nn.Module):
@@ -67,6 +66,8 @@ if _HAS_TORCH:
         ) -> tuple[_torch.Tensor, tuple[_torch.Tensor, _torch.Tensor]]:
             out, (h, c) = self.lstm(x, hc)
             return self.dec(out[:, -1, :]), (h, c)
+except ImportError:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -186,14 +187,24 @@ class TestControllerPID(unittest.TestCase):
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
 class TestControllerNeuralMLP(unittest.TestCase):
     """ControllerNeuralMLP — load via model_path, call compute() directly."""
 
     def setUp(self):
-        self.torch = _torch
+        # Mark the test as skipped if Torch is not installed but required
+        try:
+            import torch
+
+            if wp.get_device().is_cuda and not torch.cuda.is_available():
+                # Ensure torch has CUDA support
+                self.skipTest("Torch not compiled with CUDA support")
+
+        except Exception as e:
+            self.skipTest(f"{e}")
+
+        self.torch = torch
         self.device = wp.get_device()
-        self._torch_dev = _torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
 
     def _save_torchscript(self, net, filename="mlp.pt", metadata=None):
@@ -300,14 +311,24 @@ class TestControllerNeuralMLP(unittest.TestCase):
         self.assertAlmostEqual(forces.numpy()[0], 30.0, places=3, msg="bias=10 * effort_scale=3 -> 30")
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
 class TestControllerNeuralLSTM(unittest.TestCase):
     """ControllerNeuralLSTM — load via model_path, call compute() directly."""
 
     def setUp(self):
-        self.torch = _torch
+        # Mark the test as skipped if Torch is not installed but required
+        try:
+            import torch
+
+            if wp.get_device().is_cuda and not torch.cuda.is_available():
+                # Ensure torch has CUDA support
+                self.skipTest("Torch not compiled with CUDA support")
+
+        except Exception as e:
+            self.skipTest(f"{e}")
+
+        self.torch = torch
         self.device = wp.get_device()
-        self._torch_dev = _torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
 
     def _make_lstm(self, hidden=8, layers=1):
@@ -411,7 +432,7 @@ class TestDelay(unittest.TestCase):
         self.assertEqual(ds.buffer_pos.shape, (max_delay, n))
         self.assertEqual(ds.buffer_vel.shape, (max_delay, n))
         self.assertEqual(ds.buffer_act.shape, (max_delay, n))
-        self.assertEqual(ds.write_idx, max_delay - 1)
+        self.assertEqual(ds.write_idx.numpy()[0], max_delay - 1)
         np.testing.assert_array_equal(ds.num_pushes.numpy(), [0, 0])
 
     def test_latency_behavior(self):
@@ -728,6 +749,46 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertIsInstance(parsed, ActuatorParsed)
         self.assertEqual(parsed.controller_class, ControllerPD)
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_from_usd_ignore_paths(self):
+        """Actuator prims matched by ignore_paths are not registered."""
+        test_dir = os.path.dirname(__file__)
+        usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
+
+        builder = newton.ModelBuilder()
+        result = parse_usd(builder, usd_path, ignore_paths=[".*Joint1Actuator"])
+        self.assertEqual(result["actuator_count"], 1)
+
+        builder2 = newton.ModelBuilder()
+        result2 = parse_usd(builder2, usd_path, ignore_paths=[".*Actuator"])
+        self.assertEqual(result2["actuator_count"], 0)
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_from_usd_schema_plugin_not_loaded(self):
+        """parse_actuator_prim works when the USD schema plugin is not registered.
+
+        Simulates the headless case where GetAppliedSchemas() returns [] because
+        the Newton schema plugin failed to load, but the raw apiSchemas metadata
+        is still present on the prim.
+        """
+        test_dir = os.path.dirname(__file__)
+        usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
+        if not os.path.exists(usd_path):
+            self.skipTest(f"Test USD file not found: {usd_path}")
+
+        stage = Usd.Stage.Open(usd_path)
+        prim = stage.GetPrimAtPath("/World/Robot/Joint1Actuator")
+
+        with patch.object(type(prim), "GetAppliedSchemas", return_value=[]):
+            self.assertEqual(prim.GetAppliedSchemas(), [], "patch must be active for this test to be meaningful")
+            parsed = parse_actuator_prim(prim)
+
+        self.assertIsNotNone(parsed)
+        self.assertIsInstance(parsed, ActuatorParsed)
+        self.assertEqual(parsed.controller_class, ControllerPD)
+        self.assertAlmostEqual(parsed.controller_kwargs["kp"], 100.0)
+        self.assertAlmostEqual(parsed.controller_kwargs["kd"], 10.0)
 
     def test_programmatic(self):
         """Mixed controller types, clamping, and delays via add_actuator.
@@ -1220,7 +1281,7 @@ class TestStateReset(unittest.TestCase):
         np.testing.assert_array_equal(state.buffer_pos.numpy(), np.zeros((max_delay, n)))
         np.testing.assert_array_equal(state.buffer_vel.numpy(), np.zeros((max_delay, n)))
         np.testing.assert_array_equal(state.buffer_act.numpy(), np.zeros((max_delay, n)))
-        self.assertEqual(state.write_idx, max_delay - 1)
+        self.assertEqual(state.write_idx.numpy()[0], max_delay - 1)
 
     def test_pid_masked_reset(self):
         """PID integral accumulator: masked reset zeros selected DOFs only."""
@@ -1321,11 +1382,127 @@ class TestStateReset(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 7b. CUDA graph capture — end-to-end with Newton solver + delayed actuator
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(
+    wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
+    "CUDA graph capture requires CUDA device with memory pools",
+)
+class TestDelayGraphCapture(unittest.TestCase):
+    """Verify delayed actuator is graph-safe with device-side write_idx.
+
+    Captures N actuator + K physics substeps as a CUDA graph and replays
+    with varying targets. With N even and N % buf_depth != 0, the test
+    confirms graph replay matches eager execution — proving the write
+    pointer advances correctly on-device during replay.
+    """
+
+    def test_delay_graph_n_not_multiple_matches_eager(self):
+        """N=2, buf_depth=5: graph matches eager across multiple cycles.
+
+        This configuration (N < buf_depth, N % buf_depth != 0) previously
+        failed when write_idx was a host-side scalar baked into the graph.
+        With device-side write_idx the kernel advances the pointer on-GPU,
+        making graph replay correct for any even N.
+        """
+        max_delay = 5
+        N = 2  # 2 % 5 != 0, N < buf_depth, N is even
+        K = 2
+        dt = 0.02
+        warmup_target = 0.0
+        cycle_targets = [2.0, -3.0, 5.0, -1.0]
+
+        # Build a single-DOF revolute pendulum with delayed PD actuator
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.density = 1000.0
+        link = builder.add_link()
+        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        builder.add_shape_sphere(body=link, radius=0.1)
+        builder.add_articulation([joint])
+        dof = builder.joint_qd_start[joint]
+        builder.add_actuator(
+            ControllerPD,
+            index=dof,
+            kp=200.0,
+            kd=10.0,
+            delay_steps=max_delay,
+            clamping=[(ClampingMaxEffort, {"max_effort": 500.0})],
+        )
+        model = builder.finalize()
+        device = model.device
+        ndof = model.joint_coord_count
+
+        def _setup():
+            solver = newton.solvers.SolverMuJoCo(model, iterations=4, ls_iterations=4)
+            s0 = model.state()
+            s1 = model.state()
+            ctrl = model.control()
+            newton.eval_fk(model, s0.joint_q, s0.joint_qd, s0)
+            act = model.actuators[0]
+            act_a, act_b = act.state(), act.state()
+            return solver, s0, s1, ctrl, act, act_a, act_b
+
+        def _loop(solver, s0, s1, ctrl, act, act_a, act_b, n):
+            sub_dt = dt / K
+            for _ in range(n):
+                ctrl.joint_f.zero_()
+                act.step(s0, ctrl, act_a, act_b, dt=dt)
+                act_a, act_b = act_b, act_a
+                for _ in range(K):
+                    s0.clear_forces()
+                    solver.step(s0, s1, ctrl, None, sub_dt)
+                    s0, s1 = s1, s0
+            return s0, s1, act_a, act_b
+
+        # --- Eager ---
+        solver, s0, s1, ctrl, act, act_a, act_b = _setup()
+        wp.copy(ctrl.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, max_delay)
+        eager_results = []
+        for tgt in cycle_targets:
+            wp.copy(ctrl.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, N)
+            eager_results.append(s0.joint_q.numpy().copy())
+
+        # --- Graph ---
+        solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g = _setup()
+        wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        s0_g, s1_g, act_a_g, act_b_g = _loop(solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay)
+        sub_dt = dt / K
+        with wp.ScopedCapture(device=device) as capture:
+            for _ in range(N):
+                ctrl_g.joint_f.zero_()
+                act_g.step(s0_g, ctrl_g, act_a_g, act_b_g, dt=dt)
+                act_a_g, act_b_g = act_b_g, act_a_g
+                for _ in range(K):
+                    s0_g.clear_forces()
+                    solver_g.step(s0_g, s1_g, ctrl_g, None, sub_dt)
+                    s0_g, s1_g = s1_g, s0_g
+        graph = capture.graph
+
+        graph_results = []
+        for tgt in cycle_targets:
+            wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.capture_launch(graph)
+            graph_results.append(s0_g.joint_q.numpy().copy())
+
+        for ci in range(len(cycle_targets)):
+            np.testing.assert_allclose(
+                graph_results[ci],
+                eager_results[ci],
+                rtol=1e-4,
+                err_msg=f"Cycle {ci}: graph should match eager with device-side write_idx",
+            )
+
+
+# ---------------------------------------------------------------------------
 # 8. Neural controller via USD parsing (parse_actuator_prim)
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_USD and _HAS_TORCH, "pxr or torch not installed")
+@unittest.skipUnless(HAS_USD, "pxr not installed")
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural controller
     prims with asset-typed ``newton:modelPath`` attributes.
@@ -1336,7 +1513,18 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """
 
     def setUp(self):
-        self.torch = _torch
+        # Mark the test as skipped if Torch is not installed but required
+        try:
+            import torch
+
+            if wp.get_device().is_cuda and not torch.cuda.is_available():
+                # Ensure torch has CUDA support
+                self.skipTest("Torch not compiled with CUDA support")
+
+        except Exception as e:
+            self.skipTest(f"{e}")
+
+        self.torch = torch
         self._tmp_dir = tempfile.mkdtemp()
 
     def tearDown(self):

@@ -9,9 +9,14 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.types import float32
-from newton._src.solvers.kamino._src.linalg.conjugate import BatchedLinearOperator, CGSolver, CRSolver
+from newton._src.solvers.kamino._src.linalg.conjugate import (
+    BatchedLinearOperator,
+    CGSolver,
+    CRSolver,
+    make_jacobi_preconditioner,
+)
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
-from newton._src.solvers.kamino._src.linalg.linear import ConjugateGradientSolver
+from newton._src.solvers.kamino._src.linalg.linear import ConjugateGradientSolver, ConjugateResidualSolver
 from newton._src.solvers.kamino._src.linalg.sparse_matrix import (
     BlockDType,
     BlockSparseMatrices,
@@ -45,20 +50,21 @@ class TestLinalgConjugate(unittest.TestCase):
         )
 
         n_worlds = problem.num_blocks
-        maxdim = int(problem.maxdims[0])
 
-        b_2d = problem.b_wp.reshape((n_worlds, maxdim))
-        x_wp = wp.zeros_like(b_2d, device=device)
-
-        world_active = wp.full(n_worlds, 1, dtype=wp.int32, device=device)
-
-        # Create operator - use maxdim for allocation, then set actual dims
+        # Create operator with per-world maxdims
         info = DenseSquareMultiLinearInfo()
-        info.finalize(dimensions=[maxdim] * n_worlds, dtype=float32, device=device)
+        info.finalize(dimensions=problem.maxdims, dtype=float32, device=device)
         info.dim = problem.dim_wp  # Override with actual active dimensions
         operator = DenseLinearOperatorData(info=info, mat=problem.A_wp)
         A = BatchedLinearOperator.from_dense(operator)
 
+        # b and x are flat 1D arrays
+        b_wp = problem.b_wp
+        x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+
+        world_active = wp.full(n_worlds, 1, dtype=wp.int32, device=device)
+
+        maxdim = max(problem.maxdims)
         atol = wp.full(n_worlds, 1.0e-4, dtype=problem.wp_dtype, device=device)
         rtol = wp.full(n_worlds, 1.0e-5, dtype=problem.wp_dtype, device=device)
         maxiter = wp.full(n_worlds, max(3 * maxdim, 50), dtype=int, device=device)
@@ -72,9 +78,9 @@ class TestLinalgConjugate(unittest.TestCase):
             callback=None,
             use_cuda_graph=False,
         )
-        cur_iter, r_norm_sq, atol_sq = solver.solve(b_2d, x_wp)
+        cur_iter, r_norm_sq, atol_sq = solver.solve(b_wp, x_wp)
 
-        x_wp_np = x_wp.numpy().reshape(-1)
+        x_wp_np = x_wp.numpy()
 
         if self.verbose:
             pass
@@ -134,69 +140,82 @@ class TestLinalgConjugate(unittest.TestCase):
             with self.subTest(problem=problem_name, solver=solver_cls.__name__):
                 self._test_solve(solver_cls, problem_params, device)
 
-    def _test_sparse_solve(self, solver_cls, n_worlds, dim, block_size, device):
-        """Test CG/CR with sparse matrices built from random SPD matrices."""
-        rng = np.random.default_rng(self.seed)
+    def _test_sparse_solve(self, solver_cls, dims, block_size, device):
+        """Test CG/CR with sparse matrices built from random SPD matrices.
 
-        # Pad to block-aligned size
-        n_blocks_per_dim = (dim + block_size - 1) // block_size
-        padded_dim = n_blocks_per_dim * block_size
-        total_blocks = n_blocks_per_dim * n_blocks_per_dim
+        Args:
+            solver_cls: CGSolver or CRSolver.
+            dims: List of active dimensions per world.
+            block_size: Block size for sparse matrix.
+            device: Warp device.
+        """
+        rng = np.random.default_rng(self.seed)
+        n_worlds = len(dims)
+
+        # Per-world padded (block-aligned) dimensions
+        padded_dims = [((d + block_size - 1) // block_size) * block_size for d in dims]
+        total_vec_size = sum(padded_dims)
 
         # Generate random SPD matrices and RHS vectors
         A_list, A_padded_list, b_list, x_ref_list = [], [], [], []
+        all_coords_list = []
+        capacities = []
         for i in range(n_worlds):
+            dim = dims[i]
+            pdim = padded_dims[i]
             A = random_spd_matrix(dim=dim, seed=self.seed + i, dtype=np.float32)
-            A_padded = np.zeros((padded_dim, padded_dim), dtype=np.float32)
+            A_padded = np.zeros((pdim, pdim), dtype=np.float32)
             A_padded[:dim, :dim] = A
             b = rng.standard_normal(dim).astype(np.float32)
             A_list.append(A)
             A_padded_list.append(A_padded)
             b_list.append(b)
             x_ref_list.append(np.linalg.solve(A, b))
+            # Block coordinates for this world
+            nb = pdim // block_size
+            coords = [(bi * block_size, bj * block_size) for bi in range(nb) for bj in range(nb)]
+            all_coords_list.extend(coords)
+            capacities.append(nb * nb)
 
-        # Block coordinates (all blocks, row-major) - same for all worlds
-        coords = [
-            (bi * block_size, bj * block_size) for bi in range(n_blocks_per_dim) for bj in range(n_blocks_per_dim)
-        ]
-        all_coords = np.array(coords * n_worlds, dtype=np.int32)
+        all_coords = np.array(all_coords_list, dtype=np.int32)
 
         # Build BlockSparseMatrices
         bsm = BlockSparseMatrices()
         bsm.finalize(
-            max_dims=[(padded_dim, padded_dim)] * n_worlds,
-            capacities=[total_blocks] * n_worlds,
+            max_dims=[(pd, pd) for pd in padded_dims],
+            capacities=capacities,
             nzb_dtype=BlockDType(float32, (block_size, block_size)),
             device=device,
         )
-        bsm.dims.assign(np.array([[padded_dim, padded_dim]] * n_worlds, dtype=np.int32))
-        bsm.num_nzb.assign(np.array([total_blocks] * n_worlds, dtype=np.int32))
+        bsm.dims.assign(np.array([[pd, pd] for pd in padded_dims], dtype=np.int32))
+        bsm.num_nzb.assign(np.array(capacities, dtype=np.int32))
         bsm.nzb_coords.assign(all_coords)
         bsm.assign(A_padded_list)
 
-        # Build dense operator for comparison
-        A_dense = np.array([A.flatten() for A in A_padded_list], dtype=np.float32)
-        A_wp = wp.array(A_dense, dtype=float32, device=device)
-        active_dims = wp.array([dim] * n_worlds, dtype=wp.int32, device=device)
+        # Build dense operator for comparison (flat 1D matrix storage)
+        A_flat = np.concatenate([A.flatten() for A in A_padded_list]).astype(np.float32)
+        A_wp = wp.array(A_flat, dtype=float32, device=device)
+        active_dims = wp.array(dims, dtype=wp.int32, device=device)
 
         info = DenseSquareMultiLinearInfo()
-        info.finalize(dimensions=[padded_dim] * n_worlds, dtype=float32, device=device)
+        info.finalize(dimensions=padded_dims, dtype=float32, device=device)
         info.dim = active_dims
         dense_op = BatchedLinearOperator.from_dense(DenseLinearOperatorData(info=info, mat=A_wp))
         sparse_op = BatchedLinearOperator.from_block_sparse(bsm, active_dims)
 
-        # Prepare RHS
-        b_2d = np.zeros((n_worlds, padded_dim), dtype=np.float32)
-        for m, b in enumerate(b_list):
-            b_2d[m, :dim] = b
-        b_wp = wp.array(b_2d, dtype=float32, device=device)
+        # Prepare RHS as flat 1D array with vio-based offsets
+        vio_np = info.vio.numpy()
+        b_flat = np.zeros(total_vec_size, dtype=np.float32)
+        for m in range(n_worlds):
+            b_flat[vio_np[m] : vio_np[m] + dims[m]] = b_list[m]
+        b_wp = wp.array(b_flat, dtype=float32, device=device)
 
         world_active = wp.full(n_worlds, 1, dtype=wp.int32, device=device)
         atol = wp.full(n_worlds, 1.0e-6, dtype=float32, device=device)
         rtol = wp.full(n_worlds, 1.0e-6, dtype=float32, device=device)
 
         # Solve with dense operator
-        x_dense = wp.zeros((n_worlds, padded_dim), dtype=float32, device=device)
+        x_dense = wp.zeros(total_vec_size, dtype=float32, device=device)
         solver_dense = solver_cls(
             A=dense_op,
             world_active=world_active,
@@ -210,7 +229,7 @@ class TestLinalgConjugate(unittest.TestCase):
         solver_dense.solve(b_wp, x_dense)
 
         # Solve with sparse operator
-        x_sparse = wp.zeros((n_worlds, padded_dim), dtype=float32, device=device)
+        x_sparse = wp.zeros(total_vec_size, dtype=float32, device=device)
         solver_sparse = solver_cls(
             A=sparse_op,
             world_active=world_active,
@@ -223,12 +242,14 @@ class TestLinalgConjugate(unittest.TestCase):
         )
         solver_sparse.solve(b_wp, x_sparse)
 
-        # Compare results
+        # Compare results - extract at flat offsets
         x_dense_np = x_dense.numpy()
         x_sparse_np = x_sparse.numpy()
         for m in range(n_worlds):
-            x_d = x_dense_np[m, :dim]
-            x_s = x_sparse_np[m, :dim]
+            offset = vio_np[m]
+            dim = dims[m]
+            x_d = x_dense_np[offset : offset + dim]
+            x_s = x_sparse_np[offset : offset + dim]
             x_ref = x_ref_list[m]
 
             if self.verbose:
@@ -244,8 +265,9 @@ class TestLinalgConjugate(unittest.TestCase):
     @classmethod
     def _sparse_problem_params(cls):
         return {
-            "small_4x4_blocks": {"n_worlds": 2, "dim": 16, "block_size": 4},
-            "medium_6x6_blocks": {"n_worlds": 3, "dim": 48, "block_size": 6},
+            "small_4x4_blocks": {"dims": [16, 16], "block_size": 4},
+            "medium_6x6_blocks": {"dims": [48, 48, 48], "block_size": 6},
+            "hetero_4x4_blocks": {"dims": [12, 20, 8], "block_size": 4},
         }
 
     def test_sparse_solve_cg_cuda(self):
@@ -301,8 +323,8 @@ class TestLinalgConjugate(unittest.TestCase):
 
         sparse_op = self._build_sparse_operator(A, block_size, device)
 
-        b_wp = wp.array(b.reshape(1, -1), dtype=float32, device=device)
-        x_wp = wp.zeros((1, dim), dtype=float32, device=device)
+        b_wp = wp.array(b, dtype=float32, device=device)
+        x_wp = wp.zeros(dim, dtype=float32, device=device)
         world_active = wp.full(1, 1, dtype=wp.int32, device=device)
         atol = wp.full(1, 1e-6, dtype=float32, device=device)
         rtol = wp.full(1, 1e-6, dtype=float32, device=device)
@@ -318,7 +340,7 @@ class TestLinalgConjugate(unittest.TestCase):
         )
         solver.solve(b_wp, x_wp)
 
-        x_result = x_wp.numpy().flatten()
+        x_result = x_wp.numpy()
         self.assertTrue(
             np.allclose(x_result, x_ref, rtol=1e-3, atol=1e-4),
             f"CG solve failed: {x_result} vs {x_ref}, error={np.abs(x_result - x_ref).max():.2e}",
@@ -412,78 +434,255 @@ class TestLinalgConjugate(unittest.TestCase):
                 f"World {w}: matrices don't match, max diff={np.abs(orig_trimmed - recovered_trimmed).max():.2e}",
             )
 
-    def test_cg_solver_discover_sparse(self):
-        """Test ConjugateGradientSolver with discover_sparse=True."""
+    @classmethod
+    def _heterogeneous_problem_params(cls):
+        problems = {
+            "hetero_small": {"maxdims": [4, 7, 5], "dims": [4, 7, 5]},
+            "hetero_partial": {"maxdims": [8, 12, 6], "dims": [5, 9, 4]},
+        }
+        return problems
+
+    def _test_solve_heterogeneous(self, solver_cls, problem_params, device):
+        problem = RandomProblemLLT(
+            **problem_params,
+            seed=self.seed,
+            np_dtype=np.float32,
+            wp_dtype=float32,
+            device=device,
+        )
+
+        n_worlds = problem.num_blocks
+
+        # Create operator with heterogeneous maxdims
+        info = DenseSquareMultiLinearInfo()
+        info.finalize(dimensions=problem.maxdims, dtype=float32, device=device)
+        info.dim = problem.dim_wp  # Override with actual active dimensions
+        operator = DenseLinearOperatorData(info=info, mat=problem.A_wp)
+        A = BatchedLinearOperator.from_dense(operator)
+
+        # b and x are flat 1D arrays
+        b = problem.b_wp
+        x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+
+        world_active = wp.full(n_worlds, 1, dtype=wp.int32, device=device)
+
+        maxdim = max(problem.maxdims)
+        atol = wp.full(n_worlds, 1.0e-4, dtype=float32, device=device)
+        rtol = wp.full(n_worlds, 1.0e-5, dtype=float32, device=device)
+        maxiter = wp.full(n_worlds, max(3 * maxdim, 50), dtype=int, device=device)
+        solver = solver_cls(
+            A=A,
+            world_active=world_active,
+            atol=atol,
+            rtol=rtol,
+            maxiter=maxiter,
+            Mi=None,
+            callback=None,
+            use_cuda_graph=False,
+        )
+        solver.solve(b, x_wp)
+
+        x_wp_np = x_wp.numpy()
+
+        for block_idx, block_act in enumerate(problem.dims):
+            x_found = get_vector_block(block_idx, x_wp_np, problem.dims, problem.maxdims)[:block_act]
+            is_x_close = np.allclose(x_found, problem.x_np[block_idx][:block_act], rtol=1e-5, atol=1e-4)
+            if self.verbose:
+                print(f"Block {block_idx}:")
+                print_error_stats("x", x_found, problem.x_np[block_idx], problem.dims[block_idx])
+            self.assertTrue(is_x_close)
+
+    def test_solve_cg_heterogeneous_cpu(self):
+        device = "cpu"
+        solver_cls = CGSolver
+        for problem_name, problem_params in self._heterogeneous_problem_params().items():
+            with self.subTest(problem=problem_name, solver=solver_cls.__name__):
+                self._test_solve_heterogeneous(solver_cls, problem_params, device)
+
+    def test_solve_cr_heterogeneous_cpu(self):
+        device = "cpu"
+        solver_cls = CRSolver
+        for problem_name, problem_params in self._heterogeneous_problem_params().items():
+            with self.subTest(problem=problem_name, solver=solver_cls.__name__):
+                self._test_solve_heterogeneous(solver_cls, problem_params, device)
+
+    def test_solve_cg_heterogeneous_cuda(self):
+        if not wp.get_cuda_devices():
+            self.skipTest("No CUDA devices found")
+        device = wp.get_cuda_device()
+        solver_cls = CGSolver
+        for problem_name, problem_params in self._heterogeneous_problem_params().items():
+            with self.subTest(problem=problem_name, solver=solver_cls.__name__):
+                self._test_solve_heterogeneous(solver_cls, problem_params, device)
+
+    def test_solve_cr_heterogeneous_cuda(self):
+        if not wp.get_cuda_devices():
+            self.skipTest("No CUDA devices found")
+        device = wp.get_cuda_device()
+        solver_cls = CRSolver
+        for problem_name, problem_params in self._heterogeneous_problem_params().items():
+            with self.subTest(problem=problem_name, solver=solver_cls.__name__):
+                self._test_solve_heterogeneous(solver_cls, problem_params, device)
+
+    def _test_solve_heterogeneous_jacobi(self, solver_cls, problem_params, device):
+        problem = RandomProblemLLT(
+            **problem_params,
+            seed=self.seed,
+            np_dtype=np.float32,
+            wp_dtype=float32,
+            device=device,
+        )
+
+        n_worlds = problem.num_blocks
+
+        # Create operator with heterogeneous maxdims
+        info = DenseSquareMultiLinearInfo()
+        info.finalize(dimensions=problem.maxdims, dtype=float32, device=device)
+        info.dim = problem.dim_wp
+        operator = DenseLinearOperatorData(info=info, mat=problem.A_wp)
+        A = BatchedLinearOperator.from_dense(operator)
+
+        # Build Jacobi preconditioner
+        maxdim = max(problem.maxdims)
+        jacobi_diag = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+        wp.launch(
+            make_jacobi_preconditioner,
+            dim=(n_worlds, maxdim),
+            inputs=[problem.A_wp, problem.dim_wp, problem.maxdim_wp, info.mio, info.vio],
+            outputs=[jacobi_diag],
+            device=device,
+        )
+        Mi = BatchedLinearOperator.from_diagonal(jacobi_diag, A.active_dims, A.vio, maxdim)
+
+        # b and x are flat 1D arrays
+        b = problem.b_wp
+        x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+
+        world_active = wp.full(n_worlds, 1, dtype=wp.int32, device=device)
+
+        atol = wp.full(n_worlds, 1.0e-4, dtype=float32, device=device)
+        rtol = wp.full(n_worlds, 1.0e-5, dtype=float32, device=device)
+        maxiter = wp.full(n_worlds, max(3 * maxdim, 50), dtype=int, device=device)
+        solver = solver_cls(
+            A=A,
+            world_active=world_active,
+            atol=atol,
+            rtol=rtol,
+            maxiter=maxiter,
+            Mi=Mi,
+            callback=None,
+            use_cuda_graph=False,
+        )
+        solver.solve(b, x_wp)
+
+        x_wp_np = x_wp.numpy()
+
+        for block_idx, block_act in enumerate(problem.dims):
+            x_found = get_vector_block(block_idx, x_wp_np, problem.dims, problem.maxdims)[:block_act]
+            is_x_close = np.allclose(x_found, problem.x_np[block_idx][:block_act], rtol=1e-5, atol=1e-4)
+            if self.verbose:
+                print(f"Block {block_idx}:")
+                print_error_stats("x", x_found, problem.x_np[block_idx], problem.dims[block_idx])
+            self.assertTrue(is_x_close)
+
+    def test_solve_cg_jacobi_heterogeneous_cpu(self):
+        device = "cpu"
+        for problem_name, problem_params in self._heterogeneous_problem_params().items():
+            with self.subTest(problem=problem_name, solver="CGSolver+Jacobi"):
+                self._test_solve_heterogeneous_jacobi(CGSolver, problem_params, device)
+
+    def test_solve_cr_jacobi_heterogeneous_cpu(self):
+        device = "cpu"
+        for problem_name, problem_params in self._heterogeneous_problem_params().items():
+            with self.subTest(problem=problem_name, solver="CRSolver+Jacobi"):
+                self._test_solve_heterogeneous_jacobi(CRSolver, problem_params, device)
+
+    def _test_iterative_solver_heterogeneous(self, solver_cls, discover_sparse):
+        """Test iterative solver wrapper with heterogeneous dims."""
         if not wp.get_cuda_devices():
             self.skipTest("No CUDA devices found")
         device = wp.get_cuda_device()
 
         rng = np.random.default_rng(self.seed)
-        n_worlds = 3
+        dims_list = [18, 24, 12]  # Heterogeneous dimensions, all multiples of block_size
         block_size = 6
-        maxdim = 24  # Multiple of block_size for clean blocks
 
-        # Generate SPD matrices and RHS
+        # Generate SPD matrices and RHS per world
         A_list, b_list, x_ref_list = [], [], []
-        for i in range(n_worlds):
-            A = random_spd_matrix(dim=maxdim, seed=self.seed + i, dtype=np.float32)
-            b = rng.standard_normal(maxdim).astype(np.float32)
+        for i, dim in enumerate(dims_list):
+            A = random_spd_matrix(dim=dim, seed=self.seed + i, dtype=np.float32)
+            b = rng.standard_normal(dim).astype(np.float32)
             A_list.append(A)
             b_list.append(b)
             x_ref_list.append(np.linalg.solve(A, b))
 
-        # Create dense storage (compact format: dim*dim per world, with maxdim^2 spacing)
-        A_flat = np.zeros(n_worlds * maxdim * maxdim, dtype=np.float32)
-        for w, A in enumerate(A_list):
-            offset = w * maxdim * maxdim
-            A_flat[offset : offset + maxdim * maxdim] = A.flatten()
+        # Create DenseSquareMultiLinearInfo with heterogeneous dimensions
+        info = DenseSquareMultiLinearInfo()
+        info.finalize(dimensions=dims_list, dtype=float32, device=device)
+        mio_np = info.mio.numpy()
+        vio_np = info.vio.numpy()
+
+        # Pack matrices into flat storage at mio offsets
+        A_flat = np.zeros(info.total_mat_size, dtype=np.float32)
+        for w, (A, dim) in enumerate(zip(A_list, dims_list, strict=True)):
+            offset = mio_np[w]
+            A_flat[offset : offset + dim * dim] = A.flatten()
         A_wp = wp.array(A_flat, dtype=float32, device=device)
 
-        # Create DenseLinearOperatorData
-        info = DenseSquareMultiLinearInfo()
-        info.finalize(dimensions=[maxdim] * n_worlds, dtype=float32, device=device)
         dense_op = DenseLinearOperatorData(info=info, mat=A_wp)
 
-        # Create b and x arrays
-        b_2d = np.array(b_list, dtype=np.float32)
-        b_wp = wp.array(b_2d.flatten(), dtype=float32, device=device)
-        x_wp = wp.zeros(n_worlds * maxdim, dtype=float32, device=device)
+        # Pack b and x as flat 1D arrays at vio offsets
+        b_flat = np.zeros(info.total_vec_size, dtype=np.float32)
+        for w, (b, dim) in enumerate(zip(b_list, dims_list, strict=True)):
+            b_flat[vio_np[w] : vio_np[w] + dim] = b
+        b_wp = wp.array(b_flat, dtype=float32, device=device)
+        x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
 
-        # Solve with discover_sparse=True
-        solver = ConjugateGradientSolver(
-            discover_sparse=True, sparse_block_size=block_size, sparse_threshold=1.0, device=device
-        )
+        # Solve
+        kwargs = {}
+        if discover_sparse:
+            kwargs = {"discover_sparse": True, "sparse_block_size": block_size, "sparse_threshold": 1.0}
+        solver = solver_cls(**kwargs, device=device)
         solver.finalize(dense_op)
         solver.compute(A_wp)
         solver.solve(b_wp, x_wp)
 
-        # Check results
-        x_np = x_wp.numpy().reshape(n_worlds, maxdim)
-        for w in range(n_worlds):
-            x_found = x_np[w]
+        # Check results at vio offsets
+        x_np = x_wp.numpy()
+        for w, dim in enumerate(dims_list):
+            x_found = x_np[vio_np[w] : vio_np[w] + dim]
             x_ref = x_ref_list[w]
             if self.verbose:
-                print(f"World {w}: max error = {np.abs(x_found - x_ref).max():.2e}")
+                print(f"World {w} (dim={dim}): max error = {np.abs(x_found - x_ref).max():.2e}")
             self.assertTrue(
                 np.allclose(x_found, x_ref, rtol=1e-3, atol=1e-4),
                 f"World {w}: solve failed, max error={np.abs(x_found - x_ref).max():.2e}",
             )
 
-        # Also solve with discover_sparse=False and compare
-        x_dense_wp = wp.zeros(n_worlds * maxdim, dtype=float32, device=device)
-        solver_dense = ConjugateGradientSolver(discover_sparse=False, device=device)
-        solver_dense.finalize(dense_op)
-        solver_dense.compute(A_wp)
-        solver_dense.solve(b_wp, x_dense_wp)
+        if discover_sparse:
+            # Also solve with discover_sparse=False and compare
+            x_dense_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+            solver_dense = solver_cls(discover_sparse=False, device=device)
+            solver_dense.finalize(dense_op)
+            solver_dense.compute(A_wp)
+            solver_dense.solve(b_wp, x_dense_wp)
 
-        x_sparse = x_wp.numpy()
-        x_dense = x_dense_wp.numpy()
-        if self.verbose:
-            print(f"Sparse vs dense max diff: {np.abs(x_sparse - x_dense).max():.2e}")
-        self.assertTrue(
-            np.allclose(x_sparse, x_dense, rtol=1e-5, atol=1e-6),
-            f"Sparse and dense solutions differ: max diff={np.abs(x_sparse - x_dense).max():.2e}",
-        )
+            x_sparse = x_wp.numpy()
+            x_dense = x_dense_wp.numpy()
+            if self.verbose:
+                print(f"Sparse vs dense max diff: {np.abs(x_sparse - x_dense).max():.2e}")
+            self.assertTrue(
+                np.allclose(x_sparse, x_dense, rtol=1e-5, atol=1e-6),
+                f"Sparse and dense solutions differ: max diff={np.abs(x_sparse - x_dense).max():.2e}",
+            )
+
+    def test_cg_solver_discover_sparse(self):
+        """Test ConjugateGradientSolver with discover_sparse=True and heterogeneous dims."""
+        self._test_iterative_solver_heterogeneous(ConjugateGradientSolver, discover_sparse=True)
+
+    def test_cr_solver_heterogeneous(self):
+        """Test ConjugateResidualSolver with heterogeneous dims."""
+        self._test_iterative_solver_heterogeneous(ConjugateResidualSolver, discover_sparse=False)
 
 
 if __name__ == "__main__":

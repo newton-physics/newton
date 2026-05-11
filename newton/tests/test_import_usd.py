@@ -5603,18 +5603,20 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         from pxr import Usd, UsdGeom, UsdPhysics
 
         # Create a minimal USD stage with physics scene and two custom prims
+        # under the imported root, plus a matching sibling outside it.
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
         # Define two Xform prims that will be matched by our custom filter
         # These prims have NO authored custom attributes
-        UsdGeom.Xform.Define(stage, "/World/CustomItem0")
-        UsdGeom.Xform.Define(stage, "/World/CustomItem1")
+        UsdGeom.Xform.Define(stage, "/World/RobotA/CustomItem0")
+        UsdGeom.Xform.Define(stage, "/World/RobotA/CustomItem1")
+        UsdGeom.Xform.Define(stage, "/World/RobotB/CustomItem0")
 
         # Define a prim filter that matches these custom items
         def is_custom_item(prim, context):
-            return prim.GetPath().pathString.startswith("/World/CustomItem")
+            return prim.GetName().startswith("CustomItem")
 
         builder = newton.ModelBuilder()
 
@@ -5639,8 +5641,8 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
             )
         )
 
-        # Parse the USD stage - this should find the 2 prims and increment count
-        builder.add_usd(stage)
+        # Parse one subtree - this should find the 2 prims under RobotA and increment count
+        builder.add_usd(stage, root_path="/World/RobotA")
 
         # Finalize and verify
         model = builder.finalize()

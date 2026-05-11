@@ -231,14 +231,14 @@ def convert_model_gravity(model_in: Model, gravity_out: GravityModel | None = No
     # correct shape and type, and copy the converted data into them.
     else:
         # Ensure that the output GravityModel has allocated arrays of the correct shape and type
-        if gravity_out.g_dir_acc is None or gravity_out.g_dir_acc.shape != (model_in.world_count, 4):
+        if gravity_out.g_dir_acc is None or gravity_out.g_dir_acc.shape != (model_in.world_count,):
             msg.warning("Output `GravityModel.g_dir_acc` array does not have matching shape. Allocating a new array.")
-            gravity_out.g_dir_acc = wp.array(g_dir_acc_np, dtype=vec4f)
+            gravity_out.g_dir_acc = wp.array(g_dir_acc_np, dtype=vec4f, device=model_in.device)
         else:
             gravity_out.g_dir_acc.assign(g_dir_acc_np)
-        if gravity_out.vector is None or gravity_out.vector.shape != (model_in.world_count, 4):
+        if gravity_out.vector is None or gravity_out.vector.shape != (model_in.world_count,):
             msg.warning("Output `GravityModel.vector` array does not have matching shape. Allocating a new array.")
-            gravity_out.vector = wp.array(vector_np, dtype=vec4f)
+            gravity_out.vector = wp.array(vector_np, dtype=vec4f, device=model_in.device)
         else:
             gravity_out.vector.assign(vector_np)
 

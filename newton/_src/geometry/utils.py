@@ -84,8 +84,17 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         # Bounding sphere radius is the largest semi-axis
         return max(scale[0], scale[1], scale[2])
     elif geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH:
-        vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
-        return np.linalg.norm(vmax)
+        # Bounding sphere of the local AABB.  We deliberately do NOT use
+        # ``max(|vertex|)`` here: that assumes the shape is centered at
+        # the local origin, which is not guaranteed for imported convex
+        # hulls (e.g. assets that place collision hulls far from the
+        # body frame).  Using the AABB diagonal gives a tighter and
+        # always-correct enclosing radius regardless of where the
+        # authoring origin sits relative to the geometry.
+        verts = np.asarray(src.vertices, dtype=np.float64) * np.asarray(scale, dtype=np.float64)
+        aabb_lo = verts.min(axis=0)
+        aabb_hi = verts.max(axis=0)
+        return float(0.5 * np.linalg.norm(aabb_hi - aabb_lo))
     elif geo_type == GeoType.PLANE:
         if scale[0] > 0.0 and scale[1] > 0.0:
             return np.linalg.norm(scale) * 0.5

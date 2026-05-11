@@ -2904,6 +2904,7 @@ def parse_usd(
                 "scale": 1.0,
                 "vel": wp.vec3(0.0, 0.0, 0.0),
                 "mesh": tetmesh_for_builder,
+                "label": path,
             }
             if _is_uniform_scale(soft_mesh_scale):
                 add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
@@ -3305,9 +3306,6 @@ def parse_usd(
         body_merged_parent = collapse_results["body_merged_parent"]
         body_merged_transform = collapse_results["body_merged_transform"]
         body_remap = collapse_results["body_remap"]
-        # remap body ids in articulation bodies
-        for art_id, bodies in articulation_bodies.items():
-            articulation_bodies[art_id] = [body_remap[b] for b in bodies if b in body_remap]
 
         for path, body_id in path_body_map.items():
             if body_id in body_remap:
@@ -3477,6 +3475,9 @@ def parse_usd(
         if idx < len(builder.joint_q_start)
     }
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        prim_path = str(prim.GetPath())
+        if any(re.match(pattern, prim_path) for pattern in ignore_paths):
+            continue
         parsed = parse_actuator_prim(prim)
         if parsed is None:
             continue
@@ -3543,7 +3544,7 @@ def parse_usd(
     }
 
     # Process custom frequencies with USD prim filters
-    # Collect frequencies with filters and their attributes, then traverse stage once
+    # Collect frequencies with filters and their attributes, then traverse the imported subtree once
     frequencies_with_filters = []
     for freq_key, freq_obj in builder.custom_frequencies.items():
         if freq_obj.usd_prim_filter is None:
@@ -3553,10 +3554,10 @@ def parse_usd(
             continue
         frequencies_with_filters.append((freq_key, freq_obj, freq_attrs))
 
-    # Traverse stage once and check all filters for each prim
+    # Traverse the requested root subtree once and check all filters for each prim
     # Use TraverseInstanceProxies to include prims under instanceable prims
     if frequencies_with_filters:
-        for prim in stage.Traverse(Usd.TraverseInstanceProxies()):
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()):
             for freq_key, freq_obj, freq_attrs in frequencies_with_filters:
                 # Build per-frequency callback context and pass the same object to
                 # usd_prim_filter and usd_entry_expander.

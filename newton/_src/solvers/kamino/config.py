@@ -7,6 +7,7 @@ Defines configurations for :class:`SolverKamino`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -807,20 +808,6 @@ class ForwardKinematicsSolverConfig:
     Defaults to `1e-6`.
     """
 
-    TILE_SIZE_CTS: int = 8
-    """
-    Tile size for kernels along the dimension of kinematic constraints.
-    Changes to this setting after the solver's initialization will have no effect.
-    Defaults to `8`.
-    """
-
-    TILE_SIZE_VRS: int = 8
-    """
-    Tile size for kernels along the dimension of rigid body pose variables.
-    Changes to this setting after the solver's initialization will have no effect.
-    Defaults to `8`.
-    """
-
     use_sparsity: bool = False
     """
     Whether to use sparse Jacobian and solver; otherwise, dense versions are used.
@@ -841,6 +828,38 @@ class ForwardKinematicsSolverConfig:
     Whether to reset the state to initial states, to use as initial guess.
     Changes to this setting after graph capture will have no effect.
     Defaults to `True`.
+    """
+
+    add_axis_joints: bool = True
+    """
+    Whether to automatically add axis joints to take out superfluous DoFs at tie rods,
+    that otherwise render the FK problem ill-posed.
+    Changes to this setting after the solver's initialization will have no effect.
+    Defaults to `True`.
+    """
+
+    use_incremental_solve: bool = True
+    """
+    Whether to automatically split large steps in actuator coordinates into smaller steps
+    in the FK solve, to improve the solver's robustness for a mild added cost.
+    Changes to this setting after the solver's initialization lead to undefined behavior.
+    Defaults to `True`.
+    """
+
+    max_linear_incremental_step: float = 0.05
+    """
+    If incremental solve is enabled, maximal allowed step in linear actuator coordinates
+    per solver iteration, in meters. A lower value results in more incremental steps.
+    Changes to this setting after the solver's initialization will have no effect.
+    Defaults to `0.05`.
+    """
+
+    max_angular_incremental_step: float = math.radians(10.0)
+    """
+    If incremental solve is enabled, maximal allowed step in angular actuator coordinates
+    per solver iteration, in radians. A lower value results in more incremental steps.
+    Changes to this setting after the solver's initialization will have no effect.
+    Defaults to `math.radians(10.0)`, i.e. 10 degrees.
     """
 
     @override
@@ -895,10 +914,10 @@ class ForwardKinematicsSolverConfig:
             raise ValueError("`max_line_search_iterations` must be positive.")
         if self.tolerance <= 0.0:
             raise ValueError("`tolerance` must be positive.")
-        if self.TILE_SIZE_CTS <= 0:
-            raise ValueError("`TILE_SIZE_CTS` must be positive.")
-        if self.TILE_SIZE_VRS <= 0:
-            raise ValueError("`TILE_SIZE_VRS` must be positive.")
+        if self.max_linear_incremental_step <= 0.0:
+            raise ValueError("`max_linear_incremental_step` must be positive.")
+        if self.max_angular_incremental_step <= 0.0:
+            raise ValueError("`max_angular_incremental_step` must be positive.")
 
     @override
     def __post_init__(self):

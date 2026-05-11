@@ -28,7 +28,7 @@ Layout assumptions
   size ``dims[b] * dims[b]``.
 - ``perm_flat``: flat int32 permutation output. Block ``b``'s output starts
   at offset ``vio[b]`` with size ``dims[b]``.
-- ``dims``, ``mio``, ``vio``: ``wp.array(dtype=int32)`` of length
+- ``dims``, ``mio``, ``vio``: ``wp.array[int32]`` of length
   ``num_blocks``, precomputed on the device.
 
 API
@@ -121,14 +121,14 @@ def _make_rcm_batch_kernels(dtype):
     def init_and_degree_kernel(
         num_blocks: int,
         tol: dtype,  # type: ignore[valid-type]
-        A: wp.array(dtype=dtype),  # type: ignore[valid-type]
-        dims: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        mio: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        vio: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        degree: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        level: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        head: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        root: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
+        A: wp.array[dtype],  # type: ignore[valid-type]
+        dims: wp.array[wp.int32],  # type: ignore[valid-type]
+        mio: wp.array[wp.int32],  # type: ignore[valid-type]
+        vio: wp.array[wp.int32],  # type: ignore[valid-type]
+        degree: wp.array[wp.int32],  # type: ignore[valid-type]
+        level: wp.array[wp.int32],  # type: ignore[valid-type]
+        head: wp.array[wp.int32],  # type: ignore[valid-type]
+        root: wp.array[wp.int32],  # type: ignore[valid-type]
     ):
         """Launch dims: ``(num_blocks, max_dim)``.
 
@@ -168,13 +168,13 @@ def _make_rcm_batch_kernels(dtype):
     @wp.kernel(module=module, enable_backward=False)
     def select_and_seed_kernel(
         num_blocks: int,
-        dims: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        vio: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        degree: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        level: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        order_buf: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        head: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        root: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
+        dims: wp.array[wp.int32],  # type: ignore[valid-type]
+        vio: wp.array[wp.int32],  # type: ignore[valid-type]
+        degree: wp.array[wp.int32],  # type: ignore[valid-type]
+        level: wp.array[wp.int32],  # type: ignore[valid-type]
+        order_buf: wp.array[wp.int32],  # type: ignore[valid-type]
+        head: wp.array[wp.int32],  # type: ignore[valid-type]
+        root: wp.array[wp.int32],  # type: ignore[valid-type]
     ):
         """Launch dims: ``(num_blocks,)``. Fused root-selection + BFS seed.
 
@@ -211,13 +211,13 @@ def _make_rcm_batch_kernels(dtype):
         num_blocks: int,
         cur: int,
         tol: dtype,  # type: ignore[valid-type]
-        A: wp.array(dtype=dtype),  # type: ignore[valid-type]
-        dims: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        mio: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        vio: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        level: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        order_buf: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        head: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
+        A: wp.array[dtype],  # type: ignore[valid-type]
+        dims: wp.array[wp.int32],  # type: ignore[valid-type]
+        mio: wp.array[wp.int32],  # type: ignore[valid-type]
+        vio: wp.array[wp.int32],  # type: ignore[valid-type]
+        level: wp.array[wp.int32],  # type: ignore[valid-type]
+        order_buf: wp.array[wp.int32],  # type: ignore[valid-type]
+        head: wp.array[wp.int32],  # type: ignore[valid-type]
     ):
         """Launch dims: ``(num_blocks, max_dim)``. One BFS expansion step.
 
@@ -264,11 +264,11 @@ def _make_rcm_batch_kernels(dtype):
     @wp.kernel(module=module, enable_backward=False)
     def append_unreached_kernel(
         num_blocks: int,
-        dims: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        vio: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        level: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        order_buf: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        head: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
+        dims: wp.array[wp.int32],  # type: ignore[valid-type]
+        vio: wp.array[wp.int32],  # type: ignore[valid-type]
+        level: wp.array[wp.int32],  # type: ignore[valid-type]
+        order_buf: wp.array[wp.int32],  # type: ignore[valid-type]
+        head: wp.array[wp.int32],  # type: ignore[valid-type]
     ):
         """Launch dims: ``(num_blocks,)``. Appends any vertex with
         ``level == -1`` to each block's ``order_buf`` segment in ascending
@@ -289,10 +289,10 @@ def _make_rcm_batch_kernels(dtype):
     @wp.kernel(module=module, enable_backward=False)
     def reverse_into_perm_kernel(
         num_blocks: int,
-        dims: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        vio: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        order_buf: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
-        perm: wp.array(dtype=wp.int32),  # type: ignore[valid-type]
+        dims: wp.array[wp.int32],  # type: ignore[valid-type]
+        vio: wp.array[wp.int32],  # type: ignore[valid-type]
+        order_buf: wp.array[wp.int32],  # type: ignore[valid-type]
+        perm: wp.array[wp.int32],  # type: ignore[valid-type]
     ):
         """Launch dims: ``(num_blocks, max_dim)``. ``perm[i] = order_buf[n-1-i]``."""
         b, i = wp.tid()
