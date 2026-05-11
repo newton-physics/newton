@@ -18,6 +18,10 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.cable._mouse_picking import (
+    apply_viewer_forces_with_linear_only_picking,
+    make_linear_only_picking_body_mask,
+)
 
 
 class Example:
@@ -47,13 +51,14 @@ class Example:
         segment_length = 0.05
         self.cable_length = self.num_elements * segment_length
         cable_radius = 0.012
+        stretch_stiffness = 5.0e5
         bend_stiffness = 2.0e1
 
         # Layers and lanes
         self.layers = layers
         self.lanes_per_layer = lanes_per_layer
         lane_spacing = max(8.0 * cable_radius, 0.15)
-        layer_gap = cable_radius * 6.0
+        layer_gap = cable_radius * 3.0
 
         builder = newton.ModelBuilder()
         builder.rigid_gap = 0.0
@@ -150,6 +155,7 @@ class Example:
                     quaternions=edge_q,
                     radius=cable_radius,
                     cfg=cable_shape_cfg,
+                    stretch_stiffness=stretch_stiffness,
                     bend_stiffness=bend_stiffness,
                     bend_damping=1.0e0,
                     label=f"cable_l{layer}_{lane}",
@@ -159,6 +165,9 @@ class Example:
         builder.color()
 
         self.model = builder.finalize()
+        self.linear_only_picking_body_mask = make_linear_only_picking_body_mask(
+            rod_bodies_all, self.model.body_count, self.model.device
+        )
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
@@ -196,7 +205,7 @@ class Example:
         """Execute all simulation substeps for one frame."""
         for _substep in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.viewer.apply_forces(self.state_0)
+            apply_viewer_forces_with_linear_only_picking(self.viewer, self.state_0, self.linear_only_picking_body_mask)
             self.model.collide(self.state_0, self.contacts)
 
             self.solver.step(

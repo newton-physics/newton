@@ -17,6 +17,10 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.cable._mouse_picking import (
+    apply_viewer_forces_with_linear_only_picking,
+    make_linear_only_picking_body_mask,
+)
 
 
 @wp.kernel
@@ -196,6 +200,7 @@ class Example:
 
         # Create bundle cross-section layout
         bundle_positions = self.bundle_start_offsets_yz(self.num_cables, self.cable_radius, self.cable_gap_multiplier)
+        cable_body_ids: list[int] = []
 
         # Build each cable in the bundle
         for i in range(self.num_cables):
@@ -210,7 +215,7 @@ class Example:
                 twist_total=0.0,
             )
 
-            _rod_bodies, _rod_joints = builder.add_rod(
+            rod_bodies, _rod_joints = builder.add_rod(
                 positions=points,
                 quaternions=quats,
                 radius=self.cable_radius,
@@ -218,6 +223,7 @@ class Example:
                 bend_damping=bend_damping,
                 label=f"bundle_cable_{i}",
             )
+            cable_body_ids.extend(rod_bodies)
 
         # Create moving obstacles (capsules arranged along X axis)
         obstacle_cfg = newton.ModelBuilder.ShapeConfig(
@@ -275,6 +281,9 @@ class Example:
 
         # Finalize model
         self.model = builder.finalize()
+        self.linear_only_picking_body_mask = make_linear_only_picking_body_mask(
+            cable_body_ids, self.model.body_count, self.model.device
+        )
 
         # Author Dahl friction parameters (per-joint) via custom model attributes.
         # SolverVBD auto-detects these and enables Dahl friction when present.
@@ -335,7 +344,7 @@ class Example:
             self.state_0.clear_forces()
 
             # Apply forces to the model
-            self.viewer.apply_forces(self.state_0)
+            apply_viewer_forces_with_linear_only_picking(self.viewer, self.state_0, self.linear_only_picking_body_mask)
 
             # Update obstacle positions (all phases handled inside kernel)
             wp.launch(

@@ -17,6 +17,10 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.cable._mouse_picking import (
+    apply_viewer_forces_with_linear_only_picking,
+    make_linear_only_picking_body_mask,
+)
 
 
 @wp.kernel
@@ -197,6 +201,12 @@ class Example:
 
         # Finalize model
         self.model = builder.finalize()
+        all_cable_bodies = [body for cable_bodies in self.cable_bodies_list for body in cable_bodies]
+        self.linear_only_picking_body_mask = make_linear_only_picking_body_mask(
+            all_cable_bodies,
+            self.model.body_count,
+            self.model.device,
+        )
 
         # Use full hard-contact correction (contact alpha 0.0) for stronger repulsion with low iterations.
         self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_avbd_contact_alpha=0.0)
@@ -238,7 +248,7 @@ class Example:
             )
 
             # Apply forces to the model
-            self.viewer.apply_forces(self.state_0)
+            apply_viewer_forces_with_linear_only_picking(self.viewer, self.state_0, self.linear_only_picking_body_mask)
 
             # Collision detection and contact refresh cadence.
             refresh_contacts = (substep % self.update_step_interval) == 0
