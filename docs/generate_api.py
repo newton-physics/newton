@@ -56,6 +56,12 @@ MODULES: list[str] = [
 # Output directory (relative to repo root)
 OUTPUT_DIR = REPO_ROOT / "docs" / "api"
 
+# Top-level index file whose API Reference toctree is kept in sync with
+# ``MODULES``. The toctree contents are rewritten between marker comments.
+INDEX_RST = REPO_ROOT / "docs" / "index.rst"
+TOCTREE_MARKER_START = ".. api-toctree-start"
+TOCTREE_MARKER_END = ".. api-toctree-end"
+
 # Where autosummary should place generated stub pages (relative to each .rst
 # file).  Keeping them alongside the .rst files avoids clutter elsewhere.
 TOCTREE_DIR = "_generated"  # sub-folder inside OUTPUT_DIR
@@ -297,8 +303,47 @@ def write_module_page(mod_name: str) -> None:
 # -----------------------------------------------------------------------------
 
 
+def sync_index_toctree(modules: list[str]) -> None:
+    """Rewrite the API Reference toctree in :data:`INDEX_RST` from ``modules``.
+
+    The toctree contents are owned by this script. Hand-editing the block
+    between :data:`TOCTREE_MARKER_START` and :data:`TOCTREE_MARKER_END` will
+    be overwritten on the next run. Solver sub-module pages (from
+    ``extra_solver_modules``) are intentionally excluded: those nest under
+    ``api/newton_solvers.rst`` and are not top-level toctree entries.
+    """
+    text = INDEX_RST.read_text()
+    start = text.find(TOCTREE_MARKER_START)
+    end = text.find(TOCTREE_MARKER_END)
+    if start < 0 or end < 0:
+        sys.exit(
+            f"Could not find {TOCTREE_MARKER_START!r}/{TOCTREE_MARKER_END!r} "
+            f"markers in {INDEX_RST}. Bracket the API Reference toctree with "
+            "these comments to enable auto-sync."
+        )
+    body_lines = [
+        TOCTREE_MARKER_START,
+        "",
+        ".. toctree::",
+        "   :maxdepth: 1",
+        "   :hidden:",
+        "   :caption: API Reference",
+        "",
+    ]
+    for mod in modules:
+        body_lines.append(f"   api/{mod.replace('.', '_')}")
+    body_lines.append("")
+    body_lines.append(TOCTREE_MARKER_END)
+    new_block = "\n".join(body_lines)
+    new_text = text[:start] + new_block + text[end + len(TOCTREE_MARKER_END):]
+    if new_text != text:
+        INDEX_RST.write_text(new_text)
+        print(f"Updated API Reference toctree in {INDEX_RST.relative_to(REPO_ROOT)} ({len(modules)} entries)")
+
+
 def generate_all() -> None:
-    """Regenerate all API ``.rst`` files under :data:`OUTPUT_DIR`."""
+    """Regenerate all API ``.rst`` files under :data:`OUTPUT_DIR` and sync the
+    API Reference toctree in :data:`INDEX_RST` to ``MODULES``."""
 
     # delete previously generated files
     shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
@@ -309,6 +354,8 @@ def generate_all() -> None:
     for mod in all_modules:
         write_module_page(mod)
 
+    sync_index_toctree(MODULES)
+
 
 # -----------------------------------------------------------------------------
 # Script entry
@@ -316,4 +363,3 @@ def generate_all() -> None:
 
 if __name__ == "__main__":
     generate_all()
-    print("\nDone. Add docs/api/index.rst to your TOC or glob it in.")
