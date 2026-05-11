@@ -1261,7 +1261,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
         origin with identity orientation and CoM at the body origin. World 0
         has gravity along +X, world 1 along +Y, world 2 along +Z. Under
         Newton's free-joint convention the per-world gravity-compensation
-        force must equal ``m * g_world`` in the linear part and zero in the
+        force must equal ``-m * g_world`` in the linear part and zero in the
         angular part, which exercises the per-world ``body_world`` lookup
         inside the RNEA gravity term.
         """
@@ -1743,9 +1743,9 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         state = model.state()
         inverse_dynamics, scratch = model.inverse_dynamics()
 
-        # Sweep two states: stationary CoM with rotation (purely gyroscopic,
-        # so v_com convention predicts zero linear), and translating + rotating
-        # CoM (linear bias is non-zero under v_com convention).
+        # Sweep two states: stationary CoM with rotation (purely gyroscopic),
+        # and translating + rotating CoM. Under Newton's v_com convention both
+        # cases have zero linear Coriolis bias at the CoM.
         v_com_cases = [
             (0.0, 0.0, 0.0),
             (0.1, -0.2, 0.05),
