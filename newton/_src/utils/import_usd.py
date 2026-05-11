@@ -2904,6 +2904,7 @@ def parse_usd(
                 "scale": 1.0,
                 "vel": wp.vec3(0.0, 0.0, 0.0),
                 "mesh": tetmesh_for_builder,
+                "label": path,
             }
             if _is_uniform_scale(soft_mesh_scale):
                 add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])

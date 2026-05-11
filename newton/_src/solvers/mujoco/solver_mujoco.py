@@ -15,7 +15,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import MAXVAL, override, vec5, vec10
-from ...geometry import GeoType, ShapeFlags
+from ...geometry import GeoType, Mesh, ShapeFlags
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -166,6 +166,111 @@ def _release(version: str) -> tuple[int, ...]:
 def _version_lt(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
     width = max(len(left), len(right))
     return left + (0,) * (width - len(left)) < right + (0,) * (width - len(right))
+
+
+def _mesh_scale_key(mesh: Mesh, scale: np.ndarray) -> tuple[int, tuple[float, float, float]]:
+    return id(mesh), tuple(float(s) for s in scale)
+
+
+def _mujoco_mesh_vertices_are_planar(
+    vertices: np.ndarray, extent_axis: np.ndarray | None = None, eps: float = 1.0e-6
+) -> bool:
+    if len(vertices) < 3:
+        return False
+
+    vertices = np.asarray(vertices)
+    if extent_axis is None:
+        extent_axis = vertices.max(axis=0) - vertices.min(axis=0)
+    extent_axis = np.asarray(extent_axis)
+    tolerance = eps * max(float(np.linalg.norm(extent_axis)), eps)
+    if np.all(extent_axis <= tolerance):
+        return True
+    if np.any(extent_axis <= tolerance):
+        return True
+
+    if len(vertices) > 64:
+        sample_indices = np.linspace(0, len(vertices) - 1, 64, dtype=np.int32)
+        if not _points_are_planar(vertices[sample_indices], tolerance):
+            return False
+
+    return _points_are_planar(vertices, tolerance)
+
+
+def _points_are_planar(points: np.ndarray, tolerance: float) -> bool:
+    p0 = points[0]
+    offsets = points - p0
+    distances_from_p0 = np.linalg.norm(offsets, axis=1)
+    p1 = int(np.argmax(distances_from_p0))
+    line_length = distances_from_p0[p1]
+    if line_length <= tolerance:
+        return True
+
+    line = points[p1] - p0
+    cross = np.cross(offsets, line)
+    cross_lengths = np.linalg.norm(cross, axis=1)
+    p2 = int(np.argmax(cross_lengths))
+    normal_length = cross_lengths[p2]
+    if normal_length <= tolerance * line_length:
+        return True
+
+    normal = cross[p2] / normal_length
+    plane_distances = np.abs(offsets @ normal)
+    return bool(np.all(plane_distances <= tolerance))
+
+
+def _make_nonplanar_mujoco_mesh(
+    vertices: np.ndarray,
+    indices: np.ndarray,
+    maxhullvert: int,
+    extent_axis: np.ndarray | None = None,
+    eps: float = 1.0e-6,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    vertices = np.asarray(vertices).reshape(-1, 3)
+    indices = np.asarray(indices, dtype=np.int32).flatten()
+    if len(vertices) < 3 or indices.size < 3 or indices.size % 3 != 0:
+        raise ValueError("Unable to build a temporary non-planar MuJoCo mesh from invalid mesh data")
+
+    if extent_axis is None:
+        extent_axis = vertices.max(axis=0) - vertices.min(axis=0)
+    extent_axis = np.asarray(extent_axis)
+    extent = float(np.linalg.norm(extent_axis))
+    edge_tolerance = eps * max(extent, eps)
+    axis = int(np.argmin(extent_axis))
+    if extent_axis[axis] <= edge_tolerance:
+        normal = np.zeros(3, dtype=np.float64)
+        normal[axis] = 1.0
+    else:
+        vertices64 = np.asarray(vertices, dtype=np.float64)
+        centered = vertices64 - vertices64.mean(axis=0)
+        _, singular_values, vh = np.linalg.svd(centered, full_matrices=True)
+        largest = float(singular_values[0]) if singular_values.size else 0.0
+        if int(np.count_nonzero(singular_values > eps * max(largest, eps))) >= 3:
+            return vertices, indices, maxhullvert
+
+        normal = vh[-1]
+        normal_length = np.linalg.norm(normal)
+        if normal_length <= eps:
+            raise ValueError("Unable to build a temporary non-planar MuJoCo mesh from coincident vertices")
+        normal /= normal_length
+
+    apex = vertices.mean(axis=0, dtype=np.float64) + normal * max(1.0e-3, 1.0e-3 * extent)
+
+    edge = None
+    for tri in indices.reshape(-1, 3):
+        for edge_indices in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            a, b = int(edge_indices[0]), int(edge_indices[1])
+            if np.linalg.norm(vertices[a] - vertices[b]) > edge_tolerance:
+                edge = (a, b)
+                break
+        if edge is not None:
+            break
+    if edge is None:
+        raise ValueError("Unable to build a temporary non-planar MuJoCo mesh without a non-degenerate edge")
+
+    apex_index = len(vertices)
+    inflated_vertices = np.vstack((vertices, apex))
+    inflated_indices = np.concatenate((indices, np.array([edge[0], edge[1], apex_index], dtype=np.int32)))
+    return inflated_vertices, inflated_indices, max(maxhullvert, 4)
 
 
 class SolverMuJoCo(SolverBase):
@@ -3279,6 +3384,8 @@ class SolverMuJoCo(SolverBase):
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
                 contacts.rigid_contact_normal,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
                 contacts.rigid_contact_margin0,
                 contacts.rigid_contact_margin1,
                 contacts.rigid_contact_stiffness,
@@ -4402,13 +4509,32 @@ class SolverMuJoCo(SolverBase):
         )
 
         selected_shapes_set = set(selected_shapes)
+        mujoco_attrs = getattr(model, "mujoco", None)
+
+        mujoco_pair_contact_shapes: set[int] = set()
+        pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
+        if mujoco_attrs is not None and pair_count > 0:
+            pair_world_attr = getattr(mujoco_attrs, "pair_world", None)
+            pair_geom1_attr = getattr(mujoco_attrs, "pair_geom1", None)
+            pair_geom2_attr = getattr(mujoco_attrs, "pair_geom2", None)
+            if pair_world_attr is not None and pair_geom1_attr is not None and pair_geom2_attr is not None:
+                pair_world_np = pair_world_attr.numpy()
+                pair_geom1_np = pair_geom1_attr.numpy()
+                pair_geom2_np = pair_geom2_attr.numpy()
+                pair_count = min(pair_count, len(pair_world_np), len(pair_geom1_np), len(pair_geom2_np))
+                for pair_index in range(pair_count):
+                    pair_world = int(pair_world_np[pair_index])
+                    if pair_world != first_world and pair_world >= 0:
+                        continue
+                    for pair_shape in (int(pair_geom1_np[pair_index]), int(pair_geom2_np[pair_index])):
+                        if pair_shape >= 0 and pair_shape in selected_shapes_set:
+                            mujoco_pair_contact_shapes.add(pair_shape)
 
         # Compute shapes required by spatial tendons (sites, wrapping geoms, sidesites)
         # so they are not skipped when skip_visual_only_geoms=True or include_sites=False.
         # Only collect from template-world tendons to avoid inflating the count with
         # shape indices from other worlds.
         tendon_required_shapes: set[int] = set()
-        mujoco_attrs = getattr(model, "mujoco", None)
         if mujoco_attrs is not None:
             _wrap_shape = getattr(mujoco_attrs, "tendon_wrap_shape", None)
             _wrap_sidesite = getattr(mujoco_attrs, "tendon_wrap_sidesite", None)
@@ -4476,7 +4602,8 @@ class SolverMuJoCo(SolverBase):
                     for label in template_target_labels & site_shape_by_label.keys():
                         actuator_required_shapes.add(site_shape_by_label[label])
 
-        required_shapes = tendon_required_shapes | actuator_required_shapes
+        required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
+        mesh_export_cache: dict[tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray, int, bool]] = {}
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -4574,14 +4701,41 @@ class SolverMuJoCo(SolverBase):
                     )
                 elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     mesh_src = model.shape_source[shape]
-                    maxhullvert = mesh_src.maxhullvert
-                    # apply scaling
                     size = shape_size[shape]
-                    vertices = mesh_src.vertices * size
+                    key = _mesh_scale_key(mesh_src, size)
+                    mesh_export = mesh_export_cache.get(key)
+                    if mesh_export is None:
+                        vertices = mesh_src.vertices * size
+                        indices = mesh_src.indices.flatten()
+                        maxhullvert = mesh_src.maxhullvert
+                        extent_axis = vertices.max(axis=0) - vertices.min(axis=0)
+                        is_planar = _mujoco_mesh_vertices_are_planar(vertices, extent_axis)
+                        if is_planar:
+                            # MuJoCo compiles every mesh geom through its convex-hull path,
+                            # which rejects lower-dimensional vertex clouds. When Newton
+                            # supplies contacts, the MuJoCo mesh only needs to compile and
+                            # keep a stable geom id, so add a tiny referenced off-plane
+                            # vertex to the exported asset.
+                            vertices, indices, maxhullvert = _make_nonplanar_mujoco_mesh(
+                                vertices, indices, maxhullvert, extent_axis
+                            )
+                        mesh_export = (vertices, indices, maxhullvert, is_planar)
+                        mesh_export_cache[key] = mesh_export
+
+                    vertices, indices, maxhullvert, is_planar = mesh_export
+                    uses_mujoco_contacts = (
+                        bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) and int(shape_collision_group[shape]) != 0
+                    ) or shape in mujoco_pair_contact_shapes
+                    if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
+                        raise ValueError(
+                            f"MuJoCo contact generation does not support planar mesh collider "
+                            f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
+                            "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
+                        )
                     spec.add_mesh(
                         name=name,
                         uservert=vertices.flatten(),
-                        userface=mesh_src.indices.flatten(),
+                        userface=indices.flatten(),
                         maxhullvert=maxhullvert,
                     )
                     geom_params["meshname"] = name

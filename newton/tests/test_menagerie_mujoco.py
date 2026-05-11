@@ -1547,6 +1547,13 @@ class TestMenagerieBase(unittest.TestCase):
         Override in subclasses where DOF ordering may differ.
         """
 
+    def _compare_qD_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare sparse RNE derivative D-structure (qD_fullm_i, qD_fullm_j).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where DOF ordering may differ.
+        """
+
     def _compare_compiled_fields(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare compilation-dependent fields at relaxed tolerance.
 
@@ -1703,6 +1710,7 @@ class TestMenagerieBase(unittest.TestCase):
         self._compare_dof_physics(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_mass_matrix_structure(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_tendon_jacobian_structure(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_qD_structure(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_actuator_physics(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_compiled_fields(self._newton_solver.mjw_model, self._native_mjw_model)
 
