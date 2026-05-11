@@ -10,7 +10,7 @@ from newton._src.solvers.mujoco import solver_mujoco
 
 _MOCK_REQUIREMENTS = (
     "mujoco~=3.8.0 ; extra == 'sim'",
-    "mujoco-warp~=3.8.0,>=3.8.0.2 ; extra == 'sim'",
+    "mujoco-warp~=3.8.0,>=3.8.0.3 ; extra == 'sim'",
 )
 _MOCK_METADATA = "\n".join(f"Requires-Dist: {requirement}" for requirement in _MOCK_REQUIREMENTS)
 
