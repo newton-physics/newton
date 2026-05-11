@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Generate concise API .rst files for selected modules.
+"""Generate concise API .rst files for public modules.
 
-This helper scans a list of *top-level* modules, reads their ``__all__`` lists
-(and falls back to public attributes if ``__all__`` is missing), and writes one
-reStructuredText file per module with an ``autosummary`` directive.  When
-Sphinx later builds the documentation (with ``autosummary_generate = True``),
-individual stub pages will be created automatically for every listed symbol.
+This helper discovers Newton's top-level public modules from ``newton.__all__``,
+reads each module's ``__all__`` list (and falls back to public attributes if
+``__all__`` is missing), and writes one reStructuredText file per module with an
+``autosummary`` directive.  When Sphinx later builds the documentation (with
+``autosummary_generate = True``), individual stub pages will be created
+automatically for every listed symbol.
 
 The generated files live in ``docs/api/`` (git-ignored by default).
 
@@ -15,7 +16,8 @@ Usage (from the repository root):
 
     python docs/generate_api.py
 
-Adjust ``MODULES`` below to fit your project.
+Export new top-level modules through ``newton.__all__`` to include them in the
+API reference.
 """
 
 from __future__ import annotations
@@ -38,26 +40,12 @@ import warp as wp  # type: ignore
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-# Modules for which we want API pages.  Feel free to modify.
-MODULES: list[str] = [
-    "newton",
-    "newton.actuators",
-    "newton.geometry",
-    "newton.ik",
-    "newton.math",
-    "newton.selection",
-    "newton.sensors",
-    "newton.solvers",
-    "newton.usd",
-    "newton.utils",
-    "newton.viewer",
-]
-
 # Output directory (relative to repo root)
 OUTPUT_DIR = REPO_ROOT / "docs" / "api"
 
 # Top-level index file whose API Reference toctree is kept in sync with
-# ``MODULES``. The toctree contents are rewritten between marker comments.
+# top-level public modules exported through ``newton.__all__``. The toctree
+# contents are rewritten between marker comments.
 INDEX_RST = REPO_ROOT / "docs" / "index.rst"
 TOCTREE_MARKER_START = ".. api-toctree-start"
 TOCTREE_MARKER_END = ".. api-toctree-end"
@@ -83,6 +71,23 @@ def public_symbols(mod: ModuleType) -> list[str]:
         return not inspect.ismodule(getattr(mod, name))
 
     return sorted(filter(is_public, dir(mod)))
+
+
+def api_modules() -> list[str]:
+    """Return top-level public Newton modules that should get API pages."""
+
+    root = importlib.import_module("newton")
+    modules = ["newton"]
+
+    for name in root.__all__:
+        attr = getattr(root, name)
+        if not inspect.ismodule(attr):
+            continue
+        mod_name = attr.__name__
+        if mod_name.startswith("newton."):
+            modules.append(mod_name)
+
+    return modules
 
 
 def _is_solver_only_module(mod: ModuleType) -> bool:
@@ -314,8 +319,8 @@ def sync_index_toctree(modules: list[str]) -> None:
     """
     text = INDEX_RST.read_text()
     start = text.find(TOCTREE_MARKER_START)
-    end = text.find(TOCTREE_MARKER_END)
-    if start < 0 or end < 0:
+    end = text.find(TOCTREE_MARKER_END, start + len(TOCTREE_MARKER_START))
+    if start < 0 or end <= start:
         sys.exit(
             f"Could not find {TOCTREE_MARKER_START!r}/{TOCTREE_MARKER_END!r} "
             f"markers in {INDEX_RST}. Bracket the API Reference toctree with "
@@ -343,18 +348,19 @@ def sync_index_toctree(modules: list[str]) -> None:
 
 def generate_all() -> None:
     """Regenerate all API ``.rst`` files under :data:`OUTPUT_DIR` and sync the
-    API Reference toctree in :data:`INDEX_RST` to ``MODULES``."""
+    API Reference toctree in :data:`INDEX_RST` to public top-level modules."""
 
     # delete previously generated files
     shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
 
+    modules = api_modules()
     extra_solver_modules = solver_submodule_pages()
-    all_modules = MODULES + [mod for mod in extra_solver_modules if mod not in MODULES]
+    all_modules = modules + [mod for mod in extra_solver_modules if mod not in modules]
 
     for mod in all_modules:
         write_module_page(mod)
 
-    sync_index_toctree(MODULES)
+    sync_index_toctree(modules)
 
 
 # -----------------------------------------------------------------------------

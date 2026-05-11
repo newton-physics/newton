@@ -531,12 +531,13 @@ API documentation
 Newton's API reference is auto-generated from the ``__all__`` lists of its public modules.
 The script ``docs/generate_api.py`` produces reStructuredText files under ``docs/api/`` (git-ignored)
 that Sphinx processes via ``autosummary`` to create individual pages for every public symbol.
-It also keeps the API Reference toctree in ``docs/index.rst`` in sync with the script's
-``MODULES`` list, so new top-level modules appear in the docs sidebar without a hand-edit.
+It also keeps the API Reference toctree in ``docs/index.rst`` in sync with
+top-level public modules exported through ``newton.__all__``.
 
 Whenever you add, remove, or rename a public symbol in one of the public modules
 (``newton``, ``newton.geometry``, ``newton.solvers``, ``newton.sensors``, etc.),
-regenerate the API pages:
+or export a new top-level public module through ``newton.__all__``, regenerate
+the API pages:
 
 .. tab-set::
     :sync-group: env
