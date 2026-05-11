@@ -3,11 +3,22 @@
 ## [Unreleased]
 
 ### Added
+- Add :class:`newton.geometry.HydroelasticContactWorkflow` and per-shape
+  workflow controls on :class:`newton.ModelBuilder.ShapeConfig` via
+  ``hydroelastic_contact_workflow``.
+- Add per-shape immutable pressure-field sine modulation parameters
+  ``hydro_pressure_sine_amplitude``, ``hydro_pressure_sine_cycles``, and
+  ``hydro_pressure_sine_phase`` for pressure-workflow hydroelastic
+  contacts.
 
 - Add linear HDR color output support to `SensorTiledCamera` via `hdr_color_image`.
 - Add composable actuator subsystem with pluggable `Controller` (`ControllerPD`, `ControllerPID`, `ControllerNeuralMLP`, `ControllerNeuralLSTM`), `Clamping` (`ClampingMaxEffort`, `ClampingDCMotor`, `ClampingPositionBased`), and `Delay` components; supports per-DOF delays, CUDA graph capture, and masked environment reset
 - Add heatmap rendering for scalar arrays logged through `ViewerGL.log_array()`
 - Add Blender-style orbit, pan, and dolly controls to the GL viewer using middle-mouse drag combinations
+- Add opt-in max-compression pressure memory to reduced SDF hydroelastic
+  contact export via :class:`newton.geometry.HydroelasticSDF.Config`, with
+  Digital Instron CLI controls for unloading loss, recovery time, and coarse
+  local memory grid.
 - Add `SolverXPBD.update_contacts()` to populate `contacts.force` with per-contact spatial forces (linear force and torque) derived from XPBD constraint impulses
 - Add `body_parent_f` extended state attribute support to `SolverXPBD` so it populates per-body incoming joint wrenches in world frame at the body's COM (matches `SolverMuJoCo`'s convention; values are approximate due to XPBD's relaxation and non-momentum-conserving nature)
 - Add `body_parent_f` extended state attribute support to `SolverFeatherstone` populated directly from the RNEA backward pass (per-body net spatial wrench translated to the body's COM, matching the `SolverMuJoCo` convention)
@@ -146,6 +157,8 @@
 - Fix `eq_objtype` mismatch for joint equality and mimic constraints in `SolverMuJoCo` so compiled models match native MuJoCo XML behavior
 - Fix implicit-MPM rheology solver launch-dim handling under `warp-lang` 1.13's templated `launch_bounds` (formerly produced out-of-bounds reads)
 - Fix `SolverKamino.reset` clobbering `q_j_p`, `q_j`, and `dq_j` for worlds outside `world_mask` when `joint_q`/`joint_u` targets were provided. The previous unmasked writes broke TWOPI revolute-joint angle unwrapping after partial-mask resets.
+- Fix SDF hydroelastic pre-pruned pressure aggregates double-counting
+  penetrating faces when all penetrating aggregate accumulation is enabled.
 
 ## [1.1.0] - 2026-04-13
 
@@ -190,6 +203,16 @@
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
 
 ### Changed
+- Change hydroelastic shape configuration to support explicit modes
+  (``none``, ``rigid``, ``compliant``) via
+  :attr:`newton.ModelBuilder.ShapeConfig.hydroelastic_type`, and enable
+  rigid-compliant hydroelastic contact routing. Migrate by setting
+  ``hydroelastic_type="compliant"`` instead of relying on
+  ``is_hydroelastic=True`` when you need explicit mode selection.
+- Change hydroelastic terrain routing so planes and heightfields can
+  participate as rigid hydroelastic counterparts. Migrate terrain setups by
+  setting ``hydroelastic_type="rigid"`` on the terrain shape config (legacy
+  ``is_hydroelastic=True`` on terrain remains ignored).
 
 - Require `mujoco ~=3.6.0` and `mujoco-warp ~=3.6.0` (previously 3.5.x)
 - Replace `plyfile` dependency with `open3d` for mesh I/O. Users who depended on `plyfile` transitively should install it separately.
@@ -219,6 +242,10 @@
 - Align articulated `State.body_qd` / FK / IK / Jacobian / mass-matrix linear velocity with COM-referenced motion. If you were comparing `body_qd[:3]` against finite-differenced body-origin motion, recover origin velocity via `v_origin = v_com - omega x r_com_world`. Descendant `FREE` / `DISTANCE` `joint_qd` remains parent-frame and `joint_f` remains a world-frame COM wrench.
 
 ### Deprecated
+- Deprecate implicit hydroelastic workflow resolution for shapes that set
+  hydro mode without ``hydroelastic_contact_workflow``. Migrate by setting
+  :attr:`newton.ModelBuilder.ShapeConfig.hydroelastic_contact_workflow`
+  explicitly to ``"classic"`` or ``"pressure"``.
 
 - Deprecate `ModelBuilder.default_body_armature`, the `armature` argument on `ModelBuilder.add_link()` / `ModelBuilder.add_body()`, and USD-authored body armature via `newton:armature` in favor of adding any isotropic artificial inertia directly to `inertia`
 - Deprecate `SensorContact.net_force` in favor of `SensorContact.total_force` and `SensorContact.force_matrix`
@@ -241,6 +268,26 @@
 - Remove `robot_humanoid` example in favor of `basic_plotting` which uses the same humanoid model with diagnostics visualization
 
 ### Fixed
+- Keep hydroelastic weighted SDF field evaluation continuous across SDF
+  sign changes by removing piecewise inside/outside switching in
+  ``newton.geometry.HydroelasticSDF``. This avoids non-physical contour
+  transitions when compliant-compliant pairs use different stiffnesses.
+- Use an immutable Poisson pressure field inside
+  ``newton.geometry.HydroelasticSDF`` for compliant-compliant isosurface
+  extraction, reducing interior contour discontinuities in hydroelastic
+  contact surfaces.
+- Regularize the immutable pressure-field PDE interior domain in
+  ``newton.geometry.HydroelasticSDF`` (largest-component + enclosed-hole
+  fill) to suppress spurious internal transitions from sparse SDF sign
+  artifacts.
+- Visualize an immutable harmonic pressure field in
+  ``newton.examples.contacts.example_hydro_pressure_slice`` to avoid
+  discrete interior contour transitions in slice heat maps. The slice demo
+  now samples the same immutable pressure volume used by
+  ``HydroelasticSDF`` during contact and reports validation metrics in-UI.
+- Remove nonlinear gamma remapping from
+  ``newton.examples.contacts.example_hydro_pressure_slice`` so the demo
+  displays the raw normalized Poisson pressure field.
 
 - Fix GL viewer crash when enabling "Gap + Margin" for soft-body-only states with no rigid body transforms
 - Fix inertia validation spuriously inflating small but physically valid eigenvalues for lightweight components (< ~50 g) by using a relative threshold instead of an absolute 1e-6 cutoff

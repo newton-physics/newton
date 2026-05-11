@@ -1,0 +1,24 @@
+{
+  "path": "DigitalInstron/04-07-2025_FR3_185ms_Fullfoot_100Cycle.steps.tracking.csv",
+  "output_path": "DigitalInstron/processed/fullfoot_avg_cycles_90_100.csv",
+  "cycle_start": 90,
+  "cycle_end": 100,
+  "cycles": [
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100
+  ],
+  "samples": 501,
+  "displacement_peak_mm": 17.92144739507251,
+  "force_peak_n": 1999.8714934148447,
+  "force_min_n": 20.09069244314969,
+  "measured_loop_area_j": 1.5189645106984067
+}

@@ -1,0 +1,24 @@
+{
+  "path": "DigitalInstron/04-07-2025_FR3_140ms_Rearfoot_100Cycle.steps.tracking.csv",
+  "output_path": "DigitalInstron/processed/rearfoot_avg_cycles_90_100.csv",
+  "cycle_start": 90,
+  "cycle_end": 100,
+  "cycles": [
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100
+  ],
+  "samples": 501,
+  "displacement_peak_mm": 22.76000203925868,
+  "force_peak_n": 1199.9541934498302,
+  "force_min_n": 20.100960366372057,
+  "measured_loop_area_j": 1.1141465210075325
+}

@@ -110,6 +110,8 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(single_ant_view.get_attribute("joint_dof_dim", single_ant_model).shape, (1, 1, J, 2))
         self.assertEqual(single_ant_view.get_attribute("joint_limit_ke", single_ant_model).shape, (1, 1, D))
         self.assertEqual(single_ant_view.get_attribute("shape_margin", single_ant_model).shape, (1, 1, S))
+        self.assertEqual(single_ant_view.get_attribute("shape_collision_aabb_lower", single_ant_model).shape, (1, 1, S))
+        self.assertEqual(single_ant_view.get_attribute("shape_collision_aabb_upper", single_ant_model).shape, (1, 1, S))
 
         W = 10  # num worlds
 
@@ -145,6 +147,14 @@ class TestSelection(unittest.TestCase):
         )
         self.assertEqual(
             single_ant_per_world_view.get_attribute("shape_margin", single_ant_per_world_model).shape, (W, 1, S)
+        )
+        self.assertEqual(
+            single_ant_per_world_view.get_attribute("shape_collision_aabb_lower", single_ant_per_world_model).shape,
+            (W, 1, S),
+        )
+        self.assertEqual(
+            single_ant_per_world_view.get_attribute("shape_collision_aabb_upper", single_ant_per_world_model).shape,
+            (W, 1, S),
         )
 
         A = 3  # num articulations per world
@@ -184,6 +194,14 @@ class TestSelection(unittest.TestCase):
         )
         self.assertEqual(
             multi_ant_per_world_view.get_attribute("shape_margin", multi_ant_per_world_model).shape, (W, A, S)
+        )
+        self.assertEqual(
+            multi_ant_per_world_view.get_attribute("shape_collision_aabb_lower", multi_ant_per_world_model).shape,
+            (W, A, S),
+        )
+        self.assertEqual(
+            multi_ant_per_world_view.get_attribute("shape_collision_aabb_upper", multi_ant_per_world_model).shape,
+            (W, A, S),
         )
 
     def test_selection_shapes_floating_base(self):

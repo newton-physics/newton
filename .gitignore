@@ -9,6 +9,11 @@ wheels/
 # Virtual Environments 
 .venv
 
+#models
+.sisyphus/
+.codex/
+data/
+
 # Tool cache
 .cache/
 .thumbs/
@@ -63,6 +68,7 @@ asv/html
 MUJOCO_LOG.TXT
 imgui.ini
 newton/tests/outputs/
+reports/upstream-sync/
 
 # Viser recordings
 docs/_static/recordings/

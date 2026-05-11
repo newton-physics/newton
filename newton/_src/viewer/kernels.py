@@ -784,6 +784,9 @@ def compute_hydro_contact_surface_lines(
     line_colors[tid * 3 + 2] = color
 
 
+PARTICLE_ACTIVE = wp.constant(wp.int32(int(newton.ParticleFlags.ACTIVE)))
+
+
 @wp.kernel
 def build_active_particle_mask(
     flags: wp.array[wp.int32],

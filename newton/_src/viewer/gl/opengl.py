@@ -269,10 +269,11 @@ class MeshGL:
 
         self._points = points
 
-        # only update indices the first time (no topology changes)
-        if self.indices is None:
+        # Re-upload indices when they change (supports dynamic topology).
+        new_num = int(len(indices))
+        if self.indices is None or new_num != self.num_indices:
             self.indices = wp.clone(indices).view(dtype=wp.uint32)
-            self.num_indices = int(len(self.indices))
+            self.num_indices = new_num
 
             host_indices = self.indices.numpy()
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
@@ -333,6 +334,11 @@ class MeshGL:
                 except Exception:
                     pass
                 self.texture_id = None
+            # Disable texture shading for direct mesh rendering.
+            gl.glBindVertexArray(self.vao)
+            gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 0.0)
+            gl.glVertexAttrib3f(7, 0.7, 0.5, 0.3)
+            gl.glBindVertexArray(0)
             return
 
         if self.texture_id is not None:
@@ -346,6 +352,12 @@ class MeshGL:
         if not texture_id:
             return
         self.texture_id = texture_id
+
+        # Enable texture shading and avoid tinting the texture by base color.
+        gl.glBindVertexArray(self.vao)
+        gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 1.0)
+        gl.glVertexAttrib3f(7, 1.0, 1.0, 1.0)
+        gl.glBindVertexArray(0)
 
     def render(self):
         if not self.hidden:

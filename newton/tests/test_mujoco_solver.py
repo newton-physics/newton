@@ -8287,6 +8287,105 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         self.assertLess(quat_dist, 0.01)
 
 
+class TestMuJoCoSolverResetWorlds(unittest.TestCase):
+    @staticmethod
+    def _build_solver_and_state():
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><joint type="free"/><geom type="sphere" size="0.1"/></body>
+        </worldbody></mujoco>"""
+        template = newton.ModelBuilder()
+        template.add_mjcf(mjcf)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
+
+        state = model.state()
+        joint_q = state.joint_q.numpy().reshape(model.world_count, -1)
+        joint_qd = state.joint_qd.numpy().reshape(model.world_count, -1)
+        joint_q[0, :3] = [0.0, 0.0, 1.0]
+        joint_q[1, :3] = [0.0, 0.0, 2.5]
+        joint_qd[0, :3] = [0.1, 0.0, 0.0]
+        joint_qd[1, :3] = [0.0, 0.2, 0.0]
+        state.joint_q.assign(joint_q.reshape(-1))
+        state.joint_qd.assign(joint_qd.reshape(-1))
+
+        return model, solver, state
+
+    @staticmethod
+    def _seed_runtime_buffers(solver):
+        solver.mjw_data.qacc_warmstart.assign(np.full_like(solver.mjw_data.qacc_warmstart.numpy(), 3.0))
+        solver.mjw_data.qacc.assign(np.full_like(solver.mjw_data.qacc.numpy(), 4.0))
+        solver.mjw_data.qacc_smooth.assign(np.full_like(solver.mjw_data.qacc_smooth.numpy(), 5.0))
+
+    @staticmethod
+    def _assert_reset_result(solver):
+        qpos = solver.mjw_data.qpos.numpy()
+        qvel = solver.mjw_data.qvel.numpy()
+        qacc_warmstart = solver.mjw_data.qacc_warmstart.numpy()
+        qacc = solver.mjw_data.qacc.numpy()
+        qacc_smooth = solver.mjw_data.qacc_smooth.numpy()
+
+        np.testing.assert_allclose(qpos[0, :3], [0.0, 0.0, 1.0], atol=1e-6)
+        np.testing.assert_allclose(qpos[1, :3], [0.0, 0.0, 2.5], atol=1e-6)
+        np.testing.assert_allclose(qvel[0, :3], [0.1, 0.0, 0.0], atol=1e-6)
+        np.testing.assert_allclose(qvel[1, :3], [0.0, 0.2, 0.0], atol=1e-6)
+        np.testing.assert_allclose(qacc_warmstart[0], 3.0, atol=1e-6)
+        np.testing.assert_allclose(qacc[0], 4.0, atol=1e-6)
+        np.testing.assert_allclose(qacc_smooth[0], 5.0, atol=1e-6)
+        np.testing.assert_allclose(qacc_warmstart[1], 0.0, atol=1e-6)
+        np.testing.assert_allclose(qacc[1], 0.0, atol=1e-6)
+        np.testing.assert_allclose(qacc_smooth[1], 0.0, atol=1e-6)
+
+    @staticmethod
+    def _assert_selected_world_reset(solver):
+        qpos = solver.mjw_data.qpos.numpy()
+        qvel = solver.mjw_data.qvel.numpy()
+        qacc_warmstart = solver.mjw_data.qacc_warmstart.numpy()
+        qacc = solver.mjw_data.qacc.numpy()
+        qacc_smooth = solver.mjw_data.qacc_smooth.numpy()
+
+        np.testing.assert_allclose(qpos[1, :3], [0.0, 0.0, 2.5], atol=1e-6)
+        np.testing.assert_allclose(qvel[1, :3], [0.0, 0.2, 0.0], atol=1e-6)
+        np.testing.assert_allclose(qacc_warmstart[1], 0.0, atol=1e-6)
+        np.testing.assert_allclose(qacc[1], 0.0, atol=1e-6)
+        np.testing.assert_allclose(qacc_smooth[1], 0.0, atol=1e-6)
+
+    def test_reset_worlds_clears_selected_world_warmstart(self):
+        _model, solver, state = self._build_solver_and_state()
+        self._seed_runtime_buffers(solver)
+
+        solver.reset_worlds(state, np.array([1], dtype=np.int32))
+
+        self._assert_reset_result(solver)
+
+    def test_reset_worlds_accepts_torch_ids_after_cuda_graph_capture(self):
+        if not wp.get_device().is_cuda:
+            self.skipTest("CUDA-only regression test")
+
+        try:
+            import torch
+        except ImportError as exc:
+            self.skipTest(f"Torch unavailable: {exc}")
+
+        model, solver, state_in = self._build_solver_and_state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.contacts()
+        dt = 1.0 / 240.0
+
+        self._seed_runtime_buffers(solver)
+
+        with wp.ScopedCapture() as capture:
+            model.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, dt)
+
+        wp.capture_launch(capture.graph)
+        solver.reset_worlds(state_in, torch.tensor([1], device="cuda", dtype=torch.long))
+
+        self._assert_selected_world_reset(solver)
+
+
 class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
     def test_body_actuator_with_duplicated_body_names(self):
         """Test that duplicated body names resolve correctly for BODY actuators."""

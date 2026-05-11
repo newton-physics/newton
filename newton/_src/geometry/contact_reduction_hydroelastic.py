@@ -54,7 +54,11 @@ from .contact_reduction_global import (
     is_contact_already_exported,
     make_contact_key,
     reduction_update_slot,
+    unpack_contact_key_bin,
+    unpack_contact_key_shape_a,
+    unpack_contact_key_shape_b,
 )
+from .flags import ShapeFlags
 
 # =============================================================================
 # Constants for hydroelastic export
@@ -63,6 +67,138 @@ from .contact_reduction_global import (
 EPS_LARGE = 1e-8
 EPS_SMALL = 1e-20
 MIN_FRICTION_SCALE = 1e-2
+
+
+@wp.struct
+class ViscoelasticMemoryData:
+    """Per-cell viscoelastic pressure memory state for rate-dependent densification and hysteresis.
+
+    Each cell in the coarse pressure memory grid tracks its own viscoelastic
+    state to model compression-hardening, strain-rate sensitivity, and
+    hysteresis energy dissipation.
+
+    Attributes:
+        max_compression: Maximum compression proxy ever reached [dimensionless].
+        recovered_compression: Decaying recovery proxy after unloading [dimensionless].
+        strain_rate: Current compression rate estimate [1/s].
+        loading_direction: Loading state indicator: +1 loading, -1 unloading, 0 stationary.
+        energy_dissipated_cumulative: Accumulated hysteresis energy dissipation [J].
+    """
+
+    max_compression: wp.float32
+    recovered_compression: wp.float32
+    strain_rate: wp.float32
+    loading_direction: wp.int32
+    energy_dissipated_cumulative: wp.float32
+
+
+@wp.func
+def _pressure_memory_cell_index(
+    position: wp.vec3,
+    aabb_lower: wp.vec3,
+    aabb_upper: wp.vec3,
+    grid_x: int,
+    grid_y: int,
+    grid_z: int,
+) -> int:
+    extent = aabb_upper - aabb_lower
+    rel_x = float(0.0)
+    rel_y = float(0.0)
+    rel_z = float(0.0)
+    if extent[0] > wp.static(EPS_LARGE):
+        rel_x = wp.clamp((position[0] - aabb_lower[0]) / extent[0], 0.0, 0.999999)
+    if extent[1] > wp.static(EPS_LARGE):
+        rel_y = wp.clamp((position[1] - aabb_lower[1]) / extent[1], 0.0, 0.999999)
+    if extent[2] > wp.static(EPS_LARGE):
+        rel_z = wp.clamp((position[2] - aabb_lower[2]) / extent[2], 0.0, 0.999999)
+
+    ix = int(wp.floor(rel_x * float(grid_x)))
+    iy = int(wp.floor(rel_y * float(grid_y)))
+    iz = int(wp.floor(rel_z * float(grid_z)))
+    ix = wp.clamp(ix, 0, grid_x - 1)
+    iy = wp.clamp(iy, 0, grid_y - 1)
+    iz = wp.clamp(iz, 0, grid_z - 1)
+    return (ix * grid_y + iy) * grid_z + iz
+
+
+@wp.kernel(enable_backward=False)
+def compute_pressure_memory_scales_kernel(
+    ht_keys: wp.array[wp.uint64],
+    ht_active_slots: wp.array[wp.int32],
+    agg_force: wp.array[wp.vec3],
+    weighted_pos_sum: wp.array[wp.vec3],
+    weight_sum: wp.array[wp.float32],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
+    pressure_memory: wp.array[wp.float32],
+    entry_memory_scale: wp.array[wp.float32],
+    n_shapes: int,
+    grid_x: int,
+    grid_y: int,
+    grid_z: int,
+    unloading_loss: float,
+    recovery_tau_s: float,
+    memory_dt_s: float,
+    total_num_threads: int,
+):
+    """Update max-compression memory and compute force scale per normal-bin entry."""
+    tid = wp.tid()
+    ht_capacity = ht_keys.shape[0]
+    num_active = ht_active_slots[ht_capacity]
+    if num_active == 0:
+        return
+
+    cell_count = grid_x * grid_y * grid_z
+    recovery_alpha = float(1.0)
+    if recovery_tau_s > 0.0:
+        recovery_alpha = wp.clamp(memory_dt_s / recovery_tau_s, 0.0, 1.0)
+
+    loss = wp.clamp(unloading_loss, 0.0, 1.0)
+
+    for i in range(tid, num_active, total_num_threads):
+        entry_idx = ht_active_slots[i]
+        entry_memory_scale[entry_idx] = 1.0
+
+        stored_key = ht_keys[entry_idx]
+        bin_id = unpack_contact_key_bin(stored_key)
+        if bin_id >= wp.static(NUM_NORMAL_BINS):
+            continue
+
+        ws = weight_sum[entry_idx]
+        current_proxy = wp.length(agg_force[entry_idx])
+        if ws <= wp.static(EPS_SMALL) or current_proxy <= wp.static(EPS_SMALL):
+            continue
+
+        shape_a = unpack_contact_key_shape_a(stored_key)
+        shape_b = unpack_contact_key_shape_b(stored_key)
+        if shape_a < 0 or shape_a >= n_shapes or shape_b < 0 or shape_b >= n_shapes:
+            continue
+
+        local_anchor = weighted_pos_sum[entry_idx] / ws
+        cell_idx = _pressure_memory_cell_index(
+            local_anchor,
+            shape_collision_aabb_lower[shape_b],
+            shape_collision_aabb_upper[shape_b],
+            grid_x,
+            grid_y,
+            grid_z,
+        )
+        pair_bin_idx = (shape_a * n_shapes + shape_b) * wp.static(NUM_NORMAL_BINS) + bin_id
+        state_idx = pair_bin_idx * cell_count + cell_idx
+        if state_idx < 0 or state_idx >= pressure_memory.shape[0]:
+            continue
+
+        prev_proxy = pressure_memory[state_idx]
+        recovered_proxy = prev_proxy
+        if current_proxy >= prev_proxy:
+            recovered_proxy = current_proxy
+        else:
+            recovered_proxy = wp.max(current_proxy, prev_proxy - recovery_alpha * (prev_proxy - current_proxy))
+
+        unloading_gap = wp.max(recovered_proxy - current_proxy, 0.0)
+        effective_proxy = wp.max(current_proxy - loss * unloading_gap, 0.0)
+        entry_memory_scale[entry_idx] = wp.clamp(effective_proxy / current_proxy, 0.0, 1.0)
+        pressure_memory[state_idx] = recovered_proxy
 
 
 @wp.func
@@ -94,13 +230,73 @@ def _compute_normal_matching_rotation(
             rotation_q = wp.quat_from_axis_angle(axis, 3.14159265359)
     return rotation_q
 
+HYDROELASTIC_MODE_NONE = wp.int32(0)
+HYDROELASTIC_MODE_RIGID = wp.int32(1)
+HYDROELASTIC_MODE_COMPLIANT = wp.int32(2)
+
 
 @wp.func
-def _effective_stiffness(k_a: wp.float32, k_b: wp.float32) -> wp.float32:
-    denom = k_a + k_b
-    if denom <= 0.0:
-        return 0.0
-    return (k_a * k_b) / denom
+def _hydroelastic_mode_from_flags(flags: wp.int32) -> wp.int32:
+    if (flags & wp.int32(ShapeFlags.HYDROELASTIC_RIGID)) != 0:
+        return HYDROELASTIC_MODE_RIGID
+    if (flags & wp.int32(ShapeFlags.HYDROELASTIC_COMPLIANT)) != 0:
+        return HYDROELASTIC_MODE_COMPLIANT
+    if (flags & wp.int32(ShapeFlags.HYDROELASTIC)) != 0:
+        return HYDROELASTIC_MODE_COMPLIANT
+    return HYDROELASTIC_MODE_NONE
+
+
+@wp.func
+def _is_compliant(mode: wp.int32) -> wp.bool:
+    return mode == HYDROELASTIC_MODE_COMPLIANT
+
+
+@wp.func
+def _effective_stiffness(k_a: wp.float32, k_b: wp.float32, mode_a: wp.int32, mode_b: wp.int32) -> wp.float32:
+    compliant_a = _is_compliant(mode_a)
+    compliant_b = _is_compliant(mode_b)
+    if compliant_a and compliant_b:
+        denom = k_a + k_b
+        if denom <= 0.0:
+            return 0.0
+        return (k_a * k_b) / denom
+    if compliant_a:
+        return k_a
+    if compliant_b:
+        return k_b
+    return 0.0
+
+
+@wp.func
+def _effective_damping(kd_a: wp.float32, kd_b: wp.float32, mode_a: wp.int32, mode_b: wp.int32) -> wp.float32:
+    compliant_a = _is_compliant(mode_a)
+    compliant_b = _is_compliant(mode_b)
+    if compliant_a and compliant_b:
+        return 0.5 * (kd_a + kd_b)
+    if compliant_a:
+        return kd_a
+    if compliant_b:
+        return kd_b
+    return 0.0
+
+
+@wp.func
+def _friction_scale(mu_a: wp.float32, mu_b: wp.float32, mode_a: wp.int32, mode_b: wp.int32) -> wp.float32:
+    compliant_a = _is_compliant(mode_a)
+    compliant_b = _is_compliant(mode_b)
+    base_mu = 0.5 * (mu_a + mu_b)
+    if base_mu <= wp.float32(1.0e-8):
+        return 1.0
+    desired_mu = base_mu
+    if compliant_a and compliant_b:
+        desired_mu = base_mu
+    elif compliant_a:
+        desired_mu = mu_a
+    elif compliant_b:
+        desired_mu = mu_b
+    if desired_mu <= 0.0:
+        return 1.0
+    return desired_mu / base_mu
 
 
 # =============================================================================
@@ -164,6 +360,7 @@ def get_reduce_hydroelastic_contacts_kernel():
     def reduce_hydroelastic_contacts_kernel(
         reducer_data: GlobalContactReducerData,
         shape_material_k_hydro: wp.array[wp.float32],
+        shape_flags: wp.array[wp.int32],
         shape_transform: wp.array[wp.transform],
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
@@ -192,6 +389,8 @@ def get_reduce_hydroelastic_contacts_kernel():
             depth = pd[3]
             shape_a = pair[0]
             shape_b = pair[1]
+            mode_a = _hydroelastic_mode_from_flags(shape_flags[shape_a])
+            mode_b = _hydroelastic_mode_from_flags(shape_flags[shape_b])
 
             aabb_lower = shape_collision_aabb_lower[shape_b]
             aabb_upper = shape_collision_aabb_upper[shape_b]
@@ -211,7 +410,7 @@ def get_reduce_hydroelastic_contacts_kernel():
             if entry_idx >= 0:
                 # k_eff is constant for a shape pair, so redundant writes are safe.
                 reducer_data.entry_k_eff[entry_idx] = _effective_stiffness(
-                    shape_material_k_hydro[shape_a], shape_material_k_hydro[shape_b]
+                    shape_material_k_hydro[shape_a], shape_material_k_hydro[shape_b], mode_a, mode_b
                 )
                 aabb_size = wp.length(aabb_upper - aabb_lower)
                 use_beta = depth < wp.static(BETA_THRESHOLD) * aabb_size
@@ -261,7 +460,7 @@ def get_reduce_hydroelastic_contacts_kernel():
             voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
             if voxel_entry_idx >= 0:
                 reducer_data.entry_k_eff[voxel_entry_idx] = _effective_stiffness(
-                    shape_material_k_hydro[shape_a], shape_material_k_hydro[shape_b]
+                    shape_material_k_hydro[shape_a], shape_material_k_hydro[shape_b], mode_a, mode_b
                 )
                 voxel_value = _make_contact_value_fast(-depth, 0, i)
                 reduction_update_slot(
@@ -503,6 +702,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         agg_force: wp.array[wp.vec3],
         weighted_pos_sum: wp.array[wp.vec3],
         weight_sum: wp.array[wp.float32],
+        entry_memory_scale: wp.array[wp.float32],
         # Contact buffer arrays
         position_depth: wp.array[wp.vec4],
         normal: wp.array[wp.vec2],  # Octahedral-encoded
@@ -519,6 +719,9 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         agg_moment_reduced: wp.array[wp.float32],
         agg_moment2_reduced: wp.array[wp.float32],
         # Shape data for margin
+        shape_material_kd: wp.array[wp.float32],
+        shape_material_mu: wp.array[wp.float32],
+        shape_flags: wp.array[wp.int32],
         shape_gap: wp.array[float],
         shape_transform: wp.array[wp.transform],
         # Writer data (custom struct)
@@ -605,6 +808,10 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             # Voxel bin entries (bin_id >= NUM_NORMAL_BINS): no aggregate force, use per-contact stiffness
             agg_force_vec = agg_force[entry_idx]
             agg_force_mag = wp.length(agg_force_vec)
+            memory_scale = float(1.0)
+            if entry_memory_scale.shape[0] > 0:
+                memory_scale = entry_memory_scale[entry_idx]
+            agg_force_mag_scaled = agg_force_mag * memory_scale
 
             # Aggregate force direction must be well-conditioned for
             # normal matching and anchor features.
@@ -646,7 +853,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             # Compute shared stiffness: c_stiffness = k_eff * |agg_force| / total_depth
             shared_stiffness = float(0.0)
             if agg_force_mag > wp.static(EPS_SMALL) and total_depth_with_anchor > 0.0:
-                shared_stiffness = k_eff_first * agg_force_mag / total_depth_with_anchor
+                shared_stiffness = k_eff_first * agg_force_mag_scaled / total_depth_with_anchor
 
             # Moment matching: hybrid uniform / per-contact strategy.
             moment_alpha = float(0.0)
@@ -688,6 +895,20 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             gap_a = shape_gap[shape_a_first]
             gap_b = shape_gap[shape_b_first]
             gap_sum = gap_a + gap_b
+            mode_a_first = _hydroelastic_mode_from_flags(shape_flags[shape_a_first])
+            mode_b_first = _hydroelastic_mode_from_flags(shape_flags[shape_b_first])
+            shared_damping = _effective_damping(
+                shape_material_kd[shape_a_first],
+                shape_material_kd[shape_b_first],
+                mode_a_first,
+                mode_b_first,
+            )
+            shared_friction_scale = _friction_scale(
+                shape_material_mu[shape_a_first],
+                shape_material_mu[shape_b_first],
+                mode_a_first,
+                mode_b_first,
+            )
 
             # === Second pass: export contacts ===
             for idx in range(num_exported):
@@ -741,6 +962,10 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     if nbin_entry_idx >= 0 and depth < 0.0:
                         nbin_agg_force = agg_force[nbin_entry_idx]
                         nbin_agg_mag = wp.length(nbin_agg_force)
+                        nbin_memory_scale = float(1.0)
+                        if entry_memory_scale.shape[0] > 0:
+                            nbin_memory_scale = entry_memory_scale[nbin_entry_idx]
+                        nbin_agg_mag_scaled = nbin_agg_mag * nbin_memory_scale
 
                         # Normal matching from the normal bin's rotation
                         if wp.static(normal_matching) and nbin_agg_mag > wp.static(EPS_LARGE):
@@ -771,7 +996,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                                 nbin_effective_depth = nbin_effective_depth_no_anchor + nbin_anchor_depth
 
                         if nbin_agg_mag > wp.static(EPS_SMALL) and nbin_effective_depth > 0.0:
-                            c_stiffness = k_eff_first * nbin_agg_mag / nbin_effective_depth
+                            c_stiffness = k_eff_first * nbin_agg_mag_scaled / nbin_effective_depth
                         else:
                             c_stiffness = area_i * k_eff_first
 
@@ -837,7 +1062,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.shape_b = shape_b
                 contact_data.gap_sum = gap_sum
                 contact_data.contact_stiffness = c_stiffness
-                contact_data.contact_friction_scale = wp.float32(c_friction_scale)
+                contact_data.contact_damping = shared_damping
+                contact_data.contact_friction_scale = shared_friction_scale * wp.float32(c_friction_scale)
 
                 # Call the writer function
                 writer_func(contact_data, writer_data, -1)
@@ -863,7 +1089,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 contact_data.shape_b = shape_b_first
                 contact_data.gap_sum = gap_sum
                 contact_data.contact_stiffness = shared_stiffness
-                contact_data.contact_friction_scale = wp.float32(anchor_friction_scale)
+                contact_data.contact_damping = shared_damping
+                contact_data.contact_friction_scale = shared_friction_scale * wp.float32(anchor_friction_scale)
 
                 # Call the writer function for anchor
                 writer_func(contact_data, writer_data, -1)
@@ -894,7 +1121,7 @@ class HydroelasticReductionConfig:
     normal_matching: bool = True
     anchor_contact: bool = False
     moment_matching: bool = False
-    margin_contact_area: float = 1e-2
+    margin_contact_area: float = 1e-4
 
 
 class HydroelasticContactReduction:
@@ -1032,6 +1259,7 @@ class HydroelasticContactReduction:
     def reduce(
         self,
         shape_material_k_hydro: wp.array,
+        shape_flags: wp.array,
         shape_transform: wp.array,
         shape_collision_aabb_lower: wp.array,
         shape_collision_aabb_upper: wp.array,
@@ -1050,6 +1278,7 @@ class HydroelasticContactReduction:
 
         Args:
             shape_material_k_hydro: Per-shape hydroelastic material stiffness (dtype: float).
+            shape_flags: Per-shape flags containing hydroelastic mode bits.
             shape_transform: Per-shape world transforms (dtype: wp.transform).
             shape_collision_aabb_lower: Per-shape local AABB lower bounds (dtype: wp.vec3).
             shape_collision_aabb_upper: Per-shape local AABB upper bounds (dtype: wp.vec3).
@@ -1063,6 +1292,7 @@ class HydroelasticContactReduction:
             inputs=[
                 reducer_data,
                 shape_material_k_hydro,
+                shape_flags,
                 shape_transform,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
@@ -1076,10 +1306,22 @@ class HydroelasticContactReduction:
 
     def export(
         self,
+        shape_material_kd: wp.array,
+        shape_material_mu: wp.array,
+        shape_flags: wp.array,
         shape_gap: wp.array,
         shape_transform: wp.array,
+        shape_collision_aabb_lower: wp.array | None,
+        shape_collision_aabb_upper: wp.array | None,
         writer_data: Any,
         grid_size: int,
+        pressure_memory: wp.array | None = None,
+        pressure_memory_enabled: bool = False,
+        pressure_memory_num_shapes: int = 0,
+        pressure_memory_grid: tuple[int, int, int] = (1, 1, 1),
+        pressure_memory_unloading_loss: float = 0.0,
+        pressure_memory_recovery_tau_s: float = 1.0,
+        pressure_memory_dt_s: float = 0.0,
     ):
         """Export reduced contacts using the writer function.
 
@@ -1090,8 +1332,13 @@ class HydroelasticContactReduction:
         global memory barrier).
 
         Args:
+            shape_material_kd: Per-shape normal damping coefficients.
+            shape_material_mu: Per-shape friction coefficients.
+            shape_flags: Per-shape flags containing hydroelastic mode bits.
             shape_gap: Per-shape contact gap (detection threshold) (dtype: float).
             shape_transform: Per-shape world transforms (dtype: wp.transform).
+            shape_collision_aabb_lower: Per-shape local AABB lower bounds.
+            shape_collision_aabb_upper: Per-shape local AABB upper bounds.
             writer_data: Data struct for the writer function.
             grid_size: Number of threads for the kernel launch.
         """
@@ -1134,6 +1381,35 @@ class HydroelasticContactReduction:
                 ],
                 device=self.device,
             )
+        # --- update stateful pressure-memory scales per normal bin (Phase 1.75) ---
+        if pressure_memory_enabled and pressure_memory is not None:
+            grid_x, grid_y, grid_z = pressure_memory_grid
+            if shape_collision_aabb_lower is None or shape_collision_aabb_upper is None:
+                raise ValueError("shape AABB arrays are required when pressure memory is enabled")
+            wp.launch(
+                kernel=compute_pressure_memory_scales_kernel,
+                dim=[grid_size],
+                inputs=[
+                    self.reducer.hashtable.keys,
+                    self.reducer.hashtable.active_slots,
+                    self.reducer.agg_force,
+                    self.reducer.weighted_pos_sum,
+                    self.reducer.weight_sum,
+                    shape_collision_aabb_lower,
+                    shape_collision_aabb_upper,
+                    pressure_memory,
+                    self.reducer.entry_memory_scale,
+                    pressure_memory_num_shapes,
+                    int(grid_x),
+                    int(grid_y),
+                    int(grid_z),
+                    float(pressure_memory_unloading_loss),
+                    float(pressure_memory_recovery_tau_s),
+                    float(pressure_memory_dt_s),
+                    grid_size,
+                ],
+                device=self.device,
+            )
         # --- export reduced contacts (Phase 2) ---
         wp.launch(
             kernel=self._export_kernel,
@@ -1145,6 +1421,7 @@ class HydroelasticContactReduction:
                 self.reducer.agg_force,
                 self.reducer.weighted_pos_sum,
                 self.reducer.weight_sum,
+                self.reducer.entry_memory_scale,
                 self.reducer.position_depth,
                 self.reducer.normal,
                 self.reducer.shape_pairs,
@@ -1156,6 +1433,9 @@ class HydroelasticContactReduction:
                 self.reducer.agg_moment_unreduced,
                 self.reducer.agg_moment_reduced,
                 self.reducer.agg_moment2_reduced,
+                shape_material_kd,
+                shape_material_mu,
+                shape_flags,
                 shape_gap,
                 shape_transform,
                 writer_data,
@@ -1168,6 +1448,9 @@ class HydroelasticContactReduction:
     def reduce_and_export(
         self,
         shape_material_k_hydro: wp.array,
+        shape_material_kd: wp.array,
+        shape_material_mu: wp.array,
+        shape_flags: wp.array,
         shape_transform: wp.array,
         shape_collision_aabb_lower: wp.array,
         shape_collision_aabb_upper: wp.array,
@@ -1175,6 +1458,13 @@ class HydroelasticContactReduction:
         shape_gap: wp.array,
         writer_data: Any,
         grid_size: int,
+        pressure_memory: wp.array | None = None,
+        pressure_memory_enabled: bool = False,
+        pressure_memory_num_shapes: int = 0,
+        pressure_memory_grid: tuple[int, int, int] = (1, 1, 1),
+        pressure_memory_unloading_loss: float = 0.0,
+        pressure_memory_recovery_tau_s: float = 1.0,
+        pressure_memory_dt_s: float = 0.0,
     ):
         """Convenience method to reduce and export in one call.
 
@@ -1182,6 +1472,9 @@ class HydroelasticContactReduction:
 
         Args:
             shape_material_k_hydro: Per-shape hydroelastic material stiffness (dtype: float).
+            shape_material_kd: Per-shape normal damping coefficients.
+            shape_material_mu: Per-shape friction coefficients.
+            shape_flags: Per-shape flags containing hydroelastic mode bits.
             shape_transform: Per-shape world transforms (dtype: wp.transform).
             shape_collision_aabb_lower: Per-shape local AABB lower bounds (dtype: wp.vec3).
             shape_collision_aabb_upper: Per-shape local AABB upper bounds (dtype: wp.vec3).
@@ -1189,13 +1482,38 @@ class HydroelasticContactReduction:
             shape_gap: Per-shape contact gap (detection threshold) (dtype: float).
             writer_data: Data struct for the writer function.
             grid_size: Number of threads for the kernel launch.
+            pressure_memory: Optional pressure-memory state array.
+            pressure_memory_enabled: Whether to update pressure-memory scales.
+            pressure_memory_num_shapes: Total shape count used for memory indexing.
+            pressure_memory_grid: Per-shape-pair memory grid dimensions.
+            pressure_memory_unloading_loss: Fraction of remembered compression removed while unloading.
+            pressure_memory_recovery_tau_s: Memory recovery time constant [s].
+            pressure_memory_dt_s: Time step used for memory recovery [s].
         """
         self.reduce(
             shape_material_k_hydro,
+            shape_flags,
             shape_transform,
             shape_collision_aabb_lower,
             shape_collision_aabb_upper,
             shape_voxel_resolution,
             grid_size,
         )
-        self.export(shape_gap, shape_transform, writer_data, grid_size)
+        self.export(
+            shape_material_kd,
+            shape_material_mu,
+            shape_flags,
+            shape_gap,
+            shape_transform,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
+            writer_data,
+            grid_size,
+            pressure_memory=pressure_memory,
+            pressure_memory_enabled=pressure_memory_enabled,
+            pressure_memory_num_shapes=pressure_memory_num_shapes,
+            pressure_memory_grid=pressure_memory_grid,
+            pressure_memory_unloading_loss=pressure_memory_unloading_loss,
+            pressure_memory_recovery_tau_s=pressure_memory_recovery_tau_s,
+            pressure_memory_dt_s=pressure_memory_dt_s,
+        )

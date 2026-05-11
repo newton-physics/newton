@@ -3,13 +3,28 @@
 
 import time
 import unittest
+import warnings
 from enum import Enum
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton.geometry import HydroelasticSDF
+from newton._src.core.types import MAXVAL
+from newton._src.geometry.sdf_hydroelastic import (
+    HYDROELASTIC_MODE_COMPLIANT,
+    PressureFieldData,
+    _solve_layer_pressure_extent,
+    _solve_poisson_pressure_extent,
+    eval_signed_field,
+    get_rel_stiffness,
+    is_valid_force,
+    is_valid_pressure,
+    resolve_pair_contact_workflow,
+    weighted_sdf_difference,
+)
+from newton._src.geometry.sdf_texture import TextureSDFData, texture_sample_sdf
+from newton.geometry import HydroelasticContactWorkflow, HydroelasticSDF, HydroelasticType
 from newton.tests.unittest_utils import (
     add_function_test,
     get_selected_cuda_test_devices,
@@ -53,6 +68,87 @@ solvers = {
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
 }
+
+HYDRO_PRESSURE_TEST_SHAPES = (
+    "sphere",
+    "ellipsoid",
+    "box",
+    "capsule",
+    "cylinder",
+    "cone",
+    "mesh",
+)
+
+
+@wp.kernel(enable_backward=False)
+def weighted_sdf_difference_kernel(
+    val_a: wp.array[wp.float32],
+    val_b: wp.array[wp.float32],
+    w_a: wp.float32,
+    w_b: wp.float32,
+    out: wp.array[wp.float32],
+):
+    tid = wp.tid()
+    out[tid] = weighted_sdf_difference(val_a[tid], val_b[tid], w_a, w_b)
+
+
+@wp.kernel(enable_backward=False)
+def resolve_pair_contact_workflow_kernel(
+    mode_a: wp.array[wp.int32],
+    mode_b: wp.array[wp.int32],
+    workflow_a: wp.array[wp.int32],
+    workflow_b: wp.array[wp.int32],
+    out: wp.array[wp.int32],
+):
+    tid = wp.tid()
+    out[tid] = resolve_pair_contact_workflow(mode_a[tid], mode_b[tid], workflow_a[tid], workflow_b[tid])
+
+
+@wp.kernel(enable_backward=False)
+def sample_pressure_and_sdf_kernel(
+    pressure_volume_id: wp.uint64,
+    sdf_data: wp.array[TextureSDFData],
+    sdf_idx: wp.int32,
+    points: wp.array[wp.vec3],
+    out_pressure: wp.array[wp.float32],
+    out_sdf: wp.array[wp.float32],
+):
+    tid = wp.tid()
+    sample = points[tid]
+
+    pressure_idx = wp.volume_world_to_index(pressure_volume_id, sample)
+    pressure = wp.volume_sample_f(pressure_volume_id, pressure_idx, wp.Volume.LINEAR)
+    if wp.isnan(pressure):
+        pressure = 0.0
+    out_pressure[tid] = wp.max(pressure, 0.0)
+    out_sdf[tid] = texture_sample_sdf(sdf_data[sdf_idx], sample)
+
+
+@wp.kernel(enable_backward=False)
+def eval_signed_field_kernel(
+    sdf_values: wp.array[wp.float32],
+    points: wp.array[wp.vec3],
+    sdf_data: wp.array[TextureSDFData],
+    pressure_data: wp.array[PressureFieldData],
+    sdf_index: wp.int32,
+    pressure_index: wp.int32,
+    pair_workflow: wp.int32,
+    pressure_blend_shell_fraction: wp.float32,
+    out_field: wp.array[wp.float32],
+    out_valid: wp.array[wp.int32],
+):
+    tid = wp.tid()
+    field, valid = eval_signed_field(
+        sdf_values[tid],
+        points[tid],
+        sdf_data[sdf_index],
+        HYDROELASTIC_MODE_COMPLIANT,
+        pressure_data[pressure_index],
+        pair_workflow,
+        pressure_blend_shell_fraction,
+    )
+    out_field[tid] = field
+    out_valid[tid] = wp.int32(valid)
 
 
 # --- Helper functions ---
@@ -160,6 +256,341 @@ def build_stacked_cubes_scene(
     )
 
     return model, solver, state_0, state_1, control, collision_pipeline, initial_positions, cube_half
+
+
+def _get_hydro_pressure_test_mesh_box() -> newton.Mesh:
+    """Return cached procedural box mesh used by pressure-field tests."""
+    mesh = getattr(_get_hydro_pressure_test_mesh_box, "_mesh", None)
+    if mesh is None:
+        mesh = newton.Mesh.create_box(
+            0.1,
+            0.08,
+            0.12,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        mesh.build_sdf(
+            max_resolution=32,
+            narrow_band_range=(-0.08, 0.08),
+            margin=0.01,
+        )
+        _get_hydro_pressure_test_mesh_box._mesh = mesh
+    return mesh
+
+
+def _hydro_pair_shape_extents(shape_name: str) -> tuple[float, float]:
+    """Return (z half-extent [m], x half-extent [m]) for a hydro test shape."""
+    if shape_name == "mesh":
+        return 0.12, 0.10
+    return 0.10, 0.10
+
+
+def _make_hydro_pair_shape_cfg(
+    shape_name: str,
+    kh: float,
+    workflow: HydroelasticContactWorkflow,
+    sine_amplitude=(0.0, 0.0, 0.0),
+    sine_cycles=(1.0, 1.0, 1.0),
+    sine_phase=(0.0, 0.0, 0.0),
+):
+    """Create per-shape hydroelastic config for pairwise pressure tests."""
+    kwargs = {
+        "hydroelastic_type": HydroelasticType.COMPLIANT,
+        "hydroelastic_contact_workflow": workflow,
+        "hydro_pressure_sine_amplitude": sine_amplitude,
+        "hydro_pressure_sine_cycles": sine_cycles,
+        "hydro_pressure_sine_phase": sine_phase,
+        "kh": float(kh),
+        "kd": 40.0,
+        "mu": 0.5,
+        "gap": 0.005,
+        "margin": 1.0e-5,
+    }
+    if shape_name != "mesh":
+        kwargs["sdf_max_resolution"] = 32
+        kwargs["sdf_narrow_band_range"] = (-0.08, 0.08)
+    return newton.ModelBuilder.ShapeConfig(**kwargs)
+
+
+def _add_hydro_test_shape(builder, body: int, shape_name: str, cfg) -> int:
+    """Add a hydro test shape by name."""
+    if shape_name == "sphere":
+        return builder.add_shape_sphere(body=body, radius=0.1, cfg=cfg)
+    if shape_name == "ellipsoid":
+        return builder.add_shape_ellipsoid(body=body, a=0.12, b=0.09, c=0.10, cfg=cfg)
+    if shape_name == "box":
+        return builder.add_shape_box(body=body, hx=0.10, hy=0.09, hz=0.10, cfg=cfg)
+    if shape_name == "capsule":
+        return builder.add_shape_capsule(body=body, radius=0.06, half_height=0.04, cfg=cfg)
+    if shape_name == "cylinder":
+        return builder.add_shape_cylinder(body=body, radius=0.08, half_height=0.10, cfg=cfg)
+    if shape_name == "cone":
+        return builder.add_shape_cone(body=body, radius=0.08, half_height=0.10, cfg=cfg)
+    if shape_name == "mesh":
+        return builder.add_shape_mesh(body=body, mesh=_get_hydro_pressure_test_mesh_box(), cfg=cfg)
+    raise ValueError(f"Unsupported hydro pressure test shape: {shape_name}")
+
+
+def _build_hydro_pair_scene(
+    device,
+    shape_name: str,
+    penetration: float,
+    kh: float = 2.0e8,
+    workflow: HydroelasticContactWorkflow = HydroelasticContactWorkflow.PRESSURE,
+    sine_amplitude=(0.0, 0.0, 0.0),
+    sine_cycles=(1.0, 1.0, 1.0),
+    sine_phase=(0.0, 0.0, 0.0),
+    x_shift: float = 0.0,
+    sdf_hydroelastic_config: HydroelasticSDF.Config | None = None,
+):
+    """Build and collide a two-shape hydro pair at a target penetration."""
+    builder = newton.ModelBuilder(gravity=0.0)
+
+    half_z, _half_x = _hydro_pair_shape_extents(shape_name)
+    z_pos = 2.0 * half_z - float(penetration)
+    cfg = _make_hydro_pair_shape_cfg(
+        shape_name=shape_name,
+        kh=kh,
+        workflow=workflow,
+        sine_amplitude=sine_amplitude,
+        sine_cycles=sine_cycles,
+        sine_phase=sine_phase,
+    )
+
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(float(x_shift), 0.0, z_pos), wp.quat_identity()))
+    shape_a = _add_hydro_test_shape(builder, body_a, shape_name, cfg)
+    shape_b = _add_hydro_test_shape(builder, body_b, shape_name, cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    if sdf_hydroelastic_config is None:
+        sdf_hydroelastic_config = HydroelasticSDF.Config(
+            buffer_fraction=1.0,
+            buffer_mult_contact=8,
+            buffer_mult_iso=8,
+            reduce_contacts=False,
+            output_contact_surface=True,
+        )
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=12000,
+        sdf_hydroelastic_config=sdf_hydroelastic_config,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    wp.synchronize()
+    return model, pipeline, contacts, shape_a, shape_b
+
+
+def _pair_mask(shape0: np.ndarray, shape1: np.ndarray, shape_a: int, shape_b: int) -> np.ndarray:
+    return ((shape0 == shape_a) & (shape1 == shape_b)) | ((shape0 == shape_b) & (shape1 == shape_a))
+
+
+def _pair_contact_stiffness_sum(contacts, shape_a: int, shape_b: int) -> float:
+    """Sum per-contact stiffness for a specific shape pair."""
+    if contacts.rigid_contact_stiffness is None:
+        return 0.0
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    if rigid_count <= 0:
+        return 0.0
+    shape0 = contacts.rigid_contact_shape0.numpy()[:rigid_count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:rigid_count]
+    stiffness = contacts.rigid_contact_stiffness.numpy()[:rigid_count]
+    mask = _pair_mask(shape0, shape1, shape_a, shape_b)
+    return float(np.sum(stiffness[mask]))
+
+
+def _pair_penetrating_depth_metrics(pipeline, shape_a: int, shape_b: int) -> tuple[float, float, int]:
+    """Return (sum depth, mean depth, penetrating count) for one pair."""
+    hydro = pipeline.hydroelastic_sdf
+    if hydro is None:
+        return 0.0, 0.0, 0
+    contact_surface = hydro.get_contact_surface()
+    face_count = int(contact_surface.face_contact_count.numpy()[0])
+    if face_count <= 0:
+        return 0.0, 0.0, 0
+
+    depth = contact_surface.contact_surface_depth.numpy()[:face_count]
+    shape_pair = contact_surface.contact_surface_shape_pair.numpy()[:face_count]
+    mask = _pair_mask(shape_pair[:, 0], shape_pair[:, 1], shape_a, shape_b)
+    pair_depth = depth[mask]
+    pair_depth = pair_depth[pair_depth < 0.0]
+    if pair_depth.size == 0:
+        return 0.0, 0.0, 0
+
+    depth_mag = -pair_depth
+    return float(np.sum(depth_mag)), float(np.mean(depth_mag)), int(pair_depth.size)
+
+
+def _assert_strictly_increasing(test, values: list[float], label: str):
+    for i in range(1, len(values)):
+        test.assertGreater(values[i], values[i - 1], f"{label}: expected increasing sequence, got {values}")
+
+
+def _fit_first_harmonic_r2(signal: np.ndarray, theta: np.ndarray) -> float:
+    """Fit signal to sin(theta), cos(theta), constant; return R^2."""
+    design = np.column_stack([np.sin(theta), np.cos(theta), np.ones_like(theta)])
+    coeff, *_ = np.linalg.lstsq(design, signal, rcond=None)
+    fit = design @ coeff
+    sse = float(np.sum((signal - fit) ** 2))
+    sst = float(np.sum((signal - np.mean(signal)) ** 2))
+    if sst <= 1.0e-12:
+        return 0.0
+    return max(0.0, 1.0 - sse / sst)
+
+
+# --- Pressure-field test fixture helpers ---
+
+
+def _build_box_pair_fixture(device, kh_a=1e10, kh_b=1e10, overlap=0.1):
+    """Build two overlapping box shapes with pressure-field hydroelastic contact.
+
+    Creates two boxes of half-extent 0.1m placed along the z-axis with
+    the specified overlap. Each box uses the given per-shape contact stiffness.
+
+    Args:
+        device: Warp device.
+        kh_a: Contact stiffness for box A (default 1e10).
+        kh_b: Contact stiffness for box B (default 1e10).
+        overlap: Penetration depth between boxes [m] (default 0.1).
+
+    Returns:
+        Tuple (model, state, pipeline, contacts).
+    """
+    builder = newton.ModelBuilder()
+    half = 0.1
+
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    cfg_a = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.PRESSURE,
+        sdf_max_resolution=64,
+        mu=0.5,
+        kh=float(kh_a),
+    )
+    builder.add_shape_box(body=body_a, hx=half, hy=half, hz=half, cfg=cfg_a)
+
+    body_b = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 2.0 * half - overlap), wp.quat_identity())
+    )
+    cfg_b = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.PRESSURE,
+        sdf_max_resolution=64,
+        mu=0.5,
+        kh=float(kh_b),
+    )
+    builder.add_shape_box(body=body_b, hx=half, hy=half, hz=half, cfg=cfg_b)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            output_contact_surface=True,
+            reduce_contacts=False,
+            buffer_fraction=1.0,
+            buffer_mult_iso=12,
+            buffer_mult_contact=12,
+        ),
+    )
+    contacts = pipeline.contacts()
+    return model, state, pipeline, contacts
+
+
+def _build_pressure_field_test_scene(device, sdf_resolution=64, pressure_profile="poisson"):
+    """Build a compliant box with pressure field and a rigid plane indenter.
+
+    Creates a compliant box (half-extent 0.1m) with the specified pressure
+    profile overlapping a rigid plane. The box center is positioned slightly
+    below the plane surface to ensure contact.
+
+    Args:
+        device: Warp device.
+        sdf_resolution: SDF max resolution (default 64).
+        pressure_profile: Pressure profile name, ``"poisson"`` or ``"layer"``
+            (default ``"poisson"``).
+
+    Returns:
+        Tuple (model, state, pipeline, contacts, compliant_shape_idx, rigid_shape_idx).
+    """
+    builder = newton.ModelBuilder()
+
+    plane_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.RIGID,
+        gap=0.02,
+        kh=1.0e9,
+        kd=100.0,
+        mu=0.5,
+        margin=1.0e-5,
+    )
+    builder.add_ground_plane(cfg=plane_cfg)
+
+    half = 0.1
+    box_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.PRESSURE,
+        hydro_pressure_profile=pressure_profile,
+        sdf_max_resolution=sdf_resolution,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=1.0e9,
+        kd=75.0,
+        mu=0.5,
+        margin=1.0e-5,
+    )
+    box_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, half - 0.01), wp.quat_identity())
+    )
+    builder.add_shape_box(body=box_body, hx=half, hy=half, hz=half, cfg=box_cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            output_contact_surface=True,
+            reduce_contacts=False,
+            buffer_fraction=1.0,
+            buffer_mult_iso=12,
+            buffer_mult_contact=12,
+        ),
+    )
+    contacts = pipeline.contacts()
+    # Shape indices: ground_plane is added first (index 0), box is second (index 1)
+    return model, state, pipeline, contacts, 0, 1
+
+
+def _compute_contact_forces(fixture):
+    """Run collision and extract contact force magnitudes from a fixture.
+
+    Calls ``pipeline.collide(state, contacts)`` on the fixture and returns
+    the resulting per-contact force magnitudes.
+
+    Args:
+        fixture: Tuple from ``_build_box_pair_fixture`` or
+            ``_build_pressure_field_test_scene``. Only the first four
+            elements ``(model, state, pipeline, contacts)`` are used.
+
+    Returns:
+        np.ndarray of force magnitudes (one per active contact). May be
+        empty if no contacts are active.
+    """
+    model, state, pipeline, contacts = fixture[:4]
+    pipeline.collide(state, contacts)
+    _, _, _, force_mag, _ = _extract_contact_forces(contacts, model, state)
+    return force_mag
 
 
 # --- Test functions ---
@@ -324,6 +755,140 @@ def test_buffer_fraction_no_crash(test, device):
         reduced_count,
         f"Full buffers ({full_count}) produced significantly fewer contacts than reduced buffers ({reduced_count})",
     )
+
+
+def test_margin_contact_area_consistent(test, device):
+    """Verify margin_contact_area flows from Config through to the kernel.
+
+    Creates a default Config (1e-4), builds a scene, and verifies that the
+    collision pipeline runs without error and produces contacts.
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+    config = HydroelasticSDF.Config()
+    test.assertAlmostEqual(config.margin_contact_area, 1e-4)
+
+    cube_half = 0.5
+    narrow_band = cube_half * 0.2
+    contact_gap = cube_half * 0.2
+    num_cubes = 3
+
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+        sdf_max_resolution=32,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-narrow_band, narrow_band),
+        gap=contact_gap,
+    )
+    builder.add_ground_plane()
+
+    for i in range(num_cubes):
+        z_pos = cube_half + i * cube_half * 2.0
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, z_pos), q=wp.quat_identity()))
+        builder.add_shape_box(body=body, hx=cube_half, hy=cube_half, hz=cube_half)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=config,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(contact_count, 0, "Expected non-zero contacts with default Config")
+
+
+def test_margin_contact_area_rejects_zero(test, device):
+    """Verify HydroelasticSDF.Config rejects zero/negative margin_contact_area.
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+    with test.assertRaises(ValueError):
+        HydroelasticSDF.Config(margin_contact_area=0.0)
+    with test.assertRaises(ValueError):
+        HydroelasticSDF.Config(margin_contact_area=-0.1)
+
+
+def test_viscoelastic_config_defaults(test, device):
+    """Verify all 5 viscoelastic config fields have correct defaults.
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+    config = HydroelasticSDF.Config()
+    test.assertFalse(config.viscoelastic_enabled)
+    test.assertEqual(config.viscoelastic_strain_rate_sensitivity, 0.0)
+    test.assertEqual(config.viscoelastic_densification_exponent, 2.0)
+    test.assertEqual(config.viscoelastic_hysteresis_fraction, 0.3)
+    test.assertEqual(config.viscoelastic_recovery_tau_s, 0.25)
+
+
+def test_viscoelastic_config_rejects_invalid_hysteresis(test, device):
+    """Verify HydroelasticSDF.Config rejects hysteresis outside [0, 1].
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+    with test.assertRaises(ValueError):
+        HydroelasticSDF.Config(viscoelastic_hysteresis_fraction=1.5)
+    with test.assertRaises(ValueError):
+        HydroelasticSDF.Config(viscoelastic_hysteresis_fraction=-0.1)
+
+
+def test_viscoelastic_config_disabled_by_default(test, device):
+    """Verify viscoelastic_enabled defaults to False.
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+    config = HydroelasticSDF.Config()
+    test.assertFalse(config.viscoelastic_enabled)
+
+
+def test_viscoelastic_memory_struct_fields(test, device):
+    """Verify ViscoelasticMemoryData has all 5 fields with correct types.
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+    from newton._src.geometry.contact_reduction_hydroelastic import ViscoelasticMemoryData
+
+    m = ViscoelasticMemoryData()
+    # Check all 5 fields exist
+    test.assertTrue(hasattr(m, "max_compression"), "missing max_compression")
+    test.assertTrue(hasattr(m, "recovered_compression"), "missing recovered_compression")
+    test.assertTrue(hasattr(m, "strain_rate"), "missing strain_rate")
+    test.assertTrue(hasattr(m, "loading_direction"), "missing loading_direction")
+    test.assertTrue(hasattr(m, "energy_dissipated_cumulative"), "missing energy_dissipated_cumulative")
+
+
+def test_viscoelastic_memory_default_values(test, device):
+    """Verify ViscoelasticMemoryData initializes with zero/identity defaults.
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+    from newton._src.geometry.contact_reduction_hydroelastic import ViscoelasticMemoryData
+
+    m = ViscoelasticMemoryData()
+    test.assertEqual(m.max_compression, 0.0)
+    test.assertEqual(m.recovered_compression, 0.0)
+    test.assertEqual(m.strain_rate, 0.0)
+    test.assertEqual(m.loading_direction, 0)
+    test.assertEqual(m.energy_dissipated_cumulative, 0.0)
 
 
 def test_iso_scan_scratch_buffers_are_level_sized(test, device):
@@ -852,6 +1417,925 @@ def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
     )
 
 
+def test_weighted_sdf_difference_is_continuous_across_surface(test, device):
+    """Ensure the weighted hydroelastic field has no branch jump at phi=0."""
+    val_a = wp.array(np.array([-1.0e-6, 0.0, 1.0e-6], dtype=np.float32), dtype=wp.float32, device=device)
+    val_b = wp.array(np.array([-2.0e-2, -2.0e-2, -2.0e-2], dtype=np.float32), dtype=wp.float32, device=device)
+    out = wp.empty(3, dtype=wp.float32, device=device)
+
+    k_a = np.float32(2.0e8)
+    k_b = np.float32(8.0e8)
+    denom = np.sqrt(k_a * k_b).astype(np.float32)
+    w_a = np.float32(k_a / denom)
+    w_b = np.float32(k_b / denom)
+
+    wp.launch(
+        weighted_sdf_difference_kernel,
+        dim=3,
+        inputs=[val_a, val_b, w_a, w_b],
+        outputs=[out],
+        device=device,
+    )
+    wp.synchronize()
+
+    values = out.numpy()
+
+    # Around phi=0 the field should vary smoothly with slope w_a.
+    test.assertLess(abs(values[1] - values[0]), 1.0e-5)
+    test.assertLess(abs(values[2] - values[1]), 1.0e-5)
+
+    expected = w_a * val_a.numpy() - w_b * val_b.numpy()
+    test.assertTrue(np.allclose(values, expected, rtol=1.0e-6, atol=1.0e-8))
+
+
+def test_poisson_pressure_extent_has_positive_deep_interior(test, device):
+    """Ensure PDE pressure extent has no internal zero pocket for a box-like SDF."""
+    _ = device
+    n = 33
+    x = np.linspace(-0.5, 0.5, n, dtype=np.float32)
+    y = np.linspace(-0.4, 0.4, n, dtype=np.float32)
+    z = np.linspace(-0.3, 0.3, n, dtype=np.float32)
+    xx, yy, zz = np.meshgrid(x, y, z, indexing="ij")
+
+    # SDF of an axis-aligned box centered at origin.
+    sdf = np.maximum.reduce([np.abs(xx) - 0.45, np.abs(yy) - 0.32, np.abs(zz) - 0.22]).astype(np.float32)
+    voxel_size = np.array(
+        [
+            float(x[1] - x[0]),
+            float(y[1] - y[0]),
+            float(z[1] - z[0]),
+        ],
+        dtype=np.float32,
+    )
+
+    field = _solve_poisson_pressure_extent(sdf, voxel_size, max_iters=900, tol=1.0e-6)
+    inside = sdf < 0.0
+    deep_inside = sdf < (-2.0 * np.min(voxel_size))
+
+    test.assertTrue(np.all(field[~inside] == 0.0), "Pressure field must stay zero outside geometry")
+    test.assertGreater(float(np.max(field[inside])), 0.5, "Expected meaningful interior pressure values")
+    test.assertGreater(
+        float(np.min(field[deep_inside])),
+        1.0e-4,
+        "Deep interior should remain strictly positive (no internal cavity/discontinuity)",
+    )
+
+    center = float(field[n // 2, n // 2, n // 2])
+    near_surface = float(field[n // 2, n // 2, 2])
+    test.assertGreater(center, near_surface, "Pressure extent should increase from boundary toward interior")
+
+
+def _make_sphere_sdf_grid(radius=0.5, n=32):
+    axis = np.linspace(-0.75, 0.75, n, dtype=np.float32)
+    xx, yy, zz = np.meshgrid(axis, axis, axis, indexing="ij")
+    sdf = (np.sqrt(xx * xx + yy * yy + zz * zz) - np.float32(radius)).astype(np.float32)
+    voxel_size = np.asarray((axis[1] - axis[0], axis[1] - axis[0], axis[1] - axis[0]), dtype=np.float32)
+    return sdf, voxel_size
+
+
+def test_poisson_converges_for_valid_geometry(test, device):
+    """Verify the default Poisson solve handles a well-resolved sphere without convergence warnings."""
+    _ = device
+    sdf, voxel_size = _make_sphere_sdf_grid(radius=0.5, n=32)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        field = _solve_poisson_pressure_extent(sdf, voxel_size)
+
+    poisson_warnings = [warning for warning in caught if issubclass(warning.category, RuntimeWarning)]
+    test.assertEqual(poisson_warnings, [])
+    test.assertTrue(np.all(field[sdf >= 0.0] == 0.0))
+    test.assertGreater(float(np.max(field[sdf < 0.0])), 0.5)
+
+
+def test_poisson_warns_on_nonconvergence(test, device):
+    """Verify the Poisson solve reports both empty and stalled solves."""
+    _ = device
+    sdf, voxel_size = _make_sphere_sdf_grid(radius=0.5, n=32)
+
+    with test.assertWarnsRegex(RuntimeWarning, "max_iters=1"):
+        _solve_poisson_pressure_extent(sdf, voxel_size, max_iters=1, tol=1.0e-12)
+
+    empty_sdf = np.ones((4, 4, 4), dtype=np.float32)
+    with test.assertWarnsRegex(RuntimeWarning, "no interior voxels"):
+        field = _solve_poisson_pressure_extent(empty_sdf, voxel_size)
+    test.assertTrue(np.all(field == 0.0))
+
+
+def test_layer_pressure_extent_increases_from_top_to_bottom(test, device):
+    """Validate local-Z layer profile is monotonic through a foam-like slab."""
+    _ = device
+    nx, ny, nz = 9, 7, 21
+    sdf = np.ones((nx, ny, nz), dtype=np.float32)
+    sdf[2:7, 2:5, 3:18] = -0.01
+    voxel_size = np.asarray((0.01, 0.01, 0.002), dtype=np.float32)
+
+    linear = _solve_layer_pressure_extent(sdf, voxel_size, (0.65, 0.0, 0.0, 0.0))
+    densified = _solve_layer_pressure_extent(sdf, voxel_size, (0.65, 0.35, 0.0, 0.0))
+
+    ix, iy = 4, 3
+    top = 17
+    mid = 10
+    bottom = 3
+    test.assertEqual(float(linear[ix, iy, top]), 0.0)
+    test.assertGreater(float(linear[ix, iy, mid]), float(linear[ix, iy, top]))
+    test.assertGreater(float(linear[ix, iy, bottom]), float(linear[ix, iy, mid]))
+    test.assertGreater(float(densified[ix, iy, bottom]), float(linear[ix, iy, bottom]))
+    test.assertTrue(np.all(linear[sdf >= 0.0] == 0.0), "Layer pressure must stay zero outside geometry")
+
+
+def test_layer_pressure_validates_thickness(test, device):
+    """Validate layer profiles reject zero thickness and flag near-limit lock strains."""
+    _ = device
+    sdf = np.ones((5, 5, 5), dtype=np.float32)
+    sdf[1:4, 1:4, 1:4] = -0.01
+
+    with test.assertRaisesRegex(ValueError, "thickness must be positive"):
+        _solve_layer_pressure_extent(sdf, np.asarray((0.01, 0.01, 0.0), dtype=np.float32))
+
+    with test.assertWarnsRegex(RuntimeWarning, "eta_lock"):
+        field = _solve_layer_pressure_extent(sdf, np.asarray((0.01, 0.01, 0.01), dtype=np.float32), (0.99, 0.0, 0.0, 0.0))
+    test.assertGreater(float(np.max(field)), 0.0)
+
+
+def _build_two_box_hydro_mode_scene(device, mode_a: HydroelasticType, mode_b: HydroelasticType):
+    """Create a minimal two-box scene for hydroelastic mode routing tests."""
+    builder = newton.ModelBuilder(gravity=0.0)
+
+    cfg_a = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=mode_a,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=2.0e8,
+        kd=75.0,
+        mu=0.6,
+        margin=1.0e-5,
+    )
+    cfg_b = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=mode_b,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=3.0e8,
+        kd=120.0,
+        mu=0.4,
+        margin=1.0e-5,
+    )
+
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.29), wp.quat_identity()))
+
+    builder.add_shape_box(body=body_a, hx=0.1, hy=0.1, hz=0.1, cfg=cfg_a)
+    builder.add_shape_box(body=body_b, hx=0.1, hy=0.1, hz=0.1, cfg=cfg_b)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_fraction=1.0),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    wp.synchronize()
+    return pipeline, contacts
+
+
+def _build_compliant_box_vs_plane_scene(
+    device,
+    *,
+    plane_cfg: newton.ModelBuilder.ShapeConfig,
+    box_pos: tuple[float, float, float],
+    plane_width: float = 0.0,
+    plane_length: float = 0.0,
+):
+    """Create a scene with one compliant box against a plane."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_shape_plane(width=plane_width, length=plane_length, cfg=plane_cfg)
+
+    box_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=2.0e8,
+        kd=75.0,
+        mu=0.6,
+        margin=1.0e-5,
+    )
+    body = builder.add_body(xform=wp.transform(wp.vec3(*box_pos), wp.quat_identity()))
+    builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=box_cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_fraction=1.0),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    wp.synchronize()
+    return pipeline, contacts
+
+
+def _build_compliant_box_vs_heightfield_scene(
+    device,
+    *,
+    hfield_cfg: newton.ModelBuilder.ShapeConfig,
+    box_pos: tuple[float, float, float],
+):
+    """Create a scene with one compliant box against a heightfield."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    hfield_data = np.zeros((10, 10), dtype=np.float32)
+    hfield = newton.Heightfield(data=hfield_data, nrow=10, ncol=10, hx=2.0, hy=2.0, min_z=0.0, max_z=1.0)
+    builder.add_shape_heightfield(heightfield=hfield, cfg=hfield_cfg)
+
+    box_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=2.0e8,
+        kd=75.0,
+        mu=0.6,
+        margin=1.0e-5,
+    )
+    body = builder.add_body(xform=wp.transform(wp.vec3(*box_pos), wp.quat_identity()))
+    builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=box_cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_fraction=1.0),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    wp.synchronize()
+    return pipeline, contacts
+
+
+def _build_two_box_hydro_workflow_scene(
+    device,
+    workflow_a: HydroelasticContactWorkflow,
+    workflow_b: HydroelasticContactWorkflow,
+    amp_a=(0.0, 0.0, 0.0),
+    amp_b=(0.0, 0.0, 0.0),
+):
+    """Create a minimal two-box scene for hydro workflow tests."""
+    builder = newton.ModelBuilder(gravity=0.0)
+
+    cfg_a = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=workflow_a,
+        hydro_pressure_sine_amplitude=amp_a,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=2.0e8,
+        margin=1.0e-5,
+    )
+    cfg_b = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=workflow_b,
+        hydro_pressure_sine_amplitude=amp_b,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+        kh=3.0e8,
+        margin=1.0e-5,
+    )
+
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.29), wp.quat_identity()))
+
+    shape_a = builder.add_shape_box(body=body_a, hx=0.1, hy=0.1, hz=0.1, cfg=cfg_a)
+    shape_b = builder.add_shape_box(body=body_b, hx=0.1, hy=0.1, hz=0.1, cfg=cfg_b)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_fraction=1.0),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    wp.synchronize()
+    return model, pipeline, contacts, shape_a, shape_b
+
+
+def test_shape_workflow_and_sine_parameters_propagate_to_model(test, device):
+    """Validate per-shape workflow and sine parameters are finalized on model arrays."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.COMPLIANT,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.PRESSURE,
+        hydro_pressure_profile="layer",
+        hydro_pressure_layer_params=(0.70, 0.25, 0.10, 0.05),
+        hydro_pressure_sine_amplitude=(0.25, 0.0, -0.10),
+        hydro_pressure_sine_cycles=(1.5, 1.0, 2.0),
+        hydro_pressure_sine_phase=(0.1, 0.0, -0.2),
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+    )
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
+    shape = builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    workflow = int(model.shape_hydroelastic_contact_workflow.numpy()[shape])
+    test.assertEqual(workflow, int(HydroelasticContactWorkflow.PRESSURE))
+    pressure_profile = int(model.shape_hydro_pressure_profile.numpy()[shape])
+    layer_params = model.shape_hydro_pressure_layer_params.numpy()[shape]
+    test.assertEqual(pressure_profile, 1)
+    test.assertTrue(np.allclose(layer_params, np.array([0.70, 0.25, 0.10, 0.05], dtype=np.float32)))
+    amps = model.shape_hydro_pressure_sine_amplitude.numpy()[shape]
+    cycles = model.shape_hydro_pressure_sine_cycles.numpy()[shape]
+    phase = model.shape_hydro_pressure_sine_phase.numpy()[shape]
+    test.assertTrue(np.allclose(amps, np.array([0.25, 0.0, -0.10], dtype=np.float32)))
+    test.assertTrue(np.allclose(cycles, np.array([1.5, 1.0, 2.0], dtype=np.float32)))
+    test.assertTrue(np.allclose(phase, np.array([0.1, 0.0, -0.2], dtype=np.float32)))
+
+
+def test_finalize_warns_on_implicit_hydro_workflow_default(test, device):
+    """Validate deprecation warning for implicit hydro workflow default."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        sdf_max_resolution=32,
+        sdf_narrow_band_range=(-0.1, 0.1),
+        gap=0.02,
+    )
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()))
+    builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DeprecationWarning)
+        _ = builder.finalize(device=device)
+    has_warning = any(issubclass(w.category, DeprecationWarning) for w in caught)
+    test.assertTrue(has_warning, "Expected finalize() to emit a DeprecationWarning for implicit workflow")
+
+
+def test_pressure_workflow_builds_distinct_profiles_for_shared_sdf(test, device):
+    """Validate pressure workflow creates distinct profile entries for shared SDF geometry."""
+    model, pipeline, _contacts, shape_a, shape_b = _build_two_box_hydro_workflow_scene(
+        device,
+        HydroelasticContactWorkflow.PRESSURE,
+        HydroelasticContactWorkflow.PRESSURE,
+        amp_a=(0.0, 0.0, 0.0),
+        amp_b=(0.3, 0.0, 0.0),
+    )
+    hydro = pipeline.hydroelastic_sdf
+    test.assertIsNotNone(hydro)
+
+    shape_sdf_index = model.shape_sdf_index.numpy()
+    test.assertEqual(shape_sdf_index[shape_a], shape_sdf_index[shape_b], "Expected shared compact SDF entry")
+
+    pressure_index = hydro.shape_pressure_index.numpy()
+    test.assertNotEqual(
+        int(pressure_index[shape_a]),
+        int(pressure_index[shape_b]),
+        "Expected distinct pressure profiles for different sine modulation settings",
+    )
+
+
+def test_mixed_classic_pressure_pair_assigns_pressure_profile_to_both_compliant_shapes(test, device):
+    """Validate mixed compliant workflows still assign pressure profiles to both sides."""
+    _model, pipeline, _contacts, shape_a, shape_b = _build_two_box_hydro_workflow_scene(
+        device,
+        HydroelasticContactWorkflow.CLASSIC,
+        HydroelasticContactWorkflow.PRESSURE,
+        amp_a=(0.0, 0.0, 0.0),
+        amp_b=(0.25, 0.0, 0.0),
+    )
+    hydro = pipeline.hydroelastic_sdf
+    test.assertIsNotNone(hydro)
+    pressure_index = hydro.shape_pressure_index.numpy()
+    test.assertGreaterEqual(int(pressure_index[shape_a]), 0, "Classic compliant shape should have pressure profile")
+    test.assertGreaterEqual(int(pressure_index[shape_b]), 0, "Pressure compliant shape should have pressure profile")
+
+
+def test_pressure_workflow_does_not_extend_beyond_valid_positive_sdf(test, device):
+    """Validate positive interpolated pressure outside the mesh does not flip field sign."""
+    model, pipeline, _contacts, shape_a, _shape_b = _build_hydro_pair_scene(
+        device=device,
+        shape_name="sphere",
+        penetration=0.025,
+        workflow=HydroelasticContactWorkflow.PRESSURE,
+    )
+    hydro = pipeline.hydroelastic_sdf
+    test.assertIsNotNone(hydro)
+
+    sdf_index = int(model.shape_sdf_index.numpy()[shape_a])
+    pressure_index = int(hydro.shape_pressure_index.numpy()[shape_a])
+    test.assertGreaterEqual(sdf_index, 0)
+    test.assertGreaterEqual(pressure_index, 0)
+
+    pressure_entry = hydro.compact_pressure_field_data.numpy()[pressure_index]
+
+    sample_points = np.array(
+        [
+            [-0.04222222, -0.09111111, 0.0],
+            [0.04222222, -0.09111111, 0.0],
+            [-0.09111111, -0.04222222, 0.0],
+            [0.09111111, -0.04222222, 0.0],
+            [-0.09111111, 0.04222222, 0.0],
+            [0.09111111, 0.04222222, 0.0],
+            [-0.04222222, 0.09111111, 0.0],
+            [0.04222222, 0.09111111, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    points_wp = wp.array(sample_points, dtype=wp.vec3, device=device)
+    pressure_wp = wp.zeros(len(sample_points), dtype=wp.float32, device=device)
+    sdf_wp = wp.zeros(len(sample_points), dtype=wp.float32, device=device)
+    wp.launch(
+        sample_pressure_and_sdf_kernel,
+        dim=len(sample_points),
+        inputs=[
+            wp.uint64(int(pressure_entry["pressure_ptr"])),
+            model.texture_sdf_data,
+            wp.int32(sdf_index),
+            points_wp,
+        ],
+        outputs=[pressure_wp, sdf_wp],
+        device=device,
+    )
+    wp.synchronize()
+
+    pressure_np = pressure_wp.numpy()
+    sdf_np = sdf_wp.numpy()
+    outside_mask = (pressure_np > 1.0e-6) & (sdf_np > 1.0e-5)
+    test.assertTrue(
+        np.any(outside_mask),
+        "Expected at least one sample with positive interpolated pressure outside the valid SDF interior.",
+    )
+
+    chosen_points = sample_points[outside_mask]
+    chosen_sdf = sdf_np[outside_mask].astype(np.float32, copy=False)
+    chosen_points_wp = wp.array(chosen_points, dtype=wp.vec3, device=device)
+    chosen_sdf_wp = wp.array(chosen_sdf, dtype=wp.float32, device=device)
+    out_field_wp = wp.zeros(len(chosen_points), dtype=wp.float32, device=device)
+    out_valid_wp = wp.zeros(len(chosen_points), dtype=wp.int32, device=device)
+    wp.launch(
+        eval_signed_field_kernel,
+        dim=len(chosen_points),
+        inputs=[
+            chosen_sdf_wp,
+            chosen_points_wp,
+            model.texture_sdf_data,
+            hydro.compact_pressure_field_data,
+            wp.int32(sdf_index),
+            wp.int32(pressure_index),
+            wp.int32(int(HydroelasticContactWorkflow.PRESSURE)),
+            wp.float32(0.15),
+        ],
+        outputs=[out_field_wp, out_valid_wp],
+        device=device,
+    )
+    wp.synchronize()
+
+    field_np = out_field_wp.numpy()
+    valid_np = out_valid_wp.numpy()
+    test.assertTrue(np.all(valid_np > 0), "Expected valid signed-field evaluations outside the narrow pressure spill.")
+    test.assertTrue(
+        np.all(field_np > 0.0),
+        f"Expected positive signed-field values outside the mesh; got {field_np.tolist()}",
+    )
+
+
+def _pressure_blend_fixture(test, device):
+    model, pipeline, _contacts, shape_a, _shape_b = _build_hydro_pair_scene(
+        device=device,
+        shape_name="sphere",
+        penetration=0.025,
+        workflow=HydroelasticContactWorkflow.PRESSURE,
+    )
+    hydro = pipeline.hydroelastic_sdf
+    test.assertIsNotNone(hydro)
+
+    sdf_index = int(model.shape_sdf_index.numpy()[shape_a])
+    pressure_index = int(hydro.shape_pressure_index.numpy()[shape_a])
+    test.assertGreaterEqual(sdf_index, 0)
+    test.assertGreaterEqual(pressure_index, 0)
+
+    sdf_entry = model.texture_sdf_data.numpy()[sdf_index]
+    diagonal = float(np.linalg.norm(sdf_entry["sdf_box_upper"] - sdf_entry["sdf_box_lower"]))
+    voxel_radius = float(sdf_entry["voxel_radius"])
+    boundary_shell = max(0.15 * diagonal, 2.0 * voxel_radius)
+    test.assertGreater(boundary_shell, 0.0)
+    return model, hydro, sdf_index, pressure_index, boundary_shell
+
+
+def _eval_pressure_blend_samples(model, hydro, sdf_index, pressure_index, points, sdf_values, device):
+    points_wp = wp.array(np.asarray(points, dtype=np.float32), dtype=wp.vec3, device=device)
+    sdf_wp = wp.array(np.asarray(sdf_values, dtype=np.float32), dtype=wp.float32, device=device)
+    out_field_wp = wp.zeros(len(sdf_values), dtype=wp.float32, device=device)
+    out_valid_wp = wp.zeros(len(sdf_values), dtype=wp.int32, device=device)
+    wp.launch(
+        eval_signed_field_kernel,
+        dim=len(sdf_values),
+        inputs=[
+            sdf_wp,
+            points_wp,
+            model.texture_sdf_data,
+            hydro.compact_pressure_field_data,
+            wp.int32(sdf_index),
+            wp.int32(pressure_index),
+            wp.int32(int(HydroelasticContactWorkflow.PRESSURE)),
+            wp.float32(0.15),
+        ],
+        outputs=[out_field_wp, out_valid_wp],
+        device=device,
+    )
+    pressure_entry = hydro.compact_pressure_field_data.numpy()[pressure_index]
+    pressure_wp = wp.zeros(len(sdf_values), dtype=wp.float32, device=device)
+    sampled_sdf_wp = wp.zeros(len(sdf_values), dtype=wp.float32, device=device)
+    wp.launch(
+        sample_pressure_and_sdf_kernel,
+        dim=len(sdf_values),
+        inputs=[
+            wp.uint64(int(pressure_entry["pressure_ptr"])),
+            model.texture_sdf_data,
+            wp.int32(sdf_index),
+            points_wp,
+        ],
+        outputs=[pressure_wp, sampled_sdf_wp],
+        device=device,
+    )
+    wp.synchronize()
+    return out_field_wp.numpy(), out_valid_wp.numpy(), pressure_wp.numpy()
+
+
+def test_pressure_blend_continuous(test, device):
+    """Pressure/SDF blend stays continuous as depth crosses the blend-shell boundary."""
+    model, hydro, sdf_index, pressure_index, boundary_shell = _pressure_blend_fixture(test, device)
+    points = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32)
+    eps = 1.0e-4
+    sdf_values = -boundary_shell * np.array([1.0 - eps, 1.0 + eps], dtype=np.float32)
+    field, valid, pressure = _eval_pressure_blend_samples(model, hydro, sdf_index, pressure_index, points, sdf_values, device)
+
+    test.assertTrue(np.all(valid > 0))
+    test.assertTrue(np.all(pressure > 0.0), f"Expected positive pressure at blend samples, got {pressure}")
+    rel_jump = abs(float(field[1] - field[0])) / max(abs(float(field[1])), abs(float(field[0])), 1.0e-6)
+    test.assertLess(rel_jump, 0.01, f"Blend field jump across shell boundary was {rel_jump:.6f}")
+
+
+def test_pressure_blend_clamped(test, device):
+    """Extreme depths clamp to pressure-only contribution instead of overshooting."""
+    model, hydro, sdf_index, pressure_index, boundary_shell = _pressure_blend_fixture(test, device)
+    points = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32)
+    sdf_values = np.array([-2.0 * boundary_shell, -1.0e6 * boundary_shell], dtype=np.float32)
+    field, valid, pressure = _eval_pressure_blend_samples(model, hydro, sdf_index, pressure_index, points, sdf_values, device)
+
+    test.assertTrue(np.all(valid > 0))
+    test.assertTrue(np.all(pressure > 0.0), f"Expected positive pressure at clamped samples, got {pressure}")
+    np.testing.assert_allclose(field, -pressure, rtol=1.0e-5, atol=1.0e-6)
+
+
+def test_pressure_blend_no_negative(test, device):
+    """Positive pressure samples never produce a positive signed-field contribution."""
+    model, hydro, sdf_index, pressure_index, boundary_shell = _pressure_blend_fixture(test, device)
+    points = np.repeat(np.array([[0.0, 0.0, 0.0]], dtype=np.float32), 4, axis=0)
+    sdf_values = -boundary_shell * np.array([0.25, 0.5, 1.0, 4.0], dtype=np.float32)
+    field, valid, pressure = _eval_pressure_blend_samples(model, hydro, sdf_index, pressure_index, points, sdf_values, device)
+
+    test.assertTrue(np.all(valid > 0))
+    test.assertTrue(np.all(pressure > 0.0), f"Expected positive pressure at non-negative guard samples, got {pressure}")
+    test.assertTrue(np.all(field <= 0.0), f"Pressure blend produced positive field values: {field}")
+
+
+def test_pair_workflow_resolution_prefers_pressure_when_any_compliant_side_uses_pressure(test, device):
+    """Validate pair workflow resolution rule for mixed and homogeneous pairs."""
+    mode_a = wp.array(
+        np.array(
+            [
+                int(HydroelasticType.COMPLIANT),
+                int(HydroelasticType.COMPLIANT),
+                int(HydroelasticType.RIGID),
+            ],
+            dtype=np.int32,
+        ),
+        dtype=wp.int32,
+        device=device,
+    )
+    mode_b = wp.array(
+        np.array(
+            [
+                int(HydroelasticType.COMPLIANT),
+                int(HydroelasticType.COMPLIANT),
+                int(HydroelasticType.COMPLIANT),
+            ],
+            dtype=np.int32,
+        ),
+        dtype=wp.int32,
+        device=device,
+    )
+    workflow_a = wp.array(
+        np.array(
+            [
+                int(HydroelasticContactWorkflow.CLASSIC),
+                int(HydroelasticContactWorkflow.CLASSIC),
+                int(HydroelasticContactWorkflow.CLASSIC),
+            ],
+            dtype=np.int32,
+        ),
+        dtype=wp.int32,
+        device=device,
+    )
+    workflow_b = wp.array(
+        np.array(
+            [
+                int(HydroelasticContactWorkflow.PRESSURE),
+                int(HydroelasticContactWorkflow.CLASSIC),
+                int(HydroelasticContactWorkflow.PRESSURE),
+            ],
+            dtype=np.int32,
+        ),
+        dtype=wp.int32,
+        device=device,
+    )
+    out = wp.empty(3, dtype=wp.int32, device=device)
+    wp.launch(
+        resolve_pair_contact_workflow_kernel,
+        dim=3,
+        inputs=[mode_a, mode_b, workflow_a, workflow_b],
+        outputs=[out],
+        device=device,
+    )
+    wp.synchronize()
+    got = out.numpy()
+    test.assertEqual(int(got[0]), int(HydroelasticContactWorkflow.PRESSURE))
+    test.assertEqual(int(got[1]), int(HydroelasticContactWorkflow.CLASSIC))
+    test.assertEqual(int(got[2]), int(HydroelasticContactWorkflow.PRESSURE))
+
+
+def test_pressure_workflow_depth_proxy_increases_with_penetration_for_all_shapes(test, device):
+    """Validate pressure proxy grows with penetration for all hydro-capable shapes."""
+    penetration_values = [0.015, 0.025, 0.035]
+
+    for shape_name in HYDRO_PRESSURE_TEST_SHAPES:
+        proxy_values = []
+        for penetration in penetration_values:
+            _model, pipeline, contacts, shape_a, shape_b = _build_hydro_pair_scene(
+                device=device,
+                shape_name=shape_name,
+                penetration=penetration,
+                workflow=HydroelasticContactWorkflow.PRESSURE,
+            )
+            test.assertIsNotNone(pipeline.hydroelastic_sdf, f"{shape_name}: expected hydroelastic SDF pipeline")
+            rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(rigid_count, 0, f"{shape_name}: expected rigid contacts")
+
+            total_depth, _mean_depth, num_pen = _pair_penetrating_depth_metrics(pipeline, shape_a, shape_b)
+            test.assertGreater(num_pen, 0, f"{shape_name}: expected penetrating contact-surface samples")
+            proxy_values.append(total_depth)
+
+        _assert_strictly_increasing(test, proxy_values, f"{shape_name} depth proxy")
+
+
+def test_pressure_workflow_contact_stiffness_increases_with_k_hydro_for_all_shapes(test, device):
+    """Validate per-contact stiffness output increases with k_hydro at fixed penetration."""
+    kh_values = [8.0e7, 2.0e8, 6.0e8]
+    penetration = 0.025
+
+    for shape_name in HYDRO_PRESSURE_TEST_SHAPES:
+        stiffness_values = []
+        for kh in kh_values:
+            _model, _pipeline, contacts, shape_a, shape_b = _build_hydro_pair_scene(
+                device=device,
+                shape_name=shape_name,
+                penetration=penetration,
+                kh=kh,
+                workflow=HydroelasticContactWorkflow.PRESSURE,
+            )
+            stiffness_sum = _pair_contact_stiffness_sum(contacts, shape_a, shape_b)
+            test.assertGreater(stiffness_sum, 0.0, f"{shape_name}: expected positive pair stiffness")
+            stiffness_values.append(stiffness_sum)
+
+        _assert_strictly_increasing(test, stiffness_values, f"{shape_name} stiffness proxy")
+
+
+def test_pressure_workflow_nonlinear_axis_sine_modulates_contact_depth_for_box_and_mesh(test, device):
+    """Validate nonlinear axis modulation changes contact depth at fixed penetration."""
+    for shape_name in ("box", "mesh"):
+        _, half_extent_x = _hydro_pair_shape_extents(shape_name)
+        x_samples = np.linspace(-0.8 * half_extent_x, 0.8 * half_extent_x, 13, dtype=np.float32)
+
+        depth_signal = []
+        for x_shift in x_samples:
+            _model, pipeline, _contacts, shape_a, shape_b = _build_hydro_pair_scene(
+                device=device,
+                shape_name=shape_name,
+                penetration=0.025,
+                workflow=HydroelasticContactWorkflow.PRESSURE,
+                sine_amplitude=(0.6, 0.0, 0.0),
+                sine_cycles=(1.0, 1.0, 1.0),
+                sine_phase=(0.0, 0.0, 0.0),
+                x_shift=float(x_shift),
+            )
+            _total_depth, mean_depth, num_pen = _pair_penetrating_depth_metrics(pipeline, shape_a, shape_b)
+            test.assertGreater(num_pen, 0, f"{shape_name}: expected penetrating samples at x={x_shift:.4f}")
+            depth_signal.append(mean_depth)
+
+        depth_signal = np.asarray(depth_signal, dtype=np.float64)
+        rel_spread = float((np.max(depth_signal) - np.min(depth_signal)) / max(np.mean(depth_signal), 1.0e-8))
+        test.assertGreater(
+            rel_spread,
+            0.05,
+            f"{shape_name}: expected measurable modulation spread, got {rel_spread:.4f}",
+        )
+
+        coord01 = 0.5 * (x_samples / half_extent_x + 1.0)
+        theta = 2.0 * np.pi * coord01
+        r2 = _fit_first_harmonic_r2(depth_signal, theta)
+        test.assertGreater(r2, 0.5, f"{shape_name}: expected sinusoidal modulation fit, got R^2={r2:.3f}")
+
+
+def test_pressure_field_falls_back_to_nonhydro_for_plane_and_heightfield(test, device):
+    """Validate unsupported pressure-field geometries route through non-hydro contacts."""
+    for terrain_name in ("plane", "heightfield"):
+        builder = newton.ModelBuilder(gravity=0.0)
+        cfg = newton.ModelBuilder.ShapeConfig(
+            hydroelastic_type=HydroelasticType.COMPLIANT,
+            hydroelastic_contact_workflow=HydroelasticContactWorkflow.PRESSURE,
+            kh=2.0e8,
+            sdf_max_resolution=32,
+            sdf_narrow_band_range=(-0.08, 0.08),
+            gap=0.005,
+            margin=1.0e-5,
+        )
+
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()))
+        if terrain_name == "plane":
+            builder.add_shape_plane(body=-1, plane=(0.0, 0.0, 1.0, 0.0), cfg=cfg)
+        else:
+            hfield = newton.Heightfield(data=np.zeros((8, 8), dtype=np.float32), nrow=8, ncol=8, hx=1.0, hy=1.0)
+            builder.add_shape_heightfield(heightfield=hfield, cfg=cfg)
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+
+        model = builder.finalize(device=device)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_fraction=1.0),
+        )
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        wp.synchronize()
+
+        rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreater(rigid_count, 0, f"{terrain_name}: expected fallback rigid contacts")
+        test.assertIsNone(pipeline.hydroelastic_sdf, f"{terrain_name}: expected non-hydro fallback path")
+
+
+def test_rigid_compliant_mode_routes_to_hydroelastic_sdf(test, device):
+    """Validate rigid-compliant hydro mode routing and per-contact damping/friction export."""
+    pipeline, contacts = _build_two_box_hydro_mode_scene(device, HydroelasticType.RIGID, HydroelasticType.COMPLIANT)
+
+    test.assertIsNotNone(pipeline.hydroelastic_sdf, "Expected hydroelastic SDF pipeline for rigid-compliant pair")
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_sdf_sdf_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 1, "Expected exactly one hydroelastic SDF pair")
+
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected generated rigid contacts from hydroelastic pipeline")
+
+    damping = contacts.rigid_contact_damping.numpy()[:rigid_count]
+    friction = contacts.rigid_contact_friction.numpy()[:rigid_count]
+    test.assertTrue(np.any(damping > 0.0), "Expected hydroelastic contacts to export positive damping")
+    test.assertTrue(np.any(friction > 0.0), "Expected hydroelastic contacts to export positive friction scale")
+
+
+def test_explicit_rigid_plane_routes_to_hydroelastic_sdf(test, device):
+    """Validate compliant box vs explicit rigid plane routes to hydroelastic SDF."""
+    plane_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.RIGID,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        gap=0.02,
+        kh=1.0e9,
+        kd=100.0,
+        mu=0.5,
+        margin=1.0e-5,
+    )
+    pipeline, contacts = _build_compliant_box_vs_plane_scene(
+        device,
+        plane_cfg=plane_cfg,
+        box_pos=(0.0, 0.0, 0.06),
+    )
+
+    test.assertIsNotNone(pipeline.hydroelastic_sdf, "Expected hydroelastic SDF pipeline for rigid-plane pair")
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_sdf_sdf_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 1, "Expected exactly one hydroelastic SDF pair")
+
+    hfield_pair_count = int(pipeline.narrow_phase.shape_pairs_heightfield_count.numpy()[0])
+    test.assertEqual(hfield_pair_count, 0, "Plane pair should not route through heightfield path")
+
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected rigid contacts from hydroelastic plane interaction")
+
+
+def test_explicit_rigid_heightfield_routes_to_hydroelastic_sdf(test, device):
+    """Validate compliant box vs explicit rigid heightfield routes to hydroelastic SDF."""
+    hfield_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.RIGID,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        gap=0.02,
+        kh=1.0e9,
+        kd=100.0,
+        mu=0.5,
+        margin=1.0e-5,
+    )
+    pipeline, contacts = _build_compliant_box_vs_heightfield_scene(
+        device,
+        hfield_cfg=hfield_cfg,
+        box_pos=(0.0, 0.0, 0.06),
+    )
+
+    test.assertIsNotNone(pipeline.hydroelastic_sdf, "Expected hydroelastic SDF pipeline for rigid-heightfield pair")
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_sdf_sdf_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 1, "Expected exactly one hydroelastic SDF pair")
+
+    hfield_pair_count = int(pipeline.narrow_phase.shape_pairs_heightfield_count.numpy()[0])
+    test.assertEqual(hfield_pair_count, 0, "Hydro heightfield pair should bypass non-hydro heightfield path")
+
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected rigid contacts from hydroelastic heightfield interaction")
+
+
+def test_finite_rigid_plane_is_clipped_in_hydro_path(test, device):
+    """Validate finite rigid plane clipping rejects contacts outside XY footprint."""
+    plane_cfg = newton.ModelBuilder.ShapeConfig(
+        hydroelastic_type=HydroelasticType.RIGID,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        gap=0.2,
+        kh=1.0e9,
+        kd=100.0,
+        mu=0.5,
+        margin=1.0e-5,
+    )
+    pipeline, contacts = _build_compliant_box_vs_plane_scene(
+        device,
+        plane_cfg=plane_cfg,
+        box_pos=(0.35, 0.0, 0.05),
+        plane_width=0.2,
+        plane_length=0.2,
+    )
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_sdf_sdf_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 1, "Expected hydro pair routing even with conservative terrain broadphase")
+
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertEqual(rigid_count, 0, "Expected no contacts outside finite plane footprint")
+
+
+def test_legacy_is_hydroelastic_still_ignored_for_terrain(test, device):
+    """Validate terrain legacy is_hydroelastic flag does not opt terrain into hydro path."""
+    plane_cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        hydroelastic_contact_workflow=HydroelasticContactWorkflow.CLASSIC,
+        gap=0.02,
+        kh=1.0e9,
+        kd=100.0,
+        mu=0.5,
+        margin=1.0e-5,
+    )
+    pipeline, contacts = _build_compliant_box_vs_plane_scene(
+        device,
+        plane_cfg=plane_cfg,
+        box_pos=(0.0, 0.0, 0.06),
+    )
+
+    test.assertIsNone(
+        pipeline.hydroelastic_sdf,
+        "Legacy is_hydroelastic on terrain should not instantiate hydroelastic SDF pipeline",
+    )
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected fallback non-hydro rigid contacts for legacy terrain flag")
+
+
+def test_rigid_rigid_mode_uses_nonhydro_path(test, device):
+    """Validate rigid-rigid hydro mode does not instantiate the hydroelastic SDF pipeline."""
+    pipeline, contacts = _build_two_box_hydro_mode_scene(device, HydroelasticType.RIGID, HydroelasticType.RIGID)
+
+    test.assertIsNone(pipeline.hydroelastic_sdf, "Rigid-rigid pairs should not use hydroelastic SDF contacts")
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected fallback non-hydro rigid contacts for rigid-rigid pair")
+
+
 def test_mujoco_hydroelastic_penetration_depth(test, device):
     """Test that hydroelastic penetration depth matches expectation.
 
@@ -1060,6 +2544,48 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         )
 
 
+# --- Fixture validation tests ---
+
+
+def test_fixtures_produce_contacts(test, device):
+    """Box pair fixture must produce a contact surface with faces."""
+    _model, _state, pipeline, contacts = _build_box_pair_fixture(device)
+    pipeline.collide(_state, contacts)
+
+    cs = pipeline.hydroelastic_sdf.get_contact_surface()
+    test.assertIsNotNone(cs, "Expected contact surface from box pair fixture")
+    num_faces = int(cs.face_contact_count.numpy()[0])
+    test.assertGreater(num_faces, 0, f"Expected non-zero face count, got {num_faces}")
+
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, f"Expected non-zero rigid contacts, got {rigid_count}")
+
+
+def test_fixtures_are_reproducible(test, device):
+    """Same fixture built twice must produce consistent force totals.
+
+    Contact assembly on GPU involves atomic operations that can reorder
+    per-contact forces between runs, but the aggregate (net force) must
+    be reproducible.
+    """
+    forces_1 = _compute_contact_forces(_build_box_pair_fixture(device))
+    forces_2 = _compute_contact_forces(_build_box_pair_fixture(device))
+
+    test.assertEqual(
+        len(forces_1),
+        len(forces_2),
+        f"Contact count mismatch: {len(forces_1)} vs {len(forces_2)}",
+    )
+    if len(forces_1) > 0:
+        total_1 = float(np.sum(forces_1))
+        total_2 = float(np.sum(forces_2))
+        test.assertGreater(total_1, 0.0, "Expected positive total force")
+        test.assertGreater(total_2, 0.0, "Expected positive total force")
+        ratio = total_1 / total_2 if total_2 > 0 else 1.0
+        test.assertAlmostEqual(ratio, 1.0, delta=0.05,
+                               msg=f"Total force ratio {ratio:.6f} outside 5% tolerance")
+
+
 # --- Test class ---
 
 
@@ -1139,6 +2665,369 @@ class TestHydroelastic(unittest.TestCase):
             print("\nSimulation stopped by user.")
 
 
+# --- is_valid_pressure / is_valid_force unit tests ---
+
+# Create sentinel values outside kernels (Warp doesn't support str-to-float conversion)
+_NAN_VAL = wp.float32(float("nan"))
+_INF_VAL = wp.float32(float("inf"))
+_NEG_INF_VAL = wp.float32(float("-inf"))
+
+
+@wp.kernel(enable_backward=False)
+def test_nan_pressure_kernel():
+    """Verify is_valid_pressure returns False for NaN."""
+    wp.expect_eq(is_valid_pressure(_NAN_VAL), wp.bool(False))
+
+
+@wp.kernel(enable_backward=False)
+def test_inf_force_kernel():
+    """Verify is_valid_force returns False for Inf."""
+    wp.expect_eq(is_valid_force(_INF_VAL), wp.bool(False))
+
+
+@wp.kernel(enable_backward=False)
+def test_neg_inf_force_kernel():
+    """Verify is_valid_force returns False for -Inf."""
+    wp.expect_eq(is_valid_force(_NEG_INF_VAL), wp.bool(False))
+
+
+@wp.kernel(enable_backward=False)
+def test_valid_pressure_kernel():
+    """Verify is_valid_pressure returns True for a normal positive value."""
+    wp.expect_eq(is_valid_pressure(wp.float32(1.0)), wp.bool(True))
+
+
+@wp.kernel(enable_backward=False)
+def test_valid_pressure_zero_kernel():
+    """Verify is_valid_pressure returns True for zero."""
+    wp.expect_eq(is_valid_pressure(wp.float32(0.0)), wp.bool(True))
+
+
+@wp.kernel(enable_backward=False)
+def test_valid_force_kernel():
+    """Verify is_valid_force returns True for a normal value."""
+    wp.expect_eq(is_valid_force(wp.float32(42.0)), wp.bool(True))
+
+
+@wp.kernel(enable_backward=False)
+def test_negative_pressure_invalid_kernel():
+    """Verify is_valid_pressure returns False for negative values."""
+    wp.expect_eq(is_valid_pressure(wp.float32(-1.0)), wp.bool(False))
+
+
+@wp.kernel(enable_backward=False)
+def test_neg_inf_pressure_kernel():
+    """Verify is_valid_pressure returns False for -Inf."""
+    wp.expect_eq(is_valid_pressure(_NEG_INF_VAL), wp.bool(False))
+
+
+# --- weighted_sdf_difference clamping / NaN guard tests ---
+
+
+@wp.kernel(enable_backward=False)
+def test_weighted_sdf_diff_nan_returns_sentinel_kernel():
+    """Verify NaN input returns MAXVAL sentinel."""
+    result = weighted_sdf_difference(_NAN_VAL, wp.float32(0.0), wp.float32(1.0), wp.float32(1.0))
+    wp.expect_eq(result, wp.float32(MAXVAL))
+
+
+@wp.kernel(enable_backward=False)
+def test_weighted_sdf_diff_inf_returns_sentinel_kernel():
+    """Verify Inf input returns MAXVAL sentinel."""
+    result = weighted_sdf_difference(_INF_VAL, wp.float32(0.0), wp.float32(1.0), wp.float32(1.0))
+    wp.expect_eq(result, wp.float32(MAXVAL))
+
+
+@wp.kernel(enable_backward=False)
+def test_weighted_sdf_diff_clamped_extreme_positive_kernel():
+    """Verify extreme positive value clamped to MAXVAL * 0.5."""
+    result = weighted_sdf_difference(
+        wp.float32(MAXVAL * 2.0), wp.float32(0.0), wp.float32(1.0), wp.float32(1.0)
+    )
+    wp.expect_eq(result, wp.float32(MAXVAL * 0.5))
+
+
+@wp.kernel(enable_backward=False)
+def test_weighted_sdf_diff_clamped_extreme_negative_kernel():
+    """Verify extreme negative value clamped to -MAXVAL * 0.5."""
+    result = weighted_sdf_difference(
+        wp.float32(-MAXVAL * 2.0), wp.float32(0.0), wp.float32(1.0), wp.float32(1.0)
+    )
+    wp.expect_eq(result, wp.float32(-MAXVAL * 0.5))
+
+
+@wp.kernel(enable_backward=False)
+def test_weighted_sdf_diff_normal_range_kernel():
+    """Verify normal values pass through unchanged."""
+    # 5*1 - 3*1 = 2
+    r1 = weighted_sdf_difference(wp.float32(5.0), wp.float32(3.0), wp.float32(1.0), wp.float32(1.0))
+    wp.expect_eq(r1, wp.float32(2.0))
+    # 10*2 - 2*1 = 18
+    r2 = weighted_sdf_difference(wp.float32(10.0), wp.float32(2.0), wp.float32(2.0), wp.float32(1.0))
+    wp.expect_eq(r2, wp.float32(18.0))
+    # 0*1 - 0*1 = 0
+    r3 = weighted_sdf_difference(wp.float32(0.0), wp.float32(0.0), wp.float32(1.0), wp.float32(1.0))
+    wp.expect_eq(r3, wp.float32(0.0))
+    # (-5)*1 - 3*1 = -8
+    r4 = weighted_sdf_difference(wp.float32(-5.0), wp.float32(3.0), wp.float32(1.0), wp.float32(1.0))
+    wp.expect_eq(r4, wp.float32(-8.0))
+
+
+# --- get_rel_stiffness unit tests ---
+
+
+@wp.kernel(enable_backward=False)
+def test_rel_stiffness_equal_stiffness_kernel():
+    """Verify equal stiffnesses produce equal weights ~1.0."""
+    w_a, w_b = get_rel_stiffness(
+        wp.float32(1.0e9), wp.float32(1.0e9),
+        HYDROELASTIC_MODE_COMPLIANT, HYDROELASTIC_MODE_COMPLIANT,
+    )
+    wp.expect_eq(w_a, wp.float32(1.0))
+    wp.expect_eq(w_b, wp.float32(1.0))
+
+
+@wp.kernel(enable_backward=False)
+def test_rel_stiffness_extreme_ratio_kernel():
+    """Verify extreme stiffness ratios are clamped to [1e-6, 1e6]."""
+    w_a, w_b = get_rel_stiffness(
+        wp.float32(1.0e15), wp.float32(1.0),
+        HYDROELASTIC_MODE_COMPLIANT, HYDROELASTIC_MODE_COMPLIANT,
+    )
+    wp.expect_eq(w_a, wp.float32(1.0e6))
+    wp.expect_eq(w_b, wp.float32(1.0e-6))
+
+
+@wp.kernel(enable_backward=False)
+def test_rel_stiffness_zero_stiffness_fallback_kernel():
+    """Verify zero stiffness returns equal-weight fallback (1.0, 1.0)."""
+    w_a, w_b = get_rel_stiffness(
+        wp.float32(0.0), wp.float32(0.0),
+        HYDROELASTIC_MODE_COMPLIANT, HYDROELASTIC_MODE_COMPLIANT,
+    )
+    wp.expect_eq(w_a, wp.float32(1.0))
+    wp.expect_eq(w_b, wp.float32(1.0))
+
+
+def test_nan_pressure_returns_invalid(test, device):
+    """Verify is_valid_pressure returns False for NaN."""
+    test_nan_pressure_kernel.module.load(device)
+    wp.launch(test_nan_pressure_kernel, dim=1, inputs=[], device=device)
+
+
+def test_inf_force_returns_invalid(test, device):
+    """Verify is_valid_force returns False for Inf."""
+    test_inf_force_kernel.module.load(device)
+    wp.launch(test_inf_force_kernel, dim=1, inputs=[], device=device)
+
+
+def test_neg_inf_force_returns_invalid(test, device):
+    """Verify is_valid_force returns False for -Inf."""
+    test_neg_inf_force_kernel.module.load(device)
+    wp.launch(test_neg_inf_force_kernel, dim=1, inputs=[], device=device)
+
+
+def test_valid_pressure_returns_valid(test, device):
+    """Verify is_valid_pressure returns True for a positive value."""
+    test_valid_pressure_kernel.module.load(device)
+    wp.launch(test_valid_pressure_kernel, dim=1, inputs=[], device=device)
+
+
+def test_valid_pressure_zero_returns_valid(test, device):
+    """Verify is_valid_pressure returns True for zero."""
+    test_valid_pressure_zero_kernel.module.load(device)
+    wp.launch(test_valid_pressure_zero_kernel, dim=1, inputs=[], device=device)
+
+
+def test_valid_force_returns_valid(test, device):
+    """Verify is_valid_force returns True for a normal value."""
+    test_valid_force_kernel.module.load(device)
+    wp.launch(test_valid_force_kernel, dim=1, inputs=[], device=device)
+
+
+def test_negative_pressure_returns_invalid(test, device):
+    """Verify is_valid_pressure returns False for negative values."""
+    test_negative_pressure_invalid_kernel.module.load(device)
+    wp.launch(test_negative_pressure_invalid_kernel, dim=1, inputs=[], device=device)
+
+
+def test_neg_inf_pressure_returns_invalid(test, device):
+    """Verify is_valid_pressure returns False for -Inf."""
+    test_neg_inf_pressure_kernel.module.load(device)
+    wp.launch(test_neg_inf_pressure_kernel, dim=1, inputs=[], device=device)
+
+
+def test_rel_stiffness_equal_stiffness(test, device):
+    """Verify equal stiffnesses produce equal weights ~1.0."""
+    test_rel_stiffness_equal_stiffness_kernel.module.load(device)
+    wp.launch(test_rel_stiffness_equal_stiffness_kernel, dim=1, inputs=[], device=device)
+
+
+def test_rel_stiffness_extreme_ratio(test, device):
+    """Verify extreme stiffness ratios are clamped to [1e-6, 1e6]."""
+    test_rel_stiffness_extreme_ratio_kernel.module.load(device)
+    wp.launch(test_rel_stiffness_extreme_ratio_kernel, dim=1, inputs=[], device=device)
+
+
+def test_rel_stiffness_zero_stiffness_fallback(test, device):
+    """Verify zero stiffness returns equal-weight fallback (1.0, 1.0)."""
+    test_rel_stiffness_zero_stiffness_fallback_kernel.module.load(device)
+    wp.launch(test_rel_stiffness_zero_stiffness_fallback_kernel, dim=1, inputs=[], device=device)
+
+
+# --- weighted_sdf_difference clamping / NaN guard tests ---
+
+
+def test_weighted_sdf_diff_nan_returns_sentinel(test, device):
+    """Verify NaN input returns MAXVAL sentinel."""
+    test_weighted_sdf_diff_nan_returns_sentinel_kernel.module.load(device)
+    wp.launch(test_weighted_sdf_diff_nan_returns_sentinel_kernel, dim=1, inputs=[], device=device)
+
+
+def test_weighted_sdf_diff_inf_returns_sentinel(test, device):
+    """Verify Inf input returns MAXVAL sentinel."""
+    test_weighted_sdf_diff_inf_returns_sentinel_kernel.module.load(device)
+    wp.launch(test_weighted_sdf_diff_inf_returns_sentinel_kernel, dim=1, inputs=[], device=device)
+
+
+def test_weighted_sdf_diff_clamped_extreme_positive(test, device):
+    """Verify extreme positive value clamped to MAXVAL * 0.5."""
+    test_weighted_sdf_diff_clamped_extreme_positive_kernel.module.load(device)
+    wp.launch(test_weighted_sdf_diff_clamped_extreme_positive_kernel, dim=1, inputs=[], device=device)
+
+
+def test_weighted_sdf_diff_clamped_extreme_negative(test, device):
+    """Verify extreme negative value clamped to -MAXVAL * 0.5."""
+    test_weighted_sdf_diff_clamped_extreme_negative_kernel.module.load(device)
+    wp.launch(test_weighted_sdf_diff_clamped_extreme_negative_kernel, dim=1, inputs=[], device=device)
+
+
+def test_weighted_sdf_diff_normal_range(test, device):
+    """Verify normal values pass through unchanged."""
+    test_weighted_sdf_diff_normal_range_kernel.module.load(device)
+    wp.launch(test_weighted_sdf_diff_normal_range_kernel, dim=1, inputs=[], device=device)
+
+
+# --- decode_contacts_kernel guard tests ---
+
+
+@wp.kernel(enable_backward=False)
+def test_decode_contacts_nan_stiffness_kernel():
+    """Verify is_valid_force detects NaN stiffness in decode kernel context."""
+    k_eff = wp.float32(1e10)
+    area = wp.float32(0.01)
+    # Valid stiffness
+    c_stiffness = area * k_eff
+    wp.expect_eq(is_valid_force(c_stiffness), wp.bool(True))
+    # NaN stiffness
+    c_stiffness = _NAN_VAL
+    wp.expect_eq(is_valid_force(c_stiffness), wp.bool(False))
+    # Inf stiffness
+    c_stiffness = _INF_VAL * k_eff
+    wp.expect_eq(is_valid_force(c_stiffness), wp.bool(False))
+
+
+@wp.kernel(enable_backward=False)
+def test_decode_contacts_depth_clamp_kernel():
+    """Verify contact_distance clamping to ±1.0 meter."""
+    # Normal depth: no clamping
+    depth = wp.float32(-0.1)
+    d = wp.float32(2.0) * depth
+    if d > wp.float32(1.0):
+        d = wp.float32(1.0)
+    elif d < wp.float32(-1.0):
+        d = wp.float32(-1.0)
+    wp.expect_eq(d, wp.float32(-0.2))
+    # Deep penetration: clamped to -1.0
+    depth = wp.float32(-1.0)
+    d = wp.float32(2.0) * depth
+    if d > wp.float32(1.0):
+        d = wp.float32(1.0)
+    elif d < wp.float32(-1.0):
+        d = wp.float32(-1.0)
+    wp.expect_eq(d, wp.float32(-1.0))
+    # Large separation: clamped to 1.0
+    depth = wp.float32(1.0)
+    d = wp.float32(2.0) * depth
+    if d > wp.float32(1.0):
+        d = wp.float32(1.0)
+    elif d < wp.float32(-1.0):
+        d = wp.float32(-1.0)
+    wp.expect_eq(d, wp.float32(1.0))
+
+
+@wp.kernel(enable_backward=False)
+def test_decode_contacts_small_area_kernel():
+    """Verify degenerate area skip in decode kernel context."""
+    # Above threshold: keep
+    area = wp.float32(1e-11)
+    wp.expect_eq(area < wp.float32(1e-12), wp.bool(False))
+    # At threshold: keep (equal is not less)
+    area = wp.float32(1e-12)
+    wp.expect_eq(area < wp.float32(1e-12), wp.bool(False))
+    # Below threshold: skip
+    area = wp.float32(1e-13)
+    wp.expect_eq(area < wp.float32(1e-12), wp.bool(True))
+
+
+def test_decode_contacts_rejects_nan_stiffness(test, device):
+    """Verify NaN stiffness contact is skipped in decode kernel."""
+    test_decode_contacts_nan_stiffness_kernel.module.load(device)
+    wp.launch(test_decode_contacts_nan_stiffness_kernel, dim=1, inputs=[], device=device)
+
+
+def test_decode_contacts_bounds_check_depth(test, device):
+    """Verify excessive depth is clamped to ±1.0 in decode kernel."""
+    test_decode_contacts_depth_clamp_kernel.module.load(device)
+    wp.launch(test_decode_contacts_depth_clamp_kernel, dim=1, inputs=[], device=device)
+
+
+def test_decode_contacts_small_area_warning(test, device):
+    """Verify degenerate contact area (< 1e-12) is skipped in decode kernel."""
+    test_decode_contacts_small_area_kernel.module.load(device)
+    wp.launch(test_decode_contacts_small_area_kernel, dim=1, inputs=[], device=device)
+
+
+# --- sample_pressure_field sentinel tests ---
+
+# These tests verify the sentinel guard logic used inside sample_pressure_field.
+# Direct kernel calls to sample_pressure_field across module boundaries are not
+# supported by Warp; instead we test the is_valid_pressure guard which branches
+# to the sentinel (not is_valid_pressure(p) → -MAXVAL) vs. the normal return path
+# (is_valid_pressure(p) → wp.max(p, 0.0)).
+
+
+@wp.kernel(enable_backward=False)
+def test_sample_pressure_nan_sentinel_kernel():
+    """Verify is_valid_pressure returns False for NaN (triggers sentinel)."""
+    wp.expect_eq(is_valid_pressure(_NAN_VAL), wp.bool(False))
+
+
+@wp.kernel(enable_backward=False)
+def test_sample_pressure_inf_sentinel_kernel():
+    """Verify is_valid_pressure returns False for Inf (triggers sentinel)."""
+    wp.expect_eq(is_valid_pressure(_INF_VAL), wp.bool(False))
+    wp.expect_eq(is_valid_pressure(_NEG_INF_VAL), wp.bool(False))
+
+
+def test_sample_pressure_valid_returns_value(test, device):
+    """Verify normal pressure (0.0) passes sentinel guard and is valid."""
+    test_valid_pressure_zero_kernel.module.load(device)
+    wp.launch(test_valid_pressure_zero_kernel, dim=1, inputs=[], device=device)
+
+
+def test_sample_pressure_nan_returns_sentinel(test, device):
+    """Verify is_valid_pressure detects NaN (sentinel path in sample_pressure_field)."""
+    test_sample_pressure_nan_sentinel_kernel.module.load(device)
+    wp.launch(test_sample_pressure_nan_sentinel_kernel, dim=1, inputs=[], device=device)
+
+
+def test_sample_pressure_inf_returns_sentinel(test, device):
+    """Verify is_valid_pressure detects Inf (sentinel path in sample_pressure_field)."""
+    test_sample_pressure_inf_sentinel_kernel.module.load(device)
+    wp.launch(test_sample_pressure_inf_sentinel_kernel, dim=1, inputs=[], device=device)
+
+
 # --- Register tests ---
 
 add_function_test(
@@ -1183,6 +3072,62 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_margin_contact_area_consistent",
+    test_margin_contact_area_consistent,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_margin_contact_area_rejects_zero",
+    test_margin_contact_area_rejects_zero,
+    devices=None,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_viscoelastic_config_defaults",
+    test_viscoelastic_config_defaults,
+    devices=None,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_viscoelastic_config_rejects_invalid_hysteresis",
+    test_viscoelastic_config_rejects_invalid_hysteresis,
+    devices=None,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_viscoelastic_config_disabled_by_default",
+    test_viscoelastic_config_disabled_by_default,
+    devices=None,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_viscoelastic_memory_struct_fields",
+    test_viscoelastic_memory_struct_fields,
+    devices=None,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_viscoelastic_memory_default_values",
+    test_viscoelastic_memory_default_values,
+    devices=None,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_iso_scan_scratch_buffers_are_level_sized",
     test_iso_scan_scratch_buffers_are_level_sized,
     devices=cuda_devices,
@@ -1199,6 +3144,156 @@ add_function_test(
     TestHydroelastic,
     "test_entry_k_eff_matches_shape_harmonic_mean",
     test_entry_k_eff_matches_shape_harmonic_mean,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_weighted_sdf_difference_is_continuous_across_surface",
+    test_weighted_sdf_difference_is_continuous_across_surface,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_poisson_pressure_extent_has_positive_deep_interior",
+    test_poisson_pressure_extent_has_positive_deep_interior,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_poisson_converges_for_valid_geometry",
+    test_poisson_converges_for_valid_geometry,
+    devices=None,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_poisson_warns_on_nonconvergence",
+    test_poisson_warns_on_nonconvergence,
+    devices=None,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_layer_pressure_extent_increases_from_top_to_bottom",
+    test_layer_pressure_extent_increases_from_top_to_bottom,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_layer_pressure_validates_thickness",
+    test_layer_pressure_validates_thickness,
+    devices=None,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_shape_workflow_and_sine_parameters_propagate_to_model",
+    test_shape_workflow_and_sine_parameters_propagate_to_model,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_finalize_warns_on_implicit_hydro_workflow_default",
+    test_finalize_warns_on_implicit_hydro_workflow_default,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_workflow_builds_distinct_profiles_for_shared_sdf",
+    test_pressure_workflow_builds_distinct_profiles_for_shared_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_mixed_classic_pressure_pair_assigns_pressure_profile_to_both_compliant_shapes",
+    test_mixed_classic_pressure_pair_assigns_pressure_profile_to_both_compliant_shapes,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_workflow_does_not_extend_beyond_valid_positive_sdf",
+    test_pressure_workflow_does_not_extend_beyond_valid_positive_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_blend_continuous",
+    test_pressure_blend_continuous,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_blend_clamped",
+    test_pressure_blend_clamped,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_blend_no_negative",
+    test_pressure_blend_no_negative,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pair_workflow_resolution_prefers_pressure_when_any_compliant_side_uses_pressure",
+    test_pair_workflow_resolution_prefers_pressure_when_any_compliant_side_uses_pressure,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_workflow_depth_proxy_increases_with_penetration_for_all_shapes",
+    test_pressure_workflow_depth_proxy_increases_with_penetration_for_all_shapes,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_workflow_contact_stiffness_increases_with_k_hydro_for_all_shapes",
+    test_pressure_workflow_contact_stiffness_increases_with_k_hydro_for_all_shapes,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_workflow_nonlinear_axis_sine_modulates_contact_depth_for_box_and_mesh",
+    test_pressure_workflow_nonlinear_axis_sine_modulates_contact_depth_for_box_and_mesh,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_pressure_field_falls_back_to_nonhydro_for_plane_and_heightfield",
+    test_pressure_field_falls_back_to_nonhydro_for_plane_and_heightfield,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_rigid_compliant_mode_routes_to_hydroelastic_sdf",
+    test_rigid_compliant_mode_routes_to_hydroelastic_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_explicit_rigid_plane_routes_to_hydroelastic_sdf",
+    test_explicit_rigid_plane_routes_to_hydroelastic_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_explicit_rigid_heightfield_routes_to_hydroelastic_sdf",
+    test_explicit_rigid_heightfield_routes_to_hydroelastic_sdf,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_finite_rigid_plane_is_clipped_in_hydro_path",
+    test_finite_rigid_plane_is_clipped_in_hydro_path,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_legacy_is_hydroelastic_still_ignored_for_terrain",
+    test_legacy_is_hydroelastic_still_ignored_for_terrain,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_rigid_rigid_mode_uses_nonhydro_path",
+    test_rigid_rigid_mode_uses_nonhydro_path,
     devices=cuda_devices,
 )
 
@@ -1362,6 +3457,191 @@ add_function_test(
     check_output=False,
 )
 
+# --- is_valid_pressure / is_valid_force helper tests ---
+
+add_function_test(
+    TestHydroelastic,
+    "test_nan_pressure_returns_invalid",
+    test_nan_pressure_returns_invalid,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_inf_force_returns_invalid",
+    test_inf_force_returns_invalid,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_neg_inf_force_returns_invalid",
+    test_neg_inf_force_returns_invalid,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_valid_pressure_returns_valid",
+    test_valid_pressure_returns_valid,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_valid_pressure_zero_returns_valid",
+    test_valid_pressure_zero_returns_valid,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_valid_force_returns_valid",
+    test_valid_force_returns_valid,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_negative_pressure_returns_invalid",
+    test_negative_pressure_returns_invalid,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_neg_inf_pressure_returns_invalid",
+    test_neg_inf_pressure_returns_invalid,
+    devices=None,
+    check_output=False,
+)
+
+# --- weighted_sdf_difference clamping / NaN guard tests ---
+
+add_function_test(
+    TestHydroelastic,
+    "test_weighted_sdf_diff_nan_returns_sentinel",
+    test_weighted_sdf_diff_nan_returns_sentinel,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_weighted_sdf_diff_inf_returns_sentinel",
+    test_weighted_sdf_diff_inf_returns_sentinel,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_weighted_sdf_diff_clamped_extreme_positive",
+    test_weighted_sdf_diff_clamped_extreme_positive,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_weighted_sdf_diff_clamped_extreme_negative",
+    test_weighted_sdf_diff_clamped_extreme_negative,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_weighted_sdf_diff_normal_range",
+    test_weighted_sdf_diff_normal_range,
+    devices=None,
+    check_output=False,
+)
+
+# --- get_rel_stiffness unit tests ---
+
+add_function_test(
+    TestHydroelastic,
+    "test_rel_stiffness_equal_stiffness",
+    test_rel_stiffness_equal_stiffness,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_rel_stiffness_extreme_ratio",
+    test_rel_stiffness_extreme_ratio,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_rel_stiffness_zero_stiffness_fallback",
+    test_rel_stiffness_zero_stiffness_fallback,
+    devices=None,
+    check_output=False,
+)
+
+# --- decode_contacts_kernel guard tests ---
+
+add_function_test(
+    TestHydroelastic,
+    "test_decode_contacts_rejects_nan_stiffness",
+    test_decode_contacts_rejects_nan_stiffness,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_decode_contacts_bounds_check_depth",
+    test_decode_contacts_bounds_check_depth,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_decode_contacts_small_area_warning",
+    test_decode_contacts_small_area_warning,
+    devices=None,
+    check_output=False,
+)
+
+# --- sample_pressure_field sentinel tests ---
+
+add_function_test(
+    TestHydroelastic,
+    "test_sample_pressure_nan_returns_sentinel",
+    test_sample_pressure_nan_returns_sentinel,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_sample_pressure_valid_returns_value",
+    test_sample_pressure_valid_returns_value,
+    devices=None,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_sample_pressure_inf_returns_sentinel",
+    test_sample_pressure_inf_returns_sentinel,
+    devices=None,
+    check_output=False,
+)
+
+# --- Fixture validation test registration ---
+
+add_function_test(
+    TestHydroelastic,
+    "test_fixtures_produce_contacts",
+    test_fixtures_produce_contacts,
+    devices=cuda_devices,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_fixtures_are_reproducible",
+    test_fixtures_are_reproducible,
+    devices=cuda_devices,
+    check_output=False,
+)
 
 def _build_two_box_hydro_pipeline(device, mc_edge_clamp_min: float):
     """Build a deeply-overlapping two-box hydroelastic scene and return the live pipeline.

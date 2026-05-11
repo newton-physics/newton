@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "material_model": "digital_instron_pressure_field_v1",
+  "description": "Shared pressure-field midsole material fit from rearfoot and fullfoot Instron trials. contact_offset_m is a geometric nuisance parameter, not a material property.",
+  "source_midsole_mesh": "DigitalInstron/puma-fast-r-nitro-elite-3-3d-internal-wt-LR.obj",
+  "source_indenter_mesh": "DigitalInstron/Instron Shoe Last Size 9 6drop merged attachment 1.STL",
+  "contact_offset_m": 0.0216,
+  "contact_threshold_n": 1.0,
+  "parameters": {
+    "kh": 2000000.0,
+    "kd": 250.0,
+    "pressure_profile": "layer",
+    "layer_eta_lock": 0.75,
+    "layer_densification_power": 0.0,
+    "layer_cubic": 0.0,
+    "layer_quintic": 0.0,
+    "pressure_sine_amplitude": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "pressure_sine_cycles": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "pressure_sine_phase": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "mu": 0.8,
+    "narrow_band_m": 0.01,
+    "sdf_resolution": 128
+  },
+  "calibration": {
+    "test_cases": [
+      "rearfoot",
+      "fullfoot"
+    ],
+    "combined_objective": 25.744829501871457,
+    "objective_components": {
+      "mode": "goal",
+      "combined_objective": 25.744829501871457,
+      "selected_component": "goal_objective",
+      "weights": {
+        "rmse": 1.0,
+        "r2": 1.0,
+        "hysteresis": 1.0,
+        "shoe_vz": 0.25,
+        "shoe_omega": 0.25
+      },
+      "targets": {
+        "shoe_vz_m_s": 0.001,
+        "shoe_omega_rad_s": 0.01
+      },
+      "mean": {
+        "force_objective": 10.594980815630613,
+        "force_r2": -0.20328211097554427,
+        "goal_objective": 25.744829501871457,
+        "hysteresis_error_j": -1.3143166328222282,
+        "hysteresis_relative_error": 0.9984815599061272,
+        "loop_rmse_n": 30014.82636294137,
+        "measured_hysteresis_j": 1.316555515870956,
+        "peak_relative_error": 0.9385401175996417,
+        "r2_loss": 1.2032821109755443,
+        "rms_shoe_free_axis_angular_velocity_rad_s": 0.0,
+        "rms_shoe_vertical_velocity_m_s": 0.013166577269312805,
+        "rmse_relative": 20.251421513661583,
+        "shoe_omega_relative": 0.0,
+        "shoe_vz_relative": 13.166577269312805,
+        "sim_hysteresis_j": 0.0022388830487280065
+      },
+      "trials": {
+        "rearfoot": {
+          "test_case": "rearfoot",
+          "force_objective": 13.590312126974707,
+          "goal_objective": 28.455796950082917,
+          "peak_relative_error": 0.964378590092034,
+          "rmse_relative": 26.21624566385738,
+          "loop_rmse_n": 31458.29392086104,
+          "force_r2": -0.2141878931126493,
+          "r2_loss": 1.2141878931126493,
+          "hysteresis_relative_error": 0.9996661533467698,
+          "hysteresis_error_j": -1.1137745669389654,
+          "measured_hysteresis_j": 1.114146521026218,
+          "sim_hysteresis_j": 0.00037195408725274395,
+          "shoe_vz_relative": 0.10278895906448955,
+          "shoe_omega_relative": 0.0,
+          "rms_shoe_vertical_velocity_m_s": 0.00010278895906448956,
+          "rms_shoe_free_axis_angular_velocity_rad_s": 0.0
+        },
+        "fullfoot": {
+          "test_case": "fullfoot",
+          "force_objective": 7.5996495042865195,
+          "goal_objective": 23.033862053659995,
+          "peak_relative_error": 0.9127016451072494,
+          "rmse_relative": 14.28659736346579,
+          "loop_rmse_n": 28571.358805021697,
+          "force_r2": -0.19237632883843925,
+          "r2_loss": 1.1923763288384392,
+          "hysteresis_relative_error": 0.9972969664654846,
+          "hysteresis_error_j": -1.5148586987054908,
+          "measured_hysteresis_j": 1.5189645107156942,
+          "sim_hysteresis_j": 0.004105812010203269,
+          "shoe_vz_relative": 26.23036557956112,
+          "shoe_omega_relative": 0.0,
+          "rms_shoe_vertical_velocity_m_s": 0.02623036557956112,
+          "rms_shoe_free_axis_angular_velocity_rad_s": 0.0
+        }
+      }
+    },
+    "trials": {
+      "rearfoot": {
+        "trace_csv": "DigitalInstron/processed/rearfoot_avg_cycles_90_100.csv",
+        "output_csv": "DigitalInstron/processed/rearfoot_sim_pressure_field.csv",
+        "measured_peak_force_n": 1199.95419345,
+        "sim_peak_force_n": 42.74406019566535,
+        "raw_contact_peak_force_n": 42.74406019566535,
+        "raw_contact_peak_relative_error": 0.964378590092034,
+        "peak_relative_error": 0.964378590092034,
+        "loop_rmse_n": 31458.29392086104,
+        "force_r2": -0.2141878931126493,
+        "max_abs_shoe_vertical_velocity_m_s": 0.0002947786415461451,
+        "rms_shoe_vertical_velocity_m_s": 0.00010278895906448956,
+        "max_abs_shoe_free_axis_angular_velocity_rad_s": 0.0,
+        "rms_shoe_free_axis_angular_velocity_rad_s": 0.0,
+        "max_adjacent_force_jump_n": 1.5114262481383722,
+        "force_jump_limit_n": 200.0,
+        "force_jump_violation_count": 0,
+        "metrics": {
+          "sim_peak_displacement_m": 0.0227600020393,
+          "sim_peak_displacement_mm": 22.760002039299998,
+          "measured_peak_displacement_m": 0.0227600020393,
+          "measured_peak_displacement_mm": 22.760002039299998,
+          "peak_displacement_error_m": 0.0,
+          "peak_displacement_error_mm": 0.0,
+          "peak_displacement_m": 0.0227600020393,
+          "peak_displacement_mm": 22.760002039299998,
+          "peak_displacement_index": 285.0,
+          "force_r2": -0.2141878931126493,
+          "measured_loop_signed_j": 1.114146521026218,
+          "sim_loop_signed_j": -0.00037195408725274395,
+          "measured_hysteresis_j": 1.114146521026218,
+          "sim_hysteresis_j": 0.00037195408725274395,
+          "hysteresis_error_j": -1.1137745669389654,
+          "measured_loading_work_j": 9.62297462291284,
+          "sim_loading_work_j": 0.3594478702467445,
+          "measured_unloading_work_j": 8.508828101886623,
+          "sim_unloading_work_j": 0.35981982433399723,
+          "measured_dissipated_work_j": 1.1141465210262176,
+          "sim_dissipated_work_j": -0.00037195408725271273,
+          "loading_rmse_n": 288.07443923689635,
+          "unloading_rmse_n": 329.0394423221065
+        }
+      },
+      "fullfoot": {
+        "trace_csv": "DigitalInstron/processed/fullfoot_avg_cycles_90_100.csv",
+        "output_csv": "DigitalInstron/processed/fullfoot_sim_pressure_field.csv",
+        "measured_peak_force_n": 1999.87149341,
+        "sim_peak_force_n": 174.58549137160134,
+        "raw_contact_peak_force_n": 174.58549137160134,
+        "raw_contact_peak_relative_error": 0.9127016451072494,
+        "peak_relative_error": 0.9127016451072494,
+        "loop_rmse_n": 28571.358805021697,
+        "force_r2": -0.19237632883843925,
+        "max_abs_shoe_vertical_velocity_m_s": 0.06441453099250793,
+        "rms_shoe_vertical_velocity_m_s": 0.02623036557956112,
+        "max_abs_shoe_free_axis_angular_velocity_rad_s": 0.0,
+        "rms_shoe_free_axis_angular_velocity_rad_s": 0.0,
+        "max_adjacent_force_jump_n": 6.686760056012147,
+        "force_jump_limit_n": 200.0,
+        "force_jump_violation_count": 0,
+        "metrics": {
+          "sim_peak_displacement_m": 0.0179214473951,
+          "sim_peak_displacement_mm": 17.921447395100003,
+          "measured_peak_displacement_m": 0.0179214473951,
+          "measured_peak_displacement_mm": 17.921447395100003,
+          "peak_displacement_error_m": 0.0,
+          "peak_displacement_error_mm": 0.0,
+          "peak_displacement_m": 0.0179214473951,
+          "peak_displacement_mm": 17.921447395100003,
+          "peak_displacement_index": 271.0,
+          "force_r2": -0.19237632883843925,
+          "measured_loop_signed_j": 1.5189645107156942,
+          "sim_loop_signed_j": 0.004105812010203269,
+          "measured_hysteresis_j": 1.5189645107156942,
+          "sim_hysteresis_j": 0.004105812010203269,
+          "hysteresis_error_j": -1.5148586987054908,
+          "measured_loading_work_j": 15.58252164402324,
+          "sim_loading_work_j": 0.7711795680834634,
+          "measured_unloading_work_j": 14.06355713330755,
+          "sim_unloading_work_j": 0.7670737560732604,
+          "measured_dissipated_work_j": 1.5189645107156906,
+          "sim_dissipated_work_j": 0.004105812010202992,
+          "loading_rmse_n": 586.375433846189,
+          "unloading_rmse_n": 694.631044436352
+        }
+      }
+    }
+  },
+  "state_model": {
+    "type": "memoryless_v1",
+    "parameters": {}
+  }
+}

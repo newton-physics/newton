@@ -80,6 +80,32 @@ from .kernels import (
 HINGE_CONNECT_AXIS_OFFSET = 0.1
 """Distance [m] along the hinge axis for the second CONNECT constraint point of a revolute loop joint."""
 
+RESET_RUNTIME_FIELDS = (
+    "qacc",
+    "qacc_smooth",
+    "qacc_warmstart",
+    "qfrc_actuator",
+    "act",
+    "act_dot",
+    "actuator_force",
+    "ctrl",
+    "nefc",
+)
+
+
+@wp.kernel
+def zero_selected_rows_float_matrix_kernel(world_ids: wp.array(dtype=wp.int32), values: wp.array(dtype=wp.float32, ndim=2)):
+    world_idx, value_idx = wp.tid()
+    world_id = world_ids[world_idx]
+    values[world_id, value_idx] = 0.0
+
+
+@wp.kernel
+def zero_selected_entries_int_vector_kernel(world_ids: wp.array(dtype=wp.int32), values: wp.array(dtype=wp.int32)):
+    tid = wp.tid()
+    world_id = world_ids[tid]
+    values[world_id] = 0
+
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
     from mujoco_warp import Data as MjWarpData
@@ -3219,6 +3245,9 @@ class SolverMuJoCo(SolverBase):
         self._last_contacts_id: int | None = None
         self._last_rigid_contact_max: int | None = None
         self._last_naconmax: int | None = None
+        self._reset_world_ids: wp.array[wp.int32] | None = None
+        if model.world_count > 0:
+            self._reset_world_ids = wp.zeros(model.world_count, dtype=wp.int32, device=model.device)
 
         with wp.ScopedTimer("convert_model_to_mujoco", active=False):
             self._convert_to_mjc(
@@ -3312,6 +3341,133 @@ class SolverMuJoCo(SolverBase):
         """
         self._last_contact_generation.fill_(_GENERATION_SENTINEL)
         self._last_nacon_count.zero_()
+
+    @staticmethod
+    def _normalize_world_ids(world_ids: Any) -> np.ndarray:
+        """Convert arbitrary world-id containers into a unique int32 numpy array."""
+        if world_ids is None:
+            return np.empty(0, dtype=np.int32)
+
+        if hasattr(world_ids, "detach"):
+            world_ids = world_ids.detach()
+        if hasattr(world_ids, "cpu"):
+            world_ids = world_ids.cpu()
+        if hasattr(world_ids, "numpy"):
+            world_ids = world_ids.numpy()
+
+        normalized = np.asarray(world_ids, dtype=np.int32).reshape(-1)
+        if normalized.size == 0:
+            return normalized
+        return np.unique(normalized)
+
+    def _zero_selected_mjwarp_rows(self, mj_data: MjWarpData, attr_name: str, world_count: int) -> None:
+        values = getattr(mj_data, attr_name, None)
+        if values is None:
+            return
+
+        if values.size == 0:
+            return
+
+        if len(values.shape) == 2:
+            if values.shape[1] == 0:
+                return
+            wp.launch(
+                zero_selected_rows_float_matrix_kernel,
+                dim=(world_count, values.shape[1]),
+                inputs=[self._reset_world_ids, values],
+                device=self.model.device,
+            )
+            return
+
+        if len(values.shape) == 1:
+            wp.launch(
+                zero_selected_entries_int_vector_kernel,
+                dim=world_count,
+                inputs=[self._reset_world_ids, values],
+                device=self.model.device,
+            )
+            return
+
+        raise ValueError(f"Unsupported reset_worlds buffer shape for '{attr_name}': {values.shape}")
+
+    @staticmethod
+    def _zero_mjdata_field(mj_data: MjData, attr_name: str) -> None:
+        values = getattr(mj_data, attr_name, None)
+        if values is None:
+            return
+
+        if isinstance(values, np.ndarray):
+            values[...] = 0
+            return
+
+        try:
+            setattr(mj_data, attr_name, 0)
+        except (AttributeError, TypeError):
+            pass
+
+    def _clear_selected_mjwarp_runtime_fields_torch(self, world_ids_torch: Any) -> None:
+        for attr_name in RESET_RUNTIME_FIELDS:
+            values = getattr(self.mjw_data, attr_name, None)
+            if values is None:
+                continue
+            values_torch = wp.to_torch(values)
+            if values_torch.numel() == 0:
+                continue
+            values_torch[world_ids_torch] = 0
+
+    def _clear_selected_mjwarp_runtime_fields(self, world_ids_count: int) -> None:
+        for attr_name in RESET_RUNTIME_FIELDS:
+            self._zero_selected_mjwarp_rows(self.mjw_data, attr_name, world_ids_count)
+
+    def reset_worlds(self, state: State | None, world_ids: Any) -> None:
+        """Sync selected worlds from Newton state and clear warmstart/runtime caches."""
+        world_ids_count = 0
+        try:
+            import torch
+        except ImportError:  # pragma: no cover - torch may be unavailable in some Newton-only installs
+            torch = None
+
+        if torch is not None and isinstance(world_ids, torch.Tensor):
+            world_ids_torch = world_ids.detach().flatten().to(dtype=torch.long)
+            if world_ids_torch.numel() == 0:
+                return
+            if torch.any(world_ids_torch < 0) or torch.any(world_ids_torch >= self.model.world_count):
+                raise ValueError(
+                    f"world_ids must be within [0, {self.model.world_count}); got {world_ids_torch.tolist()}"
+                )
+            world_ids_count = int(world_ids_torch.numel())
+        else:
+            normalized_world_ids = self._normalize_world_ids(world_ids)
+            if normalized_world_ids.size == 0:
+                return
+            if np.any(normalized_world_ids < 0) or np.any(normalized_world_ids >= self.model.world_count):
+                raise ValueError(
+                    f"world_ids must be within [0, {self.model.world_count}); got {normalized_world_ids.tolist()}"
+                )
+            reset_world_ids = self._reset_world_ids.numpy()
+            reset_world_ids[: normalized_world_ids.size] = normalized_world_ids
+            self._reset_world_ids.assign(reset_world_ids)
+            world_ids_count = int(normalized_world_ids.size)
+
+        if self.use_mujoco_cpu:
+            if world_ids_count != 1:
+                raise ValueError(
+                    "CPU MuJoCo reset_worlds only supports the single-world model at world index 0."
+                )
+
+            self._update_mjc_data(self.mj_data, self.model, state)
+            for attr_name in (*RESET_RUNTIME_FIELDS, "ncon"):
+                self._zero_mjdata_field(self.mj_data, attr_name)
+            return
+
+        if self._reset_world_ids is None or self._reset_world_ids.shape[0] < self.model.world_count:
+            raise RuntimeError("Solver reset buffer is not initialized for the current world count.")
+        self._update_mjc_data(self.mjw_data, self.model, state)
+        if torch is not None and isinstance(world_ids, torch.Tensor):
+            self._clear_selected_mjwarp_runtime_fields_torch(world_ids_torch)
+            return
+
+        self._clear_selected_mjwarp_runtime_fields(world_ids_count)
 
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         # Ensure the inverse shape mapping exists (lazy creation)
@@ -5844,6 +6000,7 @@ class SolverMuJoCo(SolverBase):
             "geom_rbound",
             "geom_pos",
             "geom_quat",
+            "geom_dataid",
             "geom_friction",
             "geom_margin",
             "geom_gap",
@@ -6660,6 +6817,22 @@ class SolverMuJoCo(SolverBase):
 
         world_count = self.mjc_geom_to_newton_shape.shape[0]
 
+        geom_dataid = self.mjw_model.geom_dataid
+        if len(geom_dataid.shape) == 1:
+            repeated_geom_dataid = wp.array2d(
+                shape=(world_count, num_geoms),
+                dtype=geom_dataid.dtype,
+                device=geom_dataid.device,
+            )
+            wp.launch(
+                repeat_array_kernel,
+                dim=world_count * num_geoms,
+                inputs=[geom_dataid, num_geoms],
+                outputs=[repeated_geom_dataid.flatten()],
+                device=geom_dataid.device,
+            )
+            geom_dataid = repeated_geom_dataid
+
         # Get custom attribute for geom_solimp and geom_solmix
         mujoco_attrs = getattr(self.model, "mujoco", None)
         shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
@@ -6676,7 +6849,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjc_geom_to_newton_shape,
                 self.mjw_model.geom_type,
                 self._mujoco.mjtGeom.mjGEOM_MESH,
-                self.mjw_model.geom_dataid,
+                geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
                 self.model.shape_material_mu_torsional,
