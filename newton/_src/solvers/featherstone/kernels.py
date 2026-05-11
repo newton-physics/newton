@@ -1034,6 +1034,8 @@ def convert_free_distance_joint_f_internal_to_public(
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_articulation: wp.array[int],
+    articulation_mask: wp.array[bool],  # can be None, mask to filter articulations
     joint_X_p: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
     body_q_com: wp.array[wp.transform],
@@ -1090,6 +1092,11 @@ def convert_free_distance_joint_f_internal_to_public(
     RNEA's ``-bias`` convention to the standard ``+bias`` convention.
     """
     joint_id = wp.tid()
+
+    if articulation_mask:
+        if not articulation_mask[joint_articulation[joint_id]]:
+            return
+
     jtype = joint_type[joint_id]
     qd_start = joint_qd_start[joint_id]
     qd_end = joint_qd_start[joint_id + 1]
@@ -1157,6 +1164,7 @@ def convert_free_distance_joint_f_internal_to_public(
 @wp.kernel
 def eval_rigid_id(
     articulation_start: wp.array[int],
+    articulation_mask: wp.array[bool],  # can be None, mask to filter articulations
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -1179,6 +1187,10 @@ def eval_rigid_id(
 ):
     # one thread per-articulation
     index = wp.tid()
+
+    if articulation_mask:
+        if not articulation_mask[index]:
+            return
 
     start = articulation_start[index]
     end = articulation_start[index + 1]
@@ -1211,6 +1223,7 @@ def eval_rigid_id(
 @wp.kernel
 def eval_rigid_tau(
     articulation_start: wp.array[int],
+    articulation_mask: wp.array[bool],  # can be None, mask to filter articulations
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -1237,6 +1250,10 @@ def eval_rigid_tau(
 ):
     # one thread per-articulation
     index = wp.tid()
+
+    if articulation_mask:
+        if not articulation_mask[index]:
+            return
 
     start = articulation_start[index]
     end = articulation_start[index + 1]

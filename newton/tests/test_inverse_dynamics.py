@@ -331,7 +331,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
             )
 
             tau = inverse_dynamics.gravity_compensation_force.numpy()
-            self.assertGreater(float(np.linalg.norm(tau)), 1e-6)
+            np.testing.assert_array_less(1e-6, np.abs(tau))
 
     def test_two_link_grav_comp_force_from_zero_gravity(self):
         """G(q) vanishes everywhere when the model has zero gravity.
@@ -2194,9 +2194,9 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         self.assertTrue(np.all(np.isfinite(H)))
         self.assertTrue(np.all(np.isfinite(g)))
         self.assertTrue(np.all(np.isfinite(c)))
-        self.assertGreater(float(np.linalg.norm(H)), 1e-6)
-        self.assertGreater(float(np.linalg.norm(g)), 1e-6)
-        self.assertGreater(float(np.linalg.norm(c)), 1e-6)
+        self.assertGreater(float(np.max(np.abs(H))), 1e-6)
+        self.assertGreater(float(np.max(np.abs(g))), 1e-6)
+        self.assertGreater(float(np.max(np.abs(c))), 1e-6)
 
     def _test_inverse_dynamics_force(self, non_zero_gravity: bool, non_zero_initial_dof_velocities: bool):
         """Manipulator-equation test parameterized on whether the bias terms are exercised.
@@ -2574,8 +2574,8 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         c = inverse_dynamics.coriolis_compensation_force.numpy()
         self.assertTrue(np.all(np.isfinite(g)))
         self.assertTrue(np.all(np.isfinite(c)))
-        self.assertGreater(float(np.linalg.norm(g)), 1e-6)
-        self.assertGreater(float(np.linalg.norm(c)), 1e-6)
+        self.assertGreater(float(np.max(np.abs(g))), 1e-6)
+        self.assertGreater(float(np.max(np.abs(c))), 1e-6)
 
     def test_eval_inverse_dynamics_raises_on_mass_matrix_shape_mismatch(self):
         """``eval_inverse_dynamics`` raises ``ValueError`` when the
@@ -2670,6 +2670,164 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         self.assertEqual(inverse_dynamics.gravity_compensation_force.shape, (0,))
         self.assertEqual(inverse_dynamics.coriolis_compensation_force.shape, (0,))
         self.assertEqual(inverse_dynamics.mass_matrix.shape[0], 0)
+
+    def test_articulation_view_masks_inverse_dynamics(self):
+        """``ArticulationView.eval_inverse_dynamics`` restricts the computation to selected articulations.
+
+        Builds a 2-world model where each world has two articulations
+        labelled ``"A"`` and ``"B"`` with distinct masses / inertias.
+        Creates an :class:`ArticulationView` selecting only ``"A"``
+        articulations and runs ``view.eval_inverse_dynamics``. Asserts:
+
+        - Slots in ``mass_matrix`` / ``gravity_compensation_force`` /
+          ``coriolis_compensation_force`` corresponding to selected
+          ``A`` articulations match an unmasked reference run.
+        - Slots corresponding to unselected ``B`` articulations are
+          exactly zero (matching the convention of
+          :func:`~newton.eval_mass_matrix`).
+
+        Repeats with a 1-D per-world submask to verify view-local
+        filtering composes with the label-pattern selection.
+        """
+        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        pos_half = wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity())
+        neg_half = wp.transform(wp.vec3(-0.5, 0.0, 0.0), wp.quat_identity())
+        y_axis = wp.vec3(0.0, 1.0, 0.0)
+
+        def _add_two_link_pendulum(builder, m_first, m_second, label):
+            # Planar double pendulum: two revolutes about +Y, end-to-end
+            # link layout (link half-length 0.5). Two DOFs per articulation
+            # so M(q) has q-dependence and C(q, q_dot)*q_dot has real
+            # cross-coupling at non-zero qd, and Z-up gravity gives
+            # non-trivial g(q) (mass sweeps vertically in the XZ plane).
+            b1 = builder.add_link(xform=identity_xform, mass=m_first, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
+            j1 = builder.add_joint_revolute(
+                parent=-1, child=b1, axis=y_axis,
+                parent_xform=identity_xform, child_xform=neg_half,
+            )
+            b2 = builder.add_link(xform=identity_xform, mass=m_second, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
+            j2 = builder.add_joint_revolute(
+                parent=b1, child=b2, axis=y_axis,
+                parent_xform=pos_half, child_xform=neg_half,
+            )
+            builder.add_articulation([j1, j2], label=label)
+
+        # Per-world: two articulations "A" and "B" with distinct masses so
+        # the M / g / C signatures differ between the two.
+        world = newton.ModelBuilder()
+        _add_two_link_pendulum(world, m_first=1.0, m_second=2.0, label="A")
+        _add_two_link_pendulum(world, m_first=3.0, m_second=5.0, label="B")
+
+        # Replicate to 2 worlds → 4 articulations: [A0, B0, A1, B1].
+        scene = newton.ModelBuilder()
+        scene.replicate(world, world_count=2)
+        model = scene.finalize(device=self.device)
+        self.assertEqual(model.articulation_count, 4)
+
+        # Per-DOF layout: [w0.A.q1, q2, w0.B.q1, q2, w1.A.q1, q2, w1.B.q1, q2].
+        # Distinct non-zero qd keeps C(q, q_dot)*q_dot non-trivial on the
+        # selected slots so the parity asserts below aren't vacuous.
+        joint_q = [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+        joint_qd = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+        state = model.state()
+        state.joint_q.assign(joint_q)
+        state.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        # Layout: 2 worlds × [A, B] with 2 DOFs each →
+        #   articulation index  0    1    2    3
+        #   label               A    B    A    B
+        #   DOF range           0,1  2,3  4,5  6,7
+
+        # Reference: unmasked run → full-model M, g, C.
+        reference_id, reference_scratch = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(
+            model, state, newton.InverseDynamics.EvalType.ALL, reference_id, reference_scratch
+        )
+        H_ref = reference_id.mass_matrix.numpy()
+        g_ref = reference_id.gravity_compensation_force.numpy()
+        c_ref = reference_id.coriolis_compensation_force.numpy()
+
+        # Ensure no entry in H_ref / g_ref / c_ref is (numerically) zero
+        # — we use zero later as the signal that a slot was masked out, so
+        # the parity asserts below would pass trivially if the reference
+        # itself were zero anywhere.
+        for art_id in range(model.articulation_count):
+            for i in range(model.max_dofs_per_articulation):
+                for j in range(model.max_dofs_per_articulation):
+                    self.assertGreater(abs(H_ref[art_id, i, j]), 1e-6)
+        for dof_idx in range(model.joint_dof_count):
+            self.assertGreater(abs(g_ref[dof_idx]), 1e-6)
+            self.assertGreater(abs(c_ref[dof_idx]), 1e-6)
+
+        # View pattern is shared across cases; the per-world submask and
+        # the resulting selected articulations / DOFs differ per case.
+        view = newton.selection.ArticulationView(model, "A", verbose=False)
+        np.testing.assert_array_equal(
+            view.articulation_mask.numpy(), [True, False, True, False]
+        )
+
+        # Parallel per-case data: row `i` describes case `i`.
+        per_world_masks = [
+            None,
+            wp.array(
+                np.asarray([True, False], dtype=bool), dtype=bool, device=self.device
+            ),
+        ]
+        # (n_cases, articulation_count): True at articulations expected to match
+        # the unmasked reference; False ones must come back as zero.
+        articulation_selected = np.array(
+            [
+                [True, False, True, False],   # no submask → A in both worlds
+                [True, False, False, False],  # per-world [T, F] → A in world 0 only
+            ]
+        )
+        # (n_cases, joint_dof_count): per-DOF version of the above.
+        dof_selected = np.array(
+            [
+                [True, True, False, False, True, True, False, False],
+                [True, True, False, False, False, False, False, False],
+            ]
+        )
+
+        for case_idx in range(len(per_world_masks)):
+            with self.subTest(case_idx=case_idx):
+                inverse_dynamics, scratch = model.inverse_dynamics()
+                view.eval_inverse_dynamics(
+                    state,
+                    newton.InverseDynamics.EvalType.ALL,
+                    inverse_dynamics,
+                    scratch,
+                    mask=per_world_masks[case_idx],
+                )
+
+                H = inverse_dynamics.mass_matrix.numpy()
+                g = inverse_dynamics.gravity_compensation_force.numpy()
+                c = inverse_dynamics.coriolis_compensation_force.numpy()
+
+                # Mass matrix: selected articulations match reference; the rest are zero.
+                for art_id in range(model.articulation_count):
+                    for i in range(model.max_dofs_per_articulation):
+                        for j in range(model.max_dofs_per_articulation):
+                            if articulation_selected[case_idx, art_id]:
+                                self.assertAlmostEqual(
+                                    float(H[art_id, i, j]), float(H_ref[art_id, i, j]), delta=1e-5
+                                )
+                            else:
+                                self.assertAlmostEqual(float(H[art_id, i, j]), 0.0, delta=1e-6)
+
+                # Per-DOF bias buffers: selected DOFs match reference; the rest are zero.
+                for dof_idx in range(model.joint_dof_count):
+                    if dof_selected[case_idx, dof_idx]:
+                        self.assertAlmostEqual(
+                            float(g[dof_idx]), float(g_ref[dof_idx]), delta=1e-5
+                        )
+                        self.assertAlmostEqual(
+                            float(c[dof_idx]), float(c_ref[dof_idx]), delta=1e-5
+                        )
+                    else:
+                        self.assertAlmostEqual(float(g[dof_idx]), 0.0, delta=1e-6)
+                        self.assertAlmostEqual(float(c[dof_idx]), 0.0, delta=1e-6)
 
 
 class TestGravCompForceCPU(TestGravCompForce, unittest.TestCase):

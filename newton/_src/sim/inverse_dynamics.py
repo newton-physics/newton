@@ -180,6 +180,7 @@ def _rnea_compensation_pass(
     joint_qd: wp.array[wp.float32],
     gravity: wp.array[wp.vec3],
     tau_out: wp.array[wp.float32],
+    mask: wp.array[bool] | None = None,
 ) -> None:
     """Run one RNEA pass (forward + backward) and write the standard
     manipulator-equation bias term into ``tau_out``, reusing the buffers
@@ -194,6 +195,10 @@ def _rnea_compensation_pass(
     ``g(q) = ∂U/∂q`` when ``joint_qd`` is zero (gravity only),
     ``C(q, q_dot)*q_dot`` when ``gravity`` is zero (Coriolis only), or
     their sum when both are non-zero.
+
+    When ``mask`` is provided, only articulations whose corresponding
+    entry is ``True`` contribute to ``tau_out``; entries for unselected
+    DOFs are zero.
     """
     # Lazy import: featherstone/kernels.py imports from newton._src.sim, so a
     # top-level import here would create a circular import during sim package
@@ -215,6 +220,12 @@ def _rnea_compensation_pass(
     # kernels (jcalc_motion, compute_link_velocity, jcalc_tau) and don't
     # need pre-zeroing.
     scratch.body_ft_s.zero_()
+
+    # Zero ``tau_out`` so unselected DOFs end up as 0 when ``mask`` is set
+    # (the masked ``eval_rigid_tau`` skips those articulations entirely,
+    # and the masked convert kernel does not touch their entries either).
+    # When ``mask`` is None this is redundant but cheap.
+    tau_out.zero_()
 
     # Body spatial inertias and the CoM-anchored body transforms consumed
     # by ``eval_rigid_id``. ``state.body_q`` is reused directly (already
@@ -262,6 +273,7 @@ def _rnea_compensation_pass(
         dim=model.articulation_count,
         inputs=[
             model.articulation_start,
+            mask,
             model.joint_type,
             model.joint_parent,
             model.joint_child,
@@ -294,6 +306,7 @@ def _rnea_compensation_pass(
         dim=model.articulation_count,
         inputs=[
             model.articulation_start,
+            mask,
             model.joint_type,
             model.joint_parent,
             model.joint_child,
@@ -335,6 +348,8 @@ def _rnea_compensation_pass(
             model.joint_parent,
             model.joint_child,
             model.joint_qd_start,
+            model.joint_articulation,
+            mask,
             model.joint_X_p,
             state.body_q,
             scratch.body_q_com,
@@ -351,6 +366,7 @@ def _compute_gravity_compensation_force(
     state: State,
     inverse_dynamics: InverseDynamics,
     scratch: InverseDynamicsScratchBuffer,
+    mask: wp.array[bool] | None = None,
 ) -> None:
     """Compute the gravity bias ``g(q) = ∂U/∂q`` into
     ``inverse_dynamics.gravity_compensation_force``.
@@ -358,6 +374,9 @@ def _compute_gravity_compensation_force(
     Runs RNEA with joint velocities zeroed and gravity set to
     :attr:`Model.gravity`, producing the joint-space force needed to hold the
     articulation static under gravity (feed-forward gravity compensation).
+
+    When ``mask`` is provided, only the selected articulations contribute;
+    DOFs belonging to unselected articulations are zero.
     """
     _rnea_compensation_pass(
         model,
@@ -366,6 +385,7 @@ def _compute_gravity_compensation_force(
         scratch.zeros_dof,
         model.gravity,
         inverse_dynamics.gravity_compensation_force,
+        mask=mask,
     )
 
 
@@ -374,6 +394,7 @@ def _compute_coriolis_compensation_force(
     state: State,
     inverse_dynamics: InverseDynamics,
     scratch: InverseDynamicsScratchBuffer,
+    mask: wp.array[bool] | None = None,
 ) -> None:
     """Compute the Coriolis bias ``C(q, q_dot)*q_dot`` into
     ``inverse_dynamics.coriolis_compensation_force``.
@@ -381,6 +402,9 @@ def _compute_coriolis_compensation_force(
     Runs RNEA with the current joint velocities and gravity zeroed, producing
     the standard manipulator-equation Coriolis + centrifugal joint-space
     bias term.
+
+    When ``mask`` is provided, only the selected articulations contribute;
+    DOFs belonging to unselected articulations are zero.
     """
     _rnea_compensation_pass(
         model,
@@ -389,6 +413,7 @@ def _compute_coriolis_compensation_force(
         state.joint_qd,
         scratch.zero_gravity,
         inverse_dynamics.coriolis_compensation_force,
+        mask=mask,
     )
 
 
@@ -398,6 +423,7 @@ def eval_inverse_dynamics(
     eval_type: InverseDynamics.EvalType,
     inverse_dynamics: InverseDynamics,
     scratch: InverseDynamicsScratchBuffer,
+    mask: wp.array[bool] | None = None,
 ) -> None:
     """Compute inverse dynamics quantities for an articulation.
 
@@ -421,6 +447,12 @@ def eval_inverse_dynamics(
         eval_type: Bitmask selecting which quantities to compute.
         inverse_dynamics: Output container whose buffers are written in place.
         scratch: Pre-allocated scratch buffers reused across calls.
+        mask: Optional ``wp.array[bool]`` of shape
+            ``(articulation_count,)`` selecting which articulations to
+            compute. Entries belonging to unselected articulations are
+            zero in the output buffers (mirroring
+            :func:`~newton.eval_mass_matrix`'s mask convention). If
+            ``None``, all articulations are computed.
     """
     if eval_type & InverseDynamics.EvalType.MASS_MATRIX:
         expected_shape = (model.articulation_count, model.max_dofs_per_articulation, model.max_dofs_per_articulation)
@@ -434,7 +466,7 @@ def eval_inverse_dynamics(
         # compute_body_spatial_inertia fully overwrites every body's
         # scratch.body_I_s; eval_mass_matrix zeros mass_matrix internally.
         # No pre-zeroing required here.
-        eval_jacobian(model, state, J=scratch.J, joint_S_s=scratch.joint_S_s)
+        eval_jacobian(model, state, J=scratch.J, joint_S_s=scratch.joint_S_s, mask=mask)
         eval_mass_matrix(
             model,
             state,
@@ -442,10 +474,11 @@ def eval_inverse_dynamics(
             J=scratch.J,
             body_I_s=scratch.body_I_s,
             joint_S_s=scratch.joint_S_s,
+            mask=mask,
         )
 
     if eval_type & InverseDynamics.EvalType.GRAVITY_COMPENSATION_FORCE:
-        _compute_gravity_compensation_force(model, state, inverse_dynamics, scratch)
+        _compute_gravity_compensation_force(model, state, inverse_dynamics, scratch, mask=mask)
 
     if eval_type & InverseDynamics.EvalType.CORIOLIS_COMPENSATION_FORCE:
-        _compute_coriolis_compensation_force(model, state, inverse_dynamics, scratch)
+        _compute_coriolis_compensation_force(model, state, inverse_dynamics, scratch, mask=mask)
