@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] - 2026-05-12
 
 ### Added
 
@@ -58,7 +58,6 @@
 - Bump `jupyterlab` lower bound to `>=4.5.7` to pick up the fix for CVE-2026-40171
 - Replace `ModelBuilder.add_actuator(actuator_class, input_indices=..., output_indices=..., **kwargs)` with `ModelBuilder.add_actuator(controller_class, index=..., clamping=[...], delay_steps=..., pos_index=..., **ctrl_kwargs)` where each call registers a single DOF
 - Change `ArticulationView.get_actuator_parameter(actuator, name)` and `set_actuator_parameter(actuator, name, values)` to require a `component` argument identifying the owning `Controller`, `Clamping`, or `Delay` instance: `get_actuator_parameter(actuator, actuator.controller, "kp")`
-- Bump `warp-lang` from `>=1.12.0` to `>=1.13.0,<1.14`; Warp 1.14 is excluded because it removes deprecated `warp.fem` arguments still used by implicit MPM grain rendering
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
 - Remove the implicit-MPM rasterized collider's reliance on Warp's `warp.fem` module (behavior unchanged)
 - Replace the StVK VBD triangle membrane material with the stable Neo-Hookean form (Smith et al. 2018, adapted to 2D shells). The upstream two-constraint Rayleigh damping model is preserved unchanged

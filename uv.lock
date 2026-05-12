@@ -3288,7 +3288,7 @@ wheels = [
 
 [[package]]
 name = "newton"
-version = "1.2.0rc4"
+version = "1.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "warp-lang" },
@@ -3542,7 +3542,7 @@ requires-dist = [
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.2.0" },
     { name = "viser", marker = "extra == 'docs'", specifier = "==1.0.26" },
     { name = "viser", marker = "extra == 'notebook'", specifier = "==1.0.26" },
-    { name = "warp-lang", specifier = ">=1.13.0,<1.14" },
+    { name = "warp-lang", specifier = ">=1.13.0" },
 ]
 provides-extras = ["sim", "importers", "remesh", "examples", "torch-cu12", "torch-cu13", "dev", "docs", "notebook"]
 
