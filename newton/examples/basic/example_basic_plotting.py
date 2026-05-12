@@ -11,19 +11,18 @@
 # The example loads a humanoid model that falls under gravity and collides
 # with the ground, collecting per-step metrics:
 #   - Solver iteration count (max across worlds — worst-case effort)
-#   - Kinetic and potential energy (mean per world — invariant to world count)
-#   - Active constraint count (mean per world — representative contact activity)
+#   - Kinetic and potential energy (world 0 — replicated worlds are identical)
+#   - Active constraint count (world 0 — replicated worlds are identical)
 #
-# Aggregation is intentional: max for solver effort (we care about the
-# hardest step), mean for physics quantities (per-world averages make
-# conservation analysis independent of how many worlds are replicated).
+# All worlds are deterministic replicates of the same humanoid, so they
+# produce identical trajectories; we report world 0 directly rather than
+# pretending aggregation across worlds adds information. The exception is
+# solver iteration count, which we report as a max to highlight worst-case
+# cost in case future variants introduce per-world variation.
 #
-# Energy signals use smoothing=3 in the live viewer to dampen the large
-# transient when humanoids first hit the ground (the viewer auto-rescales
-# its y-axis and smoothing reduces visual instability in that window).
-# The saved PNG uses raw unsmoothed data so the full transient is visible.
-#
-# These are displayed as live plots in the viewer GUI.
+# The numeric overlay drawn on top of each live plot is the most recent
+# logged value (matching the right-most point on the plot and the values
+# in the side panel).
 #
 # Command: python -m newton.examples basic_plotting --world-count 4
 #
@@ -120,17 +119,17 @@ class Example:
         niter_np = d.solver_niter.numpy() if hasattr(d.solver_niter, "numpy") else d.solver_niter
         self.log_iterations.append(float(np.max(niter_np)))
 
-        # Per-world mean: energy represents one representative humanoid, making
-        # the value independent of world_count and suitable for conservation
-        # analysis. Shape is (world_count, 2) — column 0 kinetic, 1 potential.
+        # Energy column order is (potential, kinetic) per MuJoCo convention; see
+        # mujoco_warp Data.energy. Worlds are identical replicates, so we report
+        # world 0 directly.
         energy_np = d.energy.numpy() if hasattr(d.energy, "numpy") else np.asarray(d.energy)
-        self.log_energy_kinetic.append(float(energy_np[:, 0].mean()))
-        self.log_energy_potential.append(float(energy_np[:, 1].mean()))
+        self.log_energy_potential.append(float(energy_np[0, 0]))
+        self.log_energy_kinetic.append(float(energy_np[0, 1]))
 
-        # Per-world mean: average contact activity is more representative than
-        # the maximum for worlds running identical simulations.
+        # nefc counts active constraint rows (contacts * condim + joint limits +
+        # equality). Worlds are identical replicates, so we report world 0.
         nefc_np = d.nefc.numpy() if hasattr(d.nefc, "numpy") else d.nefc
-        self.log_nefc.append(float(np.mean(nefc_np)))
+        self.log_nefc.append(float(nefc_np[0]) if hasattr(nefc_np, "__len__") else float(nefc_np))
 
     def step(self):
         if self.graph:
@@ -141,13 +140,12 @@ class Example:
 
         self._read_status()
 
-        # Iteration and constraint plots need no smoothing — they are already
-        # bounded integers. Energy uses smoothing=3 to reduce the large y-axis
-        # rescale when humanoids impact the ground (viewer auto-scales its axis).
+        # Plots show raw per-frame values so the overlay number (the latest
+        # buffered value) matches the right-most plot point and the side panel.
         self.viewer.log_scalar("Solver Iterations (max)", self.log_iterations[-1])
-        self.viewer.log_scalar("Kinetic Energy [J/world]", self.log_energy_kinetic[-1], smoothing=3)
-        self.viewer.log_scalar("Potential Energy [J/world]", self.log_energy_potential[-1], smoothing=3)
-        self.viewer.log_scalar("Active Constraints (mean)", self.log_nefc[-1])
+        self.viewer.log_scalar("Kinetic Energy [J]", self.log_energy_kinetic[-1])
+        self.viewer.log_scalar("Potential Energy [J]", self.log_energy_potential[-1])
+        self.viewer.log_scalar("Active Constraints", self.log_nefc[-1])
 
     def test_final(self):
         # Verify the humanoid hasn't exploded or fallen through the ground
@@ -182,7 +180,7 @@ class Example:
         axs[1].plot(time, self.log_energy_potential, color="blue", label="potential")
         total = np.array(self.log_energy_kinetic) + np.array(self.log_energy_potential)
         axs[1].plot(time, total, color="black", linestyle="--", label="total")
-        axs[1].set_ylabel("Energy [J] (per world)")
+        axs[1].set_ylabel("Energy [J]")
         axs[1].legend()
         axs[1].grid(True)
 
@@ -205,9 +203,9 @@ class Example:
         iters = np.array(self.log_iterations)
         print(f"\nSimulation diagnostics summary ({n} steps):")
         print(f"  Iterations (max):   mean={np.mean(iters):.1f}, peak={np.max(iters):.0f}")
-        print(f"  Kinetic E [J/world]:    final={self.log_energy_kinetic[-1]:.4f}")
-        print(f"  Potential E [J/world]:  final={self.log_energy_potential[-1]:.4f}")
-        print(f"  Constraints (mean): mean={np.mean(self.log_nefc):.1f}, peak={np.max(self.log_nefc):.1f}")
+        print(f"  Kinetic E [J]:    final={self.log_energy_kinetic[-1]:.4f}")
+        print(f"  Potential E [J]:  final={self.log_energy_potential[-1]:.4f}")
+        print(f"  Constraints:        mean={np.mean(self.log_nefc):.1f}, peak={np.max(self.log_nefc):.1f}")
 
     def gui(self, ui):
         n = len(self.log_iterations)
@@ -217,9 +215,9 @@ class Example:
 
         ui.text(f"Step: {n}")
         ui.text(f"Solver iterations (max): {int(self.log_iterations[-1])}")
-        ui.text(f"Kinetic E (per world): {self.log_energy_kinetic[-1]:.4f} J")
-        ui.text(f"Potential E (per world): {self.log_energy_potential[-1]:.4f} J")
-        ui.text(f"Active constraints (mean): {self.log_nefc[-1]:.1f}")
+        ui.text(f"Kinetic E: {self.log_energy_kinetic[-1]:.4f} J")
+        ui.text(f"Potential E: {self.log_energy_potential[-1]:.4f} J")
+        ui.text(f"Active constraints: {int(self.log_nefc[-1])}")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
