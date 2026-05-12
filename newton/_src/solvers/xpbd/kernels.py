@@ -218,8 +218,13 @@ def solve_particle_shape_contacts(
     wp.atomic_add(delta, particle_index, w1 * delta_total)
 
     if body_index >= 0:
-        delta_t = wp.cross(r, delta_total)
-        wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_total, delta_t))
+        # apply_body_deltas() treats body_delta as a velocity-like correction:
+        # it multiplies by inverse mass/inertia and dt to update the body pose.
+        # delta_total is a positional contact correction, matching the particle
+        # path above, so convert it to the body-delta convention here.
+        delta_v = delta_total / dt
+        delta_w = wp.cross(r, delta_v)
+        wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_v, delta_w))
 
 
 @wp.kernel

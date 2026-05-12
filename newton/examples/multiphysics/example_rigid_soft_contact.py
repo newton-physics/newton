@@ -20,6 +20,20 @@ GRID_DIM_X = 20
 GRID_DIM_Y = 10
 GRID_DIM_Z = 10
 GRID_CELL_SIZE = 0.1
+SPHERE_RADIUS = 0.75
+SPHERE_INITIAL_Z = 2.5
+
+SOFT_GRID_DENSITY = 100.0
+SOFT_GRID_K_MU = 1.0e4
+SOFT_GRID_K_LAMBDA = 5.0e4
+SOFT_GRID_K_DAMP = 1.0
+
+RIGID_SOFT_SPHERE_DENSITY = 13.5
+RIGID_SOFT_CONTACT_KE = 75.0
+RIGID_SOFT_CONTACT_KD = 1.0
+RIGID_SOFT_CONTACT_KF = 1.0e3
+RIGID_SOFT_CONTACT_MU = 1.0
+GROUND_CONTACT_KE = 2.0e5
 
 
 def _grid_index(x, y, z):
@@ -50,34 +64,35 @@ class Example:
         self.sim_substeps = 32
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        if self.solver_type not in {"semi_implicit", "xpbd"}:
-            raise ValueError("The rigid soft contact example supports the semi_implicit and xpbd solvers.")
+        if self.solver_type not in {"semi_implicit", "xpbd", "vbd"}:
+            raise ValueError("The rigid soft contact example supports the semi_implicit, xpbd, and vbd solvers.")
 
-        if self.solver_type == "semi_implicit":
+        if self.solver_type in {"semi_implicit", "xpbd"}:
+            # Share the same scene material for force-based and XPBD solves.
+            # XPBD rigid-soft contact is a positional projection and ignores
+            # the normal contact stiffness, but SemiImplicit uses it as a
+            # penalty stiffness, so keep the value low enough for visible
+            # penetration while the tet material carries the shape recovery.
             sphere_contact_cfg = newton.ModelBuilder.ShapeConfig(
-                density=100.0,
-                ke=1.0e3,
-                kd=5.0,
-                kf=1.0e2,
-                mu=0.1,
+                density=RIGID_SOFT_SPHERE_DENSITY,
+                ke=RIGID_SOFT_CONTACT_KE,
+                kd=RIGID_SOFT_CONTACT_KD,
+                kf=RIGID_SOFT_CONTACT_KF,
+                mu=RIGID_SOFT_CONTACT_MU,
             )
             ground_contact_cfg = sphere_contact_cfg.copy()
-            ground_contact_cfg.ke = 2.0e5
-            ground_contact_cfg.kd = 1.0e1
-            ground_contact_cfg.kf = 1.0e3
-            ground_contact_cfg.mu = 1.0
+            ground_contact_cfg.ke = GROUND_CONTACT_KE
         else:
-            # Keep the off-center XPBD drop from shearing the free grid into a
-            # non-recovering fold while still visibly compressing it.
             sphere_contact_cfg = newton.ModelBuilder.ShapeConfig(
-                density=12.5,
-                ke=1.0e3,
-                kd=0.0,
+                density=RIGID_SOFT_SPHERE_DENSITY,
+                ke=1.0e5,
+                kd=1.0e-4,
                 kf=1.0e3,
-                mu=1.0,
+                mu=0.3,
             )
             ground_contact_cfg = sphere_contact_cfg.copy()
-            ground_contact_cfg.ke = 2.0e5
+            ground_contact_cfg.ke = 1.0e5
+            ground_contact_cfg.mu = 0.5
 
         builder = newton.ModelBuilder()
         builder.default_particle_radius = 0.01
@@ -94,44 +109,57 @@ class Example:
             cell_x=GRID_CELL_SIZE,
             cell_y=GRID_CELL_SIZE,
             cell_z=GRID_CELL_SIZE,
-            density=100.0,
-            k_mu=200000.0,
-            k_lambda=1000000.0,
-            k_damp=0.01,
+            density=SOFT_GRID_DENSITY,
+            k_mu=SOFT_GRID_K_MU,
+            k_lambda=SOFT_GRID_K_LAMBDA,
+            k_damp=SOFT_GRID_K_DAMP,
         )
 
         # Warp's original example is y-up; Newton examples are z-up.
         sphere_body = builder.add_body(
-            xform=wp.transform(wp.vec3(0.5, 0.5, 2.5), wp.quat_identity()),
+            xform=wp.transform(wp.vec3(0.5, 0.5, SPHERE_INITIAL_Z), wp.quat_identity()),
             label="sphere",
         )
         builder.add_shape_sphere(
             sphere_body,
-            radius=0.75,
+            radius=SPHERE_RADIUS,
             cfg=sphere_contact_cfg,
             color=wp.vec3(0.95, 0.43, 0.18),
             label="rigid_sphere",
         )
 
+        if self.solver_type == "vbd":
+            builder.color()
+
         self.model = builder.finalize()
-        self.model.soft_contact_ke = 1.0e3
-        if self.solver_type == "semi_implicit":
-            self.model.soft_contact_kd = 5.0
-            self.model.soft_contact_kf = 1.0e2
-            self.model.soft_contact_mu = 0.1
-        else:
-            self.model.soft_contact_kd = 0.0
+        if self.solver_type in {"semi_implicit", "xpbd"}:
+            self.model.soft_contact_ke = RIGID_SOFT_CONTACT_KE
+            self.model.soft_contact_kd = RIGID_SOFT_CONTACT_KD
+            self.model.soft_contact_kf = RIGID_SOFT_CONTACT_KF
+            self.model.soft_contact_mu = RIGID_SOFT_CONTACT_MU
+        elif self.solver_type == "vbd":
+            self.model.soft_contact_ke = 1.0e5
+            self.model.soft_contact_kd = 1.0e-4
             self.model.soft_contact_kf = 1.0e3
-            self.model.soft_contact_mu = 1.0
+            self.model.soft_contact_mu = 0.3
 
         if self.solver_type == "semi_implicit":
             self.solver = newton.solvers.SolverSemiImplicit(model=self.model)
         elif self.solver_type == "xpbd":
             self.solver = newton.solvers.SolverXPBD(
                 model=self.model,
-                iterations=5,
+                iterations=20,
                 soft_body_relaxation=0.55,
-                soft_contact_relaxation=0.7,
+                soft_contact_relaxation=0.5,
+            )
+        elif self.solver_type == "vbd":
+            self.solver = newton.solvers.SolverVBD(
+                model=self.model,
+                iterations=10,
+                particle_enable_self_contact=False,
+                particle_enable_tile_solve=False,
+                rigid_contact_hard=False,
+                rigid_body_particle_contact_buffer_size=512,
             )
 
         self.state_0 = self.model.state()
@@ -228,7 +256,7 @@ class Example:
             "--solver",
             help="Type of solver",
             type=str,
-            choices=["semi_implicit", "xpbd"],
+            choices=["semi_implicit", "xpbd", "vbd"],
             default="xpbd",
         )
         return parser
