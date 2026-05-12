@@ -1,0 +1,134 @@
+name: Sync Fork with Upstream
+
+# Rebase the fork's main branch onto upstream/main daily.
+# Unlike the old merge-based sync, this replays the fork's commits
+# cleanly on top — no merge commits, no tangled history.
+# On conflict, an issue is opened on the fork so you can resolve it manually.
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # Daily at 8 AM UTC (4 AM ET / 1 AM PT)
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Rebase fork onto upstream
+    if: github.repository == 'jkuzmeski/newton'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout fork with full history
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/newton-physics/newton.git
+          git fetch upstream main
+
+      - name: Check if sync is needed
+        id: check
+        run: |
+          BEHIND=$(git rev-list --count HEAD..upstream/main)
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "Fork is already up to date with upstream. Nothing to do."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Fork is $BEHIND commit(s) behind upstream. Rebasing..."
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase onto upstream/main
+        id: rebase
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          AHEAD_BEFORE=$(git rev-list --count upstream/main..HEAD)
+          if git rebase upstream/main; then
+            echo "Rebase succeeded."
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Rebase conflict detected."
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "ahead_before=$AHEAD_BEFORE" >> "$GITHUB_OUTPUT"
+            echo "behind=${{ steps.check.outputs.behind }}" >> "$GITHUB_OUTPUT"
+            git rebase --abort
+          fi
+
+      - name: Push rebased main
+        if: steps.rebase.outputs.conflict == 'false'
+        run: |
+          git push --force-with-lease origin main
+          echo "Successfully synced fork with upstream."
+
+      - name: Open conflict issue
+        if: steps.rebase.outputs.conflict == 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        with:
+          script: |
+            const behind = '${{ steps.check.outputs.behind }}';
+            const ahead_before = '${{ steps.rebase.outputs.ahead_before }}';
+            const date = new Date().toISOString().split('T')[0];
+
+            const body = `## Sync blocked by merge conflict
+
+            The daily rebase onto \`newton-physics/newton:main\` failed because
+            your research commits conflict with upstream changes.
+
+            **State at time of conflict:**
+            - ${ahead_before} fork commit(s) to rebase
+            - ${behind} upstream commit(s) to apply
+
+            **To resolve:**
+
+            \`\`\`bash
+            git fetch upstream
+            git rebase upstream/main
+            # Resolve conflicts, then:
+            git push --force-with-lease origin main
+            \`\`\`
+
+            Once resolved, the next nightly sync will continue automatically.`;
+
+            // Check if there's already an open conflict issue
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['sync-conflict'],
+              state: 'open',
+            });
+
+            if (issues.length > 0) {
+              // Update existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues[0].number,
+                body: `Conflict persists as of ${date}. Still ${behind} commits behind upstream.`,
+              });
+              console.log(`Updated existing issue #${issues[0].number}`);
+            } else {
+              // Create new issue
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `[sync] Rebase conflict with upstream (${date})`,
+                body: body,
+                labels: ['sync-conflict'],
+              });
+              console.log('Created new conflict issue');
+            }
