@@ -517,7 +517,7 @@ def parse_usd(
             mesh.has_inertia = physics_mesh.has_inertia
         else:
             mesh = physics_mesh.copy(recompute_inertia=False)
-        if texture:
+        if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
             warnings.warn(
