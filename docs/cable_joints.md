@@ -6,6 +6,9 @@ for rolling links.  The known-good pre-split finite capstan baseline is commit
 `1a87f7a2a` (`Add finite capstan routed cable baseline`); compare against that
 commit if the clean split regresses the routed-cable examples.
 
+For the mathematical formulation behind the current split stretch/slip solver,
+see [A Split Stretch/Slip Formulation for Routed Cable Joints](cable_joints_formulation.md).
+
 ## Current Scope
 
 Implemented:
