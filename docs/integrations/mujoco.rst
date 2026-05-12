@@ -158,18 +158,20 @@ To keep Newton's force-space meaning,
 compiled or refreshed ``dof_invweight0``. If ``joint_limit_ke <= 0``, the
 solver restores MuJoCo's default ``solref_limit`` value ``(0.02, 1.0)``.
 
-MJCF-authored ``solreflimit`` values are already native MuJoCo parameters, so
-they are preserved verbatim through the ``model.mujoco.solreflimit`` custom
-attribute and are not rescaled. Imported MJCF joints that did not author
-``solreflimit`` keep MuJoCo's implicit default ``(0.02, 1.0)`` until their
-Newton ``joint_limit_ke`` or ``joint_limit_kd`` values are changed, at which
-point the Newton force-space scaling above is used.
+MJCF- or USD-authored ``solreflimit`` values are already native MuJoCo
+parameters, so they are preserved verbatim through the
+``model.mujoco.solreflimit`` custom attribute and are not rescaled. Imported
+MJCF joints that did not author ``solreflimit`` keep MuJoCo's implicit default
+``(0.02, 1.0)`` until their Newton ``joint_limit_ke`` or ``joint_limit_kd``
+values are changed, at which point the Newton force-space scaling above is
+used.
 
 ``model.mujoco.solreflimit_mode`` records how ``solreflimit`` should be
 interpreted: Newton force-space gains, a raw authored MuJoCo value, or an
 implicit MJCF default. This extra flag is needed because the two-component
 ``solreflimit`` value alone cannot distinguish an unauthored value from an
-authored native value such as ``solreflimit="0 0"``.
+authored native value such as ``solreflimit="0 0"`` or USD
+``mjc:solreflimit = [0, 0]``.
 
 
 Actuators

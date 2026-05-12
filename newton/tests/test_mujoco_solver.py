@@ -14,7 +14,10 @@ import newton
 from newton import BodyFlags, JointType, Mesh
 from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.constants import (
+    DEFAULT_LIMIT_KD,
+    DEFAULT_LIMIT_KE,
     KINEMATIC_ARMATURE,
+    SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
@@ -9620,6 +9623,77 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         self.assertFalse(np.allclose(actual_solref, initial_solref))
         np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
 
+    def test_mjcf_implicit_default_mode_promotes_after_gain_edit(self):
+        """Once imported MJCF default gains are edited, later default-valued gains stay force-space."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        model.joint_limit_ke.assign(np.array([5000.0], dtype=np.float32))
+        model.joint_limit_kd.assign(np.array([50.0], dtype=np.float32))
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_FORCE_SPACE)
+
+        model.joint_limit_ke.assign(np.array([DEFAULT_LIMIT_KE], dtype=np.float32))
+        model.joint_limit_kd.assign(np.array([DEFAULT_LIMIT_KD], dtype=np.float32))
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+        dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
+        factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+        expected_solref = np.array([-DEFAULT_LIMIT_KE * factor, -DEFAULT_LIMIT_KD * factor], dtype=np.float64)
+        actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+
+        np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_authored_zero_solreflimit_is_preserved_as_native_parameter(self):
+        """USD-authored ``mjc:solreflimit = [0, 0]`` must set raw mode just like MJCF import."""
+        from pxr import Sdf, Vt
+
+        def set_zero_solref(joint):
+            joint.GetPrim().CreateAttribute("mjc:solreflimit", Sdf.ValueTypeNames.DoubleArray, True).Set(
+                Vt.DoubleArray([0.0, 0.0])
+            )
+
+        stage = _create_actuator_test_stage(extra_joint_attrs=set_zero_solref)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        raw_dofs = np.flatnonzero(model.mujoco.solreflimit_mode.numpy() == SOLREF_MODE_RAW)
+        self.assertEqual(len(raw_dofs), 1)
+        raw_dof = int(raw_dofs[0])
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[raw_dof], [0.0, 0.0], rtol=0.0, atol=0.0)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        jnt_to_dof = solver.mjc_jnt_to_newton_dof.numpy()[0]
+        raw_mjc_joints = np.flatnonzero(jnt_to_dof == raw_dof)
+        self.assertEqual(len(raw_mjc_joints), 1)
+        np.testing.assert_allclose(
+            solver.mjw_model.jnt_solref.numpy()[0, int(raw_mjc_joints[0])],
+            [0.0, 0.0],
+            rtol=0.0,
+            atol=0.0,
+        )
+
     def test_mjcf_authored_solreflimit_is_preserved_as_native_parameter(self):
         """Authored MJCF ``solreflimit`` still bypasses Newton force-space gain scaling."""
         builder = newton.ModelBuilder()
@@ -9696,6 +9770,47 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             joint = next(tree.iter("joint"))
             solref = np.array([float(x) for x in joint.get("solreflimit").split()], dtype=np.float64)
             np.testing.assert_allclose(solref, expected_solref, rtol=1e-6, atol=1e-6)
+        finally:
+            os.unlink(xml_path)
+
+    def test_saved_mjcf_does_not_write_limit_solref_to_unlimited_joints(self):
+        """Runtime-scaled limit ``solref`` should only be authored for joints with active limits."""
+        builder = newton.ModelBuilder(gravity=0.0)
+        inertia = wp.mat33(np.eye(3) * 0.5)
+        link_a = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia, label="link_a")
+        link_b = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia, label="link_b")
+        limited = builder.add_joint_revolute(
+            parent=-1,
+            child=link_a,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=10000.0,
+            limit_kd=100.0,
+            label="limited",
+        )
+        unlimited = builder.add_joint_revolute(
+            parent=link_a,
+            child=link_b,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            limit_ke=10000.0,
+            limit_kd=100.0,
+            label="unlimited",
+        )
+        builder.add_articulation([limited, unlimited])
+        model = builder.finalize()
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+
+            tree = ET.parse(xml_path)
+            joints = {joint.get("name"): joint for joint in tree.iter("joint")}
+            self.assertIn("limited", joints)
+            self.assertIn("unlimited", joints)
+            self.assertIsNotNone(joints["limited"].get("solreflimit"))
+            self.assertIsNone(joints["unlimited"].get("solreflimit"))
         finally:
             os.unlink(xml_path)
 

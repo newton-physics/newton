@@ -594,6 +594,15 @@ class SolverMuJoCo(SolverBase):
 
         # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
 
+        def parse_solreflimit_mode_usd(_value: Any, context: dict[str, Any]) -> int | None:
+            prim = context.get("prim")
+            if prim is None:
+                return None
+            solreflimit_attr = prim.GetAttribute("mjc:solreflimit")
+            if solreflimit_attr is not None and solreflimit_attr.HasAuthoredValue():
+                return SOLREF_MODE_RAW
+            return None
+
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
         builder.add_custom_frequency(
@@ -727,6 +736,8 @@ class SolverMuJoCo(SolverBase):
                 # attribute's legacy zero sentinel.
                 default=SOLREF_MODE_FORCE_SPACE,
                 namespace="mujoco",
+                usd_attribute_name="*",
+                usd_value_transformer=parse_solreflimit_mode_usd,
             )
         )
         builder.add_custom_attribute(
@@ -5122,17 +5133,18 @@ class SolverMuJoCo(SolverBase):
                     else:
                         joint_params["limited"] = True
 
-                    # we're piping these through unconditionally even though they are only active with limited joints
+                    # Keep the range available for runtime limit enablement.
                     joint_params["range"] = (lower, upper)
-                    if joint_has_raw_limit_solref(ai):
-                        joint_params["solref_limit"] = joint_solref_limit[ai]
-                    # Seed user-authored Newton stiffness with MuJoCo's negative
-                    # convention; this is rescaled after compilation once
-                    # ``dof_invweight0`` is available. MJCF joints that used
-                    # MuJoCo's implicit default omit solref_limit here so the
-                    # compiled model starts from native MuJoCo dynamics.
-                    elif joint_limit_ke[ai] > 0 and not joint_uses_mjcf_default_limit_solref(ai):
-                        joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
+                    if joint_params["limited"]:
+                        if joint_has_raw_limit_solref(ai):
+                            joint_params["solref_limit"] = joint_solref_limit[ai]
+                        # Seed user-authored Newton stiffness with MuJoCo's negative
+                        # convention; this is rescaled after compilation once
+                        # ``dof_invweight0`` is available. MJCF joints that used
+                        # MuJoCo's implicit default omit solref_limit here so the
+                        # compiled model starts from native MuJoCo dynamics.
+                        elif joint_limit_ke[ai] > 0 and not joint_uses_mjcf_default_limit_solref(ai):
+                            joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
                     if joint_dof_solref is not None:
@@ -5226,17 +5238,18 @@ class SolverMuJoCo(SolverBase):
                     else:
                         joint_params["limited"] = True
 
-                    # we're piping these through unconditionally even though they are only active with limited joints
+                    # Keep the range available for runtime limit enablement.
                     joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
-                    if joint_has_raw_limit_solref(ai):
-                        joint_params["solref_limit"] = joint_solref_limit[ai]
-                    # Seed user-authored Newton stiffness with MuJoCo's negative
-                    # convention; this is rescaled after compilation once
-                    # ``dof_invweight0`` is available. MJCF joints that used
-                    # MuJoCo's implicit default omit solref_limit here so the
-                    # compiled model starts from native MuJoCo dynamics.
-                    elif joint_limit_ke[ai] > 0 and not joint_uses_mjcf_default_limit_solref(ai):
-                        joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
+                    if joint_params["limited"]:
+                        if joint_has_raw_limit_solref(ai):
+                            joint_params["solref_limit"] = joint_solref_limit[ai]
+                        # Seed user-authored Newton stiffness with MuJoCo's negative
+                        # convention; this is rescaled after compilation once
+                        # ``dof_invweight0`` is available. MJCF joints that used
+                        # MuJoCo's implicit default omit solref_limit here so the
+                        # compiled model starts from native MuJoCo dynamics.
+                        elif joint_limit_ke[ai] > 0 and not joint_uses_mjcf_default_limit_solref(ai):
+                            joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
                     if joint_dof_solref is not None:
@@ -5906,7 +5919,8 @@ class SolverMuJoCo(SolverBase):
 
             if target_filename:
                 for mjc_jnt, solref in enumerate(self.mj_model.jnt_solref):
-                    spec.joints[mjc_jnt].solref_limit = solref
+                    if self.mj_model.jnt_limited[mjc_jnt]:
+                        spec.joints[mjc_jnt].solref_limit = solref
                 with open(target_filename, "w") as f:
                     f.write(spec.to_xml())
                     print(f"Saved mujoco model to {os.path.abspath(target_filename)}")
@@ -6844,6 +6858,21 @@ class SolverMuJoCo(SolverBase):
         mujoco_attrs = getattr(self.model, "mujoco", None)
         joint_limit_solref = getattr(mujoco_attrs, "solreflimit", None) if mujoco_attrs is not None else None
         joint_limit_solref_mode = getattr(mujoco_attrs, "solreflimit_mode", None) if mujoco_attrs is not None else None
+
+        if joint_limit_solref_mode is not None:
+            solref_mode_np = joint_limit_solref_mode.numpy()
+            mjcf_default = solref_mode_np == SOLREF_MODE_MJCF_DEFAULT
+            if np.any(mjcf_default):
+                joint_limit_ke_np = self.model.joint_limit_ke.numpy()
+                joint_limit_kd_np = self.model.joint_limit_kd.numpy()
+                edited = mjcf_default & (
+                    ~np.isclose(joint_limit_ke_np, DEFAULT_LIMIT_KE, rtol=0.0, atol=DEFAULT_LIMIT_GAIN_ATOL)
+                    | ~np.isclose(joint_limit_kd_np, DEFAULT_LIMIT_KD, rtol=0.0, atol=DEFAULT_LIMIT_GAIN_ATOL)
+                )
+                if np.any(edited):
+                    solref_mode_np = np.array(solref_mode_np, copy=True)
+                    solref_mode_np[edited] = SOLREF_MODE_FORCE_SPACE
+                    joint_limit_solref_mode.assign(solref_mode_np.astype(np.int32, copy=False))
 
         if self.use_mujoco_cpu:
             joint_limit_ke = self.model.joint_limit_ke.numpy()
