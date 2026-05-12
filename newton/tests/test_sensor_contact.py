@@ -561,7 +561,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         """Test contact forces with b stacked on a on base."""
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
-        builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.kd = 2000.0
         builder.default_shape_cfg.density = 1000.0
 
         builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, label="base")
