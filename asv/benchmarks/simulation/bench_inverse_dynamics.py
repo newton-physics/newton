@@ -77,8 +77,8 @@ class _InverseDynamicsBenchmark:
                 self.model,
                 self.inverse_dynamics.mass_matrix,
                 self.qddot,
-                self.inverse_dynamics.coriolis_compensation_force,
-                self.inverse_dynamics.gravity_compensation_force,
+                self.inverse_dynamics.coriolis_force,
+                self.inverse_dynamics.gravity_force,
                 self.inverse_dynamics.tau,
             )
         self.force_graph = cap_force.graph
@@ -97,8 +97,8 @@ class _InverseDynamicsBenchmark:
 
     def teardown(self):
         H = self.inverse_dynamics.mass_matrix.numpy()
-        g = self.inverse_dynamics.gravity_compensation_force.numpy()
-        c = self.inverse_dynamics.coriolis_compensation_force.numpy()
+        g = self.inverse_dynamics.gravity_force.numpy()
+        c = self.inverse_dynamics.coriolis_force.numpy()
         tau = self.inverse_dynamics.tau.numpy()
         finite = (
             np.all(np.isfinite(H)) and np.all(np.isfinite(g)) and np.all(np.isfinite(c)) and np.all(np.isfinite(tau))

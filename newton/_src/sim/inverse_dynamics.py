@@ -109,17 +109,14 @@ class InverseDynamics:
         MASS_MATRIX = 1 << 0
         """Compute the joint-space mass matrix M(q)."""
 
-        GRAVITY_COMPENSATION_FORCE = 1 << 1
-        """Compute the standard manipulator-equation gravity bias ``g(q) = ∂U/∂q``."""
+        GRAVITY_FORCE = 1 << 1
+        """Compute the gravity force ``g(q) = ∂U/∂q``."""
 
-        CORIOLIS_COMPENSATION_FORCE = 1 << 2
-        """Compute the standard manipulator-equation Coriolis bias ``C(q, q_dot)*q_dot``."""
+        CORIOLIS_FORCE = 1 << 2
+        """Compute the Coriolis force ``C(q, q_dot)*q_dot``."""
 
-        COMPENSATION_FORCES = GRAVITY_COMPENSATION_FORCE | CORIOLIS_COMPENSATION_FORCE
-        """Compute both manipulator-equation bias terms ``g(q)`` and ``C(q, q_dot)*q_dot``."""
-
-        ALL = MASS_MATRIX | GRAVITY_COMPENSATION_FORCE | CORIOLIS_COMPENSATION_FORCE
-        """Compute the mass matrix and both compensation forces."""
+        ALL = MASS_MATRIX | GRAVITY_FORCE | CORIOLIS_FORCE
+        """Compute the mass matrix, gravity force, and Coriolis force."""
 
     def __init__(
         self,
@@ -136,8 +133,8 @@ class InverseDynamics:
         ``max_dofs_per_articulation`` already includes any 6 DOFs contributed by a
         floating-base root joint.
 
-        The compensation-force buffers share the flat joint-space layout that
-        :func:`~newton.Model.joint_qd` uses.
+        The ``gravity_force`` and ``coriolis_force`` buffers share the flat
+        joint-space layout that :func:`~newton.Model.joint_qd` uses.
 
         Internal scratch lives on a separate
         :class:`InverseDynamicsScratchBuffer`, which is passed alongside
@@ -160,13 +157,13 @@ class InverseDynamics:
         self.mass_matrix: wp.array3d[wp.float32] = wp.zeros((ac, max_dofs, max_dofs), dtype=wp.float32, device=device)
         """Joint-space mass matrix M(q) [kg, kg·m, or kg·m^2, depending on the joint types of the row/column DOFs], shape (articulation_count, max_dofs_per_articulation, max_dofs_per_articulation), dtype float."""
 
-        self.gravity_compensation_force: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
-        """Standard manipulator-equation gravity bias ``g(q) = ∂U/∂q`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
-        Equivalently, the joint-space force a controller must apply to hold the articulation static under gravity (feed-forward gravity compensation)."""
+        self.gravity_force: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
+        """Gravity force ``g(q) = ∂U/∂q`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
+        The joint-space force a controller must apply to hold the articulation static under gravity."""
 
-        self.coriolis_compensation_force: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
-        """Standard manipulator-equation Coriolis + centrifugal bias ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
-        Equivalently, the joint-space force a controller must apply to maintain the current ``joint_qd`` at zero acceleration in the absence of gravity (feed-forward Coriolis compensation)."""
+        self.coriolis_force: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
+        """Coriolis + centrifugal force ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
+        The joint-space force a controller must apply to maintain the current ``joint_qd`` at zero acceleration in the absence of gravity."""
 
         self.tau: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
         """Inverse-dynamics joint force ``tau = M(q)*qddot + C(q, q_dot)*q_dot + g(q)`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
@@ -182,9 +179,9 @@ def _rnea_compensation_pass(
     tau_out: wp.array[wp.float32],
     mask: wp.array[bool] | None = None,
 ) -> None:
-    """Run one RNEA pass (forward + backward) and write the standard
-    manipulator-equation bias term into ``tau_out``, reusing the buffers
-    on ``scratch``.
+    """Run one RNEA pass (forward + backward) and write a single bias
+    force (``g(q)``, ``C(q, q_dot)*q_dot``, or their sum) into
+    ``tau_out``, reusing the buffers on ``scratch``.
 
     Requires ``state.body_q`` to be consistent with ``state.joint_q``;
     callers must invoke :func:`~newton.eval_fk` (or otherwise update
@@ -361,19 +358,19 @@ def _rnea_compensation_pass(
     )
 
 
-def _compute_gravity_compensation_force(
+def _compute_gravity_force(
     model: Model,
     state: State,
     inverse_dynamics: InverseDynamics,
     scratch: InverseDynamicsScratchBuffer,
     mask: wp.array[bool] | None = None,
 ) -> None:
-    """Compute the gravity bias ``g(q) = ∂U/∂q`` into
-    ``inverse_dynamics.gravity_compensation_force``.
+    """Compute the gravity force ``g(q) = ∂U/∂q`` into
+    ``inverse_dynamics.gravity_force``.
 
     Runs RNEA with joint velocities zeroed and gravity set to
     :attr:`Model.gravity`, producing the joint-space force needed to hold the
-    articulation static under gravity (feed-forward gravity compensation).
+    articulation static under gravity.
 
     When ``mask`` is provided, only the selected articulations contribute;
     DOFs belonging to unselected articulations are zero.
@@ -384,24 +381,23 @@ def _compute_gravity_compensation_force(
         scratch,
         scratch.zeros_dof,
         model.gravity,
-        inverse_dynamics.gravity_compensation_force,
+        inverse_dynamics.gravity_force,
         mask=mask,
     )
 
 
-def _compute_coriolis_compensation_force(
+def _compute_coriolis_force(
     model: Model,
     state: State,
     inverse_dynamics: InverseDynamics,
     scratch: InverseDynamicsScratchBuffer,
     mask: wp.array[bool] | None = None,
 ) -> None:
-    """Compute the Coriolis bias ``C(q, q_dot)*q_dot`` into
-    ``inverse_dynamics.coriolis_compensation_force``.
+    """Compute the Coriolis force ``C(q, q_dot)*q_dot`` into
+    ``inverse_dynamics.coriolis_force``.
 
     Runs RNEA with the current joint velocities and gravity zeroed, producing
-    the standard manipulator-equation Coriolis + centrifugal joint-space
-    bias term.
+    the Coriolis + centrifugal force in joint space.
 
     When ``mask`` is provided, only the selected articulations contribute;
     DOFs belonging to unselected articulations are zero.
@@ -412,7 +408,7 @@ def _compute_coriolis_compensation_force(
         scratch,
         state.joint_qd,
         scratch.zero_gravity,
-        inverse_dynamics.coriolis_compensation_force,
+        inverse_dynamics.coriolis_force,
         mask=mask,
     )
 
@@ -427,18 +423,36 @@ def eval_inverse_dynamics(
 ) -> None:
     """Compute inverse dynamics quantities for an articulation.
 
-    Depending on the flags in ``eval_type``, populates one or more of: the
-    joint-space mass matrix ``M(q)`` [kg, kg·m, or kg·m^2, depending on the
-    joint types of the row/column DOFs], the gravity bias
-    ``g(q) = ∂U/∂q`` [N or N·m, depending on joint type], and the Coriolis
-    bias ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type] into
-    ``inverse_dynamics``. All three quantities follow the standard
-    manipulator-equation convention ``tau = M(q)*qddot + C(q,q_dot)*q_dot
-    + g(q)``.
+    Depending on the flags in ``eval_type``, populates one or more of the
+    output buffers on ``inverse_dynamics``:
+
+    * ``mass_matrix`` ← the joint-space mass matrix ``M(q)`` [kg, kg·m, or
+      kg·m^2, depending on the joint types of the row/column DOFs];
+    * ``gravity_force`` ← the gravity force ``g(q) = ∂U/∂q`` [N or N·m,
+      depending on joint type], where ``U(q)`` is the system's
+      gravitational potential energy ``sum_i m_i * g . x_com_i``. This is
+      the joint-space force that holds the articulation static under
+      gravity;
+    * ``coriolis_force`` ← the Coriolis + centrifugal force
+      ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type].
+
+    All three quantities follow the standard manipulator-equation convention
+    ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)``.
 
     Requires ``state.body_q`` to be consistent with ``state.joint_q``;
     callers must invoke :func:`~newton.eval_fk` (or otherwise update
     ``state.body_q``) before this function.
+
+    Note:
+        The underlying algorithms (RNEA for ``g(q)`` / ``C(q, q_dot)*q_dot``
+        and a Jacobian-product mass matrix) traverse only the joint
+        spanning tree (``Model.joint_parent`` / ``Model.joint_ancestor``).
+        Closed kinematic loops expressed via equality constraints
+        (``EqType.CONNECT`` / ``EqType.WELD`` / ``EqType.JOINT``) are
+        ignored — the returned ``M(q)``, ``g(q)``, and
+        ``C(q, q_dot)*q_dot`` are those of the tree-only system,
+        without the constraint-Jacobian contribution required to model
+        the constrained dynamics.
 
     Args:
         model: Model providing articulation topology and inertial parameters.
@@ -477,8 +491,8 @@ def eval_inverse_dynamics(
             mask=mask,
         )
 
-    if eval_type & InverseDynamics.EvalType.GRAVITY_COMPENSATION_FORCE:
-        _compute_gravity_compensation_force(model, state, inverse_dynamics, scratch, mask=mask)
+    if eval_type & InverseDynamics.EvalType.GRAVITY_FORCE:
+        _compute_gravity_force(model, state, inverse_dynamics, scratch, mask=mask)
 
-    if eval_type & InverseDynamics.EvalType.CORIOLIS_COMPENSATION_FORCE:
-        _compute_coriolis_compensation_force(model, state, inverse_dynamics, scratch, mask=mask)
+    if eval_type & InverseDynamics.EvalType.CORIOLIS_FORCE:
+        _compute_coriolis_force(model, state, inverse_dynamics, scratch, mask=mask)

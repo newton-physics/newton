@@ -1259,19 +1259,19 @@ def eval_articulation_inverse_dynamics_force_kernel(
     joint_qd_start: wp.array[int],
     H: wp.array3d[float],
     qddot: wp.array[float],
-    coriolis_compensation_force: wp.array[float],
-    gravity_compensation_force: wp.array[float],
+    coriolis_force: wp.array[float],
+    gravity_force: wp.array[float],
     # outputs
     tau: wp.array[float],
 ):
     """Compute the manipulator-equation joint force per articulation.
 
-    Evaluates ``tau = H @ qddot + coriolis_compensation_force + gravity_compensation_force``
+    Evaluates ``tau = H @ qddot + coriolis_force + gravity_force``
     per DOF, matching the standard manipulator-equation
     ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)`` when the inputs hold the
-    Lagrangian bias terms populated by :func:`eval_inverse_dynamics` into
-    :attr:`InverseDynamics.coriolis_compensation_force` and
-    :attr:`InverseDynamics.gravity_compensation_force`.
+    values populated by :func:`eval_inverse_dynamics` into
+    :attr:`InverseDynamics.coriolis_force` and
+    :attr:`InverseDynamics.gravity_force`.
 
     Per-articulation DOF counts are recovered from ``joint_qd_start``, so a
     mix of fixed-root (1+ internal DOFs) and floating-root (6 root DOFs +
@@ -1293,7 +1293,7 @@ def eval_articulation_inverse_dynamics_force_kernel(
         for j in range(dof_count):
             sum_val += H[art_idx, i, j] * qddot[dof_start + j]
         tau[dof_start + i] = (
-            sum_val + coriolis_compensation_force[dof_start + i] + gravity_compensation_force[dof_start + i]
+            sum_val + coriolis_force[dof_start + i] + gravity_force[dof_start + i]
         )
 
 
@@ -1301,16 +1301,16 @@ def eval_inverse_dynamics_force(
     model: Model,
     H: wp.array,
     qddot: wp.array,
-    coriolis_compensation_force: wp.array,
-    gravity_compensation_force: wp.array,
+    coriolis_force: wp.array,
+    gravity_force: wp.array,
     tau: wp.array,
 ) -> None:
     """Evaluate the manipulator-equation joint force ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)``.
 
     Combines a per-articulation mass-matrix-times-acceleration product with
-    the Coriolis and gravity bias terms to produce the full joint force
+    the Coriolis and gravity forces to produce the full joint force
     required to realize ``qddot`` at the current ``(q, q_dot)`` under
-    gravity, writing the result into ``tau`` in place. The compensation-force
+    gravity, writing the result into ``tau`` in place. The two force
     inputs follow the standard manipulator-equation sign convention
     (``+C(q,q_dot)*q_dot`` and ``+g(q) = +∂U/∂q``, the buffers populated by
     :func:`eval_inverse_dynamics`) and are added directly. Per-articulation
@@ -1327,14 +1327,12 @@ def eval_inverse_dynamics_force(
             by :func:`eval_mass_matrix`.
         qddot: Joint accelerations [m/s^2 or rad/s^2, depending on joint
             type], shape ``(joint_dof_count,)``, dtype float.
-        coriolis_compensation_force: Standard Coriolis bias term
-            ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type],
-            shape ``(joint_dof_count,)``, dtype float, e.g.
-            :attr:`InverseDynamics.coriolis_compensation_force`.
-        gravity_compensation_force: Standard gravity bias term
-            ``g(q) = ∂U/∂q`` [N or N·m, depending on joint type], shape
-            ``(joint_dof_count,)``, dtype float, e.g.
-            :attr:`InverseDynamics.gravity_compensation_force`.
+        coriolis_force: Coriolis force ``C(q, q_dot)*q_dot`` [N or N·m,
+            depending on joint type], shape ``(joint_dof_count,)``, dtype
+            float, e.g. :attr:`InverseDynamics.coriolis_force`.
+        gravity_force: Gravity force ``g(q) = ∂U/∂q`` [N or N·m, depending
+            on joint type], shape ``(joint_dof_count,)``, dtype float,
+            e.g. :attr:`InverseDynamics.gravity_force`.
         tau: Output joint forces [N or N·m, depending on joint type],
             shape ``(joint_dof_count,)``, dtype float, written in place.
             Typically :attr:`InverseDynamics.tau`.
@@ -1352,8 +1350,8 @@ def eval_inverse_dynamics_force(
             model.joint_qd_start,
             H,
             qddot,
-            coriolis_compensation_force,
-            gravity_compensation_force,
+            coriolis_force,
+            gravity_force,
         ],
         outputs=[tau],
         device=model.device,
