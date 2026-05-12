@@ -70,12 +70,12 @@ def compute_inverse_ordering(ordering):
 
 @wp.kernel(enable_backward=False)
 def reorder_rows_kernel(
-    src: wp.array3d(dtype=float),
-    dst: wp.array3d(dtype=float),
-    ordering: wp.array(dtype=int, ndim=2),
-    n_rows_arr: wp.array(dtype=int, ndim=1),
-    n_cols_arr: wp.array(dtype=int, ndim=1),
-    batch_mask: wp.array(dtype=int, ndim=1),
+    src: wp.array3d[float],
+    dst: wp.array3d[float],
+    ordering: wp.array2d[int],
+    n_rows_arr: wp.array[int],
+    n_cols_arr: wp.array[int],
+    batch_mask: wp.array[int],
 ):
     batch_id, i, j = wp.tid()  # 2D launch: (n_rows, n_cols)
     n_rows = n_rows_arr[batch_id]
@@ -88,11 +88,11 @@ def reorder_rows_kernel(
 
 @wp.kernel(enable_backward=False)
 def reorder_rows_kernel_col_vector(
-    src: wp.array3d(dtype=float),
-    dst: wp.array3d(dtype=float),
-    ordering: wp.array(dtype=int, ndim=2),
-    n_rows_arr: wp.array(dtype=int, ndim=1),
-    batch_mask: wp.array(dtype=int, ndim=1),
+    src: wp.array3d[float],
+    dst: wp.array3d[float],
+    ordering: wp.array2d[int],
+    n_rows_arr: wp.array[int],
+    batch_mask: wp.array[int],
 ):
     batch_id, i = wp.tid()
     n_rows = n_rows_arr[batch_id]
@@ -167,11 +167,11 @@ def symbolic_cholesky_dense(M, tile_size):
 def create_blocked_cholesky_kernel(block_size: int):
     @wp.kernel(enable_backward=False)
     def blocked_cholesky_kernel(
-        A_batched: wp.array(dtype=float, ndim=3),
-        L_batched: wp.array(dtype=float, ndim=3),
-        L_tile_pattern_batched: wp.array(dtype=int, ndim=3),
-        active_matrix_size_arr: wp.array(dtype=int, ndim=1),
-        batch_mask: wp.array(dtype=int, ndim=1),
+        A_batched: wp.array3d[float],
+        L_batched: wp.array3d[float],
+        L_tile_pattern_batched: wp.array3d[int],
+        active_matrix_size_arr: wp.array[int],
+        batch_mask: wp.array[int],
     ):
         """
         Batched Cholesky factorization of symmetric positive definite matrices in blocks.
@@ -238,12 +238,12 @@ def create_blocked_cholesky_kernel(block_size: int):
                         continue
                     L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
                     L_block_T = wp.tile_transpose(L_block)
-                    L_L_T_block = wp.tile_matmul(L_block, L_block_T)
-                    A_kk_tile -= L_L_T_block
+                    wp.tile_matmul(L_block, L_block_T, A_kk_tile, alpha=-1.0)
+                    # equivalent to A_kk_tile -= L_block * L_block_T, without intermediate allocation
 
             # Compute the Cholesky factorization for the block
-            L_kk_tile = wp.tile_cholesky(A_kk_tile)
-            wp.tile_store(L, L_kk_tile, offset=(k, k))
+            wp.tile_cholesky_inplace(A_kk_tile)  # In-place solve to avoid extra allocation
+            wp.tile_store(L, A_kk_tile, offset=(k, k))
 
             # Process the blocks below the current block
             for i in range(end, n, block_size):
@@ -278,12 +278,12 @@ def create_blocked_cholesky_kernel(block_size: int):
                         L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
                         L_2_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
                         L_T_tile = wp.tile_transpose(L_2_tile)
-                        L_L_T_tile = wp.tile_matmul(L_tile, L_T_tile)
-                        A_ik_tile -= L_L_T_tile
+                        wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
+                        # equivalent to A_ik_tile -= L_tile * L_T_tile, without intermediate allocation
 
                 t = wp.tile_transpose(A_ik_tile)
-                tmp = wp.tile_lower_solve(L_kk_tile, t)
-                sol_tile = wp.tile_transpose(tmp)
+                wp.tile_lower_solve_inplace(A_kk_tile, t)  # In-place solve to avoid extra allocation
+                sol_tile = wp.tile_transpose(t)
 
                 wp.tile_store(L, sol_tile, offset=(i, k))
 
@@ -294,13 +294,13 @@ def create_blocked_cholesky_kernel(block_size: int):
 def create_blocked_cholesky_solve_kernel(block_size: int):
     @wp.kernel(enable_backward=False)
     def blocked_cholesky_solve_kernel(
-        L_batched: wp.array(dtype=float, ndim=3),
-        L_tile_pattern_batched: wp.array(dtype=int, ndim=3),
-        b_batched: wp.array(dtype=float, ndim=3),
-        x_batched: wp.array(dtype=float, ndim=3),
-        y_batched: wp.array(dtype=float, ndim=3),
-        active_matrix_size_arr: wp.array(dtype=int, ndim=1),
-        batch_mask: wp.array(dtype=int, ndim=1),
+        L_batched: wp.array3d[float],
+        L_tile_pattern_batched: wp.array3d[int],
+        b_batched: wp.array3d[float],
+        x_batched: wp.array3d[float],
+        y_batched: wp.array3d[float],
+        active_matrix_size_arr: wp.array[int],
+        batch_mask: wp.array[int],
     ):
         """
         Batched blocked Cholesky solver kernel. For each batch, solves A x = b using L L^T = A.
@@ -331,6 +331,9 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
 
             i_end = i + block_size
             rhs_tile = wp.tile_load(b, shape=(block_size, 1), offset=(i, 0))
+            # Hoist the diagonal load above the j loop so the shared-memory fetch can
+            # overlap with the gemm pipeline below.
+            L_diag = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i))
             if i > 0:
                 for j in range(0, i, block_size):
                     tile_j = j // block_size
@@ -339,11 +342,10 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
                         continue
                     L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
                     y_block = wp.tile_load(y, shape=(block_size, 1), offset=(j, 0))
-                    Ly_block = wp.tile_matmul(L_block, y_block)
-                    rhs_tile -= Ly_block
-            L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i))
-            y_tile = wp.tile_lower_solve(L_tile, rhs_tile)
-            wp.tile_store(y, y_tile, offset=(i, 0))
+                    wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
+                    # equivalent to rhs_tile -= L_block * y_block, without intermediate allocation
+            wp.tile_lower_solve_inplace(L_diag, rhs_tile)  # In-place solve to avoid extra allocation
+            wp.tile_store(y, rhs_tile, offset=(i, 0))
 
         # Backward substitution: solve L^T x = y
         for i in range(n - block_size, -1, -block_size):
@@ -355,6 +357,8 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
             i_start = i
             i_end = i_start + block_size
             rhs_tile = wp.tile_load(y, shape=(block_size, 1), offset=(i_start, 0))
+            # Hoist the diagonal load above the j loop (see forward sub above).
+            L_diag = wp.tile_load(L, shape=(block_size, block_size), offset=(i_start, i_start))
             if i_end < n:
                 for j in range(i_end, n, block_size):
                     tile_j = j // block_size
@@ -364,11 +368,10 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
                     L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i_start))
                     L_T_tile = wp.tile_transpose(L_tile)
                     x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0))
-                    L_T_x_tile = wp.tile_matmul(L_T_tile, x_tile)
-                    rhs_tile -= L_T_x_tile
-            L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i_start, i_start))
-            x_tile = wp.tile_upper_solve(wp.tile_transpose(L_tile), rhs_tile)
-            wp.tile_store(x, x_tile, offset=(i_start, 0))
+                    wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
+                    # equivalent to rhs_tile -= L_T_tile * x_tile, without intermediate allocation
+            wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)  # In-place solve to avoid extra allocation
+            wp.tile_store(x, rhs_tile, offset=(i_start, 0))
 
     return blocked_cholesky_solve_kernel
 
@@ -426,20 +429,30 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         A: np.ndarray,  # 3D array (batch_size, n, n)
         A_reorder_size: np.ndarray,  # 1D array (batch_size)
+        eq_classes: list[list[int]] | None = None,
     ):
         """
         Captures sparsity pattern and computes fill-reducing ordering for batched matrices.
 
         Args:
-            A: Input SPD matrices of shape (batch_size, n, n), as float arrays or directly as binary 0/1 matrices
-            indicating the sparsity pattern (float arrays will be converted to binary automatically).
-            A_reorder_size: Per-batch size of top-left block to reorder for sparsity
+        A (np.ndarray):
+            Input SPD matrices as float arrays or directly as binary 0/1 matrices indicating the sparsity
+            pattern (float arrays are converted to binary automatically).
+            Shape of (batch_size, n, n); or of (num_classes, n, n) if eq_classes is provided.
+        A_reorder_size (np.ndarray):
+            Size of the active top-left block per matrix, to reorder for sparsity.
+            Shape of (batch_size,); or of (num_classes,) if eq_classes is provided.
+        eq_classes (list[list[int]], optional):
+            List of list of matrix indices (along the batch dimension) that form equivalence classes with
+            the same sparsity pattern.
+            If provided, only one sparsity pattern per class should be provided in `A`.
+            The computed ordering will then be broadcast to all matrices in each class.
 
         Computes Cuthill-McKee ordering on top-left block, analyzes symbolic Cholesky factorization,
         and stores tile-level sparsity patterns. Tiles beyond A_reorder_size are treated as dense.
         """
 
-        batch_size = A.shape[0]
+        batch_size = self.num_batches
 
         # Convert to binary
         A = to_binary_matrix(A)
@@ -450,25 +463,28 @@ class SemiSparseBlockCholeskySolverBatched:
         inverse_orderings = np.zeros((batch_size, self.max_num_equations), dtype=np.int32)
         L_tile_patterns = np.zeros((batch_size, self.num_tiles, self.num_tiles), dtype=np.int32)
 
-        # Process each batch independently
-        for batch_id in range(batch_size):
+        # Process each equivalence class independently
+        if eq_classes is None:
+            eq_classes = [[i] for i in range(batch_size)]
+        assert len(A) == len(eq_classes)
+        assert len(A_reorder_size) == len(eq_classes)
+        for class_id, eq_class in enumerate(eq_classes):
             # Call cuthill_mckee_ordering on the binary version of A and store both orderings
-            reorder_size = A_reorder_size[batch_id]
-            ordering = cuthill_mckee_ordering(A[batch_id, :reorder_size, :reorder_size])
+            reorder_size = A_reorder_size[class_id]
+            ordering = cuthill_mckee_ordering(A[class_id, :reorder_size, :reorder_size])
 
             # Append sequential indices for remaining rows/cols
             remaining_indices = np.arange(reorder_size, self.max_num_equations)
             ordering = np.concatenate([ordering, remaining_indices])
-            orderings[batch_id] = ordering
 
+            # Compute inverse ordering
             inverse_ordering = compute_inverse_ordering(ordering)
-            inverse_orderings[batch_id] = inverse_ordering
 
             # Reorder A and then extract the sparsity patterns
             if self.enable_reordering:
-                A_reordered = A[batch_id][ordering][:, ordering]
+                A_reordered = A[class_id][ordering][:, ordering]
             else:
-                A_reordered = A[batch_id]
+                A_reordered = A[class_id]
 
             L_tile_pattern_np = symbolic_cholesky_dense(A_reordered, self.block_size)
 
@@ -478,7 +494,11 @@ class SemiSparseBlockCholeskySolverBatched:
                 for j in range(min(i + 1, self.num_tiles)):  # Only set lower triangular part
                     L_tile_pattern_np[i, j] = 1
 
-            L_tile_patterns[batch_id] = L_tile_pattern_np
+            # Store ordering data for all ids in the equivalence class
+            for batch_id in eq_class:
+                orderings[batch_id] = ordering
+                inverse_orderings[batch_id] = inverse_ordering
+                L_tile_patterns[batch_id] = L_tile_pattern_np
 
         # Convert to warp arrays on the correct device
         self.ordering = wp.array(orderings, dtype=int, device=self.device)
@@ -487,9 +507,9 @@ class SemiSparseBlockCholeskySolverBatched:
 
     def factorize(
         self,
-        A: wp.array(dtype=float, ndim=3),
-        num_active_equations: wp.array(dtype=int, ndim=1),
-        batch_mask: wp.array(dtype=int, ndim=1),
+        A: wp.array3d[float],
+        num_active_equations: wp.array[int],
+        batch_mask: wp.array[int],
     ):
         """
         Computes the Cholesky factorization of a symmetric positive definite matrix A in blocks.
@@ -530,9 +550,9 @@ class SemiSparseBlockCholeskySolverBatched:
 
     def solve(
         self,
-        rhs: wp.array(dtype=float, ndim=3),
-        result: wp.array(dtype=float, ndim=3),
-        batch_mask: wp.array(dtype=int, ndim=1),
+        rhs: wp.array3d[float],
+        result: wp.array3d[float],
+        batch_mask: wp.array[int],
     ):
         """
         Solves A x = b given the Cholesky factor L (A = L L^T) using

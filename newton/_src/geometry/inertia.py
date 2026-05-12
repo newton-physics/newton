@@ -61,6 +61,24 @@ def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec
     return (m, wp.vec3(), I)
 
 
+def compute_inertia_sphere_from_mass(mass: float, radius: float) -> wp.mat33:
+    """Helper to compute 3x3 inertia matrix of a solid box with given mass and half-extents.
+
+    Args:
+        mass: The box mass [kg]
+        hx: The box half-extent along the x-axis [m]
+        hy: The box half-extent along the y-axis [m]
+        hz: The box half-extent along the z-axis [m]
+
+    Returns:
+
+        A 3x3 inertia matrix with inertia specified around the center of mass
+    """
+    Ia = 0.4 * mass * radius * radius
+    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ia]])
+    return I
+
+
 def compute_inertia_capsule(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid capsule extending along the z-axis
 
