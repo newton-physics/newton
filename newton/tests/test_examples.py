@@ -774,6 +774,13 @@ add_example_test(
     test_options={"num-frames": 200},
     use_viewer=True,
 )
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 180},
+    use_viewer=True,
+)
 
 
 class TestSoftbodyExamples(unittest.TestCase):
