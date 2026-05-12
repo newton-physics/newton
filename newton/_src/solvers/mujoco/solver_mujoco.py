@@ -35,6 +35,7 @@ from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
+from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..solver import SolverBase
 from .constants import (
     DEFAULT_LIMIT_GAIN_RTOL,
@@ -65,6 +66,8 @@ from .kernels import (
     create_convert_mjw_contacts_to_newton_kernel,
     create_inverse_shape_mapping_kernel,
     eval_articulation_fk,
+    eval_mujoco_coupling_effective_mass_block_kernel,
+    eval_mujoco_coupling_effective_mass_kernel,
     recompute_jnt_eq_anchor1_kernel,
     repeat_array_kernel,
     reset_joint_state_kernel,
@@ -341,7 +344,7 @@ def _make_nonplanar_mujoco_mesh(
     return inflated_vertices, inflated_indices, max(maxhullvert, 4)
 
 
-class SolverMuJoCo(SolverBase):
+class SolverMuJoCo(SolverBase, CouplingInterface):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
     optimized with GPU acceleration through `mujoco_warp <https://github.com/google-deepmind/mujoco_warp>`_. It supports both MuJoCo and
@@ -407,6 +410,13 @@ class SolverMuJoCo(SolverBase):
 
             solver.render_mujoco_viewer()
     """
+
+    coupling_unsupported = frozenset(
+        {
+            CouplingInterface.Hook.BODY_PROXY_HARVEST,
+            CouplingInterface.Hook.PARTICLE_PROXY_HARVEST,
+        }
+    )
 
     class CtrlSource(IntEnum):
         """Control source for MuJoCo actuators.
@@ -3461,6 +3471,13 @@ class SolverMuJoCo(SolverBase):
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
 
+        # Coupling effective-mass hooks rely on MuJoCo Warp-side data. Hide
+        # them on instances that run the CPU path or lack the Warp model so
+        # the coupled wrapper falls back to its generic mass/inertia path.
+        if self.use_mujoco_cpu or self.mjw_model is None or self.mjc_body_to_newton is None:
+            self.coupling_eval_effective_mass = None
+            self.coupling_eval_effective_mass_block = None
+
     @event_scope
     def _mujoco_warp_step(self):
         self._mujoco_warp.step(self.mjw_model, self.mjw_data)
@@ -3628,6 +3645,90 @@ class SolverMuJoCo(SolverBase):
         """
         self._last_contact_generation.fill_(_GENERATION_SENTINEL)
         self._last_nacon_count.zero_()
+
+    @override
+    def coupling_eval_effective_mass(
+        self,
+        endpoint_kind: wp.array[int],
+        endpoint_index: wp.array[int],
+        endpoint_local_pos: wp.array[wp.vec3],
+        out: wp.array[float],
+    ) -> None:
+        """Evaluate MuJoCo articulated effective masses for coupling endpoints."""
+        if (
+            self.mjw_model is None
+            or self.mjc_body_to_newton is None
+            or self.model.body_world is None
+            or self.model.body_mass is None
+            or self.model.particle_mass is None
+        ):
+            out.zero_()
+            return
+
+        wp.launch(
+            eval_mujoco_coupling_effective_mass_kernel,
+            dim=out.shape[0],
+            inputs=[
+                endpoint_kind,
+                endpoint_index,
+                endpoint_local_pos,
+                int(CouplingEndpointKind.BODY),
+                int(CouplingEndpointKind.PARTICLE),
+                self.model.body_mass,
+                self.model.particle_mass,
+                self.model.body_world,
+                self.mjc_body_to_newton,
+                self.mjw_model.body_invweight0,
+            ],
+            outputs=[out],
+            device=self.model.device,
+        )
+
+    @override
+    def coupling_eval_effective_mass_block(
+        self,
+        endpoint_kind: wp.array[int],
+        endpoint_index: wp.array[int],
+        endpoint_local_pos: wp.array[wp.vec3],
+        out_mass: wp.array[float],
+        out_inertia: wp.array[wp.mat33] | None = None,
+    ) -> None:
+        """Evaluate MuJoCo articulated effective mass and inertia blocks."""
+        if out_inertia is None:
+            self.coupling_eval_effective_mass(endpoint_kind, endpoint_index, endpoint_local_pos, out_mass)
+            return
+
+        if (
+            self.mjw_model is None
+            or self.mjc_body_to_newton is None
+            or self.model.body_world is None
+            or self.model.body_mass is None
+            or self.model.body_inertia is None
+            or self.model.particle_mass is None
+        ):
+            out_mass.zero_()
+            out_inertia.zero_()
+            return
+
+        wp.launch(
+            eval_mujoco_coupling_effective_mass_block_kernel,
+            dim=out_mass.shape[0],
+            inputs=[
+                endpoint_kind,
+                endpoint_index,
+                endpoint_local_pos,
+                int(CouplingEndpointKind.BODY),
+                int(CouplingEndpointKind.PARTICLE),
+                self.model.body_mass,
+                self.model.body_inertia,
+                self.model.particle_mass,
+                self.model.body_world,
+                self.mjc_body_to_newton,
+                self.mjw_model.body_invweight0,
+            ],
+            outputs=[out_mass, out_inertia],
+            device=self.model.device,
+        )
 
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         # Ensure the inverse shape mapping exists (lazy creation)
