@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-label="Stretch row projection removes pulley spin">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#263238"/>
+    </marker>
+    <marker id="redArrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#c84b31"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="960" height="360" rx="14" fill="#fbfcff"/>
+  <text x="40" y="44" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="24" font-weight="700" fill="#16202a">Stretch row: tension without implicit no-slip spin</text>
+  <text x="40" y="72" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#53616f">Tangent points do not depend on pure pulley spin, so the stretch Jacobian removes the spin-axis angular component.</text>
+
+  <circle cx="340" cy="185" r="92" fill="#fff7e6" stroke="#d9822b" stroke-width="4"/>
+  <circle cx="340" cy="185" r="5" fill="#d9822b"/>
+  <text x="328" y="190" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" fill="#16202a">p</text>
+  <circle cx="420" cy="139" r="8" fill="#263238"/>
+  <text x="432" y="132" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" fill="#16202a">x</text>
+  <path d="M 140 250 L 420 139" stroke="#263238" stroke-width="5" stroke-linecap="round"/>
+  <path d="M 420 139 L 700 96" stroke="#263238" stroke-width="5" stroke-linecap="round"/>
+
+  <path d="M 420 139 L 532 122" stroke="#1f67d2" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="486" y="112" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" fill="#1f67d2">n</text>
+  <path d="M 340 185 L 420 139" stroke="#53616f" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="372" y="174" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" fill="#53616f">r = x - p</text>
+
+  <circle cx="340" cy="185" r="22" fill="none" stroke="#c84b31" stroke-width="3"/>
+  <circle cx="340" cy="185" r="4" fill="#c84b31"/>
+  <text x="310" y="227" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" fill="#c84b31">pulley axis a</text>
+  <text x="309" y="246" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#c84b31">(spin component)</text>
+
+  <path d="M 460 175 C 500 214 536 220 572 196" fill="none" stroke="#c84b31" stroke-width="3" marker-end="url(#redArrow)"/>
+  <text x="420" y="272" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" fill="#c84b31">removed from stretch</text>
+
+  <rect x="590" y="178" width="322" height="120" rx="8" fill="#eef6ff" stroke="#bad7ff"/>
+  <text x="612" y="210" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="16" fill="#16202a">Jw = +/- (x - p) x n</text>
+  <text x="612" y="242" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="16" fill="#16202a">if ROLLING:</text>
+  <text x="612" y="272" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="16" fill="#16202a">Jw &lt;- Jw - (Jw.a) a</text>
+  <text x="612" y="302" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#53616f">spin coupling is handled by the slip row</text>
+</svg>

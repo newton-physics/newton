@@ -47,6 +47,11 @@ length between neighboring spans while conserving the sum.
 This is the key modeling choice: rest-length distribution is the internal state
 that records which side of a guide currently owns cable material.
 
+![Routed cable state showing attachments, a rolling guide, free-span rest lengths, geometric lengths, tensions, and wrap angle.](images/cable_joints_formulation/route_state.svg)
+
+SVG source: [route_state.svg](images/cable_joints_formulation/route_state.svg);
+TikZ source: [route_state.tex](images/cable_joints_formulation/route_state.tex).
+
 ## 2. Tendon State
 
 Consider a tendon with links indexed by `i = 0 ... n - 1`. Link `i` is attached
@@ -185,6 +190,11 @@ no-slip pulley constraint and bypass the capstan friction law. The stretch row
 should carry cable tension. Pulley spin coupling belongs to the separated slip
 row.
 
+![Stretch row angular projection removes only the pulley spin-axis component, leaving ordinary rigid-body translation and swing coupling in the distance constraint.](images/cable_joints_formulation/stretch_projection.svg)
+
+SVG source: [stretch_projection.svg](images/cable_joints_formulation/stretch_projection.svg);
+TikZ source: [stretch_projection.tex](images/cable_joints_formulation/stretch_projection.tex).
+
 The XPBD update is the usual compliant row update. With stretch multiplier
 `lambda`, compliance `c`, damping `d`, timestep `dt`, and constraint velocity
 `Cdot`, the implemented increment has the form:
@@ -227,6 +237,11 @@ When the two tensions are inside this band, the guide sticks and no rest length
 is transferred. When one side exceeds the band, the model transfers rest length
 between the two adjacent spans, conserving their sum.
 
+![Capstan rest-length projection transfers cable material between adjacent spans until the active capstan tension boundary is satisfied.](images/cable_joints_formulation/capstan_rest_projection.svg)
+
+SVG source: [capstan_rest_projection.svg](images/cable_joints_formulation/capstan_rest_projection.svg);
+TikZ source: [capstan_rest_projection.tex](images/cable_joints_formulation/capstan_rest_projection.tex).
+
 Let
 
 ```text
@@ -235,6 +250,10 @@ e_r = max(L_r - r_r, 0)
 T_l = e_l / c_l
 T_r = e_r / c_r.
 ```
+
+The rest-length projection is obtained directly from the capstan equation plus
+rest-length conservation. The capstan equation supplies the active tension-ratio
+boundary, and conservation supplies the update structure.
 
 ### Left Side Too Tight
 
@@ -251,6 +270,12 @@ r_l' = r_l + delta
 r_r' = r_r - delta.
 ```
 
+The total free-span rest length is unchanged:
+
+```text
+r_l' + r_r' = r_l + r_r.
+```
+
 The new extensions are
 
 ```text
@@ -258,10 +283,16 @@ e_l' = e_l - delta
 e_r' = e_r + delta.
 ```
 
-The boundary condition after projection is
+The active capstan boundary after projection is
 
 ```text
 e_l' / c_l = alpha e_r' / c_r.
+```
+
+Substituting the rest-length transfer into the capstan boundary gives
+
+```text
+(e_l - delta) / c_l = alpha (e_r + delta) / c_r.
 ```
 
 Solving for `delta` gives
@@ -288,13 +319,32 @@ r_l' = r_l - delta
 r_r' = r_r + delta.
 ```
 
-The boundary condition is
+Again, the total free-span rest length is conserved:
+
+```text
+r_l' + r_r' = r_l + r_r.
+```
+
+The new extensions are
+
+```text
+e_l' = e_l + delta
+e_r' = e_r - delta.
+```
+
+The active capstan boundary is
 
 ```text
 e_r' / c_r = alpha e_l' / c_l,
 ```
 
-which gives
+so direct substitution gives
+
+```text
+(e_r - delta) / c_r = alpha (e_l + delta) / c_l.
+```
+
+Solving for `delta` gives
 
 ```text
 delta = (c_l e_r - alpha c_r e_l) / (c_l + alpha c_r).
@@ -411,6 +461,11 @@ T_l / T_r = alpha.
 The hysteresis loop comes from the static capstan band and the persistent
 rest-length distribution. It does not require different static and kinetic
 friction coefficients.
+
+![Capstan hysteresis loop with loading slip, static sticking on a latched rest-length distribution, and reverse slip.](images/cable_joints_formulation/hysteresis_loop.svg)
+
+SVG source: [hysteresis_loop.svg](images/cable_joints_formulation/hysteresis_loop.svg);
+TikZ source: [hysteresis_loop.tex](images/cable_joints_formulation/hysteresis_loop.tex).
 
 The benchmark added in `newton.tests.test_tendon_capstan` uses `mu = 0.2` and a
 near-pi wrap angle. It measures:

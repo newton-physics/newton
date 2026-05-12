@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-label="Routed cable tendon state">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#263238"/>
+    </marker>
+    <marker id="blueArrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#1f67d2"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="960" height="360" rx="14" fill="#fbfcff"/>
+  <text x="40" y="44" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="24" font-weight="700" fill="#16202a">Tendon state: free spans plus route links</text>
+  <text x="40" y="72" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#53616f">Mutable rest lengths store how much cable material belongs to each span.</text>
+
+  <circle cx="150" cy="220" r="15" fill="#e7f0ff" stroke="#1f67d2" stroke-width="3"/>
+  <text x="112" y="257" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" fill="#16202a">attachment</text>
+
+  <circle cx="480" cy="185" r="88" fill="#fff7e6" stroke="#d9822b" stroke-width="4"/>
+  <circle cx="480" cy="185" r="5" fill="#d9822b"/>
+  <line x1="480" y1="185" x2="480" y2="97" stroke="#d9822b" stroke-width="2" stroke-dasharray="5 5"/>
+  <text x="437" y="189" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" fill="#16202a">ROLLING</text>
+  <text x="446" y="208" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" fill="#16202a">radius R</text>
+
+  <circle cx="810" cy="220" r="15" fill="#e7f0ff" stroke="#1f67d2" stroke-width="3"/>
+  <text x="772" y="257" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" fill="#16202a">attachment</text>
+
+  <path d="M 150 220 L 406 132" stroke="#263238" stroke-width="5" stroke-linecap="round"/>
+  <path d="M 554 132 L 810 220" stroke="#263238" stroke-width="5" stroke-linecap="round"/>
+  <path d="M 406 132 A 88 88 0 0 1 554 132" fill="none" stroke="#263238" stroke-width="5" stroke-linecap="round"/>
+
+  <path d="M 190 198 L 365 139" stroke="#1f67d2" stroke-width="3" marker-end="url(#blueArrow)"/>
+  <path d="M 770 198 L 595 139" stroke="#1f67d2" stroke-width="3" marker-end="url(#blueArrow)"/>
+  <text x="248" y="171" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" fill="#1f67d2">T_l</text>
+  <text x="690" y="171" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" fill="#1f67d2">T_r</text>
+
+  <path d="M 150 282 L 406 282" stroke="#53616f" stroke-width="2" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <path d="M 554 282 L 810 282" stroke="#53616f" stroke-width="2" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="246" y="306" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" fill="#53616f">span l: L_l, rest r_l</text>
+  <text x="604" y="306" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" fill="#53616f">span r: L_r, rest r_r</text>
+
+  <path d="M 437 110 A 68 68 0 0 1 523 110" fill="none" stroke="#c84b31" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="459" y="101" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" fill="#c84b31">theta</text>
+
+  <rect x="40" y="102" width="300" height="80" rx="8" fill="#eef6ff" stroke="#bad7ff"/>
+  <text x="58" y="132" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="15" fill="#16202a">e_s = max(L_s - r_s, 0)</text>
+  <text x="58" y="158" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="15" fill="#16202a">T_s = e_s / c_s</text>
+</svg>
