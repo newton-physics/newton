@@ -253,6 +253,63 @@ def build_kinematic_pulley_atwood(mu=0.0, mass_left=1.0, mass_right=3.0, pulley_
     return builder.finalize(), left, right, pulley
 
 
+def build_kinematic_capstan_hysteresis(mu=0.2, pulley_radius=0.2, compliance=1.0e-3):
+    builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=0.0)
+
+    # Endpoints sit just outside the pulley radius and below the pulley, giving
+    # a near-pi wrap angle while still using the finite-radius rolling path.
+    left = builder.add_body(
+        xform=wp.transform(p=wp.vec3(-0.21, 0.0, -2.0)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+    pulley = builder.add_body(
+        xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+    right = builder.add_body(
+        xform=wp.transform(p=wp.vec3(0.21, 0.0, -2.0)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+
+    for body in (left, pulley, right):
+        builder.add_shape_sphere(body, radius=0.01)
+
+    axis = (0.0, 1.0, 0.0)
+    builder.add_tendon()
+    builder.add_tendon_link(
+        body=left,
+        link_type=int(TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.0, 0.0),
+        axis=axis,
+    )
+    builder.add_tendon_link(
+        body=pulley,
+        link_type=int(TendonLinkType.ROLLING),
+        radius=pulley_radius,
+        orientation=1,
+        mu=mu,
+        offset=(0.0, 0.0, 0.0),
+        axis=axis,
+        compliance=compliance,
+        damping=0.0,
+        rest_length=-1.0,
+    )
+    builder.add_tendon_link(
+        body=right,
+        link_type=int(TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.0, 0.0),
+        axis=axis,
+        compliance=compliance,
+        damping=0.0,
+        rest_length=-1.0,
+    )
+
+    return builder.finalize(), left, pulley, right
+
+
 def build_motorized_pulley_drive(mu=0.0):
     builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=0.0)
     dof = newton.ModelBuilder.JointDofConfig
@@ -439,6 +496,60 @@ def _kinematic_capstan_metrics(device, mu, num_frames=100):
     right_travel = 2.0 - float(body_q[right_idx][2])
     theta = _hinge_y_angle(body_q, pulley_idx)
     return body_q, left_travel, right_travel, theta
+
+
+def _set_body_translation(state, body_idx, xyz):
+    body_q = state.body_q.numpy()
+    body_q[body_idx, :3] = np.asarray(xyz, dtype=np.float32)
+    state.body_q.assign(body_q)
+
+
+def _capstan_span_tensions(solver):
+    att_l = solver.tendon_seg_attachment_l.numpy()
+    att_r = solver.tendon_seg_attachment_r.numpy()
+    rest = solver.tendon_seg_rest_length.numpy()
+    compliance = solver.model.tendon_seg_compliance.numpy()
+    lengths = np.linalg.norm(att_r - att_l, axis=1)
+    tensions = np.maximum(lengths - rest, 0.0) / np.maximum(compliance, 1.0e-8)
+    return tensions, att_l, att_r
+
+
+def _capstan_wrap_angle(att_l, att_r):
+    normal = np.array([0.0, 1.0, 0.0])
+    left_radius = att_r[0]
+    right_radius = att_l[1]
+    return float(abs(np.atan2(np.dot(np.cross(left_radius, right_radius), normal), np.dot(left_radius, right_radius))))
+
+
+def _capstan_hysteresis_history(mu=0.2):
+    model, _left_idx, _pulley_idx, right_idx = build_kinematic_capstan_hysteresis(mu=mu)
+    solver = newton.solvers.SolverXPBD(model, iterations=16, joint_linear_relaxation=1.0)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    loading_z = np.linspace(-2.0, -2.3, 31)
+    unloading_z = np.linspace(-2.3, -2.0, 31)[1:]
+    history = []
+    for z in np.concatenate((loading_z, unloading_z)):
+        _set_body_translation(state_0, right_idx, (0.21, 0.0, z))
+        solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+        state_0, state_1 = state_1, state_0
+
+        tensions, att_l, att_r = _capstan_span_tensions(solver)
+        theta = _capstan_wrap_angle(att_l, att_r)
+        history.append(
+            {
+                "z": float(z),
+                "t_fix": float(tensions[0]),
+                "t_app": float(tensions[1]),
+                "theta": theta,
+                "alpha": float(np.exp(mu * theta)),
+            }
+        )
+
+    return history
 
 
 def test_pinhole_slip_atwood(test, device):
@@ -645,6 +756,82 @@ def test_kinematic_capstan_mu_controls_slip_and_locking(test, device):
         test.assertLess(right_high, 0.06, f"High-mu kinematic capstan should lock cable motion: dz={right_high:.5f}")
 
 
+def test_kinematic_capstan_hysteresis_matches_capstan_band(test, device):
+    """Loading and unloading should hit opposite sides of the capstan friction cone."""
+    with wp.ScopedDevice(device):
+        history = _capstan_hysteresis_history(mu=0.2)
+
+        loading = history[:31]
+        unloading = history[31:]
+        peak = loading[-1]
+        peak_fix = peak["t_fix"]
+        peak_app = peak["t_app"]
+        peak_alpha = peak["alpha"]
+
+        test.assertGreater(peak_app, 150.0, f"Benchmark should generate a meaningful applied tension: {peak_app}")
+        test.assertAlmostEqual(
+            peak_app / peak_fix,
+            peak_alpha,
+            delta=0.01,
+            msg=f"Loading branch should slip at T_app/T_fix=alpha: peak={peak}, ratio={peak_app / peak_fix}",
+        )
+
+        # All samples should remain inside the static capstan cone. Once a side
+        # tries to exceed the cone, rest length transfers and the active branch
+        # lands on the corresponding capstan boundary.
+        for sample in history:
+            t_fix = sample["t_fix"]
+            t_app = sample["t_app"]
+            alpha = sample["alpha"]
+            test.assertLessEqual(
+                t_app,
+                alpha * t_fix + 1.0,
+                f"Applied side escaped capstan cone: sample={sample}",
+            )
+            test.assertLessEqual(
+                t_fix,
+                alpha * t_app + 1.0,
+                f"Fixed side escaped capstan cone: sample={sample}",
+            )
+
+        loading_ratios = [sample["t_app"] / sample["t_fix"] for sample in loading if sample["t_fix"] > 10.0]
+        loading_alphas = [sample["alpha"] for sample in loading if sample["t_fix"] > 10.0]
+        max_loading_error = max(abs(ratio - alpha) for ratio, alpha in zip(loading_ratios, loading_alphas, strict=True))
+        test.assertLess(max_loading_error, 0.01, f"Loading branch did not track alpha: err={max_loading_error}")
+
+        stick_samples = [sample for sample in unloading if sample["t_app"] > 0.8 * peak_fix]
+        test.assertGreaterEqual(len(stick_samples), 5, f"Expected several unloading stick samples: {stick_samples}")
+        fixed_variation = max(abs(sample["t_fix"] - peak_fix) for sample in stick_samples)
+        test.assertLess(
+            fixed_variation,
+            1.0,
+            f"Fixed-side tension should stay on the static plateau during early unloading: {stick_samples}",
+        )
+
+        reverse_threshold = peak_fix / peak_alpha
+        reverse_slip = [sample for sample in unloading if 20.0 < sample["t_app"] < 0.9 * reverse_threshold]
+        test.assertTrue(
+            reverse_slip, f"Expected reverse-slip samples after unloading crosses the lower band: {unloading}"
+        )
+        reverse_errors = [abs(sample["t_fix"] / sample["t_app"] - sample["alpha"]) for sample in reverse_slip]
+        test.assertLess(max(reverse_errors), 0.02, f"Unloading branch did not track alpha: err={reverse_errors}")
+
+        target_app = 0.5 * peak_app
+        loading_mid = min(loading, key=lambda sample: abs(sample["t_app"] - target_app))
+        unloading_mid = min(unloading, key=lambda sample: abs(sample["t_app"] - target_app))
+        test.assertLess(
+            abs(loading_mid["t_app"] - unloading_mid["t_app"]),
+            5.0,
+            f"Could not compare similar applied tensions: loading={loading_mid}, unloading={unloading_mid}",
+        )
+        test.assertGreater(
+            unloading_mid["t_fix"],
+            loading_mid["t_fix"] + 40.0,
+            f"Expected hysteresis: fixed tension should be higher on unloading at similar applied tension: "
+            f"loading={loading_mid}, unloading={unloading_mid}",
+        )
+
+
 def test_motorized_pulley_drives_slider(test, device):
     """A rolling drive pulley must convert rotation into cable sliding."""
     with wp.ScopedDevice(device):
@@ -815,6 +1002,12 @@ add_test(
     "kinematic_capstan_mu_controls_slip_and_locking",
     devices,
     test_kinematic_capstan_mu_controls_slip_and_locking,
+)
+add_test(
+    TestTendonCapstan,
+    "kinematic_capstan_hysteresis_matches_capstan_band",
+    devices,
+    test_kinematic_capstan_hysteresis_matches_capstan_band,
 )
 add_test(TestTendonCapstan, "motorized_pulley_drives_slider", devices, test_motorized_pulley_drives_slider)
 add_test(
