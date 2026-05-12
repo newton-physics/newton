@@ -3005,15 +3005,13 @@ def solve_elasticity_tile(
 
     dt_sqr_reciprocal = 1.0 / (dt * dt)
 
-    # elastic force and hessian
-    num_adj_faces = get_vertex_num_adjacent_faces(particle_adjacency, particle_index)
-
     f = wp.vec3(0.0)
     h = wp.mat33(0.0)
 
     batch_counter = wp.int32(0)
 
     if tri_indices:
+        num_adj_faces = get_vertex_num_adjacent_faces(particle_adjacency, particle_index)
         # loop through all the adjacent triangles using whole block
         while batch_counter + thread_idx < num_adj_faces:
             adj_tri_counter = thread_idx + batch_counter

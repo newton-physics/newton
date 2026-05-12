@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 from typing import Any
@@ -65,6 +65,20 @@ def integrate_fraction(s: fem.Sample, phi: fem.Field, domain: fem.Domain, inv_ce
 
 
 @fem.integrand
+def integrate_active_fraction(
+    s: fem.Sample,
+    phi: fem.Field,
+    domain: fem.Domain,
+    inv_cell_volume: float,
+    particle_flags: wp.array[wp.int32],
+):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
+    return phi(s) * inv_cell_volume
+
+
+@fem.integrand
 def integrate_collider_fraction(
     s: fem.Sample,
     domain: fem.Domain,
@@ -106,7 +120,11 @@ def integrate_mass(
     domain: fem.Domain,
     inv_cell_volume: float,
     particle_density: wp.array[float],
+    particle_flags: wp.array[wp.int32],
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
     # Particles with density == 0 are kinematic boundary conditions: they contribute
     # infinite mass so the grid velocity at their location is prescribed.
     # This is distinct from ~ACTIVE particles (checked in advect/strain updates),
@@ -126,7 +144,11 @@ def integrate_velocity(
     particle_world: wp.array[wp.int32],
     inv_cell_volume: float,
     particle_density: wp.array[float],
+    particle_flags: wp.array[wp.int32],
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
     vel_adv = velocities[s.qp_index]
     world_idx = particle_world[s.qp_index]
     world_g = gravity[wp.max(world_idx, 0)]
@@ -148,7 +170,11 @@ def integrate_velocity_apic(
     velocity_gradients: wp.array[wp.mat33],
     inv_cell_volume: float,
     particle_density: wp.array[float],
+    particle_flags: wp.array[wp.int32],
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
     # APIC velocity prediction
     node_offset = domain(fem.at_node(u, s)) - domain(s)
     vel_apic = velocity_gradients[s.qp_index] * node_offset
@@ -234,7 +260,11 @@ def integrate_elastic_parameters(
     u: fem.Field,
     inv_cell_volume: float,
     material_parameters: MaterialParameters,
+    particle_flags: wp.array[wp.int32],
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
     i = s.qp_index
     params_vec = get_elastic_parameters(i, material_parameters)
     return wp.dot(u(s), params_vec) * inv_cell_volume
@@ -248,7 +278,11 @@ def integrate_yield_parameters(
     material_parameters: MaterialParameters,
     particle_Jp: wp.array[float],
     dt: float,
+    particle_flags: wp.array[wp.int32],
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
     i = s.qp_index
     params_vec = get_yield_parameters(i, material_parameters, particle_Jp[i], dt)
     return wp.dot(u(s), params_vec) * inv_cell_volume
@@ -260,7 +294,11 @@ def integrate_particle_stress(
     tau: fem.Field,
     inv_cell_volume: float,
     particle_stress: wp.array[wp.mat33],
+    particle_flags: wp.array[wp.int32],
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
     i = s.qp_index
 
     return wp.ddot(tau(s), particle_stress[i]) * inv_cell_volume
@@ -438,7 +476,11 @@ def strain_delta_form(
     dt: float,
     domain: fem.Domain,
     inv_cell_volume: float,
+    particle_flags: wp.array[wp.int32],
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
     # The full strain matrix can be recovered from this divergence
     # see _symmetric_part_op in rheology_solver_kernels.py
     return fem.div(u, s) * tau(s) * (dt * inv_cell_volume)
@@ -472,7 +514,11 @@ def strain_rhs(
     elastic_strains: wp.array[wp.mat33],
     inv_cell_volume: float,
     dt: float,
+    particle_flags: wp.array[wp.int32],
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
     _compliance, _poisson, damping = extract_elastic_parameters(elastic_parameters(s))
     alpha = 1.0 / (1.0 + damping / dt)
 
@@ -502,7 +548,11 @@ def compliance_form(
     elastic_strains: wp.array[wp.mat33],
     inv_cell_volume: float,
     dt: float,
+    particle_flags: wp.array[wp.int32],
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
     F = elastic_strains[s.qp_index]
 
     compliance, poisson, damping = extract_elastic_parameters(elastic_parameters(s))
@@ -542,7 +592,11 @@ def mass_form(
     p: fem.Field,
     q: fem.Field,
     inv_cell_volume: float,
+    particle_flags: wp.array[wp.int32],
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
     return p(s) * q(s) * inv_cell_volume
 
 

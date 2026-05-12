@@ -91,6 +91,10 @@ class SolverSemiImplicit(SolverBase):
         self.joint_attach_kd = joint_attach_kd
         self.enable_tri_contact = enable_tri_contact
 
+        if model.particle_count > 1 and model.particle_grid is not None:
+            with wp.ScopedDevice(model.device):
+                model.particle_grid.reserve(model.particle_count)
+
     @override
     def step(
         self,
@@ -158,6 +162,10 @@ class SolverSemiImplicit(SolverBase):
                 eval_muscle_forces(model, state_in, control, body_f)
 
             # particle-particle interactions
+            if model.particle_count > 1 and model.particle_grid is not None:
+                search_radius = model.particle_max_radius * 2.0 + model.particle_cohesion
+                with wp.ScopedDevice(model.device):
+                    model.particle_grid.build(state_in.particle_q, radius=search_radius)
             eval_particle_contact_forces(model, state_in, particle_f)
 
             # triangle/triangle contacts

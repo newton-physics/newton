@@ -1,0 +1,1356 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{graphicx}
+
+\setlist{noitemsep,topsep=2pt,parsep=0pt,partopsep=0pt}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\graphicspath{{docs/images/examples/}{../images/examples/}}
+
+\title{Multi-Solver Coupling Strategies \\
+       \large WIP design note}
+\author{Newton coupling notes}
+\date{2026-04-23}
+
+\newcommand{\va}{\bm v_a}
+\newcommand{\vb}{\bm v_b}
+\newcommand{\uu}{\bm u}
+\newcommand{\ubar}{\bar{\bm u}}
+\newcommand{\fa}{\bm f_a}
+\newcommand{\fb}{\bm f_b}
+\newcommand{\lam}{\bm\lambda}
+\newcommand{\Ja}{J_a}
+\newcommand{\Jb}{J_b}
+\newcommand{\Ma}{M_a}
+\newcommand{\Mb}{M_b}
+\newcommand{\Mhat}{\widehat M_a}
+\newcommand{\Dop}{D}
+\newcommand{\Dhat}{\widehat D}
+\newcommand{\Keff}{K_{\mathrm{eff}}}
+\newcommand{\Pmat}{P}
+\newcommand{\res}{\bm r}
+\newcommand{\normal}{\bm n}
+
+\begin{document}
+\maketitle
+
+\section{Scope}
+
+This is a work-in-progress design note. It uses a common notation to describe several
+candidate coupling schemes for running two solvers on one simulation step. The text is
+not a statement of shipped behavior. In particular, solver composition, model views,
+proxy bodies, and ADMM coupling are treated here as proposed design surfaces.
+
+The variants considered below are:
+\begin{itemize}
+\item collider exchange,
+\item one-way coupling,
+\item proxy bodies / virtual inertia,
+\item linearized ADMM,
+\item implicit-interface ADMM.
+\end{itemize}
+They all start from the same velocity-level interface problem. The main differences
+are where the interface law is solved, how action-reaction consistency is obtained, and
+what API each scheme requires from the sub-solvers.
+
+Notation map from earlier notes: $(M_1,M_2,H_1,H_2)$ are written here as
+$(\Ma,\Mb,\Ja,\Jb)$ for solvers $a$ and $b$. The Delassus operator is denoted by
+$\Dop$. The ADMM contact-space preconditioner is denoted by $\Pmat$.
+
+\section{Common interface problem}
+
+Let $\va\in\mathbb R^{n_a}$ and $\vb\in\mathbb R^{n_b}$ be the generalized velocities
+owned by solvers $a$ and $b$ during one time step. The matrices $\Ma$ and $\Mb$ denote
+the step inertia or the local quadratic model used by each sub-solver. The vectors
+$\fa,\fb$ collect explicit forces, controls, and internal terms after the local
+time-integration linearization.
+
+The interface relative velocity is
+\begin{equation}
+    \uu = \Ja\va + \Jb\vb,
+    \label{eq:relative-velocity}
+\end{equation}
+where $\Ja$ and $\Jb$ are contact or attachment Jacobians. They may represent normal
+contact velocities, tangential slip velocities, rigid attachment velocities, or other
+low-dimensional interface quantities. Bias velocities and stabilization terms can be
+folded into a target $\ubar$.
+
+For a hard bilateral velocity constraint $\uu=\ubar$, the monolithic coupled solve is
+\begin{equation}
+\begin{bmatrix}
+\Ma & 0 & -\Ja^\top \\
+0 & \Mb & -\Jb^\top \\
+-\Ja & -\Jb & 0
+\end{bmatrix}
+\begin{bmatrix}
+\va \\ \vb \\ \lam
+\end{bmatrix}
+=
+\begin{bmatrix}
+\fa \\ \fb \\ -\ubar
+\end{bmatrix}.
+\label{eq:global-kkt}
+\end{equation}
+The multiplier $\lam$ is the interface impulse in the sign convention
+\[
+    \Ma\va = \fa + \Ja^\top\lam,\qquad
+    \Mb\vb = \fb + \Jb^\top\lam .
+\]
+For unilateral contact, the third row is replaced by a contact law. In the frictionless
+normal direction this is the Signorini condition
+\[
+    0 \leq u_n \perp \lambda_n \geq 0 .
+\]
+Friction modifies the local contact law but not the ownership split.
+
+\paragraph{Delassus form.}
+Eliminating $\va$ and $\vb$ gives the contact-space relation
+\begin{equation}
+    \uu = \Dop\lam + \uu^0,\qquad
+    \Dop =
+        \Ja\Ma^{-1}\Ja^\top
+      + \Jb\Mb^{-1}\Jb^\top,\qquad
+    \uu^0 =
+        \Ja\Ma^{-1}\fa
+      + \Jb\Mb^{-1}\fb .
+    \label{eq:delassus}
+\end{equation}
+$\Dop$ is the Delassus operator, or contact-space inverse inertia. Its inverse
+$\Keff=\Dop^{-1}$ is the effective mass when it exists.
+
+\paragraph{Finite stiffness form.}
+For a finite bilateral stiffness $\kappa$ with energy
+$E_c(\uu)=\frac{\kappa}{2}\|\uu-\ubar\|^2$, the monolithic velocity solve can also be
+written as
+\begin{equation}
+\begin{bmatrix}
+\Ma + \kappa\Ja^\top\Ja & \kappa\Ja^\top\Jb \\
+\kappa\Jb^\top\Ja & \Mb + \kappa\Jb^\top\Jb
+\end{bmatrix}
+\begin{bmatrix}
+\va \\ \vb
+\end{bmatrix}
+=
+\begin{bmatrix}
+\fa + \kappa\Ja^\top\ubar \\
+\fb + \kappa\Jb^\top\ubar
+\end{bmatrix}.
+\label{eq:stiffness}
+\end{equation}
+All variants below avoid directly assembling this full coupled system.
+
+\section{Coupling variants}
+
+\subsection{Collider exchange}
+
+In collider exchange, each sub-solver sees the other side as kinematic collision
+geometry. The two sub-solvers advance independently, each with its own contact solve.
+This is the least intrusive scheme: it requires only pose and velocity updates for the
+foreign collision geometry.
+
+The approximation is that the two sides do not solve one shared interface impulse.
+Consequently, the impulses computed by the two contact solvers need not be equal and
+opposite. The combined interface complementarity problem is also not enforced as one
+problem, and either side can receive kinematic boundary velocities that make its local
+contact problem inconsistent. The method is mainly justified when the time step is
+small or when the foreign side is intentionally treated as prescribed scenery.
+
+\subsection{One-way coupling}
+
+One-way coupling is the limiting case where side $a$ is prescribed or much heavier than
+side $b$. Setting $\Ma^{-1}$ to zero in \eqref{eq:delassus}, side $a$ first advances to
+\[
+    \va^\star=\Ma^{-1}\fa ,
+\]
+and side $b$ solves
+\begin{equation}
+    \uu =
+      \Ja\va^\star
+    + \Jb\Mb^{-1}\fb
+    + \Jb\Mb^{-1}\Jb^\top\lam .
+    \label{eq:one-way}
+\end{equation}
+The interface impulse is scaled by side $b$'s effective inertia. If
+$\Mb \ll \Ma$, applying $\Ja^\top\lam$ back to side $a$ produces a negligible change,
+so the approximation is consistent with the mass ratio. If the mass ratio assumption is
+not valid, the scheme becomes a modeling choice rather than a controlled
+approximation.
+
+\subsection{Proxy bodies / virtual inertia}
+
+In the proxy-body variant, objects owned by side $a$ are represented in side $b$ by
+replica degrees of freedom with an approximate inertia $\Mhat$. The proxy inertia is
+chosen to be easy for side $b$ to solve, for example independent rigid-body blocks or a
+diagonal approximation. A scalar relaxation factor can be used to make the proxies
+lighter or heavier in the destination solve.
+
+Suppose an impulse $J_{a,k}^\top\lam^k$ was applied to side $a$ in the previous outer
+iteration or previous time step, producing
+\begin{equation}
+    \va^k = \Ma^{-1}\left(\fa + J_{a,k}^\top\lam^k\right).
+    \label{eq:lagged-va}
+\end{equation}
+The proxy solve uses the virtual-inertia approximation
+\begin{equation}
+    \va
+    \approx
+    \va^k
+    + \Mhat^{-1}\left(\Ja^\top\lam - J_{a,k}^\top\lam^k\right),
+    \label{eq:virtual-inertia-update}
+\end{equation}
+or equivalently
+\begin{equation}
+    \Mhat(\va-\va^k)=\Ja^\top\lam-J_{a,k}^\top\lam^k.
+    \label{eq:virtual-inertia-increment}
+\end{equation}
+The destination solver then solves
+\begin{equation}
+\begin{bmatrix}
+\Mhat & 0 & -\Ja^\top \\
+0 & \Mb & -\Jb^\top \\
+-\Ja & -\Jb & 0
+\end{bmatrix}
+\begin{bmatrix}
+\va \\ \vb \\ \lam
+\end{bmatrix}
+=
+\begin{bmatrix}
+\Mhat\va^k - J_{a,k}^\top\lam^k \\
+\fb \\
+-\ubar
+\end{bmatrix}.
+\label{eq:proxy-kkt}
+\end{equation}
+The subtraction term $-J_{a,k}^\top\lam^k$ prevents the previously applied impulse from
+being counted again. The resulting impulse can be applied to side $a$ in the next time
+step, or in an outer fixed-point iteration.
+
+For frozen Jacobians and bilateral constraints, define the proxy Delassus
+\[
+    \Dhat = \Ja\Mhat^{-1}\Ja^\top + \Jb\Mb^{-1}\Jb^\top .
+\]
+The fixed-point error propagation for the impulse contains the matrix
+\begin{equation}
+    \Dhat^{-1}\Ja\left(\Mhat^{-1}-\Ma^{-1}\right)\Ja^\top .
+    \label{eq:proxy-convergence}
+\end{equation}
+A spectral radius below one gives a local contraction. This condition is favored when
+$\Mhat$ is close to $\Ma$ in the interface directions, when side $b$ is light relative
+to side $a$, or when the proxy inertia is relaxed enough to damp the update.
+
+For a scalar interface with $\Ja=1$, write the virtual-inertia scale as
+$s=\Mhat/\Ma$ and the mass ratio as $q=\Ma/\Mb$. Then
+\begin{equation}
+    r(s,q)
+    =
+    \frac{\Mhat^{-1}-\Ma^{-1}}{\Mhat^{-1}+\Mb^{-1}}
+    =
+    \frac{1/s-1}{1/s+q}
+    =
+    \frac{1-s}{1+qs}.
+    \label{eq:proxy-scalar-factor}
+\end{equation}
+Thus $s=1$ gives exact inertia matching and $r=0$. For $0<s<1$ the scalar map is
+contractive for any positive $q$, but the limit $s\to0$ approaches $r\to1$ from
+below, so very light proxies are only weakly contractive. For $s>1$ the fixed-point
+factor changes sign, and it becomes non-contractive when the overscaled proxy is large
+enough relative to the side-$b$ inertia.
+
+The sign and magnitude of Eq.~\eqref{eq:proxy-scalar-factor} are useful as a
+two-parameter diagnostic over $s$ and $q$.  The repository keeps the executable
+visualization in \texttt{example\_proxy\_coupling\_convergence.py}; the generated
+plot is intentionally not checked into the documentation image gallery while
+the coupled examples remain experimental.
+
+When the true source-side effective inertia is not available, the proxy mass scale
+should be treated as a relaxation parameter rather than as a precise physical mass.
+A practical policy is:
+\begin{enumerate}
+\item build the cheapest available estimate $M_{\mathrm{est}}$ of source inertia at
+      the interface: particle mass for particles, directional rigid effective mass
+      $1/(\Ja\Ma^{-1}\Ja^\top)$ when available, translational body mass otherwise,
+      or a local particle-stencil mass for cloth and soft bodies;
+\item initialize $\Mhat=sM_{\mathrm{est}}$ with $s\in[0.5,1]$, using the lower end
+      when the estimate is crude and the upper end when the estimate is trusted;
+\item measure feedback convergence from harvested forces or impulses, for example
+      $e_k=\|\lam_k-\lam_{k-1}\|$ or, in force form,
+      $e_k=\|\mathbf f_k-\mathbf f_{k-1}\|$;
+\item adapt the scale from the observed residual ratio
+      $\hat r=e_k/\max(e_{k-1},\epsilon)$: reduce $s$ when $\hat r$ is large or the
+      feedback oscillates, keep it when $\hat r$ is moderate, and increase $s$
+      toward one when $\hat r$ is small;
+\item clamp the result, for example $s\in[0.05,1]$, so the proxy stays conservative
+      and avoids overscaled-inertia sign flips unless a solver-specific effective
+      mass estimate justifies $s>1$.
+\end{enumerate}
+This requires no new mandatory solver interface if adaptation happens between
+top-level steps: the shared coupler can use its existing harvested feedback buffers,
+update the stored proxy scale, and rescale the destination \texttt{ModelView} mass
+overlay before the next step. A runtime API to mutate proxy mass scales, or a small
+\texttt{notify\_model\_changed} path for view-local mass overlays, would make this
+implementation cleaner and avoid rebuilding the coupled solver. Per-interface
+effective-mass hooks would still be useful for better initialization, but they are an
+optimization rather than a prerequisite for adaptive proxy relaxation.
+
+\subsection{Linearized ADMM}
+
+ADMM introduces an explicit interface variable and keeps the ownership of physical
+degrees of freedom disjoint. The coupling law is represented by an interface energy or
+indicator $E_c(\uu)$:
+\begin{itemize}
+\item hard bilateral attachment: indicator of $\uu=\ubar$;
+\item compliant attachment: $E_c(\uu)=\frac{\kappa}{2}\|\uu-\ubar\|^2$;
+\item frictionless unilateral contact: indicator of the admissible normal velocity set;
+\item frictional contact: local maximum-dissipation Coulomb velocity solve.
+\end{itemize}
+The split problem is
+\begin{equation}
+\min_{\va,\vb,\uu}\;
+    E_a(\va) + E_b(\vb) + E_c(\uu)
+\quad\text{s.t.}\quad
+    \uu = \Ja\va + \Jb\vb .
+\label{eq:admm-split}
+\end{equation}
+$E_a$ and $E_b$ are the sub-solvers' per-step objectives, including their internal
+forces and contacts.
+
+Let
+\[
+    \res(\va,\vb,\uu)=\uu-\Ja\va-\Jb\vb .
+\]
+Using the physical interface impulse $\lam$ as the dual variable and a symmetric
+positive-definite contact-space preconditioner $\Pmat$, the augmented Lagrangian is
+\begin{equation}
+\mathcal L_\rho(\va,\vb,\uu,\lam)
+=
+E_a(\va)+E_b(\vb)+E_c(\uu)
++ \langle \lam,\,\res\rangle
++ \frac{\rho}{2}\|\res\|_{\Pmat}^2,
+\qquad
+\|x\|_{\Pmat}^2 = x^\top\Pmat x.
+\label{eq:alag}
+\end{equation}
+A natural choice is $\Pmat\approx\Keff=\Dop^{-1}$, so the penalty is scaled by
+contact-space effective mass. Equivalently, one may write
+$\Pmat=W^\top W$ with $W\approx\Keff^{1/2}$.
+
+A direct ADMM velocity update would add the Hessian
+$\rho\Ja^\top\Pmat\Ja$ to solver $a$ and $\rho\Jb^\top\Pmat\Jb$ to solver $b$.
+Linearized ADMM avoids that solver-internal Hessian by evaluating the penalty gradient
+at the present iterate and adding a local proximal term. With
+\[
+    \res^k = \uu^k-\Ja\va^k-\Jb\vb^k,\qquad
+    \bm g^k = \lam^k + \rho\Pmat\res^k ,
+\]
+the parallel velocity sweep is
+\begin{align}
+\va^{k+1}
+&= \arg\min_{\va}\;
+    E_a(\va)
+    - \langle \Ja^\top\bm g^k,\,\va\rangle
+    + \frac{\alpha_a}{2}\|\va-\va^k\|_{\Ma}^2,
+    \label{eq:admm-va}\\
+\vb^{k+1}
+&= \arg\min_{\vb}\;
+    E_b(\vb)
+    - \langle \Jb^\top\bm g^k,\,\vb\rangle
+    + \frac{\alpha_b}{2}\|\vb-\vb^k\|_{\Mb}^2.
+    \label{eq:admm-vb}
+\end{align}
+A sufficient convexity condition is
+\[
+    \alpha_a\Ma \succeq \rho\,\Ja^\top\Pmat\Ja,\qquad
+    \alpha_b\Mb \succeq \rho\,\Jb^\top\Pmat\Jb .
+\]
+
+After the velocity sweep, the interface variable is updated by the small separable
+problem
+\begin{equation}
+\uu^{k+1}
+=
+\arg\min_{\uu}\;
+    E_c(\uu)
+    + \langle \lam^k,\,\uu\rangle
+    + \frac{\rho}{2}
+      \|\uu-\Ja\va^{k+1}-\Jb\vb^{k+1}\|_{\Pmat}^2 ,
+\label{eq:admm-u}
+\end{equation}
+followed by the dual update
+\begin{equation}
+    \lam^{k+1}
+    =
+    \lam^k
+    + \rho\Pmat
+      \left(\uu^{k+1}
+      - \Ja\va^{k+1}
+      - \Jb\vb^{k+1}\right).
+\label{eq:admm-dual}
+\end{equation}
+For a damped quadratic attachment,
+\[
+    E_c(\uu)=\frac{\kappa}{2}\|\uu-\ubar\|^2
+            +\frac{\eta}{2}\|\uu\|^2,
+\]
+the local update remains diagonal per row:
+\[
+    \uu^{k+1}
+    =
+    \frac{\rho W^2(\Ja\va^{k+1}+\Jb\vb^{k+1}) + \kappa\ubar - W\lam^k}
+         {\kappa+\eta+\rho W^2}.
+\]
+The damping coefficient $\eta$ adds resistance to relative interface velocity
+without changing the Baumgarte or spring target $\ubar$.
+For model-joint box friction with per-axis limits $\bm\tau$, the same local
+problem uses the support function $\sum_i \tau_i |u_i|$ and reduces to a
+component-wise soft-threshold of the relative angular velocity in the joint
+frame.  This is the box analogue of the contact maximum-dissipation solve.
+The interface update is a tiny dense solve for quadratic attachments, a clamp for a
+frictionless normal contact, or a local maximum-dissipation Coulomb solve for
+frictional contact. With isotropic contact weight $W$ and
+\[
+    \uu^\star = \Ja\va^{k+1} + \Jb\vb^{k+1} - \frac{\lam^k}{\rho W},
+    \qquad
+    \bar\uu = \uu^\star - u_{\min}\normal ,
+\]
+the implemented Coulomb update applies the Daviet local map in the normal/tangent
+frame:
+\[
+\uu^{k+1} =
+u_{\min}\normal +
+\begin{cases}
+\bar\uu, & \bar u_n \geq 0,\\
+0, & \|\bar\uu_t\| \leq -\mu \bar u_n,\\
+\left(1 + \mu \bar u_n / \|\bar\uu_t\|\right)\bar\uu_t,
+& \text{otherwise}.
+\end{cases}
+\]
+The middle branch is sticking. The last branch is sliding: the normal velocity is
+at the unilateral bound and the dual update places the tangential contact force on
+the Coulomb boundary, opposite the slip direction. This solves the Coulomb
+maximum-dissipation law rather than projecting an already-computed force onto a
+cone.
+
+\subsection{Implicit-interface ADMM}
+
+The full ADMM variant keeps the quadratic penalty inside each sub-solver instead of
+linearizing it. The update for side $a$ contains the term
+\[
+    \frac{\rho}{2}
+    \|\uu^k-\Ja\va-\Jb\vb^k\|_{\Pmat}^2 ,
+\]
+and side $b$ receives the analogous term. This removes the proximal tuning parameters
+$\alpha_a,\alpha_b$ and usually reduces the number of ADMM iterations. The cost is a
+stronger sub-solver API: each solver must accept implicit point attachments, implicit
+springs, or another representation of $\Ja^\top\Pmat\Ja$ within its own solve.
+
+This variant is closest to the monolithic finite-stiffness system
+\eqref{eq:stiffness}, while still allowing the two velocity blocks to be minimized by
+their native solvers.
+
+\section{API additions relative to upstream/main}
+
+The upstream/main baseline provides a generic
+\[
+    \texttt{SolverBase.step(state\_in, state\_out, control, contacts, dt)}
+\]
+interface, external force arrays on \texttt{State} such as \texttt{body\_f} and
+\texttt{particle\_f}, model-change notification via \texttt{notify\_model\_changed},
+and model/state attribute metadata. It does not provide a public coupled-solver
+orchestration layer, model partition views, proxy-body metadata, interface Jacobian
+actions, or a standard solver API for effective mass and implicit interface terms.
+
+\subsection{Common APIs}
+
+Most variants benefit from the following additions:
+\begin{itemize}
+\item \textbf{Model partitioning.} A way to define solver ownership for bodies,
+      particles, shapes, and joints. This should include collision ownership:
+      internal pairs owned by one sub-solver, cross-owner pairs retained for interface
+      coupling, and static geometry assigned explicitly.
+\item \textbf{Model views.} A lightweight view or subset object that presents one
+      sub-solver with only the attributes it owns, plus controlled overrides such as
+      mass, inertia, collision masks, or kinematic state. This avoids cloning whole
+      models for every variant.
+\item \textbf{State distribution and reconciliation.} Utilities to scatter a global
+      state into per-solver states and gather the owned outputs back. The API must
+      define which side owns overlapping quantities and how joint, body, and particle
+      arrays are merged.
+\item \textbf{External-force contract.} A solver-level guarantee that
+      \texttt{body\_f} and \texttt{particle\_f} are interpreted as additive external
+      loads for that step, and a clear rule for whether solvers read, modify, or
+      preserve those arrays.
+\item \textbf{Coupling constraint data.} Internal row records derived from model
+      joints or collision detection: endpoint type and index, local anchor,
+      normal/tangent basis, target velocity or bias, compliance, friction, and
+      owner side.
+\item \textbf{Jacobian actions.} Kernels or methods for evaluating $Jv$ and applying
+      $J^\top f$ for rigid bodies, particles, and mixed endpoint pairs.
+      Materializing $J$ should not be required.
+\item \textbf{Effective-mass estimates.} Optional methods to evaluate diagonal or
+      block-diagonal approximations of $J M^{-1} J^\top$ for contact-space scaling.
+\end{itemize}
+
+\subsection{APIs for collider exchange and one-way coupling}
+
+These schemes need the smallest API surface:
+\begin{itemize}
+\item update kinematic collision geometry from another solver's state;
+\item filter collision pairs so that each sub-solver receives the intended collider
+      set;
+\item optionally accumulate or report reaction forces if one-way feedback is desired.
+\end{itemize}
+They do not require a shared interface dual variable or repeated in-step iterations.
+
+\subsection{APIs for proxy / virtual-inertia coupling}
+
+Proxy coupling requires additional support:
+\begin{itemize}
+\item create or expose replica bodies or particles in the destination model without
+      treating them as independently owned physical outputs;
+\item mark proxy bodies and particles as coupling metadata rather than ordinary
+      dynamic or kinematic entities;
+\item override proxy mass and inertia in a solver view, including block rigid inertia
+      or diagonal approximations;
+\item sync proxy poses and velocities from the source side before the destination
+      solve;
+\item remove previously applied impulses, gravity, or other loads that would otherwise
+      be counted twice on proxy degrees of freedom;
+\item report contact impulses or accumulated wrenches on proxies after the destination
+      solve so that the source side can receive the reaction;
+\item optionally run an outer fixed-point loop with convergence metrics on interface
+      velocity and impulse.
+\end{itemize}
+
+\subsection{APIs for linearized ADMM}
+
+Linearized ADMM can avoid arbitrary coupling Hessians, but it needs iteration-level
+control:
+\begin{itemize}
+\item repeat sub-solver steps from the same begin-of-step state while changing only
+      external coupling forces and proximal targets;
+\item apply $J^\top\bm g$ as body and particle forces before each ADMM velocity sweep;
+\item express the proximal term
+      $\frac{\alpha}{2}\|v-v^k\|_M^2$ either as a first-class solver option or through
+      mass scaling plus a rewritten pre-step velocity;
+\item keep warm-started interface variables $\uu$ and $\lam$ across time steps;
+\item expose residuals, stopping criteria, and graph-capture-safe iteration buffers.
+\end{itemize}
+
+\subsection{APIs for implicit-interface ADMM}
+
+The implicit variant needs the strongest solver interface:
+\begin{itemize}
+\item add per-interface implicit springs or attachments to a solver step;
+\item represent local Hessian contributions such as $\rho J^\top P J$ without forcing
+      callers to assemble solver-internal matrices;
+\item expose enough effective-mass information to tune $\rho$ and $P$ robustly;
+\item preserve the same interface data model as linearized ADMM so the two ADMM
+      variants can share contact detection, Jacobian actions, and dual updates.
+\end{itemize}
+
+\section{Implemented public Python API}
+
+The implemented public API lives in \texttt{newton.solvers}; examples and user code
+import those public symbols. The implementation modules remain under
+\texttt{newton.\_src}.
+
+The implemented split uses a shared coupled-solver base plus algorithm-specific
+derived couplers. The shared coupler owns state partitioning, \texttt{ModelView}
+construction, state reconciliation, per-entry substeps, and generic coupling hook
+helpers. Lagged-impulse proxy coupling lives in \texttt{SolverProxyCoupled};
+linearized ADMM lives in \texttt{SolverAdmmCoupled}.
+
+The currently exported coupling symbols are:
+\begin{itemize}
+\item \texttt{ModelView} and \texttt{SolverCoupled};
+\item \texttt{SolverProxyCoupled} and \texttt{SolverAdmmCoupled}.
+\end{itemize}
+
+\subsection{Shared coupled-solver API}
+
+\begin{verbatim}
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from enum import IntEnum
+
+import newton as nt
+import warp as wp
+from newton.solvers import SolverBase
+
+
+class SolverCoupled(SolverBase):
+    class ContactPolicy(IntEnum):
+        INTERNAL_ONLY = 0
+        INTERNAL_AND_STATIC = 1
+        NONE = 2
+
+    @dataclass(frozen=True)
+    class Entry:
+        name: str
+        solver: type[SolverBase] | Callable
+        bodies: Sequence[int] = ()
+        particles: Sequence[int] = ()
+        joints: Sequence[int] = ()
+        shapes: Sequence[int] = ()
+        solver_kwargs: dict = field(default_factory=dict)
+        configure_view: Callable[[ModelView], None] | None = None
+        contact_policy: int | None = None
+        substeps: int = 1
+        in_place: bool = False
+
+    def __init__(
+        self,
+        model: nt.Model,
+        entries: Sequence["SolverCoupled.Entry"],
+        coupling: object | None = None,
+    ) -> None: ...
+
+    def get_solver(self, name: str) -> SolverBase: ...
+
+    def solver(self, name: str) -> SolverBase: ...
+
+    def get_view(self, name: str) -> ModelView: ...
+
+
+class SolverProxyCoupled(SolverCoupled):
+    class ProxyMode(IntEnum):
+        LAGGED = 0
+        STAGGERED = 1
+
+    @dataclass(frozen=True)
+    class Proxy:
+        source: str
+        destination: str
+        bodies: Sequence[int] = ()
+        proxy_bodies: Sequence[int] | None = None
+        mass_scale: float = 1.0
+        mode: int | str = 0
+        particles: Sequence[int] = ()
+        proxy_particles: Sequence[int] | None = None
+        collision_pipeline: Callable[[ModelView], object | None] | None = None
+        collide_interval: int | None = None
+
+    @dataclass(frozen=True)
+    class CouplingProxy:
+        proxies: Sequence["SolverProxyCoupled.Proxy"]
+        iterations: int = 1
+
+    def __init__(
+        self,
+        model: nt.Model,
+        entries: Sequence["SolverCoupled.Entry"],
+        coupling: "SolverProxyCoupled.CouplingProxy",
+    ) -> None: ...
+
+    def get_proxy_contacts(
+        self,
+        source: str,
+        destination: str,
+    ) -> nt.Contacts | None: ...
+\end{verbatim}
+
+\texttt{SolverCoupled.Entry} describes ownership, sub-solver construction, and
+optional entry-local time substeps. The solver callable is constructed as
+\texttt{solver(model=view, **solver\_kwargs)}, so it must accept a
+\texttt{model} keyword. \texttt{substeps} splits that entry's solve into equal
+sub-intervals. \texttt{in\_place=True} aliases the entry's input and output
+states and calls \texttt{solver.step(state\_0, state\_0, ...)}; use it only for
+solvers that explicitly support same-object input/output stepping. In-place
+entries currently require \texttt{substeps=1}, and lagged proxy coupling rejects
+in-place source entries because the source begin pose must remain available.
+\texttt{SolverCoupled} builds one
+\texttt{ModelView} per entry, zeros non-owned body or particle inverse masses in that
+view, and reconciles only owned body, particle, and joint
+outputs back into the caller's \texttt{state\_out}. The constructor only accepts
+explicit \texttt{entries}; older map-based prototype construction paths have been
+removed. Derived couplers may keep non-owned endpoints dynamic in a view and mark
+them as proxies before sub-solver construction. Proxy coupling is enabled by
+constructing \texttt{SolverProxyCoupled} with a \texttt{CouplingProxy} object.
+
+\subsection{\texttt{ModelView}}
+
+\begin{verbatim}
+class ModelView:
+    def __init__(self, parent: nt.Model, name: str) -> None: ...
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def parent(self) -> nt.Model: ...
+
+    @property
+    def overrides(self) -> dict[str, object]: ...
+
+    def state(self, requires_grad: bool | None = None) -> nt.State: ...
+
+    def zero_body_mass(self, body_indices: wp.array) -> None: ...
+
+    def scale_body_mass(self, body_indices: wp.array, factor: float) -> None: ...
+
+    def mark_proxy_bodies(self, body_indices: wp.array) -> None: ...
+
+    def mark_proxy_particles(self, particle_indices: wp.array) -> None: ...
+
+    def zero_particle_mass(self, particle_indices: wp.array) -> None: ...
+
+    def scale_particle_mass(
+        self,
+        factor: float,
+        particle_indices: wp.array | None = None,
+    ) -> None: ...
+\end{verbatim}
+
+\texttt{ModelView} has copy-on-write overlay semantics for its explicit mutator
+methods. Reads fall through to the parent model until a mutator clones the affected
+array into the view's overrides. The parent model is not mutated by
+\texttt{zero\_body\_mass}, \texttt{scale\_body\_mass},
+\texttt{mark\_proxy\_bodies}, \texttt{mark\_proxy\_particles},
+\texttt{zero\_particle\_mass}, or \texttt{scale\_particle\_mass}. Direct writes
+through a returned Warp array are not intercepted, so callers should use the mutator
+methods for view-local edits.
+
+\subsection{Proxy / virtual-inertia coupling}
+
+\begin{verbatim}
+solver = SolverProxyCoupled(
+    model,
+    entries=[rigid_entry, soft_entry],
+    coupling=SolverProxyCoupled.CouplingProxy(
+        proxies=[
+            SolverProxyCoupled.Proxy(
+                source="rigid",
+                destination="soft",
+                bodies=rigid_body_ids,
+                proxy_bodies=rigid_proxy_body_ids,
+                mass_scale=0.25,
+                mode=SolverProxyCoupled.ProxyMode.LAGGED,
+                collision_pipeline=lambda model: CollisionPipeline(model),
+                collide_interval=1,
+            )
+        ]
+    ),
+)
+\end{verbatim}
+
+\texttt{proxy\_bodies=None} maps each source body to the same body index in the
+destination view; otherwise \texttt{proxy\_bodies} must have the same length as
+\texttt{bodies}. \texttt{proxy\_particles=None} does the same for source particles.
+\texttt{mass\_scale} scales proxy body mass/inertia and proxy particle mass in the
+destination view. \texttt{mode} accepts either the \texttt{ProxyMode} enum value or
+the strings \texttt{"lagged"} and \texttt{"staggered"}. \texttt{LAGGED} syncs the
+source begin-of-step state and end velocity, then rewinds destination proxy
+velocities by the previously applied feedback wrench or particle force, public
+force input, and gravity unless the destination solver provides a custom body or
+particle proxy velocity-rewind hook.
+\texttt{STAGGERED} syncs the source end state and end velocity and skips the
+generic rewind. If \texttt{collision\_pipeline} is supplied, the proxy coupler
+calls the factory with the destination \texttt{ModelView}. If the factory returns
+\texttt{None}, no proxy-local collision pipeline is installed and the destination
+solve receives the outer-level contacts supplied to \texttt{step()}. Otherwise
+the coupler allocates a persistent contacts buffer from the returned pipeline and
+refreshes those contacts before the destination solve every
+\texttt{collide\_interval} proxy passes. A \texttt{None} interval means every
+proxy pass when a custom pipeline is supplied; with no custom pipeline, the
+coupler keeps the previous behavior and uses the contacts supplied to
+\texttt{step()}. \texttt{get\_proxy\_contacts()} exposes the internal contact
+buffer for diagnostics and rendering; it returns \texttt{None} when no
+proxy-local pipeline is installed.
+Destination solvers may also mark
+\texttt{BODY\_PROXY\_HARVEST} or \texttt{PARTICLE\_PROXY\_HARVEST} as custom to
+override generic momentum harvesting; otherwise the shared coupler estimates
+feedback from proxy momentum change. Custom harvest hooks receive the prepared
+destination input state, the destination output state, and the contacts used for
+the proxy solve, so contact-native solvers can report feedback from final contact
+forces rather than from aggregate solver forces or arbitrary momentum changes.
+VBD uses this path to harvest rigid-rigid contact forces through its per-contact
+collector and body-particle contact forces through a matching soft-contact
+reducer. MPM has two particle-proxy paths. Pure proxy particles stay active in
+the MPM transfer flags, so they participate in the normal P2G/G2P momentum
+transfer, but are masked out of material volume, stress, strain, and constitutive
+updates. Their feedback is harvested from the transfer-induced momentum change
+with gravity removed from the lagged velocity rewind and from the final force.
+Deformable collider particles registered through \texttt{collider\_particle\_ids}
+remain inactive in both transfer and material terms and use the private collider
+impulse collector instead. The \texttt{iterations} field repeats this proxy
+relaxation pass over the same top-level time interval.
+The implemented generic proxy loop currently supports at most two solver entries;
+larger proxy-coupled configurations should use a more explicit scheduling layer.
+Within that two-entry limit, the loop groups body and particle mappings by
+\texttt{(source, destination)} and performs one source step and one destination
+step per solver pair per proxy iteration. A single \texttt{Proxy} may therefore
+carry both \texttt{bodies} and \texttt{particles}; both mappings are synchronized,
+velocity-rewound, and harvested around the same destination solve.
+
+Example usage:
+\begin{verbatim}
+rigid = SolverProxyCoupled.Entry(
+    name="rigid",
+    solver=SolverMuJoCo,
+    bodies=robot_bodies,
+    shapes=robot_shapes,
+    joints=robot_joints,
+    substeps=4,
+)
+soft = SolverProxyCoupled.Entry(
+    name="soft",
+    solver=SolverVBD,
+    bodies=cloth_bodies,
+    particles=cloth_particles,
+    shapes=cloth_shapes,
+)
+
+solver = SolverProxyCoupled(
+    model,
+    entries=[rigid, soft],
+    coupling=SolverProxyCoupled.CouplingProxy(
+        proxies=[
+            SolverProxyCoupled.Proxy(
+                source="rigid",
+                destination="soft",
+                bodies=robot_bodies,
+                proxy_bodies=robot_proxy_bodies,
+                mass_scale=0.25,
+                mode=SolverProxyCoupled.ProxyMode.LAGGED,
+            )
+        ],
+    ),
+)
+\end{verbatim}
+
+
+\subsection{Linearized ADMM coupling}
+
+\begin{verbatim}
+class SolverAdmmCoupled(SolverCoupled):
+    @classmethod
+    def register_custom_attributes(cls, builder: nt.ModelBuilder) -> None: ...
+
+    @classmethod
+    def add_body_particle_attachment(
+        cls,
+        builder: nt.ModelBuilder,
+        body: int,
+        particle: int,
+        *,
+        body_point: tuple[float, float, float] | wp.vec3 = (0.0, 0.0, 0.0),
+        stiffness: float = 1.0e4,
+        damping: float = 0.0,
+        enabled: bool = True,
+    ) -> int: ...
+
+    @dataclass(frozen=True)
+    class CouplingAdmm:
+        iterations: int = 5
+        rho: float = 1.0
+        gamma: float = 0.0
+        baumgarte: float = 0.0
+        joint_stiffness: float = 1.0e4
+        joint_damping: float = 0.0
+        joint_angular_stiffness: float = 1.0e4
+        joint_angular_damping: float = 0.0
+        contact_detection: bool = False
+        contact_distance: float | None = None
+        contact_friction: float = 0.0
+        contact_detection_margin: float = 0.01
+        particle_contact_detection_margin: float | None = None
+
+    def __init__(
+        self,
+        model: nt.Model,
+        entries: Sequence[SolverCoupled.Entry],
+        coupling: "SolverAdmmCoupled.CouplingAdmm",
+    ) -> None: ...
+\end{verbatim}
+
+\texttt{SolverAdmmCoupled} no longer accepts explicit endpoint-interface
+records. The ADMM constraints are discovered from the shared model:
+\begin{itemize}
+    \item cross-solver model joints become quadratic ADMM attachment rows;
+    \item custom \texttt{coupling:body\_particle\_attachment} rows become
+    quadratic rigid-body to particle attachment rows;
+    \item particle-shape, rigid-rigid, and particle-particle contacts come from
+    model-derived collision candidates when \texttt{contact\_detection=True}.
+\end{itemize}
+
+For cross-solver joints, the two connected bodies must be owned by different
+\texttt{SolverCoupled.Entry} objects, and the joint itself must be left unowned
+by sub-solvers so it is not solved twice. The current generic ADMM joint path
+maps \texttt{JointType.BALL} to translational anchor-coincidence rows and
+\texttt{JointType.FIXED} to translational plus angular rows. Other cross-solver
+joint types are rejected until their constrained subspace is represented
+exactly in the ADMM local solve. The scalar \texttt{joint\_stiffness},
+\texttt{joint\_damping}, \texttt{joint\_angular\_stiffness}, and
+\texttt{joint\_angular\_damping} parameters are the quadratic local-solve
+stiffnesses and damping coefficients for those model-derived rows.
+For \texttt{JointType.BALL}, nonzero \texttt{model.joint\_friction} entries
+create an additional angular dry-friction row.  The row measures relative
+angular velocity in the child joint frame and applies a per-axis box
+maximum-dissipation solve, matching the model's three stored ball-joint
+friction DOFs.
+
+\texttt{SolverAdmmCoupled.add\_body\_particle\_attachment} is the convenience
+path for deformable-to-rigid attachments that cannot be represented by a model
+joint because one endpoint is a particle. It registers a model custom frequency
+\texttt{coupling:body\_particle\_attachment} with SoA attributes for the body
+index, particle index, body-local point, stiffness, damping, and enabled flag, then
+appends one row. During construction, rows whose body and particle endpoints are
+owned by different entries become quadratic ADMM attachment rows. Rows with
+unowned or same-entry endpoints are ignored, matching the model-joint path's
+"only cross-solver constraints are owned by the coupler" rule. The helper is
+equivalent to calling \texttt{register\_custom\_attributes} and filling the
+custom values directly, so USD or importer paths can author the same attributes
+without using the Python helper.
+
+\texttt{contact\_detection=True} enables model-derived ADMM contacts. The
+coupler owns a private collision pipeline for shape-based contact detection and
+builds contact groups from solver-entry ownership: particle-shape rows are
+generated between particle entries and shapes on bodies owned by another entry
+whose shape flags include particle collision; rigid-rigid rows are generated
+from cross-entry shape contact pairs; particle-particle rows are generated for
+cross-entry particle sets through a private hash-grid pass. When
+\texttt{contact\_distance} is \texttt{None}, rigid contacts use collision
+margins, particle-shape contacts use particle radii, and particle-particle
+contacts use radius sums. Otherwise \texttt{contact\_distance} is the admissible
+signed gap for generated rows. \texttt{contact\_friction} sets the isotropic
+Coulomb coefficient. The hash-grid contact stream is an internal fixed-capacity
+record used only to refresh persistent ADMM rows and report normal force/impulse
+inside the coupler. Contact paths keep fixed-capacity device arrays and
+warm-start \texttt{u} / \texttt{lambda} by stable contact keys when contacts
+persist from one step to the next.
+
+A possible future extension is to make contact streams the input contract for
+proxy momentum harvesting itself: stream rows would encode source/proxy endpoint
+pairs, the proxy step would snapshot destination velocities, and the harvester
+would write feedback directly through those rows. That design is different from
+mirroring the current dense momentum-harvest result into streams after the
+harvest has already happened. The private detection contacts are not forwarded
+to sub-solvers; callers may still pass their own \texttt{Contacts} buffer for
+ordinary solver contacts. \texttt{gamma} controls the proximal term: when it is
+positive, \texttt{SolverAdmmCoupled} scales masses in each \texttt{ModelView},
+notifies sub-solvers that inertial properties changed, and shifts the
+begin-of-iteration velocities toward the previous ADMM iterate.
+
+Model-joint attachment usage:
+\begin{verbatim}
+link_joint = builder.add_joint_revolute(parent=-1, child=link)
+payload_joint = builder.add_joint_ball(
+    parent=link,
+    child=payload,
+    parent_xform=wp.transform(p=wp.vec3(link_hx, 0.0, 0.0)),
+    child_xform=wp.transform(p=wp.vec3(-payload_hx, 0.0, 0.0)),
+)
+
+rigid = SolverCoupled.Entry(
+    name="mjc",
+    solver=SolverMuJoCo,
+    bodies=[link],
+    joints=[link_joint],      # sub-solver-owned world joint
+)
+soft = SolverCoupled.Entry(
+    name="vbd",
+    solver=SolverVBD,
+    bodies=[payload],         # payload_joint is intentionally unowned
+)
+
+solver = SolverAdmmCoupled(
+    model,
+    entries=[rigid, soft],
+    coupling=SolverAdmmCoupled.CouplingAdmm(
+        iterations=8,
+        rho=1.0,
+        gamma=0.1,
+        baumgarte=0.2,
+        joint_stiffness=1.0e4,
+        joint_damping=10.0,
+    ),
+)
+\end{verbatim}
+
+Body-particle attachment usage:
+\begin{verbatim}
+ball = builder.add_body(...)
+center_particle = particle_start + center_j * (dim_x + 1) + center_i
+
+SolverAdmmCoupled.add_body_particle_attachment(
+    builder,
+    body=ball,
+    particle=center_particle,
+    body_point=(0.0, 0.0, 0.0),
+    stiffness=50.0,
+    damping=1.0,
+)
+
+solver = SolverAdmmCoupled(
+    model,
+    entries=[
+        SolverCoupled.Entry(name="mjc", solver=SolverMuJoCo, bodies=[ball]),
+        SolverCoupled.Entry(
+            name="vbd",
+            solver=SolverVBD,
+            particles=list(range(model.particle_count)),
+        ),
+    ],
+    coupling=SolverAdmmCoupled.CouplingAdmm(iterations=8, rho=50.0),
+)
+\end{verbatim}
+
+Collision-detected particle-shape contact usage:
+\begin{verbatim}
+solver = SolverAdmmCoupled(
+    model,
+    entries=[drop, tray],
+    coupling=SolverAdmmCoupled.CouplingAdmm(
+        iterations=12,
+        rho=45.0,
+        baumgarte=0.1,
+        contact_detection=True,
+        contact_distance=0.04,
+        contact_detection_margin=0.08,
+    ),
+)
+\end{verbatim}
+
+Collision-detected rigid-rigid contact usage:
+\begin{verbatim}
+solver = SolverAdmmCoupled(
+    model,
+    entries=[box_entry, plane_entry],
+    coupling=SolverAdmmCoupled.CouplingAdmm(
+        iterations=30,
+        rho=5.0,
+        gamma=0.2,
+        baumgarte=0.03,
+        contact_detection=True,
+        contact_friction=0.45,
+    ),
+)
+\end{verbatim}
+
+Collision-detected particle-particle contact usage:
+\begin{verbatim}
+solver = SolverAdmmCoupled(
+    model,
+    entries=[cloth_a, cloth_b],
+    coupling=SolverAdmmCoupled.CouplingAdmm(
+        iterations=10,
+        rho=30.0,
+        baumgarte=0.2,
+        contact_detection=True,
+        contact_detection_margin=0.02,
+    ),
+)
+\end{verbatim}
+
+\subsection{No single-pair convenience wrappers}
+
+The implementation intentionally avoids exported MuJoCo+VBD, MuJoCo+MPM, or
+MuJoCo+VBD-ADMM wrapper classes. The examples construct
+\texttt{SolverProxyCoupled}, \texttt{SolverAdmmCoupled}, or the base
+\texttt{SolverCoupled} directly.  Example-only sharing was also removed: each
+example now carries its own rigid-solver selection and graph-capture setup so
+the framework behavior is visible at the construction site.  MPM proxy examples
+that use deformable colliders rely on \texttt{SolverImplicitMPM}'s default
+constructor-time collider setup against the entry \texttt{ModelView}, so proxy
+mass relaxation is visible without an extra example-side setup call. The
+XPBD-MPM particle example instead exercises transfer-active pure proxy particles,
+with no triangles and no collider-particle registration. This keeps the default
+coupler path under test for the common two-solver cases and makes any missing
+generic hook visible.
+
+\subsection{Optional \texttt{SolverBase} coupling hooks}
+
+The implemented coupling hooks keep \texttt{step()} source-compatible. A solver
+reports, per hook, whether the model/state fallback is adequate, a custom
+implementation is required, or the requested hook is unsupported. Omitted hooks
+default to the fallback path.
+
+\begin{verbatim}
+class SolverBase:
+    class CouplingEndpointKind(IntEnum):
+        BODY = 0
+        PARTICLE = 1
+
+    class CouplingInputStateFlags(IntFlag):
+        BODY_Q = 1 << 0
+        BODY_QD = 1 << 1
+        PARTICLE_Q = 1 << 2
+        PARTICLE_QD = 1 << 3
+        JOINT_Q = 1 << 4
+        JOINT_QD = 1 << 5
+        BODY_F = 1 << 6
+        PARTICLE_F = 1 << 7
+        JOINT_F = 1 << 8
+        ITERATION_RESTART = 1 << 9
+
+        BODY = BODY_Q | BODY_QD
+        PARTICLE = PARTICLE_Q | PARTICLE_QD
+        JOINT = JOINT_Q | JOINT_QD
+        FORCE = BODY_F | PARTICLE_F | JOINT_F
+        ALL = BODY | PARTICLE | JOINT | FORCE
+
+    class CouplingHooks(IntFlag):
+        BODY_PROXY_REWIND_VELOCITY = 1 << 0
+        PARTICLE_PROXY_REWIND_VELOCITY = 1 << 1
+        BODY_PROXY_HARVEST = 1 << 2
+        PARTICLE_PROXY_HARVEST = 1 << 3
+        EFFECTIVE_MASS_DIAGONAL = 1 << 4
+        EFFECTIVE_MASS_BLOCK = 1 << 5
+        NOTIFY_INPUT_STATE_UPDATE = 1 << 6
+        PROXY_CONTACT_PREPARE = 1 << 7
+
+    class CouplingCapability(Enum):
+        DEFAULT = "default"
+        CUSTOM = "custom"
+        UNSUPPORTED = "unsupported"
+
+    CouplingCapabilities = dict[CouplingHooks, CouplingCapability]
+
+    def coupling_capabilities(
+        self,
+    ) -> "SolverBase.CouplingCapabilities":
+        return {}
+
+    def coupling_capability(
+        self,
+        hook: "SolverBase.CouplingHooks",
+    ) -> "SolverBase.CouplingCapability":
+        return self.coupling_capabilities().get(
+            hook,
+            SolverBase.CouplingCapability.DEFAULT,
+        )
+
+    def coupling_eval_effective_mass(
+        self,
+        endpoint_kind: wp.array[int],
+        endpoint_index: wp.array[int],
+        endpoint_local_pos: wp.array[wp.vec3],
+        out: wp.array[float],
+    ) -> None: ...
+
+    def coupling_eval_effective_mass_block(
+        self,
+        endpoint_kind: wp.array[int],
+        endpoint_index: wp.array[int],
+        endpoint_local_pos: wp.array[wp.vec3],
+        out_mass: wp.array[float],
+        out_inertia: wp.array[wp.mat33] | None = None,
+    ) -> None: ...
+
+    def coupling_notify_input_state_update(
+        self,
+        state: nt.State,
+        flags: CouplingInputStateFlags | int,
+        dt: float = 0.0,
+    ) -> None: ...
+
+    def coupling_harvest_proxy_wrenches(
+        self,
+        body_local_to_proxy_global: wp.array[int],
+        out_body_f: wp.array[wp.spatial_vector],
+        *,
+        state: nt.State | None = None,
+        state_out: nt.State | None = None,
+        contacts: nt.Contacts | None = None,
+        dt: float = 0.0,
+    ) -> None: ...
+
+    def coupling_rewind_proxy_body_velocity(
+        self,
+        body_local_to_proxy_global: wp.array[int],
+        state: nt.State,
+        coupling_forces: wp.array[wp.spatial_vector],
+        dt: float,
+    ) -> None: ...
+
+    def coupling_prepare_proxy_contacts(
+        self,
+        state: nt.State,
+        contacts: nt.Contacts | None,
+        *,
+        contacts_freshly_detected: bool = False,
+    ) -> nt.Contacts | None: ...
+
+    def coupling_harvest_proxy_particle_forces(
+        self,
+        particle_local_to_proxy_global: wp.array[int],
+        out_particle_f: wp.array[wp.vec3],
+        *,
+        state: nt.State | None = None,
+        state_out: nt.State | None = None,
+        contacts: nt.Contacts | None = None,
+        dt: float = 0.0,
+    ) -> None: ...
+
+    def coupling_rewind_proxy_particle_velocity(
+        self,
+        particle_local_to_proxy_global: wp.array[int],
+        state: nt.State,
+        coupling_forces: wp.array[wp.vec3],
+        dt: float,
+    ) -> None: ...
+
+\end{verbatim}
+
+The default implementation is the public model/state path. Body and particle
+coupling forces are written directly into \texttt{state.body\_f} and
+\texttt{state.particle\_f}; force injection is no longer a solver hook.  The maps
+used by the couplers are dense local-to-global index maps.  For example, the
+default body path loops over local body ids \texttt{b} and, when
+\texttt{body\_local\_to\_global[b] >= 0}, adds
+\texttt{body\_f[body\_local\_to\_global[b]]} into \texttt{state.body\_f[b]}.
+Normal ADMM force buffers use the identity map. Proxy feedback uses a
+source-local-to-global-proxy map, so harvested forces stored at the global proxy
+id are applied to the source solver's local id without changing the indexing
+convention of the feedback buffer.
+
+\texttt{ITERATION\_RESTART} is a contextual bit on
+\texttt{coupling\_notify\_input\_state\_update}.  ADMM and proxy coupling set it
+when they restart a solver input state for another relaxation pass over the same
+top-level time step.  Solvers with private step history can then realign that
+history with the public input state without treating the reset as a physical
+teleport.  VBD uses this to reset rigid \texttt{body\_q\_prev} on repeated
+coupling iterations, while ordinary proxy pose updates still use the proxy
+velocity-target path.
+
+Model-view mass and inertia overrides are also not coupling hooks.  Couplers
+mutate the destination \texttt{ModelView} directly: body proxy virtual inertia
+uses \texttt{set\_body\_inertial\_properties}, and particle proxy virtual mass
+uses \texttt{set\_particle\_mass}.  After such post-construction mutations the
+coupler calls the ordinary solver \texttt{notify\_model\_changed} path, using
+\texttt{BODY\_INERTIAL\_PROPERTIES} for body mass/inertia changes and a model
+properties notification for particle mass changes. Solvers with private model
+caches should therefore handle these changes in \texttt{notify\_model\_changed}
+rather than through a coupling-specific override hook. ADMM uses the same
+\texttt{ModelView} mutation mechanism for the proximal inertia term: when
+\texttt{gamma>0}, it scales owned body and particle masses by \texttt{1+gamma}
+before sub-solver construction and notifies solvers after construction.
+
+\texttt{NOTIFY\_INPUT\_STATE\_UPDATE} is the generic state-side notification
+hook. The fallback is no extra action because the coupler has already written
+the updated values directly into the public \texttt{State}. Custom solvers use
+this hook to synchronize private input buffers or to translate public state
+updates into solver-native history. \texttt{SolverProxyCoupled} calls it after
+state distribution, source force-buffer updates, source-to-proxy synchronization,
+and lagged proxy velocity rewinds. \texttt{SolverAdmmCoupled} calls it at the
+beginning of each ADMM iteration after restoring the iteration state, and after
+writing the proximal velocity target
+\texttt{(v\_n + gamma v\_k)/(1+gamma)} into \texttt{body\_qd},
+\texttt{particle\_qd}, and \texttt{joint\_qd}. There is therefore no separate
+ADMM-specific proximal-inertia or proximal-velocity hook; proximal inertia uses
+model-view mass scaling, and proximal velocity uses this generic state-update
+notification hook.
+
+\texttt{BODY\_PROXY\_REWIND\_VELOCITY} and
+\texttt{PARTICLE\_PROXY\_REWIND\_VELOCITY} let a destination solver rewind
+synchronized proxy velocities before its step. MPM uses these hooks for collider
+velocity preparation because its body and deformable-particle colliders are
+prescribed rather than integrated from public force buffers. For pure
+transfer-active particle proxies, the same MPM hook also subtracts gravity from
+the lagged input velocity so gravity is not harvested as coupling feedback.
+Without custom capabilities, \texttt{SolverProxyCoupled} applies the generic
+lagged velocity rewind from the destination \texttt{ModelView}, subtracting
+previously applied feedback, public force inputs, and gravity.
+VBD instead uses \texttt{NOTIFY\_INPUT\_STATE\_UPDATE} for smooth proxy-body
+teleport handling and the generic rewind for lagged feedback.
+\texttt{BODY\_PROXY\_HARVEST} and \texttt{PARTICLE\_PROXY\_HARVEST} let a solver
+report feedback from private buffers or impulses; otherwise proxy feedback is
+estimated from destination proxy momentum change.
+For body and particle proxies, \texttt{state} is the prepared destination input
+state, \texttt{state\_out} is the destination output state after the proxy solve,
+and \texttt{contacts} is the contact set passed to that solve. This lets custom
+harvesters report contact-only feedback at the accepted configuration. VBD uses
+this to avoid harvesting the final AVBD body force buffer, which may include
+non-contact terms or only the last nonlinear force assembly, and instead reduces
+the final rigid-rigid and body-particle contact forces onto proxy bodies.
+Proxy rewind and harvest hooks receive a dense local-to-global-proxy map.
+The local id is a body or particle index in the destination solver's
+\texttt{ModelView}; proxy entries map to the corresponding global proxy id in
+the parent model, and non-proxy entries are \texttt{-1}.  State arrays and
+solver-private buffers remain local-indexed.  The \texttt{coupling\_forces},
+\texttt{out\_body\_f}, and \texttt{out\_particle\_f} buffers are indexed by
+global proxy ids.
+\texttt{SolverProxyCoupled} maps the proxy-indexed feedback back to source
+local ids through the public force-buffer path when injecting it into the
+driving solver.
+\texttt{EFFECTIVE\_MASS\_DIAGONAL} and \texttt{EFFECTIVE\_MASS\_BLOCK} are
+query hooks, not mutation hooks: they let couplers ask a solver for endpoint
+effective mass. Endpoint batches are passed as structure-of-arrays Warp
+buffers: \texttt{endpoint\_kind}, \texttt{endpoint\_index}, and
+\texttt{endpoint\_local\_pos}. The arrays all have the same length as the
+output mass buffer. \texttt{endpoint\_kind} stores body/particle kind values,
+\texttt{endpoint\_index} stores the local model-view body or particle id, and
+\texttt{endpoint\_local\_pos} stores body-frame points for body endpoints
+(\texttt{0} for particles). The diagonal hook defaults to model mass/inertia.
+The block hook defaults to model mass and full body inertia, or to the
+diagonal/model fallback only when the caller can accept a scalarized body
+estimate. Proxy coupling uses the block hook for full virtual body inertia and
+the diagonal hook for particle proxy mass; ADMM uses diagonal endpoint masses
+for interface/contact weighting and falls back to model masses when no custom
+query is supplied.
+
+\texttt{coupling\_prepare\_proxy\_contacts} is called for body-proxy destination
+solves so the destination contact set can filter proxy contacts outside its
+ownership/feedback boundary. Proxy-local collision generation is configured on
+\texttt{SolverProxyCoupled.Proxy} rather than through this hook; the hook receives
+\texttt{contacts\_freshly\_detected=True} only when that proxy collision pipeline
+has just run. VBD uses this to filter newly detected proxy contacts and to call
+\texttt{set\_rigid\_history\_update} on the same cadence as contact refreshes.
+XPBD additionally treats view-local \texttt{ParticleFlags.PROXY} particles as
+contact-only proxies, filtering proxy-proxy and proxy-static particle contacts
+while retaining owned-particle versus proxy contact.
+
+\section{Comparison}
+
+\begin{center}
+\small
+\begin{tabular}{@{}L{0.18\linewidth}L{0.22\linewidth}L{0.19\linewidth}L{0.28\linewidth}@{}}
+\toprule
+Variant & Interface solve & API cost & Main tradeoff \\
+\midrule
+Collider exchange
+& independent kinematic-contact solves
+& low
+& easiest to stage, but action-reaction and complementarity are not solved as one
+interface problem \\
+\addlinespace
+One-way
+& one side prescribes motion, the other solves contact
+& low
+& controlled when one side is effectively infinite mass; otherwise intentionally
+asymmetric \\
+\addlinespace
+Proxy / virtual inertia
+& destination solver solves contacts against finite-mass replicas
+& medium
+& reuses a native contact solver, but stability depends on proxy inertia and force
+feedback is lagged unless fixed-point iterations are used \\
+\addlinespace
+Linearized ADMM
+& external-force sub-solver sweeps plus local interface proximal step
+& medium-high
+& symmetric in ownership and gives residuals/dual impulses, but needs in-step
+iterations and proximal tuning \\
+\addlinespace
+Implicit-interface ADMM
+& sub-solvers include implicit interface quadratic terms
+& high
+& fewer ADMM iterations and less proximal tuning, but requires implicit attachment or
+Hessian support in each sub-solver \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The schemes therefore occupy different points on an implementation spectrum. Collider
+exchange and one-way coupling minimize new API surface. Proxy coupling adds replica
+metadata and force harvesting in exchange for reusing one solver's contact machinery.
+Linearized ADMM adds a shared interface iteration without requiring arbitrary Hessians
+inside sub-solvers. Implicit-interface ADMM asks for the richest solver API and is the
+closest split form to a monolithic coupled solve.
+
+\end{document}

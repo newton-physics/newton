@@ -81,7 +81,7 @@ def eval_particle_contact(
 
                 f += particle_force(n, vrel, err, k_contact, k_damp, k_friction, k_mu)
 
-    particle_f[i] = f
+    particle_f[i] = particle_f[i] + f
 
 
 @wp.kernel

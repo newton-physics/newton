@@ -676,11 +676,13 @@ class ModelKamino:
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
         """
 
-        # Ensure the base model is valid
+        # Ensure the base model is valid. Coupled solvers pass ModelView
+        # instances that duck-type as Model while hiding unsupported topology.
         if model is None:
             raise ValueError("Cannot finalize ModelKamino from a None newton.Model instance.")
-        elif not isinstance(model, Model):
-            raise TypeError("Cannot finalize ModelKamino from an invalid newton.Model instance.")
+        for attr in ("body_count", "joint_count", "shape_count", "world_count", "device"):
+            if not hasattr(model, attr):
+                raise TypeError("Cannot finalize ModelKamino from an invalid newton.Model-like instance.")
 
         # Single-world Newton models may have world index -1 (unassigned).
         # Normalize to 0 so downstream world-based grouping works correctly.

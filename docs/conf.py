@@ -114,6 +114,16 @@ exclude_patterns = [
     "sphinx-env",
     "**/site-packages/**",
     "**/lib/**",
+    "plans/2026-03-23-coupling-sdd-review.md",
+    "plans/2026-03-24-coupling-implementation-status.md",
+    "plans/2026-04-24-admm-implementation-status.md",
+]
+
+suppress_warnings = [
+    # Keep ``-W`` focused on this repository's docs. External inventories are
+    # useful when reachable, but transient DNS/network failures should not make
+    # local and CI docs builds fail.
+    "intersphinx.external",
 ]
 
 

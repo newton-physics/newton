@@ -215,6 +215,111 @@ def quat_xyzw_to_wxyz(q: wp.quat) -> wp.quat:
     return wp.quat(q[3], q[0], q[1], q[2])
 
 
+# Coupling kernels
+@wp.kernel
+def eval_mujoco_coupling_effective_mass_kernel(
+    endpoint_kind: wp.array[int],
+    endpoint_index: wp.array[int],
+    endpoint_local_pos: wp.array[wp.vec3],
+    body_kind: int,
+    particle_kind: int,
+    body_mass: wp.array[float],
+    particle_mass: wp.array[float],
+    newton_body_to_mjc_world: wp.array[int],
+    newton_body_to_mjc_body: wp.array[int],
+    body_invweight0: wp.array2d[wp.vec2],
+    out: wp.array[float],
+):
+    tid = wp.tid()
+    kind = endpoint_kind[tid]
+    index = endpoint_index[tid]
+
+    value = float(0.0)
+    if kind == body_kind:
+        if index >= 0 and index < body_mass.shape[0]:
+            value = body_mass[index]
+
+        if index >= 0 and index < newton_body_to_mjc_world.shape[0] and index < newton_body_to_mjc_body.shape[0]:
+            world = newton_body_to_mjc_world[index]
+            mjc_body = newton_body_to_mjc_body[index]
+            if (
+                world >= 0
+                and world < body_invweight0.shape[0]
+                and mjc_body >= 0
+                and mjc_body < body_invweight0.shape[1]
+            ):
+                invweight = body_invweight0[world, mjc_body]
+                inv_mass = invweight[0]
+                inv_rot = invweight[1]
+                r = endpoint_local_pos[tid]
+                inv_eff = inv_mass + (2.0 / 3.0) * inv_rot * wp.dot(r, r)
+                if inv_eff > 0.0:
+                    value = 1.0 / inv_eff
+    elif kind == particle_kind:
+        if index >= 0 and index < particle_mass.shape[0]:
+            value = particle_mass[index]
+
+    out[tid] = value
+
+
+@wp.kernel
+def eval_mujoco_coupling_effective_mass_block_kernel(
+    endpoint_kind: wp.array[int],
+    endpoint_index: wp.array[int],
+    endpoint_local_pos: wp.array[wp.vec3],
+    body_kind: int,
+    particle_kind: int,
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    particle_mass: wp.array[float],
+    newton_body_to_mjc_world: wp.array[int],
+    newton_body_to_mjc_body: wp.array[int],
+    body_invweight0: wp.array2d[wp.vec2],
+    out_mass: wp.array[float],
+    out_inertia: wp.array[wp.mat33],
+):
+    tid = wp.tid()
+    kind = endpoint_kind[tid]
+    index = endpoint_index[tid]
+
+    mass = float(0.0)
+    inertia = wp.mat33(0.0)
+    if kind == body_kind:
+        if index >= 0 and index < body_mass.shape[0]:
+            mass = body_mass[index]
+        if index >= 0 and index < body_inertia.shape[0]:
+            inertia = body_inertia[index]
+
+        if index >= 0 and index < newton_body_to_mjc_world.shape[0] and index < newton_body_to_mjc_body.shape[0]:
+            world = newton_body_to_mjc_world[index]
+            mjc_body = newton_body_to_mjc_body[index]
+            if (
+                world >= 0
+                and world < body_invweight0.shape[0]
+                and mjc_body >= 0
+                and mjc_body < body_invweight0.shape[1]
+            ):
+                invweight = body_invweight0[world, mjc_body]
+                inv_mass = invweight[0]
+                inv_rot = invweight[1]
+                r = endpoint_local_pos[tid]
+                inv_eff = inv_mass + (2.0 / 3.0) * inv_rot * wp.dot(r, r)
+                if inv_eff > 0.0:
+                    mass = 1.0 / inv_eff
+
+                trace = wp.trace(inertia)
+                if inv_rot > 0.0 and trace > 1.0e-30:
+                    inertia = inertia * ((1.0 / inv_rot) / (trace / 3.0))
+                elif index >= 0 and index < body_mass.shape[0] and body_mass[index] > 0.0:
+                    inertia = inertia * (mass / body_mass[index])
+    elif kind == particle_kind:
+        if index >= 0 and index < particle_mass.shape[0]:
+            mass = particle_mass[index]
+
+    out_mass[tid] = mass
+    out_inertia[tid] = inertia
+
+
 # Kernel functions
 @wp.kernel
 def convert_newton_contacts_to_mjwarp_kernel(
