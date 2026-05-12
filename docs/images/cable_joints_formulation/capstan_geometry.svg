@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="430" viewBox="0 0 760 430" role="img" aria-label="Capstan cable constraint geometry">
+  <defs>
+    <marker id="arrow-blue" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <path d="M 0 0 L 9 3.5 L 0 7 z" fill="#1f67d2"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M 0 0 L 8 3 L 0 6 z" fill="#c84b31"/>
+    </marker>
+    <style>
+      text { font-family: DejaVu Sans, Arial, sans-serif; fill: #16202a; }
+      .mono { font-family: DejaVu Sans Mono, Consolas, monospace; }
+      .muted { fill: #5b6776; }
+    </style>
+  </defs>
+  <rect x="0" y="0" width="760" height="430" rx="16" fill="#ffffff"/>
+  <text x="36" y="44" font-size="24" font-weight="700">Capstan cable row</text>
+  <text x="36" y="72" font-size="14" class="muted">Geometry generated with the same circular tangent construction used for rolling links.</text>
+
+  <circle cx="371.04" cy="156.77" r="89.58" fill="#fff7e6" stroke="#c77a1f" stroke-width="4"/>
+  <circle cx="371.04" cy="156.77" r="4" fill="#c77a1f"/>
+  <text x="348.04" y="163.77" font-size="15">g</text>
+  <text x="389.04" y="189.77" font-size="14" class="muted">axis a</text>
+
+  <path d="M 281.46,385.21 L 281.46,156.77 L 281.54,152.86 L 281.80,148.96 L 282.22,145.08 L 282.82,141.21 L 283.58,137.38 L 284.51,133.58 L 285.60,129.83 L 286.86,126.13 L 288.28,122.49 L 289.85,118.91 L 291.58,115.41 L 293.46,111.98 L 295.49,108.64 L 297.66,105.39 L 299.97,102.24 L 302.42,99.19 L 304.99,96.25 L 307.70,93.43 L 310.52,90.72 L 313.46,88.15 L 316.51,85.70 L 319.66,83.39 L 322.91,81.22 L 326.25,79.19 L 329.68,77.31 L 333.18,75.58 L 336.76,74.01 L 340.40,72.59 L 344.10,71.33 L 347.86,70.24 L 351.65,69.31 L 355.49,68.55 L 359.35,67.95 L 363.23,67.53 L 367.13,67.27 L 371.04,67.19 L 374.95,67.27 L 378.85,67.53 L 382.73,67.95 L 386.60,68.55 L 390.43,69.31 L 394.23,70.24 L 397.98,71.33 L 401.68,72.59 L 405.32,74.01 L 408.90,75.58 L 412.41,77.31 L 415.83,79.19 L 419.17,81.22 L 422.42,83.39 L 425.58,85.70 L 428.62,88.15 L 431.56,90.72 L 434.39,93.43 L 437.09,96.25 L 439.67,99.19 L 442.11,102.24 L 444.42,105.39 L 446.60,108.64 L 448.62,111.98 L 450.50,115.41 L 452.23,118.91 L 453.81,122.49 L 455.22,126.13 L 456.48,129.83 L 457.57,133.58 L 458.50,137.38 L 459.26,141.21 L 459.86,145.08 L 460.28,148.96 L 460.54,152.86 L 460.63,156.77 L 460.63,385.21" fill="none" stroke="#202a34" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="281.46" cy="156.77" r="6" fill="#202a34"/>
+  <circle cx="460.63" cy="156.77" r="6" fill="#202a34"/>
+
+  <path d="M 329.83,156.77 L 329.92,154.08 L 330.19,151.39 L 330.63,148.73 L 331.24,146.11 L 332.02,143.52 L 332.97,141.00 L 334.08,138.54 L 335.35,136.17 L 336.78,133.88 L 338.35,131.68 L 340.06,129.60 L 341.90,127.63 L 343.87,125.79 L 345.96,124.08 L 348.15,122.51 L 350.44,121.08 L 352.82,119.81 L 355.27,118.70 L 357.80,117.75 L 360.38,116.97 L 363.00,116.35 L 365.66,115.92 L 368.35,115.65 L 371.04,115.56 L 373.74,115.65 L 376.42,115.92 L 379.08,116.35 L 381.71,116.97 L 384.29,117.75 L 386.81,118.70 L 389.27,119.81 L 391.65,121.08 L 393.94,122.51 L 396.13,124.08 L 398.21,125.79 L 400.18,127.63 L 402.02,129.60 L 403.73,131.68 L 405.31,133.88 L 406.73,136.17 L 408.00,138.54 L 409.11,141.00 L 410.06,143.52 L 410.85,146.11 L 411.46,148.73 L 411.90,151.39 L 412.16,154.08 L 412.25,156.77" fill="none" stroke="#c84b31" stroke-width="3" marker-end="url(#arrow-red)"/>
+  <text x="354.92" y="104.81" font-size="17" fill="#c84b31">theta</text>
+
+  <path d="M 251.00,340.42 L 251.00,223.96" stroke="#1f67d2" stroke-width="3" marker-end="url(#arrow-blue)"/>
+  <text x="216.96" y="275.02" font-size="18" fill="#1f67d2">T_l</text>
+  <path d="M 480.33,223.96 L 480.33,340.42" stroke="#1f67d2" stroke-width="3" marker-end="url(#arrow-blue)"/>
+  <text x="420.31" y="276.81" font-size="18" fill="#1f67d2">T_r</text>
+
+  <text x="196.35" y="412.08" font-size="14" class="muted">rest state: r_l + r_r = const</text>
+
+  <rect x="484" y="124" width="224" height="146" rx="10" fill="#f5f9ff" stroke="#b9d6ff"/>
+  <text x="504" y="154" font-size="16" font-weight="700">Capstan admissibility</text>
+  <text x="504" y="186" font-size="15" class="mono">alpha = exp(mu theta)</text>
+  <text x="504" y="214" font-size="15" class="mono">T_l &lt;= alpha T_r</text>
+  <text x="504" y="240" font-size="15" class="mono">T_r &lt;= alpha T_l</text>
+
+  <rect x="484" y="292" width="224" height="72" rx="10" fill="#fff8f0" stroke="#ecc28b"/>
+  <text x="504" y="322" font-size="15" class="mono">slip moves rest length</text>
+  <text x="504" y="348" font-size="15" class="mono">until a bound is active</text>
+</svg>

@@ -11,6 +11,7 @@
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{array}
+\usepackage{graphicx}
 \usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
 
 \newcommand{\R}{\mathbb{R}}
@@ -160,6 +161,16 @@ is applied to the adjacent span rest length with the capstan factor
 \end{equation}
 so that $\mu=0$ gives no surface drag and high friction approaches the no-slip
 surface-transfer limit.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.88\linewidth]{docs/images/cable_joints_formulation/capstan_geometry.pdf}
+  \caption{A single capstan row.  The circular route update supplies the
+  tangent points and wrap angle $\theta$.  The stretch rows carry the adjacent
+  span tensions $T_l,T_r$, while slip changes only the rest-length distribution
+  subject to $r_l+r_r=\mathrm{const}$ and the capstan band.}
+  \label{fig:capstan-row}
+\end{figure}
 
 \section{Free-Span Stretch Row}
 
