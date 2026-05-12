@@ -97,10 +97,6 @@ CPU-Only Limitations
 Newton can run on CPU (including macOS), but the following features require an
 NVIDIA GPU and are unavailable in CPU-only mode:
 
-- **SDF collision** — signed-distance-field computation requires CUDA
-  (``wp.Volume`` is GPU-only).
-- **Mesh-mesh contacts** — SDF-based mesh-mesh collision is silently skipped on CPU.
-- **Hydroelastic contacts** — depends on the SDF system.
 - **Tiled camera sensor** — GPU-accelerated raytraced rendering.
 - **Implicit MPM solver** — designed for GPU execution with CUDA graph support.
 - **Tile-based VBD solve** — uses GPU tile API; gracefully disabled on CPU.
