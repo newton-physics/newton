@@ -16,7 +16,15 @@
 - Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 - Expose `MeshAdjacencyData` (the device-resident soft-mesh adjacency struct returned by `MeshAdjacency.to()`) as public API for use in custom Warp kernels
+- Add `Model.AttributeSpec` and `Model.attribute_specs` for declaring model-attribute indexing, references, and view/compaction behavior in one metadata registry.
 - Add `ModelBuilder.BvhConfig` for selecting Warp BVH constructors during model finalization for mesh, Gaussian, and shape BVHs.
+- Add an experimental coupled solver framework:
+  - Introduce `newton.solvers.experimental.coupled` with `SolverCoupled`, `SolverCoupledProxy`, `SolverCoupledADMM`, and `ModelView` for multi-solver ownership, state mapping, and view-local model overrides.
+  - Support body and particle proxy coupling with virtual inertia, solver hooks, MPM collider/transfer proxies, and convergence diagnostics.
+  - Support ADMM coupling from model-derived joints, body-particle attachments, and collision-detected rigid/particle contacts with Coulomb friction.
+  - Add standalone multiphysics examples and regression coverage for MuJoCo/Kamino, VBD, XPBD, MPM, and ADMM contacts.
+  - Add `--coupled-view` to coupled multiphysics examples and expose `SolverCoupled` entry view/state helpers for rendering individual sub-solver views.
+- Add `BODY_F`, `PARTICLE_F`, and `JOINT_F` to `StateFlags`.
 
 ### Changed
 
@@ -78,6 +86,8 @@
 - Fix `ModelBuilder.collapse_fixed_joints()` crashing with `IndexError` when a `mujoco:equality_constraint` row omits optional fields (`anchor`, `relpose`) that carry defaults. (#3054)
 - Fix `ViewerGL.set_model()` resetting headless/interactive camera and wind state when switching between models that use the same up-axis. (#2658)
 - Fix bend force calculation error in Style3D solver
+- Fix `SolverSemiImplicit` skipping particle-particle contacts by rebuilding `Model.particle_grid` before contact evaluation.
+- Fix `SolverSemiImplicit` particle-particle contact forces overwriting previously accumulated forces in `particle_f` instead of adding to them.
 
 ### Removed
 
