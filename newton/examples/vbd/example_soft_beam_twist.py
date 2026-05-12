@@ -117,15 +117,6 @@ class Example:
         self._frame_index = 0
 
         self.viewer.set_model(self.model)
-        self.capture()
-
-    def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -155,10 +146,7 @@ class Example:
 
     def step(self):
         self._apply_twist_ramp()
-        if self.graph:
-            wp.capture_launch(self.graph)
-        else:
-            self.simulate()
+        self.simulate()
         self.sim_time += self.frame_dt
         self._frame_index += 1
 

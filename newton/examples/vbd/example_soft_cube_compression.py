@@ -112,15 +112,6 @@ class Example:
         self._released = False
 
         self.viewer.set_model(self.model)
-        self.capture()
-
-    def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -133,13 +124,10 @@ class Example:
     def _apply_compression(self):
         if self._frame_index >= self.RELEASE_FRAME:
             if not self._released:
-                # Re-activate top layer
                 flags = self.model.particle_flags.numpy()
                 for i in self.top_indices:
                     flags[i] = flags[i] | int(ParticleFlags.ACTIVE)
                 self.model.particle_flags = wp.array(flags)
-                # Re-capture graph since flags changed
-                self.capture()
                 self._released = True
             return
 
@@ -153,10 +141,7 @@ class Example:
 
     def step(self):
         self._apply_compression()
-        if self.graph:
-            wp.capture_launch(self.graph)
-        else:
-            self.simulate()
+        self.simulate()
         self.sim_time += self.frame_dt
         self._frame_index += 1
 
