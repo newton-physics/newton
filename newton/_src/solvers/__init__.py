@@ -1,6 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from .coupled import (
+    CouplingInterface,
+    ModelView,
+    SolverCoupled,
+    SolverCoupledAdmm,
+    SolverCoupledProxy,
+)
 from .featherstone import SolverFeatherstone
 from .flags import SolverNotifyFlags
 from .implicit_mpm import SolverImplicitMPM
@@ -13,7 +20,12 @@ from .vbd import SolverVBD
 from .xpbd import SolverXPBD
 
 __all__ = [
+    "CouplingInterface",
+    "ModelView",
     "SolverBase",
+    "SolverCoupled",
+    "SolverCoupledAdmm",
+    "SolverCoupledProxy",
     "SolverFeatherstone",
     "SolverImplicitMPM",
     "SolverKamino",
