@@ -387,12 +387,111 @@ rest-length distribution derived directly from the capstan equation.  The
 capstan equation supplies the active boundary; rest-length conservation supplies
 the update structure.
 
+\section{Spin Coupling from the Same Capstan Projection}
+
+The capstan angle $\theta$ in \eqref{eq:capstan-band} is the geometric wrap or
+bend angle.  It is not the pulley spin angle.  For a circular pulley, pure spin
+about the axle does not change the tangent points and therefore does not change
+$\theta$.  Pulley spin enters through surface travel.  Let $\phi$ be the pulley
+spin angle, and choose the sign convention that a positive scalar transfer
+$\delta$ moves cable material from the left free span to the right free span:
+\[
+  r_l' = r_l-\delta,\qquad r_r'=r_r+\delta.
+\]
+The rolling no-slip candidate over one substep is then
+\begin{equation}
+  \delta_0 = \delta_\mathrm{geom} + R\,\dd\phi,
+  \label{eq:no-slip-transfer}
+\end{equation}
+where $\delta_\mathrm{geom}$ is the signed tangent-point surface transfer from
+the route update and $R\dd\phi$ is the rim travel caused by pulley spin.  This
+candidate gives
+\begin{equation}
+  r_l^\star = r_l-\delta_0,\qquad
+  r_r^\star = r_r+\delta_0,
+  \label{eq:no-slip-rest-candidate}
+\end{equation}
+and therefore
+\begin{equation}
+  e_l^\star=\max(L_l-r_l^\star,0),\qquad
+  e_r^\star=\max(L_r-r_r^\star,0),
+\end{equation}
+\begin{equation}
+  T_l^\star=\frac{e_l^\star}{c_l},\qquad
+  T_r^\star=\frac{e_r^\star}{c_r}.
+\end{equation}
+The no-slip rolling update is statically admissible exactly when the candidate
+tensions satisfy the capstan band:
+\begin{equation}
+  \frac{1}{\alpha}
+  \le
+  \frac{T_l^\star}{T_r^\star}
+  \le
+  \alpha.
+  \label{eq:no-slip-admissible}
+\end{equation}
+If \eqref{eq:no-slip-admissible} holds, static friction can support the
+candidate and $\delta=\delta_0$.  If it does not hold, slip occurs and
+$\delta$ is projected back to the active capstan boundary using
+\eqref{eq:left-delta} or \eqref{eq:right-delta}.  In this sense, the
+rest-length update and the rolling no-slip/slip decision are both obtained from
+the same capstan equation: the spin angle only supplies the no-slip transfer
+candidate through $R\dd\phi$.
+
+The corresponding angular form follows by rewriting the capstan band as a
+bound on the tension difference.  From $T_l=\alpha T_r$,
+\[
+  \frac{T_l-T_r}{T_l+T_r}
+  =
+  \frac{\alpha-1}{\alpha+1},
+\]
+so the symmetric capstan cone is
+\begin{equation}
+  |T_r-T_l|
+  \le
+  \beta(T_r+T_l),
+  \qquad
+  \beta=\frac{\alpha-1}{\alpha+1}.
+  \label{eq:capstan-difference-cone}
+\end{equation}
+The tangential force imbalance on a circular pulley is $T_r-T_l$, so the
+capstan-limited spin torque is
+\begin{equation}
+  \tau_\phi
+  =
+  R\,\clamp\!\left(
+    T_r-T_l,\,
+    -\beta(T_l+T_r),\,
+    \beta(T_l+T_r)
+  \right).
+  \label{eq:capstan-torque}
+\end{equation}
+For a scalar spin inertia $I_\phi$, the spin equation of motion is
+\begin{equation}
+  I_\phi\dot{\omega}_\phi = \tau_\phi + \tau_\mathrm{ext},
+  \label{eq:spin-eom}
+\end{equation}
+and a simple discrete angular impulse update is
+\begin{equation}
+  \dd\omega_\phi
+  =
+  h I_\phi^{-1}\tau_\phi.
+  \label{eq:spin-velocity-update}
+\end{equation}
+Equations \eqref{eq:no-slip-transfer}--\eqref{eq:spin-velocity-update} are a
+useful target formulation: capstan friction chooses between the no-slip
+surface-transfer candidate and an active-boundary slip projection, while the
+same capstan cone supplies the admissible pulley spin torque.
+
 \section{Rolling Spin-Axis Row}
 
 The stretch row intentionally removed pulley spin coupling in
 \eqref{eq:spin-projection}.  A rolling link therefore receives a separate
 angular correction, admitted only to the extent allowed by the same capstan
-cone.
+cone.  The current implementation uses an impulse-style approximation to
+\eqref{eq:capstan-torque}: it reconstructs the spin-axis correction that the
+neighboring stretch rows would have applied, then gates that correction by the
+difference cone \eqref{eq:capstan-difference-cone}.
 
 The symmetric difference/sum form of the capstan band is
 \begin{equation}
@@ -400,8 +499,7 @@ The symmetric difference/sum form of the capstan band is
   \beta=\frac{\alpha-1}{\alpha+1}.
   \label{eq:symmetric-capstan}
 \end{equation}
-This follows by substituting $T_l=\alpha T_r$ into
-$(T_l-T_r)/(T_l+T_r)$.
+This is the same cone as \eqref{eq:capstan-difference-cone}.
 
 For a rolling guide body with axis $a$, define
 \begin{equation}
