@@ -230,9 +230,25 @@ class _ExampleBrowser:
         if hasattr(example, "gui") and hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
 
+    def _show_splash(self, text):
+        # Raise the splash and pump a couple of frames so it actually paints
+        # before the upcoming blocking work (importlib + Example construction
+        # can take several seconds when Warp kernels recompile).
+        if not hasattr(self.viewer, "show_loading_splash"):
+            return
+        self.viewer.show_loading_splash(text)
+        for _ in range(2):
+            self.viewer.begin_frame(0.0)
+            self.viewer.end_frame()
+
+    def _hide_splash(self):
+        if hasattr(self.viewer, "hide_loading_splash"):
+            self.viewer.hide_loading_splash()
+
     def switch(self, example_class):
         """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
         module_path, self.switch_target = self.switch_target, None
+        self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
         self.viewer.clear_model()
         try:
             mod = importlib.import_module(module_path)
@@ -241,12 +257,14 @@ class _ExampleBrowser:
             example = mod.Example(self.viewer, new_args)
         except Exception as e:
             warnings.warn(f"Failed to load example {module_path}: {e}", stacklevel=2)
+            self._hide_splash()
             return None, example_class
         # Track the args used to launch the current example so a subsequent
         # Reset reuses the new example's args, not the originally launched
         # example's args (different parsers expose different fields).
         self._initial_args = copy.deepcopy(new_args)
         self._register_ui(example)
+        self._hide_splash()
         return example, type(example)
 
     def reset(self, example_class):
@@ -256,6 +274,7 @@ class _ExampleBrowser:
         this method.
         """
         self._reset_requested = False
+        self._show_splash("Resetting...")
         self.viewer.clear_model()
         try:
             if self._initial_args is not None:
@@ -269,8 +288,10 @@ class _ExampleBrowser:
             new_example = example_class(self.viewer, args)
         except Exception as e:
             warnings.warn(f"Failed to reset example: {e}", stacklevel=2)
+            self._hide_splash()
             return None
         self._register_ui(new_example)
+        self._hide_splash()
         return new_example
 
 
@@ -286,6 +307,9 @@ def _format_fps(fps: float) -> str:
 def run(example, args):
     viewer = example.viewer
     example_class = type(example)
+
+    if hasattr(viewer, "hide_loading_splash"):
+        viewer.hide_loading_splash()
 
     perform_test = args is not None and args.test
     test_post_step = perform_test and hasattr(example, "test_post_step")
@@ -704,6 +728,7 @@ def init(parser=None):
         _raise_benchmark_priority(realtime=args.realtime)
 
     # Create viewer based on type
+    visible_gl = args.viewer == "gl" and not args.headless
     if args.viewer == "gl":
         viewer = newton.viewer.ViewerGL(headless=args.headless)
     elif args.viewer == "usd":
@@ -722,6 +747,17 @@ def init(parser=None):
         viewer = newton.viewer.ViewerViser()
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
+
+    if visible_gl:
+        viewer.show_loading_splash("Loading...")
+        # Pump a few frames so the OS maps the GL surface before kernel
+        # compilation blocks the main thread.  No portable "window is on
+        # screen" signal exists across X11/Wayland/macOS; three frames is
+        # a best-effort heuristic that may still come up blank on slow
+        # compositors (silently absent, not wrong).
+        for _ in range(3):
+            viewer.begin_frame(0.0)
+            viewer.end_frame()
 
     return viewer, args
 
