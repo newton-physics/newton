@@ -1,0 +1,519 @@
+% SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+% SPDX-License-Identifier: CC-BY-4.0
+
+\documentclass[11pt]{article}
+
+\input{glyphtounicode}
+\pdfgentounicode=1
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{array}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\dd}{\Delta}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\pinv}{M^{-1}}
+\newcommand{\T}{\mathsf{T}}
+\newcommand{\proj}{\Pi}
+\newcommand{\clamp}{\operatorname{clamp}}
+
+\title{A Split Stretch/Slip Formulation for Routed Cable Joints}
+\author{Newton Developers}
+\date{May 2026}
+\hypersetup{
+  pdftitle={A Split Stretch/Slip Formulation for Routed Cable Joints},
+  pdfauthor={Newton Developers}
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note describes the reduced routed-cable model used by Newton's tendon
+solver for massless cables over attachments, zero-radius pinholes, and
+finite-radius rolling pulleys.  The formulation separates the cable solve into
+three local mechanisms: unilateral free-span stretch, capstan slip represented
+as rest-length redistribution, and a capstan-limited rolling spin row.  The
+same rows are used by the XPBD solver and by the VBD rigid-body path.  This
+document states the equations of motion, the exact constraint rows, and the
+rest-length projection derived directly from the Euler--Eytelwein capstan
+equation.
+\end{abstract}
+
+\section{Model}
+
+Let a tendon be an ordered sequence of links $i=0,\ldots,n-1$.  Consecutive
+links define free spans $s=0,\ldots,n-2$.  Each link is attached to a rigid
+body $b_i$ and has one of three types:
+\[
+  \texttt{ATTACHMENT}, \qquad \texttt{PINHOLE}, \qquad \texttt{ROLLING}.
+\]
+Each free span stores a mutable rest length $r_s$, compliance $c_s$, damping
+$d_s$, and stretch multiplier $\lambda_s$.  The rest-length distribution is the
+state that records how much cable material is assigned to each free span.
+
+For body $b$, let
+\[
+  q_b = (p_b,Q_b), \qquad v_b = (u_b,\omega_b),
+\]
+where $p_b$ is translation, $Q_b\in SO(3)$ is orientation, $u_b$ is linear
+velocity, and $\omega_b$ is angular velocity.  A body-local point $o$ has world
+position
+\[
+  x_b(o) = p_b + Q_b o.
+\]
+Let $c_b^0$ be the local center of mass and $x_b^c=p_b+Q_b c_b^0$ its world
+position.  The velocity of $x=x_b(o)$ is
+\[
+  \dot{x} = u_b + \omega_b \times (x-x_b^c).
+\]
+
+\section{Equations of Motion and Discrete Projection}
+
+The unconstrained rigid-body dynamics can be written in generalized velocity
+form as
+\begin{equation}
+  M(q)\dot{v} = f_\mathrm{ext}(q,v,t) + J(q,r)^\T \tau,
+  \label{eq:eom}
+\end{equation}
+where $M$ is block-diagonal in body space, $J$ contains the active cable rows,
+$r$ is the vector of free-span rest lengths, and $\tau$ are row impulses or
+forces depending on time discretization.
+
+Newton applies the cable model as local position/velocity projections.  After
+external integration predicts $(q^\star,v^\star)$, each active row computes an
+increment $\dd\lambda$ and applies the body-space impulse
+\[
+  \dd p_b = J_{b,v}^\T\dd\lambda,\qquad
+  \dd \ell_b = J_{b,\omega}^\T\dd\lambda.
+\]
+The velocity increment is
+\[
+  \dd u_b = m_b^{-1}\dd p_b,\qquad
+  \dd\omega_b = I_b^{-1}\dd\ell_b,
+\]
+using the same effective inverse mass and inverse inertia arrays as the solver
+path.  The pose is advanced by the velocity increment over the substep $h$.
+For rigid-limit rows $c_s\to 0$, the stretch constraints satisfy the unilateral
+complementarity conditions
+\begin{equation}
+  C_s(q,r_s)\le 0,\qquad \lambda_s\ge 0,\qquad
+  \lambda_s C_s(q,r_s)=0.
+\end{equation}
+Finite compliance replaces this hard complementarity with the XPBD row below.
+
+\section{Route Update}
+
+For an attachment or pinhole, the route point is simply the body-local point
+transformed to world space.  For a rolling link with center $g$, radius $R$,
+axis $a$, and orientation sign $\sigma\in\{-1,+1\}$, the tangent point from an
+external point $p$ is computed in the plane orthogonal to $a$.
+
+Let
+\[
+  d = g-p,\qquad
+  \bar d = d - (d\cdot a)a,\qquad
+  u = \frac{\bar d}{\|\bar d\|},\qquad
+  v = a\times u.
+\]
+For $\|\bar d\|>R$, define
+\[
+  \phi = \arcsin\!\left(\min\left(\frac{R}{\|\bar d\|},1\right)\right),
+  \qquad
+  \psi =
+  \begin{cases}
+    -\pi/2-\phi, & \sigma>0,\\
+    \phantom{-}\pi/2+\phi, & \sigma<0.
+  \end{cases}
+\]
+The tangent point is
+\begin{equation}
+  x_\mathrm{tan}=g+R(\cos\psi\,u+\sin\psi\,v).
+\end{equation}
+For a span between two rolling links, the two tangent points are iterated to
+consistency.  A pure spin about the circular pulley axis does not change these
+tangent points; this is why the stretch row removes the spin-axis angular
+component.
+
+When a rolling contact point moves from $x_\mathrm{old}$ to $x_\mathrm{new}$ on
+the pulley surface, the signed surface transfer used by the route update is
+\begin{equation}
+  \dd \ell
+  = R\sigma\,
+    \operatorname{atan2}\!\left(
+      ((u_\mathrm{new}\times u_\mathrm{old})\cdot a),
+      u_\mathrm{old}\cdot u_\mathrm{new}
+    \right),
+  \label{eq:surface-transfer}
+\end{equation}
+where $u_\mathrm{old}$ and $u_\mathrm{new}$ are the normalized radial vectors
+from the pulley center, projected into the pulley plane.  The signed transfer
+is applied to the adjacent span rest length with the capstan factor
+\begin{equation}
+  \alpha = \exp(\clamp(\mu\theta,0,20)),\qquad
+  \beta = \frac{\alpha-1}{\alpha+1},
+  \label{eq:alpha-beta}
+\end{equation}
+so that $\mu=0$ gives no surface drag and high friction approaches the no-slip
+surface-transfer limit.
+
+\section{Free-Span Stretch Row}
+
+Span $s$ runs from left endpoint $x_s^L$ on body $b_L$ to right endpoint
+$x_s^R$ on body $b_R$.  Its geometric length, unit direction, and unilateral
+stretch constraint are
+\begin{equation}
+  L_s = \|x_s^R-x_s^L\|,\qquad
+  n_s = \frac{x_s^R-x_s^L}{\max(L_s,\eps)},\qquad
+  C_s(q,r_s)=L_s-r_s \le 0.
+  \label{eq:stretch-constraint}
+\end{equation}
+If $C_s\le 0$, the span is slack: the row is inactive, $\lambda_s$ is reset to
+zero, and the span contributes no tension.
+
+For an active taut span, the translational Jacobian blocks are
+\begin{equation}
+  J_{L,v}=-n_s,\qquad J_{R,v}=n_s.
+\end{equation}
+Let
+\[
+  \rho_L=x_s^L-x_{b_L}^c,\qquad \rho_R=x_s^R-x_{b_R}^c.
+\]
+The unprojected angular blocks are
+\begin{equation}
+  \widehat J_{L,\omega}= -\rho_L\times n_s,\qquad
+  \widehat J_{R,\omega}= \phantom{-}\rho_R\times n_s.
+  \label{eq:unprojected-angular}
+\end{equation}
+For an endpoint that lies on a rolling link with world axis $a$, the stretch
+row removes the spin-axis component:
+\begin{equation}
+  J_{\omega} =
+  \proj_a^\perp \widehat J_{\omega},\qquad
+  \proj_a^\perp = I-aa^\T.
+  \label{eq:spin-projection}
+\end{equation}
+For attachments and pinholes, $J_{\omega}=\widehat J_{\omega}$.  Equation
+\eqref{eq:spin-projection} is a modeling choice, not a numerical tweak: pulley
+spin does not change the route tangent geometry, so the stretch row should not
+accidentally impose a no-slip pulley constraint.
+
+The row velocity and effective inverse mass are
+\begin{align}
+  \dot C_s &=
+  J_{L,v}\cdot u_L + J_{L,\omega}\cdot \omega_L
+  + J_{R,v}\cdot u_R + J_{R,\omega}\cdot \omega_R,
+  \\
+  w_s &= J_s M^{-1}J_s^\T.
+\end{align}
+Written in body blocks,
+\begin{equation}
+  w_s =
+  m_L^{-1}\|J_{L,v}\|^2
+  + J_{L,\omega}^\T I_L^{-1}J_{L,\omega}
+  + m_R^{-1}\|J_{R,v}\|^2
+  + J_{R,\omega}^\T I_R^{-1}J_{R,\omega}.
+\end{equation}
+
+Newton's implemented XPBD increment is
+\begin{equation}
+  \gamma_s=c_s d_s,\qquad
+  \dd\lambda_s =
+  -\frac{
+    C_s + c_s\lambda_s + \gamma_s\dot C_s
+  }{
+    (h+\gamma_s)w_s + c_s/h
+  }.
+  \label{eq:xpbd-stretch}
+\end{equation}
+The solver stores both $\lambda_s\leftarrow\lambda_s+\dd\lambda_s$ and the
+latest $\dd\lambda_s$.  The latter is used by the rolling spin row.
+
+The stretch row applies the impulse-like body deltas
+\begin{equation}
+  \dd P_{b_L}=J_{L,v}^\T\dd\lambda_s,\quad
+  \dd L_{b_L}=J_{L,\omega}^\T\dd\lambda_s,\quad
+  \dd P_{b_R}=J_{R,v}^\T\dd\lambda_s,\quad
+  \dd L_{b_R}=J_{R,\omega}^\T\dd\lambda_s.
+  \label{eq:stretch-deltas}
+\end{equation}
+Relaxation multiplies these deltas before they are accumulated.
+
+\section{Capstan Slip as Rest-Length Projection}
+
+For a guide $g$ between a left span $l$ and right span $r$, define taut
+extensions and tension estimates
+\begin{equation}
+  e_l=\max(L_l-r_l,0),\qquad
+  e_r=\max(L_r-r_r,0),\qquad
+  T_l=\frac{e_l}{\max(c_l,\eps)},\qquad
+  T_r=\frac{e_r}{\max(c_r,\eps)}.
+  \label{eq:tension-estimate}
+\end{equation}
+
+For a pinhole, the bend angle is
+\begin{equation}
+  \theta =
+  \operatorname{atan2}\!\left(
+    \|d_\mathrm{in}\times d_\mathrm{out}\|,
+    d_\mathrm{in}\cdot d_\mathrm{out}
+  \right),
+  \label{eq:pinhole-angle}
+\end{equation}
+where $d_\mathrm{in}$ is the incoming unit cable direction into the pinhole and
+$d_\mathrm{out}$ is the outgoing unit direction.  For a rolling link,
+\begin{equation}
+  \theta =
+  \left|
+  \operatorname{atan2}\!\left(
+    (u_l\times u_r)\cdot a,\; u_l\cdot u_r
+  \right)
+  \right|,
+  \label{eq:rolling-angle}
+\end{equation}
+where $u_l$ and $u_r$ are the normalized radial vectors from the pulley center
+to the two tangent points, projected into the pulley plane.
+
+The Euler--Eytelwein capstan law gives the admissible static tension band
+\begin{equation}
+  T_l \le \alpha T_r,\qquad
+  T_r \le \alpha T_l,\qquad
+  \alpha=\exp(\clamp(\mu\theta,0,20)).
+  \label{eq:capstan-band}
+\end{equation}
+Equivalently,
+\begin{equation}
+  \frac{1}{\alpha}\le\frac{T_l}{T_r}\le\alpha.
+\end{equation}
+Inside this band the guide sticks and the adjacent rest lengths are unchanged.
+Outside the band, rest length is transferred between the two spans while
+preserving
+\begin{equation}
+  r_l' + r_r' = r_l+r_r.
+  \label{eq:rest-conservation}
+\end{equation}
+
+\subsection{Left Side Too Tight}
+
+If $T_l>\alpha T_r$, the active capstan boundary after projection is
+\begin{equation}
+  \frac{e_l'}{c_l} = \alpha \frac{e_r'}{c_r}.
+  \label{eq:left-boundary}
+\end{equation}
+Conservation means
+\[
+  r_l'=r_l+\delta,\qquad r_r'=r_r-\delta,
+\]
+so the taut extensions become
+\[
+  e_l'=e_l-\delta,\qquad e_r'=e_r+\delta.
+\]
+Substituting these directly into \eqref{eq:left-boundary} gives
+\[
+  \frac{e_l-\delta}{c_l}
+  =
+  \alpha\frac{e_r+\delta}{c_r}.
+\]
+Solving for the rest-length transfer,
+\begin{equation}
+  \delta_l =
+  \frac{c_r e_l-\alpha c_l e_r}{c_r+\alpha c_l}.
+  \label{eq:left-delta}
+\end{equation}
+The implementation clamps
+\[
+  \delta=\clamp(\delta_l,0,r_r-r_\mathrm{min}),
+\]
+then applies
+\[
+  r_l\leftarrow r_l+\delta,\qquad
+  r_r\leftarrow r_r-\delta.
+\]
+
+\subsection{Right Side Too Tight}
+
+If $T_r>\alpha T_l$, the active boundary is
+\begin{equation}
+  \frac{e_r'}{c_r} = \alpha \frac{e_l'}{c_l}.
+  \label{eq:right-boundary}
+\end{equation}
+Now
+\[
+  r_l'=r_l-\delta,\qquad r_r'=r_r+\delta,
+\]
+and therefore
+\[
+  e_l'=e_l+\delta,\qquad e_r'=e_r-\delta.
+\]
+Substitution into \eqref{eq:right-boundary} gives
+\[
+  \frac{e_r-\delta}{c_r}
+  =
+  \alpha\frac{e_l+\delta}{c_l},
+\]
+so
+\begin{equation}
+  \delta_r =
+  \frac{c_l e_r-\alpha c_r e_l}{c_l+\alpha c_r}.
+  \label{eq:right-delta}
+\end{equation}
+The implementation clamps
+\[
+  \delta=\clamp(\delta_r,0,r_l-r_\mathrm{min}),
+\]
+then applies
+\[
+  r_l\leftarrow r_l-\delta,\qquad
+  r_r\leftarrow r_r+\delta.
+\]
+
+Equations \eqref{eq:left-delta} and \eqref{eq:right-delta} are the desired
+rest-length distribution derived directly from the capstan equation.  The
+capstan equation supplies the active boundary; rest-length conservation supplies
+the update structure.
+
+\section{Rolling Spin-Axis Row}
+
+The stretch row intentionally removed pulley spin coupling in
+\eqref{eq:spin-projection}.  A rolling link therefore receives a separate
+angular correction, admitted only to the extent allowed by the same capstan
+cone.
+
+The symmetric difference/sum form of the capstan band is
+\begin{equation}
+  |T_l-T_r| \le \beta(T_l+T_r),\qquad
+  \beta=\frac{\alpha-1}{\alpha+1}.
+  \label{eq:symmetric-capstan}
+\end{equation}
+This follows by substituting $T_l=\alpha T_r$ into
+$(T_l-T_r)/(T_l+T_r)$.
+
+For a rolling guide body with axis $a$, define
+\begin{equation}
+  s_g =
+  \min\left(
+    1,\;
+    \frac{\beta(T_l+T_r)}{\max(|T_l-T_r|,\eps)}
+  \right).
+  \label{eq:spin-scale}
+\end{equation}
+If the adjacent stretch rows had kept the spin-axis term, their angular
+corrections on the pulley would have contained
+\begin{align}
+  A_l &= a a^\T \left((x_l^+-x_g^c)\times n_l\right)
+        \dd\lambda_l \rho,\\
+  A_r &= a a^\T \left(-(x_r^--x_g^c)\times n_r\right)
+        \dd\lambda_r \rho,
+  \label{eq:spin-candidates}
+\end{align}
+where $\rho$ is the relaxation factor, $x_l^+$ is the left span endpoint on the
+pulley, $x_r^-$ is the right span endpoint on the pulley, $x_g^c$ is the pulley
+body center of mass, and $n_l,n_r$ are the left and right span directions.
+
+The implemented rolling spin row applies the pure angular body delta
+\begin{equation}
+  \dd L_g^\mathrm{spin}
+  =
+  \beta\,s_g\,(A_l+A_r),
+  \qquad
+  \dd P_g^\mathrm{spin}=0.
+  \label{eq:spin-row}
+\end{equation}
+This row has no independent multiplier in the current implementation.  It uses
+the lagged stretch increments $\dd\lambda_l,\dd\lambda_r$ as the candidate
+no-slip rolling correction and gates that correction by the capstan cone.  The
+limiting cases are:
+\[
+  \mu=0 \Rightarrow \beta=0 \quad\text{(no pulley spin grip),}
+\]
+\[
+  \mu\to\infty \Rightarrow \beta\to 1 \quad\text{(no-slip rolling limit).}
+\]
+
+\section{Hysteresis}
+
+Because $r_l$ and $r_r$ are persistent state, the capstan projection reproduces
+static capstan hysteresis without requiring distinct static and kinetic
+coefficients.  Consider a fixed left endpoint, a rolling guide, and a driven
+right endpoint.  During loading, $T_r$ increases.  When
+\[
+  T_r>\alpha T_l,
+\]
+equation \eqref{eq:right-delta} transfers rest length from left to right:
+\[
+  r_l\downarrow,\qquad r_r\uparrow.
+\]
+The left endpoint has not moved, but the left span has shorter rest length, so
+the fixed side develops tension.  On that loading slip boundary,
+\[
+  T_r/T_l=\alpha.
+\]
+During unloading, the previous rest-length distribution remains latched while
+the tensions stay inside the capstan band.  Once the opposite boundary is
+violated,
+\[
+  T_l>\alpha T_r,
+\]
+equation \eqref{eq:left-delta} reverses the rest-length transfer and the
+unloading branch follows
+\[
+  T_l/T_r=\alpha.
+\]
+The area between these two branches is the hysteresis band.
+
+\section{XPBD and VBD Integration}
+
+The XPBD tendon iteration is:
+\begin{enumerate}
+  \item update route contacts and rolling/pinhole rest-length transfer,
+  \item solve each active free-span stretch row using \eqref{eq:xpbd-stretch},
+  \item solve each rolling spin-axis row using \eqref{eq:spin-row}.
+\end{enumerate}
+The VBD rigid-body path calls the same route update, stretch row, and rolling
+spin row inside the rigid iteration, using VBD's effective inverse mass and
+inverse inertia arrays.  There is no separate VBD global length force and no
+separate tendon Hessian model for routed cables; VBD regularizes the rigid
+solve while reusing the same cable rows as XPBD.
+
+\section{Implementation Map}
+
+The equations above correspond to the current Newton implementation as follows:
+\begin{center}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.34\linewidth}
+                >{\raggedright\arraybackslash}p{0.54\linewidth}}
+\hline
+Equation or mechanism & Implementation \\
+\hline
+Route tangent update and surface transfer &
+\path{newton/_src/solvers/tendon_kernels.py}\newline
+\texttt{update\_tendon\_attachments} \\
+Stretch row \eqref{eq:xpbd-stretch} &
+\path{newton/_src/solvers/xpbd/tendon_kernels.py}\newline
+\texttt{solve\_tendon\_stretch} \\
+Pinhole and rolling rest-length projection &
+\path{newton/_src/solvers/tendon_kernels.py}\newline
+\texttt{update\_tendon\_attachments} \\
+Rolling spin row \eqref{eq:spin-row} &
+\path{newton/_src/solvers/xpbd/tendon_kernels.py}\newline
+\texttt{solve\_tendon\_slip} \\
+VBD routed-tendon projection &
+\path{newton/_src/solvers/vbd/solver_vbd.py}\newline
+\texttt{\_project\_tendon\_constraints} \\
+\hline
+\end{tabular}
+\end{center}
+
+\section{Limitations}
+
+This is a reduced massless cable model, not a resolved rope/contact model.  It
+does not represent distributed cable mass, bending stiffness, contact patch
+pressure, or geodesic rerouting over arbitrary geometry.  The pinhole and
+rolling capstan laws use local bend or wrap angle as the reduced contact
+measure.  Displacement-driven force benchmarks require compliance somewhere in
+the system: cable compliance, actuator compliance, or a load-cell model.
+
+\end{document}

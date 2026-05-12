@@ -7,7 +7,7 @@ for rolling links.  The known-good pre-split finite capstan baseline is commit
 commit if the clean split regresses the routed-cable examples.
 
 For the mathematical formulation behind the current split stretch/slip solver,
-including SVG/TikZ mechanism diagrams, see
+including the equations of motion and exact constraint rows, see
 [A Split Stretch/Slip Formulation for Routed Cable Joints](cable_joints_formulation.md).
 
 ## Current Scope
