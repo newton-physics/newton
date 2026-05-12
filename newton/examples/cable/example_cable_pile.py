@@ -18,10 +18,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.cable._mouse_picking import (
-    apply_viewer_forces_with_linear_only_picking,
-    make_linear_only_picking_body_mask,
-)
 
 
 class Example:
@@ -165,9 +161,6 @@ class Example:
         builder.color()
 
         self.model = builder.finalize()
-        self.linear_only_picking_body_mask = make_linear_only_picking_body_mask(
-            rod_bodies_all, self.model.body_count, self.model.device
-        )
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
@@ -184,11 +177,13 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        if hasattr(self.viewer, "picking"):
-            ps = self.viewer.picking.pick_state.numpy()
-            ps[0]["pick_stiffness"] = 20.0
+        picking = getattr(self.viewer, "picking", None)
+        if picking is not None:
+            picking.set_linear_only_bodies(rod_bodies_all)
+            ps = picking.pick_state.numpy()
+            ps[0]["pick_stiffness"] = 100.0
             ps[0]["pick_damping"] = 0.0
-            self.viewer.picking.pick_state.assign(ps)
+            picking.pick_state.assign(ps)
 
         self.capture()
 
@@ -205,7 +200,7 @@ class Example:
         """Execute all simulation substeps for one frame."""
         for _substep in range(self.sim_substeps):
             self.state_0.clear_forces()
-            apply_viewer_forces_with_linear_only_picking(self.viewer, self.state_0, self.linear_only_picking_body_mask)
+            self.viewer.apply_forces(self.state_0)
             self.model.collide(self.state_0, self.contacts)
 
             self.solver.step(

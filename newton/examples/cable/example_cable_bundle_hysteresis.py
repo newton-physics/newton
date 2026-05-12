@@ -17,10 +17,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.cable._mouse_picking import (
-    apply_viewer_forces_with_linear_only_picking,
-    make_linear_only_picking_body_mask,
-)
 
 
 @wp.kernel
@@ -281,9 +277,6 @@ class Example:
 
         # Finalize model
         self.model = builder.finalize()
-        self.linear_only_picking_body_mask = make_linear_only_picking_body_mask(
-            cable_body_ids, self.model.body_count, self.model.device
-        )
 
         # Author Dahl friction parameters (per-joint) via custom model attributes.
         # SolverVBD auto-detects these and enables Dahl friction when present.
@@ -303,6 +296,9 @@ class Example:
 
         self.contacts = self.model.contacts()
         self.viewer.set_model(self.model)
+        picking = getattr(self.viewer, "picking", None)
+        if picking is not None:
+            picking.set_linear_only_bodies(cable_body_ids)
 
         # Obstacle kinematics parameters
         self.obstacle_bodies_wp = wp.array(self.obstacle_bodies, dtype=int, device=self.solver.device)
@@ -344,7 +340,7 @@ class Example:
             self.state_0.clear_forces()
 
             # Apply forces to the model
-            apply_viewer_forces_with_linear_only_picking(self.viewer, self.state_0, self.linear_only_picking_body_mask)
+            self.viewer.apply_forces(self.state_0)
 
             # Update obstacle positions (all phases handled inside kernel)
             wp.launch(

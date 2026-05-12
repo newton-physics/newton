@@ -19,10 +19,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.cable._mouse_picking import (
-    apply_viewer_forces_with_linear_only_picking,
-    make_linear_only_picking_body_mask,
-)
 
 
 def _y_dirs_xy() -> list[wp.vec3]:
@@ -107,9 +103,6 @@ class Example:
         sim_device = wp.get_device(args.device) if args.device else None
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, float(getattr(args, "gravity_z", -9.81))))
-        self.linear_only_picking_body_mask = make_linear_only_picking_body_mask(
-            self.graph_bodies, self.model.body_count, self.model.device
-        )
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
@@ -127,11 +120,13 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        if hasattr(self.viewer, "picking"):
-            pick_state = self.viewer.picking.pick_state.numpy()
+        picking = getattr(self.viewer, "picking", None)
+        if picking is not None:
+            picking.set_linear_only_bodies(self.graph_bodies)
+            pick_state = picking.pick_state.numpy()
             pick_state[0]["pick_stiffness"] = 2.0
             pick_state[0]["pick_damping"] = 0.0
-            self.viewer.picking.pick_state.assign(pick_state)
+            picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(
             pos=wp.vec3(2.10, 0.0, z0 - 0.15),
@@ -152,7 +147,7 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            apply_viewer_forces_with_linear_only_picking(self.viewer, self.state_0, self.linear_only_picking_body_mask)
+            self.viewer.apply_forces(self.state_0)
             self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0

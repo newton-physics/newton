@@ -73,6 +73,7 @@ def apply_picking_force_kernel(
     body_com: wp.array[wp.vec3],
     body_mass: wp.array[float],
     pick_effective_mass: wp.array[float],
+    linear_only_body_mask: wp.array[wp.int32],
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
@@ -120,7 +121,13 @@ def apply_picking_force_kernel(
         force_at_offset = force_at_offset * (max_force / force_mag)
 
     # Compute the resulting torque given the offset from COM to the picked point.
-    torque_at_offset = wp.cross(offset, force_at_offset)
+    # Bodies registered via Picking.set_linear_only_bodies() receive force only,
+    # which keeps mouse picking from injecting destabilizing torques into cables
+    # and other low-inertia articulated chains.
+    if linear_only_body_mask[pick_body] != 0:
+        torque_at_offset = wp.vec3(0.0)
+    else:
+        torque_at_offset = wp.cross(offset, force_at_offset)
 
     wp.atomic_add(body_f, pick_body, wp.spatial_vector(force_at_offset, torque_at_offset))
 
