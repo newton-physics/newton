@@ -454,6 +454,19 @@ def eval_inverse_dynamics(
         without the constraint-Jacobian contribution required to model
         the constrained dynamics.
 
+    Note:
+        A D6 joint with more than one angular DOF uses a stacked
+        axis-angle composition for its position kinematics
+        (rotation by ``q_1`` is taken about the axis already rotated
+        by ``q_0``, and so on) but an independent-axis sum for its
+        angular velocity (``ω = sum_i axis_i * qd_i`` using the raw
+        body-frame axes). These two models are not time-derivatives
+        of each other if any angular ``joint_q`` is non-zero, so
+        the ``tau`` produced for such a joint cannot be round-tripped
+        through any forward-dynamics integrator that advances
+        ``joint_q`` from ``joint_qd``. D6 joints with at most one
+        angular axis are unaffected.
+
     Args:
         model: Model providing articulation topology and inertial parameters.
         state: State providing the current generalized coordinates and velocities.
