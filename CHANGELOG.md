@@ -112,7 +112,7 @@
 - Fix O(W²·S²) memory explosion in `CollisionPipeline` shape-pair buffer allocation for NXN and SAP broad phase modes by computing per-world pair counts instead of a global N²
 - Fix non-determinism in `CollisionPipeline(contact_matching="sticky")` where the matcher's `atomic_min` claim tie-break used the unsorted narrow-phase thread id (which `wp.atomic_add` makes non-deterministic) instead of the contact's sort key, so two runs of the same scene could pick different winners and diverge across frames
 - Fix the deterministic narrow-phase sort buffer being sized to the broad-phase candidate-pair bound (`N*(N-1)/2` per world for NXN/SAP) instead of `rigid_contact_max`, which wasted multi-GB of VRAM on scenes with thousands of shapes
-- Fix VBD rigid body-body contact accumulation to replay deterministically when rigid contacts are produced by a deterministic collision pipeline
+- Fix VBD rigid body-body contact accumulation to replay deterministically on the same device when rigid contacts are produced by a deterministic collision pipeline
 - Fix `SensorRaycast` ignoring `PLANE` geometry
 - Fix `nut_bolt_hydro` example threading regression where some nuts were pinned in static friction; nuts now thread reliably down the bolt under both MuJoCo and XPBD solvers (#2702)
 - Fix VRAM leak when resetting examples that allocate large GPU state (e.g. `diffsim_bear`)

@@ -829,7 +829,7 @@ def _run_vbd_rigid_contact_replay(device):
 
 
 def _rigid_body_contacts_replay_bit_identically(test, device):
-    """Repeated VBD rigid contact runs should produce bit-identical rigid states."""
+    """Repeated VBD rigid contact runs should produce bit-identical rigid states on one device."""
     with wp.ScopedDevice(device):
         body_q_a, body_qd_a = _run_vbd_rigid_contact_replay(device)
         body_q_b, body_qd_b = _run_vbd_rigid_contact_replay(device)
