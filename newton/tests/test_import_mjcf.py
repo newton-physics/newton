@@ -2312,6 +2312,32 @@ class TestImportMjcfGeometry(unittest.TestCase):
             msg=f"Visual geom with default density should produce mass={expected_mass}, got {actual_mass}",
         )
 
+    def test_visual_geom_explicit_mass_with_parse_visuals(self):
+        """Regression: visual geoms must honor explicit mass when parse_visuals=True."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <worldbody>
+    <body name="test" pos="0 0 0.5">
+      <joint type="hinge" axis="0 0 1"/>
+      <geom name="vis" type="box" size="0.1 0.1 0.1"
+            contype="0" conaffinity="0" group="2" mass="5"/>
+      <geom name="col" type="box" size="0.1 0.1 0.1"
+            mass="0" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=True)
+        model = builder.finalize()
+
+        actual_mass = float(model.body_mass.numpy()[0])
+        self.assertAlmostEqual(actual_mass, 5.0, places=4, msg=f"Expected visual geom mass=5.0, got {actual_mass}")
+        self.assertGreater(
+            float(np.trace(model.body_inertia.numpy()[0])),
+            0.0,
+            msg="Visual geom with explicit mass should contribute non-zero inertia",
+        )
+
     def test_inertial_locks_body_against_frame_geom_mass(self):
         """Regression: explicit <inertial> must lock body mass/COM against later frame geoms.
 

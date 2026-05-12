@@ -16,7 +16,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.math import orthonormal_basis
-from newton._src.solvers.vbd.rigid_vbd_kernels import evaluate_body_particle_contact
+from newton._src.solvers.vbd.rigid_vbd_kernels import _eval_body_particle_contact, evaluate_body_particle_contact
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
@@ -2442,7 +2442,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
 
-            body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
+            body_contact_force, body_contact_hessian = _eval_body_particle_contact(
                 particle_idx,
                 pos[particle_idx],
                 pos_anchor[particle_idx],
@@ -2452,7 +2452,6 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 contact_mu,
                 friction_epsilon,
                 particle_radius,
-                shape_material_mu,
                 shape_body,
                 body_q,
                 body_q_prev,
@@ -2943,7 +2942,7 @@ def accumulate_particle_body_contact_force_and_hessian(
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
 
-            body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
+            body_contact_force, body_contact_hessian = _eval_body_particle_contact(
                 particle_idx,
                 pos[particle_idx],
                 pos_anchor[particle_idx],
@@ -2953,7 +2952,6 @@ def accumulate_particle_body_contact_force_and_hessian(
                 contact_mu,
                 friction_epsilon,
                 particle_radius,
-                shape_material_mu,
                 shape_body,
                 body_q,
                 body_q_prev,

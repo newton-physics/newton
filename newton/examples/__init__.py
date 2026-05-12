@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
+import copy
+import gc
 import importlib
 import os
 import warnings
@@ -185,12 +187,16 @@ def test_particle_state(
 class _ExampleBrowser:
     """Manages the example browser UI and switching/reset logic for the run loop."""
 
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.switch_target: str | None = None
         self._reset_requested = False
         self.callback = None
         self._tree: dict[str, list[tuple[str, str]]] = {}
+        # Deep-copy so later mutations to the caller's namespace (or to
+        # nested mutable fields like ``args.warp_config``) do not change
+        # what Reset restores.
+        self._initial_args = copy.deepcopy(args) if args is not None else None
 
         if not hasattr(viewer, "register_ui_callback"):
             return
@@ -213,43 +219,79 @@ class _ExampleBrowser:
                             if clicked:
                                 self.switch_target = module_path
                         imgui.tree_pop()
-                imgui.separator()
-                if imgui.button("Reset"):
-                    self._reset_requested = True
 
         self.callback = _browser_ui
         viewer.register_ui_callback(_browser_ui, position="panel")
+        if hasattr(viewer, "set_reset_callback"):
+            viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
 
     def _register_ui(self, example):
         """Re-register the example's GUI callback (panel callbacks survive clear_model)."""
         if hasattr(example, "gui") and hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
 
+    def _show_splash(self, text):
+        # Raise the splash and pump a couple of frames so it actually paints
+        # before the upcoming blocking work (importlib + Example construction
+        # can take several seconds when Warp kernels recompile).
+        if not hasattr(self.viewer, "show_loading_splash"):
+            return
+        self.viewer.show_loading_splash(text)
+        for _ in range(2):
+            self.viewer.begin_frame(0.0)
+            self.viewer.end_frame()
+
+    def _hide_splash(self):
+        if hasattr(self.viewer, "hide_loading_splash"):
+            self.viewer.hide_loading_splash()
+
     def switch(self, example_class):
         """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
         module_path, self.switch_target = self.switch_target, None
+        self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
         self.viewer.clear_model()
         try:
             mod = importlib.import_module(module_path)
             parser = getattr(mod.Example, "create_parser", create_parser)()
-            example = mod.Example(self.viewer, default_args(parser))
+            new_args = default_args(parser)
+            example = mod.Example(self.viewer, new_args)
         except Exception as e:
             warnings.warn(f"Failed to load example {module_path}: {e}", stacklevel=2)
+            self._hide_splash()
             return None, example_class
+        # Track the args used to launch the current example so a subsequent
+        # Reset reuses the new example's args, not the originally launched
+        # example's args (different parsers expose different fields).
+        self._initial_args = copy.deepcopy(new_args)
         self._register_ui(example)
+        self._hide_splash()
         return example, type(example)
 
     def reset(self, example_class):
-        """Reset the current example by re-creating it. Returns the new example or None."""
+        """Reset the current example by re-creating it. Returns the new example or None.
+
+        The caller must drop its reference to the old example before calling
+        this method.
+        """
         self._reset_requested = False
+        self._show_splash("Resetting...")
         self.viewer.clear_model()
         try:
-            parser = getattr(example_class, "create_parser", create_parser)()
-            new_example = example_class(self.viewer, default_args(parser))
+            if self._initial_args is not None:
+                # Re-create the example with the user's original CLI args so
+                # options like --world-count survive a reset; deep-copy so
+                # the new instance cannot mutate the snapshot.
+                args = copy.deepcopy(self._initial_args)
+            else:
+                parser = getattr(example_class, "create_parser", create_parser)()
+                args = default_args(parser)
+            new_example = example_class(self.viewer, args)
         except Exception as e:
             warnings.warn(f"Failed to reset example: {e}", stacklevel=2)
+            self._hide_splash()
             return None
         self._register_ui(new_example)
+        self._hide_splash()
         return new_example
 
 
@@ -266,11 +308,14 @@ def run(example, args):
     viewer = example.viewer
     example_class = type(example)
 
+    if hasattr(viewer, "hide_loading_splash"):
+        viewer.hide_loading_splash()
+
     perform_test = args is not None and args.test
     test_post_step = perform_test and hasattr(example, "test_post_step")
     test_final = perform_test and hasattr(example, "test_final")
 
-    browser = _ExampleBrowser(viewer) if not perform_test else None
+    browser = _ExampleBrowser(viewer, args) if not perform_test else None
 
     if hasattr(example, "gui") and hasattr(viewer, "register_ui_callback"):
         viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
@@ -281,6 +326,12 @@ def run(example, args):
             continue
 
         if browser is not None and browser._reset_requested:
+            # Drop our reference and force cycle collection so the old
+            # example's destructors finish before reset() enters the new
+            # CUDA graph capture; otherwise late texture/array __del__
+            # calls could fire mid-capture and CUDA rejects them.
+            example = None
+            gc.collect()
             example = browser.reset(example_class)
             continue
 
@@ -289,7 +340,7 @@ def run(example, args):
             viewer.end_frame()
             continue
 
-        if not viewer.is_paused():
+        if viewer.should_step():
             with wp.ScopedTimer("step", active=False):
                 example.step()
         if test_post_step:
@@ -512,6 +563,19 @@ def add_mujoco_contacts_arg(parser):
     return parser
 
 
+def add_kamino_contacts_arg(parser):
+    """Add ``--use-kamino-contacts`` argument to *parser*."""
+    import argparse  # noqa: PLC0415  — needed for BooleanOptionalAction
+
+    parser.add_argument(
+        "--use-kamino-contacts",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use Kamino's collision-detection wrapper instead of Newton contacts (default: use Newton contacts).",
+    )
+    return parser
+
+
 def add_world_count_arg(parser):
     """Add ``--world-count`` argument to *parser*."""
     parser.add_argument(
@@ -664,6 +728,7 @@ def init(parser=None):
         _raise_benchmark_priority(realtime=args.realtime)
 
     # Create viewer based on type
+    visible_gl = args.viewer == "gl" and not args.headless
     if args.viewer == "gl":
         viewer = newton.viewer.ViewerGL(headless=args.headless)
     elif args.viewer == "usd":
@@ -682,6 +747,17 @@ def init(parser=None):
         viewer = newton.viewer.ViewerViser()
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
+
+    if visible_gl:
+        viewer.show_loading_splash("Loading...")
+        # Pump a few frames so the OS maps the GL surface before kernel
+        # compilation blocks the main thread.  No portable "window is on
+        # screen" signal exists across X11/Wayland/macOS; three frames is
+        # a best-effort heuristic that may still come up blank on slow
+        # compositors (silently absent, not wrong).
+        for _ in range(3):
+            viewer.begin_frame(0.0)
+            viewer.end_frame()
 
     return viewer, args
 

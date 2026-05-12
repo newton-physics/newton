@@ -19,7 +19,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.utils
-from newton import GeoType, State
+from newton import State
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
@@ -74,7 +74,6 @@ class Example:
         self.viewer = viewer
         self.device = wp.get_device()
         self.torch_device = wp.device_to_torch(self.device)
-        self.is_test = args is not None and args.test
 
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
@@ -99,35 +98,6 @@ class Example:
             ignore_inertial_definitions=False,
         )
 
-        # Enlarge foot collision spheres to improve walking stability on uneven terrain.
-        # The URDF defines small spheres on the shank links; doubling their radius
-        # prevents the robot from stumbling on terrain features like waves and stairs.
-        for i in range(len(builder.shape_type)):
-            if builder.shape_type[i] == GeoType.SPHERE:
-                r = builder.shape_scale[i][0]
-                builder.shape_scale[i] = (r * 2.0, 0.0, 0.0)
-
-        # Generate procedural terrain for visual demonstration (but not during unit tests)
-        if not self.is_test:
-            terrain_mesh = newton.Mesh.create_terrain(
-                grid_size=(8, 3),  # 3x8 grid for forward walking
-                block_size=(3.0, 3.0),
-                terrain_types=["random_grid", "flat", "wave", "gap", "pyramid_stairs"],
-                terrain_params={
-                    "pyramid_stairs": {"step_width": 0.3, "step_height": 0.02, "platform_width": 0.6},
-                    "random_grid": {"grid_width": 0.3, "grid_height_range": (0, 0.02)},
-                    "wave": {"wave_amplitude": 0.1, "wave_frequency": 2.0},  # amplitude reduced from 0.15
-                },
-                seed=42,
-                compute_inertia=False,
-            )
-            terrain_offset = wp.transform(p=wp.vec3(-5, -2.0, 0.01), q=wp.quat_identity())
-            builder.add_shape_mesh(
-                body=-1,
-                mesh=terrain_mesh,
-                xform=terrain_offset,
-                cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False),
-            )
         builder.add_ground_plane()
 
         self.sim_time = 0.0
@@ -362,6 +332,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

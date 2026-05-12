@@ -1547,6 +1547,13 @@ class TestMenagerieBase(unittest.TestCase):
         Override in subclasses where DOF ordering may differ.
         """
 
+    def _compare_qD_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare sparse RNE derivative D-structure (qD_fullm_i, qD_fullm_j).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where DOF ordering may differ.
+        """
+
     def _compare_compiled_fields(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare compilation-dependent fields at relaxed tolerance.
 
@@ -1624,6 +1631,10 @@ class TestMenagerieBase(unittest.TestCase):
         # This mirrors the Newton solver's approach in SolverMuJoCo.
         mj_model.geom_margin[:] = 0.0
 
+        # Mirror SolverMuJoCo's enable_multiccd=False default. MuJoCo 3.8 turns
+        # multi-CCD on by default; Newton disables it via mjDSBL_MULTICCD.
+        mj_model.opt.disableflags |= int(_mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+
         # Create mujoco_warp model/data with multiple worlds
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)
@@ -1699,6 +1710,7 @@ class TestMenagerieBase(unittest.TestCase):
         self._compare_dof_physics(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_mass_matrix_structure(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_tendon_jacobian_structure(self._newton_solver.mjw_model, self._native_mjw_model)
+        self._compare_qD_structure(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_actuator_physics(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_compiled_fields(self._newton_solver.mjw_model, self._native_mjw_model)
 
@@ -2354,15 +2366,9 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     # while native keeps False when no actuatorfrcrange is specified. Flagged as
     # "no effect" in DEFAULT_MODEL_SKIP_FIELDS, but Cassie's closed-loop dynamics
     # show a measurable divergence without this backfill (qvel step 0 diff ~2e-5).
-    # jnt_solref: Newton's solref standard->direct conversion omits the dmax
-    # (solimp[0]) factor, so its stored direct-mode values are ~11% lower
-    # stiffness/damping than native's internal values for the same MJCF input
-    # (tracked in #2515). Cassie's closed-loop limit constraints amplify this
-    # into measurable qvel divergence; backfill until the conversion is fixed.
     backfill_fields = MODEL_BACKFILL_FIELDS + [  # noqa: RUF005
         "eq_data",
         "jnt_actfrclimited",
-        "jnt_solref",
     ]
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_data"}
 

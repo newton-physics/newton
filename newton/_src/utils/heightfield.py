@@ -291,39 +291,70 @@ def heightfield_vs_convex_midphase(
     other_shape: int,
     hfd: HeightfieldData,
     shape_transform: wp.array[wp.transform],
-    shape_collision_radius: wp.array[float],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],
     triangle_pairs: wp.array[wp.vec3i],
     triangle_pairs_count: wp.array[int],
 ):
-    """Find heightfield triangles that overlap with a convex shape's bounding sphere.
+    """Find heightfield triangles that overlap with a convex shape's AABB.
 
-    Projects the convex shape onto the heightfield grid and emits triangle pairs
-    for each overlapping cell (two triangles per cell).
+    Projects the convex shape's local AABB into heightfield-local space and
+    emits triangle pairs for each overlapping grid cell (two triangles per
+    cell).
+
+    The convex shape's *local* AABB (from
+    :attr:`Model.shape_collision_aabb_lower`/``upper``) is used rather than
+    a sphere centered on the shape's local origin.  Many imported assets
+    place collision hulls far from their body/shape frame, so an
+    origin-centered bounding sphere can fail to enclose the hull and miss
+    real heightfield collisions.  The local AABB is exact regardless of
+    where the authoring origin sits relative to the geometry.
 
     Args:
         hfield_shape: Index of the heightfield shape.
         other_shape: Index of the convex shape.
         hfd: Heightfield data struct.
         shape_transform: World-space transforms for all shapes.
-        shape_collision_radius: Bounding-sphere radii for all shapes.
+        shape_collision_aabb_lower: Local-space AABB lower bounds for each
+            shape (scale already baked in).
+        shape_collision_aabb_upper: Local-space AABB upper bounds for each
+            shape (scale already baked in).
         shape_gap: Per-shape contact gaps.
         triangle_pairs: Output buffer for ``(hfield_shape, other_shape, tri_idx)`` triples.
         triangle_pairs_count: Atomic counter for emitted triangle pairs.
     """
-    # Transform other shape's position to heightfield local space
     X_hfield_ws = shape_transform[hfield_shape]
-    X_hfield_inv = wp.transform_inverse(X_hfield_ws)
     X_other_ws = shape_transform[other_shape]
-    pos_in_hfield = wp.transform_point(X_hfield_inv, wp.transform_get_translation(X_other_ws))
+    X_other_in_hfield = wp.transform_multiply(wp.transform_inverse(X_hfield_ws), X_other_ws)
 
-    # Conservative AABB using bounding sphere radius
-    radius = shape_collision_radius[other_shape]
+    other_pos = wp.transform_get_translation(X_other_in_hfield)
+    other_rot = wp.transform_get_rotation(X_other_in_hfield)
+
+    local_lo = shape_collision_aabb_lower[other_shape]
+    local_hi = shape_collision_aabb_upper[other_shape]
+    local_center = 0.5 * (local_lo + local_hi)
+    local_half = 0.5 * (local_hi - local_lo)
+
+    center_in_hfield = wp.quat_rotate(other_rot, local_center) + other_pos
+
+    # Rotated AABB half-extents in heightfield-local space.  Standard
+    # OBB-to-AABB projection: |R| * half_extents, where R is the
+    # rotation from other-local to heightfield-local.
+    r0 = wp.quat_rotate(other_rot, wp.vec3(1.0, 0.0, 0.0))
+    r1 = wp.quat_rotate(other_rot, wp.vec3(0.0, 1.0, 0.0))
+    r2 = wp.quat_rotate(other_rot, wp.vec3(0.0, 0.0, 1.0))
+    half_in_hfield = wp.vec3(
+        wp.abs(r0[0]) * local_half[0] + wp.abs(r1[0]) * local_half[1] + wp.abs(r2[0]) * local_half[2],
+        wp.abs(r0[1]) * local_half[0] + wp.abs(r1[1]) * local_half[1] + wp.abs(r2[1]) * local_half[2],
+        wp.abs(r0[2]) * local_half[0] + wp.abs(r1[2]) * local_half[1] + wp.abs(r2[2]) * local_half[2],
+    )
+
     gap_sum = shape_gap[hfield_shape] + shape_gap[other_shape]
-    extent = radius + gap_sum
+    gap_vec = wp.vec3(gap_sum, gap_sum, gap_sum)
 
-    aabb_lower = pos_in_hfield - wp.vec3(extent, extent, extent)
-    aabb_upper = pos_in_hfield + wp.vec3(extent, extent, extent)
+    aabb_lower = center_in_hfield - half_in_hfield - gap_vec
+    aabb_upper = center_in_hfield + half_in_hfield + gap_vec
 
     # Map AABB to grid cell indices
     dx = 2.0 * hfd.hx / wp.float32(hfd.ncol - 1)

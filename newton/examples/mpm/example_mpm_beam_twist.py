@@ -275,13 +275,11 @@ class Example:
             "--solver",
             "-s",
             type=str,
-            default="cg",
-            choices=["gauss-seidel", "jacobi", "cg", "cg+jacobi", "cg+gauss-seidel"],
+            default="cr",
         )
         parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])
 
         parser.add_argument("--strain-basis", "-sb", type=str, default="P1d")
-        parser.add_argument("--collider-basis", "-cb", type=str, default="Q1")
         parser.add_argument("--velocity-basis", "-vb", type=str, default="Q1")
 
         parser.add_argument("--max-iterations", "-it", type=int, default=250)
@@ -330,6 +328,4 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

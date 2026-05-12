@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import collections
 import ctypes
+import math
 import re
 import time
 from collections.abc import Callable, Sequence
@@ -21,6 +22,7 @@ from ..core.types import Axis, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
+from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
@@ -42,6 +44,8 @@ def _imgui_uses_imvec4_color_edit3() -> bool:
 
 
 _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
+# Width of the main Newton Viewer sidebar [px].
+_SIDEBAR_WIDTH_PX: float = 300.0
 
 
 @wp.kernel
@@ -228,15 +232,22 @@ class ViewerGL(ViewerBase):
         self._heatmap_color_lut = self._build_heatmap_color_lut()
         self._plot_history_size = plot_history_size
 
+        # Initialized below once self.device is available; declared here so
+        # close() can safely run if __init__ raises before that point.
+        self._image_logger: ImageLogger | None = None
+
         super().__init__()
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
+        self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
         self._paused = False
+        self._step_requested = False
+        self._reset_callback: Callable[[], None] | None = None
 
         # Selection panel state
         self._selection_ui_state = {
@@ -260,6 +271,9 @@ class ViewerGL(ViewerBase):
         self.renderer.register_mouse_drag(self.on_mouse_drag)
         self.renderer.register_mouse_scroll(self.on_mouse_scroll)
         self.renderer.register_resize(self.on_resize)
+
+        self._loading_splash_active: bool = False
+        self._loading_splash_text: str | None = None
 
         # Camera movement settings
         self._camera_speed = 0.04
@@ -482,6 +496,13 @@ class ViewerGL(ViewerBase):
         self._array_dirty.clear()
         self._clear_array_textures()
 
+        # Drop image-logger entries so example-switch removes any image
+        # windows the previous example opened, and a re-entry into the same
+        # example creates a fresh entry (re-triggering the auto-select that
+        # opens the window after the user manually closed it).
+        if getattr(self, "_image_logger", None) is not None:
+            self._image_logger.clear()
+
         super().clear_model()
 
     @override
@@ -494,6 +515,13 @@ class ViewerGL(ViewerBase):
             max_worlds: Maximum number of worlds to render (None = all).
         """
         super().set_model(model, max_worlds=max_worlds)
+
+        # ``ViewerBase.set_model`` may have switched ``self.device`` to the
+        # model's device. Rebind the image logger so its GPU path tests against
+        # — and registers PBO interop with — the correct CUDA context.
+        if self._image_logger is not None and self._image_logger.device != self.device:
+            self._image_logger.clear()
+            self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
 
         if self.model is not None:
             # For capsule batches, replace per-instance scales with (radius, radius, half_height)
@@ -704,6 +732,9 @@ class ViewerGL(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        color: tuple[float, float, float] | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
     ):
         """
         Log a mesh for rendering.
@@ -717,6 +748,12 @@ class ViewerGL(ViewerBase):
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Enable backface culling.
+            color: Optional base color as an RGB tuple with values in
+                [0, 1]. Used when no texture is provided.
+            roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
+                smooth, ``1`` is fully rough.
+            metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
+                is metal.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -731,6 +768,17 @@ class ViewerGL(ViewerBase):
         self.objects[name].update(points, indices, normals, uvs, texture)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+
+        if color is not None:
+            self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
+
+        if roughness is not None or metallic is not None:
+            r, m, c, t = self.objects[name].material
+            if roughness is not None:
+                r = float(roughness)
+            if metallic is not None:
+                m = float(metallic)
+            self.objects[name].material = (r, m, c, t)
 
     @override
     def log_instances(
@@ -1286,6 +1334,11 @@ class ViewerGL(ViewerBase):
         self._array_dirty.add(name)
 
     @override
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+        """See :meth:`~newton.viewer.ViewerBase.log_image`."""
+        self._image_logger.log(name, image)
+
+    @override
     def log_scalar(
         self,
         name: str,
@@ -1524,12 +1577,13 @@ class ViewerGL(ViewerBase):
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
 
-        if self.ui and self.ui.is_available and self.show_ui:
+        # The splash needs an ImGui frame even when the user has hidden
+        # the regular UI, so the gate also opens for an active splash.
+        if self.ui and self.ui.is_available and (self.show_ui or self._loading_splash_active):
             self.ui.begin_frame()
-
-            # Render the UI
-            self._render_ui()
-
+            if self.show_ui:
+                self._render_ui()
+            self._render_loading_splash()
             self.ui.end_frame()
             self.ui.render()
 
@@ -1640,6 +1694,51 @@ class ViewerGL(ViewerBase):
         """
         return self._paused
 
+    def show_loading_splash(self, text: str | None = None) -> None:
+        """Display a centered Newton's-cradle loading splash with optional sub-label.
+
+        The splash dims the underlying scene and renders even when the rest
+        of the ImGui UI is hidden.  Call :meth:`hide_loading_splash` to
+        remove it.
+
+        Args:
+            text: Optional sub-label drawn below the cradle.
+
+        Note:
+            Not thread-safe.  Must be called on the thread that owns this
+            viewer's GL context.
+        """
+        self._loading_splash_active = True
+        self._loading_splash_text = text
+
+    def hide_loading_splash(self) -> None:
+        """Remove the splash set by :meth:`show_loading_splash`."""
+        self._loading_splash_active = False
+        self._loading_splash_text = None
+
+    @override
+    def should_step(self) -> bool:
+        """
+        Return True if the loop should advance one step.
+
+        Consumes a pending single-step request, so call exactly once per frame.
+        """
+        if not self._paused:
+            self._step_requested = False
+            return True
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
+    def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register a callback invoked when the user clicks the Reset button.
+
+        Args:
+            callback: Called with no arguments on reset, or ``None`` to remove.
+        """
+        self._reset_callback = callback
+
     @override
     def close(self):
         """
@@ -1647,6 +1746,8 @@ class ViewerGL(ViewerBase):
         """
         self._clear_array_textures()
         self._invalidate_pbo()
+        if self._image_logger is not None:
+            self._image_logger.clear()
         self.renderer.close()
 
     @property
@@ -1926,6 +2027,8 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.SPACE:
             # Toggle pause with space key
             self._paused = not self._paused
+        elif symbol == pyglet.window.key.PERIOD and self._paused:
+            self._step_requested = True
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
@@ -2200,6 +2303,108 @@ class ViewerGL(ViewerBase):
 
         self.gizmo_is_using = giz.is_using_any()
 
+    def _render_loading_splash(self):
+        """Render a stylized Newton's-cradle loading splash, optionally with a sub-label.
+
+        The cradle is drawn statically with the leftmost ball lifted; this is
+        a one-frame snapshot, not an animation.  Sizes scale with the current
+        ImGui font size so the splash stays legible across DPI settings.
+        """
+        if not self._loading_splash_active or not self.ui:
+            return
+        imgui = self.ui.imgui
+        viewport = imgui.get_main_viewport()
+
+        # Scale relative to the default 13 px ImGui font so the splash
+        # respects user/DPI font scaling.
+        scale = imgui.get_font_size() / 13.0
+        ball_radius = 16.0 * scale
+        # 2.05 (vs 2.0) leaves a hairline gap between balls so adjacent
+        # rest-position balls remain visually distinguishable.
+        ball_spacing = ball_radius * 2.05
+        string_length = 80.0 * scale
+        bar_thickness = 5.0 * scale
+        text_gap = 18.0 * scale
+        bar_overhang = 8.0 * scale
+        string_thickness = 1.5 * scale
+        n_balls = 5
+
+        # Center the cradle's full bounding box (bar -> deepest ball) at the
+        # viewport center.  ``pivot_y`` is the bar's *bottom* edge (where
+        # strings attach), not the bar centerline — hence the
+        # ``+ bar_thickness`` after positioning the bbox top.
+        cradle_height = bar_thickness + string_length + ball_radius
+        cx = viewport.pos.x + viewport.size.x * 0.5
+        cy = viewport.pos.y + viewport.size.y * 0.5
+        pivot_y = cy - cradle_height * 0.5 + bar_thickness
+
+        imgui.set_next_window_pos(imgui.ImVec2(viewport.pos.x, viewport.pos.y))
+        imgui.set_next_window_size(imgui.ImVec2(viewport.size.x, viewport.size.y))
+        flags = (
+            imgui.WindowFlags_.no_decoration
+            | imgui.WindowFlags_.no_inputs
+            | imgui.WindowFlags_.no_saved_settings
+            | imgui.WindowFlags_.no_focus_on_appearing
+            | imgui.WindowFlags_.no_nav
+            | imgui.WindowFlags_.no_bring_to_front_on_focus
+            | imgui.WindowFlags_.no_move
+            | imgui.WindowFlags_.no_background
+        )
+        if imgui.begin("##loading_splash", None, flags)[0]:
+            draw_list = imgui.get_window_draw_list()
+
+            dim_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.0, 0.0, 0.0, 0.55))
+            ball_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.88, 0.88, 0.92, 1.0))
+            string_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.55, 0.55, 0.6, 1.0))
+            bar_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.45, 0.45, 0.5, 1.0))
+            text_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.9, 0.9, 0.9, 1.0))
+
+            # Dim the underlying scene.  Drawn manually rather than via
+            # ``set_next_window_bg_alpha`` so the dim color is independent
+            # of the active ImGui style.
+            draw_list.add_rect_filled(
+                imgui.ImVec2(viewport.pos.x, viewport.pos.y),
+                imgui.ImVec2(viewport.pos.x + viewport.size.x, viewport.pos.y + viewport.size.y),
+                dim_col,
+            )
+
+            first_pivot_x = cx - (n_balls - 1) * ball_spacing * 0.5
+            bar_half = (n_balls - 1) * ball_spacing * 0.5 + ball_radius + bar_overhang
+            draw_list.add_rect_filled(
+                imgui.ImVec2(cx - bar_half, pivot_y - bar_thickness),
+                imgui.ImVec2(cx + bar_half, pivot_y),
+                bar_col,
+            )
+
+            swing_angle = math.radians(32.0)
+            for i in range(n_balls):
+                pivot_x = first_pivot_x + i * ball_spacing
+                if i == 0:
+                    ball_x = pivot_x - math.sin(swing_angle) * string_length
+                    ball_y = pivot_y + math.cos(swing_angle) * string_length
+                else:
+                    ball_x = pivot_x
+                    ball_y = pivot_y + string_length
+
+                draw_list.add_line(
+                    imgui.ImVec2(pivot_x, pivot_y),
+                    imgui.ImVec2(ball_x, ball_y),
+                    string_col,
+                    string_thickness,
+                )
+                draw_list.add_circle_filled(
+                    imgui.ImVec2(ball_x, ball_y),
+                    ball_radius,
+                    ball_col,
+                )
+
+            if self._loading_splash_text:
+                text_size = imgui.calc_text_size(self._loading_splash_text)
+                text_x = cx - text_size.x * 0.5
+                text_y = pivot_y + string_length + ball_radius + text_gap
+                draw_list.add_text(imgui.ImVec2(text_x, text_y), text_col, self._loading_splash_text)
+        imgui.end()
+
     def _render_ui(self):
         """
         Render the complete ImGui interface (left panel, stats overlay, and custom UI).
@@ -2235,7 +2440,7 @@ class ViewerGL(ViewerBase):
         # Position the window on the left side
         io = self.ui.io
         imgui.set_next_window_pos(imgui.ImVec2(10, 10))
-        imgui.set_next_window_size(imgui.ImVec2(300, io.display_size[1] - 20))
+        imgui.set_next_window_size(imgui.ImVec2(_SIDEBAR_WIDTH_PX, io.display_size[1] - 20))
 
         # Main control panel window - use safe flag values
         flags = imgui.WindowFlags_.no_resize.value
@@ -2245,6 +2450,20 @@ class ViewerGL(ViewerBase):
 
             # Collapsing headers default-open handling (first frame only)
             header_flags = 0
+
+            # Run controls — shown once a model is loaded
+            if self.model is not None:
+                changed, self._paused = imgui.checkbox("Pause", self._paused)
+                imgui.same_line()
+                imgui.begin_disabled(not self._paused)
+                if imgui.button("Step"):
+                    self._step_requested = True
+                imgui.end_disabled()
+                if self._reset_callback is not None:
+                    imgui.same_line()
+                    if imgui.button("Reset"):
+                        self._reset_callback()
+                imgui.separator()
 
             # Panel callbacks (e.g. example browser) - top-level collapsing headers
             for callback in self._ui_callbacks["panel"]:
@@ -2260,9 +2479,6 @@ class ViewerGL(ViewerBase):
                     gravity = self.model.gravity.numpy()[0]
                     gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
                     imgui.text(gravity_text)
-
-                    # Pause simulation checkbox
-                    changed, self._paused = imgui.checkbox("Pause", self._paused)
 
                 # Visualization Controls section
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
@@ -2363,6 +2579,8 @@ class ViewerGL(ViewerBase):
                 # Ground color
                 changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
 
+            self._image_logger.draw_controls()
+
             # Wind Effects section
             if self.wind is not None:
                 imgui.set_next_item_open(False, imgui.Cond_.once)
@@ -2413,6 +2631,7 @@ class ViewerGL(ViewerBase):
                 imgui.text("Scroll - Dolly")
                 imgui.text("Ctrl + Scroll - FOV zoom")
                 imgui.text("Space - Pause/Resume")
+                imgui.text(". - Step one frame (when paused)")
                 imgui.text("H - Toggle UI")
                 imgui.text("F - Frame camera around model")
 
@@ -2420,6 +2639,9 @@ class ViewerGL(ViewerBase):
             self._render_selection_panel()
 
         imgui.end()
+
+        # Draw image-logger windows. Must be outside the sidebar begin/end block.
+        self._image_logger.draw()
 
     @staticmethod
     def _build_heatmap_color_lut() -> np.ndarray:
@@ -2609,7 +2831,7 @@ class ViewerGL(ViewerBase):
             item_height + 60,
         )
         imgui.set_next_window_pos(
-            imgui.ImVec2(io.display_size[0] - window_width - 10, 10),
+            imgui.ImVec2(io.display_size[0] - window_width - 10, io.display_size[1] - window_height - 10),
             imgui.Cond_.appearing,
         )
         imgui.set_next_window_size(

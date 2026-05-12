@@ -177,7 +177,6 @@ class Example:
             model=self.model,
             iterations=self.iterations,
         )
-        self.cloth_solver._precompute(h1)
         self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()
 
@@ -324,5 +323,4 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.set_defaults(num_frames=601)
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)
