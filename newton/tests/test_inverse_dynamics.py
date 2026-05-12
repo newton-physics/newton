@@ -1995,8 +1995,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 newton.eval_inverse_dynamics(
                     model,
                     state,
-                    newton.InverseDynamics.EvalType.MASS_MATRIX
-                    | newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+                    newton.InverseDynamics.EvalType.MASS_MATRIX | newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
                     inverse_dynamics,
                     scratch,
                 )

@@ -1292,9 +1292,7 @@ def eval_articulation_inverse_dynamics_force_kernel(
         sum_val = float(0.0)
         for j in range(dof_count):
             sum_val += H[art_idx, i, j] * qddot[dof_start + j]
-        tau[dof_start + i] = (
-            sum_val + coriolis_force[dof_start + i] + gravity_force[dof_start + i]
-        )
+        tau[dof_start + i] = sum_val + coriolis_force[dof_start + i] + gravity_force[dof_start + i]
 
 
 def eval_inverse_dynamics_force(
