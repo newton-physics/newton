@@ -798,13 +798,37 @@ class ViewerGui:
                         _, renderer.joint_scale = imgui.slider_float("Joint Scale", renderer.joint_scale, 0.25, 5.0)
                     _changed, viewer.show_contacts = imgui.checkbox("Show Contacts", viewer.show_contacts)
                     if viewer.show_contacts and renderer is not None:
-                        if hasattr(renderer, "arrow_length_scale"):
-                            _, renderer.arrow_length_scale = imgui.slider_float(
-                                "Contact Length", renderer.arrow_length_scale, 0.25, 5.0
+                        imgui.indent()
+                        _, viewer.show_contact_normals = imgui.checkbox("Normal", bool(viewer.show_contact_normals))
+                        _, viewer.show_contact_disks = imgui.checkbox("Contact Mode", bool(viewer.show_contact_disks))
+                        _, viewer.show_contact_forces = imgui.checkbox("Force", bool(viewer.show_contact_forces))
+                        imgui.unindent()
+
+                        log_flag = imgui.SliderFlags_.logarithmic.value
+                        base = float(viewer._contact_viz_scale_default) or 1.0
+                        _, viewer.contact_viz_scale = imgui.slider_float(
+                            "Contact Scale",
+                            float(viewer.contact_viz_scale),
+                            base * 0.01,
+                            base * 100.0,
+                            "%.4g",
+                            log_flag,
+                        )
+                        if viewer.show_contact_forces:
+                            base = float(viewer._contact_force_scale_default) or 0.5
+                            _, viewer.contact_force_scale = imgui.slider_float(
+                                "Force Relative Scale",
+                                float(viewer.contact_force_scale),
+                                base * 0.01,
+                                base * 100.0,
+                                "%.4g",
+                                log_flag,
                             )
-                        if hasattr(renderer, "arrow_scale"):
+                        if hasattr(renderer, "arrow_scale") and (
+                            viewer.show_contact_normals or viewer.show_contact_forces
+                        ):
                             _, renderer.arrow_scale = imgui.slider_float(
-                                "Contact Width", renderer.arrow_scale, 0.25, 5.0
+                                "Arrow Thickness", renderer.arrow_scale, 0.25, 5.0
                             )
                     _changed, viewer.show_particles = imgui.checkbox("Show Particles", viewer.show_particles)
                     _changed, viewer.show_springs = imgui.checkbox("Show Springs", viewer.show_springs)
