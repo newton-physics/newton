@@ -37,7 +37,22 @@ _HAS_ONNX = importlib.util.find_spec("onnx") is not None
 _PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
     r"(?s)#+\n#  PXR_WORK_THREAD_LIMIT is overridden to '1'\.  Default is '0'\.  #\n#+\n?"
 )
-_BASIC_PLOTTING_OUTPUT_RE = r"Diagnostics plot saved to solver_convergence\.png\n?"
+_WARP_CUDA_DRIVER_WARNING_RE = (
+    r"Warp CUDA warning: Could not find or load the NVIDIA CUDA driver\. "
+    r"GPU execution will not be available\.\n?"
+)
+_MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
+_BASIC_PLOTTING_OUTPUT_RE = (
+    r"(?s)(?:"
+    r"Diagnostics plot saved to solver_convergence\.png\n?"
+    r"|"
+    r"\n?Simulation diagnostics summary \(\d+ steps\):\n"
+    r"  Iterations:   mean=.*\n"
+    r"  Kinetic E:    final=.*\n"
+    r"  Potential E:  final=.*\n"
+    r"  Constraints:  mean=.*\n?"
+    r")"
+)
 _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
     r"(?m)"
     r"(?:^.*wp_sdf_contact_write_contact_to_reducer_[^\n]*\.cpp:\d+:\d+: warning: "
@@ -236,7 +251,10 @@ cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test o
 test_devices = get_test_devices(mode="basic")
 
 
-_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES = [(_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr")]
+_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
+    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+    (_WARP_CUDA_DRIVER_WARNING_RE, "stderr"),
+]
 
 
 class TestBasicExamples(NewtonTestCase):
@@ -751,6 +769,7 @@ add_basic_example_test(
     test_options={"num-frames": 200},
     use_viewer=True,
     expect_output_regexes=[(_BASIC_PLOTTING_OUTPUT_RE, "stdout")],
+    allow_output_regexes=[(_MATPLOTLIB_FONT_CACHE_OUTPUT_RE, "stderr")],
 )
 
 
