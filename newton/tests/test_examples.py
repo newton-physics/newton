@@ -26,6 +26,7 @@ import warp as wp
 import newton.tests.unittest_utils
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
+    NewtonTestCase,
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
@@ -33,6 +34,20 @@ from newton.tests.unittest_utils import (
 )
 
 _HAS_ONNX = importlib.util.find_spec("onnx") is not None
+_PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
+    r"(?s)#+\n#  PXR_WORK_THREAD_LIMIT is overridden to '1'\.  Default is '0'\.  #\n#+\n?"
+)
+_BASIC_PLOTTING_OUTPUT_RE = r"Diagnostics plot saved to solver_convergence\.png\n?"
+_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
+    r"(?m)"
+    r"(?:^.*wp_sdf_contact_write_contact_to_reducer_[^\n]*\.cpp:\d+:\d+: warning: "
+    r"implicit conversion from 'long' to 'const wp::int32'.*\n"
+    r"^.*\n"
+    r"^.*\n"
+    r"){2}"
+    r"^2 warnings generated\.\n?"
+)
+_OutputRegexSpec = str | tuple[str, str]
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
@@ -70,8 +85,13 @@ def add_example_test(
     test_options_cuda: dict[str, Any] | None = None,
     use_viewer: bool = False,
     test_suffix: str | None = None,
+    expect_output_regexes: list[_OutputRegexSpec] | None = None,
+    allow_output_regexes: list[_OutputRegexSpec] | None = None,
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase."""
+
+    if (expect_output_regexes or allow_output_regexes) and not issubclass(cls, NewtonTestCase):
+        raise TypeError("Output regex expectations require a NewtonTestCase subclass")
 
     # verify the module exists (use package-relative path so this works from any CWD)
     _examples_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
@@ -172,16 +192,24 @@ def add_example_test(
                 command, capture_output=True, text=True, env=env_vars, timeout=test_timeout, check=False
             )
 
-        # print any error messages (e.g.: module not found)
-        if result.stderr != "":
-            print(result.stderr)
+        if isinstance(test, NewtonTestCase):
+            _register_output_regexes(test, expect_output_regexes, required=True)
+            _register_output_regexes(test, allow_output_regexes, required=False)
+            test.assertSubprocessSuccess(result, command=command)
+        else:
+            # print any error messages (e.g.: module not found)
+            if result.stderr != "":
+                print(result.stderr)
 
-        # Check the return code (0 is standard for success)
-        test.assertEqual(
-            result.returncode,
-            0,
-            msg=f"Failed with return code {result.returncode}, command: {' '.join(command)}\n\nOutput:\n{result.stdout}\n{result.stderr}",
-        )
+            # Check the return code (0 is standard for success)
+            test.assertEqual(
+                result.returncode,
+                0,
+                msg=(
+                    f"Failed with return code {result.returncode}, command: {' '.join(command)}\n\n"
+                    f"Output:\n{result.stdout}\n{result.stderr}"
+                ),
+            )
 
         # Clean up output file for old-style examples that may have created one
         if stage_path and stage_path != "None" and result.returncode == 0:
@@ -194,18 +222,35 @@ def add_example_test(
     add_function_test(cls, test_name, run, devices=devices, check_output=False)
 
 
+def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpec] | None, *, required: bool):
+    add_regex = test.expectOutputRegex if required else test.allowOutputRegex
+    for regex_spec in regexes or ():
+        if isinstance(regex_spec, tuple):
+            regex, stream = regex_spec
+        else:
+            regex, stream = regex_spec, "any"
+        add_regex(regex, stream=stream)
+
+
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
 test_devices = get_test_devices(mode="basic")
 
 
-class TestBasicExamples(unittest.TestCase):
+_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES = [(_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr")]
+
+
+class TestBasicExamples(NewtonTestCase):
     pass
 
 
-add_example_test(TestBasicExamples, name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+def add_basic_example_test(**kwargs):
+    allow_output_regexes = [*_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES, *(kwargs.pop("allow_output_regexes", ()))]
+    add_example_test(TestBasicExamples, allow_output_regexes=allow_output_regexes, **kwargs)
 
-add_example_test(
-    TestBasicExamples,
+
+add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+
+add_basic_example_test(
     name="basic.example_basic_urdf",
     devices=test_devices,
     test_options={"num-frames": 200},
@@ -214,8 +259,7 @@ add_example_test(
     use_viewer=True,
     test_suffix="xpbd",
 )
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_urdf",
     devices=test_devices,
     test_options={"num-frames": 200, "solver": "vbd"},
@@ -225,17 +269,15 @@ add_example_test(
     test_suffix="vbd",
 )
 
-add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
+add_basic_example_test(name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
 
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_joints",
     devices=test_devices,
     use_viewer=True,
     test_suffix="xpbd",
 )
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_joints",
     devices=test_devices,
     use_viewer=True,
@@ -243,12 +285,12 @@ add_example_test(
     test_suffix="vbd",
 )
 
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_shapes",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 150},
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 
 
@@ -703,12 +745,12 @@ add_example_test(
 )
 
 
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_plotting",
     devices=test_devices,
     test_options={"num-frames": 200},
     use_viewer=True,
+    expect_output_regexes=[(_BASIC_PLOTTING_OUTPUT_RE, "stdout")],
 )
 
 
