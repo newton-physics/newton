@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- Fix `SolverMuJoCo` returning `State.joint_q` / `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_q` / `body_qd`. Also fix `ModelBuilder.add_joint_free` initializing `joint_q[0:7]` from world-frame `body_q[child]` without rotating into the parent joint frame.
+- Fix `SolverMuJoCo` returning `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_qd`.
 
 ## [1.2.0] - 2026-05-12
 

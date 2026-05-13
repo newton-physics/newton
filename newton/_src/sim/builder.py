@@ -4250,20 +4250,8 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
         q_start = self.joint_q_start[joint_id]
-        # joint_q[0:7] for FREE joints is the joint-anchor pose expressed in
-        # the parent joint frame, consistent with eval_fk:
-        #     body_q = X_wpj * X_j * inv(X_cj)
-        # So we solve X_j = inv(X_wpj) * body_q * X_cj. For the typical
-        # parent=-1 + identity parent_xform + identity child_xform case this
-        # reduces to joint_q = body_q[child].
-        X_pj = self.joint_X_p[joint_id]
-        if parent >= 0:
-            X_wpj = self.body_q[parent] * X_pj
-        else:
-            X_wpj = X_pj
-        X_j = wp.transform_inverse(X_wpj) * self.body_q[child] * self.joint_X_c[joint_id]
-        for i in range(7):
-            self.joint_q[q_start + i] = X_j[i]
+        # set the positional dofs to the child body's transform
+        self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
         return joint_id
 
     def add_joint_distance(

@@ -369,21 +369,20 @@ def test_combined_velocity(
     test.assertLess(quat_diff, 0.9999, "Body should have rotated")
 
 
-def test_root_free_joint_under_rotated_xforms_uses_parent_frame_qd(
+def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
     test: TestBodyVelocity,
     device,
     solver_fn,
 ):
-    """Root FREE joint with rotated parent_xform / child_xform must report joint_qd
-    in the parent joint frame and body_qd in world frame at the COM (regression
-    for #2704 -- MuJoCo bridge previously left both in world frame and missed
-    child_xform handling on qpos round-trips).
+    """Root FREE joint with a rotated ``parent_xform`` must report ``joint_qd``
+    in the parent joint frame and ``body_qd`` in world frame at the COM
+    (regression for #2704 — the MuJoCo bridge previously wrote both in world
+    frame).
     """
     builder = newton.ModelBuilder(gravity=-10.0, up_axis=newton.Axis.Z)
     parent_xform = wp.transform(wp.vec3(0.5, 0.6, 0.7), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0))
-    child_xform = wp.transform(wp.vec3(0.3, 0.4, 0.5), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.6))
     body = builder.add_link(mass=1.0, inertia=wp.mat33(1, 0, 0, 0, 1, 0, 0, 0, 1))
-    joint = builder.add_joint_free(parent=-1, child=body, parent_xform=parent_xform, child_xform=child_xform)
+    joint = builder.add_joint_free(parent=-1, child=body, parent_xform=parent_xform)
     builder.add_articulation([joint])
 
     model = builder.finalize(device=device)
@@ -830,8 +829,8 @@ for device in devices:
             continue
         add_function_test(
             TestBodyVelocity,
-            f"test_root_free_joint_under_rotated_xforms_uses_parent_frame_qd_{solver_name}",
-            test_root_free_joint_under_rotated_xforms_uses_parent_frame_qd,
+            f"test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd_{solver_name}",
+            test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd,
             devices=[device],
             solver_fn=solvers[solver_name][0],
         )
