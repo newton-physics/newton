@@ -3928,6 +3928,56 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             f"Sphere is floating above the plane. Final height: {final_height}",
         )
 
+    def test_sphere_rolls_without_slip_with_newton_contacts(self):
+        radius = 0.1
+        builder = newton.ModelBuilder(gravity=-9.81)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_shape_cfg.ke = 1.0e5
+        builder.default_shape_cfg.kd = 2.0e3
+        builder.default_shape_cfg.mu = 1.0
+        builder.add_ground_plane()
+
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e5, kd=2.0e3, mu=1.0)
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius), wp.quat_identity()))
+        builder.add_shape_sphere(body=body, radius=radius, cfg=shape_cfg)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(
+                model,
+                use_mujoco_contacts=False,
+                use_mujoco_cpu=False,
+                solver="newton",
+                integrator="implicitfast",
+                cone="elliptic",
+                iterations=50,
+                ls_iterations=20,
+                nconmax=64,
+                njmax=256,
+            )
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        contacts = model.contacts()
+
+        joint_qd = state_0.joint_qd.numpy()
+        joint_qd[:] = 0.0
+        joint_qd[0] = 0.1
+        state_0.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+        for _ in range(240):
+            state_0.clear_forces()
+            model.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+
+        body_qd = state_0.body_qd.numpy()[body]
+        self.assertAlmostEqual(float(body_qd[0]), float(body_qd[4] * radius), delta=5.0e-3)
+
     def test_efc_address_init(self):
         """efc_address is -1 for inactive contacts after Newton-to-mujoco_warp conversion.
 
@@ -4195,6 +4245,8 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             "rigid_contact_point0",
             "rigid_contact_point1",
             "rigid_contact_normal",
+            "rigid_contact_offset0",
+            "rigid_contact_offset1",
             "rigid_contact_margin0",
             "rigid_contact_margin1",
             "rigid_contact_stiffness",

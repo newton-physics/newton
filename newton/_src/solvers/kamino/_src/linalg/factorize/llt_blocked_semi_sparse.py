@@ -238,12 +238,12 @@ def create_blocked_cholesky_kernel(block_size: int):
                         continue
                     L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
                     L_block_T = wp.tile_transpose(L_block)
-                    L_L_T_block = wp.tile_matmul(L_block, L_block_T)
-                    A_kk_tile -= L_L_T_block
+                    wp.tile_matmul(L_block, L_block_T, A_kk_tile, alpha=-1.0)
+                    # equivalent to A_kk_tile -= L_block * L_block_T, without intermediate allocation
 
             # Compute the Cholesky factorization for the block
-            L_kk_tile = wp.tile_cholesky(A_kk_tile)
-            wp.tile_store(L, L_kk_tile, offset=(k, k))
+            wp.tile_cholesky_inplace(A_kk_tile)  # In-place solve to avoid extra allocation
+            wp.tile_store(L, A_kk_tile, offset=(k, k))
 
             # Process the blocks below the current block
             for i in range(end, n, block_size):
@@ -278,12 +278,12 @@ def create_blocked_cholesky_kernel(block_size: int):
                         L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
                         L_2_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
                         L_T_tile = wp.tile_transpose(L_2_tile)
-                        L_L_T_tile = wp.tile_matmul(L_tile, L_T_tile)
-                        A_ik_tile -= L_L_T_tile
+                        wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
+                        # equivalent to A_ik_tile -= L_tile * L_T_tile, without intermediate allocation
 
                 t = wp.tile_transpose(A_ik_tile)
-                tmp = wp.tile_lower_solve(L_kk_tile, t)
-                sol_tile = wp.tile_transpose(tmp)
+                wp.tile_lower_solve_inplace(A_kk_tile, t)  # In-place solve to avoid extra allocation
+                sol_tile = wp.tile_transpose(t)
 
                 wp.tile_store(L, sol_tile, offset=(i, k))
 
@@ -331,6 +331,9 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
 
             i_end = i + block_size
             rhs_tile = wp.tile_load(b, shape=(block_size, 1), offset=(i, 0))
+            # Hoist the diagonal load above the j loop so the shared-memory fetch can
+            # overlap with the gemm pipeline below.
+            L_diag = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i))
             if i > 0:
                 for j in range(0, i, block_size):
                     tile_j = j // block_size
@@ -339,11 +342,10 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
                         continue
                     L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
                     y_block = wp.tile_load(y, shape=(block_size, 1), offset=(j, 0))
-                    Ly_block = wp.tile_matmul(L_block, y_block)
-                    rhs_tile -= Ly_block
-            L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i))
-            y_tile = wp.tile_lower_solve(L_tile, rhs_tile)
-            wp.tile_store(y, y_tile, offset=(i, 0))
+                    wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
+                    # equivalent to rhs_tile -= L_block * y_block, without intermediate allocation
+            wp.tile_lower_solve_inplace(L_diag, rhs_tile)  # In-place solve to avoid extra allocation
+            wp.tile_store(y, rhs_tile, offset=(i, 0))
 
         # Backward substitution: solve L^T x = y
         for i in range(n - block_size, -1, -block_size):
@@ -355,6 +357,8 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
             i_start = i
             i_end = i_start + block_size
             rhs_tile = wp.tile_load(y, shape=(block_size, 1), offset=(i_start, 0))
+            # Hoist the diagonal load above the j loop (see forward sub above).
+            L_diag = wp.tile_load(L, shape=(block_size, block_size), offset=(i_start, i_start))
             if i_end < n:
                 for j in range(i_end, n, block_size):
                     tile_j = j // block_size
@@ -364,11 +368,10 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
                     L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i_start))
                     L_T_tile = wp.tile_transpose(L_tile)
                     x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0))
-                    L_T_x_tile = wp.tile_matmul(L_T_tile, x_tile)
-                    rhs_tile -= L_T_x_tile
-            L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i_start, i_start))
-            x_tile = wp.tile_upper_solve(wp.tile_transpose(L_tile), rhs_tile)
-            wp.tile_store(x, x_tile, offset=(i_start, 0))
+                    wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
+                    # equivalent to rhs_tile -= L_T_tile * x_tile, without intermediate allocation
+            wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)  # In-place solve to avoid extra allocation
+            wp.tile_store(x, rhs_tile, offset=(i_start, 0))
 
     return blocked_cholesky_solve_kernel
 

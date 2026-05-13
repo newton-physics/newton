@@ -897,11 +897,11 @@ class DelassusOperator:
 
         # Update the allocation meta-data the specified constraint dimensions
         self._num_worlds = model.size.num_worlds
-        self._world_dims = maxdims
-        self._world_size = [maxdims[i] * maxdims[i] for i in range(self._num_worlds)]
-        self._model_maxdims = sum(self._world_dims)
-        self._model_maxsize = sum(self._world_size)
-        self._max_of_max_total_D_size = max(self._world_size)
+        self._world_maxdims = maxdims
+        self._world_maxsize = [maxdims[i] * maxdims[i] for i in range(self._num_worlds)]
+        self._model_maxdims = sum(self._world_maxdims)
+        self._model_maxsize = sum(self._world_maxsize)
+        self._max_of_max_total_D_size = max(self._world_maxsize) if self._world_maxsize else 0
 
         # Use the model's device
         self._device = model.device
@@ -911,7 +911,7 @@ class DelassusOperator:
         self._operator.info = DenseSquareMultiLinearInfo()
         self._operator.mat = wp.zeros(shape=(self._model_maxsize,), dtype=float32, device=self._device)
         if (model.info is not None) and (data.info is not None):
-            mat_offsets = [0] + [sum(self._world_size[:i]) for i in range(1, self._num_worlds + 1)]
+            mat_offsets = [0] + [sum(self._world_maxsize[:i]) for i in range(1, self._num_worlds + 1)]
             self._operator.info.assign(
                 maxdim=model.info.max_total_cts,
                 dim=data.info.num_total_cts,
@@ -985,7 +985,7 @@ class DelassusOperator:
         # Build the Delassus matrix parallelized over the upper triangle.
         # Aligns to warp size (32) to avoid partially-filled warps.
         if isinstance(jacobians, DenseSystemJacobians):
-            max_ncts = max(self._world_dims) if self._world_dims else 0
+            max_ncts = max(self._world_maxdims) if self._world_maxdims else 0
             upper_tri_size = max_ncts * (max_ncts + 1) // 2
             warp_size = 32
             upper_tri_size = ((upper_tri_size + warp_size - 1) // warp_size) * warp_size
