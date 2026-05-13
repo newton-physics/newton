@@ -657,6 +657,8 @@ class SolverXPBD(TendonStateMixin, SolverBase):
                         else:
                             body_deltas.zero_()
 
+                        # seg_lambda stores impulse, so physical compliance
+                        # scales the accumulated multiplier by 1 / dt.
                         wp.launch(
                             kernel=solve_tendon_stretch,
                             dim=model.tendon_segment_count,
@@ -679,6 +681,7 @@ class SolverXPBD(TendonStateMixin, SolverBase):
                                 self.tendon_seg_lambda,
                                 self.tendon_seg_delta_lambda,
                                 self.tendon_seg_link_l,
+                                1.0 / dt,
                                 self.joint_linear_relaxation,
                                 dt,
                             ],

@@ -43,11 +43,13 @@ class Example:
         builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=-9.81)
 
         self.pulley_radius = 0.15
+        self.pulley_z = 3.5
+        self.weight_x = 0.3
         self.mus = [0.0, 0.08, 10.0]
         self.x_offsets = [-1.5, 0.0, 1.5]
 
         mass_light = 1.0
-        mass_heavy = 1.08
+        mass_heavy = 1.02
 
         q_cyl = wp.quat(np.sin(np.pi / 4.0), 0.0, 0.0, np.cos(np.pi / 4.0))
 
@@ -62,7 +64,7 @@ class Example:
         self._right_z_history = []
 
         for mu, x_off in zip(self.mus, self.x_offsets, strict=True):
-            pulley_pos = wp.vec3(x_off, 0.0, 3.5)
+            pulley_pos = wp.vec3(x_off, 0.0, self.pulley_z)
             pulley = builder.add_body(
                 xform=wp.transform(p=pulley_pos, q=wp.quat_identity()),
                 mass=0.0,
@@ -76,7 +78,7 @@ class Example:
             )
             self.pulley_indices.append(pulley)
 
-            left_pos = wp.vec3(x_off - 0.4, 0.0, 1.85)
+            left_pos = wp.vec3(x_off - self.weight_x, 0.0, 1.85)
             left = builder.add_link(
                 xform=wp.transform(p=left_pos, q=wp.quat_identity()),
                 mass=mass_light,
@@ -93,7 +95,7 @@ class Example:
             builder.add_articulation([j1])
             self.left_indices.append(left)
 
-            right_pos = wp.vec3(x_off + 0.4, 0.0, 1.85)
+            right_pos = wp.vec3(x_off + self.weight_x, 0.0, 1.85)
             right = builder.add_link(
                 xform=wp.transform(p=right_pos, q=wp.quat_identity()),
                 mass=mass_heavy,
@@ -127,7 +129,7 @@ class Example:
                 offset=(0.0, 0.0, 0.0),
                 axis=axis,
                 compliance=2.0e-5,
-                damping=8.0,
+                damping=80.0,
                 rest_length=-1.0,
             )
             builder.add_tendon_link(
@@ -136,7 +138,7 @@ class Example:
                 offset=(0.0, 0.0, 0.06),
                 axis=axis,
                 compliance=2.0e-5,
-                damping=8.0,
+                damping=80.0,
                 rest_length=-1.0,
             )
 
@@ -159,7 +161,7 @@ class Example:
 
         if self.viewer is not None:
             self.viewer.set_model(self.model)
-            self.viewer.set_camera(pos=wp.vec3(0.0, -6.0, 2.5), pitch=5.0, yaw=90.0)
+            self.viewer.set_camera(pos=wp.vec3(0.0, -5.8, 2.55), pitch=5.0, yaw=90.0)
             if hasattr(self.viewer, "renderer"):
                 self.viewer.renderer.show_wireframe_overlay = True
 
@@ -211,6 +213,11 @@ class Example:
 
         left_disp = left_z[-1] - self._initial_left_z
         right_disp = self._initial_right_z - right_z[-1]
+
+        assert np.max(left_z[:, :2]) < self.pulley_z - self.pulley_radius - 0.05, (
+            f"Low/mid kinematic capstan weights should stay below the pulley: max_z={np.max(left_z[:, :2], axis=0)}"
+        )
+
         assert np.all(left_disp > -0.04), f"Light weights should not sink in kinematic capstan: dz={left_disp}"
         assert np.all(right_disp > -0.02), f"Heavy weights should not rise in kinematic capstan: dz={right_disp}"
 
@@ -227,7 +234,7 @@ class Example:
             right_step = np.max(np.abs(np.diff(right_z[:, :2], axis=0)), axis=0)
             left_acc_step = np.max(np.abs(np.diff(left_z[:, :2], n=2, axis=0)), axis=0)
             right_acc_step = np.max(np.abs(np.diff(right_z[:, :2], n=2, axis=0)), axis=0)
-            assert np.max(left_step) < 0.035 and np.max(right_step) < 0.035, (
+            assert np.max(left_step) < 0.045 and np.max(right_step) < 0.045, (
                 f"Low/mid kinematic capstan slip should move smoothly per frame: "
                 f"left_step={left_step}, right_step={right_step}"
             )

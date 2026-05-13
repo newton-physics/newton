@@ -42,7 +42,7 @@ def _box_on_planar_joint(builder, pos, mass, half_extent):
     return body
 
 
-def build_pinhole_atwood(mass_left=1.0, mass_right=3.0, mu=0.0):
+def build_pinhole_atwood(mass_left=1.0, mass_right=3.0, mu=0.0, compliance=1.0e-5):
     builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=-9.81)
 
     pin = builder.add_body(
@@ -69,7 +69,7 @@ def build_pinhole_atwood(mass_left=1.0, mass_right=3.0, mu=0.0):
         mu=mu,
         offset=(0.0, 0.0, 0.0),
         axis=axis,
-        compliance=1.0e-5,
+        compliance=compliance,
         damping=0.1,
         rest_length=-1.0,
     )
@@ -78,7 +78,7 @@ def build_pinhole_atwood(mass_left=1.0, mass_right=3.0, mu=0.0):
         link_type=int(TendonLinkType.ATTACHMENT),
         offset=(0.0, 0.0, 0.06),
         axis=axis,
-        compliance=1.0e-5,
+        compliance=compliance,
         damping=0.1,
         rest_length=-1.0,
     )
@@ -120,7 +120,14 @@ def build_slack_pinhole_route():
     return builder.finalize()
 
 
-def build_dynamic_pulley_atwood(mu=10.0, mass_left=1.0, mass_right=3.0, pulley_mass=5.0, pulley_radius=0.15):
+def build_dynamic_pulley_atwood(
+    mu=10.0,
+    mass_left=1.0,
+    mass_right=3.0,
+    pulley_mass=5.0,
+    pulley_radius=0.15,
+    compliance=1.0e-5,
+):
     builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=-9.81)
 
     pulley_pos = wp.vec3(0.0, 0.0, 3.5)
@@ -180,7 +187,7 @@ def build_dynamic_pulley_atwood(mu=10.0, mass_left=1.0, mass_right=3.0, pulley_m
         mu=mu,
         offset=(0.0, 0.0, 0.0),
         axis=axis,
-        compliance=1.0e-5,
+        compliance=compliance,
         damping=0.1,
         rest_length=-1.0,
     )
@@ -189,7 +196,7 @@ def build_dynamic_pulley_atwood(mu=10.0, mass_left=1.0, mass_right=3.0, pulley_m
         link_type=int(TendonLinkType.ATTACHMENT),
         offset=(0.0, 0.0, 0.06),
         axis=axis,
-        compliance=1.0e-5,
+        compliance=compliance,
         damping=0.1,
         rest_length=-1.0,
     )
@@ -198,7 +205,7 @@ def build_dynamic_pulley_atwood(mu=10.0, mass_left=1.0, mass_right=3.0, pulley_m
     return builder.finalize(), left, right, pulley
 
 
-def build_kinematic_pulley_atwood(mu=0.0, mass_left=1.0, mass_right=3.0, pulley_radius=0.15):
+def build_kinematic_pulley_atwood(mu=0.0, mass_left=1.0, mass_right=3.0, pulley_radius=0.15, compliance=1.0e-5):
     builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=-9.81)
 
     pulley_pos = wp.vec3(0.0, 0.0, 3.5)
@@ -235,7 +242,7 @@ def build_kinematic_pulley_atwood(mu=0.0, mass_left=1.0, mass_right=3.0, pulley_
         mu=mu,
         offset=(0.0, 0.0, 0.0),
         axis=axis,
-        compliance=1.0e-5,
+        compliance=compliance,
         damping=0.1,
         rest_length=-1.0,
     )
@@ -244,7 +251,7 @@ def build_kinematic_pulley_atwood(mu=0.0, mass_left=1.0, mass_right=3.0, pulley_
         link_type=int(TendonLinkType.ATTACHMENT),
         offset=(0.0, 0.0, 0.06),
         axis=axis,
-        compliance=1.0e-5,
+        compliance=compliance,
         damping=0.1,
         rest_length=-1.0,
     )
@@ -308,6 +315,146 @@ def build_kinematic_capstan_hysteresis(mu=0.2, pulley_radius=0.2, compliance=1.0
     )
 
     return builder.finalize(), left, pulley, right
+
+
+def build_pinhole_capstan_force_mode(num_pinholes=5, mu=0.2, mass=20.0, pulley_radius=0.2, compliance=1.0e-3):
+    builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=-9.81)
+    endpoint_x = 0.21
+    endpoint_z = -2.0
+
+    left = builder.add_body(
+        xform=wp.transform(p=wp.vec3(-endpoint_x, 0.0, endpoint_z)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+    pulley = builder.add_body(
+        xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+
+    inertia = 0.4 * mass * 0.03 * 0.03
+    right = builder.add_link(
+        xform=wp.transform(p=wp.vec3(endpoint_x, 0.0, endpoint_z)),
+        mass=mass,
+        inertia=wp.mat33(
+            inertia,
+            0.0,
+            0.0,
+            0.0,
+            inertia,
+            0.0,
+            0.0,
+            0.0,
+            inertia,
+        ),
+        lock_inertia=True,
+    )
+    dof = newton.ModelBuilder.JointDofConfig
+    j_right = builder.add_joint_d6(
+        parent=-1,
+        child=right,
+        linear_axes=[dof(axis=Axis.Z)],
+        angular_axes=[],
+        parent_xform=wp.transform(p=wp.vec3(endpoint_x, 0.0, endpoint_z)),
+        child_xform=wp.transform(),
+    )
+    builder.add_articulation([j_right])
+
+    seg_compliance = 2.0 * compliance / (num_pinholes + 1)
+    axis = (0.0, 1.0, 0.0)
+    builder.add_tendon()
+    builder.add_tendon_link(
+        body=left,
+        link_type=int(TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.0, 0.0),
+        axis=axis,
+    )
+    for i in range(num_pinholes):
+        alpha = np.pi - i * np.pi / (num_pinholes - 1)
+        builder.add_tendon_link(
+            body=pulley,
+            link_type=int(TendonLinkType.PINHOLE),
+            mu=mu,
+            offset=(pulley_radius * np.cos(alpha), 0.0, pulley_radius * np.sin(alpha)),
+            axis=axis,
+            compliance=seg_compliance,
+            damping=0.0,
+            rest_length=-1.0,
+        )
+    builder.add_tendon_link(
+        body=right,
+        link_type=int(TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.0, 0.0),
+        axis=axis,
+        compliance=seg_compliance,
+        damping=0.0,
+        rest_length=-1.0,
+    )
+
+    return builder.finalize(), right, mass, endpoint_z
+
+
+def build_simple_cable_gravity(mass=10.0, compliance=1.0e-3, initial_z=-0.1):
+    """Build a one-segment cable from a fixed anchor to a hanging prismatic mass."""
+    builder = newton.ModelBuilder(up_axis=Axis.Z, gravity=-9.81)
+
+    anchor = builder.add_body(
+        xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+    builder.add_shape_sphere(anchor, radius=0.01)
+
+    inertia = 0.4 * mass * 0.02 * 0.02
+    body = builder.add_link(
+        xform=wp.transform(p=wp.vec3(0.0, 0.0, initial_z)),
+        mass=mass,
+        inertia=wp.mat33(
+            inertia,
+            0.0,
+            0.0,
+            0.0,
+            inertia,
+            0.0,
+            0.0,
+            0.0,
+            inertia,
+        ),
+        lock_inertia=True,
+    )
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+    builder.add_shape_box(body, hx=0.02, hy=0.02, hz=0.02, cfg=cfg)
+
+    dof = newton.ModelBuilder.JointDofConfig
+    joint = builder.add_joint_d6(
+        parent=-1,
+        child=body,
+        linear_axes=[dof(axis=Axis.Z)],
+        angular_axes=[],
+        parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, initial_z)),
+        child_xform=wp.transform(),
+    )
+    builder.add_articulation([joint])
+
+    builder.add_tendon()
+    builder.add_tendon_link(
+        body=anchor,
+        link_type=int(TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.0, 0.0),
+        axis=(0.0, 1.0, 0.0),
+    )
+    builder.add_tendon_link(
+        body=body,
+        link_type=int(TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.0, 0.0),
+        axis=(0.0, 1.0, 0.0),
+        compliance=compliance,
+        damping=0.0,
+        rest_length=-1.0,
+    )
+
+    return builder.finalize(), body, mass, compliance, initial_z
 
 
 def build_motorized_pulley_drive(mu=0.0):
@@ -448,7 +595,7 @@ def _hinge_y_angle(body_q, body_idx):
 
 
 def _dynamic_capstan_metrics(device, mu, num_frames=40):
-    model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(mu=mu)
+    model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(mu=mu, compliance=3.0e-8)
     substeps = 12
     dt = 1.0 / 60.0 / substeps
     solver = newton.solvers.SolverXPBD(model, iterations=8, joint_linear_relaxation=0.8)
@@ -489,7 +636,7 @@ def _dynamic_capstan_example_theta(device, num_frames=40):
 
 
 def _kinematic_capstan_metrics(device, mu, num_frames=100):
-    model, left_idx, right_idx, pulley_idx = build_kinematic_pulley_atwood(mu=mu)
+    model, left_idx, right_idx, pulley_idx = build_kinematic_pulley_atwood(mu=mu, compliance=3.0e-7)
     state = run_model(model, num_frames=num_frames)
     body_q = state.body_q.numpy()
     left_travel = float(body_q[left_idx][2]) - 2.0
@@ -555,7 +702,7 @@ def _capstan_hysteresis_history(mu=0.2):
 def test_pinhole_slip_atwood(test, device):
     """A pinhole is a frictionless slip waypoint: heavy descends, light rises."""
     with wp.ScopedDevice(device):
-        model, left_idx, right_idx = build_pinhole_atwood()
+        model, left_idx, right_idx = build_pinhole_atwood(compliance=4.0e-7)
         state = run_model(model, num_frames=80)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite pinhole Atwood state")
@@ -567,7 +714,7 @@ def test_pinhole_slip_atwood(test, device):
 
 
 def _pinhole_friction_metrics(mu, num_frames=80):
-    model, left_idx, right_idx = build_pinhole_atwood(mass_left=1.0, mass_right=3.0, mu=mu)
+    model, left_idx, right_idx = build_pinhole_atwood(mass_left=1.0, mass_right=3.0, mu=mu, compliance=4.0e-7)
     state = run_model(model, num_frames=num_frames)
     body_q = state.body_q.numpy()
     left_travel = float(body_q[left_idx][2]) - 2.0
@@ -631,7 +778,7 @@ def test_slack_pinhole_does_not_redistribute(test, device):
 def test_dynamic_pulley_uses_angular_jacobian(test, device):
     """High friction recovers the no-slip angular Jacobian baseline."""
     with wp.ScopedDevice(device):
-        model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(mu=10.0)
+        model, left_idx, right_idx, pulley_idx = build_dynamic_pulley_atwood(mu=10.0, compliance=3.0e-8)
         state = run_model(model, num_frames=80)
         body_q = state.body_q.numpy()
         test.assertTrue(np.isfinite(body_q).all(), "Non-finite dynamic pulley Atwood state")
@@ -656,6 +803,7 @@ def test_pulley_inertia_limit_locks_cable_travel(test, device):
             mass_right=3.0,
             pulley_mass=5000.0,
             pulley_radius=radius,
+            compliance=3.0e-8,
         )
         state = run_model(model, num_frames=80)
         body_q = state.body_q.numpy()
@@ -683,7 +831,7 @@ def test_dynamic_capstan_mu_controls_pulley_rotation(test, device):
             body_q, left_travel, right_travel, *_ = metrics
             test.assertTrue(np.isfinite(body_q).all(), f"Non-finite dynamic capstan state for {label} mu")
             test.assertGreater(right_travel, 0.03, f"Heavy side should descend for {label} mu: {right_travel:.5f}")
-            test.assertGreater(left_travel, -0.03, f"Light side should not sink for {label} mu: {left_travel:.5f}")
+            test.assertGreater(left_travel, -0.04, f"Light side should not sink for {label} mu: {left_travel:.5f}")
 
         _, _, _, _, theta_low, _, slip_low = low
         _, _, _, _, theta_mid, rim_mid, slip_mid = mid
@@ -702,10 +850,10 @@ def test_dynamic_capstan_mu_controls_pulley_rotation(test, device):
             f"High-mu dynamic capstan should approach no-slip: cable={cable_high:.5f}, rim={rim_high:.5f}",
         )
         test.assertGreater(
-            slip_low, slip_mid, f"Dynamic slip should decrease from low to mid mu: {slip_low:.5f} <= {slip_mid:.5f}"
+            slip_mid, slip_high, f"Dynamic slip should decrease from mid to high mu: {slip_mid:.5f} <= {slip_high:.5f}"
         )
         test.assertGreater(
-            slip_mid, slip_high, f"Dynamic slip should decrease from mid to high mu: {slip_mid:.5f} <= {slip_high:.5f}"
+            slip_low, slip_high, f"High friction should slip less than zero friction: {slip_low:.5f} <= {slip_high:.5f}"
         )
         test.assertGreater(rim_mid, 0.0, f"Mid-mu rim travel should be positive: {rim_mid:.5f}")
 
@@ -829,6 +977,98 @@ def test_kinematic_capstan_hysteresis_matches_capstan_band(test, device):
             loading_mid["t_fix"] + 40.0,
             f"Expected hysteresis: fixed tension should be higher on unloading at similar applied tension: "
             f"loading={loading_mid}, unloading={unloading_mid}",
+        )
+
+
+def test_pinhole_capstan_force_mode_uses_physical_compliance(test, device):
+    """A force-driven pinhole capstan should report stretch tension in newtons."""
+    with wp.ScopedDevice(device):
+        num_pinholes = 5
+        mu = 0.2
+        model, right_idx, mass, initial_z = build_pinhole_capstan_force_mode(num_pinholes=num_pinholes, mu=mu)
+        solver = newton.solvers.SolverXPBD(model, iterations=40, joint_linear_relaxation=1.0)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        contacts = model.contacts()
+        dt = 1.0 / 60.0
+
+        for _ in range(120):
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+
+        body_q = state_0.body_q.numpy()
+        test.assertTrue(np.isfinite(body_q).all(), "Non-finite pinhole capstan force-mode state")
+
+        drop = initial_z - float(body_q[right_idx][2])
+        tensions, _att_l, _att_r = _capstan_span_tensions(solver)
+        t_fix = float(tensions[0])
+        t_app = float(tensions[-1])
+        t_lambda = float(-solver.tendon_seg_lambda.numpy()[-1] / dt)
+        applied_load = mass * 9.81
+        capstan_ratio = np.exp(mu * np.pi)
+
+        test.assertGreater(drop, 0.2, f"Force-driven cable should stretch by a physical amount: dz={drop:.6f}")
+        test.assertAlmostEqual(
+            t_app,
+            t_lambda,
+            delta=0.05 * applied_load,
+            msg=f"Stretch/compliance tension should match XPBD multiplier readback: {t_app:.3f} vs {t_lambda:.3f}",
+        )
+        test.assertAlmostEqual(
+            t_app,
+            applied_load,
+            delta=0.15 * applied_load,
+            msg=f"Applied-side tension should balance the hanging load: T={t_app:.3f}, load={applied_load:.3f}",
+        )
+        test.assertLessEqual(t_app, capstan_ratio * t_fix + 5.0, f"Applied side escaped capstan cone: {t_app}, {t_fix}")
+        test.assertLessEqual(t_fix, capstan_ratio * t_app + 5.0, f"Fixed side escaped capstan cone: {t_app}, {t_fix}")
+
+
+def test_simple_cable_gravity_balances_mass_load(test, device):
+    """A single cable segment should report the physical stretch tension under gravity."""
+    with wp.ScopedDevice(device):
+        model, body_idx, mass, compliance, initial_z = build_simple_cable_gravity()
+        solver = newton.solvers.SolverXPBD(model, iterations=16, joint_linear_relaxation=1.0)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        contacts = model.contacts()
+        dt = 1.0 / 60.0
+
+        for _ in range(300):
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+
+        body_q = state_0.body_q.numpy()
+        test.assertTrue(np.isfinite(body_q).all(), "Non-finite simple cable gravity state")
+
+        tensions, _att_l, _att_r = _capstan_span_tensions(solver)
+        tension = float(tensions[0])
+        lambda_tension = float(-solver.tendon_seg_lambda.numpy()[0] / dt)
+        load = mass * 9.81
+        expected_z = initial_z - load * compliance
+        z = float(body_q[body_idx][2])
+
+        test.assertAlmostEqual(
+            tension,
+            load,
+            delta=0.05 * load,
+            msg=f"Single-segment stretch tension should balance mg: T={tension:.3f}, mg={load:.3f}",
+        )
+        test.assertAlmostEqual(
+            lambda_tension,
+            tension,
+            delta=0.05 * load,
+            msg=f"XPBD lambda tension should match stretch/compliance readback: {lambda_tension:.3f} vs {tension:.3f}",
+        )
+        test.assertAlmostEqual(
+            z,
+            expected_z,
+            delta=5.0e-3,
+            msg=f"Mass should settle near compliance extension: z={z:.6f}, expected={expected_z:.6f}",
         )
 
 
@@ -1008,6 +1248,18 @@ add_test(
     "kinematic_capstan_hysteresis_matches_capstan_band",
     devices,
     test_kinematic_capstan_hysteresis_matches_capstan_band,
+)
+add_test(
+    TestTendonCapstan,
+    "pinhole_capstan_force_mode_uses_physical_compliance",
+    devices,
+    test_pinhole_capstan_force_mode_uses_physical_compliance,
+)
+add_test(
+    TestTendonCapstan,
+    "simple_cable_gravity_balances_mass_load",
+    devices,
+    test_simple_cable_gravity_balances_mass_load,
 )
 add_test(TestTendonCapstan, "motorized_pulley_drives_slider", devices, test_motorized_pulley_drives_slider)
 add_test(

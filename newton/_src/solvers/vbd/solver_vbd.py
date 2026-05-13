@@ -1969,6 +1969,8 @@ class SolverVBD(TendonStateMixin, SolverBase):
         self._update_tendon_routing(state_in)
 
         self.tendon_body_deltas.zero_()
+        # VBD keeps its existing position-level tendon multiplier scaling while
+        # sharing the routed stretch kernel with XPBD.
         wp.launch(
             kernel=solve_tendon_stretch,
             dim=model.tendon_segment_count,
@@ -1991,6 +1993,7 @@ class SolverVBD(TendonStateMixin, SolverBase):
                 self.tendon_seg_lambda,
                 self.tendon_seg_delta_lambda,
                 self.tendon_seg_link_l,
+                1.0,
                 self.rigid_tendon_relaxation,
                 dt,
             ],

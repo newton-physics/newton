@@ -39,6 +39,7 @@ def solve_tendon_stretch(
     seg_lambda: wp.array[float],
     seg_delta_lambda: wp.array[float],
     seg_link_l: wp.array[int],
+    compliance_lambda_scale: float,
     relaxation: float,
     dt: float,
     # outputs
@@ -126,13 +127,14 @@ def solve_tendon_stretch(
     denom += wp.dot(rot_ang_l, I_inv_l * rot_ang_l)
     denom += wp.dot(rot_ang_r, I_inv_r * rot_ang_r)
 
-    alpha = compliance
+    alpha = compliance * compliance_lambda_scale
     gamma = compliance * damping
 
     lambda_prev = seg_lambda[seg]
     d_lambda = -(err + alpha * lambda_prev + gamma * derr)
-    if denom + alpha > 0.0:
-        d_lambda = d_lambda / ((dt + gamma) * denom + alpha / dt)
+    denom = (dt + gamma) * denom + compliance / dt
+    if denom > 0.0:
+        d_lambda = d_lambda / denom
 
     seg_lambda[seg] = lambda_prev + d_lambda
     seg_delta_lambda[seg] = d_lambda

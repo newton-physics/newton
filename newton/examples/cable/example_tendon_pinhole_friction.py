@@ -40,6 +40,8 @@ class Example:
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=-9.81)
 
+        self.guide_z = 3.55
+        self.weight_x = 0.1
         self.mus = [0.0, 0.2, 10.0]
         self.x_offsets = [-1.5, 0.0, 1.5]
         self.guide_indices = []
@@ -49,20 +51,20 @@ class Example:
         self._right_z_history = []
 
         mass_light = 1.0
-        mass_heavy = 3.0
+        mass_heavy = 1.04
         axis = (0.0, 1.0, 0.0)
 
         for mu, x_off in zip(self.mus, self.x_offsets, strict=True):
             guide = builder.add_body(
-                xform=wp.transform(p=wp.vec3(x_off, 0.0, 3.5), q=wp.quat_identity()),
+                xform=wp.transform(p=wp.vec3(x_off, 0.0, self.guide_z), q=wp.quat_identity()),
                 mass=0.0,
                 is_kinematic=True,
             )
             builder.add_shape_sphere(guide, radius=0.055)
             self.guide_indices.append(guide)
 
-            left = self._add_planar_weight(builder, wp.vec3(x_off - 0.45, 0.0, 2.0), mass_light, 0.06)
-            right = self._add_planar_weight(builder, wp.vec3(x_off + 0.45, 0.0, 2.0), mass_heavy, 0.10)
+            left = self._add_planar_weight(builder, wp.vec3(x_off - self.weight_x, 0.0, 2.0), mass_light, 0.06)
+            right = self._add_planar_weight(builder, wp.vec3(x_off + self.weight_x, 0.0, 2.0), mass_heavy, 0.10)
             self.left_indices.append(left)
             self.right_indices.append(right)
 
@@ -80,7 +82,7 @@ class Example:
                 offset=(0.0, 0.0, 0.0),
                 axis=axis,
                 compliance=1.0e-5,
-                damping=0.1,
+                damping=0.5,
                 rest_length=-1.0,
             )
             builder.add_tendon_link(
@@ -89,7 +91,7 @@ class Example:
                 offset=(0.0, 0.0, 0.10),
                 axis=axis,
                 compliance=1.0e-5,
-                damping=0.1,
+                damping=0.5,
                 rest_length=-1.0,
             )
 
@@ -113,7 +115,7 @@ class Example:
 
         if self.viewer is not None:
             self.viewer.set_model(self.model)
-            self.viewer.set_camera(pos=wp.vec3(0.0, -6.0, 2.45), pitch=4.0, yaw=90.0)
+            self.viewer.set_camera(pos=wp.vec3(0.0, -5.6, 2.55), pitch=4.0, yaw=90.0)
             if hasattr(self.viewer, "renderer"):
                 self.viewer.renderer.show_wireframe_overlay = True
 
@@ -165,8 +167,14 @@ class Example:
         right_z = np.array(self._right_z_history)
         assert np.isfinite(left_z).all() and np.isfinite(right_z).all(), "Non-finite pinhole friction trajectory"
 
-        left_disp = left_z[-1] - self._initial_left_z
-        right_disp = self._initial_right_z - right_z[-1]
+        right_disp_history = self._initial_right_z - right_z
+        metric_idx = int(np.argmax(right_disp_history[:, 0]))
+        left_disp = left_z[metric_idx] - self._initial_left_z
+        right_disp = right_disp_history[metric_idx]
+
+        assert np.max(left_z[:, :2]) < self.guide_z - 0.05, (
+            f"Low/mid pinhole weights should stay below the guide: max_z={np.max(left_z[:, :2], axis=0)}"
+        )
 
         assert right_disp[0] > 0.25, f"Zero-friction pinhole should freely slip: dz={right_disp}"
         assert left_disp[0] > 0.20, f"Zero-friction light weight should rise through the pinhole: dz={left_disp}"
