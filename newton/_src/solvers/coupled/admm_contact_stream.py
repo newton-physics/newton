@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Internal fixed-capacity contact streams for coupled solvers."""
+"""Internal fixed-capacity contact streams for ADMM coupled contacts.
+
+These streams are solver-side ADMM work buffers, not a generic coupling contact
+API. They hold detected contacts and the corresponding ADMM normal
+force/impulse scalars so contact detection and constraint solves share one
+fixed-layout record.
+"""
 
 from __future__ import annotations
 
@@ -11,16 +17,16 @@ from enum import IntEnum
 import warp as wp
 
 
-class CouplingContactType(IntEnum):
-    """Homogeneous contact endpoint type stored by a contact stream."""
+class AdmmContactType(IntEnum):
+    """Homogeneous contact endpoint type stored by an ADMM contact stream."""
 
     RIGID_PARTICLE = 0
     PARTICLE_PARTICLE = 1
 
 
 @dataclass
-class CouplingContactStream:
-    """Internal fixed-capacity stream of coupling contacts.
+class AdmmContactStream:
+    """Internal fixed-capacity stream of ADMM coupling contacts.
 
     A stream stores contacts between side A and side B endpoints. The normal
     points from side B toward side A, so a positive ``normal_force`` applies
@@ -73,8 +79,8 @@ class CouplingContactStream:
         cls,
         capacity: int,
         device,
-        contact_type: int = int(CouplingContactType.PARTICLE_PARTICLE),
-    ) -> CouplingContactStream:
+        contact_type: int = int(AdmmContactType.PARTICLE_PARTICLE),
+    ) -> AdmmContactStream:
         """Allocate a stream on ``device``.
 
         Args:
@@ -108,13 +114,13 @@ class CouplingContactStream:
 
 
 @wp.kernel(enable_backward=False)
-def contact_stream_reset_count_kernel(count: wp.array[int]):
+def admm_contact_stream_reset_count_kernel(count: wp.array[int]):
     """Reset the active contact count of a stream."""
     count[0] = 0
 
 
 @wp.kernel(enable_backward=False)
-def contact_stream_update_admm_normal_force_kernel(
+def admm_contact_stream_update_normal_force_kernel(
     active_count: wp.array[int],
     dt: float,
     rho: float,

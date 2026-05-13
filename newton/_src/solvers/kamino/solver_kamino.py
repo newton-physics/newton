@@ -97,6 +97,13 @@ class SolverKamino(SolverBase, CouplingInterface):
             state_in, state_out = state_out, state_in
     """
 
+    coupling_unsupported = frozenset(
+        {
+            CouplingInterface.Hook.BODY_PROXY_HARVEST,
+            CouplingInterface.Hook.PARTICLE_PROXY_HARVEST,
+        }
+    )
+
     @dataclass
     class Config:
         """

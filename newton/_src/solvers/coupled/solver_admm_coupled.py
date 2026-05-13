@@ -20,6 +20,12 @@ from ..coupling import (
     CouplingInputStateFlags,
 )
 from ..flags import SolverNotifyFlags
+from .admm_contact_stream import (
+    AdmmContactStream,
+    AdmmContactType,
+    admm_contact_stream_reset_count_kernel,
+    admm_contact_stream_update_normal_force_kernel,
+)
 from .admm_utils import (
     attach_rp_accumulate_forces_kernel,
     attach_rp_compute_Jv_kernel,
@@ -60,12 +66,6 @@ from .admm_utils import (
     velocity_proximal_shift_body_kernel,
     velocity_proximal_shift_joint_kernel,
     velocity_proximal_shift_particle_kernel,
-)
-from .contact_stream import (
-    CouplingContactStream,
-    CouplingContactType,
-    contact_stream_reset_count_kernel,
-    contact_stream_update_admm_normal_force_kernel,
 )
 from .model_view import ModelView
 from .solver_coupled import SolverCoupled, SolverEntry
@@ -290,7 +290,7 @@ class _AdmmParticleParticleContactGroup:
     active_count: wp.array | None = None
     active_count_max: wp.array | None = None
     active: wp.array | None = None
-    contact_stream: CouplingContactStream | None = None
+    contact_stream: AdmmContactStream | None = None
     particle_mask_a: wp.array | None = None
     particle_mask_b: wp.array | None = None
     contact_distance_value: float = 0.0
@@ -1848,7 +1848,7 @@ class SolverAdmmCoupled(SolverCoupled):
                 device=self.model.device,
             )
             wp.launch(
-                contact_stream_reset_count_kernel,
+                admm_contact_stream_reset_count_kernel,
                 dim=1,
                 inputs=[contact_stream.count],
                 device=self.model.device,
@@ -2070,10 +2070,10 @@ class SolverAdmmCoupled(SolverCoupled):
                 if use_radius_sum
                 else float(spec.contact_distance) + detection_margin
             )
-            contact_stream = CouplingContactStream.allocate(
+            contact_stream = AdmmContactStream.allocate(
                 capacity=capacity,
                 device=device,
-                contact_type=CouplingContactType.PARTICLE_PARTICLE,
+                contact_type=AdmmContactType.PARTICLE_PARTICLE,
             )
 
             groups.append(
@@ -2676,7 +2676,7 @@ class SolverAdmmCoupled(SolverCoupled):
             )
             if group.contact_stream is not None:
                 wp.launch(
-                    contact_stream_update_admm_normal_force_kernel,
+                    admm_contact_stream_update_normal_force_kernel,
                     dim=group.count,
                     inputs=[
                         group.active_count,

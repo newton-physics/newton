@@ -30,6 +30,7 @@ The implementation now has three layers:
 | `SolverAdmmCoupled` | `newton/_src/solvers/coupled/solver_admm_coupled.py` | Working prototype. Supports cross-solver model joints, custom body-particle attachments, rigid/particle contacts, Coulomb friction, and graph-capturable fixed-iteration solves. |
 | Proxy kernels | `newton/_src/solvers/coupled/proxy_utils.py` | Working. Body/particle proxy state sync, velocity rewind, smooth body teleport support, and fallback momentum harvesting. |
 | ADMM kernels | `newton/_src/solvers/coupled/admm_utils.py` | Working. Constraint/contact relative velocities, local updates, dual updates, force splats, Coulomb projection, joint box friction, and particle-particle hash-grid contact generation. |
+| ADMM contact streams | `newton/_src/solvers/coupled/admm_contact_stream.py` | Working. Internal fixed-capacity ADMM contact work buffers; not a generic coupling contact API. |
 | Public API | `newton/solvers.py` | Working. Exports `ModelView`, `SolverCoupled`, `SolverProxyCoupled`, `SolverAdmmCoupled`, and the `CouplingInterface` mixin. Coupling hook enums live under `CouplingInterface` to keep the top-level solver namespace compact. No single-pair wrapper classes are exported. |
 
 ## Coupling Hooks
@@ -97,7 +98,9 @@ needed by the XPBD/VBD particle-proxy example.
 the GPU path. Those hooks query MuJoCo Warp's `body_invweight0` data and map it
 back to Newton body ids, giving proxy virtual inertia and ADMM endpoint weights
 an articulated effective-mass estimate instead of a raw body mass fallback.
-The normal MuJoCo step and force-input path remain unchanged.
+MuJoCo explicitly marks proxy impulse harvesting as unsupported because the
+current hook set does not expose a MuJoCo contact-only feedback path. The normal
+MuJoCo step and force-input path remain unchanged.
 
 **SemiImplicit.** SemiImplicit now reserves and rebuilds the model particle
 hash-grid before particle contact evaluation when particle contacts are active,
@@ -105,11 +108,11 @@ and particle contact forces accumulate into the existing `particle_f` buffer
 instead of overwriting it. That preserves externally injected or coupled
 particle forces when SemiImplicit is used in coupled scenes.
 
-**Kamino.** Kamino model construction now accepts `ModelView` instances by
-duck-typing the required model fields instead of requiring an actual
-`newton.Model` instance. This lets coupled examples pass a rigid-only Kamino
-view that hides unsupported soft topology while still using the normal Kamino
-solver construction path.
+**Kamino.** Kamino model construction now accepts either `newton.Model` or
+`ModelView` instances explicitly. This lets coupled examples pass a rigid-only
+Kamino view that hides unsupported soft topology while still using the normal
+Kamino solver construction path. Kamino also marks proxy impulse harvesting as
+unsupported until it exposes a contact-only feedback path for proxy coupling.
 
 ## Proxy Coupling Status
 
@@ -157,8 +160,8 @@ standalone. Shared example-only helpers have been removed.
 
 | Test | Coverage |
 |------|----------|
-| `newton/_src/solvers/coupled/test_coupled.py` | ModelView overlays, proxy body/particle mappings, virtual inertia, hook dispatch, proxy iteration behavior, XPBD proxy filtering, and force-buffer notification. |
-| `newton/_src/solvers/coupled/test_admm_coupled.py` | ADMM attachments, joint discovery, contact detection, Coulomb friction, particle-particle hash-grid contacts, external-force passthrough, effective-mass hooks, and repeated-iteration notifications. |
+| `newton/tests/test_coupled_solver.py` | ModelView overlays, proxy body/particle mappings, virtual inertia, hook dispatch, proxy iteration behavior, XPBD proxy filtering, and force-buffer notification. |
+| `newton/tests/test_admm_coupled_solver.py` | ADMM attachments, joint discovery, contact detection, Coulomb friction, particle-particle hash-grid contacts, external-force passthrough, effective-mass hooks, and repeated-iteration notifications. |
 | `newton/_src/solvers/implicit_mpm/test_proxy_particles.py` | MPM transfer-active proxy particles, material inactivity, deformable collider proxies, and gravity-subtracted feedback. |
 | `newton/tests/test_implicit_mpm.py` | Public MPM regression coverage for proxy material flags. |
 

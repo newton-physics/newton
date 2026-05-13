@@ -343,6 +343,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             solver.render_mujoco_viewer()
     """
 
+    coupling_unsupported = frozenset(
+        {
+            CouplingInterface.Hook.BODY_PROXY_HARVEST,
+            CouplingInterface.Hook.PARTICLE_PROXY_HARVEST,
+        }
+    )
+
     _KINEMATIC_ARMATURE = 1.0e10
 
     class CtrlSource(IntEnum):

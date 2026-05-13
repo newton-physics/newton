@@ -17,6 +17,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.coupled.admm_contact_stream import AdmmContactStream, AdmmContactType
 from newton._src.solvers.coupled.admm_utils import (
     contact_lambda_update_kernel,
     contact_pp_accumulate_forces_kernel,
@@ -32,7 +33,6 @@ from newton._src.solvers.coupled.admm_utils import (
     joint_box_friction_u_update_kernel,
     u_update_quadratic_kernel,
 )
-from newton._src.solvers.coupled.contact_stream import CouplingContactStream, CouplingContactType
 from newton._src.solvers.coupling import (
     CouplingInputStateFlags,
     CouplingInterface,
@@ -164,14 +164,14 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
     """Validate ADMM particle-particle contact sign conventions."""
 
     def test_contact_stream_allocates_endpoint_and_force_buffers(self):
-        stream = CouplingContactStream.allocate(
+        stream = AdmmContactStream.allocate(
             capacity=3,
             device="cpu",
-            contact_type=CouplingContactType.PARTICLE_PARTICLE,
+            contact_type=AdmmContactType.PARTICLE_PARTICLE,
         )
 
         self.assertEqual(stream.capacity, 3)
-        self.assertEqual(stream.contact_type, int(CouplingContactType.PARTICLE_PARTICLE))
+        self.assertEqual(stream.contact_type, int(AdmmContactType.PARTICLE_PARTICLE))
         self.assertEqual(stream.count.shape[0], 1)
         np.testing.assert_array_equal(stream.particle_a.numpy(), [-1, -1, -1])
         np.testing.assert_allclose(stream.normal_force.numpy(), [0.0, 0.0, 0.0])

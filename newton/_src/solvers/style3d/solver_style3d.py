@@ -7,7 +7,6 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelBuilder, State
-from ..coupling import CouplingInterface
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder
 from .collision import Collision
@@ -33,7 +32,7 @@ AttributeFrequency = Model.AttributeFrequency
 ########################################################################################################################
 
 
-class SolverStyle3D(SolverBase, CouplingInterface):
+class SolverStyle3D(SolverBase):
     r"""Projective dynamics based cloth solver.
 
     References:
