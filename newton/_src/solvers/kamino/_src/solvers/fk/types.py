@@ -88,10 +88,10 @@ class ForwardKinematicsStatus:
     Shape `(num_worlds,)` and type :class:`np.int32`.
 
     Note that in some cases the solver may fail to converge within the maximum number
-    of iterations, but still produce a solution with a reasonable constraint residual.
-    In such cases, the success flag will be set to 0, but the `max_constraints` field
-    can be inspected to check the actual constraint residuals and determine if the
-    solution is acceptable for the intended application.
+    of iterations, but still produce a solution with a reasonable residual.
+    In such cases, the success flag will be set to 0, but the `max_residual` field
+    can be inspected to check the actual residuals and determine if the solution is acceptable
+    for the intended application.
     """
 
     iterations: np.ndarray(dtype=np.int32)
@@ -100,8 +100,10 @@ class ForwardKinematicsStatus:
     Shape `(num_worlds,)` and type :class:`np.int32`.
     """
 
-    max_constraints: np.ndarray(dtype=np.float32)
+    max_residual: np.ndarray(dtype=np.float32)
     """
-    Maximal absolute kinematic constraint residual at the final solution, per world.\n
+    Maximal absolute residual at the final solution, per world. In the general case, the residual vector
+    is the kinematic constraints vector; if regularization is enabled, it is the penalty gradient.
+
     Shape `(num_worlds,)` and type :class:`np.float32`.
     """

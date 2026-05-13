@@ -5001,6 +5001,7 @@ class SolverMuJoCo(SolverBase):
                             actuator_count += 1
             elif j_type in supported_joint_types:
                 lin_axis_count, ang_axis_count = joint_dof_dim[j]
+                multi_axis_joint = lin_axis_count + ang_axis_count > 1
                 num_dofs += lin_axis_count + ang_axis_count
                 num_qpos += lin_axis_count + ang_axis_count
 
@@ -5053,7 +5054,7 @@ class SolverMuJoCo(SolverBase):
                         joint_params["ref"] = joint_ref[ai]
 
                     axname = name
-                    if lin_axis_count > 1 or ang_axis_count > 1:
+                    if multi_axis_joint:
                         axname += "_lin"
                     if lin_axis_count > 1:
                         axname += str(i)
@@ -5151,7 +5152,7 @@ class SolverMuJoCo(SolverBase):
                         joint_params["ref"] = np.rad2deg(joint_ref[ai])
 
                     axname = name
-                    if lin_axis_count > 1 or ang_axis_count > 1:
+                    if multi_axis_joint:
                         axname += "_ang"
                     if ang_axis_count > 1:
                         axname += str(i - lin_axis_count)
