@@ -758,9 +758,6 @@ class SolverVBD(SolverBase):
         self._rigid_contact_point1_world = wp.zeros(0, dtype=wp.vec3, device=self.device)
         self._rigid_contact_zero_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         self._rigid_contact_zero_force = wp.zeros(0, dtype=wp.vec3, device=self.device)
-        self._rigid_contact_empty_shape = wp.empty(0, dtype=wp.int32, device=self.device)
-        self._rigid_contact_empty_point = wp.empty(0, dtype=wp.vec3, device=self.device)
-        self._rigid_contact_empty_margin = wp.empty(0, dtype=float, device=self.device)
 
         # Validation
         has_bodies = model.body_count > 0
@@ -2361,23 +2358,20 @@ class SolverVBD(SolverBase):
         body_color_groups = model.body_color_groups
         has_rigid_contacts = contacts is not None and contacts.rigid_contact_max > 0
         body_q_contact = self.body_q_contact if has_rigid_contacts else state_in.body_q
-        rigid_contact_count = contacts.rigid_contact_count if has_rigid_contacts else self._rigid_contact_zero_count
-        rigid_contact_shape0 = contacts.rigid_contact_shape0 if has_rigid_contacts else self._rigid_contact_empty_shape
-        rigid_contact_shape1 = contacts.rigid_contact_shape1 if has_rigid_contacts else self._rigid_contact_empty_shape
-        rigid_contact_point0 = contacts.rigid_contact_point0 if has_rigid_contacts else self._rigid_contact_empty_point
-        rigid_contact_point1 = contacts.rigid_contact_point1 if has_rigid_contacts else self._rigid_contact_empty_point
-        rigid_contact_normal = contacts.rigid_contact_normal if has_rigid_contacts else self._rigid_contact_empty_point
-        rigid_contact_margin0 = (
-            contacts.rigid_contact_margin0 if has_rigid_contacts else self._rigid_contact_empty_margin
-        )
-        rigid_contact_margin1 = (
-            contacts.rigid_contact_margin1 if has_rigid_contacts else self._rigid_contact_empty_margin
-        )
+        rigid_contact_count = contacts.rigid_contact_count if has_rigid_contacts else None
+        rigid_contact_shape0 = contacts.rigid_contact_shape0 if has_rigid_contacts else None
+        rigid_contact_shape1 = contacts.rigid_contact_shape1 if has_rigid_contacts else None
+        rigid_contact_point0 = contacts.rigid_contact_point0 if has_rigid_contacts else None
+        rigid_contact_point1 = contacts.rigid_contact_point1 if has_rigid_contacts else None
+        rigid_contact_normal = contacts.rigid_contact_normal if has_rigid_contacts else None
+        rigid_contact_margin0 = contacts.rigid_contact_margin0 if has_rigid_contacts else None
+        rigid_contact_margin1 = contacts.rigid_contact_margin1 if has_rigid_contacts else None
 
         # Gauss-Seidel-style per-color updates
         for color in range(len(body_color_groups)):
             color_group = body_color_groups[color]
 
+            # Snapshot contact poses because body colors are joint-based, not contact-based.
             if has_rigid_contacts:
                 wp.copy(self.body_q_contact, state_in.body_q)
 

@@ -588,36 +588,18 @@ def _rigid_body_contact_indices_are_sorted_for_deterministic_traversal(test, dev
     contact_capacity = 6
     with wp.ScopedDevice(device):
         contact_counts = wp.array([5, 4, 0, 8], dtype=wp.int32, device=device)
+        # fmt: off
         contact_indices = wp.array(
             [
-                8,
-                3,
-                5,
-                1,
-                4,
-                99,
-                2,
-                2,
-                9,
-                0,
-                77,
-                88,
-                42,
-                43,
-                44,
-                45,
-                46,
-                47,
-                10,
-                6,
-                11,
-                7,
-                12,
-                5,
+                8, 3, 5, 1, 4, 99,
+                2, 2, 9, 0, 77, 88,
+                42, 43, 44, 45, 46, 47,
+                10, 6, 11, 7, 12, 5,
             ],
             dtype=wp.int32,
             device=device,
         )
+        # fmt: on
 
         wp.launch(
             sort_body_body_contact_indices,
