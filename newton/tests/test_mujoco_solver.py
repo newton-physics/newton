@@ -8288,6 +8288,27 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
 
 
 class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
+    def test_d6_single_linear_single_angular_joint_names_are_unique(self):
+        """D6 joints with one slide and one hinge axis emit unique MuJoCo joint names."""
+        builder = newton.ModelBuilder()
+        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_d6(
+            parent=-1,
+            child=link,
+            linear_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X)],
+            angular_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z)],
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        mujoco = SolverMuJoCo._mujoco
+        joint_names = [
+            mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_JOINT, i) for i in range(solver.mj_model.njnt)
+        ]
+
+        self.assertEqual(joint_names, ["joint_1_lin", "joint_1_ang"])
+
     def test_body_actuator_with_duplicated_body_names(self):
         """Test that duplicated body names resolve correctly for BODY actuators."""
         mjcf = """<?xml version="1.0" encoding="utf-8"?>
