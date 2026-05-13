@@ -43,14 +43,6 @@ def _configure_kamino_rigid_view(view: ModelView) -> None:
     ):
         setattr(view, name, wp.clone(getattr(view, name)))
 
-    view.particle_count = 0
-    view.spring_count = 0
-    view.tri_count = 0
-    view.edge_count = 0
-    view.tet_count = 0
-    view.muscle_count = 0
-    view.equality_constraint_count = 0
-
 
 def _make_kamino_config() -> SolverKamino.Config:
     config = SolverKamino.Config()

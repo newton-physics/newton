@@ -68,7 +68,7 @@ from .admm_utils import (
     velocity_proximal_shift_particle_kernel,
 )
 from .model_view import ModelView
-from .solver_coupled import SolverCoupled, SolverEntry
+from .solver_coupled import SolverCoupled, SolverEntry, _copy_prefix
 
 if TYPE_CHECKING:
     from ...sim import Contacts, Control, Model, ModelBuilder, State
@@ -1147,6 +1147,13 @@ class SolverAdmmCoupled(SolverCoupled):
             return None
         return self._entry_configs[owner].name
 
+    def _body_local_id(self, entry_name: str, body: int) -> int:
+        mapping = self._entries[entry_name].body_global_to_local.numpy()
+        local = int(mapping[body]) if 0 <= body < len(mapping) else -1
+        if local < 0:
+            raise ValueError(f"Body {body} is not visible in coupled solver entry {entry_name!r}")
+        return local
+
     def _cross_solver_joint_entries(self, joint: int, parent: int, child: int) -> tuple[str, str] | None:
         parent_entry = self._entry_name_for_body(parent)
         child_entry = self._entry_name_for_body(child)
@@ -1323,9 +1330,9 @@ class SolverAdmmCoupled(SolverCoupled):
             self._require_effective_mass(entry_name_b, CouplingEndpointKind.BODY)
             body_mass_np_a = self._body_effective_mass_np(entry_name_a)
             body_mass_np_b = self._body_effective_mass_np(entry_name_b)
-            body_ids_a = [item[0] for item in items]
+            body_ids_a = [self._body_local_id(entry_name_a, item[0]) for item in items]
             points_a = [wp.vec3(*item[1]) for item in items]
-            body_ids_b = [item[2] for item in items]
+            body_ids_b = [self._body_local_id(entry_name_b, item[2]) for item in items]
             points_b = [wp.vec3(*item[3]) for item in items]
             kappa = [item[4] for item in items]
             damping = [item[5] for item in items]
@@ -1355,9 +1362,9 @@ class SolverAdmmCoupled(SolverCoupled):
             )
 
         for (entry_name_a, entry_name_b), items in angular_items.items():
-            body_ids_a = [item[0] for item in items]
+            body_ids_a = [self._body_local_id(entry_name_a, item[0]) for item in items]
             frames_a = [item[1] for item in items]
-            body_ids_b = [item[2] for item in items]
+            body_ids_b = [self._body_local_id(entry_name_b, item[2]) for item in items]
             frames_b = [item[3] for item in items]
             kappa = [item[4] for item in items]
             damping = [item[5] for item in items]
@@ -1385,9 +1392,9 @@ class SolverAdmmCoupled(SolverCoupled):
             )
 
         for (entry_name_a, entry_name_b), items in revolute_angular_items.items():
-            body_ids_a = [item[0] for item in items]
+            body_ids_a = [self._body_local_id(entry_name_a, item[0]) for item in items]
             frames_a = [item[1] for item in items]
-            body_ids_b = [item[2] for item in items]
+            body_ids_b = [self._body_local_id(entry_name_b, item[2]) for item in items]
             frames_b = [item[3] for item in items]
             kappa = [item[4] for item in items]
             damping = [item[5] for item in items]
@@ -1415,9 +1422,9 @@ class SolverAdmmCoupled(SolverCoupled):
             )
 
         for (entry_name_a, entry_name_b), items in angular_friction_items.items():
-            body_ids_a = [item[0] for item in items]
+            body_ids_a = [self._body_local_id(entry_name_a, item[0]) for item in items]
             frames_a = [item[1] for item in items]
-            body_ids_b = [item[2] for item in items]
+            body_ids_b = [self._body_local_id(entry_name_b, item[2]) for item in items]
             friction = [wp.vec3(*item[3]) for item in items]
             W = [
                 self._angular_effective_weight(entry_name_a, body_a, entry_name_b, body_b)
@@ -1498,7 +1505,7 @@ class SolverAdmmCoupled(SolverCoupled):
             self._require_effective_mass(particle_entry, CouplingEndpointKind.PARTICLE)
             body_mass_np = self._body_effective_mass_np(body_entry)
             particle_mass_np = self._particle_effective_mass_np(particle_entry)
-            body_ids = [item[0] for item in items]
+            body_ids = [self._body_local_id(body_entry, item[0]) for item in items]
             points = [wp.vec3(*item[1]) for item in items]
             particle_ids = [item[2] for item in items]
             kappa = [item[3] for item in items]
@@ -1601,6 +1608,8 @@ class SolverAdmmCoupled(SolverCoupled):
         for group in self._admm_dynamic_rr_contact_groups:
             if group.count == 0:
                 continue
+            entry_a = self._entries[group.body_entry_name_a]
+            entry_b = self._entries[group.body_entry_name_b]
             buf_a = self._admm_buffers[group.body_entry_name_a]
             buf_b = self._admm_buffers[group.body_entry_name_b]
             wp.launch(
@@ -1670,6 +1679,8 @@ class SolverAdmmCoupled(SolverCoupled):
                     group.body_mask_b,
                     group.shape_mask_a,
                     group.shape_mask_b,
+                    entry_a.body_global_to_local,
+                    entry_b.body_global_to_local,
                     buf_a.body_effective_mass,
                     buf_b.body_effective_mass,
                     self.model.shape_material_mu,
@@ -1708,6 +1719,7 @@ class SolverAdmmCoupled(SolverCoupled):
             for group in self._admm_dynamic_rp_contact_groups:
                 if group.count == 0:
                     continue
+                body_entry = self._entries[group.body_entry_name]
                 body_buf = self._admm_buffers[group.body_entry_name]
                 particle_buf = self._admm_buffers[group.particle_entry_name]
                 wp.launch(
@@ -1766,6 +1778,7 @@ class SolverAdmmCoupled(SolverCoupled):
                         group.particle_mask,
                         group.body_mask,
                         group.shape_mask,
+                        body_entry.body_global_to_local,
                         self.model.particle_radius,
                         body_buf.body_effective_mass,
                         particle_buf.particle_effective_mass,
@@ -2346,12 +2359,12 @@ class SolverAdmmCoupled(SolverCoupled):
 
         if buf.body_f is not None:
             if state_in.body_f is not None:
-                wp.copy(buf.body_f, state_in.body_f)
+                _copy_prefix(buf.body_f, state_in.body_f, "body_f")
             else:
                 buf.body_f.zero_()
         if buf.particle_f is not None:
             if state_in.particle_f is not None:
-                wp.copy(buf.particle_f, state_in.particle_f)
+                _copy_prefix(buf.particle_f, state_in.particle_f, "particle_f")
             else:
                 buf.particle_f.zero_()
 

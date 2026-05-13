@@ -10,6 +10,10 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.coupled.admm_utils import (
+    contact_rp_fill_from_soft_contacts_kernel,
+    contact_rr_fill_from_rigid_contacts_kernel,
+)
 from newton._src.solvers.coupled.proxy_utils import (
     smooth_proxy_teleportation_kernel,
     subtract_proxy_forces_kernel,
@@ -562,17 +566,71 @@ class TestModelView(unittest.TestCase):
         # Parent unchanged
         self.assertIsNot(self.model.body_inv_mass, new_mass)
 
-    def test_zero_body_mass(self):
-        """zero_body_mass should zero inv_mass for specified indices."""
+    def test_count_override_slices_frequency_arrays(self):
+        """Frequency-matched arrays should follow view-local counts."""
+        view = ModelView(self.model, "test")
+        view.body_count = 1
+        view.shape_count = 1
+
+        self.assertEqual(view.body_mass.shape[0], 1)
+        self.assertEqual(view.body_inv_mass.shape[0], 1)
+        self.assertEqual(view.shape_flags.shape[0], 1)
+        self.assertEqual(self.model.body_mass.shape[0], 2)
+
+    def test_zero_count_override_exposes_empty_frequency_arrays(self):
+        """Zero-count views should expose empty arrays, not parent arrays."""
+        builder = newton.ModelBuilder()
+        builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+        view = ModelView(model, "test")
+        view.particle_count = 0
+
+        self.assertEqual(view.particle_mass.shape[0], 0)
+        self.assertEqual(view.particle_inv_mass.shape[0], 0)
+        self.assertEqual(model.particle_mass.shape[0], 1)
+
+    def test_disable_body_dynamics(self):
+        """disable_body_dynamics should zero inverse inertia and mark bodies kinematic."""
         view = ModelView(self.model, "test")
         indices = wp.array([1], dtype=int, device="cpu")
-        view.zero_body_mass(indices)
+        view.disable_body_dynamics(indices)
 
+        mass = view.body_mass.numpy()
+        inertia = view.body_inertia.numpy()
         inv_mass = view.body_inv_mass.numpy()
+        inv_inertia = view.body_inv_inertia.numpy()
+        flags = view.body_flags.numpy()
+        parent_flags = self.model.body_flags.numpy()
+        dynamic = int(newton.BodyFlags.DYNAMIC)
+        kinematic = int(newton.BodyFlags.KINEMATIC)
         # Body 0 should be unchanged (non-zero)
+        self.assertGreater(mass[0], 0.0)
         self.assertGreater(inv_mass[0], 0.0)
-        # Body 1 should be zeroed
+        self.assertNotEqual(flags[0] & dynamic, 0)
+        self.assertEqual(flags[0] & kinematic, 0)
+        # Body 1 should keep forward inertial metadata but become immovable.
+        self.assertEqual(mass[1], self.model.body_mass.numpy()[1])
         self.assertEqual(inv_mass[1], 0.0)
+        np.testing.assert_allclose(inertia[1], self.model.body_inertia.numpy()[1])
+        np.testing.assert_allclose(inv_inertia[1], np.zeros((3, 3)))
+        self.assertEqual(flags[1] & dynamic, 0)
+        self.assertNotEqual(flags[1] & kinematic, 0)
+        self.assertNotEqual(parent_flags[1] & dynamic, 0)
+        self.assertEqual(parent_flags[1] & kinematic, 0)
+
+    def test_zero_particle_mass(self):
+        """zero_particle_mass should zero forward and inverse mass arrays."""
+        builder = newton.ModelBuilder()
+        builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        builder.add_particle(pos=(0.1, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=2.0)
+        model = builder.finalize(device="cpu")
+        view = ModelView(model, "test")
+
+        view.zero_particle_mass(wp.array([1], dtype=int, device="cpu"))
+
+        np.testing.assert_allclose(view.particle_mass.numpy(), [1.0, 0.0])
+        np.testing.assert_allclose(view.particle_inv_mass.numpy(), [1.0, 0.0])
+        np.testing.assert_allclose(model.particle_mass.numpy(), [1.0, 2.0])
 
     def test_set_body_inertial_properties(self):
         """set_body_inertial_properties should replace mass and full inertia."""
@@ -695,6 +753,12 @@ class TestModelView(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "body_inv_mass"):
             view.body_inv_mass = wp.zeros((2, 2), dtype=float, device="cpu")
 
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_setattr_rejects_device_mismatch(self):
+        view = ModelView(self.model, "test")
+        with self.assertRaisesRegex(TypeError, "body_inv_mass"):
+            view.body_inv_mass = wp.zeros(2, dtype=float, device="cuda")
+
     def test_setattr_rejects_wrong_python_type(self):
         view = ModelView(self.model, "test")
         with self.assertRaisesRegex(TypeError, "body_count"):
@@ -737,12 +801,16 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         view_a = coupled.view("A")
         view_b = coupled.view("B")
-        # Solver A's view should have body 1 zeroed
-        self.assertEqual(view_a.body_inv_mass.numpy()[1], 0.0)
+        # Solver A owns a dense prefix, so its local view is compact.
+        self.assertEqual(view_a.body_count, 1)
+        self.assertEqual(view_a.body_inv_mass.shape[0], 1)
         self.assertGreater(view_a.body_inv_mass.numpy()[0], 0.0)
-        # Solver B's view should have body 0 zeroed
+        # Solver B is not a prefix, so the generic zero-mass mask is used.
+        self.assertEqual(view_b.body_count, 2)
         self.assertEqual(view_b.body_inv_mass.numpy()[0], 0.0)
         self.assertGreater(view_b.body_inv_mass.numpy()[1], 0.0)
+        self.assertGreater(view_b.body_mass.numpy()[0], 0.0)
+        self.assertNotEqual(view_b.body_flags.numpy()[0] & int(newton.BodyFlags.KINEMATIC), 0)
 
     def test_entry_shapes_filter_shape_contact_pairs(self):
         """Entry shape masks should prune explicit contact pairs in each view."""
@@ -761,7 +829,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         view_b = coupled.view("B")
 
         self.assertNotEqual(int(view_a.shape_flags.numpy()[0]) & collide, 0)
-        self.assertEqual(int(view_a.shape_flags.numpy()[1]) & collide, 0)
+        self.assertEqual(view_a.shape_flags.shape[0], 1)
         self.assertEqual(view_a.shape_contact_pair_count, 0)
 
         self.assertEqual(int(view_b.shape_flags.numpy()[0]) & collide, 0)
@@ -794,6 +862,16 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertNotEqual(int(view_b.shape_flags.numpy()[1]) & collide, 0)
         self.assertEqual(view_b.shape_contact_pair_count, 1)
         np.testing.assert_array_equal(view_b.shape_contact_pairs.numpy(), np.array([[0, 1]], dtype=np.int32))
+
+    def test_duplicate_shape_ownership_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "owned by more than one"):
+            SolverCoupled(
+                model=self.model,
+                entries=[
+                    SolverCoupled.Entry(name="A", solver=SolverSemiImplicit, bodies=[0], shapes=[0]),
+                    SolverCoupled.Entry(name="B", solver=SolverSemiImplicit, bodies=[1], shapes=[0]),
+                ],
+            )
 
     def test_step(self):
         """SolverCoupled.step() should advance both bodies."""
@@ -913,6 +991,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         view_b_flags = coupled.view("B").particle_flags.numpy()
         parent_flags = model.particle_flags.numpy()
 
+        self.assertEqual(view_a_flags.shape[0], 2)
         self.assertNotEqual(view_a_flags[0] & active, 0)
         self.assertEqual(view_a_flags[1] & active, 0)
         self.assertEqual(view_b_flags[0] & active, 0)
@@ -992,8 +1071,218 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_allclose(solver.input_qd[1], np.zeros(6))
 
 
+class TestSolverAdmmContactKernels(unittest.TestCase):
+    """ADMM contact fill kernels should respect solver-local body ids."""
+
+    def test_rigid_contact_fill_maps_global_body_ids_to_local_ids(self):
+        device = "cpu"
+        capacity = 1
+
+        active_count = wp.zeros(1, dtype=int, device=device)
+        active_count_max = wp.zeros(1, dtype=int, device=device)
+        body_a = wp.zeros(capacity, dtype=int, device=device)
+        body_b = wp.zeros(capacity, dtype=int, device=device)
+        point_a = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        point_b = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        shape_a = wp.full(capacity, -1, dtype=int, device=device)
+        shape_b = wp.full(capacity, -1, dtype=int, device=device)
+        point_id = wp.full(capacity, -1, dtype=int, device=device)
+        active = wp.zeros(capacity, dtype=int, device=device)
+        normal = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        contact_distance = wp.zeros(capacity, dtype=float, device=device)
+        W = wp.zeros(capacity, dtype=float, device=device)
+        friction = wp.zeros(capacity, dtype=float, device=device)
+        u = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        lambda_ = wp.zeros(capacity, dtype=wp.vec3, device=device)
+
+        body_mask_a = wp.array([0, 0, 0, 0, 0, 1, 0, 0], dtype=int, device=device)
+        body_mask_b = wp.array([0, 0, 0, 0, 0, 0, 0, 1], dtype=int, device=device)
+        body_global_to_local_a = wp.array([-1, -1, -1, -1, -1, 0, -1, -1], dtype=int, device=device)
+        body_global_to_local_b = wp.array([-1, -1, -1, -1, -1, -1, -1, 1], dtype=int, device=device)
+
+        wp.launch(
+            contact_rr_fill_from_rigid_contacts_kernel,
+            dim=1,
+            inputs=[
+                wp.array([1], dtype=int, device=device),
+                wp.array([0], dtype=int, device=device),
+                wp.array([1], dtype=int, device=device),
+                wp.array([wp.vec3(0.1, 0.2, 0.3)], dtype=wp.vec3, device=device),
+                wp.array([wp.vec3(0.4, 0.5, 0.6)], dtype=wp.vec3, device=device),
+                wp.array([wp.vec3(0.0, 1.0, 0.0)], dtype=wp.vec3, device=device),
+                wp.array([0.01], dtype=float, device=device),
+                wp.array([0.02], dtype=float, device=device),
+                wp.array([23], dtype=int, device=device),
+                wp.array([5, 7], dtype=int, device=device),
+                body_mask_a,
+                body_mask_b,
+                wp.array([1, 0], dtype=int, device=device),
+                wp.array([0, 1], dtype=int, device=device),
+                body_global_to_local_a,
+                body_global_to_local_b,
+                wp.array([0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0], dtype=float, device=device),
+                wp.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.0], dtype=float, device=device),
+                wp.array([0.25, 1.0], dtype=float, device=device),
+                0.0,
+                1,
+                capacity,
+                active_count,
+                active_count_max,
+                wp.full(capacity, -1, dtype=int, device=device),
+                wp.full(capacity, -1, dtype=int, device=device),
+                wp.full(capacity, -1, dtype=int, device=device),
+                wp.zeros(capacity, dtype=int, device=device),
+                wp.zeros(capacity, dtype=wp.vec3, device=device),
+                wp.zeros(capacity, dtype=wp.vec3, device=device),
+            ],
+            outputs=[
+                body_a,
+                point_a,
+                body_b,
+                point_b,
+                shape_a,
+                shape_b,
+                point_id,
+                active,
+                normal,
+                contact_distance,
+                W,
+                friction,
+                u,
+                lambda_,
+            ],
+            device=device,
+        )
+
+        self.assertEqual(int(active_count.numpy()[0]), 1)
+        self.assertEqual(int(body_a.numpy()[0]), 0)
+        self.assertEqual(int(body_b.numpy()[0]), 1)
+        self.assertEqual(int(point_id.numpy()[0]), 23)
+        np.testing.assert_allclose(W.numpy()[0], np.sqrt(1.5), rtol=1.0e-6)
+        np.testing.assert_allclose(friction.numpy()[0], 0.5, rtol=1.0e-6)
+
+    def test_rigid_particle_contact_fill_keeps_particle_ids_global(self):
+        device = "cpu"
+        capacity = 1
+
+        active_count = wp.zeros(1, dtype=int, device=device)
+        active_count_max = wp.zeros(1, dtype=int, device=device)
+        body_id = wp.zeros(capacity, dtype=int, device=device)
+        point_body = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        particle_id = wp.zeros(capacity, dtype=int, device=device)
+        shape_id = wp.full(capacity, -1, dtype=int, device=device)
+        active = wp.zeros(capacity, dtype=int, device=device)
+        normal = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        body_sign = wp.zeros(capacity, dtype=int, device=device)
+        contact_distance = wp.zeros(capacity, dtype=float, device=device)
+        W = wp.zeros(capacity, dtype=float, device=device)
+        friction = wp.zeros(capacity, dtype=float, device=device)
+        u = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        lambda_ = wp.zeros(capacity, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            contact_rp_fill_from_soft_contacts_kernel,
+            dim=1,
+            inputs=[
+                wp.array([1], dtype=int, device=device),
+                wp.array([3], dtype=int, device=device),
+                wp.array([1], dtype=int, device=device),
+                wp.array([wp.vec3(1.0, 2.0, 3.0)], dtype=wp.vec3, device=device),
+                wp.array([wp.vec3(0.0, 2.0, 0.0)], dtype=wp.vec3, device=device),
+                wp.array([0, 5], dtype=int, device=device),
+                wp.array([0, 0, 0, 1], dtype=int, device=device),
+                wp.array([0, 0, 0, 0, 0, 1], dtype=int, device=device),
+                wp.array([0, 1], dtype=int, device=device),
+                wp.array([-1, -1, -1, -1, -1, 2], dtype=int, device=device),
+                wp.array([0.0, 0.0, 0.0, 0.12], dtype=float, device=device),
+                wp.array([0.0, 0.0, 0.0, 0.0, 0.0, 10.0], dtype=float, device=device),
+                wp.array([0.0, 0.0, 0.0, 2.0], dtype=float, device=device),
+                wp.array([0.0, 0.36], dtype=float, device=device),
+                0.25,
+                0.0,
+                1,
+                capacity,
+                active_count,
+                active_count_max,
+                wp.zeros(capacity, dtype=int, device=device),
+                wp.full(capacity, -1, dtype=int, device=device),
+                wp.zeros(capacity, dtype=int, device=device),
+                wp.zeros(capacity, dtype=wp.vec3, device=device),
+                wp.zeros(capacity, dtype=wp.vec3, device=device),
+            ],
+            outputs=[
+                body_id,
+                point_body,
+                particle_id,
+                shape_id,
+                active,
+                normal,
+                body_sign,
+                contact_distance,
+                W,
+                friction,
+                u,
+                lambda_,
+            ],
+            device=device,
+        )
+
+        self.assertEqual(int(active_count.numpy()[0]), 1)
+        self.assertEqual(int(body_id.numpy()[0]), 2)
+        self.assertEqual(int(particle_id.numpy()[0]), 3)
+        self.assertEqual(int(shape_id.numpy()[0]), 1)
+        np.testing.assert_allclose(normal.numpy()[0], np.array([0.0, 1.0, 0.0]), atol=1.0e-6)
+        np.testing.assert_allclose(contact_distance.numpy()[0], 0.12, atol=1.0e-6)
+        np.testing.assert_allclose(W.numpy()[0], np.sqrt(20.0 / 12.0), rtol=1.0e-6)
+        np.testing.assert_allclose(friction.numpy()[0], 0.3, rtol=1.0e-6)
+
+
 class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
     """Body proxy mappings install full proxy inertia tensors."""
+
+    def test_duplicate_body_proxy_mapping_ids_are_rejected(self):
+        builder = newton.ModelBuilder(gravity=0.0)
+        for _ in range(3):
+            builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        model = builder.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "Duplicate source body"):
+            SolverProxyCoupled(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=_StepCountingCopySolver, bodies=[0, 1]),
+                    SolverCoupled.Entry(name="dst", solver=_StepCountingCopySolver),
+                ],
+                coupling=SolverProxyCoupled.Config(
+                    proxies=[
+                        SolverProxyCoupled.Proxy(
+                            source="src",
+                            destination="dst",
+                            bodies=[0, 0],
+                            proxy_bodies=[1, 2],
+                        ),
+                    ],
+                ),
+            )
+
+        with self.assertRaisesRegex(ValueError, "Duplicate proxy body"):
+            SolverProxyCoupled(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=_StepCountingCopySolver, bodies=[0, 1]),
+                    SolverCoupled.Entry(name="dst", solver=_StepCountingCopySolver),
+                ],
+                coupling=SolverProxyCoupled.Config(
+                    proxies=[
+                        SolverProxyCoupled.Proxy(
+                            source="src",
+                            destination="dst",
+                            bodies=[0, 1],
+                            proxy_bodies=[2, 2],
+                        ),
+                    ],
+                ),
+            )
 
     def test_proxy_body_uses_source_inertia_shape(self):
         _StepCountingCopySolver.instances.clear()
@@ -1068,8 +1357,8 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
 
         src_solver = _BodyForceRecordingSolver.instances[-1]
         expected = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        self.assertEqual(src_solver.input_body_f[1].shape[0], 1)
         np.testing.assert_allclose(src_solver.input_body_f[1][0], expected, atol=1.0e-6)
-        np.testing.assert_allclose(src_solver.input_body_f[1][2], np.zeros(6), atol=1.0e-6)
 
     def test_proxy_body_diagonal_effective_mass_scales_source_inertia(self):
         _CustomEffectiveMassBodySolver.instances.clear()
@@ -1373,6 +1662,50 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
             ),
         )
 
+    def test_duplicate_particle_proxy_mapping_ids_are_rejected(self):
+        builder = newton.ModelBuilder(gravity=0.0)
+        for i in range(3):
+            builder.add_particle(pos=(float(i), 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
+        model = builder.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "Duplicate source particle"):
+            SolverProxyCoupled(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=_ParticleForceRecordingSolver, particles=[0, 1]),
+                    SolverCoupled.Entry(name="dst", solver=_ProxyParticleKickSolver, particles=[2]),
+                ],
+                coupling=SolverProxyCoupled.Config(
+                    proxies=[
+                        SolverProxyCoupled.Proxy(
+                            source="src",
+                            destination="dst",
+                            particles=[0, 0],
+                            proxy_particles=[1, 2],
+                        ),
+                    ],
+                ),
+            )
+
+        with self.assertRaisesRegex(ValueError, "Duplicate proxy particle"):
+            SolverProxyCoupled(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=_ParticleForceRecordingSolver, particles=[0, 1]),
+                    SolverCoupled.Entry(name="dst", solver=_ProxyParticleKickSolver, particles=[2]),
+                ],
+                coupling=SolverProxyCoupled.Config(
+                    proxies=[
+                        SolverProxyCoupled.Proxy(
+                            source="src",
+                            destination="dst",
+                            particles=[0, 1],
+                            proxy_particles=[2, 2],
+                        ),
+                    ],
+                ),
+            )
+
     def test_proxy_destination_view_keeps_and_scales_particle_mass(self):
         _ParticleForceRecordingSolver.instances.clear()
         coupled = self._make_coupled()
@@ -1380,6 +1713,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         src_view = coupled.view("src")
         dst_view = coupled.view("dst")
 
+        self.assertEqual(src_view.particle_inv_mass.shape[0], 2)
         self.assertEqual(src_view.particle_inv_mass.numpy()[1], 0.0)
         np.testing.assert_allclose(dst_view.particle_mass.numpy(), [1.0, 2.0])
         np.testing.assert_allclose(dst_view.particle_inv_mass.numpy(), [1.0, 0.5])
@@ -1629,6 +1963,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         coupled.step(state_1, state_0, control=None, contacts=None, dt=dt)
 
         src_solver = _ParticleForceRecordingSolver.instances[-1]
+        self.assertEqual(src_solver.input_particle_f[1].shape[0], 3)
         np.testing.assert_allclose(src_solver.input_particle_f[1][0], np.array([0.0, 7.0, 0.0]), atol=1.0e-6)
         np.testing.assert_allclose(src_solver.input_particle_f[1][2], np.zeros(3), atol=1.0e-6)
 

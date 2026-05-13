@@ -29,7 +29,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.solvers import ModelView, SolverAdmmCoupled, SolverCoupled, SolverKamino, SolverMuJoCo, SolverVBD
+from newton.solvers import SolverAdmmCoupled, SolverCoupled, SolverKamino, SolverMuJoCo, SolverVBD
 
 
 def _add_rigid_solver_arg(parser) -> None:
@@ -40,16 +40,6 @@ def _add_rigid_solver_arg(parser) -> None:
         choices=["mujoco", "kamino"],
         default="mujoco",
     )
-
-
-def _configure_kamino_rigid_view(view: ModelView) -> None:
-    view.particle_count = 0
-    view.spring_count = 0
-    view.tri_count = 0
-    view.edge_count = 0
-    view.tet_count = 0
-    view.muscle_count = 0
-    view.equality_constraint_count = 0
 
 
 def _register_rigid_solver_custom_attributes(builder: newton.ModelBuilder, rigid_solver: str) -> None:
@@ -78,7 +68,7 @@ def _rigid_solver_entry_args(
     mujoco_kwargs: dict[str, object] | None = None,
 ):
     if rigid_solver == "kamino":
-        return "kamino", SolverKamino, {"config": _make_kamino_config()}, _configure_kamino_rigid_view
+        return "kamino", SolverKamino, {"config": _make_kamino_config()}, None
     if rigid_solver == "mujoco":
         return "mjc", SolverMuJoCo, dict(mujoco_kwargs or {}), None
     raise ValueError(f"Unsupported rigid solver '{rigid_solver}'")

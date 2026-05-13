@@ -5,22 +5,91 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
 
 from ...geometry import ParticleFlags
-from ...sim import BodyFlags
+from ...sim import BodyFlags, Model
 
 if TYPE_CHECKING:
-    from ...sim import Model, State
+    from ...sim import State
+
+
+_CORE_START_COUNT_ATTR_BY_NAME = {
+    "joint_q_start": "joint_count",
+    "joint_qd_start": "joint_count",
+    "articulation_start": "articulation_count",
+}
+
+
+_CORE_WORLD_START_TOTAL_ATTR_BY_NAME = {
+    "particle_world_start": "particle_count",
+    "shape_world_start": "shape_count",
+    "body_world_start": "body_count",
+    "joint_world_start": "joint_count",
+    "joint_dof_world_start": "joint_dof_count",
+    "joint_coord_world_start": "joint_coord_count",
+    "joint_constraint_world_start": "joint_constraint_count",
+    "articulation_world_start": "articulation_count",
+    "equality_constraint_world_start": "equality_constraint_count",
+}
+
+
+_UNREGISTERED_CORE_COUNT_ATTR_BY_NAME = {
+    "particle_q": "particle_count",
+    "particle_qd": "particle_count",
+    "particle_mass": "particle_count",
+    "particle_inv_mass": "particle_count",
+    "particle_radius": "particle_count",
+    "particle_flags": "particle_count",
+    "particle_colors": "particle_count",
+    "particle_world": "particle_count",
+    "body_colors": "body_count",
+    "shape_world": "shape_count",
+    "body_world": "body_count",
+    "joint_world": "joint_count",
+    "articulation_world": "articulation_count",
+    "equality_constraint_world": "equality_constraint_count",
+    "constraint_mimic_world": "constraint_mimic_count",
+}
+
+
+_COLOR_GROUP_COUNT_ATTR_BY_NAME = {
+    "particle_color_groups": "particle_count",
+    "body_color_groups": "body_count",
+}
+
+
+_COUNT_ATTR_BY_FREQUENCY = {
+    Model.AttributeFrequency.JOINT: "joint_count",
+    Model.AttributeFrequency.JOINT_DOF: "joint_dof_count",
+    Model.AttributeFrequency.JOINT_COORD: "joint_coord_count",
+    Model.AttributeFrequency.JOINT_CONSTRAINT: "joint_constraint_count",
+    Model.AttributeFrequency.BODY: "body_count",
+    Model.AttributeFrequency.SHAPE: "shape_count",
+    Model.AttributeFrequency.ARTICULATION: "articulation_count",
+    Model.AttributeFrequency.EQUALITY_CONSTRAINT: "equality_constraint_count",
+    Model.AttributeFrequency.PARTICLE: "particle_count",
+    Model.AttributeFrequency.EDGE: "edge_count",
+    Model.AttributeFrequency.TRIANGLE: "tri_count",
+    Model.AttributeFrequency.TETRAHEDRON: "tet_count",
+    Model.AttributeFrequency.SPRING: "spring_count",
+    Model.AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
+    Model.AttributeFrequency.WORLD: "world_count",
+}
 
 
 def _types_compatible(current, value) -> bool:
     """Return True iff *value* is type-compatible with *current* for an override."""
     if isinstance(current, wp.array):
-        return isinstance(value, wp.array) and value.dtype == current.dtype and value.ndim == current.ndim
+        return (
+            isinstance(value, wp.array)
+            and value.dtype == current.dtype
+            and value.ndim == current.ndim
+            and value.device == current.device
+        )
     if isinstance(current, np.ndarray):
         return isinstance(value, np.ndarray) and value.dtype == current.dtype and value.ndim == current.ndim
     if isinstance(current, float) and isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -30,7 +99,7 @@ def _types_compatible(current, value) -> bool:
 
 def _type_summary(value) -> str:
     if isinstance(value, wp.array):
-        return f"wp.array[dtype={value.dtype}, ndim={value.ndim}]"
+        return f"wp.array[dtype={value.dtype}, ndim={value.ndim}, device={value.device}]"
     if isinstance(value, np.ndarray):
         return f"numpy.ndarray[dtype={value.dtype}, ndim={value.ndim}]"
     return type(value).__name__
@@ -59,6 +128,7 @@ class ModelView:
         object.__setattr__(self, "_parent", parent)
         object.__setattr__(self, "_name", name)
         object.__setattr__(self, "_overrides", {})
+        object.__setattr__(self, "_cache", {})
 
     # ------------------------------------------------------------------
     # Attribute delegation
@@ -67,8 +137,8 @@ class ModelView:
     def __getattr__(self, name: str):
         overrides = object.__getattribute__(self, "_overrides")
         if name in overrides:
-            return overrides[name]
-        return getattr(object.__getattribute__(self, "_parent"), name)
+            return self._count_limited_attribute(name, overrides[name])
+        return self._count_limited_attribute(name, getattr(object.__getattribute__(self, "_parent"), name))
 
     def __setattr__(self, name: str, value) -> None:
         parent = object.__getattribute__(self, "_parent")
@@ -82,6 +152,8 @@ class ModelView:
                 f"ModelView {self.name!r} override for {name!r}: expected "
                 f"{_type_summary(current)}, got {_type_summary(value)}"
             )
+        if name.endswith("_count"):
+            object.__getattribute__(self, "_cache").clear()
         object.__getattribute__(self, "_overrides")[name] = value
 
     def __delattr__(self, name: str) -> None:
@@ -114,6 +186,106 @@ class ModelView:
         overrides = object.__getattribute__(self, "_overrides")
         attrs = list(overrides.keys())
         return f"ModelView('{self.name}', overrides={attrs})"
+
+    def _count_limited_attribute(self, name: str, value):
+        """Return *value* sliced to the view-local frequency count when needed."""
+        color_group_count_attr = _COLOR_GROUP_COUNT_ATTR_BY_NAME.get(name)
+        if color_group_count_attr is not None:
+            return self._count_limited_color_groups(
+                name, value, color_group_count_attr, int(getattr(self, color_group_count_attr))
+            )
+
+        if not isinstance(value, (wp.array, np.ndarray)):
+            return value
+
+        start_count_attr = _CORE_START_COUNT_ATTR_BY_NAME.get(name)
+        if start_count_attr is not None:
+            count = int(getattr(self, start_count_attr)) + 1
+            if value.shape[0] == count:
+                return value
+            if value.shape[0] < count:
+                raise ValueError(
+                    f"ModelView '{self.name}' has {name} with length {value.shape[0]}, below count {count}"
+                )
+            return value[:count]
+
+        world_start_total_attr = _CORE_WORLD_START_TOTAL_ATTR_BY_NAME.get(name)
+        if world_start_total_attr is not None:
+            return self._count_limited_world_start(name, value, int(getattr(self, world_start_total_attr)))
+
+        count = self._frequency_count_for_attribute(name)
+        if count is None or value.shape[0] == count:
+            return value
+        if value.shape[0] < count:
+            raise ValueError(f"ModelView '{self.name}' has {name} with length {value.shape[0]}, below count {count}")
+        return value[:count]
+
+    def _frequency_count_for_attribute(self, name: str) -> int | None:
+        """Return the view-local count associated with a model attribute."""
+        parent = object.__getattribute__(self, "_parent")
+        frequency = parent.attribute_frequency.get(name)
+        if frequency is None:
+            count_attr = _UNREGISTERED_CORE_COUNT_ATTR_BY_NAME.get(name)
+            return None if count_attr is None else int(getattr(self, count_attr))
+        if isinstance(frequency, str):
+            return self.custom_frequency_counts.get(frequency)
+
+        count_attr = _COUNT_ATTR_BY_FREQUENCY.get(frequency)
+        return None if count_attr is None else int(getattr(self, count_attr))
+
+    def _count_limited_world_start(self, name: str, value, count: int):
+        """Return a world-start array whose offsets do not exceed *count*."""
+        if value.shape[0] == 0:
+            return value
+        host = value.numpy() if isinstance(value, wp.array) else value
+        clipped = np.minimum(host, count).astype(host.dtype, copy=False)
+        if np.array_equal(clipped, host):
+            return value
+
+        cache_name = f"__count_limited_{name}"
+        cache = object.__getattribute__(self, "_cache")
+        cached = cache.get(cache_name)
+        if cached is not None:
+            return cached
+        if isinstance(value, wp.array):
+            cached = wp.array(clipped, dtype=value.dtype, device=value.device)
+        else:
+            cached = np.array(clipped, dtype=value.dtype)
+        cache[cache_name] = cached
+        return cached
+
+    def _count_limited_color_groups(self, name: str, value, count_attr: str, count: int):
+        """Return color groups filtered to ids visible in a prefix-limited view."""
+        if not isinstance(value, list):
+            return value
+        parent = object.__getattribute__(self, "_parent")
+        if count >= int(getattr(parent, count_attr)):
+            return value
+
+        cache_name = f"__count_limited_{name}_{count}"
+        cache = object.__getattribute__(self, "_cache")
+        cached = cache.get(cache_name)
+        if cached is not None:
+            return cached
+
+        filtered_groups = []
+        changed = False
+        for group in value:
+            if not isinstance(group, wp.array):
+                filtered_groups.append(group)
+                continue
+            host = group.numpy()
+            filtered = host[host < count]
+            changed = changed or filtered.shape[0] != host.shape[0]
+            if filtered.shape[0] == host.shape[0]:
+                filtered_groups.append(group)
+            else:
+                filtered_groups.append(wp.array(filtered, dtype=group.dtype, device=parent.device))
+
+        if not changed:
+            return value
+        cache[cache_name] = filtered_groups
+        return filtered_groups
 
     # ------------------------------------------------------------------
     # State creation - reuses Model.state() through this view
@@ -166,7 +338,7 @@ class ModelView:
     # Helpers for common overrides
     # ------------------------------------------------------------------
 
-    def _cow_array(self, name: str) -> wp.array:
+    def _cow_array(self, name: str) -> wp.array[Any]:
         """Return a view-local mutable copy of a parent model array.
 
         ``ModelView`` uses copy-on-write overlay semantics for explicit
@@ -183,15 +355,17 @@ class ModelView:
             overrides[name] = array
         return array
 
-    def zero_body_mass(self, body_indices: wp.array) -> None:
-        """Zero the inverse mass and inverse inertia for the given body indices.
+    def disable_body_dynamics(self, body_indices: wp.array[int]) -> None:
+        """Disable dynamics for the given body indices in this view.
 
-        Creates overridden copies of ``body_inv_mass`` and ``body_inv_inertia``
-        with the specified bodies set to zero (i.e. infinite mass / immovable
-        from this solver's perspective).
+        Creates overridden copies of ``body_inv_mass``, ``body_inv_inertia``
+        and ``body_flags``. Inverse inertial properties are zeroed, while the
+        bodies are marked :attr:`~newton.BodyFlags.KINEMATIC` so solvers that
+        branch on body flags also treat them as immovable. Forward mass and
+        inertia are left intact as inertial metadata for solver conversion.
 
         Args:
-            body_indices: 1-D int array of body indices to zero out.
+            body_indices: 1-D int array of body indices to immobilize.
         """
         parent = object.__getattribute__(self, "_parent")
         if body_indices.shape[0] == 0:
@@ -199,15 +373,23 @@ class ModelView:
 
         inv_mass = self._cow_array("body_inv_mass")
         inv_inertia = self._cow_array("body_inv_inertia")
+        body_flags = self._cow_array("body_flags")
 
         wp.launch(
-            _zero_body_mass_kernel,
+            _disable_body_dynamics_kernel,
             dim=body_indices.shape[0],
-            inputs=[body_indices, inv_mass, inv_inertia],
+            inputs=[
+                body_indices,
+                inv_mass,
+                inv_inertia,
+                body_flags,
+                int(BodyFlags.DYNAMIC),
+                int(BodyFlags.KINEMATIC),
+            ],
             device=parent.device,
         )
 
-    def scale_body_mass(self, body_indices: wp.array, factor: float) -> None:
+    def scale_body_mass(self, body_indices: wp.array[int], factor: float) -> None:
         """Scale mass and inertia for the given body indices.
 
         Multiplying mass by *factor* means dividing ``body_inv_mass`` and
@@ -242,7 +424,7 @@ class ModelView:
             device=parent.device,
         )
 
-    def set_body_mass(self, body_indices: wp.array, body_mass: wp.array) -> None:
+    def set_body_mass(self, body_indices: wp.array[int], body_mass: wp.array[float]) -> None:
         """Set mass for the given body indices and scale inertia consistently.
 
         Existing body inertia tensors are scaled by the ratio between the new
@@ -322,7 +504,7 @@ class ModelView:
             device=parent.device,
         )
 
-    def mark_proxy_bodies(self, body_indices: wp.array) -> None:
+    def mark_proxy_bodies(self, body_indices: wp.array[int]) -> None:
         """Mark the given body indices as proxy bodies in this view.
 
         Creates a view-local copy of ``body_flags`` on first write and ORs the
@@ -344,7 +526,7 @@ class ModelView:
             device=parent.device,
         )
 
-    def mark_proxy_particles(self, particle_indices: wp.array) -> None:
+    def mark_proxy_particles(self, particle_indices: wp.array[int]) -> None:
         """Mark the given particle indices as proxy particles in this view.
 
         Creates a view-local copy of ``particle_flags`` on first write and ORs
@@ -366,7 +548,7 @@ class ModelView:
             device=parent.device,
         )
 
-    def deactivate_particles(self, particle_indices: wp.array) -> None:
+    def deactivate_particles(self, particle_indices: wp.array[int]) -> None:
         """Clear the active flag for the given particle indices in this view.
 
         Creates a view-local copy of ``particle_flags`` on first write. The
@@ -387,7 +569,7 @@ class ModelView:
             device=parent.device,
         )
 
-    def disable_joints(self, joint_indices: wp.array) -> None:
+    def disable_joints(self, joint_indices: wp.array[int]) -> None:
         """Disable the given joints in this view.
 
         Creates a view-local copy of ``joint_enabled`` on first write. The
@@ -408,12 +590,12 @@ class ModelView:
             device=parent.device,
         )
 
-    def zero_particle_mass(self, particle_indices: wp.array) -> None:
-        """Zero inverse mass for the given particle indices.
+    def zero_particle_mass(self, particle_indices: wp.array[int]) -> None:
+        """Zero mass and inverse mass for the given particle indices.
 
-        Creates a view-local copy of ``particle_inv_mass`` on first write and
-        sets the selected particles to zero inverse mass. The parent model is
-        never mutated.
+        Creates view-local copies of ``particle_mass`` and
+        ``particle_inv_mass`` on first write and sets the selected particles to
+        zero mass. The parent model is never mutated.
 
         Args:
             particle_indices: 1-D int array of particle indices to zero.
@@ -423,14 +605,15 @@ class ModelView:
             return
 
         inv_mass = self._cow_array("particle_inv_mass")
+        mass = self._cow_array("particle_mass")
         wp.launch(
             _zero_particle_mass_kernel,
             dim=particle_indices.shape[0],
-            inputs=[particle_indices, inv_mass],
+            inputs=[particle_indices, inv_mass, mass],
             device=parent.device,
         )
 
-    def scale_particle_mass(self, factor: float, particle_indices: wp.array | None = None) -> None:
+    def scale_particle_mass(self, factor: float, particle_indices: wp.array[int] | None = None) -> None:
         """Scale mass for particles on this view by ``factor``.
 
         Multiplying mass by ``factor`` means dividing ``particle_inv_mass`` by
@@ -472,7 +655,7 @@ class ModelView:
                 device=parent.device,
             )
 
-    def set_particle_mass(self, particle_indices: wp.array, particle_mass: wp.array) -> None:
+    def set_particle_mass(self, particle_indices: wp.array[int], particle_mass: wp.array[float]) -> None:
         """Set mass for the given particle indices.
 
         Args:
@@ -529,25 +712,31 @@ class _TemporaryStateArrayOverrides:
 
 
 @wp.kernel(enable_backward=False)
-def _zero_body_mass_kernel(
+def _disable_body_dynamics_kernel(
     indices: wp.array[int],
     inv_mass: wp.array[float],
     inv_inertia: wp.array[wp.mat33],
+    body_flags: wp.array[wp.int32],
+    dynamic_flag: int,
+    kinematic_flag: int,
 ):
     i = wp.tid()
     idx = indices[i]
     inv_mass[idx] = 0.0
     inv_inertia[idx] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    body_flags[idx] = (body_flags[idx] & ~dynamic_flag) | kinematic_flag
 
 
 @wp.kernel(enable_backward=False)
 def _zero_particle_mass_kernel(
     indices: wp.array[int],
     inv_mass: wp.array[float],
+    mass: wp.array[float],
 ):
     i = wp.tid()
     idx = indices[i]
     inv_mass[idx] = 0.0
+    mass[idx] = 0.0
 
 
 @wp.kernel(enable_backward=False)

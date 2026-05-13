@@ -705,6 +705,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     body_mask_b: wp.array[int],
     shape_mask_a: wp.array[int],
     shape_mask_b: wp.array[int],
+    body_global_to_local_a: wp.array[int],
+    body_global_to_local_b: wp.array[int],
     body_mass_a: wp.array[float],
     body_mass_b: wp.array[float],
     shape_material_mu: wp.array[float],
@@ -776,15 +778,20 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     else:
         return
 
+    ba_local = body_global_to_local_a[ba]
+    bb_local = body_global_to_local_b[bb]
+    if ba_local < 0 or bb_local < 0:
+        return
+
     dst = wp.atomic_add(active_count, 0, 1)
     if dst >= capacity:
         wp.atomic_min(active_count, 0, capacity)
         return
     wp.atomic_max(active_count_max, 0, dst + 1)
 
-    body_a[dst] = ba
+    body_a[dst] = ba_local
     point_a_local[dst] = pa
-    body_b[dst] = bb
+    body_b[dst] = bb_local
     point_b_local[dst] = pb
     shape_a[dst] = sa
     shape_b[dst] = sb
@@ -992,6 +999,7 @@ def contact_rp_fill_from_soft_contacts_kernel(
     particle_owner_mask: wp.array[int],
     body_owner_mask: wp.array[int],
     shape_filter_mask: wp.array[int],
+    body_global_to_local: wp.array[int],
     particle_radius: wp.array[float],
     body_mass: wp.array[float],
     particle_mass: wp.array[float],
@@ -1036,6 +1044,10 @@ def contact_rp_fill_from_soft_contacts_kernel(
     if b < 0 or body_owner_mask[b] == 0:
         return
 
+    b_local = body_global_to_local[b]
+    if b_local < 0:
+        return
+
     n = soft_contact_normal[i]
     n_len = wp.length(n)
     if n_len <= 0.0:
@@ -1067,7 +1079,7 @@ def contact_rp_fill_from_soft_contacts_kernel(
             lambda0 = prev_lambda[j]
 
     active[dst] = 1
-    body_id[dst] = b
+    body_id[dst] = b_local
     point_body_local[dst] = soft_contact_body_pos[i]
     particle_id[dst] = p
     shape_id[dst] = s

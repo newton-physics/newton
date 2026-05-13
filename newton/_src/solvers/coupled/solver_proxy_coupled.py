@@ -186,6 +186,11 @@ class SolverProxyCoupled(SolverCoupled):
             if id_ < 0 or id_ >= count:
                 raise ValueError(f"{label} id {id_} out of range [0, {count})")
 
+    @staticmethod
+    def _validate_unique_proxy_ids(label: str, ids: Sequence[int]) -> None:
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"Duplicate {label} ids in proxy mapping")
+
     def _build_proxy_mappings(
         self,
         model: Model,
@@ -202,6 +207,8 @@ class SolverProxyCoupled(SolverCoupled):
                 raise ValueError("Proxy source bodies and proxy_bodies must have the same length")
             self._validate_proxy_ids("Proxy source body", src_ids, model.body_count)
             self._validate_proxy_ids("Proxy destination body", proxy_local_ids, model.body_count)
+            self._validate_unique_proxy_ids("source body", src_ids)
+            self._validate_unique_proxy_ids("proxy body", proxy_local_ids)
             # ModelView currently preserves parent-model indexing, so the
             # configured proxy ids are both local ids in the destination view
             # and global ids in the parent model. Keep both names explicit so
@@ -283,6 +290,8 @@ class SolverProxyCoupled(SolverCoupled):
                 raise ValueError("Proxy source particles and proxy_particles must have the same length")
             self._validate_proxy_ids("Proxy source particle", src_ids, model.particle_count)
             self._validate_proxy_ids("Proxy destination particle", proxy_local_ids, model.particle_count)
+            self._validate_unique_proxy_ids("source particle", src_ids)
+            self._validate_unique_proxy_ids("proxy particle", proxy_local_ids)
             # ModelView currently preserves parent-model indexing; see the
             # body-proxy construction above for the local/global convention.
             proxy_global_ids = proxy_local_ids
@@ -327,9 +336,51 @@ class SolverProxyCoupled(SolverCoupled):
         return proxy_keep
 
     def _after_entries_constructed(self) -> None:
+        self._refresh_proxy_view_maps()
         self._validate_in_place_proxy_entries()
         self._apply_proxy_effective_masses()
         self._init_proxy_collision_pipelines()
+
+    def _refresh_proxy_view_maps(self) -> None:
+        """Resize dense proxy maps to the source/destination view counts."""
+        device = self.model.device
+        for mapping in self._proxy_mappings:
+            src_count = int(self._entries[mapping.src_name].view.body_count)
+            dst_count = int(self._entries[mapping.dst_name].view.body_count)
+            mapping.source_local_to_proxy_local = wp.array(
+                mapping.source_local_to_proxy_local.numpy()[:src_count],
+                dtype=int,
+                device=device,
+            )
+            mapping.source_local_to_proxy_global = wp.array(
+                mapping.source_local_to_proxy_global.numpy()[:src_count],
+                dtype=int,
+                device=device,
+            )
+            mapping.destination_local_to_proxy_global = wp.array(
+                mapping.destination_local_to_proxy_global.numpy()[:dst_count],
+                dtype=int,
+                device=device,
+            )
+
+        for mapping in self._proxy_particle_mappings:
+            src_count = int(self._entries[mapping.src_name].view.particle_count)
+            dst_count = int(self._entries[mapping.dst_name].view.particle_count)
+            mapping.source_local_to_proxy_local = wp.array(
+                mapping.source_local_to_proxy_local.numpy()[:src_count],
+                dtype=int,
+                device=device,
+            )
+            mapping.source_local_to_proxy_global = wp.array(
+                mapping.source_local_to_proxy_global.numpy()[:src_count],
+                dtype=int,
+                device=device,
+            )
+            mapping.destination_local_to_proxy_global = wp.array(
+                mapping.destination_local_to_proxy_global.numpy()[:dst_count],
+                dtype=int,
+                device=device,
+            )
 
     def _validate_in_place_proxy_entries(self) -> None:
         for proxy in [*self._proxy_mappings, *self._proxy_particle_mappings]:
@@ -519,7 +570,7 @@ class SolverProxyCoupled(SolverCoupled):
 
                 wp.launch(
                     sync_proxy_states_kernel,
-                    dim=self.model.body_count,
+                    dim=proxy.source_local_to_proxy_local.shape[0],
                     inputs=[
                         sync_body_q,
                         src.state_1.body_qd,
@@ -577,7 +628,7 @@ class SolverProxyCoupled(SolverCoupled):
 
                 wp.launch(
                     sync_proxy_particles_kernel,
-                    dim=self.model.particle_count,
+                    dim=proxy.source_local_to_proxy_local.shape[0],
                     inputs=[
                         sync_particle_q,
                         src.state_1.particle_qd,
@@ -636,49 +687,50 @@ class SolverProxyCoupled(SolverCoupled):
                 dst_contacts, contacts_freshly_detected = self._proxy_collision_contacts(collision_config, dst.state_0)
 
             restore_filtered_contacts = False
-            if body_proxies:
-                if self._uses_custom_coupling_hook(dst.solver, CouplingHook.PROXY_CONTACT_PREPARE):
-                    dst_contacts = dst.solver.coupling_prepare_proxy_contacts(
-                        dst.state_0,
-                        dst_contacts,
-                        contacts_freshly_detected=contacts_freshly_detected,
-                    )
+            try:
+                if body_proxies:
+                    if self._uses_custom_coupling_hook(dst.solver, CouplingHook.PROXY_CONTACT_PREPARE):
+                        dst_contacts = dst.solver.coupling_prepare_proxy_contacts(
+                            dst.state_0,
+                            dst_contacts,
+                            contacts_freshly_detected=contacts_freshly_detected,
+                        )
 
-                if dst_contacts is contacts and contacts is not None and contacts.rigid_contact_count is not None:
+                    if dst_contacts is contacts and contacts is not None and contacts.rigid_contact_count is not None:
+                        wp.launch(
+                            _filter_proxy_rigid_contacts_kernel,
+                            dim=contacts.rigid_contact_shape0.shape[0],
+                            inputs=[
+                                contacts.rigid_contact_count,
+                                contacts.rigid_contact_shape0,
+                                contacts.rigid_contact_shape1,
+                                self.model.shape_body,
+                                dst.view.body_flags,
+                                dst.view.body_inv_mass,
+                                int(BodyFlags.PROXY),
+                            ],
+                            device=self.model.device,
+                        )
+                        restore_filtered_contacts = True
+
+                for proxy in body_proxies:
+                    wp.copy(proxy.proxy_qd_before, dst.state_0.body_qd)
+                for proxy in particle_proxies:
+                    wp.copy(proxy.proxy_qd_before, dst.state_0.particle_qd)
+
+                self._step_entry(dst, control, dst_contacts, dt)
+            finally:
+                if restore_filtered_contacts:
                     wp.launch(
-                        _filter_proxy_rigid_contacts_kernel,
+                        _restore_filtered_proxy_rigid_contacts_kernel,
                         dim=contacts.rigid_contact_shape0.shape[0],
                         inputs=[
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_shape0,
                             contacts.rigid_contact_shape1,
-                            self.model.shape_body,
-                            dst.view.body_flags,
-                            dst.view.body_inv_mass,
-                            int(BodyFlags.PROXY),
                         ],
                         device=self.model.device,
                     )
-                    restore_filtered_contacts = True
-
-            for proxy in body_proxies:
-                wp.copy(proxy.proxy_qd_before, dst.state_0.body_qd)
-            for proxy in particle_proxies:
-                wp.copy(proxy.proxy_qd_before, dst.state_0.particle_qd)
-
-            self._step_entry(dst, control, dst_contacts, dt)
-
-            if restore_filtered_contacts:
-                wp.launch(
-                    _restore_filtered_proxy_rigid_contacts_kernel,
-                    dim=contacts.rigid_contact_shape0.shape[0],
-                    inputs=[
-                        contacts.rigid_contact_count,
-                        contacts.rigid_contact_shape0,
-                        contacts.rigid_contact_shape1,
-                    ],
-                    device=self.model.device,
-                )
 
             for proxy in body_proxies:
                 proxy.coupling_forces.zero_()

@@ -33,6 +33,16 @@ def _identity_index_map(count: int, device) -> wp.array:
     return wp.array(list(range(count)), dtype=int, device=device)
 
 
+def _inverse_index_map(local_to_global: wp.array, global_count: int, device) -> wp.array:
+    """Return a dense global-to-local map with -1 for hidden ids."""
+    mapping = [-1] * int(global_count)
+    for local_id, raw_global_id in enumerate(local_to_global.numpy()):
+        global_id = int(raw_global_id)
+        if 0 <= global_id < global_count:
+            mapping[global_id] = local_id
+    return wp.array(mapping, dtype=int, device=device)
+
+
 def _coupling_endpoint_arrays(
     endpoint_kind: CouplingEndpointKind,
     endpoint_indices: wp.array,
@@ -99,6 +109,7 @@ class SolverEntry:
     joint_qd_indices: wp.array
     shape_indices: wp.array
     body_local_to_global: wp.array
+    body_global_to_local: wp.array
     particle_local_to_global: wp.array
     joint_dof_local_to_global: wp.array
     in_place: bool
@@ -169,6 +180,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._body_owner = self._build_owner_map(model.body_count, [e.bodies for e in self._entry_configs])
         self._particle_owner = self._build_owner_map(model.particle_count, [e.particles for e in self._entry_configs])
         self._joint_owner = self._build_owner_map(model.joint_count, [e.joints for e in self._entry_configs])
+        self._shape_owner = self._build_owner_map(model.shape_count, [e.shapes for e in self._entry_configs])
 
         self._build_entries()
 
@@ -215,30 +227,29 @@ class SolverCoupled(SolverBase, CouplingInterface):
             joint_indices = wp.array([int(i) for i in cfg.joints], dtype=int, device=device)
             shape_indices = wp.array([int(i) for i in cfg.shapes], dtype=int, device=device)
             joint_q_indices, joint_qd_indices = self._joint_state_indices(cfg.joints)
-            body_local_to_global = _identity_index_map(model.body_count, device)
-            particle_local_to_global = _identity_index_map(model.particle_count, device)
-            joint_dof_local_to_global = _identity_index_map(model.joint_dof_count, device)
-
             view = ModelView(model, cfg.name)
             proxy_body_keep: set[int] = set()
+            proxy_particle_keep: set[int] = set()
 
             if any_body_owner:
                 proxy_body_keep = self._entry_proxy_body_keep_indices(cfg.name)
                 to_zero = [i for i, owner in enumerate(self._body_owner) if owner != idx and i not in proxy_body_keep]
                 if to_zero:
-                    view.zero_body_mass(wp.array(to_zero, dtype=int, device=device))
+                    view.disable_body_dynamics(wp.array(to_zero, dtype=int, device=device))
                 if proxy_body_keep:
                     view.mark_proxy_bodies(wp.array(sorted(proxy_body_keep), dtype=int, device=device))
 
             if any_particle_owner:
-                proxy_keep = self._entry_proxy_particle_keep_indices(cfg.name)
-                to_zero = [i for i, owner in enumerate(self._particle_owner) if owner != idx and i not in proxy_keep]
+                proxy_particle_keep = self._entry_proxy_particle_keep_indices(cfg.name)
+                to_zero = [
+                    i for i, owner in enumerate(self._particle_owner) if owner != idx and i not in proxy_particle_keep
+                ]
                 if to_zero:
                     to_zero_array = wp.array(to_zero, dtype=int, device=device)
                     view.zero_particle_mass(to_zero_array)
                     view.deactivate_particles(to_zero_array)
-                if proxy_keep:
-                    view.mark_proxy_particles(wp.array(sorted(proxy_keep), dtype=int, device=device))
+                if proxy_particle_keep:
+                    view.mark_proxy_particles(wp.array(sorted(proxy_particle_keep), dtype=int, device=device))
 
             if any_joint_owner:
                 to_disable = [i for i, owner in enumerate(self._joint_owner) if owner != idx]
@@ -246,10 +257,16 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     view.disable_joints(wp.array(to_disable, dtype=int, device=device))
 
             self._apply_entry_shape_visibility(view, cfg, proxy_body_keep)
+            self._apply_entry_prefix_limits(view, cfg, proxy_body_keep, proxy_particle_keep)
             self._customize_view(cfg.name, view, body_indices)
             if cfg.configure_view is not None:
                 cfg.configure_view(view)
             self._filter_shape_contact_pairs(view)
+
+            body_local_to_global = _identity_index_map(int(view.body_count), device)
+            particle_local_to_global = _identity_index_map(int(view.particle_count), device)
+            joint_dof_local_to_global = _identity_index_map(int(view.joint_dof_count), device)
+            body_global_to_local = _inverse_index_map(body_local_to_global, model.body_count, device)
 
             solver = cfg.solver(view)
             self._entries[cfg.name] = SolverEntry(
@@ -264,6 +281,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 joint_qd_indices=joint_qd_indices,
                 shape_indices=shape_indices,
                 body_local_to_global=body_local_to_global,
+                body_global_to_local=body_global_to_local,
                 particle_local_to_global=particle_local_to_global,
                 joint_dof_local_to_global=joint_dof_local_to_global,
                 in_place=bool(cfg.in_place),
@@ -375,6 +393,78 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.shape_contact_pairs = wp.array(filtered, dtype=wp.vec2i, device=self.model.device)
         view.shape_contact_pair_count = len(keep)
 
+    @staticmethod
+    def _prefix_length(indices: set[int]) -> int | None:
+        """Return the dense prefix length represented by *indices*, or None."""
+        if not indices:
+            return 0
+        prefix_len = max(indices) + 1
+        return prefix_len if indices == set(range(prefix_len)) else None
+
+    def _apply_entry_prefix_limits(
+        self,
+        view: ModelView,
+        cfg: SolverCoupled.Entry,
+        proxy_body_keep: set[int],
+        proxy_particle_keep: set[int],
+    ) -> None:
+        """Expose compact body/joint view counts when visible entities form a prefix."""
+        model = self.model
+
+        visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
+        body_prefix = self._prefix_length(visible_bodies)
+        if body_prefix is not None and body_prefix < model.body_count:
+            view.body_count = body_prefix
+
+        # Keep particle arrays globally indexed for now. Particle contacts and
+        # deformable element connectivity still commonly carry global particle
+        # ids. The pure-rigid case is the exception: expose zero particles and
+        # zero deformable element counts so rigid-only solvers never see stale
+        # particle metadata.
+        visible_particles = {int(i) for i in cfg.particles} | {int(i) for i in proxy_particle_keep}
+        if not visible_particles and model.particle_count:
+            view.particle_count = 0
+            view.spring_count = 0
+            view.tri_count = 0
+            view.edge_count = 0
+            view.tet_count = 0
+            view.muscle_count = 0
+
+        visible_joints = {int(i) for i in cfg.joints}
+        joint_prefix = self._prefix_length(visible_joints)
+        if joint_prefix is not None and joint_prefix < model.joint_count:
+            articulation_prefix = self._articulation_prefix_count(joint_prefix)
+            if articulation_prefix is not None:
+                view.joint_count = joint_prefix
+                view.joint_coord_count = int(model.joint_q_start.numpy()[joint_prefix])
+                view.joint_dof_count = int(model.joint_qd_start.numpy()[joint_prefix])
+                view.articulation_count = articulation_prefix
+
+        visible_shapes = {int(i) for i in cfg.shapes}
+        if model.shape_count and model.shape_body is not None and visible_bodies:
+            shape_body = model.shape_body.numpy()
+            visible_shapes.update(
+                int(shape_id)
+                for shape_id, body_id in enumerate(shape_body)
+                if int(body_id) < 0 or int(body_id) in visible_bodies
+            )
+        if visible_shapes:
+            shape_prefix = self._prefix_length(visible_shapes)
+            if shape_prefix is not None and shape_prefix < model.shape_count:
+                view.shape_count = shape_prefix
+
+    def _articulation_prefix_count(self, joint_prefix: int) -> int | None:
+        """Return articulation count for a joint prefix, if it ends on a boundary."""
+        if joint_prefix == 0:
+            return 0
+        starts = self.model.articulation_start.numpy() if self.model.articulation_start is not None else []
+        for index, start in enumerate(starts):
+            if int(start) == joint_prefix:
+                return index
+            if int(start) > joint_prefix:
+                return None
+        return None
+
     def _after_entries_constructed(self) -> None:
         """Hook called after sub-solvers are constructed and before state allocation."""
 
@@ -418,12 +508,15 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return [float(value) for value in out.numpy()]
 
         if int(endpoint_kind) == int(CouplingEndpointKind.BODY):
-            mass = entry.view.body_mass.numpy() if entry.view.body_mass is not None else []
+            inv_mass = entry.view.body_inv_mass.numpy() if entry.view.body_inv_mass is not None else []
         elif int(endpoint_kind) == int(CouplingEndpointKind.PARTICLE):
-            mass = entry.view.particle_mass.numpy() if entry.view.particle_mass is not None else []
+            inv_mass = entry.view.particle_inv_mass.numpy() if entry.view.particle_inv_mass is not None else []
         else:
             raise ValueError(f"Unknown coupling endpoint kind {endpoint_kind}")
-        return [float(mass[index]) if len(mass) > index else 0.0 for index in indices]
+        return [
+            0.0 if len(inv_mass) <= index or float(inv_mass[index]) == 0.0 else 1.0 / float(inv_mass[index])
+            for index in indices
+        ]
 
     def _eval_effective_body_inertial_properties(
         self,
