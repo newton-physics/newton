@@ -205,7 +205,7 @@ class Example:
         self.model = builder.finalize()
 
         # Contact parameters
-        self.model.soft_contact_ke = 1.0e5
+        self.model.soft_contact_ke = 5.0e4
         self.model.soft_contact_kd = 1e-5
         self.model.soft_contact_mu = 1.0
 
@@ -298,5 +298,4 @@ class Example:
 if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

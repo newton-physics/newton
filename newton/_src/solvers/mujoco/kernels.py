@@ -239,6 +239,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     rigid_contact_margin0: wp.array[wp.float32],
     rigid_contact_margin1: wp.array[wp.float32],
     rigid_contact_stiffness: wp.array[wp.float32],
@@ -346,19 +348,24 @@ def convert_newton_contacts_to_mjwarp_kernel(
         if body_b >= 0:
             X_wb_b = body_q[body_b]
 
+        # Strip artificial shape margins from Newton offsets before computing MuJoCo's geometry-surface anchor.
+        offset_scale_a = safe_div(rigid_contact_margin0[tid] - shape_margin[shape_a], rigid_contact_margin0[tid])
+        offset_scale_b = safe_div(rigid_contact_margin1[tid] - shape_margin[shape_b], rigid_contact_margin1[tid])
+        offset_a = rigid_contact_offset0[tid] * offset_scale_a
+        offset_b = rigid_contact_offset1[tid] * offset_scale_b
+
         bx_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid])
         bx_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid])
+        point_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid] + offset_a)
+        point_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid] + offset_b)
 
-        # rigid_contact_margin0/1 = radius_eff + shape_margin per shape.
-        # Subtract shape_margin so dist is the surface-to-surface distance;
-        # shape_margin is handled by geom_margin (MuJoCo's includemargin).
         radius_eff = (rigid_contact_margin0[tid] - shape_margin[shape_a]) + (
             rigid_contact_margin1[tid] - shape_margin[shape_b]
         )
 
         n = rigid_contact_normal[tid]
         dist = wp.dot(n, bx_b - bx_a) - radius_eff
-        pos = 0.5 * (bx_a + bx_b)
+        pos = 0.5 * (point_a + point_b)
 
         frame = make_frame(n)
 
@@ -460,11 +467,16 @@ def convert_newton_contacts_to_mjwarp_kernel(
             nacon_out[0] = last_nacon_count[0]
 
         cid = tid_to_cid[tid]
-        if cid < 0:
+        # Defensive bounds check: a stale tid_to_cid (e.g. cached from a
+        # previous mjw_data with larger naconmax) could otherwise produce
+        # out-of-bounds writes that corrupt the GPU allocator state.
+        if cid < 0 or cid >= naconmax:
             return
 
         shape_a = rigid_contact_shape0[tid]
         shape_b = rigid_contact_shape1[tid]
+        if shape_a < 0 or shape_b < 0:
+            return
         body_a = shape_body[shape_a]
         body_b = shape_body[shape_b]
 
@@ -475,8 +487,15 @@ def convert_newton_contacts_to_mjwarp_kernel(
         if body_b >= 0:
             X_wb_b = body_q[body_b]
 
+        offset_scale_a = safe_div(rigid_contact_margin0[tid] - shape_margin[shape_a], rigid_contact_margin0[tid])
+        offset_scale_b = safe_div(rigid_contact_margin1[tid] - shape_margin[shape_b], rigid_contact_margin1[tid])
+        offset_a = rigid_contact_offset0[tid] * offset_scale_a
+        offset_b = rigid_contact_offset1[tid] * offset_scale_b
+
         bx_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid])
         bx_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid])
+        point_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid] + offset_a)
+        point_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid] + offset_b)
 
         radius_eff = (rigid_contact_margin0[tid] - shape_margin[shape_a]) + (
             rigid_contact_margin1[tid] - shape_margin[shape_b]
@@ -484,7 +503,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         n = rigid_contact_normal[tid]
         contact_dist_out[cid] = wp.dot(n, bx_b - bx_a) - radius_eff
-        contact_pos_out[cid] = 0.5 * (bx_a + bx_b)
+        contact_pos_out[cid] = 0.5 * (point_a + point_b)
 
         for i in range(contact_efc_address_out.shape[1]):
             contact_efc_address_out[cid, i] = -1
@@ -647,18 +666,19 @@ def convert_warp_coords_to_mj_kernel(
 ):
     worldid, jntid = wp.tid()
 
+    joint_id = joints_per_world * worldid + jntid
+
     # Skip loop joints — they have no MuJoCo qpos/qvel entries
     q_i = mj_q_start[jntid]
     if q_i < 0:
         return
 
     qd_i = mj_qd_start[jntid]
-    type = joint_type[jntid]
-    joint_id = joints_per_world * worldid + jntid
+    jtype = joint_type[joint_id]
     wq_i = joint_q_start[joint_id]
     wqd_i = joint_qd_start[joint_id]
 
-    if type == JointType.FREE:
+    if jtype == JointType.FREE:
         # Newton's public joint_q[0:7] for FREE is the joint anchor pose in the
         # parent joint frame; eval_fk produces body_q = X_wpj * X_j * inv(X_cj).
         # MuJoCo only allows FREE joints at the worldbody root, so X_wpj == X_pj.
@@ -690,7 +710,7 @@ def convert_warp_coords_to_mj_kernel(
         v_com_world = wp.quat_rotate(q_p, v_com_parent)
         w_world = wp.quat_rotate(q_p, w_parent)
 
-        child = joint_child[jntid]
+        child = joint_child[joint_id]
         com_world = wp.quat_rotate(rot_world, body_com[child])
         v_origin_world = v_com_world - wp.cross(w_world, com_world)
         qvel[worldid, qd_i + 0] = v_origin_world[0]
@@ -702,7 +722,7 @@ def convert_warp_coords_to_mj_kernel(
         qvel[worldid, qd_i + 4] = w_body[1]
         qvel[worldid, qd_i + 5] = w_body[2]
 
-    elif type == JointType.BALL:
+    elif jtype == JointType.BALL:
         # change quaternion order from xyzw to wxyz
         ball_q = wp.quat(joint_q[wq_i], joint_q[wq_i + 1], joint_q[wq_i + 2], joint_q[wq_i + 3])
         ball_q_wxyz = quat_xyzw_to_wxyz(ball_q)
@@ -714,7 +734,7 @@ def convert_warp_coords_to_mj_kernel(
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
     else:
-        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
         for i in range(axis_count):
             ref = float(0.0)
             if dof_ref:
