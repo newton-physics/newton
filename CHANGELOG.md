@@ -42,6 +42,7 @@
 - Fix O(W²·S²) memory explosion in `CollisionPipeline` shape-pair buffer allocation for NXN and SAP broad phase modes by computing per-world pair counts instead of a global N²
 - Fix `SensorRaycast` ignoring `PLANE` geometry
 - Fix multi-world `qfrc_actuator` conversion using the wrong body center of mass for worlds with `worldid > 0`
+- Fix `SolverMuJoCo` returning `State.joint_q` / `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_q` / `body_qd`. Also fix `ModelBuilder.add_joint_free` initializing `joint_q[0:7]` from world-frame `body_q[child]` without rotating into the parent joint frame.
 - Fix SDF hydroelastic broadphase scatter kernel using a grid-stride loop with binary search instead of per-pair thread launch
 - Fix box support-map sign flips from quaternion rotation noise (~1e-14) producing invalid GJK/MPR contacts for face-touching boxes with non-trivial base rotations
 - Fix USD import of multi-DOF joints from MuJoCo-converted assets where multiple revolute joints between the same two bodies caused false cycle detection; merge them into D6 joints with correct DOF label mapping for MjcActuator target resolution

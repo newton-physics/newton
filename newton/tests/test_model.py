@@ -557,11 +557,14 @@ class TestModelJoints(unittest.TestCase):
 
         # a non-fixed joint followed by fixed joints
         free_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.4, 0.5, 0.6))
+        free_parent_xform = wp.transform(wp.vec3(0.0, -1.0, 0.0))
         b4 = builder.add_link(xform=free_xform)
         builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
-        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
+        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=free_parent_xform)
         assert_np_equal(builder.body_q[b4], np.array(free_xform))
-        assert_np_equal(builder.joint_q[-7:], np.array(free_xform))
+        # joint_q[0:7] is the body pose in the parent joint frame
+        expected_joint_q = wp.transform_inverse(free_parent_xform) * free_xform
+        assert_np_equal(builder.joint_q[-7:], np.array(expected_joint_q))
         assert builder.joint_count == 8
         assert builder.body_count == 8
         _last_body2, joints2 = add_three_cubes(builder, parent_body=b4)
