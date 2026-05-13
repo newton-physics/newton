@@ -4,8 +4,9 @@
 ###########################################################################
 # Example Robot control via keyboard
 #
-# Shows how to control robot pretrained in IsaacLab with RL.
-# The policy is loaded from a file and the robot is controlled via keyboard.
+# Shows how to control robots pretrained in IsaacLab with RL.  Policies are
+# loaded from ONNX files and run via Newton's Warp-backed
+# :class:`~newton.utils.OnnxRuntime` (no PyTorch dependency).
 #
 # Press "p" to reset the robot.
 # Press "i", "j", "k", "l", "u", "o" to move the robot.
@@ -15,21 +16,19 @@
 # python -m newton.examples robot_policy --robot go2
 # python -m newton.examples robot_policy --robot anymal
 # python -m newton.examples robot_policy --robot anymal --physx
-# to run the example with a PhysX-trained policy run with --physx
 ###########################################################################
 
-import warnings
 from dataclasses import dataclass
 from typing import Any
 
-import torch
+import numpy as np
 import warp as wp
 import yaml
 
 import newton
 import newton.examples
 import newton.utils
-from newton import JointTargetMode, State
+from newton import JointTargetMode
 
 
 @dataclass
@@ -39,145 +38,164 @@ class RobotConfig:
     asset_dir: str
     policy_path: dict[str, str]
     asset_path: str
-    yaml_path: str  # Path within the asset directory to the configuration YAML
+    yaml_path: str
 
 
-# Robot configurations pointing to newton-assets repository
+# Policy paths are now ONNX files.  These names mirror the original ``.pt``
+# layout under ``rl_policies/`` but with the ``.onnx`` extension.
 ROBOT_CONFIGS = {
     "anymal": RobotConfig(
         asset_dir="anybotics_anymal_c",
-        policy_path={"mjw": "rl_policies/mjw_anymal.pt", "physx": "rl_policies/physx_anymal.pt"},
+        policy_path={"mjw": "rl_policies/mjw_anymal.onnx", "physx": "rl_policies/physx_anymal.onnx"},
         asset_path="usd/anymal_c.usda",
         yaml_path="rl_policies/anymal.yaml",
     ),
     "go2": RobotConfig(
         asset_dir="unitree_go2",
-        policy_path={"mjw": "rl_policies/mjw_go2.pt", "physx": "rl_policies/physx_go2.pt"},
+        policy_path={"mjw": "rl_policies/mjw_go2.onnx", "physx": "rl_policies/physx_go2.onnx"},
         asset_path="usd/go2.usda",
         yaml_path="rl_policies/go2.yaml",
     ),
     "g1_29dof": RobotConfig(
         asset_dir="unitree_g1",
-        policy_path={"mjw": "rl_policies/mjw_g1_29DOF.pt"},
+        policy_path={"mjw": "rl_policies/mjw_g1_29DOF.onnx"},
         asset_path="usd/g1_isaac.usd",
         yaml_path="rl_policies/g1_29dof.yaml",
     ),
     "g1_23dof": RobotConfig(
         asset_dir="unitree_g1",
-        policy_path={"mjw": "rl_policies/mjw_g1_23DOF.pt", "physx": "rl_policies/physx_g1_23DOF.pt"},
+        policy_path={"mjw": "rl_policies/mjw_g1_23DOF.onnx", "physx": "rl_policies/physx_g1_23DOF.onnx"},
         asset_path="usd/g1_minimal.usd",
         yaml_path="rl_policies/g1_23dof.yaml",
     ),
 }
 
 
-def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-    """Rotate a vector by the inverse of a quaternion.
+@wp.kernel
+def _compute_obs_kernel(
+    joint_q: wp.array[float],  # full joint_q, [px,py,pz, qx,qy,qz,qw, q0..]
+    joint_qd: wp.array[float],  # full joint_qd, [vx,vy,vz, wx,wy,wz, qd0..]
+    joint_pos_initial: wp.array[float],  # (num_dofs,) reference posture
+    physx_to_mjc_idx: wp.array[int],  # (num_dofs,) reordering
+    gravity_w: wp.vec3,
+    command: wp.vec3,
+    prev_act: wp.array2d[float],  # (1, num_dofs)
+    num_dofs: int,
+    obs: wp.array2d[float],  # (1, 12 + 3*num_dofs)
+):
+    """Build the IsaacLab-style observation entirely on-device.
 
-    Args:
-        q: The quaternion in (x, y, z, w). Shape is (..., 4).
-        v: The vector in (x, y, z). Shape is (..., 3).
-
-    Returns:
-        The rotated vector in (x, y, z). Shape is (..., 3).
+    Layout (constant 12-float prefix + three num_dofs blocks):
+      [0:3]                 body-frame linear velocity
+      [3:6]                 body-frame angular velocity
+      [6:9]                 body-frame projected gravity
+      [9:12]                command (fwd, lat, yaw)
+      [12 : 12+N]           joint position error, reordered
+      [12+N : 12+2N]        joint velocity, reordered
+      [12+2N : 12+3N]       previous action
     """
-    q_w = q[..., 3]  # w component is at index 3 for XYZW format
-    q_vec = q[..., :3]  # xyz components are at indices 0, 1, 2
-    a = v * (2.0 * q_w**2 - 1.0).unsqueeze(-1)
-    b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
-    # for two-dimensional tensors, bmm is faster than einsum
-    if q_vec.dim() == 2:
-        c = q_vec * torch.bmm(q_vec.view(q.shape[0], 1, 3), v.view(q.shape[0], 3, 1)).squeeze(-1) * 2.0
+    q = wp.quat(joint_q[3], joint_q[4], joint_q[5], joint_q[6])
+
+    lin_w = wp.vec3(joint_qd[0], joint_qd[1], joint_qd[2])
+    ang_w = wp.vec3(joint_qd[3], joint_qd[4], joint_qd[5])
+
+    vel_b = wp.quat_rotate_inv(q, lin_w)
+    avel_b = wp.quat_rotate_inv(q, ang_w)
+    grav_b = wp.quat_rotate_inv(q, gravity_w)
+
+    obs[0, 0] = vel_b[0]
+    obs[0, 1] = vel_b[1]
+    obs[0, 2] = vel_b[2]
+    obs[0, 3] = avel_b[0]
+    obs[0, 4] = avel_b[1]
+    obs[0, 5] = avel_b[2]
+    obs[0, 6] = grav_b[0]
+    obs[0, 7] = grav_b[1]
+    obs[0, 8] = grav_b[2]
+    obs[0, 9] = command[0]
+    obs[0, 10] = command[1]
+    obs[0, 11] = command[2]
+
+    for k in range(num_dofs):
+        idx = physx_to_mjc_idx[k]
+        obs[0, 12 + k] = joint_q[7 + idx] - joint_pos_initial[idx]
+        obs[0, 12 + num_dofs + k] = joint_qd[6 + idx]
+        obs[0, 12 + 2 * num_dofs + k] = prev_act[0, k]
+
+
+@wp.kernel
+def _build_joint_target_pos_kernel(
+    act: wp.array2d[float],  # (1, num_dofs) on device
+    joint_pos_initial: wp.array[float],  # (num_dofs,) on device
+    reorder: wp.array[int],  # (num_dofs,) mjc_to_physx mapping
+    action_scale: float,
+    num_prefix_zeros: int,
+    out: wp.array[float],  # (num_prefix_zeros + num_dofs,)
+):
+    """Reorder, scale, and prepend ``num_prefix_zeros`` zeros into ``out``.
+
+    Single kernel that replaces the NumPy reorder + concatenate + per-step
+    ``wp.array(..., device=device)`` upload, keeping the control target on
+    device for the rest of the simulation step.
+    """
+    i = wp.tid()
+    if i < num_prefix_zeros:
+        out[i] = 0.0
     else:
-        c = q_vec * torch.einsum("...i,...i->...", q_vec, v).unsqueeze(-1) * 2.0
-    return a - b + c
+        j = i - num_prefix_zeros
+        idx = reorder[j]
+        out[i] = joint_pos_initial[j] + action_scale * act[0, idx]
 
 
-with warnings.catch_warnings():
-    warnings.filterwarnings(
-        "ignore",
-        message=r"`torch\.jit\.script` is deprecated\. Please switch to `torch\.compile` or `torch\.export`\.",
-        category=DeprecationWarning,
-    )
-    quat_rotate_inverse = torch.jit.script(quat_rotate_inverse)
-
-
-def compute_obs(
-    actions: torch.Tensor,
-    state: State,
-    joint_pos_initial: torch.Tensor,
-    device: str,
-    indices: torch.Tensor,
-    gravity_vec: torch.Tensor,
-    command: torch.Tensor,
-) -> torch.Tensor:
-    """Compute observation for robot policy.
-
-    Args:
-        actions: Previous actions tensor
-        state: Current simulation state
-        joint_pos_initial: Initial joint positions
-        device: PyTorch device string
-        indices: Index mapping for joint reordering
-        gravity_vec: Gravity vector in world frame
-        command: Command vector
-
-    Returns:
-        Observation tensor for policy input
-    """
-    # Extract state information with proper handling
-    joint_q = state.joint_q if state.joint_q is not None else []
-    joint_qd = state.joint_qd if state.joint_qd is not None else []
-
-    root_quat_w = torch.tensor(joint_q[3:7], device=device, dtype=torch.float32).unsqueeze(0)
-    root_lin_vel_w = torch.tensor(joint_qd[:3], device=device, dtype=torch.float32).unsqueeze(0)
-    root_ang_vel_w = torch.tensor(joint_qd[3:6], device=device, dtype=torch.float32).unsqueeze(0)
-    joint_pos_current = torch.tensor(joint_q[7:], device=device, dtype=torch.float32).unsqueeze(0)
-    joint_vel_current = torch.tensor(joint_qd[6:], device=device, dtype=torch.float32).unsqueeze(0)
-
-    vel_b = quat_rotate_inverse(root_quat_w, root_lin_vel_w)
-    a_vel_b = quat_rotate_inverse(root_quat_w, root_ang_vel_w)
-    grav = quat_rotate_inverse(root_quat_w, gravity_vec)
-    joint_pos_rel = joint_pos_current - joint_pos_initial
-    joint_vel_rel = joint_vel_current
-    rearranged_joint_pos_rel = torch.index_select(joint_pos_rel, 1, indices)
-    rearranged_joint_vel_rel = torch.index_select(joint_vel_rel, 1, indices)
-    obs = torch.cat([vel_b, a_vel_b, grav, command, rearranged_joint_pos_rel, rearranged_joint_vel_rel, actions], dim=1)
-
-    return obs
-
-
-def load_policy_and_setup_tensors(example: Any, policy_path: str, num_dofs: int, joint_pos_slice: slice):
-    """Load policy and setup initial tensors for robot control.
-
-    Args:
-        example: Robot example instance
-        policy_path: Path to the policy file
-        num_dofs: Number of degrees of freedom
-        joint_pos_slice: Slice for extracting joint positions from state
-    """
-    device = example.torch_device
+def load_policy_and_setup_arrays(example: Any, policy_path: str, num_dofs: int, joint_pos_slice: slice):
+    """Load ONNX policy and setup device buffers for the on-device policy step."""
     print("[INFO] Loading policy from:", policy_path)
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"`torch\.jit\.load` is deprecated\. Please switch to `torch\.export`\.",
-            category=DeprecationWarning,
-        )
-        example.policy = torch.jit.load(policy_path, map_location=device)
+    example.policy = newton.utils.OnnxRuntime(policy_path, device=str(example.device))
+    example.policy_input_name = example.policy.input_names[0]
+    example.policy_output_name = example.policy.output_names[0]
 
-    # Handle potential None state
-    joint_q = example.state_0.joint_q if example.state_0.joint_q is not None else []
-    example.joint_pos_initial = torch.tensor(joint_q[joint_pos_slice], device=device, dtype=torch.float32).unsqueeze(0)
-    example.act = torch.zeros(1, num_dofs, device=device, dtype=torch.float32)
-    example.rearranged_act = torch.zeros(1, num_dofs, device=device, dtype=torch.float32)
+    # All policy inputs and intermediate buffers live on device.  Reference
+    # posture is sliced on-device with wp.clone to avoid a startup host sync.
+    if example.state_0.joint_q is not None:
+        example._joint_pos_initial_wp = wp.clone(example.state_0.joint_q[joint_pos_slice])
+    else:
+        example._joint_pos_initial_wp = wp.zeros(num_dofs, dtype=wp.float32, device=example.device)
+
+    # Cross-check three things that all have to agree: the YAML's declared
+    # obs size (when present), the ONNX model's input shape, and the
+    # 12 + 3*num_dofs layout that ``_compute_obs_kernel`` actually writes.
+    # If they drift, fail loudly here instead of producing wrong inferences
+    # at the first OnnxRuntime call.
+    model_obs_dim = int(example.policy._shapes[example.policy_input_name][1])
+    expected = 12 + 3 * num_dofs
+    config_obs_dim = int(example.config["num_observations"]) if "num_observations" in example.config else None
+    if config_obs_dim is not None and config_obs_dim != model_obs_dim:
+        raise ValueError(
+            f"load_policy_and_setup_arrays: config num_observations={config_obs_dim} does not match "
+            f"the ONNX model's declared input shape ({model_obs_dim}); update the YAML or re-export "
+            f"the policy."
+        )
+    if model_obs_dim != expected:
+        raise ValueError(
+            f"load_policy_and_setup_arrays: policy obs_dim={model_obs_dim} does not match the expected "
+            f"layout (12 + 3*num_dofs = {expected}); the on-device _compute_obs_kernel only "
+            f"supports the IsaacLab-style 12 + 3N observation."
+        )
+    example._obs_wp = wp.zeros((1, model_obs_dim), dtype=wp.float32, device=example.device)
+    example._prev_act_wp = wp.zeros((1, num_dofs), dtype=wp.float32, device=example.device)
+
+    # The two reorder permutations are pre-uploaded as int32 device arrays
+    # (the kernel takes them as wp.array[int]).
+    example._physx_to_mjc_wp = wp.array(
+        np.asarray(example.physx_to_mjc_indices, dtype=np.int32), dtype=wp.int32, device=example.device
+    )
+    example._mjc_to_physx_wp = wp.array(
+        np.asarray(example.mjc_to_physx_indices, dtype=np.int32), dtype=wp.int32, device=example.device
+    )
+    example._num_dofs = num_dofs
 
 
 def find_physx_mjwarp_mapping(mjwarp_joint_names, physx_joint_names):
-    """
-    Finds the mapping between PhysX and MJWarp joint names.
-    Returns a tuple of two lists: (mjc_to_physx, physx_to_mjc).
-    """
     mjc_to_physx = []
     physx_to_mjc = []
     for j in mjwarp_joint_names:
@@ -226,31 +244,24 @@ class Example:
         else:
             policy_path = f"{asset_directory}/{robot_config.policy_path['mjw']}"
 
-        # Setup simulation parameters first
         fps = 200
         self.frame_dt = 1.0e0 / fps
         self.decimation = 4
         self.cycle_time = 1 / fps * self.decimation
 
-        # Group related attributes by prefix
         self.sim_time = 0.0
         self.sim_step = 0
         self.sim_substeps = 1
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # Save a reference to the viewer
         self.viewer = viewer
 
-        # Store configuration
         self.use_mujoco = False
         self.config = config
         self.robot_config = robot_config
 
-        # Device setup
         self.device = wp.get_device()
-        self.torch_device = "cuda" if self.device.is_cuda else "cpu"
 
-        # Build the model
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
@@ -274,8 +285,6 @@ class Example:
         builder.approximate_meshes("convex_hull")
 
         builder.add_ground_plane()
-        # builder's gravity isn't a vec3. use model.set_gravity()
-        # builder.gravity = wp.vec3(0.0, 0.0, -9.81)
 
         builder.joint_q[:3] = [0.0, 0.0, 0.76]
         builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
@@ -298,121 +307,135 @@ class Example:
             njmax=100,
         )
 
-        # Initialize state objects
         self.state_temp = self.model.state()
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
 
-        # Set model in viewer
         self.viewer.set_model(self.model)
         self.viewer.vsync = True
 
-        # Ensure FK evaluation (for non-MuJoCo solvers)
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
-        # Store initial joint state for fast reset
         self._initial_joint_q = wp.clone(self.state_0.joint_q)
         self._initial_joint_qd = wp.clone(self.state_0.joint_qd)
 
-        # Pre-compute tensors that don't change during simulation
-        self.physx_to_mjc_indices = torch.tensor(physx_to_mjc, device=self.torch_device, dtype=torch.long)
-        self.mjc_to_physx_indices = torch.tensor(mjc_to_physx, device=self.torch_device, dtype=torch.long)
-        self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
-        self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
+        self.physx_to_mjc_indices = np.asarray(physx_to_mjc, dtype=np.int64)
+        self.mjc_to_physx_indices = np.asarray(mjc_to_physx, dtype=np.int64)
+        # Kernel reads these as wp.vec3 values passed by argument; the
+        # command is mutated each frame from keyboard input.
+        self._gravity_w = wp.vec3(0.0, 0.0, -1.0)
+        self._command = wp.vec3(0.0, 0.0, 0.0)
         self._reset_key_prev = False
 
-        # Initialize policy-related attributes
-        # (will be set by load_policy_and_setup_tensors)
         self.policy = None
-        self.joint_pos_initial = None
-        self.act = None
-        self.rearranged_act = None
+        self.policy_input_name = None
+        self.policy_output_name = None
+        # Device-resident buffers; populated by load_policy_and_setup_arrays.
+        self._joint_pos_initial_wp = None
+        self._obs_wp = None
+        self._prev_act_wp = None
+        self._physx_to_mjc_wp = None
+        self._mjc_to_physx_wp = None
+        self._num_dofs = None
 
-        # Load policy weights and prepare tensors used by step()
-        load_policy_and_setup_tensors(self, policy_path, config["num_dofs"], slice(7, None))
+        # Load policy weights and prepare device buffers used by step().
+        load_policy_and_setup_arrays(self, policy_path, config["num_dofs"], slice(7, None))
 
-        # Call capture at the end
         self.capture()
 
     def capture(self):
-        """Put graph capture into it's own method."""
         self.graph = None
         self.use_cuda_graph = False
         if wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()):
             print("[INFO] Using CUDA graph")
             self.use_cuda_graph = True
-            torch_tensor = torch.zeros(self.config["num_dofs"] + 6, device=self.torch_device, dtype=torch.float32)
-            self.control.joint_target_pos = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
+            self.control.joint_target_pos = wp.zeros(self.config["num_dofs"] + 6, dtype=wp.float32, device=self.device)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
 
     def simulate(self):
-        """Simulate performs one frame's worth of updates."""
         need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
 
         for i in range(self.sim_substeps):
             self.state_0.clear_forces()
 
-            # Apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
 
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
 
-            # Swap states - handle CUDA graph case specially
             if need_state_copy and i == self.sim_substeps - 1:
-                # Swap states by copying the state arrays for graph capture
                 self.state_0.assign(self.state_1)
             else:
-                # We can just swap the state references
                 self.state_0, self.state_1 = self.state_1, self.state_0
 
         self.solver.update_contacts(self.contacts, self.state_0)
 
     def reset(self):
         print("[INFO] Resetting example")
-        # Restore initial joint positions and velocities in-place.
         wp.copy(self.state_0.joint_q, self._initial_joint_q)
         wp.copy(self.state_0.joint_qd, self._initial_joint_qd)
         wp.copy(self.state_1.joint_q, self._initial_joint_q)
         wp.copy(self.state_1.joint_qd, self._initial_joint_qd)
-        # Recompute forward kinematics to refresh derived state.
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.state_1.joint_q, self.state_1.joint_qd, self.state_1)
+        # Clear stale policy history so the first observation after reset is
+        # built purely from the restored kinematic state.
+        if self._prev_act_wp is not None:
+            self._prev_act_wp.zero_()
 
     def step(self):
-        # Build command from viewer keyboard
         if hasattr(self.viewer, "is_key_down"):
             fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
             lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
             rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
-            self.command[0, 0] = float(fwd)
-            self.command[0, 1] = float(lat)
-            self.command[0, 2] = float(rot)
-            # Reset when 'P' is pressed (edge-triggered)
+            # ``wp.vec3`` is immutable; rebuild it on key change so the next
+            # _compute_obs_kernel launch sees the latest command.
+            self._command = wp.vec3(float(fwd), float(lat), float(rot))
             reset_down = bool(self.viewer.is_key_down("p"))
             if reset_down and not self._reset_key_prev:
                 self.reset()
             self._reset_key_prev = reset_down
 
-        obs = compute_obs(
-            self.act,
-            self.state_0,
-            self.joint_pos_initial,
-            self.torch_device,
-            self.physx_to_mjc_indices,
-            self.gravity_vec,
-            self.command,
+        # Build obs on device.  No host syncs in the policy step pipeline.
+        wp.launch(
+            _compute_obs_kernel,
+            dim=1,
+            inputs=[
+                self.state_0.joint_q,
+                self.state_0.joint_qd,
+                self._joint_pos_initial_wp,
+                self._physx_to_mjc_wp,
+                self._gravity_w,
+                self._command,
+                self._prev_act_wp,
+                self._num_dofs,
+                self._obs_wp,
+            ],
+            device=self.device,
         )
-        with torch.no_grad():
-            self.act = self.policy(obs)
-            self.rearranged_act = torch.index_select(self.act, 1, self.mjc_to_physx_indices)
-            a = self.joint_pos_initial + self.config["action_scale"] * self.rearranged_act
-            a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
-            a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
-            wp.copy(self.control.joint_target_pos, a_wp)
+        out = self.policy({self.policy_input_name: self._obs_wp})
+        act_wp = out[self.policy_output_name]
+
+        # Build joint_target_pos on device: reorder, scale, prepend zeros.
+        wp.launch(
+            _build_joint_target_pos_kernel,
+            dim=6 + self._num_dofs,
+            inputs=[
+                act_wp,
+                self._joint_pos_initial_wp,
+                self._mjc_to_physx_wp,
+                float(self.config["action_scale"]),
+                6,
+                self.control.joint_target_pos,
+            ],
+            device=self.device,
+        )
+
+        # Stash the action for the *next* obs build, on device (no sync).
+        wp.copy(self._prev_act_wp, act_wp)
 
         for _ in range(self.decimation):
             if self.graph:

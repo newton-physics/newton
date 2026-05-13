@@ -862,6 +862,29 @@ class ForwardKinematicsSolverConfig:
     Defaults to `math.radians(10.0)`, i.e. 10 degrees.
     """
 
+    use_regularization: bool = False
+    """
+    Whether to regularize the FK problem by trying to preserve the rigid body poses with a small weight.
+    This might result in constraint violations of the order of the regularization weight, but allows to
+    tackle systems with solution sub-spaces, in particular underactuated systems.
+
+    Important note: the default tolerance of 1e-6 may not be reachable if regularization is enabled,
+    using 1e-5 instead is recommended in most cases.
+
+    For systems that are only underactuated due to tie rods being free to rotate about their own axis,
+    enabling `add_axis_joints` is recommended instead.
+
+    Changes to this setting after the solver's initialization lead to undefined behavior.
+    Defaults to `False`.
+    """
+
+    regularization_weight: float = 1e-5
+    """
+    Weight applied to the rigid body pose least-squares regularizer, if regularization is enabled.
+    Changes to this setting after the solver's initialization lead to undefined behavior.
+    Defaults to `1e-5`.
+    """
+
     @override
     @staticmethod
     def register_custom_attributes(builder: ModelBuilder) -> None:
@@ -918,6 +941,8 @@ class ForwardKinematicsSolverConfig:
             raise ValueError("`max_linear_incremental_step` must be positive.")
         if self.max_angular_incremental_step <= 0.0:
             raise ValueError("`max_angular_incremental_step` must be positive.")
+        if self.regularization_weight < 0.0:
+            raise ValueError("`regularization_weight` must be non-negative.")
 
     @override
     def __post_init__(self):
