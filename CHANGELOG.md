@@ -105,6 +105,7 @@
 - Fix `ModelBuilder.finalize()` crashing with 3+ articulations after `collapse_fixed_joints()` reordered `articulation_start` and dropped per-articulation metadata
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration
 - Fix `SolverStyle3D` initialization to precompute its fixed PD matrix from the finalized model
+- Fix `SolverMuJoCo` generated MuJoCo joint names for multi-axis D6 joints to avoid duplicate names
 - Fix connect constraint anchor computation to account for joint reference positions when `SolverMuJoCo` is the chosen solver.
 - Fix joint-synthesized CONNECT constraint anchors not updating when `dof_ref` or `joint_X_p` changes at runtime via `notify_model_changed()`
 - Fix WELD constraint data corruption when a model contains both FIXED and revolute/ball loop joints
@@ -141,6 +142,7 @@
 - Fix MJCF importer creating finite planes from MuJoCo visual half-sizes instead of infinite planes
 - Fix USD custom-frequency parsing to respect `ModelBuilder.add_usd(root_path=...)`, avoiding rows from sibling subtrees
 - Fix USD import of joint limit stiffness/damping from `MjcJointAPI`: `SchemaResolverMjc` now reads the schema-correct `mjc:solreflimit` attribute instead of the generic `mjc:solref`, which was never authored on joints
+- Fix USD import of revolute and D6-angular joint `limit_ke` / `limit_kd` from `mjc:solreflimit` being over-scaled by ~57x
 - Fix MJCF importer in `compiler.angle="degree"` mode: (1) stop multiplying joint `damping`/`stiffness` by `180/π` (MuJoCo stores these in `N·m·s/rad` and `N·m/rad` regardless of `angle`); (2) stop `deg2rad`-scaling the default `±MAXVAL` sentinel for joints without an explicit `range=`, which was turning unlimited hinges into bounded joints with `~1.75e8 rad` range
 - Fix MJCF importer ignoring explicit `mass=` on visual geoms loaded via `parse_visuals=True`; authored visual-only mass now contributes to body mass and inertia like visual-only density already does
 - Fix ViewerViser mesh popping artifacts caused by viser's automatic LOD simplification creating holes in complex geometry
