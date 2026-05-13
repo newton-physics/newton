@@ -749,6 +749,290 @@ def test_xpbd_update_contacts_requires_force_attribute(test, device):
         solver.update_contacts(contacts)
 
 
+def _build_single_body_pendulum(joint_kind: str, parent_kinematic: bool, gravity: float):
+    """Build a single dynamic body suspended from world (or a kinematic body).
+
+    Returns ``(model, child_body_index)``.  The child body is offset 1 m below
+    the joint anchor along -Z, so steady-state requires the joint to support
+    its weight along +Z.
+    """
+    builder = newton.ModelBuilder(gravity=-gravity, up_axis=newton.Axis.Z)
+    builder.request_state_attributes("body_parent_f")
+
+    if parent_kinematic:
+        parent_link = builder.add_body(xform=wp.transform_identity())
+        builder.add_shape_box(parent_link, hx=0.05, hy=0.05, hz=0.05)
+        # Replace the default DYNAMIC flag with KINEMATIC.
+        builder.body_flags[parent_link] = int(newton.BodyFlags.KINEMATIC)
+    else:
+        parent_link = -1
+
+    child_link = builder.add_link()
+    builder.add_shape_box(child_link, hx=0.1, hy=0.1, hz=0.1)
+
+    parent_xform = wp.transform_identity()
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity())
+
+    if joint_kind == "revolute":
+        joint = builder.add_joint_revolute(
+            parent_link,
+            child_link,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+        )
+    elif joint_kind == "ball":
+        joint = builder.add_joint_ball(
+            parent_link,
+            child_link,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+    elif joint_kind == "fixed":
+        joint = builder.add_joint_fixed(
+            parent_link,
+            child_link,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+    else:
+        raise ValueError(f"Unsupported joint kind: {joint_kind}")
+
+    builder.add_articulation([joint])
+    return builder, child_link
+
+
+def _run_single_body_steady_state(test, device, joint_kind: str, parent_kinematic: bool):
+    """Settle a single-body pendulum and return the time-averaged parent force."""
+    gravity = 9.81
+    builder, child_link = _build_single_body_pendulum(joint_kind, parent_kinematic, gravity)
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(model, iterations=8)
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+    test.assertIsNotNone(state_in.body_parent_f)
+
+    dt = 1.0 / 60.0
+    num_substeps = 8
+    sub_dt = dt / num_substeps
+    settle_steps = 60
+    avg_steps = 30
+
+    for _ in range(settle_steps):
+        for _ in range(num_substeps):
+            solver.step(state_in, state_out, None, None, sub_dt)
+            state_in, state_out = state_out, state_in
+
+    parent_f_avg = np.zeros(6)
+    for _ in range(avg_steps):
+        for _ in range(num_substeps):
+            solver.step(state_in, state_out, None, None, sub_dt)
+            state_in, state_out = state_out, state_in
+        parent_f_avg += state_in.body_parent_f.numpy()[child_link]
+    parent_f_avg /= avg_steps
+
+    weight = float(model.body_mass.numpy()[child_link]) * gravity
+    return parent_f_avg, weight
+
+
+def _assert_simple_decoupled_pendulum(test, parent_f_avg, weight, label):
+    """Tight assertions for the simple decoupled single-body case.
+
+    With one dynamic body and a kinematic / world parent, XPBD's joint solve
+    is fully decoupled and converges essentially exactly.  Only a small
+    first-order integration bias remains (~0.05% of ``m*g``).  We assert a
+    1% tolerance on the vertical reaction and small absolute tolerances on
+    the orthogonal components.
+    """
+    np.testing.assert_allclose(
+        parent_f_avg[2],
+        weight,
+        rtol=0.01,
+        err_msg=f"{label}: vertical parent force should match m*g",
+    )
+    np.testing.assert_allclose(
+        parent_f_avg[:2], 0.0, atol=0.1, err_msg=f"{label}: horizontal parent force should be ~0"
+    )
+    np.testing.assert_allclose(
+        parent_f_avg[3:6], 0.0, atol=0.1, err_msg=f"{label}: parent torque about COM should be ~0"
+    )
+
+
+def test_xpbd_parent_force_revolute_to_world(test, device):
+    """Single body on a revolute joint to world should give ~exact m*g reaction."""
+    parent_f_avg, weight = _run_single_body_steady_state(test, device, joint_kind="revolute", parent_kinematic=False)
+    _assert_simple_decoupled_pendulum(test, parent_f_avg, weight, "revolute-to-world")
+
+
+def test_xpbd_parent_force_revolute_to_kinematic(test, device):
+    """Single body on a revolute joint to a kinematic parent should give ~exact m*g reaction."""
+    parent_f_avg, weight = _run_single_body_steady_state(test, device, joint_kind="revolute", parent_kinematic=True)
+    _assert_simple_decoupled_pendulum(test, parent_f_avg, weight, "revolute-to-kinematic")
+
+
+def test_xpbd_parent_force_ball_to_world(test, device):
+    """Single body on a ball joint to world should give ~exact m*g reaction."""
+    parent_f_avg, weight = _run_single_body_steady_state(test, device, joint_kind="ball", parent_kinematic=False)
+    _assert_simple_decoupled_pendulum(test, parent_f_avg, weight, "ball-to-world")
+
+
+def test_xpbd_parent_force_ball_to_kinematic(test, device):
+    """Single body on a ball joint to a kinematic parent should give ~exact m*g reaction."""
+    parent_f_avg, weight = _run_single_body_steady_state(test, device, joint_kind="ball", parent_kinematic=True)
+    _assert_simple_decoupled_pendulum(test, parent_f_avg, weight, "ball-to-kinematic")
+
+
+def test_xpbd_parent_force_fixed_to_world(test, device):
+    """Single body on a fixed joint to world should give ~exact m*g reaction."""
+    parent_f_avg, weight = _run_single_body_steady_state(test, device, joint_kind="fixed", parent_kinematic=False)
+    _assert_simple_decoupled_pendulum(test, parent_f_avg, weight, "fixed-to-world")
+
+
+def test_xpbd_parent_force_fixed_to_kinematic(test, device):
+    """Single body on a fixed joint to a kinematic parent should give ~exact m*g reaction."""
+    parent_f_avg, weight = _run_single_body_steady_state(test, device, joint_kind="fixed", parent_kinematic=True)
+    _assert_simple_decoupled_pendulum(test, parent_f_avg, weight, "fixed-to-kinematic")
+
+
+def test_xpbd_parent_force_chain_weight_propagation(test, device):
+    """Steady-state parent-force test on a 2-link chain.
+
+    Two links hang from a revolute joint to ground, with a second revolute
+    joint between them.  After settling, the upper joint must support the
+    weight of *both* links, while the lower joint must support only the
+    second link.  This verifies that joint reactions propagate correctly up
+    the kinematic chain.
+    """
+    gravity = 9.81
+
+    builder = newton.ModelBuilder(gravity=-gravity, up_axis=newton.Axis.Z)
+    builder.request_state_attributes("body_parent_f")
+
+    link0 = builder.add_link()
+    builder.add_shape_box(link0, hx=0.1, hy=0.1, hz=0.1)
+    joint0 = builder.add_joint_revolute(
+        -1,
+        link0,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
+        axis=wp.vec3(0.0, 1.0, 0.0),
+    )
+    link1 = builder.add_link()
+    builder.add_shape_box(link1, hx=0.1, hy=0.1, hz=0.1)
+    joint1 = builder.add_joint_revolute(
+        link0,
+        link1,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
+        axis=wp.vec3(0.0, 1.0, 0.0),
+    )
+    builder.add_articulation([joint0, joint1])
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(model, iterations=32)
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+    masses = model.body_mass.numpy()
+    weight_total = float(masses[0] + masses[1]) * gravity
+    weight_link1 = float(masses[1]) * gravity
+
+    dt = 1.0 / 60.0
+    num_substeps = 8
+    sub_dt = dt / num_substeps
+    settle_steps = 120
+    avg_steps = 60
+
+    for _ in range(settle_steps):
+        for _ in range(num_substeps):
+            solver.step(state_in, state_out, None, None, sub_dt)
+            state_in, state_out = state_out, state_in
+
+    parent_f_avg = np.zeros((2, 6))
+    for _ in range(avg_steps):
+        for _ in range(num_substeps):
+            solver.step(state_in, state_out, None, None, sub_dt)
+            state_in, state_out = state_out, state_in
+        parent_f_avg += state_in.body_parent_f.numpy()
+    parent_f_avg /= avg_steps
+
+    np.testing.assert_allclose(
+        parent_f_avg[0, 2],
+        weight_total,
+        rtol=0.10,
+        err_msg="Chain: upper joint should support total weight of both links",
+    )
+    np.testing.assert_allclose(
+        parent_f_avg[1, 2],
+        weight_link1,
+        rtol=0.10,
+        err_msg="Chain: lower joint should support only the second link's weight",
+    )
+
+
+def test_xpbd_parent_force_not_allocated(test, device):
+    """``body_parent_f`` is None when not requested, and ``step`` runs without it."""
+    builder = newton.ModelBuilder()
+    link = builder.add_link()
+    builder.add_shape_sphere(link, radius=0.1)
+    joint = builder.add_joint_revolute(
+        -1,
+        link,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+        axis=wp.vec3(0.0, 1.0, 0.0),
+    )
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    state_in = model.state()
+    state_out = model.state()
+
+    test.assertIsNone(state_in.body_parent_f)
+    test.assertIsNone(state_out.body_parent_f)
+
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+    solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+
+    test.assertIsNone(state_out.body_parent_f)
+
+
+def test_xpbd_parent_force_zero_for_free_body(test, device):
+    """A body with only a free joint should report zero parent force.
+
+    ``solve_body_joints`` returns early for ``JointType.FREE``, so no
+    constraint impulse accumulates and ``body_parent_f`` should remain at
+    its zero-init value for the free body.
+    """
+    builder = newton.ModelBuilder()
+    builder.request_state_attributes("body_parent_f")
+    link = builder.add_link()
+    builder.add_shape_sphere(link, radius=0.1)
+    joint = builder.add_joint_free(child=link)
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+    solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+
+    parent_f = state_out.body_parent_f.numpy()[0]
+    np.testing.assert_allclose(
+        parent_f,
+        0.0,
+        atol=1e-6,
+        err_msg="Free-joint body should have zero parent force",
+    )
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -826,6 +1110,41 @@ add_function_test(
     TestSolverXPBD,
     "test_xpbd_update_contacts_requires_force_attribute",
     test_xpbd_update_contacts_requires_force_attribute,
+    devices=devices,
+    check_output=False,
+)
+
+for _joint_kind in ("revolute", "ball", "fixed"):
+    for _parent in ("world", "kinematic"):
+        _name = f"test_xpbd_parent_force_{_joint_kind}_to_{_parent}"
+        add_function_test(
+            TestSolverXPBD,
+            _name,
+            globals()[_name],
+            devices=devices,
+            check_output=False,
+        )
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_parent_force_chain_weight_propagation",
+    test_xpbd_parent_force_chain_weight_propagation,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_parent_force_not_allocated",
+    test_xpbd_parent_force_not_allocated,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_parent_force_zero_for_free_body",
+    test_xpbd_parent_force_zero_for_free_body,
     devices=devices,
     check_output=False,
 )

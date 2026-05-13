@@ -56,10 +56,9 @@ class SimulatorFromNewton:
         self,
         newton_model: newton.Model,
         config: Simulator.Config | None = None,
-        device: wp.DeviceLike = None,
         use_newton_collisions: bool = False,
     ):
-        self._device = wp.get_device(device)
+        self._device = newton_model.device
 
         if config is None:
             config = Simulator.Config()
@@ -300,7 +299,7 @@ class RigidBodySim:
             builder.add_ground_plane()
 
         # Create the model from the builder
-        self._newton_model = builder.finalize(skip_validation_joints=True)
+        self._newton_model = builder.finalize(skip_validation_joints=True, device=self._device)
 
         if enable_gravity:
             self._newton_model.set_gravity((0.0, 0.0, -9.81))
@@ -320,7 +319,6 @@ class RigidBodySim:
         self.sim = SimulatorFromNewton(
             newton_model=self._newton_model,
             config=settings,
-            device=self._device,
             use_newton_collisions=use_newton_cd,
         )
         self.model: ModelKamino = self.sim.model
@@ -356,15 +354,17 @@ class RigidBodySim:
             self._newton_state = self._newton_model.state()
             self._apply_render_config(self._render_config)
 
-        # ----- CUDA graphs -----
+        # ----- Initialize empty CUDA graphs -----
         self._reset_graph = None
         self._step_graph = None
-        self._capture_graphs()
 
         # ----- Warm-up (compiles Warp kernels) -----
         msg.notif("Warming up simulator ...")
         self.step()
         self.reset()
+
+        # ----- Capture CUDA graphs -----
+        self._capture_graphs()
 
     # ------------------------------------------------------------------
     # Viewer appearance
@@ -467,9 +467,7 @@ class RigidBodySim:
         self._update_base_u = False
 
         # Contact aggregation
-        self._contact_aggregation = ContactAggregation(
-            model=self.sim.model, contacts=self.sim.contacts, device=self._device
-        )
+        self._contact_aggregation = ContactAggregation(model=self.sim.model, contacts=self.sim.contacts)
         self._contact_flags = wp.to_torch(self._contact_aggregation.body_contact_flag).reshape(nw, nb)
         self._ground_contact_flags = wp.to_torch(self._contact_aggregation.body_static_contact_flag).reshape(nw, nb)
         self._net_contact_forces = wp.to_torch(self._contact_aggregation.body_net_force).reshape(nw, nb, 3)
