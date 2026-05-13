@@ -5,14 +5,14 @@
 # Example Proxy Coupling Convergence
 #
 # A synthetic one-dimensional virtual-inertia problem that exercises
-# SolverProxyCoupled.CouplingProxy.iterations in lagged mode. The source solver owns
+# SolverProxyCoupled.Config.iterations in lagged mode. The source solver owns
 # one interface particle and maps the previous feedback force to an end
 # velocity. The destination solver sees that particle as a proxy with scaled
 # virtual inertia, lets the generic lagged prepare step subtract the previously
 # applied force through that proxy mass, then returns the scalar KKT response
 # force with Delassus denominator ``1/Mhat + 1/Mb``.
 #
-# Sweeping CouplingProxy.iterations gives a compact convergence plot for the
+# Sweeping Config.iterations gives a compact convergence plot for the
 # fixed-point error described by the proxy / virtual-inertia section of the
 # ADMM coupling note.
 #
@@ -29,7 +29,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.solvers import SolverBase, SolverProxyCoupled
+from newton.solvers import CouplingInterface, SolverBase, SolverProxyCoupled
 
 
 @wp.kernel(enable_backward=False)
@@ -96,7 +96,7 @@ def _set_display_particles(
     particle_qd[response_particle_id] = wp.vec3(0.0, 0.0, 0.0)
 
 
-class _SourceVelocitySolver(SolverBase):
+class _SourceVelocitySolver(SolverBase, CouplingInterface):
     """One-particle source solve for a fixed feedback force estimate."""
 
     def __init__(self, model, particle_id: int, drive_velocity: float, source_mass: float):
@@ -125,7 +125,7 @@ class _SourceVelocitySolver(SolverBase):
         )
 
 
-class _KktResponseSolver(SolverBase):
+class _KktResponseSolver(SolverBase, CouplingInterface):
     """Destination solver that returns the scalar proxy KKT force."""
 
     def __init__(self, model, proxy_particle_id: int, response_particle_id: int, target_velocity: float):
@@ -134,11 +134,6 @@ class _KktResponseSolver(SolverBase):
         self.response_particle_id = int(response_particle_id)
         self.target_velocity = float(target_velocity)
         self.proxy_forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=model.device)
-
-    def coupling_capabilities(self):
-        return {
-            SolverBase.CouplingHooks.PARTICLE_PROXY_HARVEST: SolverBase.CouplingCapability.CUSTOM,
-        }
 
     def coupling_harvest_proxy_particle_forces(
         self,
@@ -283,33 +278,37 @@ class Example:
             entries=[
                 SolverProxyCoupled.Entry(
                     name="source",
-                    solver=_SourceVelocitySolver,
+                    solver=lambda v: _SourceVelocitySolver(
+                        model=v,
+                        **{
+                            "particle_id": self.source_particle,
+                            "drive_velocity": self.drive_velocity,
+                            "source_mass": self.source_mass,
+                        },
+                    ),
                     particles=[self.source_particle],
-                    solver_kwargs={
-                        "particle_id": self.source_particle,
-                        "drive_velocity": self.drive_velocity,
-                        "source_mass": self.source_mass,
-                    },
                 ),
                 SolverProxyCoupled.Entry(
                     name="response",
-                    solver=_KktResponseSolver,
+                    solver=lambda v: _KktResponseSolver(
+                        model=v,
+                        **{
+                            "proxy_particle_id": self.source_particle,
+                            "response_particle_id": self.response_particle,
+                            "target_velocity": self.response_target_velocity,
+                        },
+                    ),
                     particles=[self.response_particle],
-                    solver_kwargs={
-                        "proxy_particle_id": self.source_particle,
-                        "response_particle_id": self.response_particle,
-                        "target_velocity": self.response_target_velocity,
-                    },
                 ),
             ],
-            coupling=SolverProxyCoupled.CouplingProxy(
+            coupling=SolverProxyCoupled.Config(
                 proxies=[
                     SolverProxyCoupled.Proxy(
                         source="source",
                         destination="response",
                         particles=[self.source_particle],
                         mass_scale=mass_scale,
-                        mode=SolverProxyCoupled.ProxyMode.LAGGED,
+                        mode="lagged",
                     ),
                 ],
                 iterations=iterations,
@@ -445,7 +444,7 @@ class Example:
             "--max-coupling-iterations",
             type=int,
             default=12,
-            help="Largest CouplingProxy.iterations value to include in the sweep.",
+            help="Largest Config.iterations value to include in the sweep.",
         )
         parser.add_argument(
             "--proxy-mass-scale",

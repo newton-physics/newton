@@ -18,6 +18,7 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
+from ..coupling import CouplingInputStateFlags, CouplingInterface
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
@@ -615,7 +616,7 @@ class LastStepData:
             self.body_q_prev.assign(collider_body_q)
 
 
-class SolverImplicitMPM(SolverBase):
+class SolverImplicitMPM(SolverBase, CouplingInterface):
     """Implicit MPM solver for granular and elasto-plastic materials.
 
     Implements an implicit Material Point Method (MPM) algorithm roughly
@@ -1096,28 +1097,19 @@ class SolverImplicitMPM(SolverBase):
         if flags & SolverNotifyFlags.MODEL_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
 
-    def coupling_capabilities(self) -> SolverBase.CouplingCapabilities:
-        """Return coupling hook support for the implicit MPM solver."""
-        custom = SolverBase.CouplingCapability.CUSTOM
-        return {
-            SolverBase.CouplingHooks.BODY_PROXY_REWIND_VELOCITY: custom,
-            SolverBase.CouplingHooks.BODY_PROXY_HARVEST: custom,
-            SolverBase.CouplingHooks.PARTICLE_PROXY_REWIND_VELOCITY: custom,
-            SolverBase.CouplingHooks.PARTICLE_PROXY_HARVEST: custom,
-            SolverBase.CouplingHooks.NOTIFY_INPUT_STATE_UPDATE: custom,
-        }
-
     def coupling_notify_input_state_update(
         self,
         state: newton.State,
-        flags: SolverBase.CouplingInputStateFlags | int,
+        flags: CouplingInputStateFlags | int,
+        *,
+        restart: bool = False,
         dt: float = 0.0,
     ) -> None:
         """Synchronize deformable collider meshes after particle input-state updates."""
-        del dt
-        flags = SolverBase.CouplingInputStateFlags(flags)
-        update_points = bool(flags & SolverBase.CouplingInputStateFlags.PARTICLE_Q)
-        update_velocities = bool(flags & SolverBase.CouplingInputStateFlags.PARTICLE_QD)
+        del dt, restart
+        flags = CouplingInputStateFlags(flags)
+        update_points = bool(flags & CouplingInputStateFlags.PARTICLE_Q)
+        update_velocities = bool(flags & CouplingInputStateFlags.PARTICLE_QD)
         if not (update_points or update_velocities) or not self._mpm_model.deformable_collider_vertex_ranges:
             return
 

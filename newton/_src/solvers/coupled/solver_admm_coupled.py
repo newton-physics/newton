@@ -14,8 +14,12 @@ import warp as wp
 
 from ...geometry.flags import ShapeFlags
 from ...sim import JointType
+from ..coupling import (
+    CouplingEndpointKind,
+    CouplingHook,
+    CouplingInputStateFlags,
+)
 from ..flags import SolverNotifyFlags
-from ..solver import SolverBase
 from .admm_utils import (
     attach_rp_accumulate_forces_kernel,
     attach_rp_compute_Jv_kernel,
@@ -68,6 +72,10 @@ from .solver_coupled import SolverCoupled, SolverEntry
 
 if TYPE_CHECKING:
     from ...sim import Contacts, Control, Model, ModelBuilder, State
+
+
+_DEFAULT_DETECTION_MARGIN = 0.01
+"""Default ADMM contact detection margin [m] when a ContactPair leaves it unset."""
 
 
 @dataclass
@@ -207,7 +215,6 @@ class _AdmmRigidRigidContactGroup:
     shape_mask_a: wp.array | None = None
     shape_mask_b: wp.array | None = None
     contact_distance_value: float = 0.0
-    friction_value: float = 0.0
     use_contact_margins: bool = False
     prev_body_ids_a: wp.array | None = None
     prev_body_ids_b: wp.array | None = None
@@ -250,7 +257,6 @@ class _AdmmRigidParticleContactGroup:
     body_mask: wp.array | None = None
     shape_mask: wp.array | None = None
     contact_distance_value: float = 0.0
-    friction_value: float = 0.0
     use_particle_radius: bool = False
     prev_body_ids: wp.array | None = None
     prev_particle_ids: wp.array | None = None
@@ -288,7 +294,6 @@ class _AdmmParticleParticleContactGroup:
     particle_mask_a: wp.array | None = None
     particle_mask_b: wp.array | None = None
     contact_distance_value: float = 0.0
-    friction_value: float = 0.0
     use_radius_sum: bool = False
     detection_margin: float = 0.0
     query_radius: float = 0.0
@@ -311,7 +316,7 @@ class _AdmmRigidParticleContactSpec:
     body_owner: str
     shapes: tuple[int, ...] | None = None
     contact_distance: float | None = None
-    friction: float = 0.0
+    detection_margin: float | None = None
 
 
 @dataclass(frozen=True)
@@ -323,7 +328,6 @@ class _AdmmRigidRigidContactSpec:
     shapes_a: tuple[int, ...] | None = None
     shapes_b: tuple[int, ...] | None = None
     contact_distance: float | None = None
-    friction: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -336,7 +340,6 @@ class _AdmmParticleParticleContactSpec:
     particles_b: tuple[int, ...] | None = None
     contact_distance: float | None = None
     detection_margin: float | None = None
-    friction: float = 0.0
 
 
 class SolverAdmmCoupled(SolverCoupled):
@@ -472,7 +475,40 @@ class SolverAdmmCoupled(SolverCoupled):
         return indices[cls.BODY_PARTICLE_ATTACHMENT_BODY_ATTR]
 
     @dataclass(frozen=True)
-    class CouplingAdmm:
+    class ContactPair:
+        """One cross-solver contact interface for ADMM coupling.
+
+        A ``ContactPair`` activates ADMM contacts between two solver entries.
+        The coupler inspects ownership for ``source`` and ``destination`` and
+        emits the applicable subset of {rigid-rigid, rigid-particle,
+        particle-particle} ADMM contact rows. If neither entry owns shapes or
+        particles, no contacts are emitted.
+
+        Friction is derived from shape and particle material properties
+        (``shape_material_mu`` and ``Model.particle_mu``), so it is not a
+        ContactPair field — set those on the model to control friction.
+
+        Args:
+            source: Name of one solver entry.
+            destination: Name of the other solver entry. Must differ from
+                ``source``.
+            contact_distance: Optional minimum contact gap [m]. ``None`` uses
+                collision margins (rigid-rigid), particle radii (rigid-particle),
+                or radius sums (particle-particle).
+            detection_margin: Optional detection margin [m]. For
+                rigid-particle pairs, this sets the soft-contact margin on the
+                shared collision pipeline. For particle-particle pairs, this
+                sets the hash-grid detection margin. ``None`` keeps the
+                solver's default.
+        """
+
+        source: str
+        destination: str
+        contact_distance: float | None = None
+        detection_margin: float | None = None
+
+    @dataclass(frozen=True)
+    class Config:
         """Linearized ADMM coupling configuration.
 
         Args:
@@ -490,19 +526,10 @@ class SolverAdmmCoupled(SolverCoupled):
             joint_angular_damping: Quadratic damping for angular ADMM
                 attachments derived from cross-solver fixed and revolute
                 joints [N*m*s/rad].
-            contact_detection: Whether to build ADMM contact rows from
-                cross-solver collision candidates in the model.
-            contact_distance: Optional minimum contact gap [m] for generated
-                contacts. If ``None``, rigid contacts use collision margins,
-                rigid-particle contacts use particle radii, and
-                particle-particle contacts use radius sums.
-            contact_friction: Isotropic Coulomb friction coefficient for
-                generated ADMM contact rows.
-            contact_detection_margin: Soft particle-shape detection margin [m]
-                and default particle-particle hash-grid detection margin [m].
-            particle_contact_detection_margin: Optional particle-particle
-                hash-grid detection margin [m]. If ``None``,
-                ``contact_detection_margin`` is used.
+            contact_pairs: Per-interface contact pairs to enable. Empty list
+                disables ADMM-managed contacts. Use
+                :meth:`SolverAdmmCoupled.auto_detect_contact_pairs` to build the
+                old auto-discovery list.
         """
 
         iterations: int = 5
@@ -513,17 +540,13 @@ class SolverAdmmCoupled(SolverCoupled):
         joint_damping: float = 0.0
         joint_angular_stiffness: float = 1.0e4
         joint_angular_damping: float = 0.0
-        contact_detection: bool = False
-        contact_distance: float | None = None
-        contact_friction: float = 0.0
-        contact_detection_margin: float = 0.01
-        particle_contact_detection_margin: float | None = None
+        contact_pairs: Sequence[SolverAdmmCoupled.ContactPair] = ()
 
     def __init__(
         self,
         model: Model,
         entries: Sequence[SolverCoupled.Entry],
-        coupling: SolverAdmmCoupled.CouplingAdmm,
+        coupling: SolverAdmmCoupled.Config,
     ) -> None:
         self._admm_coupling = coupling
         self._admm_buffers: dict[str, _AdmmBuffers] = {}
@@ -592,13 +615,6 @@ class SolverAdmmCoupled(SolverCoupled):
         self._admm_collision_contact_count_max = max(self._admm_collision_contact_count_max, count)
         return self._admm_collision_contact_count_max
 
-    def prepare_graph_capture(self) -> None:
-        """Allocate lazy ADMM buffers that must exist before CUDA graph capture."""
-        if (
-            self._admm_dynamic_rr_contact_groups or self._admm_dynamic_rp_contact_groups
-        ) and self._admm_internal_contacts is None:
-            self._admm_internal_contacts = self._admm_collision_pipeline.contacts()
-
     def _customize_view(self, name: str, view: ModelView, body_indices: wp.array) -> None:
         """Apply ADMM proximal mass scaling before sub-solver construction."""
         del name
@@ -610,7 +626,7 @@ class SolverAdmmCoupled(SolverCoupled):
             view.scale_body_mass(body_indices, scale)
         view.scale_particle_mass(scale)
 
-    def _setup_admm(self, coupling: SolverAdmmCoupled.CouplingAdmm) -> None:
+    def _setup_admm(self, coupling: SolverAdmmCoupled.Config) -> None:
         for entry in self._entries.values():
             buf = _AdmmBuffers()
             s0 = entry.state_0
@@ -650,19 +666,6 @@ class SolverAdmmCoupled(SolverCoupled):
         self._build_admm_body_particle_attachment_groups()
         self._setup_admm_contact_specs(coupling)
 
-        if coupling.contact_detection:
-            if coupling.contact_detection_margin < 0.0:
-                raise ValueError("ADMM contact detection margin must be non-negative")
-            if (
-                coupling.particle_contact_detection_margin is not None
-                and coupling.particle_contact_detection_margin < 0.0
-            ):
-                raise ValueError("ADMM particle contact detection margin must be non-negative")
-            if coupling.contact_distance is not None and coupling.contact_distance < 0.0:
-                raise ValueError("ADMM contact distance must be non-negative")
-            if coupling.contact_friction < 0.0:
-                raise ValueError("ADMM contact friction must be non-negative")
-
         if self._admm_rigid_particle_contact_specs or self._admm_rigid_rigid_contact_specs:
             if self._admm_rigid_particle_contact_specs:
                 self._validate_rigid_particle_contact_specs()
@@ -677,7 +680,7 @@ class SolverAdmmCoupled(SolverCoupled):
             self._admm_collision_pipeline = CollisionPipeline(
                 self.model,
                 broad_phase="explicit",
-                soft_contact_margin=float(coupling.contact_detection_margin),
+                soft_contact_margin=float(self._rigid_particle_detection_margin()),
             )
             if self._admm_rigid_particle_contact_specs:
                 self._admm_dynamic_rp_contact_groups = self._build_collision_rigid_particle_contact_groups()
@@ -699,13 +702,21 @@ class SolverAdmmCoupled(SolverCoupled):
         self._admm_rp_contact_groups = list(self._admm_dynamic_rp_contact_groups)
         self._admm_pp_contact_groups = list(self._admm_dynamic_pp_contact_groups)
 
+        # Eagerly allocate the internal contact buffer so it exists before any
+        # CUDA graph capture. Lazy allocation during capture leaves a bogus
+        # pointer in the captured graph.
+        if (
+            self._admm_dynamic_rr_contact_groups or self._admm_dynamic_rp_contact_groups
+        ) and self._admm_internal_contacts is None:
+            self._admm_internal_contacts = self._admm_collision_pipeline.contacts()
+
     def _setup_admm_effective_mass_buffers(self, entry: SolverEntry, buf: _AdmmBuffers) -> None:
         device = self.model.device
         if self.model.body_mass is not None:
             body_mass = self.model.body_mass.numpy().copy()
             self._apply_custom_effective_mass(
                 entry,
-                SolverBase.CouplingEndpointKind.BODY,
+                CouplingEndpointKind.BODY,
                 entry.body_indices,
                 body_mass,
             )
@@ -714,7 +725,7 @@ class SolverAdmmCoupled(SolverCoupled):
             particle_mass = self.model.particle_mass.numpy().copy()
             self._apply_custom_effective_mass(
                 entry,
-                SolverBase.CouplingEndpointKind.PARTICLE,
+                CouplingEndpointKind.PARTICLE,
                 entry.particle_indices,
                 particle_mass,
             )
@@ -723,7 +734,7 @@ class SolverAdmmCoupled(SolverCoupled):
     def _apply_custom_effective_mass(
         self,
         entry: SolverEntry,
-        endpoint_kind: SolverBase.CouplingEndpointKind,
+        endpoint_kind: CouplingEndpointKind,
         endpoint_indices: wp.array,
         mass_values,
     ) -> None:
@@ -748,13 +759,12 @@ class SolverAdmmCoupled(SolverCoupled):
         buf = self._admm_buffers[entry_name]
         return buf.particle_effective_mass.numpy() if buf.particle_effective_mass is not None else []
 
-    def _require_effective_mass(self, entry_name: str, endpoint_kind: SolverBase.CouplingEndpointKind) -> None:
+    def _require_effective_mass(self, entry_name: str, endpoint_kind: CouplingEndpointKind) -> None:
         if (entry_name, int(endpoint_kind)) not in self._admm_effective_mass_unsupported:
             return
         solver = self._entries[entry_name].solver
         raise NotImplementedError(
-            f"{solver.__class__.__name__} does not support coupling hook "
-            f"{SolverBase.CouplingHooks.EFFECTIVE_MASS_DIAGONAL.name}"
+            f"{solver.__class__.__name__} does not support coupling hook {CouplingHook.EFFECTIVE_MASS_DIAGONAL.name}"
         )
 
     @staticmethod
@@ -763,24 +773,124 @@ class SolverAdmmCoupled(SolverCoupled):
             return ((m_a * m_b) / (m_a + m_b)) ** 0.5
         return 1.0
 
-    def _setup_admm_contact_specs(self, coupling: SolverAdmmCoupled.CouplingAdmm) -> None:
-        """Populate dynamic ADMM contact specs from model ownership."""
-        if not bool(coupling.contact_detection):
+    def _setup_admm_contact_specs(self, coupling: SolverAdmmCoupled.Config) -> None:
+        """Populate dynamic ADMM contact specs from configured contact pairs."""
+        if not coupling.contact_pairs:
             return
 
-        self._admm_rigid_particle_contact_specs = self._discover_rigid_particle_contact_specs(coupling)
-        self._admm_rigid_rigid_contact_specs = self._discover_rigid_rigid_contact_specs(coupling)
-        self._admm_particle_particle_contact_specs = self._discover_particle_particle_contact_specs(coupling)
+        # Discover all candidate specs from model state (one rigid-rigid/rigid-particle
+        # /particle-particle entry per cross-owner combination), then keep only those
+        # whose owner pair appears in the user's ContactPair list. ContactPair fields
+        # override per-pair friction/contact_distance.
+        pair_by_owners: dict[frozenset[str], SolverAdmmCoupled.ContactPair] = {}
+        for pair in coupling.contact_pairs:
+            if pair.source == pair.destination:
+                raise ValueError(f"ADMM ContactPair requires distinct source and destination, got {pair.source!r}")
+            if pair.source not in self._entries:
+                raise ValueError(f"Unknown ADMM ContactPair source {pair.source!r}")
+            if pair.destination not in self._entries:
+                raise ValueError(f"Unknown ADMM ContactPair destination {pair.destination!r}")
+            if pair.contact_distance is not None and pair.contact_distance < 0.0:
+                raise ValueError("ADMM ContactPair contact_distance must be non-negative")
+            if pair.detection_margin is not None and pair.detection_margin < 0.0:
+                raise ValueError("ADMM ContactPair detection_margin must be non-negative")
+            key = frozenset({pair.source, pair.destination})
+            if key in pair_by_owners:
+                raise ValueError(f"Duplicate ADMM ContactPair for entries {pair.source!r} and {pair.destination!r}")
+            pair_by_owners[key] = pair
+
+        rp_specs = self._discover_rigid_particle_contact_specs()
+        rr_specs = self._discover_rigid_rigid_contact_specs()
+        pp_specs = self._discover_particle_particle_contact_specs()
+
+        def matching_pair(owner_a: str, owner_b: str):
+            return pair_by_owners.get(frozenset({owner_a, owner_b}))
+
+        def override(spec, pair):
+            return spec.__class__(
+                **{
+                    **{k: getattr(spec, k) for k in spec.__dataclass_fields__},
+                    "contact_distance": pair.contact_distance,
+                    **(
+                        {"detection_margin": pair.detection_margin}
+                        if "detection_margin" in spec.__dataclass_fields__
+                        else {}
+                    ),
+                }
+            )
+
+        self._admm_rigid_particle_contact_specs = [
+            override(spec, matching_pair(spec.body_owner, spec.particle_owner))
+            for spec in rp_specs
+            if matching_pair(spec.body_owner, spec.particle_owner) is not None
+        ]
+        self._admm_rigid_rigid_contact_specs = [
+            override(spec, matching_pair(spec.owner_a, spec.owner_b))
+            for spec in rr_specs
+            if matching_pair(spec.owner_a, spec.owner_b) is not None
+        ]
+        self._admm_particle_particle_contact_specs = [
+            override(spec, matching_pair(spec.owner_a, spec.owner_b))
+            for spec in pp_specs
+            if matching_pair(spec.owner_a, spec.owner_b) is not None
+        ]
+
+    @classmethod
+    def auto_detect_contact_pairs(
+        cls,
+        entries: Sequence[SolverCoupled.Entry],
+        *,
+        contact_distance: float | None = None,
+        detection_margin: float | None = None,
+    ) -> list[SolverAdmmCoupled.ContactPair]:
+        """Return ContactPair entries for every cross-owner interface.
+
+        Mirrors the prior auto-detection behavior: a pair is emitted for every
+        distinct combination of entries. Friction is read from
+        ``shape_material_mu`` and ``Model.particle_mu`` at contact-fill time;
+        only ``contact_distance`` and ``detection_margin`` need to be supplied
+        here, and they default to the solver's own defaults.
+
+        Args:
+            entries: Sub-solver entries that will be passed to
+                :class:`SolverAdmmCoupled`.
+            contact_distance: Default minimum contact gap [m].
+            detection_margin: Default detection margin [m].
+        """
+        names = [e.name for e in entries]
+        pairs: list[SolverAdmmCoupled.ContactPair] = []
+        for i, a in enumerate(names):
+            for b in names[i + 1 :]:
+                pairs.append(
+                    cls.ContactPair(
+                        source=a,
+                        destination=b,
+                        contact_distance=contact_distance,
+                        detection_margin=detection_margin,
+                    )
+                )
+        return pairs
 
     def _shape_flagged(self, shape_flags, shape: int, flag: ShapeFlags) -> bool:
         if shape_flags is None:
             return False
         return bool(int(shape_flags[shape]) & int(flag))
 
-    def _discover_rigid_particle_contact_specs(
-        self,
-        coupling: SolverAdmmCoupled.CouplingAdmm,
-    ) -> list[_AdmmRigidParticleContactSpec]:
+    def _rigid_particle_detection_margin(self) -> float:
+        """Return the soft-contact margin to apply on the shared collision pipeline.
+
+        The collision pipeline is shared across all rigid-particle ADMM pairs,
+        so it must use a single margin. We pick the max of all
+        rigid-particle ``ContactPair.detection_margin`` values (defaulting to
+        :data:`_DEFAULT_DETECTION_MARGIN` when unset).
+        """
+        margin = _DEFAULT_DETECTION_MARGIN
+        for spec in self._admm_rigid_particle_contact_specs:
+            value = _DEFAULT_DETECTION_MARGIN if spec.detection_margin is None else float(spec.detection_margin)
+            margin = max(margin, value)
+        return margin
+
+    def _discover_rigid_particle_contact_specs(self) -> list[_AdmmRigidParticleContactSpec]:
         shape_body = self.model.shape_body.numpy() if self.model.shape_body is not None else []
         shape_flags = self.model.shape_flags.numpy() if getattr(self.model, "shape_flags", None) is not None else None
         shapes_by_owner: dict[str, list[int]] = {}
@@ -805,16 +915,11 @@ class SolverAdmmCoupled(SolverCoupled):
                         particle_owner=particle_owner,
                         body_owner=body_owner,
                         shapes=tuple(shapes),
-                        contact_distance=coupling.contact_distance,
-                        friction=float(coupling.contact_friction),
                     )
                 )
         return specs
 
-    def _discover_rigid_rigid_contact_specs(
-        self,
-        coupling: SolverAdmmCoupled.CouplingAdmm,
-    ) -> list[_AdmmRigidRigidContactSpec]:
+    def _discover_rigid_rigid_contact_specs(self) -> list[_AdmmRigidRigidContactSpec]:
         if getattr(self.model, "shape_contact_pairs", None) is None:
             return []
         shape_body = self.model.shape_body.numpy() if self.model.shape_body is not None else []
@@ -842,21 +947,11 @@ class SolverAdmmCoupled(SolverCoupled):
                 owner_b=owner_b,
                 shapes_a=tuple(sorted(shapes_a)),
                 shapes_b=tuple(sorted(shapes_b)),
-                contact_distance=coupling.contact_distance,
-                friction=float(coupling.contact_friction),
             )
             for (owner_a, owner_b), (shapes_a, shapes_b) in grouped.items()
         ]
 
-    def _discover_particle_particle_contact_specs(
-        self,
-        coupling: SolverAdmmCoupled.CouplingAdmm,
-    ) -> list[_AdmmParticleParticleContactSpec]:
-        particle_margin = (
-            coupling.contact_detection_margin
-            if coupling.particle_contact_detection_margin is None
-            else coupling.particle_contact_detection_margin
-        )
+    def _discover_particle_particle_contact_specs(self) -> list[_AdmmParticleParticleContactSpec]:
         entries = [(name, particles) for name, particles in self._entry_particle_sets.items() if particles]
         specs: list[_AdmmParticleParticleContactSpec] = []
         for i, (owner_a, particles_a) in enumerate(entries):
@@ -869,9 +964,6 @@ class SolverAdmmCoupled(SolverCoupled):
                         owner_b=owner_b,
                         particles_a=tuple(sorted(particles_a)),
                         particles_b=tuple(sorted(particles_b)),
-                        contact_distance=coupling.contact_distance,
-                        detection_margin=particle_margin,
-                        friction=float(coupling.contact_friction),
                     )
                 )
         return specs
@@ -911,8 +1003,6 @@ class SolverAdmmCoupled(SolverCoupled):
                 raise ValueError(f"ADMM rigid-rigid contact owner '{spec.owner_b}' does not own any bodies")
             if spec.contact_distance is not None and spec.contact_distance < 0.0:
                 raise ValueError("ADMM rigid-rigid contact distances must be non-negative")
-            if spec.friction < 0.0:
-                raise ValueError("ADMM rigid-rigid contacts require non-negative friction")
             self._validate_shape_contact_subset(spec.owner_a, spec.shapes_a)
             self._validate_shape_contact_subset(spec.owner_b, spec.shapes_b)
 
@@ -1084,7 +1174,7 @@ class SolverAdmmCoupled(SolverCoupled):
         inertia_b = self._inertia_scalar(props_b[1][0])
         return self._interface_weight(inertia_a, inertia_b)
 
-    def _build_admm_joint_groups(self, coupling: SolverAdmmCoupled.CouplingAdmm) -> None:
+    def _build_admm_joint_groups(self, coupling: SolverAdmmCoupled.Config) -> None:
         """Build quadratic ADMM attachments from cross-solver model joints."""
         if (
             coupling.joint_stiffness < 0.0
@@ -1229,8 +1319,8 @@ class SolverAdmmCoupled(SolverCoupled):
 
         device = self.model.device
         for (entry_name_a, entry_name_b), items in point_items.items():
-            self._require_effective_mass(entry_name_a, SolverBase.CouplingEndpointKind.BODY)
-            self._require_effective_mass(entry_name_b, SolverBase.CouplingEndpointKind.BODY)
+            self._require_effective_mass(entry_name_a, CouplingEndpointKind.BODY)
+            self._require_effective_mass(entry_name_b, CouplingEndpointKind.BODY)
             body_mass_np_a = self._body_effective_mass_np(entry_name_a)
             body_mass_np_b = self._body_effective_mass_np(entry_name_b)
             body_ids_a = [item[0] for item in items]
@@ -1404,8 +1494,8 @@ class SolverAdmmCoupled(SolverCoupled):
 
         device = self.model.device
         for (body_entry, particle_entry), items in grouped.items():
-            self._require_effective_mass(body_entry, SolverBase.CouplingEndpointKind.BODY)
-            self._require_effective_mass(particle_entry, SolverBase.CouplingEndpointKind.PARTICLE)
+            self._require_effective_mass(body_entry, CouplingEndpointKind.BODY)
+            self._require_effective_mass(particle_entry, CouplingEndpointKind.PARTICLE)
             body_mass_np = self._body_effective_mass_np(body_entry)
             particle_mass_np = self._particle_effective_mass_np(particle_entry)
             body_ids = [item[0] for item in items]
@@ -1505,11 +1595,6 @@ class SolverAdmmCoupled(SolverCoupled):
         ):
             return
 
-        if (self._admm_dynamic_rr_contact_groups or self._admm_dynamic_rp_contact_groups) and (
-            self._admm_internal_contacts is None
-        ):
-            self._admm_internal_contacts = self._admm_collision_pipeline.contacts()
-
         if self._admm_dynamic_rr_contact_groups or self._admm_dynamic_rp_contact_groups:
             self._admm_collision_pipeline.collide(state_in, self._admm_internal_contacts)
 
@@ -1587,8 +1672,8 @@ class SolverAdmmCoupled(SolverCoupled):
                     group.shape_mask_b,
                     buf_a.body_effective_mass,
                     buf_b.body_effective_mass,
+                    self.model.shape_material_mu,
                     float(group.contact_distance_value),
-                    float(group.friction_value),
                     1 if group.use_contact_margins else 0,
                     int(group.count),
                     group.active_count,
@@ -1684,8 +1769,9 @@ class SolverAdmmCoupled(SolverCoupled):
                         self.model.particle_radius,
                         body_buf.body_effective_mass,
                         particle_buf.particle_effective_mass,
+                        self.model.shape_material_mu,
+                        float(self.model.particle_mu),
                         float(group.contact_distance_value),
-                        float(group.friction_value),
                         1 if group.use_particle_radius else 0,
                         int(group.count),
                         group.active_count,
@@ -1806,7 +1892,7 @@ class SolverAdmmCoupled(SolverCoupled):
                     contact_stream.distance,
                     self._admm_buffers[group.particle_entry_name_a].particle_effective_mass,
                     self._admm_buffers[group.particle_entry_name_b].particle_effective_mass,
-                    float(group.friction_value),
+                    float(self.model.particle_mu),
                     int(group.count),
                     group.active_count,
                     group.active_count_max,
@@ -1852,17 +1938,14 @@ class SolverAdmmCoupled(SolverCoupled):
         groups = []
 
         for spec in self._admm_rigid_rigid_contact_specs:
-            friction = float(spec.friction)
-            if friction < 0.0:
-                raise ValueError("ADMM rigid-rigid contacts require non-negative friction")
             shapes_a = self._shape_contact_candidates(spec.owner_a, spec.shapes_a)
             shapes_b = self._shape_contact_candidates(spec.owner_b, spec.shapes_b)
             # Primitive pairs may emit a small manifold rather than one row.
             capacity = 8 * len(shapes_a) * len(shapes_b)
             if capacity == 0:
                 continue
-            self._require_effective_mass(spec.owner_a, SolverBase.CouplingEndpointKind.BODY)
-            self._require_effective_mass(spec.owner_b, SolverBase.CouplingEndpointKind.BODY)
+            self._require_effective_mass(spec.owner_a, CouplingEndpointKind.BODY)
+            self._require_effective_mass(spec.owner_b, CouplingEndpointKind.BODY)
 
             groups.append(
                 _AdmmRigidRigidContactGroup(
@@ -1892,7 +1975,6 @@ class SolverAdmmCoupled(SolverCoupled):
                     shape_mask_a=self._make_int_mask_array(self.model.shape_count, set(shapes_a)),
                     shape_mask_b=self._make_int_mask_array(self.model.shape_count, set(shapes_b)),
                     contact_distance_value=0.0 if spec.contact_distance is None else float(spec.contact_distance),
-                    friction_value=friction,
                     use_contact_margins=spec.contact_distance is None,
                     prev_body_ids_a=wp.zeros(capacity, dtype=int, device=device),
                     prev_body_ids_b=wp.zeros(capacity, dtype=int, device=device),
@@ -1913,9 +1995,6 @@ class SolverAdmmCoupled(SolverCoupled):
         shape_body = self.model.shape_body.numpy() if self.model.shape_body is not None else []
 
         for spec_idx, spec in enumerate(self._admm_rigid_particle_contact_specs):
-            friction = float(spec.friction)
-            if friction < 0.0:
-                raise ValueError("ADMM rigid-particle contacts require non-negative friction")
             particle_candidates = sorted(self._entry_particle_sets[spec.particle_owner])
             body_candidates = set(self._entry_body_sets[spec.body_owner])
             shape_filter = self._admm_rigid_particle_shape_filters.get(spec_idx)
@@ -1929,8 +2008,8 @@ class SolverAdmmCoupled(SolverCoupled):
             capacity = len(particle_candidates) * len(shape_candidates)
             if capacity == 0:
                 continue
-            self._require_effective_mass(spec.body_owner, SolverBase.CouplingEndpointKind.BODY)
-            self._require_effective_mass(spec.particle_owner, SolverBase.CouplingEndpointKind.PARTICLE)
+            self._require_effective_mass(spec.body_owner, CouplingEndpointKind.BODY)
+            self._require_effective_mass(spec.particle_owner, CouplingEndpointKind.PARTICLE)
 
             groups.append(
                 _AdmmRigidParticleContactGroup(
@@ -1957,7 +2036,6 @@ class SolverAdmmCoupled(SolverCoupled):
                     body_mask=self._make_int_mask_array(self.model.body_count, body_candidates),
                     shape_mask=self._make_int_mask_array(self.model.shape_count, set(shape_candidates)),
                     contact_distance_value=0.0 if spec.contact_distance is None else float(spec.contact_distance),
-                    friction_value=friction,
                     use_particle_radius=spec.contact_distance is None,
                     prev_body_ids=wp.zeros(capacity, dtype=int, device=device),
                     prev_particle_ids=wp.zeros(capacity, dtype=int, device=device),
@@ -1975,22 +2053,17 @@ class SolverAdmmCoupled(SolverCoupled):
         groups = []
 
         for spec in self._admm_particle_particle_contact_specs:
-            friction = float(spec.friction)
-            if friction < 0.0:
-                raise ValueError("ADMM particle-particle contacts require non-negative friction")
             particles_a = self._particle_contact_candidates(spec.owner_a, spec.particles_a)
             particles_b = self._particle_contact_candidates(spec.owner_b, spec.particles_b)
             capacity = len(particles_a) * len(particles_b)
             if capacity == 0:
                 continue
-            self._require_effective_mass(spec.owner_a, SolverBase.CouplingEndpointKind.PARTICLE)
-            self._require_effective_mass(spec.owner_b, SolverBase.CouplingEndpointKind.PARTICLE)
+            self._require_effective_mass(spec.owner_a, CouplingEndpointKind.PARTICLE)
+            self._require_effective_mass(spec.owner_b, CouplingEndpointKind.PARTICLE)
 
             use_radius_sum = spec.contact_distance is None
             detection_margin = (
-                float(self._admm_coupling.contact_detection_margin)
-                if spec.detection_margin is None
-                else float(spec.detection_margin)
+                _DEFAULT_DETECTION_MARGIN if spec.detection_margin is None else float(spec.detection_margin)
             )
             query_radius = (
                 2.0 * float(self.model.particle_max_radius) + detection_margin
@@ -2025,7 +2098,6 @@ class SolverAdmmCoupled(SolverCoupled):
                     particle_mask_a=self._make_int_mask_array(self.model.particle_count, set(particles_a)),
                     particle_mask_b=self._make_int_mask_array(self.model.particle_count, set(particles_b)),
                     contact_distance_value=0.0 if spec.contact_distance is None else float(spec.contact_distance),
-                    friction_value=friction,
                     use_radius_sum=use_radius_sum,
                     detection_margin=detection_margin,
                     query_radius=query_radius,
@@ -2212,7 +2284,7 @@ class SolverAdmmCoupled(SolverCoupled):
         dt: float,
     ) -> None:
         device = self.model.device
-        flags = SolverBase.CouplingInputStateFlags(0)
+        flags = CouplingInputStateFlags(0)
         if buf.body_qd_n is not None:
             wp.launch(
                 velocity_proximal_shift_body_kernel,
@@ -2220,7 +2292,7 @@ class SolverAdmmCoupled(SolverCoupled):
                 inputs=[buf.body_qd_n, buf.body_qd_k, gamma, entry.state_0.body_qd],
                 device=device,
             )
-            flags |= SolverBase.CouplingInputStateFlags.BODY_QD
+            flags |= CouplingInputStateFlags.BODY_QD
         if buf.particle_qd_n is not None:
             wp.launch(
                 velocity_proximal_shift_particle_kernel,
@@ -2228,7 +2300,7 @@ class SolverAdmmCoupled(SolverCoupled):
                 inputs=[buf.particle_qd_n, buf.particle_qd_k, gamma, entry.state_0.particle_qd],
                 device=device,
             )
-            flags |= SolverBase.CouplingInputStateFlags.PARTICLE_QD
+            flags |= CouplingInputStateFlags.PARTICLE_QD
         if buf.joint_qd_n is not None and buf.joint_qd_n.shape[0] > 0:
             wp.launch(
                 velocity_proximal_shift_joint_kernel,
@@ -2236,7 +2308,7 @@ class SolverAdmmCoupled(SolverCoupled):
                 inputs=[buf.joint_qd_n, buf.joint_qd_k, gamma, entry.state_0.joint_qd],
                 device=device,
             )
-            flags |= SolverBase.CouplingInputStateFlags.JOINT_QD
+            flags |= CouplingInputStateFlags.JOINT_QD
         self._notify_input_state_update(entry, flags, dt=dt)
 
     def _prepare_admm_iteration_state(
@@ -2250,26 +2322,24 @@ class SolverAdmmCoupled(SolverCoupled):
     ) -> None:
         gamma = float(self._admm_coupling.gamma)
         apply_proximal = gamma > 0.0
-        flags = SolverBase.CouplingInputStateFlags(0)
+        flags = CouplingInputStateFlags(0)
 
         if buf.body_q_n is not None:
             wp.copy(entry.state_0.body_q, buf.body_q_n)
             wp.copy(entry.state_0.body_qd, buf.body_qd_n)
-            flags |= SolverBase.CouplingInputStateFlags.BODY
+            flags |= CouplingInputStateFlags.BODY
 
         if buf.particle_q_n is not None:
             wp.copy(entry.state_0.particle_q, buf.particle_q_n)
             wp.copy(entry.state_0.particle_qd, buf.particle_qd_n)
-            flags |= SolverBase.CouplingInputStateFlags.PARTICLE
+            flags |= CouplingInputStateFlags.PARTICLE
 
         if buf.joint_q_n is not None:
             wp.copy(entry.state_0.joint_q, buf.joint_q_n)
             wp.copy(entry.state_0.joint_qd, buf.joint_qd_n)
-            flags |= SolverBase.CouplingInputStateFlags.JOINT
+            flags |= CouplingInputStateFlags.JOINT
 
-        if iteration_restart and flags:
-            flags |= SolverBase.CouplingInputStateFlags.ITERATION_RESTART
-        self._notify_input_state_update(entry, flags, dt=dt)
+        self._notify_input_state_update(entry, flags, dt=dt, restart=bool(iteration_restart) and bool(flags))
 
         if apply_proximal:
             self._apply_admm_velocity_proximal_shift(entry, buf, gamma, dt)

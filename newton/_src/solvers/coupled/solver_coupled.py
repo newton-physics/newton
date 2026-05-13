@@ -7,13 +7,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from enum import IntEnum
 from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
 
 from ...geometry import ShapeFlags
+from ..coupling import (
+    COUPLING_HOOK_METHOD,
+    CouplingEndpointKind,
+    CouplingHook,
+    CouplingInputStateFlags,
+    CouplingInterface,
+)
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .model_view import ModelView
@@ -28,7 +34,7 @@ def _identity_index_map(count: int, device) -> wp.array:
 
 
 def _coupling_endpoint_arrays(
-    endpoint_kind: SolverBase.CouplingEndpointKind,
+    endpoint_kind: CouplingEndpointKind,
     endpoint_indices: wp.array,
     device,
 ) -> tuple[wp.array, wp.array, wp.array]:
@@ -39,6 +45,43 @@ def _coupling_endpoint_arrays(
         endpoint_indices,
         wp.zeros(count, dtype=wp.vec3, device=device),
     )
+
+
+_UNSUPPORTED = object()
+"""Sentinel returned by :func:`_coupling_method_or_fallback` when the solver
+declared the hook unsupported and ``raise_on_unsupported`` is False."""
+
+
+def _require_supports_coupling(solver: SolverBase) -> None:
+    if not isinstance(solver, CouplingInterface):
+        raise TypeError(
+            f"{type(solver).__name__} cannot participate in a coupled simulation; "
+            "inherit CouplingInterface and override the hook methods it needs."
+        )
+
+
+def _coupling_method_or_fallback(
+    solver: SolverBase,
+    hook: CouplingHook,
+    *,
+    raise_on_unsupported: bool = True,
+):
+    """Look up a solver's hook method.
+
+    Returns the bound method to call if the solver overrides the hook, ``None``
+    if the solver supports the hook but expects the wrapper fallback, or
+    :data:`_UNSUPPORTED` if the solver declared the hook unsupported and
+    ``raise_on_unsupported`` is False. Raises :class:`NotImplementedError`
+    when the hook is unsupported and ``raise_on_unsupported`` is True, or
+    :class:`TypeError` when the solver does not inherit :class:`CouplingInterface`.
+    """
+    _require_supports_coupling(solver)
+    if hook in solver.coupling_unsupported:
+        if raise_on_unsupported:
+            raise NotImplementedError(f"{type(solver).__name__} declared coupling hook {hook.name} as unsupported")
+        return _UNSUPPORTED
+    method = getattr(solver, COUPLING_HOOK_METHOD[hook], None)
+    return method if callable(method) else None
 
 
 @dataclass
@@ -67,7 +110,7 @@ class SolverEntry:
     particle_force_input: wp.array = field(default=None)
 
 
-class SolverCoupled(SolverBase):
+class SolverCoupled(SolverBase, CouplingInterface):
     """Couple multiple solvers through explicit ownership and coupling config.
 
     ``SolverCoupled`` owns generic mechanics that can be derived from
@@ -85,31 +128,27 @@ class SolverCoupled(SolverBase):
             reconciles owned state.
     """
 
-    class ContactPolicy(IntEnum):
-        INTERNAL_ONLY = 0
-        INTERNAL_AND_STATIC = 1
-        NONE = 2
-
     @dataclass(frozen=True)
     class Entry:
         """Public configuration for one sub-solver.
 
         Each entry names a solver factory, the global model ids owned by that
-        solver, optional solver construction arguments, an optional
-        :class:`ModelView` customization callback, and stepping policy. Entry
-        names must be unique. In-place stepping is only valid for solvers that
-        explicitly support it and currently requires ``substeps=1``.
+        solver, an optional :class:`ModelView` customization callback, and
+        stepping policy. The factory is called as ``solver(view)`` with the
+        per-entry :class:`ModelView` and must return a configured
+        :class:`SolverBase`. Bind any extra constructor arguments in the
+        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10)``).
+        Entry names must be unique. In-place stepping is only valid for solvers
+        that explicitly support it and currently requires ``substeps=1``.
         """
 
         name: str
-        solver: type[SolverBase] | Callable
+        solver: Callable[[ModelView], SolverBase]
         bodies: Sequence[int] = ()
         particles: Sequence[int] = ()
         joints: Sequence[int] = ()
         shapes: Sequence[int] = ()
-        solver_kwargs: dict = field(default_factory=dict)
         configure_view: Callable[[ModelView], None] | None = None
-        contact_policy: int | None = None
         substeps: int = 1
         in_place: bool = False
 
@@ -212,7 +251,7 @@ class SolverCoupled(SolverBase):
                 cfg.configure_view(view)
             self._filter_shape_contact_pairs(view)
 
-            solver = cfg.solver(model=view, **dict(cfg.solver_kwargs))
+            solver = cfg.solver(view)
             self._entries[cfg.name] = SolverEntry(
                 name=cfg.name,
                 solver=solver,
@@ -345,7 +384,7 @@ class SolverCoupled(SolverBase):
     def _eval_effective_masses(
         self,
         entry: SolverEntry,
-        endpoint_kind: SolverBase.CouplingEndpointKind,
+        endpoint_kind: CouplingEndpointKind,
         endpoint_indices: wp.array,
         *,
         raise_on_unsupported: bool = True,
@@ -354,24 +393,23 @@ class SolverCoupled(SolverBase):
         if endpoint_indices.shape[0] == 0:
             return []
 
-        capability = entry.solver.coupling_capability(SolverBase.CouplingHooks.EFFECTIVE_MASS_DIAGONAL)
-        if capability == SolverBase.CouplingCapability.UNSUPPORTED:
-            if raise_on_unsupported:
-                raise NotImplementedError(
-                    f"{entry.solver.__class__.__name__} does not support coupling hook "
-                    f"{SolverBase.CouplingHooks.EFFECTIVE_MASS_DIAGONAL.name}"
-                )
+        method = _coupling_method_or_fallback(
+            entry.solver,
+            CouplingHook.EFFECTIVE_MASS_DIAGONAL,
+            raise_on_unsupported=raise_on_unsupported,
+        )
+        if method is _UNSUPPORTED:
             return None
 
         indices = [int(i) for i in endpoint_indices.numpy()]
-        if capability == SolverBase.CouplingCapability.CUSTOM:
+        if method is not None:
             endpoint_kind_array, endpoint_index, endpoint_local_pos = _coupling_endpoint_arrays(
                 endpoint_kind,
                 endpoint_indices,
                 self.model.device,
             )
             out = wp.empty(endpoint_indices.shape[0], dtype=float, device=self.model.device)
-            entry.solver.coupling_eval_effective_mass(
+            method(
                 endpoint_kind_array,
                 endpoint_index,
                 endpoint_local_pos,
@@ -379,9 +417,9 @@ class SolverCoupled(SolverBase):
             )
             return [float(value) for value in out.numpy()]
 
-        if int(endpoint_kind) == int(SolverBase.CouplingEndpointKind.BODY):
+        if int(endpoint_kind) == int(CouplingEndpointKind.BODY):
             mass = entry.view.body_mass.numpy() if entry.view.body_mass is not None else []
-        elif int(endpoint_kind) == int(SolverBase.CouplingEndpointKind.PARTICLE):
+        elif int(endpoint_kind) == int(CouplingEndpointKind.PARTICLE):
             mass = entry.view.particle_mass.numpy() if entry.view.particle_mass is not None else []
         else:
             raise ValueError(f"Unknown coupling endpoint kind {endpoint_kind}")
@@ -399,24 +437,23 @@ class SolverCoupled(SolverBase):
             return [], []
 
         indices = [int(i) for i in body_indices.numpy()]
-        block_capability = entry.solver.coupling_capability(SolverBase.CouplingHooks.EFFECTIVE_MASS_BLOCK)
-        if block_capability == SolverBase.CouplingCapability.UNSUPPORTED:
-            if raise_on_unsupported:
-                raise NotImplementedError(
-                    f"{entry.solver.__class__.__name__} does not support coupling hook "
-                    f"{SolverBase.CouplingHooks.EFFECTIVE_MASS_BLOCK.name}"
-                )
+        block_method = _coupling_method_or_fallback(
+            entry.solver,
+            CouplingHook.EFFECTIVE_MASS_BLOCK,
+            raise_on_unsupported=raise_on_unsupported,
+        )
+        if block_method is _UNSUPPORTED:
             return None
 
-        if block_capability == SolverBase.CouplingCapability.CUSTOM:
+        if block_method is not None:
             endpoint_kind_array, endpoint_index, endpoint_local_pos = _coupling_endpoint_arrays(
-                SolverBase.CouplingEndpointKind.BODY,
+                CouplingEndpointKind.BODY,
                 body_indices,
                 self.model.device,
             )
             out_mass = wp.empty(body_indices.shape[0], dtype=float, device=self.model.device)
             out_inertia = wp.empty(body_indices.shape[0], dtype=wp.mat33, device=self.model.device)
-            entry.solver.coupling_eval_effective_mass_block(
+            block_method(
                 endpoint_kind_array,
                 endpoint_index,
                 endpoint_local_pos,
@@ -429,7 +466,7 @@ class SolverCoupled(SolverBase):
 
         masses = self._eval_effective_masses(
             entry,
-            SolverBase.CouplingEndpointKind.BODY,
+            CouplingEndpointKind.BODY,
             body_indices,
             raise_on_unsupported=raise_on_unsupported,
         )
@@ -475,15 +512,11 @@ class SolverCoupled(SolverBase):
     # Sub-solver access
     # ------------------------------------------------------------------
 
-    def get_solver(self, name: str) -> SolverBase:
+    def solver(self, name: str) -> SolverBase:
         """Return the sub-solver registered under *name*."""
         return self._entries[name].solver
 
-    def solver(self, name: str) -> SolverBase:
-        """Return the sub-solver registered under *name*."""
-        return self.get_solver(name)
-
-    def get_view(self, name: str) -> ModelView:
+    def view(self, name: str) -> ModelView:
         """Return the :class:`ModelView` for the sub-solver *name*."""
         return self._entries[name].view
 
@@ -499,7 +532,13 @@ class SolverCoupled(SolverBase):
         contacts: Contacts | None,
         dt: float,
     ) -> None:
-        """Step all coupled sub-solvers for one time step."""
+        """Step all coupled sub-solvers for one time step.
+
+        ``contacts`` is forwarded to sub-solvers that accept it; ``SolverCoupled``
+        itself does not maintain a global contact buffer. Coupling schemes that
+        need a private contact pipeline (e.g. proxy collisions, ADMM internal
+        contacts) own their own buffers internally.
+        """
         self._distribute_state(state_in, dt=dt)
         self._step_coupled(state_in, state_out, control, contacts, dt)
         _copy_state(state_in, state_out)
@@ -526,17 +565,15 @@ class SolverCoupled(SolverBase):
     def _distribute_state(
         self,
         state_in: State,
+        *,
         dt: float = 0.0,
-        extra_flags: SolverBase.CouplingInputStateFlags | int = 0,
+        restart: bool = False,
     ) -> None:
         """Copy ``state_in`` into each sub-solver's ``state_0``."""
-        extra_flags = SolverBase.CouplingInputStateFlags(extra_flags)
         for entry in self._entries.values():
             flags = self._input_state_copy_flags(state_in, entry.state_0)
             _copy_state(state_in, entry.state_0)
-            if flags:
-                flags |= extra_flags
-            self._notify_input_state_update(entry, flags, dt=dt)
+            self._notify_input_state_update(entry, flags, dt=dt, restart=restart)
 
     def _reconcile_state(self, state_out: State) -> None:
         """Merge owned sub-solver state into ``state_out``."""
@@ -596,36 +633,16 @@ class SolverCoupled(SolverBase):
                     device=self.model.device,
                 )
 
-        # Legacy fallback for prototype callers that did not declare particle
-        # or joint ownership explicitly.
-        if not any(owner >= 0 for owner in self._particle_owner):
-            particle_entry = None
-            for entry in self._entries.values():
-                if entry.state_1 is not None and entry.state_1.particle_q is not None:
-                    particle_entry = entry
-            if particle_entry is not None and state_out.particle_q is not None:
-                wp.copy(state_out.particle_q, particle_entry.state_1.particle_q)
-                wp.copy(state_out.particle_qd, particle_entry.state_1.particle_qd)
-
-        if not any(owner >= 0 for owner in self._joint_owner):
-            for entry in self._entries.values():
-                if entry.state_1 is None or entry.body_indices.shape[0] == 0:
-                    continue
-                if entry.state_1.joint_q is not None and state_out.joint_q is not None:
-                    wp.copy(state_out.joint_q, entry.state_1.joint_q)
-                    wp.copy(state_out.joint_qd, entry.state_1.joint_qd)
-                    break
-
     # ------------------------------------------------------------------
     # Generic proxy implementation
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _uses_custom_coupling_hook(solver: SolverBase, hook: SolverBase.CouplingHooks) -> bool:
-        capability = solver.coupling_capability(hook)
-        if capability == SolverBase.CouplingCapability.UNSUPPORTED:
-            raise NotImplementedError(f"{solver.__class__.__name__} does not support coupling hook {hook.name}")
-        return capability == SolverBase.CouplingCapability.CUSTOM
+    def _uses_custom_coupling_hook(solver: SolverBase, hook: CouplingHook) -> bool:
+        _require_supports_coupling(solver)
+        if hook in solver.coupling_unsupported:
+            raise NotImplementedError(f"{type(solver).__name__} declared coupling hook {hook.name} as unsupported")
+        return callable(getattr(solver, COUPLING_HOOK_METHOD[hook], None))
 
     def _clear_body_force_input(self, entry: SolverEntry) -> None:
         """Clear an entry's public body force input before mapped additions."""
@@ -662,7 +679,7 @@ class SolverCoupled(SolverBase):
             body_local_to_global = entry.body_local_to_global
         self._add_body_force_input(entry, body_local_to_global, body_f)
         if entry.state_0.body_f is not None:
-            self._notify_input_state_update(entry, SolverBase.CouplingInputStateFlags.BODY_F, dt=dt)
+            self._notify_input_state_update(entry, CouplingInputStateFlags.BODY_F, dt=dt)
 
     def _clear_particle_force_input(self, entry: SolverEntry) -> None:
         """Clear an entry's public particle force input before mapped additions."""
@@ -699,42 +716,44 @@ class SolverCoupled(SolverBase):
             particle_local_to_global = entry.particle_local_to_global
         self._add_particle_force_input(entry, particle_local_to_global, particle_f)
         if entry.state_0.particle_f is not None:
-            self._notify_input_state_update(entry, SolverBase.CouplingInputStateFlags.PARTICLE_F, dt=dt)
+            self._notify_input_state_update(entry, CouplingInputStateFlags.PARTICLE_F, dt=dt)
 
     @staticmethod
-    def _input_state_copy_flags(src: State, dst: State) -> SolverBase.CouplingInputStateFlags:
+    def _input_state_copy_flags(src: State, dst: State) -> CouplingInputStateFlags:
         """Return state-array flags that ``_copy_state`` will update."""
-        flags = SolverBase.CouplingInputStateFlags(0)
+        flags = CouplingInputStateFlags(0)
         if src.body_q is not None and dst.body_q is not None:
-            flags |= SolverBase.CouplingInputStateFlags.BODY_Q
+            flags |= CouplingInputStateFlags.BODY_Q
             if src.body_qd is not None and dst.body_qd is not None:
-                flags |= SolverBase.CouplingInputStateFlags.BODY_QD
+                flags |= CouplingInputStateFlags.BODY_QD
         if dst.body_f is not None:
-            flags |= SolverBase.CouplingInputStateFlags.BODY_F
+            flags |= CouplingInputStateFlags.BODY_F
         if src.particle_q is not None and dst.particle_q is not None:
-            flags |= SolverBase.CouplingInputStateFlags.PARTICLE_Q
+            flags |= CouplingInputStateFlags.PARTICLE_Q
             if src.particle_qd is not None and dst.particle_qd is not None:
-                flags |= SolverBase.CouplingInputStateFlags.PARTICLE_QD
+                flags |= CouplingInputStateFlags.PARTICLE_QD
         if dst.particle_f is not None:
-            flags |= SolverBase.CouplingInputStateFlags.PARTICLE_F
+            flags |= CouplingInputStateFlags.PARTICLE_F
         if src.joint_q is not None and dst.joint_q is not None:
-            flags |= SolverBase.CouplingInputStateFlags.JOINT_Q
+            flags |= CouplingInputStateFlags.JOINT_Q
             if src.joint_qd is not None and dst.joint_qd is not None:
-                flags |= SolverBase.CouplingInputStateFlags.JOINT_QD
+                flags |= CouplingInputStateFlags.JOINT_QD
         return flags
 
     def _notify_input_state_update(
         self,
         entry: SolverEntry,
-        flags: SolverBase.CouplingInputStateFlags | int,
+        flags: CouplingInputStateFlags | int,
+        *,
         dt: float = 0.0,
+        restart: bool = False,
     ) -> None:
         """Notify custom solvers after coupler-produced input state updates."""
-        flags = SolverBase.CouplingInputStateFlags(flags)
-        if flags == 0:
+        flags = CouplingInputStateFlags(flags)
+        if flags == 0 and not restart:
             return
-        if self._uses_custom_coupling_hook(entry.solver, SolverBase.CouplingHooks.NOTIFY_INPUT_STATE_UPDATE):
-            entry.solver.coupling_notify_input_state_update(entry.state_0, flags, dt=dt)
+        if self._uses_custom_coupling_hook(entry.solver, CouplingHook.NOTIFY_INPUT_STATE_UPDATE):
+            entry.solver.coupling_notify_input_state_update(entry.state_0, flags, restart=restart, dt=dt)
 
     def _step_entry(
         self,
@@ -775,48 +794,56 @@ class SolverCoupled(SolverBase):
         for entry in self._entries.values():
             entry.solver.notify_model_changed(flags)
 
-    def update_contacts(self, contacts: Contacts) -> None:
-        """Not supported for coupled solvers (contacts are managed internally)."""
-        raise NotImplementedError("SolverCoupled manages contacts internally per sub-solver.")
-
 
 def _copy_state(src: State, dst: State) -> None:
     """Copy all matching state arrays from *src* to *dst*."""
     if src is dst:
         return
     if src.body_q is not None and dst.body_q is not None:
-        wp.copy(dst.body_q, src.body_q)
-        wp.copy(dst.body_qd, src.body_qd)
+        _copy_prefix(dst.body_q, src.body_q, "body_q")
+        _copy_prefix(dst.body_qd, src.body_qd, "body_qd")
     if dst.body_f is not None:
         if src.body_f is not None:
-            wp.copy(dst.body_f, src.body_f)
+            _copy_prefix(dst.body_f, src.body_f, "body_f")
         else:
             dst.body_f.zero_()
     if src.particle_q is not None and dst.particle_q is not None:
-        wp.copy(dst.particle_q, src.particle_q)
-        wp.copy(dst.particle_qd, src.particle_qd)
+        _copy_prefix(dst.particle_q, src.particle_q, "particle_q")
+        _copy_prefix(dst.particle_qd, src.particle_qd, "particle_qd")
     if dst.particle_f is not None:
         if src.particle_f is not None:
-            wp.copy(dst.particle_f, src.particle_f)
+            _copy_prefix(dst.particle_f, src.particle_f, "particle_f")
         else:
             dst.particle_f.zero_()
     if src.joint_q is not None and dst.joint_q is not None:
-        wp.copy(dst.joint_q, src.joint_q)
-        wp.copy(dst.joint_qd, src.joint_qd)
+        _copy_prefix(dst.joint_q, src.joint_q, "joint_q")
+        _copy_prefix(dst.joint_qd, src.joint_qd, "joint_qd")
 
 
 def _copy_forces(src: State, dst: State) -> None:
     """Copy force buffers without disturbing positions or velocities."""
     if dst.body_f is not None:
         if src.body_f is not None:
-            wp.copy(dst.body_f, src.body_f)
+            _copy_prefix(dst.body_f, src.body_f, "body_f")
         else:
             dst.body_f.zero_()
     if dst.particle_f is not None:
         if src.particle_f is not None:
-            wp.copy(dst.particle_f, src.particle_f)
+            _copy_prefix(dst.particle_f, src.particle_f, "particle_f")
         else:
             dst.particle_f.zero_()
+
+
+def _copy_prefix(dst: wp.array, src: wp.array, name: str) -> None:
+    """Copy *src* into *dst*, allowing destination prefix views."""
+    dst_len = int(dst.shape[0])
+    src_len = int(src.shape[0])
+    if dst_len == src_len:
+        wp.copy(dst, src)
+    elif dst_len < src_len:
+        wp.copy(dst, src, count=dst_len)
+    else:
+        raise RuntimeError(f"Cannot copy {name}: source length {src_len} is smaller than destination length {dst_len}")
 
 
 @wp.kernel(enable_backward=False)

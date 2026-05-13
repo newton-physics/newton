@@ -1063,20 +1063,23 @@ with no triangles and no collider-particle registration. This keeps the default
 coupler path under test for the common two-solver cases and makes any missing
 generic hook visible.
 
-\subsection{Optional \texttt{SolverBase} coupling hooks}
+\subsection{Optional \texttt{CouplingInterface} hooks}
 
 The implemented coupling hooks keep \texttt{step()} source-compatible. A solver
-reports, per hook, whether the model/state fallback is adequate, a custom
-implementation is required, or the requested hook is unsupported. Omitted hooks
-default to the fallback path.
+inherits \texttt{CouplingInterface} when it participates in coupled simulations.
+Omitted hook methods default to the model/state fallback path; hooks listed in
+\texttt{coupling\_unsupported} reject the coupling mode explicitly. The hook
+enums are nested under \texttt{CouplingInterface} so the public
+\texttt{newton.solvers} namespace exports one coupling entry point rather than a
+family of top-level helper symbols.
 
 \begin{verbatim}
-class SolverBase:
-    class CouplingEndpointKind(IntEnum):
+class CouplingInterface:
+    class EndpointKind(IntEnum):
         BODY = 0
         PARTICLE = 1
 
-    class CouplingInputStateFlags(IntFlag):
+    class InputStateFlags(IntFlag):
         BODY_Q = 1 << 0
         BODY_QD = 1 << 1
         PARTICLE_Q = 1 << 2
@@ -1086,7 +1089,6 @@ class SolverBase:
         BODY_F = 1 << 6
         PARTICLE_F = 1 << 7
         JOINT_F = 1 << 8
-        ITERATION_RESTART = 1 << 9
 
         BODY = BODY_Q | BODY_QD
         PARTICLE = PARTICLE_Q | PARTICLE_QD
@@ -1094,7 +1096,7 @@ class SolverBase:
         FORCE = BODY_F | PARTICLE_F | JOINT_F
         ALL = BODY | PARTICLE | JOINT | FORCE
 
-    class CouplingHooks(IntFlag):
+    class Hook(IntFlag):
         BODY_PROXY_REWIND_VELOCITY = 1 << 0
         PARTICLE_PROXY_REWIND_VELOCITY = 1 << 1
         BODY_PROXY_HARVEST = 1 << 2
@@ -1104,26 +1106,7 @@ class SolverBase:
         NOTIFY_INPUT_STATE_UPDATE = 1 << 6
         PROXY_CONTACT_PREPARE = 1 << 7
 
-    class CouplingCapability(Enum):
-        DEFAULT = "default"
-        CUSTOM = "custom"
-        UNSUPPORTED = "unsupported"
-
-    CouplingCapabilities = dict[CouplingHooks, CouplingCapability]
-
-    def coupling_capabilities(
-        self,
-    ) -> "SolverBase.CouplingCapabilities":
-        return {}
-
-    def coupling_capability(
-        self,
-        hook: "SolverBase.CouplingHooks",
-    ) -> "SolverBase.CouplingCapability":
-        return self.coupling_capabilities().get(
-            hook,
-            SolverBase.CouplingCapability.DEFAULT,
-        )
+    coupling_unsupported: ClassVar[frozenset[Hook]] = frozenset()
 
     def coupling_eval_effective_mass(
         self,
@@ -1145,7 +1128,9 @@ class SolverBase:
     def coupling_notify_input_state_update(
         self,
         state: nt.State,
-        flags: CouplingInputStateFlags | int,
+        flags: CouplingInterface.InputStateFlags | int,
+        *,
+        restart: bool = False,
         dt: float = 0.0,
     ) -> None: ...
 
@@ -1209,8 +1194,8 @@ source-local-to-global-proxy map, so harvested forces stored at the global proxy
 id are applied to the source solver's local id without changing the indexing
 convention of the feedback buffer.
 
-\texttt{ITERATION\_RESTART} is a contextual bit on
-\texttt{coupling\_notify\_input\_state\_update}.  ADMM and proxy coupling set it
+\texttt{restart=True} is a contextual argument on
+\texttt{coupling\_notify\_input\_state\_update}.  ADMM and proxy coupling pass it
 when they restart a solver input state for another relaxation pass over the same
 top-level time step.  Solvers with private step history can then realign that
 history with the public input state without treating the reset as a physical

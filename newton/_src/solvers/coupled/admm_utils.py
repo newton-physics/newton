@@ -707,8 +707,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     shape_mask_b: wp.array[int],
     body_mass_a: wp.array[float],
     body_mass_b: wp.array[float],
+    shape_material_mu: wp.array[float],
     contact_distance_value: float,
-    friction_value: float,
     use_contact_margins: int,
     capacity: int,
     active_count: wp.array[int],
@@ -803,7 +803,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
         W[dst] = wp.sqrt((ma * mb) / (ma + mb))
     else:
         W[dst] = 1.0
-    friction[dst] = friction_value
+    # Geometric-mean combining of shape material friction (matches AVBD).
+    friction[dst] = wp.sqrt(shape_material_mu[sa] * shape_material_mu[sb])
 
     u_out = wp.vec3(0.0, 0.0, 0.0)
     lambda_out = wp.vec3(0.0, 0.0, 0.0)
@@ -994,8 +995,9 @@ def contact_rp_fill_from_soft_contacts_kernel(
     particle_radius: wp.array[float],
     body_mass: wp.array[float],
     particle_mass: wp.array[float],
+    shape_material_mu: wp.array[float],
+    particle_mu: float,
     contact_distance_value: float,
-    friction_value: float,
     use_particle_radius: int,
     capacity: int,
     active_count: wp.array[int],
@@ -1073,7 +1075,8 @@ def contact_rp_fill_from_soft_contacts_kernel(
     body_sign[dst] = -1
     contact_distance[dst] = distance
     W[dst] = weight
-    friction[dst] = friction_value
+    # Geometric-mean combining of shape and particle friction.
+    friction[dst] = wp.sqrt(shape_material_mu[s] * particle_mu)
     u[dst] = u0
     lambda_[dst] = lambda0
 
@@ -1289,7 +1292,7 @@ def contact_pp_fill_from_particle_contacts_kernel(
     particle_contact_distance: wp.array[float],
     particle_mass_a: wp.array[float],
     particle_mass_b: wp.array[float],
-    friction_value: float,
+    particle_mu: float,
     capacity: int,
     active_count: wp.array[int],
     active_count_max: wp.array[int],
@@ -1341,6 +1344,6 @@ def contact_pp_fill_from_particle_contacts_kernel(
     normal[dst] = particle_contact_normal[i]
     contact_distance[dst] = particle_contact_distance[i]
     W[dst] = weight
-    friction[dst] = friction_value
+    friction[dst] = particle_mu
     u[dst] = u0
     lambda_[dst] = lambda0

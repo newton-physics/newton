@@ -19,6 +19,7 @@ from ...sim import (
     ModelBuilder,
     State,
 )
+from ..coupling import CouplingInputStateFlags, CouplingInterface
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
@@ -87,7 +88,7 @@ from .tri_mesh_collision import (
 __all__ = ["SolverVBD"]
 
 
-class SolverVBD(SolverBase):
+class SolverVBD(SolverBase, CouplingInterface):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
     This unified solver supports:
@@ -437,6 +438,15 @@ class SolverVBD(SolverBase):
         # Defaults to True and is reset to True when consumed by step().
         self._update_rigid_history = True
 
+        # Conditional coupling hooks: the notify and body-proxy harvest hooks
+        # only have meaningful implementations when VBD owns rigid-body AVBD
+        # state. Hide them on this instance otherwise so the coupled wrapper
+        # falls back to its generic logic.
+        if not hasattr(self, "body_q_prev"):
+            self.coupling_notify_input_state_update = None
+        if not (hasattr(self, "body_forces") and hasattr(self, "body_torques")):
+            self.coupling_harvest_proxy_wrenches = None
+
     def _init_particle_system(
         self,
         model: Model,
@@ -776,35 +786,27 @@ class SolverVBD(SolverBase):
         if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
-    def coupling_capabilities(self) -> SolverBase.CouplingCapabilities:
-        """Return coupling hook support for VBD."""
-        custom = SolverBase.CouplingCapability.CUSTOM
-        capabilities = {SolverBase.CouplingHooks.PROXY_CONTACT_PREPARE: custom}
-        if hasattr(self, "body_q_prev"):
-            capabilities[SolverBase.CouplingHooks.NOTIFY_INPUT_STATE_UPDATE] = custom
-        if hasattr(self, "body_forces") and hasattr(self, "body_torques"):
-            capabilities[SolverBase.CouplingHooks.BODY_PROXY_HARVEST] = custom
-        return capabilities
-
     def coupling_notify_input_state_update(
         self,
         state: State,
-        flags: SolverBase.CouplingInputStateFlags | int,
+        flags: CouplingInputStateFlags | int,
+        *,
+        restart: bool = False,
         dt: float = 0.0,
     ) -> None:
         """Convert input body pose updates into VBD-compatible history updates."""
-        flags = SolverBase.CouplingInputStateFlags(flags)
+        flags = CouplingInputStateFlags(flags)
         if (
             dt <= 0.0
-            or not (flags & SolverBase.CouplingInputStateFlags.BODY_Q)
-            or not (flags & SolverBase.CouplingInputStateFlags.BODY_QD)
+            or not (flags & CouplingInputStateFlags.BODY_Q)
+            or not (flags & CouplingInputStateFlags.BODY_QD)
             or state.body_q is None
             or state.body_qd is None
             or not hasattr(self, "body_q_prev")
         ):
             return
 
-        iteration_restart = int(bool(flags & SolverBase.CouplingInputStateFlags.ITERATION_RESTART))
+        iteration_restart = int(bool(restart))
         if hasattr(self, "_coupling_proxy_body_q_prev"):
             wp.copy(self._coupling_proxy_body_q_prev, self.body_q_prev)
 

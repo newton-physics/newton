@@ -213,22 +213,20 @@ class Example:
             entries=[
                 SolverCoupled.Entry(
                     name=rigid_name,
-                    solver=rigid_solver,
+                    solver=lambda v: rigid_solver(model=v, **rigid_kwargs),
                     bodies=[self.ball_body, self.pendulum_body],
                     joints=[self.ball_joint, self.pendulum_joint],
-                    solver_kwargs=rigid_kwargs,
                     configure_view=rigid_configure_view,
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
-                    solver=SolverVBD,
+                    solver=lambda v: SolverVBD(model=v, iterations=8),
                     bodies=[self.payload_body],
                     joints=[self.payload_free_joint],
                     particles=list(range(self.model.particle_count)),
-                    solver_kwargs={"iterations": 8},
                 ),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(
+            coupling=SolverAdmmCoupled.Config(
                 iterations=2,
                 rho=50,
                 gamma=0.1,

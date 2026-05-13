@@ -72,37 +72,53 @@ class Example:
             entries=[
                 SolverCoupled.Entry(
                     name="drop_a",
-                    solver=SolverXPBD,
+                    solver=lambda v: SolverXPBD(model=v, iterations=args.xpbd_iterations),
                     particles=self.falling_particles_a,
-                    solver_kwargs={"iterations": args.xpbd_iterations},
                 ),
                 SolverCoupled.Entry(
                     name="drop_b",
-                    solver=SolverXPBD,
+                    solver=lambda v: SolverXPBD(model=v, iterations=args.xpbd_iterations),
                     particles=self.falling_particles_b,
-                    solver_kwargs={"iterations": args.xpbd_iterations},
                 ),
                 SolverCoupled.Entry(
                     name="tray",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(
+                        model=v,
+                        **{"enable_tri_contact": False, "joint_attach_ke": 2.5e4, "joint_attach_kd": 4.0e2},
+                    ),
                     bodies=[self.tray_body],
                     joints=[self.tray_joint],
-                    solver_kwargs={
-                        "enable_tri_contact": False,
-                        "joint_attach_ke": 2.5e4,
-                        "joint_attach_kd": 4.0e2,
-                    },
                 ),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(
+            coupling=SolverAdmmCoupled.Config(
                 iterations=args.admm_iterations,
                 rho=args.rho,
                 gamma=args.gamma,
                 baumgarte=args.baumgarte,
-                contact_detection=self.solver_type == "admm",
-                contact_distance=args.contact_distance,
-                contact_detection_margin=args.contact_detection_margin,
-                particle_contact_detection_margin=args.particle_contact_detection_margin,
+                contact_pairs=(
+                    [
+                        SolverAdmmCoupled.ContactPair(
+                            source="drop_a",
+                            destination="tray",
+                            contact_distance=args.contact_distance,
+                            detection_margin=args.contact_detection_margin,
+                        ),
+                        SolverAdmmCoupled.ContactPair(
+                            source="drop_b",
+                            destination="tray",
+                            contact_distance=args.contact_distance,
+                            detection_margin=args.contact_detection_margin,
+                        ),
+                        SolverAdmmCoupled.ContactPair(
+                            source="drop_a",
+                            destination="drop_b",
+                            contact_distance=args.contact_distance,
+                            detection_margin=args.particle_contact_detection_margin,
+                        ),
+                    ]
+                    if self.solver_type == "admm"
+                    else []
+                ),
             ),
         )
 
@@ -154,17 +170,11 @@ class Example:
 
     def capture(self):
         if wp.get_device().is_cuda:
-            self._prepare_graph_capture()
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
         else:
             self.graph = None
-
-    def _prepare_graph_capture(self):
-        if self.solver_type != "admm":
-            return
-        self.solver.prepare_graph_capture()
 
     def simulate(self):
         for _ in range(self.sim_substeps):

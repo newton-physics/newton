@@ -74,22 +74,20 @@ class Example:
             entries=[
                 SolverCoupled.Entry(
                     name="xpbd",
-                    solver=SolverXPBD,
+                    solver=lambda v: SolverXPBD(
+                        model=v,
+                        **{"iterations": args.xpbd_iterations, "soft_contact_relaxation": args.xpbd_contact_relaxation},
+                    ),
                     particles=self.xpbd_particles,
-                    solver_kwargs={
-                        "iterations": args.xpbd_iterations,
-                        "soft_contact_relaxation": args.xpbd_contact_relaxation,
-                    },
                 ),
                 SolverCoupled.Entry(
                     name="mpm",
-                    solver=SolverImplicitMPM,
+                    solver=lambda v: SolverImplicitMPM(model=v, config=mpm_config),
                     particles=self.mpm_particles,
-                    solver_kwargs={"config": mpm_config},
                     in_place=True,
                 ),
             ],
-            coupling=SolverProxyCoupled.CouplingProxy(
+            coupling=SolverProxyCoupled.Config(
                 iterations=args.proxy_iterations,
                 proxies=[
                     SolverProxyCoupled.Proxy(
@@ -97,7 +95,7 @@ class Example:
                         destination="mpm",
                         particles=self.xpbd_particles,
                         mass_scale=args.proxy_mass_scale,
-                        mode=SolverProxyCoupled.ProxyMode.LAGGED,
+                        mode="lagged",
                     )
                 ],
             ),
@@ -107,7 +105,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.collision_pipeline = newton.CollisionPipeline(self.solver.get_view("xpbd"))
+        self.collision_pipeline = newton.CollisionPipeline(self.solver.view("xpbd"))
         self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)

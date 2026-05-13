@@ -30,13 +30,16 @@ The implementation now has three layers:
 | `SolverAdmmCoupled` | `newton/_src/solvers/coupled/solver_admm_coupled.py` | Working prototype. Supports cross-solver model joints, custom body-particle attachments, rigid/particle contacts, Coulomb friction, and graph-capturable fixed-iteration solves. |
 | Proxy kernels | `newton/_src/solvers/coupled/proxy_utils.py` | Working. Body/particle proxy state sync, velocity rewind, smooth body teleport support, and fallback momentum harvesting. |
 | ADMM kernels | `newton/_src/solvers/coupled/admm_utils.py` | Working. Constraint/contact relative velocities, local updates, dual updates, force splats, Coulomb projection, joint box friction, and particle-particle hash-grid contact generation. |
-| Public API | `newton/solvers.py` | Working. Exports `ModelView`, `SolverCoupled`, `SolverProxyCoupled`, `SolverAdmmCoupled`, and contact-stream helpers. No single-pair wrapper classes are exported. |
+| Public API | `newton/solvers.py` | Working. Exports `ModelView`, `SolverCoupled`, `SolverProxyCoupled`, `SolverAdmmCoupled`, and the `CouplingInterface` mixin. Coupling hook enums live under `CouplingInterface` to keep the top-level solver namespace compact. No single-pair wrapper classes are exported. |
 
 ## Coupling Hooks
 
-`SolverBase.CouplingHooks` now describes only operations where a solver may need
-custom behavior. Missing entries use the coupler fallback, `CUSTOM` calls the
-solver hook, and `UNSUPPORTED` rejects the coupling mode.
+`CouplingInterface.Hook` describes only operations where a solver may need
+custom behavior. Missing hook methods use the coupler fallback, while entries
+listed in `CouplingInterface.coupling_unsupported` reject the coupling mode.
+`CouplingInterface.InputStateFlags` and `CouplingInterface.EndpointKind` describe
+state-update notifications and endpoint arrays without adding more top-level
+public symbols.
 
 | Hook | Default behavior | Current custom users |
 |------|------------------|----------------------|
@@ -116,7 +119,7 @@ solver construction path.
 | Particle proxies | Working for XPBD/VBD and XPBD/MPM particle transfer scenes. Pure MPM proxy particles remain transfer-active but are excluded from material transfer through `material_particle_flags`. |
 | Deformable MPM colliders | Working for VBD/MPM soft bodies. Triangle-owned particles use the collider path rather than pure transfer particles. |
 | Contact preparation | Proxy-local collision pipelines can be supplied per proxy with an optional collide interval. A `None` factory means the outer contact set is passed through. |
-| Iteration count | Working for lagged proxy relaxation. Repeated iterations notify solvers with `ITERATION_RESTART` so private histories can be realigned. |
+| Iteration count | Working for lagged proxy relaxation. Repeated iterations notify solvers with `restart=True` so private histories can be realigned. |
 | Harvesting | Solver-specific contact/impulse harvesting is preferred where available; the fallback remains momentum-based and is most useful for simple particle proxy cases. |
 
 ## ADMM Coupling Status

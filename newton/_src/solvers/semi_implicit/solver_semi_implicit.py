@@ -5,6 +5,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
+from ..coupling import CouplingInterface
 from ..solver import SolverBase
 from .kernels_body import (
     eval_body_joint_forces,
@@ -26,7 +27,7 @@ from .kernels_particle import (
 )
 
 
-class SolverSemiImplicit(SolverBase):
+class SolverSemiImplicit(SolverBase, CouplingInterface):
     """A semi-implicit integrator using symplectic Euler.
 
     After constructing `Model` and `State` objects this time-integrator

@@ -1376,20 +1376,18 @@ class Example:
         entries = [
             newton.solvers.SolverCoupled.Entry(
                 name="mjc",
-                solver=newton.solvers.SolverMuJoCo,
+                solver=lambda v: newton.solvers.SolverMuJoCo(model=v, **mujoco_kwargs),
                 bodies=self._mujoco_body_ids,
                 joints=self._mujoco_joint_ids,
                 shapes=self._mujoco_shape_ids,
-                solver_kwargs=mujoco_kwargs,
                 configure_view=self._configure_mujoco_solver_view,
             ),
             newton.solvers.SolverCoupled.Entry(
                 name="vbd",
-                solver=newton.solvers.SolverVBD,
+                solver=lambda v: newton.solvers.SolverVBD(model=v, **vbd_kwargs),
                 bodies=self._vbd_body_ids,
                 joints=self._vbd_joint_ids,
                 shapes=self._vbd_shape_ids,
-                solver_kwargs=vbd_kwargs,
                 configure_view=self._configure_vbd_solver_view,
             ),
         ]
@@ -1399,7 +1397,7 @@ class Example:
         self.solver = newton.solvers.SolverProxyCoupled(
             model=self.model,
             entries=entries,
-            coupling=newton.solvers.SolverProxyCoupled.CouplingProxy(
+            coupling=newton.solvers.SolverProxyCoupled.Config(
                 proxies=[
                     newton.solvers.SolverProxyCoupled.Proxy(
                         source="mjc",
@@ -1422,7 +1420,7 @@ class Example:
             ),
         )
 
-        self.vbd_solver = self.solver.get_solver("vbd")
+        self.vbd_solver = self.solver.solver("vbd")
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

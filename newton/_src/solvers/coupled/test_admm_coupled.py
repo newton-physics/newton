@@ -33,6 +33,10 @@ from newton._src.solvers.coupled.admm_utils import (
     u_update_quadratic_kernel,
 )
 from newton._src.solvers.coupled.contact_stream import CouplingContactStream, CouplingContactType
+from newton._src.solvers.coupling import (
+    CouplingInputStateFlags,
+    CouplingInterface,
+)
 from newton.solvers import (
     ModelView,
     SolverAdmmCoupled,
@@ -64,7 +68,7 @@ def _set_admm_plane_angle_kernel(body_q: wp.array[wp.transform], body_qd: wp.arr
     body_qd[0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
-class _CustomAdmmParticleCopySolver(SolverBase):
+class _CustomAdmmParticleCopySolver(SolverBase, CouplingInterface):
     """Base test solver that copies particle state."""
 
     def step(self, state_in, state_out, control, contacts, dt):
@@ -102,17 +106,16 @@ class _AdmmParticleForceNotifySolver(_CustomAdmmParticleCopySolver):
     def __init__(self, model):
         super().__init__(model)
         self.notified_flags = []
+        self.notified_restart = []
         self.notified_particle_f = []
         self.instances.append(self)
 
-    def coupling_capabilities(self):
-        return {SolverBase.CouplingHooks.NOTIFY_INPUT_STATE_UPDATE: SolverBase.CouplingCapability.CUSTOM}
-
-    def coupling_notify_input_state_update(self, state, flags, dt=0.0):
+    def coupling_notify_input_state_update(self, state, flags, *, restart=False, dt=0.0):
         del dt
-        flags = SolverBase.CouplingInputStateFlags(flags)
+        flags = CouplingInputStateFlags(flags)
         self.notified_flags.append(flags)
-        if flags & SolverBase.CouplingInputStateFlags.PARTICLE_F:
+        self.notified_restart.append(bool(restart))
+        if flags & CouplingInputStateFlags.PARTICLE_F:
             self.notified_particle_f.append(state.particle_f.numpy().copy())
 
 
@@ -124,20 +127,17 @@ class _CustomAdmmInputStateUpdateSolver(_CustomAdmmParticleCopySolver):
     def __init__(self, model):
         super().__init__(model)
         self.update_calls = []
+        self.update_restart = []
         self.proximal_shift_calls = 0
         self.input_particle_qd = None
         self.instances.append(self)
 
-    def coupling_capabilities(self):
-        return {
-            SolverBase.CouplingHooks.NOTIFY_INPUT_STATE_UPDATE: SolverBase.CouplingCapability.CUSTOM,
-        }
-
-    def coupling_notify_input_state_update(self, state, flags, dt=0.0):
+    def coupling_notify_input_state_update(self, state, flags, *, restart=False, dt=0.0):
         del dt
-        flags = SolverBase.CouplingInputStateFlags(flags)
+        flags = CouplingInputStateFlags(flags)
         self.update_calls.append(flags)
-        if flags == SolverBase.CouplingInputStateFlags.PARTICLE_QD:
+        self.update_restart.append(bool(restart))
+        if flags == CouplingInputStateFlags.PARTICLE_QD:
             self.proximal_shift_calls += 1
             self.input_particle_qd = state.particle_qd.numpy().copy()
             wp.launch(_set_admm_particle_qd_kernel, dim=1, inputs=[state.particle_qd], device=self.model.device)
@@ -153,9 +153,6 @@ class _CustomEffectiveMassSolver(_CustomAdmmParticleCopySolver):
         self.effective_mass = float(effective_mass)
         self.queried_endpoints = []
         self.instances.append(self)
-
-    def coupling_capabilities(self):
-        return {SolverBase.CouplingHooks.EFFECTIVE_MASS_DIAGONAL: SolverBase.CouplingCapability.CUSTOM}
 
     def coupling_eval_effective_mass(self, endpoint_kind, endpoint_index, endpoint_local_pos, out):
         del endpoint_kind, endpoint_local_pos
@@ -623,20 +620,18 @@ def _make_solver(
         entries=[
             SolverCoupled.Entry(
                 name="mjc",
-                solver=SolverMuJoCo,
+                solver=lambda v: SolverMuJoCo(model=v, use_mujoco_contacts=False, njmax=20),
                 bodies=[int(i) for i in mjc_ids.numpy()],
                 joints=list(range(model.joint_count)),
-                solver_kwargs={"use_mujoco_contacts": False, "njmax": 20},
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=SolverVBD,
+                solver=lambda v: SolverVBD(model=v, iterations=5),
                 bodies=[int(i) for i in vbd_ids.numpy()],
                 particles=list(range(model.particle_count)),
-                solver_kwargs={"iterations": 5},
             ),
         ],
-        coupling=SolverAdmmCoupled.CouplingAdmm(
+        coupling=SolverAdmmCoupled.Config(
             iterations=admm_iters,
             rho=rho,
             gamma=gamma,
@@ -703,18 +698,16 @@ def _make_vbd_xpbd_particle_solver(model: newton.Model):
         entries=[
             SolverCoupled.Entry(
                 name="vbd",
-                solver=SolverVBD,
+                solver=lambda v: SolverVBD(model=v, iterations=2),
                 particles=[0],
-                solver_kwargs={"iterations": 2},
             ),
             SolverCoupled.Entry(
                 name="xpbd",
-                solver=SolverXPBD,
+                solver=lambda v: SolverXPBD(model=v, iterations=2),
                 particles=[1],
-                solver_kwargs={"iterations": 2},
             ),
         ],
-        coupling=SolverAdmmCoupled.CouplingAdmm(
+        coupling=SolverAdmmCoupled.Config(
             iterations=8,
             rho=20.0,
             baumgarte=0.2,
@@ -728,18 +721,16 @@ def _make_semi_particle_solver(model: newton.Model):
         entries=[
             SolverCoupled.Entry(
                 name="a",
-                solver=SolverSemiImplicit,
+                solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                 particles=[0],
-                solver_kwargs={"enable_tri_contact": False},
             ),
             SolverCoupled.Entry(
                 name="b",
-                solver=SolverSemiImplicit,
+                solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                 particles=[1],
-                solver_kwargs={"enable_tri_contact": False},
             ),
         ],
-        coupling=SolverAdmmCoupled.CouplingAdmm(
+        coupling=SolverAdmmCoupled.Config(
             iterations=10,
             rho=30.0,
             baumgarte=0.5,
@@ -875,18 +866,16 @@ def _make_semi_body_particle_solver(model: newton.Model):
         entries=[
             SolverCoupled.Entry(
                 name="body",
-                solver=SolverSemiImplicit,
+                solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                 bodies=[0],
-                solver_kwargs={"enable_tri_contact": False},
             ),
             SolverCoupled.Entry(
                 name="particle",
-                solver=SolverSemiImplicit,
+                solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                 particles=[0],
-                solver_kwargs={"enable_tri_contact": False},
             ),
         ],
-        coupling=SolverAdmmCoupled.CouplingAdmm(
+        coupling=SolverAdmmCoupled.Config(
             iterations=10,
             rho=30.0,
             baumgarte=0.5,
@@ -900,18 +889,16 @@ def _make_semi_body_body_solver(model: newton.Model):
         entries=[
             SolverCoupled.Entry(
                 name="a",
-                solver=SolverSemiImplicit,
+                solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                 bodies=[0],
-                solver_kwargs={"enable_tri_contact": False},
             ),
             SolverCoupled.Entry(
                 name="b",
-                solver=SolverSemiImplicit,
+                solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                 bodies=[1],
-                solver_kwargs={"enable_tri_contact": False},
             ),
         ],
-        coupling=SolverAdmmCoupled.CouplingAdmm(
+        coupling=SolverAdmmCoupled.Config(
             iterations=10,
             rho=30.0,
             baumgarte=0.5,
@@ -986,24 +973,26 @@ def _make_admm_inclined_plane_particle_box_solver(
         entries=[
             SolverCoupled.Entry(
                 name="plane",
-                solver=_KinematicAdmmPlaneSolver,
+                solver=lambda v: _KinematicAdmmPlaneSolver(model=v, angle=angle),
                 bodies=[plane_body],
-                solver_kwargs={"angle": angle},
             ),
             SolverCoupled.Entry(
                 name="box",
-                solver=SolverSemiImplicit,
+                solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                 particles=particle_ids,
-                solver_kwargs={"enable_tri_contact": False},
             ),
         ],
-        coupling=SolverAdmmCoupled.CouplingAdmm(
+        coupling=SolverAdmmCoupled.Config(
             iterations=18,
             rho=50.0,
             baumgarte=0.1,
-            contact_detection=True,
-            contact_friction=friction,
-            contact_detection_margin=0.04,
+            contact_pairs=[
+                SolverAdmmCoupled.ContactPair(
+                    source="plane",
+                    destination="box",
+                    detection_margin=0.04,
+                )
+            ],
         ),
     )
 
@@ -1016,6 +1005,10 @@ def _run_inclined_plane_particle_box(
     dt: float = 1.0 / 360.0,
 ) -> tuple[float, float, int]:
     model, plane_body, _, particle_ids = _build_inclined_plane_particle_box_scene(angle)
+    # ADMM derives friction from material properties; set both sides so the
+    # geometric-mean combine reduces to the requested coefficient.
+    model.particle_mu = float(friction)
+    model.shape_material_mu = wp.full(model.shape_count, float(friction), dtype=wp.float32, device=model.device)
     solver = _make_admm_inclined_plane_particle_box_solver(
         model,
         plane_body,
@@ -1139,24 +1132,26 @@ def _make_collision_admm_inclined_plane_rigid_box_solver(
         entries=[
             SolverCoupled.Entry(
                 name="plane",
-                solver=_KinematicAdmmPlaneSolver,
+                solver=lambda v: _KinematicAdmmPlaneSolver(model=v, angle=angle),
                 bodies=[plane_body],
-                solver_kwargs={"angle": angle},
             ),
             SolverCoupled.Entry(
                 name="box",
-                solver=SolverSemiImplicit,
+                solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                 bodies=[box_body],
-                solver_kwargs={"enable_tri_contact": False},
             ),
         ],
-        coupling=SolverAdmmCoupled.CouplingAdmm(
+        coupling=SolverAdmmCoupled.Config(
             iterations=30,
             rho=5.0,
             gamma=0.2,
             baumgarte=0.03,
-            contact_detection=True,
-            contact_friction=friction,
+            contact_pairs=[
+                SolverAdmmCoupled.ContactPair(
+                    source="plane",
+                    destination="box",
+                )
+            ],
         ),
     )
 
@@ -1169,6 +1164,7 @@ def _run_collision_inclined_plane_rigid_box(
     dt: float = 1.0 / 360.0,
 ) -> tuple[float, float, float, int]:
     model, plane_body, box_body = _build_collision_inclined_plane_rigid_box_scene(angle)
+    model.shape_material_mu = wp.full(model.shape_count, float(friction), dtype=wp.float32, device=model.device)
     solver = _make_collision_admm_inclined_plane_rigid_box_solver(model, plane_body, box_body, angle, friction)
     state_0 = model.state()
     state_1 = model.state()
@@ -1224,7 +1220,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(name="p", solver=_AdmmParticleForceNotifySolver, particles=[0]),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(iterations=1),
+            coupling=SolverAdmmCoupled.Config(iterations=1),
         )
 
         state_0 = model.state()
@@ -1233,9 +1229,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         solver.step(state_0, state_1, model.control(), contacts=None, dt=1.0 / 60.0)
 
         custom_solver = _AdmmParticleForceNotifySolver.instances[-1]
-        self.assertTrue(
-            any(flags & SolverBase.CouplingInputStateFlags.PARTICLE_F for flags in custom_solver.notified_flags)
-        )
+        self.assertTrue(any(flags & CouplingInputStateFlags.PARTICLE_F for flags in custom_solver.notified_flags))
         np.testing.assert_allclose(custom_solver.notified_particle_f[-1][0], np.array([2.0, 3.0, 4.0]), atol=1.0e-6)
         np.testing.assert_allclose(
             solver._entries["p"].state_0.particle_f.numpy()[0],
@@ -1253,7 +1247,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(name="p", solver=_CustomAdmmInputStateUpdateSolver, particles=[0]),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(iterations=1, gamma=2.0),
+            coupling=SolverAdmmCoupled.Config(iterations=1, gamma=2.0),
         )
 
         state_0 = model.state()
@@ -1263,7 +1257,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         custom_solver = _CustomAdmmInputStateUpdateSolver.instances[-1]
         self.assertTrue(
             any(
-                (flags & SolverBase.CouplingInputStateFlags.PARTICLE) == SolverBase.CouplingInputStateFlags.PARTICLE
+                (flags & CouplingInputStateFlags.PARTICLE) == CouplingInputStateFlags.PARTICLE
                 for flags in custom_solver.update_calls
             )
         )
@@ -1281,7 +1275,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(name="p", solver=_CustomAdmmInputStateUpdateSolver, particles=[0]),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(iterations=2),
+            coupling=SolverAdmmCoupled.Config(iterations=2),
         )
 
         state_0 = model.state()
@@ -1291,9 +1285,8 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         custom_solver = _CustomAdmmInputStateUpdateSolver.instances[-1]
         self.assertTrue(
             any(
-                bool(flags & SolverBase.CouplingInputStateFlags.ITERATION_RESTART)
-                and bool(flags & SolverBase.CouplingInputStateFlags.PARTICLE)
-                for flags in custom_solver.update_calls
+                restart and bool(flags & CouplingInputStateFlags.PARTICLE)
+                for flags, restart in zip(custom_solver.update_calls, custom_solver.update_restart, strict=True)
             )
         )
 
@@ -1305,20 +1298,19 @@ class TestAdmmCouplingHooks(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(
                     name="a",
-                    solver=_CustomEffectiveMassSolver,
+                    solver=lambda v: _CustomEffectiveMassSolver(model=v, effective_mass=4.0),
                     particles=[0],
-                    solver_kwargs={"effective_mass": 4.0},
                 ),
                 SolverCoupled.Entry(
                     name="b",
-                    solver=_CustomEffectiveMassSolver,
+                    solver=lambda v: _CustomEffectiveMassSolver(model=v, effective_mass=9.0),
                     particles=[1],
-                    solver_kwargs={"effective_mass": 9.0},
                 ),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(
-                contact_detection=True,
-                contact_distance=0.1,
+            coupling=SolverAdmmCoupled.Config(
+                contact_pairs=[
+                    SolverAdmmCoupled.ContactPair(source="a", destination="b", contact_distance=0.1),
+                ],
             ),
         )
 
@@ -1426,18 +1418,16 @@ class TestAdmmModelJointInterface(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(
                     name="parent",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     bodies=[parent],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
                 SolverCoupled.Entry(
                     name="child",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     bodies=[child],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(
+            coupling=SolverAdmmCoupled.Config(
                 iterations=12,
                 rho=40.0,
                 baumgarte=0.5,
@@ -1519,19 +1509,17 @@ class TestAdmmModelJointInterface(unittest.TestCase):
                 entries=[
                     SolverCoupled.Entry(
                         name="parent",
-                        solver=SolverSemiImplicit,
+                        solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                         bodies=[parent],
                         joints=[joint],
-                        solver_kwargs={"enable_tri_contact": False},
                     ),
                     SolverCoupled.Entry(
                         name="child",
-                        solver=SolverSemiImplicit,
+                        solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                         bodies=[child],
-                        solver_kwargs={"enable_tri_contact": False},
                     ),
                 ],
-                coupling=SolverAdmmCoupled.CouplingAdmm(),
+                coupling=SolverAdmmCoupled.Config(),
             )
 
 
@@ -1627,23 +1615,22 @@ class TestAdmmCollisionDetection(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(
                     name="a",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     particles=[0],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
                 SolverCoupled.Entry(
                     name="b",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     particles=[1],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(
+            coupling=SolverAdmmCoupled.Config(
                 iterations=10,
                 rho=30.0,
                 baumgarte=0.5,
-                contact_detection=True,
-                contact_distance=0.1,
+                contact_pairs=[
+                    SolverAdmmCoupled.ContactPair(source="a", destination="b", contact_distance=0.1),
+                ],
             ),
         )
 
@@ -1659,20 +1646,19 @@ class TestAdmmCollisionDetection(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(
                     name="a",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     particles=[0],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
                 SolverCoupled.Entry(
                     name="b",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     particles=[1],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(
-                contact_detection=True,
-                contact_distance=0.1,
+            coupling=SolverAdmmCoupled.Config(
+                contact_pairs=[
+                    SolverAdmmCoupled.ContactPair(source="a", destination="b", contact_distance=0.1),
+                ],
             ),
         )
         state = model.state()
@@ -1703,23 +1689,22 @@ class TestAdmmCollisionDetection(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(
                     name="a",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     particles=[0],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
                 SolverCoupled.Entry(
                     name="b",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     particles=[1],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(
+            coupling=SolverAdmmCoupled.Config(
                 iterations=4,
                 rho=30.0,
                 baumgarte=0.5,
-                contact_detection=True,
-                contact_distance=0.1,
+                contact_pairs=[
+                    SolverAdmmCoupled.ContactPair(source="a", destination="b", contact_distance=0.1),
+                ],
             ),
         )
 
@@ -1799,25 +1784,28 @@ class TestAdmmCollisionDetection(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(
                     name="drop",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     particles=[particle],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
                 SolverCoupled.Entry(
                     name="tray",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     bodies=[tray_body],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(
+            coupling=SolverAdmmCoupled.Config(
                 iterations=12,
                 rho=45.0,
                 gamma=0.05,
                 baumgarte=0.1,
-                contact_detection=True,
-                contact_distance=0.04,
-                contact_detection_margin=0.08,
+                contact_pairs=[
+                    SolverAdmmCoupled.ContactPair(
+                        source="drop",
+                        destination="tray",
+                        contact_distance=0.04,
+                        detection_margin=0.08,
+                    ),
+                ],
             ),
         )
 

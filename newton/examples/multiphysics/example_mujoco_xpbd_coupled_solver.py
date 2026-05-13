@@ -156,34 +156,32 @@ class Example:
                 entries=[
                     SolverProxyCoupled.Entry(
                         name=rigid_name,
-                        solver=rigid_solver,
+                        solver=lambda v: rigid_solver(model=v, **rigid_kwargs),
                         bodies=[int(i) for i in rigid_body_indices.numpy()],
                         joints=list(range(self.model.joint_count)),
-                        solver_kwargs=rigid_kwargs,
                         configure_view=rigid_configure_view,
                     ),
                     SolverProxyCoupled.Entry(
                         name="xpbd",
-                        solver=SolverXPBD,
+                        solver=lambda v: SolverXPBD(model=v, **xpbd_kwargs),
                         bodies=[int(i) for i in xpbd_body_indices.numpy()],
                         particles=list(range(self.model.particle_count)),
-                        solver_kwargs=xpbd_kwargs,
                     ),
                 ],
-                coupling=SolverProxyCoupled.CouplingProxy(
+                coupling=SolverProxyCoupled.Config(
                     proxies=[
                         SolverProxyCoupled.Proxy(
                             source=rigid_name,
                             destination="xpbd",
                             bodies=[int(i) for i in rigid_body_indices.numpy()],
-                            mass_scale=args.proxy_mass_relaxation,
+                            mass_scale=args.mass_scale,
                         )
                     ],
                     iterations=args.proxy_iterations,
                 ),
             )
             if self.model.joint_count > 0:
-                self.solver.get_view("xpbd").joint_enabled = wp.zeros(
+                self.solver.view("xpbd").joint_enabled = wp.zeros(
                     self.model.joint_count, dtype=wp.bool, device=self.model.device
                 )
         else:
@@ -325,7 +323,7 @@ class Example:
         )
         _add_rigid_solver_arg(parser)
         parser.add_argument(
-            "--proxy-mass-relaxation",
+            "--mass-scale",
             "-pmr",
             help="Scale factor for proxy body mass in XPBD (< 1 = softer coupling)",
             type=float,

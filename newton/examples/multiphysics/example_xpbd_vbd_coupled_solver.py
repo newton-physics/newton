@@ -88,27 +88,25 @@ class Example:
                     # receives only the harvested XPBD particle response.
                     SolverProxyCoupled.Entry(
                         name="vbd",
-                        solver=SolverVBD,
+                        solver=lambda v: SolverVBD(model=v, **vbd_kwargs),
                         particles=self.vbd_particles,
-                        solver_kwargs=vbd_kwargs,
                     ),
                     # XPBD is the secondary/destination solver. It sees the
                     # VBD particles as proxies, handles particle-particle
                     # collision, and exposes the proxy momentum change.
                     SolverProxyCoupled.Entry(
                         name="xpbd",
-                        solver=SolverXPBD,
+                        solver=lambda v: SolverXPBD(model=v, **xpbd_kwargs),
                         particles=self.xpbd_particles,
-                        solver_kwargs=xpbd_kwargs,
                     ),
                 ],
-                coupling=SolverProxyCoupled.CouplingProxy(
+                coupling=SolverProxyCoupled.Config(
                     proxies=[
                         SolverProxyCoupled.Proxy(
                             source="vbd",
                             destination="xpbd",
                             particles=self.vbd_particles,
-                            mass_scale=args.proxy_mass_relaxation,
+                            mass_scale=args.mass_scale,
                             mode=args.coupling_mode,
                         ),
                     ],
@@ -243,7 +241,7 @@ class Example:
             default="lagged",
         )
         parser.add_argument(
-            "--proxy-mass-relaxation",
+            "--mass-scale",
             "-pmr",
             help="Scale factor for proxy particle mass in XPBD (< 1 = softer coupling)",
             type=float,

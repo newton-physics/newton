@@ -25,7 +25,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.solvers import SolverAdmmCoupled, SolverBase, SolverCoupled, SolverSemiImplicit
+from newton.solvers import CouplingInterface, SolverAdmmCoupled, SolverBase, SolverCoupled, SolverSemiImplicit
 
 
 @wp.kernel(enable_backward=False)
@@ -43,7 +43,7 @@ def _set_kinematic_plane_kernel(
     body_qd[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
-class _KinematicPlaneSolver(SolverBase):
+class _KinematicPlaneSolver(SolverBase, CouplingInterface):
     """Solver that prescribes a fixed tilted plane pose."""
 
     def __init__(self, model, body: int, angle: wp.array[float]):
@@ -92,24 +92,25 @@ class Example:
             entries=[
                 SolverCoupled.Entry(
                     name="plane",
-                    solver=_KinematicPlaneSolver,
+                    solver=lambda v: _KinematicPlaneSolver(model=v, body=self.plane_body, angle=self.angle_buffer),
                     bodies=[self.plane_body],
-                    solver_kwargs={"body": self.plane_body, "angle": self.angle_buffer},
                 ),
                 SolverCoupled.Entry(
                     name="box",
-                    solver=SolverSemiImplicit,
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     bodies=[self.box_body],
-                    solver_kwargs={"enable_tri_contact": False},
                 ),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(
+            coupling=SolverAdmmCoupled.Config(
                 iterations=args.admm_iterations,
                 rho=args.rho,
                 gamma=args.gamma,
                 baumgarte=args.baumgarte,
-                contact_detection=self.solver_type == "admm",
-                contact_friction=args.friction,
+                contact_pairs=(
+                    [SolverAdmmCoupled.ContactPair(source="plane", destination="box")]
+                    if self.solver_type == "admm"
+                    else []
+                ),
             ),
         )
 
@@ -137,17 +138,11 @@ class Example:
 
     def capture(self):
         if wp.get_device().is_cuda:
-            self._prepare_graph_capture()
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
         else:
             self.graph = None
-
-    def _prepare_graph_capture(self):
-        if self.solver_type != "admm":
-            return
-        self.solver.prepare_graph_capture()
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -206,6 +201,7 @@ class Example:
         visible_cfg.density = 0.0
         visible_cfg.has_shape_collision = True
         visible_cfg.has_particle_collision = False
+        visible_cfg.mu = float(args.friction)
         builder.add_shape_box(
             plane_body,
             xform=wp.transform(p=wp.vec3(1.0, 0.0, -0.025), q=wp.quat_identity()),

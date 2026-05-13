@@ -6,6 +6,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, State
+from ..coupling import CouplingInterface
 from ..flags import SolverNotifyFlags
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
@@ -52,7 +53,7 @@ from .kernels import (
 )
 
 
-class SolverFeatherstone(SolverBase):
+class SolverFeatherstone(SolverBase, CouplingInterface):
     """A semi-implicit integrator using symplectic Euler that operates
     on reduced (also called generalized) coordinates to simulate articulated rigid body dynamics
     based on Featherstone's composite rigid body algorithm (CRBA).

@@ -23,6 +23,7 @@ from ...sim import (
     ModelBuilder,
     State,
 )
+from ..coupling import CouplingInterface
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 
@@ -48,7 +49,7 @@ __all__ = ["SolverKamino"]
 ###
 
 
-class SolverKamino(SolverBase):
+class SolverKamino(SolverBase, CouplingInterface):
     """
     A physics solver for simulating constrained multi-body systems containing kinematic loops,
     under-/overactuation, joint-limits, hard frictional contacts and restitutive impacts.

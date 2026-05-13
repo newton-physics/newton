@@ -32,6 +32,7 @@ from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
+from ..coupling import CouplingEndpointKind, CouplingInterface
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
@@ -275,7 +276,7 @@ def _make_nonplanar_mujoco_mesh(
     return inflated_vertices, inflated_indices, max(maxhullvert, 4)
 
 
-class SolverMuJoCo(SolverBase):
+class SolverMuJoCo(SolverBase, CouplingInterface):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
     optimized with GPU acceleration through `mujoco_warp <https://github.com/google-deepmind/mujoco_warp>`_. It supports both MuJoCo and
@@ -3263,6 +3264,13 @@ class SolverMuJoCo(SolverBase):
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
 
+        # Coupling effective-mass hooks rely on MuJoCo Warp-side data. Hide
+        # them on instances that run the CPU path or lack the Warp model so
+        # the coupled wrapper falls back to its generic mass/inertia path.
+        if self.use_mujoco_cpu or self.mjw_model is None or self.mjc_body_to_newton is None:
+            self.coupling_eval_effective_mass = None
+            self.coupling_eval_effective_mass_block = None
+
     @event_scope
     def _mujoco_warp_step(self):
         self._mujoco_warp.step(self.mjw_model, self.mjw_data)
@@ -3320,16 +3328,6 @@ class SolverMuJoCo(SolverBase):
         self._last_nacon_count.zero_()
 
     @override
-    def coupling_capabilities(self) -> SolverBase.CouplingCapabilities:
-        """Return MuJoCo-specific coupling hook support."""
-        capabilities: SolverBase.CouplingCapabilities = {}
-        if not self.use_mujoco_cpu and self.mjw_model is not None and self.mjc_body_to_newton is not None:
-            custom = SolverBase.CouplingCapability.CUSTOM
-            capabilities[SolverBase.CouplingHooks.EFFECTIVE_MASS_DIAGONAL] = custom
-            capabilities[SolverBase.CouplingHooks.EFFECTIVE_MASS_BLOCK] = custom
-        return capabilities
-
-    @override
     def coupling_eval_effective_mass(
         self,
         endpoint_kind: wp.array[int],
@@ -3355,8 +3353,8 @@ class SolverMuJoCo(SolverBase):
                 endpoint_kind,
                 endpoint_index,
                 endpoint_local_pos,
-                int(SolverBase.CouplingEndpointKind.BODY),
-                int(SolverBase.CouplingEndpointKind.PARTICLE),
+                int(CouplingEndpointKind.BODY),
+                int(CouplingEndpointKind.PARTICLE),
                 self.model.body_mass,
                 self.model.particle_mass,
                 self.newton_body_to_mjc_world,
@@ -3400,8 +3398,8 @@ class SolverMuJoCo(SolverBase):
                 endpoint_kind,
                 endpoint_index,
                 endpoint_local_pos,
-                int(SolverBase.CouplingEndpointKind.BODY),
-                int(SolverBase.CouplingEndpointKind.PARTICLE),
+                int(CouplingEndpointKind.BODY),
+                int(CouplingEndpointKind.PARTICLE),
                 self.model.body_mass,
                 self.model.body_inertia,
                 self.model.particle_mass,

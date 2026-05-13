@@ -7,6 +7,7 @@ from .coupled import (
     SolverCoupled,
     SolverProxyCoupled,
 )
+from .coupling import CouplingInterface
 from .featherstone import SolverFeatherstone
 from .flags import SolverNotifyFlags
 from .implicit_mpm import SolverImplicitMPM
@@ -19,6 +20,7 @@ from .vbd import SolverVBD
 from .xpbd import SolverXPBD
 
 __all__ = [
+    "CouplingInterface",
     "ModelView",
     "SolverAdmmCoupled",
     "SolverBase",

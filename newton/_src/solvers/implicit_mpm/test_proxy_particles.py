@@ -41,19 +41,18 @@ class TestImplicitMPMProxyParticles(unittest.TestCase):
                 SolverCoupled.Entry(name="xpbd", solver=SolverXPBD, particles=[0]),
                 SolverCoupled.Entry(
                     name="mpm",
-                    solver=SolverImplicitMPM,
+                    solver=lambda v: SolverImplicitMPM(model=v, config=self._mpm_config()),
                     particles=[1],
-                    solver_kwargs={"config": self._mpm_config()},
                 ),
             ],
-            coupling=SolverProxyCoupled.CouplingProxy(
+            coupling=SolverProxyCoupled.Config(
                 proxies=[SolverProxyCoupled.Proxy(source="xpbd", destination="mpm", particles=[0])]
             ),
         )
 
         active = int(newton.ParticleFlags.ACTIVE)
         proxy = int(newton.ParticleFlags.PROXY)
-        mpm_model = coupled.get_solver("mpm")._mpm_model
+        mpm_model = coupled.solver("mpm")._mpm_model
 
         transfer_flags = mpm_model.particle_flags.numpy()
         material_flags = mpm_model.material_particle_flags.numpy()
@@ -83,12 +82,11 @@ class TestImplicitMPMProxyParticles(unittest.TestCase):
                 SolverCoupled.Entry(name="xpbd", solver=SolverXPBD, particles=[0, 1, 2]),
                 SolverCoupled.Entry(
                     name="mpm",
-                    solver=SolverImplicitMPM,
+                    solver=lambda v: SolverImplicitMPM(model=v, config=self._mpm_config()),
                     particles=[3],
-                    solver_kwargs={"config": self._mpm_config()},
                 ),
             ],
-            coupling=SolverProxyCoupled.CouplingProxy(
+            coupling=SolverProxyCoupled.Config(
                 proxies=[SolverProxyCoupled.Proxy(source="xpbd", destination="mpm", particles=[0, 1, 2])]
             ),
         )
@@ -97,12 +95,12 @@ class TestImplicitMPMProxyParticles(unittest.TestCase):
         indices = wp.array([0, 1, 2], dtype=wp.int32, device=model.device)
         mesh = wp.Mesh(points=points, indices=indices, velocities=wp.zeros(3, dtype=wp.vec3, device=model.device))
 
-        mpm_solver = coupled.get_solver("mpm")
+        mpm_solver = coupled.solver("mpm")
         mpm_solver.setup_collider(
             collider_meshes=[mesh],
             collider_body_ids=[None],
             collider_particle_ids=[[0, 1, 2]],
-            model=coupled.get_view("mpm"),
+            model=coupled.view("mpm"),
         )
 
         active = int(newton.ParticleFlags.ACTIVE)
@@ -134,16 +132,15 @@ class TestImplicitMPMProxyParticles(unittest.TestCase):
         coupled = SolverProxyCoupled(
             model=model,
             entries=[
-                SolverCoupled.Entry(name="xpbd", solver=SolverXPBD, particles=[0], solver_kwargs={"iterations": 1}),
+                SolverCoupled.Entry(name="xpbd", solver=lambda v: SolverXPBD(model=v, iterations=1), particles=[0]),
                 SolverCoupled.Entry(
                     name="mpm",
-                    solver=SolverImplicitMPM,
+                    solver=lambda v: SolverImplicitMPM(model=v, config=config),
                     particles=[1],
-                    solver_kwargs={"config": config},
                     in_place=True,
                 ),
             ],
-            coupling=SolverProxyCoupled.CouplingProxy(
+            coupling=SolverProxyCoupled.Config(
                 proxies=[SolverProxyCoupled.Proxy(source="xpbd", destination="mpm", particles=[0])]
             ),
         )
@@ -152,7 +149,7 @@ class TestImplicitMPMProxyParticles(unittest.TestCase):
         state_1 = model.state()
         coupled.step(state_0, state_1, control=None, contacts=None, dt=1.0 / 60.0)
 
-        rewound_proxy_qd = coupled.get_solver("mpm")._proxy_particle_qd_before.numpy()[0]
+        rewound_proxy_qd = coupled.solver("mpm")._proxy_particle_qd_before.numpy()[0]
         np.testing.assert_allclose(rewound_proxy_qd, np.zeros(3), atol=1.0e-5)
 
         harvested_force = coupled._proxy_particle_mappings[0].coupling_forces.numpy()[0]

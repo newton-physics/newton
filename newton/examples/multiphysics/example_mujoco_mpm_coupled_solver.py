@@ -144,29 +144,27 @@ class Example:
             entries=[
                 SolverProxyCoupled.Entry(
                     name=rigid_name,
-                    solver=rigid_solver,
+                    solver=lambda v: rigid_solver(model=v, **rigid_kwargs),
                     bodies=[int(i) for i in rigid_body_indices.numpy()],
                     joints=list(range(self.model.joint_count)),
-                    solver_kwargs=rigid_kwargs,
                     configure_view=rigid_configure_view,
                     substeps=args.rigid_substeps,
                 ),
                 SolverProxyCoupled.Entry(
                     name="mpm",
-                    solver=SolverImplicitMPM,
+                    solver=lambda v: SolverImplicitMPM(model=v, config=mpm_config),
                     particles=list(range(self.model.particle_count)),
-                    solver_kwargs={"config": mpm_config},
                     in_place=True,
                 ),
             ],
-            coupling=SolverProxyCoupled.CouplingProxy(
+            coupling=SolverProxyCoupled.Config(
                 proxies=[
                     SolverProxyCoupled.Proxy(
                         source=rigid_name,
                         destination="mpm",
                         bodies=[int(i) for i in rigid_body_indices.numpy()],
-                        mass_scale=getattr(args, "proxy_mass_relaxation", 1.0),
-                        mode=SolverProxyCoupled.ProxyMode.LAGGED,
+                        mass_scale=getattr(args, "mass_scale", 1.0),
+                        mode="lagged",
                         # MPM handles collider contact internally; no proxy
                         # collision pipeline should generate Contacts here.
                         collision_pipeline=lambda _model: None,
@@ -175,7 +173,7 @@ class Example:
                 iterations=args.proxy_iterations,
             ),
         )
-        self.mpm_solver = self.solver.get_solver("mpm")
+        self.mpm_solver = self.solver.solver("mpm")
 
         self.state_0 = self.model.state()
         self.rigid_collision_pipeline = newton.CollisionPipeline(self.model, soft_contact_max=0)
@@ -325,7 +323,7 @@ class Example:
         parser = newton.examples.create_parser()
         _add_rigid_solver_arg(parser)
         parser.add_argument(
-            "--proxy-mass-relaxation",
+            "--mass-scale",
             "-pmr",
             help="Scale factor for proxy collider mass in MPM (< 1 = softer coupling)",
             type=float,

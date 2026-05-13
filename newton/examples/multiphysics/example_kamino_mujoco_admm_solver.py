@@ -142,25 +142,22 @@ class Example:
             entries=[
                 SolverCoupled.Entry(
                     name="kamino",
-                    solver=SolverKamino,
+                    solver=lambda v: SolverKamino(model=v, config=kamino_config),
                     bodies=self.kamino_bodies,
                     joints=self.kamino_joints,
-                    solver_kwargs={"config": kamino_config},
                     configure_view=_configure_kamino_rigid_view,
                 ),
                 SolverCoupled.Entry(
                     name="mjc",
-                    solver=SolverMuJoCo,
+                    solver=lambda v: SolverMuJoCo(
+                        model=v,
+                        **{"use_mujoco_contacts": False, "njmax": 64, "nconmax": 64},
+                    ),
                     bodies=self.mujoco_bodies,
                     joints=self.mujoco_joints,
-                    solver_kwargs={
-                        "use_mujoco_contacts": False,
-                        "njmax": 64,
-                        "nconmax": 64,
-                    },
                 ),
             ],
-            coupling=SolverAdmmCoupled.CouplingAdmm(
+            coupling=SolverAdmmCoupled.Config(
                 iterations=args.admm_iterations,
                 rho=args.rho,
                 gamma=args.gamma,

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 import warp as wp
 
 from ...geometry import ParticleFlags
@@ -14,6 +15,25 @@ from ...sim import BodyFlags
 
 if TYPE_CHECKING:
     from ...sim import Model, State
+
+
+def _types_compatible(current, value) -> bool:
+    """Return True iff *value* is type-compatible with *current* for an override."""
+    if isinstance(current, wp.array):
+        return isinstance(value, wp.array) and value.dtype == current.dtype and value.ndim == current.ndim
+    if isinstance(current, np.ndarray):
+        return isinstance(value, np.ndarray) and value.dtype == current.dtype and value.ndim == current.ndim
+    if isinstance(current, float) and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return True
+    return isinstance(value, type(current))
+
+
+def _type_summary(value) -> str:
+    if isinstance(value, wp.array):
+        return f"wp.array[dtype={value.dtype}, ndim={value.ndim}]"
+    if isinstance(value, np.ndarray):
+        return f"numpy.ndarray[dtype={value.dtype}, ndim={value.ndim}]"
+    return type(value).__name__
 
 
 class ModelView:
@@ -51,6 +71,17 @@ class ModelView:
         return getattr(object.__getattribute__(self, "_parent"), name)
 
     def __setattr__(self, name: str, value) -> None:
+        parent = object.__getattribute__(self, "_parent")
+        if not hasattr(parent, name):
+            raise AttributeError(
+                f"ModelView {self.name!r} cannot override {name!r}: {type(parent).__name__} has no such attribute"
+            )
+        current = getattr(parent, name)
+        if current is not None and value is not None and not _types_compatible(current, value):
+            raise TypeError(
+                f"ModelView {self.name!r} override for {name!r}: expected "
+                f"{_type_summary(current)}, got {_type_summary(value)}"
+            )
         object.__getattribute__(self, "_overrides")[name] = value
 
     def __delattr__(self, name: str) -> None:

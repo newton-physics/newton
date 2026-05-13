@@ -59,22 +59,23 @@ class _VBDMPMProxyCoupled(SolverProxyCoupled):
             entries=[
                 SolverProxyCoupled.Entry(
                     name="vbd",
-                    solver=SolverVBD,
+                    solver=lambda v: SolverVBD(
+                        model=v,
+                        **{
+                            "iterations": vbd_iterations,
+                            "particle_enable_tile_solve": True,
+                            "particle_enable_self_contact": False,
+                        },
+                    ),
                     particles=soft_particles,
-                    solver_kwargs={
-                        "iterations": vbd_iterations,
-                        "particle_enable_tile_solve": True,
-                        "particle_enable_self_contact": False,
-                    },
                 ),
                 SolverProxyCoupled.Entry(
                     name="mpm",
-                    solver=SolverImplicitMPM,
+                    solver=lambda v: SolverImplicitMPM(model=v, config=mpm_config),
                     particles=mpm_particles,
-                    solver_kwargs={"config": mpm_config},
                 ),
             ],
-            coupling=SolverProxyCoupled.CouplingProxy(
+            coupling=SolverProxyCoupled.Config(
                 iterations=max(1, int(proxy_iterations)),
                 proxies=[
                     SolverProxyCoupled.Proxy(
@@ -83,7 +84,7 @@ class _VBDMPMProxyCoupled(SolverProxyCoupled):
                         particles=soft_particles,
                         proxy_particles=soft_particles,
                         mass_scale=proxy_mass_scale,
-                        mode=SolverProxyCoupled.ProxyMode.LAGGED,
+                        mode="lagged",
                     )
                 ],
             ),
@@ -95,16 +96,16 @@ class _VBDMPMProxyCoupled(SolverProxyCoupled):
             collider_margins=[collider_thickness, None],
             collider_friction=[collider_friction, 0.8],
             collider_particle_ids=[soft_particles, None],
-            model=self.get_view("mpm"),
+            model=self.view("mpm"),
         )
 
     @property
     def vbd_solver(self):
-        return self.get_solver("vbd")
+        return self.solver("vbd")
 
     @property
     def mpm_solver(self):
-        return self.get_solver("mpm")
+        return self.solver("mpm")
 
 
 class Example:

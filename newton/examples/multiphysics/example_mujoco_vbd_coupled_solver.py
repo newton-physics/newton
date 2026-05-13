@@ -187,27 +187,25 @@ class Example:
                 entries=[
                     SolverProxyCoupled.Entry(
                         name=rigid_name,
-                        solver=rigid_solver,
+                        solver=lambda v: rigid_solver(model=v, **rigid_kwargs),
                         bodies=[int(i) for i in rigid_body_indices.numpy()],
                         joints=list(range(self.model.joint_count)),
-                        solver_kwargs=rigid_kwargs,
                         configure_view=rigid_configure_view,
                     ),
                     SolverProxyCoupled.Entry(
                         name="vbd",
-                        solver=SolverVBD,
+                        solver=lambda v: SolverVBD(model=v, **vbd_kwargs),
                         bodies=[int(i) for i in vbd_body_indices.numpy()],
                         particles=list(range(self.model.particle_count)),
-                        solver_kwargs=vbd_kwargs,
                     ),
                 ],
-                coupling=SolverProxyCoupled.CouplingProxy(
+                coupling=SolverProxyCoupled.Config(
                     proxies=[
                         SolverProxyCoupled.Proxy(
                             source=rigid_name,
                             destination="vbd",
                             bodies=[int(i) for i in rigid_body_indices.numpy()],
-                            mass_scale=args.proxy_mass_relaxation,
+                            mass_scale=args.mass_scale,
                             mode=args.coupling_mode,
                             collision_pipeline=lambda model: newton.examples.create_collision_pipeline(
                                 model, self.args
@@ -392,7 +390,7 @@ class Example:
         )
         _add_rigid_solver_arg(parser)
         parser.add_argument(
-            "--proxy-mass-relaxation",
+            "--mass-scale",
             "-pmr",
             help="Scale factor for proxy body mass in VBD (< 1 = softer coupling)",
             type=float,
