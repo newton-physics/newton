@@ -67,6 +67,7 @@ class Example:
             basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
 
         # Create the model from the builder
+        builder.request_contact_attributes("force")  # For contact visualization
         self.model = builder.finalize(skip_validation_joints=True)
 
         # Create and configure settings for SolverKamino and the collision detector

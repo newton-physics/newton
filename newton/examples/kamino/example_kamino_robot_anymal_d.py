@@ -34,6 +34,7 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
+        robot_builder.request_contact_attributes("force")  # For contact visualization
 
         # Load the Anymal D USD and add it to the builder
         asset_path = newton.utils.download_asset("anybotics_anymal_d")

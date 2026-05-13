@@ -33,6 +33,7 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 1e-6
         robot_builder.default_shape_cfg.gap = 0.01
+        robot_builder.request_contact_attributes("force")  # For contact visualization
 
         # Load the DR TestMech USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
