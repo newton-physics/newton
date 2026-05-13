@@ -1140,7 +1140,7 @@ class TetMesh:
                 per-element array of shape (tet_count,).
             k_lambda: Second elastic Lame parameter [Pa]. Scalar (uniform) or
                 per-element array of shape (tet_count,).
-            k_damp: Rayleigh damping coefficient [-] (dimensionless). Scalar
+            k_damp: Viscous damping coefficient [Pa·s]. Scalar
                 (uniform) or per-element array of shape (tet_count,).
             density: Uniform density [kg/m^3] for mass computation.
             custom_attributes: Dictionary of named custom arrays with their
@@ -1337,7 +1337,7 @@ class TetMesh:
 
     @property
     def k_damp(self) -> np.ndarray | None:
-        """Per-element Rayleigh damping coefficient [-], shape (tet_count,) or None."""
+        """Per-element viscous damping coefficient [Pa·s], shape (tet_count,) or None."""
         return self._k_damp
 
     @property

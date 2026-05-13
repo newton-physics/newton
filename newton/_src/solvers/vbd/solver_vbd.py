@@ -108,13 +108,10 @@ class SolverVBD(SolverBase):
         - :attr:`~newton.Model.joint_enabled` is supported for all joint types.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
           for REVOLUTE, PRISMATIC, D6 (as drives), and CABLE (as stretch/bend stiffness and damping).
-          VBD interprets ``kd`` as a dimensionless Rayleigh coefficient (``D = kd * ke``).
+          VBD interprets ``kd`` as absolute damping in physical units.
         - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
-          for REVOLUTE, PRISMATIC, and D6 joints. The default ``limit_kd`` in
-          :class:`~newton.ModelBuilder.JointDofConfig` is ``1e1``, which under VBD's Rayleigh
-          convention (``D = kd * ke``) can produce excessive damping. When using joint limits
-          with VBD, explicitly set ``limit_kd`` to a small value.
+          for REVOLUTE, PRISMATIC, and D6 joints.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
@@ -233,8 +230,8 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural angular joint constraints
         rigid_joint_linear_k_start: float = 1.0e2,  # Linear penalty seed (used when linear beta > 0)
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
-        rigid_joint_linear_kd: float = 0.0,  # Rayleigh damping for non-cable linear joint constraints
-        rigid_joint_angular_kd: float = 0.0,  # Rayleigh damping for non-cable angular joint constraints
+        rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-cable linear joint constraints
+        rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-cable angular joint constraints
         rigid_enable_dahl_friction: bool | None = None,  # Deprecated: auto-detected from model attributes
     ):
         """
@@ -339,9 +336,9 @@ class SolverVBD(SolverBase):
             rigid_joint_angular_k_start: Angular penalty seed for AVBD ramping. Used when
                 ``rigid_avbd_angular_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the angular beta is 0, k is fixed at the joint stiffness regardless of this value.
-            rigid_joint_linear_kd: Rayleigh damping coefficient for non-cable linear joint constraints.
+            rigid_joint_linear_kd: Damping coefficient for non-cable linear joint constraints [N·s/m].
                 Negative values are clamped to 0.
-            rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints.
+            rigid_joint_angular_kd: Damping coefficient for non-cable angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
             rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is auto-detected
                 from ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
@@ -2162,6 +2159,7 @@ class SolverVBD(SolverBase):
                         contacts.soft_contact_count,
                         contacts.soft_contact_max,
                         self.body_particle_contact_penalty_k,
+                        self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
                         model.shape_material_mu,
@@ -2366,6 +2364,7 @@ class SolverVBD(SolverBase):
                         self.body_inv_mass_effective,
                         self.friction_epsilon,
                         self.body_particle_contact_penalty_k,
+                        self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
                         contacts.soft_contact_count,
@@ -2401,6 +2400,7 @@ class SolverVBD(SolverBase):
                         self.body_inv_mass_effective,
                         self.friction_epsilon,
                         self.body_body_contact_penalty_k,
+                        self.body_body_contact_material_ke,
                         self.body_body_contact_material_kd,
                         self.body_body_contact_material_mu,
                         self.body_body_contact_lambda,
@@ -2685,6 +2685,7 @@ class SolverVBD(SolverBase):
                 body_q_prev,
                 self.model.body_com,
                 self.body_body_contact_penalty_k,
+                self.body_body_contact_material_ke,
                 self.body_body_contact_material_kd,
                 self.body_body_contact_material_mu,
                 self.body_body_contact_lambda,
