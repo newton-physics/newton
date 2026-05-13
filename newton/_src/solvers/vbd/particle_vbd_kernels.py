@@ -224,114 +224,6 @@ def assemble_tet_vertex_force_and_hessian(
 
 
 @wp.func
-def damp_force_and_hessian(
-    particle_pos_prev: wp.vec3,
-    particle_pos: wp.vec3,
-    force: wp.vec3,
-    hessian: wp.mat33,
-    damping: float,
-    dt: float,
-):
-    displacement = particle_pos_prev - particle_pos
-    h_d = hessian * (damping / dt)
-    f_d = h_d * displacement
-
-    return force + f_d, hessian + h_d
-
-
-# @wp.func
-# def evaluate_volumetric_neo_hookean_force_and_hessian(
-#     tet_id: int,
-#     v_order: int,
-#     pos_prev: wp.array[wp.vec3],
-#     pos: wp.array[wp.vec3],
-#     tet_indices: wp.array2d[wp.int32],
-#     Dm_inv: wp.mat33,
-#     mu: float,
-#     lmbd: float,
-#     damping: float,
-#     dt: float,
-# ) -> tuple[wp.vec3, wp.mat33]:
-
-#     # ============ Get Vertices ============
-#     v0 = pos[tet_indices[tet_id, 0]]
-#     v1 = pos[tet_indices[tet_id, 1]]
-#     v2 = pos[tet_indices[tet_id, 2]]
-#     v3 = pos[tet_indices[tet_id, 3]]
-
-#     # ============ Compute rest volume from Dm_inv ============
-#     rest_volume = 1.0 / (wp.determinant(Dm_inv) * 6.0)
-
-#     # ============ Deformation Gradient ============
-#     Ds = wp.mat33(v1 - v0, v2 - v0, v3 - v0)
-#     F = Ds * Dm_inv
-
-#     # ============ Flatten F to vec9 ============
-#     f = vec9(
-#         F[0,0], F[1,0], F[2,0],
-#         F[0,1], F[1,1], F[2,1],
-#         F[0,2], F[1,2], F[2,2],
-#     )
-
-#     # ============ Useful Quantities ============
-#     J = wp.determinant(F)
-#     alpha = 1.0 + mu / lmbd
-#     F_inv = wp.inverse(F)
-#     cof = J * wp.transpose(F_inv)
-
-#     cof_vec = vec9(
-#         cof[0,0], cof[1,0], cof[2,0],
-#         cof[0,1], cof[1,1], cof[2,1],
-#         cof[0,2], cof[1,2], cof[2,2],
-#     )
-
-#     # ============ Stress ============
-#     P_vec = rest_volume * (mu * f + lmbd * (J - alpha) * cof_vec)
-
-#     # ============ Hessian ============
-#     H = (mu * wp.identity(n=9, dtype=float)
-#          + lmbd * wp.outer(cof_vec, cof_vec)
-#          + compute_cofactor_derivative(F, lmbd * (J - alpha)))
-#     H = rest_volume * H
-
-#     # ============ G_i ============
-#     G_i = compute_G_matrix(Dm_inv, v_order)
-
-#     # ============ Force & Hessian ============
-#     force = -wp.transpose(G_i) * P_vec
-#     hessian = wp.transpose(G_i) * H * G_i
-
-#     # ============ Damping ============
-#     if damping > 0.0:
-#         inv_dt = 1.0 / dt
-
-#         v0_prev = pos_prev[tet_indices[tet_id, 0]]
-#         v1_prev = pos_prev[tet_indices[tet_id, 1]]
-#         v2_prev = pos_prev[tet_indices[tet_id, 2]]
-#         v3_prev = pos_prev[tet_indices[tet_id, 3]]
-
-#         Ds_dot = wp.mat33(
-#             (v1 - v1_prev) - (v0 - v0_prev),
-#             (v2 - v2_prev) - (v0 - v0_prev),
-#             (v3 - v3_prev) - (v0 - v0_prev),
-#         ) * inv_dt
-#         F_dot = Ds_dot * Dm_inv
-
-#         f_dot = vec9(
-#             F_dot[0,0], F_dot[1,0], F_dot[2,0],
-#             F_dot[0,1], F_dot[1,1], F_dot[2,1],
-#             F_dot[0,2], F_dot[1,2], F_dot[2,2],
-#         )
-
-#         P_damp = damping * (H * f_dot)
-
-#         force = force - wp.transpose(G_i) * P_damp
-#         hessian = hessian + (damping * inv_dt) * wp.transpose(G_i) * H * G_i
-
-#     return force, hessian
-
-
-@wp.func
 def evaluate_volumetric_neo_hookean_force_and_hessian(
     tet_id: int,
     v_order: int,
@@ -455,7 +347,7 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
             F_dot[2, 2],
         )
 
-        P_damp = damping * (H * f_dot)
+        P_damp = rest_volume * damping * f_dot
 
         f_damp = wp.vec3(
             -(P_damp[0] * m[0] + P_damp[3] * m[1] + P_damp[6] * m[2]),
@@ -463,7 +355,8 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
             -(P_damp[2] * m[0] + P_damp[5] * m[1] + P_damp[8] * m[2]),
         )
         force = force + f_damp
-        hessian = hessian * (1.0 + damping * inv_dt)
+        m_sq = m[0] * m[0] + m[1] * m[1] + m[2] * m[2]
+        hessian = hessian + (rest_volume * damping * inv_dt * m_sq) * wp.identity(3, float)
 
     return force, hessian
 
@@ -960,63 +853,24 @@ def evaluate_neo_hookean_membrane_force_hessian(
     I33 = wp.identity(n=3, dtype=float)
     hessian = I_coeff * I33 + c1 * wp.outer(dJ_dx, dJ_dx) - r * wp.outer(w, w)
 
-    # Rayleigh damping (matches the original StVK damping model on upstream):
-    #   Cmu   = ||G||_F       (Frobenius norm of Green strain)
-    #   Clmbd = trace(G)
-    # with coefficients kd_mu = mu * damping and kd_lmbd = lmbd * damping.
-    # G is computed locally — the NH elastic part does not use it.
+    # Absolute damping (Newtonian viscosity: P_damp = damping * F_dot).
     if damping > 0.0:
-        G00 = 0.5 * (f0_dot_f0 - 1.0)
-        G11 = 0.5 * (f1_dot_f1 - 1.0)
-        G01 = 0.5 * f0_dot_f1
-        G_frobenius_sq = G00 * G00 + G11 * G11 + 2.0 * G01 * G01
+        inv_dt = 1.0 / dt
 
-        # Cmu normalization is ill-defined at rest; skip damping near zero strain.
-        if G_frobenius_sq >= 1.0e-20:
-            inv_dt = 1.0 / dt
+        x0_prev = pos_anchor[v0]
+        x01_prev = pos_anchor[v1] - x0_prev
+        x02_prev = pos_anchor[v2] - x0_prev
 
-            x0_prev = pos_anchor[v0]
-            x01_prev = pos_anchor[v1] - x0_prev
-            x02_prev = pos_anchor[v2] - x0_prev
+        vel_x01 = (x01 - x01_prev) * inv_dt
+        vel_x02 = (x02 - x02_prev) * inv_dt
 
-            vel_x01 = (x01 - x01_prev) * inv_dt
-            vel_x02 = (x02 - x02_prev) * inv_dt
+        df0_dt = vel_x01 * DmInv00 + vel_x02 * DmInv10
+        df1_dt = vel_x01 * DmInv01 + vel_x02 * DmInv11
 
-            df0_dt = vel_x01 * DmInv00 + vel_x02 * DmInv10
-            df1_dt = vel_x01 * DmInv01 + vel_x02 * DmInv11
+        f_damp = damping * (df0_dt * df0_dx + df1_dt * df1_dx)
+        force += -f_damp
 
-            # First constraint: Cmu = ||G||_F
-            Cmu = wp.sqrt(G_frobenius_sq)
-            G00_normalized = G00 / Cmu
-            G01_normalized = G01 / Cmu
-            G11_normalized = G11 / Cmu
-
-            dG_dt_00 = wp.dot(f0, df0_dt)
-            dG_dt_11 = wp.dot(f1, df1_dt)
-            dG_dt_01 = 0.5 * (wp.dot(f0, df1_dt) + wp.dot(f1, df0_dt))
-
-            dCmu_dt = G00_normalized * dG_dt_00 + G11_normalized * dG_dt_11 + 2.0 * G01_normalized * dG_dt_01
-
-            dCmu_dF_col0 = G00_normalized * f0 + G01_normalized * f1
-            dCmu_dF_col1 = G01_normalized * f0 + G11_normalized * f1
-
-            dCmu_dx = df0_dx * dCmu_dF_col0 + df1_dx * dCmu_dF_col1
-
-            kd_mu = mu * damping
-            force += -kd_mu * dCmu_dt * dCmu_dx
-            hessian += kd_mu * inv_dt * wp.outer(dCmu_dx, dCmu_dx)
-
-            # Second constraint: Clmbd = trace(G)
-            dClmbd_dt = dG_dt_00 + dG_dt_11
-
-            dClmbd_dF_col0 = f0
-            dClmbd_dF_col1 = f1
-
-            dClmbd_dx = df0_dx * dClmbd_dF_col0 + df1_dx * dClmbd_dF_col1
-
-            kd_lmbd = lmbd * damping
-            force += -kd_lmbd * dClmbd_dt * dClmbd_dx
-            hessian += kd_lmbd * inv_dt * wp.outer(dClmbd_dx, dClmbd_dx)
+        hessian += damping * inv_dt * (df0_dx_sq + df1_dx_sq) * I33
 
     # Apply area scaling
     force *= area
@@ -1180,9 +1034,9 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
             wp.dot(dtheta_dx0, dx0) + wp.dot(dtheta_dx1, dx1) + wp.dot(dtheta_dx2, dx2) + wp.dot(dtheta_dx3, dx3)
         ) * inv_dt
 
-        damping_coeff = damping * k  # damping coefficients following the VBD convention
-        damping_force = -damping_coeff * dtheta_dt * dtheta_dx
-        damping_hessian = damping_coeff * inv_dt * wp.outer(dtheta_dx, dtheta_dx)
+        rest_len = edge_rest_length[bending_index]
+        damping_force = -damping * rest_len * dtheta_dt * dtheta_dx
+        damping_hessian = damping * rest_len * inv_dt * wp.outer(dtheta_dx, dtheta_dx)
 
         bending_force = bending_force + damping_force
         bending_hessian = bending_hessian + damping_hessian
@@ -1224,15 +1078,17 @@ def evaluate_self_contact_force_norm(dis: float, collision_radius: float, k: flo
 
 @wp.func
 def damp_collision(
-    displacement: wp.vec3,
+    gap_rate: float,
+    b_i: float,
     collision_normal: wp.vec3,
-    collision_hessian: wp.mat33,
     collision_damping: float,
     dt: float,
 ):
-    if wp.dot(displacement, collision_normal) > 0:
-        damping_hessian = (collision_damping / dt) * collision_hessian
-        damping_force = damping_hessian * displacement
+    """Damp collision with the contact gap rate, not absolute vertex motion."""
+    if gap_rate < -1.0e-6:
+        n_outer = wp.outer(collision_normal, collision_normal)
+        damping_force = -collision_damping * gap_rate * b_i * collision_normal
+        damping_hessian = (collision_damping / dt) * b_i * b_i * n_outer
         return damping_force, damping_hessian
     else:
         return wp.vec3(0.0), wp.mat33(0.0)
@@ -1344,20 +1200,11 @@ def evaluate_edge_edge_contact(
         #     )
         # # fmt: on
 
-        if v_order == 0:
-            displacement = pos_anchor[e1_v1] - e1_v1_pos
-        elif v_order == 1:
-            displacement = pos_anchor[e1_v2] - e1_v2_pos
-        elif v_order == 2:
-            displacement = pos_anchor[e2_v1] - e2_v1_pos
-        else:
-            displacement = pos_anchor[e2_v2] - e2_v2_pos
+        gap_rate = wp.dot(collision_normal, dx) / dt
 
-        collision_normal_sign = wp.vec4(1.0, 1.0, -1.0, -1.0)
-        if wp.dot(displacement, collision_normal * collision_normal_sign[v_order]) > 0:
-            damping_hessian = (collision_damping / dt) * collision_hessian
-            collision_hessian = collision_hessian + damping_hessian
-            collision_force = collision_force + damping_hessian * displacement
+        damping_force, damping_hessian = damp_collision(gap_rate, v_bary, collision_normal, collision_damping, dt)
+        collision_force = collision_force + damping_force
+        collision_hessian = collision_hessian + damping_hessian
 
         collision_force = collision_force + friction_force
         collision_hessian = collision_hessian + friction_hessian
@@ -1467,8 +1314,7 @@ def evaluate_edge_edge_contact_2_vertices(
         #     )
         # # fmt: on
 
-        displacement_0 = pos_anchor[e1_v1] - e1_v1_pos
-        displacement_1 = pos_anchor[e1_v2] - e1_v2_pos
+        gap_rate = wp.dot(collision_normal, dx) / dt
 
         collision_force_0 = collision_force * bs[0]
         collision_force_1 = collision_force * bs[1]
@@ -1476,25 +1322,12 @@ def evaluate_edge_edge_contact_2_vertices(
         collision_hessian_0 = collision_hessian * bs[0] * bs[0]
         collision_hessian_1 = collision_hessian * bs[1] * bs[1]
 
-        collision_normal_sign = wp.vec4(1.0, 1.0, -1.0, -1.0)
-        damping_force, damping_hessian = damp_collision(
-            displacement_0,
-            collision_normal * collision_normal_sign[0],
-            collision_hessian_0,
-            collision_damping,
-            dt,
-        )
+        damping_force, damping_hessian = damp_collision(gap_rate, bs[0], collision_normal, collision_damping, dt)
 
         collision_force_0 += damping_force + bs[0] * friction_force
         collision_hessian_0 += damping_hessian + bs[0] * bs[0] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(
-            displacement_1,
-            collision_normal * collision_normal_sign[1],
-            collision_hessian_1,
-            collision_damping,
-            dt,
-        )
+        damping_force, damping_hessian = damp_collision(gap_rate, bs[1], collision_normal, collision_damping, dt)
         collision_force_1 += damping_force + bs[1] * friction_force
         collision_hessian_1 += damping_hessian + bs[1] * bs[1] * friction_hessian
 
@@ -1572,20 +1405,11 @@ def evaluate_vertex_triangle_collision_force_hessian(
             )
         # fmt: on
 
-        if v_order == 0:
-            displacement = pos_anchor[tri_indices[tri, 0]] - a
-        elif v_order == 1:
-            displacement = pos_anchor[tri_indices[tri, 1]] - b
-        elif v_order == 2:
-            displacement = pos_anchor[tri_indices[tri, 2]] - c
-        else:
-            displacement = pos_anchor[v] - p
+        gap_rate = wp.dot(collision_normal, dx) / dt
 
-        collision_normal_sign = wp.vec4(-1.0, -1.0, -1.0, 1.0)
-        if wp.dot(displacement, collision_normal * collision_normal_sign[v_order]) > 0:
-            damping_hessian = (collision_damping / dt) * collision_hessian
-            collision_hessian = collision_hessian + damping_hessian
-            collision_force = collision_force + damping_hessian * displacement
+        damping_force, damping_hessian = damp_collision(gap_rate, v_bary, collision_normal, collision_damping, dt)
+        collision_force = collision_force + damping_force
+        collision_hessian = collision_hessian + damping_hessian
 
         collision_force = collision_force + v_bary * friction_force
         collision_hessian = collision_hessian + v_bary * v_bary * friction_hessian
@@ -1661,10 +1485,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
             )
         # fmt: on
 
-        displacement_0 = pos_anchor[tri_indices[tri, 0]] - a
-        displacement_1 = pos_anchor[tri_indices[tri, 1]] - b
-        displacement_2 = pos_anchor[tri_indices[tri, 2]] - c
-        displacement_3 = pos_anchor[v] - p
+        gap_rate = wp.dot(collision_normal, dx) / dt
 
         collision_force_0 = collision_force * bs[0]
         collision_force_1 = collision_force * bs[1]
@@ -1676,45 +1497,20 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
         collision_hessian_2 = collision_hessian * bs[2] * bs[2]
         collision_hessian_3 = collision_hessian * bs[3] * bs[3]
 
-        collision_normal_sign = wp.vec4(-1.0, -1.0, -1.0, 1.0)
-        damping_force, damping_hessian = damp_collision(
-            displacement_0,
-            collision_normal * collision_normal_sign[0],
-            collision_hessian_0,
-            collision_damping,
-            dt,
-        )
+        damping_force, damping_hessian = damp_collision(gap_rate, bs[0], collision_normal, collision_damping, dt)
 
         collision_force_0 += damping_force + bs[0] * friction_force
         collision_hessian_0 += damping_hessian + bs[0] * bs[0] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(
-            displacement_1,
-            collision_normal * collision_normal_sign[1],
-            collision_hessian_1,
-            collision_damping,
-            dt,
-        )
+        damping_force, damping_hessian = damp_collision(gap_rate, bs[1], collision_normal, collision_damping, dt)
         collision_force_1 += damping_force + bs[1] * friction_force
         collision_hessian_1 += damping_hessian + bs[1] * bs[1] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(
-            displacement_2,
-            collision_normal * collision_normal_sign[2],
-            collision_hessian_2,
-            collision_damping,
-            dt,
-        )
+        damping_force, damping_hessian = damp_collision(gap_rate, bs[2], collision_normal, collision_damping, dt)
         collision_force_2 += damping_force + bs[2] * friction_force
         collision_hessian_2 += damping_hessian + bs[2] * bs[2] * friction_hessian
 
-        damping_force, damping_hessian = damp_collision(
-            displacement_3,
-            collision_normal * collision_normal_sign[3],
-            collision_hessian_3,
-            collision_damping,
-            dt,
-        )
+        damping_force, damping_hessian = damp_collision(gap_rate, bs[3], collision_normal, collision_damping, dt)
         collision_force_3 += damping_force + bs[3] * friction_force
         collision_hessian_3 += damping_hessian + bs[3] * bs[3] * friction_hessian
         return (
@@ -2279,15 +2075,15 @@ def evaluate_spring_force_and_hessian(
     force_sign = 1.0 if particle_idx == v0 else -1.0
 
     spring_force = force_sign * spring_stiffness[spring_idx] * (l0 - spring_length) / spring_length * diff
-    spring_hessian = spring_stiffness[spring_idx] * (
-        wp.identity(3, float)
-        - (l0 / spring_length) * (wp.identity(3, float) - wp.outer(diff, diff) / (spring_length * spring_length))
+    structural = wp.identity(3, float) - (l0 / spring_length) * (
+        wp.identity(3, float) - wp.outer(diff, diff) / (spring_length * spring_length)
     )
+    spring_hessian = spring_stiffness[spring_idx] * structural
 
-    # compute damping
-    h_d = spring_hessian * (spring_damping[spring_idx] / dt)
-
-    f_d = h_d * (pos_anchor[particle_idx] - pos[particle_idx])
+    h_d = structural * (spring_damping[spring_idx] / dt)
+    other_idx = v1 if particle_idx == v0 else v0
+    dx_rel = (pos[particle_idx] - pos_anchor[particle_idx]) - (pos[other_idx] - pos_anchor[other_idx])
+    f_d = -h_d * dx_rel
 
     spring_force = spring_force + f_d
     spring_hessian = spring_hessian + h_d
@@ -2322,18 +2118,15 @@ def evaluate_spring_force_and_hessian_both_vertices(
     # Base spring force for v0 (v1 gets the opposite)
     base_force = spring_stiffness[spring_idx] * (l0 - spring_length) / spring_length * diff
 
-    # Hessian is the same for both vertices (symmetric)
-    spring_hessian = spring_stiffness[spring_idx] * (
-        wp.identity(3, float)
-        - (l0 / spring_length) * (wp.identity(3, float) - wp.outer(diff, diff) / (spring_length * spring_length))
+    structural = wp.identity(3, float) - (l0 / spring_length) * (
+        wp.identity(3, float) - wp.outer(diff, diff) / (spring_length * spring_length)
     )
+    spring_hessian = spring_stiffness[spring_idx] * structural
 
-    # Compute damping hessian contribution
-    h_d = spring_hessian * (spring_damping[spring_idx] / dt)
-
-    # Damping force for each vertex
-    f_d_v0 = h_d * (pos_anchor[v0] - pos[v0])
-    f_d_v1 = h_d * (pos_anchor[v1] - pos[v1])
+    h_d = structural * (spring_damping[spring_idx] / dt)
+    dx_rel = (pos[v0] - pos_anchor[v0]) - (pos[v1] - pos_anchor[v1])
+    f_d_v0 = -h_d * dx_rel
+    f_d_v1 = h_d * dx_rel
 
     # Total force and hessian for each vertex
     force_v0 = base_force + f_d_v0
@@ -2413,6 +2206,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     body_particle_contact_max: int,
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
     body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     shape_material_mu: wp.array[float],
@@ -2439,6 +2233,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
         if particle_colors[particle_idx] == current_color:
             # Read per-contact AVBD penalty and material properties shared with the rigid side
             contact_ke = body_particle_contact_penalty_k[t_id]
+            contact_damping_scale = contact_ke / wp.max(body_particle_contact_material_ke[t_id], 1.0e-12)
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
 
@@ -2449,6 +2244,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 t_id,
                 contact_ke,
                 contact_kd,
+                contact_damping_scale,
                 contact_mu,
                 friction_epsilon,
                 particle_radius,
@@ -2913,6 +2709,7 @@ def accumulate_particle_body_contact_force_and_hessian(
     body_particle_contact_max: int,
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
     body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     shape_material_mu: wp.array[float],
@@ -2939,6 +2736,7 @@ def accumulate_particle_body_contact_force_and_hessian(
         if particle_colors[particle_idx] == current_color:
             # Read per-contact AVBD penalty and material properties shared with the rigid side
             contact_ke = body_particle_contact_penalty_k[t_id]
+            contact_damping_scale = contact_ke / wp.max(body_particle_contact_material_ke[t_id], 1.0e-12)
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
 
@@ -2949,6 +2747,7 @@ def accumulate_particle_body_contact_force_and_hessian(
                 t_id,
                 contact_ke,
                 contact_kd,
+                contact_damping_scale,
                 contact_mu,
                 friction_epsilon,
                 particle_radius,

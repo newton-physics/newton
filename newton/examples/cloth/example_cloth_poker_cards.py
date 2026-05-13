@@ -74,7 +74,7 @@ class Example:
         cube_cfg = newton.ModelBuilder.ShapeConfig()
         cube_cfg.density = 0.0  # Static body (infinite mass)
         cube_cfg.ke = 5.0e6  # Contact stiffness
-        cube_cfg.kd = 1.0e-4  # Contact damping
+        cube_cfg.kd = 5.0e2  # Contact damping
         cube_cfg.mu = 0.1  # Friction
         builder.add_shape_box(
             body_cube,
@@ -103,7 +103,7 @@ class Example:
         sphere_cfg = newton.ModelBuilder.ShapeConfig()
         sphere_cfg.density = 0.0  # Kinematic body (not affected by gravity)
         sphere_cfg.ke = 1.0e5  # Contact stiffness
-        sphere_cfg.kd = 1.0e-4  # Contact damping
+        sphere_cfg.kd = 1.0e1  # Contact damping
         sphere_cfg.mu = 0.3  # Friction
         builder.add_shape_sphere(body_sphere, radius=self.sphere_radius, cfg=sphere_cfg)
 
@@ -125,9 +125,9 @@ class Example:
         # edge_ke: bending stiffness (key for card rigidity)
         tri_ke = 1.0e4  # High stretch stiffness
         tri_ka = 1.0e4  # High shear stiffness
-        tri_kd = 1.0e-4  # Small damping
+        tri_kd = 1.0e0  # Stretch/shear damping
         edge_ke = 1.0e2  # High bending stiffness for rigid cards
-        edge_kd = 1.0e-2  # Bending damping
+        edge_kd = 1.0e0  # Bending damping
 
         # Particle radius for collision (in meters)
         particle_radius = 0.003  # m (0.15 cm)
@@ -173,7 +173,7 @@ class Example:
         # Add ground plane
         ground_cfg = newton.ModelBuilder.ShapeConfig()
         ground_cfg.ke = 1.0e5  # Contact stiffness
-        ground_cfg.kd = 1.0e-4  # Contact damping
+        ground_cfg.kd = 1.0e1  # Contact damping
         ground_cfg.mu = 0.3  #
         builder.add_ground_plane(cfg=ground_cfg)
 
@@ -185,7 +185,7 @@ class Example:
 
         # Contact parameters for card-card and card-ground interactions
         self.model.soft_contact_ke = 1.0e5  # Contact stiffness
-        self.model.soft_contact_kd = 1.0e-4  # Contact damping
+        self.model.soft_contact_kd = 1.0e1  # Contact damping
         self.model.soft_contact_mu = 0.3  # Friction coefficient
 
         # Create VBD solver with self-contact enabled

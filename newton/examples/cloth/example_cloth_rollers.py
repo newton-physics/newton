@@ -255,9 +255,9 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=1.0e-5,
+            tri_kd=1.0e0,
             edge_ke=1e2,
-            edge_kd=0.1,
+            edge_kd=1.0e1,
             particle_radius=0.5,
         )
 
@@ -272,7 +272,7 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=1.0e-5,
+            tri_kd=1.0e0,
             edge_ke=1e2,
             edge_kd=0.0,
         )
@@ -288,7 +288,7 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=1.0e-5,
+            tri_kd=1.0e0,
             edge_ke=1,
             edge_kd=0.01,
         )
@@ -302,7 +302,7 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
         self.model.soft_contact_ke = 5.0e5
-        self.model.soft_contact_kd = 1.0e-6
+        self.model.soft_contact_kd = 5.0e-1
         self.model.soft_contact_mu = 0.1
 
         # Fix outer edge of cloth to cylinder 2 and set up cylinder rotation

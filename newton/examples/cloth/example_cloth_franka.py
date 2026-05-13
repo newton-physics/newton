@@ -92,10 +92,10 @@ class Example:
         self.particle_self_contact_margin = 0.2
 
         self.soft_contact_ke = 1e4
-        self.soft_contact_kd = 1e-2
+        self.soft_contact_kd = 1e2
 
         self.robot_contact_ke = 5e4
-        self.robot_contact_kd = 1e-3
+        self.robot_contact_kd = 5e1
         self.robot_contact_mu = 1.5
 
         self.self_contact_friction = 0.25
@@ -103,10 +103,10 @@ class Example:
         #   elasticity
         self.tri_ke = 1e4
         self.tri_ka = 1e4
-        self.tri_kd = 1.5e-6
+        self.tri_kd = 1.5e-2
 
         self.bending_ke = 5
-        self.bending_kd = 1e-2
+        self.bending_kd = 5e-2
 
         self.scene = ModelBuilder(gravity=-981.0)
 
