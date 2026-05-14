@@ -157,7 +157,7 @@ class Example:
             tri_ka=1.0e3,
             tri_kd=2.0e-4,
             edge_ke=1e-3,
-            edge_kd=1e-7,
+            edge_kd=1e-2,
         )
         scene.color()
         self.model = scene.finalize()
