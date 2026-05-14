@@ -579,7 +579,12 @@ class TestModelMesh(unittest.TestCase):
         child = builder.add_link()
         parent_shape = builder.add_shape_sphere(body=parent, radius=0.5)
         child_shape = builder.add_shape_sphere(body=child, radius=0.5)
-        builder.add_joint_free(parent=parent, child=child)
+        with warnings.catch_warnings():
+            # add_joint_free with a non-world parent emits a UserWarning about
+            # SolverMuJoCo incompatibility; that warning is orthogonal to what
+            # this test exercises.
+            warnings.simplefilter("ignore", UserWarning)
+            builder.add_joint_free(parent=parent, child=child)
         pair = (min(parent_shape, child_shape), max(parent_shape, child_shape))
         self.assertEqual(builder.shape_collision_filter_pairs.count(pair), 1)
 
@@ -1505,6 +1510,78 @@ class TestModelJoints(unittest.TestCase):
 
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
         self.assertEqual(builder.joint_parent[joint_id], parent_body)
+
+    def test_add_joint_free_world_parent_no_warning(self):
+        """Free joint with the world (parent=-1) is the supported configuration
+        and must not emit the MuJoCo-incompatibility warning."""
+        builder = ModelBuilder()
+        body = builder.add_body(wp.transform_identity(), mass=1.0)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_joint_free(child=body)
+        self.assertFalse(
+            any("SolverMuJoCo" in str(w.message) for w in caught),
+            f"Unexpected MuJoCo-incompat warning for parent=-1: {[str(w.message) for w in caught]}",
+        )
+
+    def test_add_joint_free_non_world_parent_warns(self):
+        """Free joint with a non-world parent must warn that SolverMuJoCo will
+        reject the model, since MuJoCo only permits free joints to attach
+        directly to the world."""
+        builder = ModelBuilder()
+        parent = builder.add_body(wp.transform_identity(), mass=1.0)
+        child = builder.add_body(wp.transform_identity(), mass=1.0)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_joint_free(parent=parent, child=child, label="floater")
+        mjc_warnings = [w for w in caught if "SolverMuJoCo" in str(w.message)]
+        self.assertEqual(len(mjc_warnings), 1)
+        self.assertEqual(mjc_warnings[0].category, UserWarning)
+        self.assertIn("floater", str(mjc_warnings[0].message))
+        self.assertIn(f"parent body {parent}", str(mjc_warnings[0].message))
+
+    def test_add_joint_generic_free_non_world_parent_warns(self):
+        """The warning fires for free joints created through the generic
+        ``add_joint`` entry point too, not only the typed ``add_joint_free``
+        wrapper (URDF ``floating`` joints take this path indirectly)."""
+        builder = ModelBuilder()
+        parent = builder.add_body(wp.transform_identity(), mass=1.0)
+        child = builder.add_body(wp.transform_identity(), mass=1.0)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_joint(
+                newton.JointType.FREE,
+                parent=parent,
+                child=child,
+                linear_axes=[
+                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.X),
+                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.Y),
+                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.Z),
+                ],
+                angular_axes=[
+                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.X),
+                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.Y),
+                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.Z),
+                ],
+            )
+        self.assertEqual(
+            sum("SolverMuJoCo" in str(w.message) for w in caught),
+            1,
+        )
+
+    def test_add_joint_non_free_non_world_parent_no_warning(self):
+        """The warning is specific to FREE joints; non-free joints with a
+        non-world parent are a normal articulation pattern and must not warn."""
+        builder = ModelBuilder()
+        parent = builder.add_body(wp.transform_identity(), mass=1.0)
+        child = builder.add_body(wp.transform_identity(), mass=1.0)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_joint_revolute(parent=parent, child=child, axis=newton.Axis.Y)
+        self.assertFalse(
+            any("SolverMuJoCo" in str(w.message) for w in caught),
+            f"Unexpected MuJoCo-incompat warning on revolute joint: {[str(w.message) for w in caught]}",
+        )
 
 
 class TestModelWorld(unittest.TestCase):
