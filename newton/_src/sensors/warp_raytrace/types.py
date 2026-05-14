@@ -81,6 +81,10 @@ class RenderConfig:
     gaussians_max_num_hits: int = 20
     """Maximum Gaussian hits accumulated per ray."""
 
+    mesh_bvh_constructor: str | None = "cubql"
+    """Renderer mesh BVH constructor backend. If it differs from the model mesh backend,
+    the renderer builds render-owned mesh handles with this constructor."""
+
 
 @dataclass(unsafe_hash=True)
 class ClearData:

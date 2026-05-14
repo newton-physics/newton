@@ -56,6 +56,7 @@
 - Add Kamino-specific simulation examples in `newton/examples/kamino`
 - Add per-mesh `color` override to `ViewerBase.log_mesh()` for tinting individual meshes without authoring per-vertex colors
 - Add per-mesh `roughness` and `metallic` PBR overrides to `ViewerBase.log_mesh()`
+- Add `ModelBuilder.BvhConfig` and `RenderConfig.mesh_bvh_constructor` so callers can choose Warp BVH constructors for finalized model geometry and renderer-owned mesh geometry. Model finalization keeps Warp's default constructors by default, while the renderer uses `cubql` for renderer-owned meshes by default.
 
 ### Changed
 
