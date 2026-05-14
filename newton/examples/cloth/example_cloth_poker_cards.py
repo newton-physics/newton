@@ -185,7 +185,7 @@ class Example:
 
         # Contact parameters for card-card and card-ground interactions
         self.model.soft_contact_ke = 1.0e5  # Contact stiffness
-        self.model.soft_contact_kd = 1.0e1  # Contact damping
+        self.model.soft_contact_kd = 1.0e2  # Contact damping
         self.model.soft_contact_mu = 0.3  # Friction coefficient
 
         # Create VBD solver with self-contact enabled
