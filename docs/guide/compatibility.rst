@@ -44,8 +44,8 @@ NVIDIA GPU and are unavailable in CPU-only mode:
 Inherited Platform Support
 --------------------------
 
-Newton inherits its operating system, CUDA toolkit, NVIDIA driver, and
-GPU architecture compatibility from `NVIDIA Warp
+Newton's baseline operating system, CUDA toolkit, NVIDIA driver, and
+GPU architecture compatibility is inherited from `NVIDIA Warp
 <https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__.
 Warp's compatibility page is the source of truth for:
 
@@ -55,8 +55,27 @@ Warp's compatibility page is the source of truth for:
   requirements.
 * Minimum GPU compute capability and forward-compatibility via PTX.
 
-For the install-relevant minimums, see :ref:`system-requirements` in
-the installation guide.
+Newton may apply additional constraints on top of Warp's baseline; see
+:ref:`cuda-compatibility` below.  For the install-relevant minimums,
+see :ref:`system-requirements` in the installation guide.
+
+.. _cuda-compatibility:
+
+CUDA Compatibility
+------------------
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - CUDA Version
+     - Notes
+   * - 12.3+
+     - Required for reliable CUDA graph capture
+   * - 12.4+
+     - Recommended for best performance
+   * - 13
+     - Supported
 
 .. _versioning:
 

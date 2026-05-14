@@ -38,23 +38,7 @@ Minimum Requirements
      - 550 or newer (CUDA 12.4) recommended for best performance
    * - CUDA
      - 12, 13
-     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles its own runtime
-
-CUDA Compatibility
-^^^^^^^^^^^^^^^^^^
-
-.. list-table::
-   :widths: 25 75
-   :header-rows: 1
-
-   * - CUDA Version
-     - Notes
-   * - 12.3+
-     - Required for reliable CUDA graph capture
-   * - 12.4+
-     - Recommended for best performance
-   * - 13
-     - Supported
+     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles its own runtime. See :ref:`cuda-compatibility` for version-specific notes.
 
 Platform-Specific Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -69,8 +53,8 @@ X11 development libraries to build ``imgui_bundle`` from source:
     sudo apt-get update
     sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
 
-For tested configurations and CPU-only feature limitations, see
-:doc:`compatibility`.
+For tested configurations, CPU-only feature limitations, and CUDA
+version-specific notes, see :doc:`compatibility`.
 
 Installing Newton
 -----------------
