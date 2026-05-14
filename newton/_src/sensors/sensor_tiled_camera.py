@@ -207,6 +207,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
         refit_bvh: bool | None = None,
         hdr_color_image: wp.array4d[wp.vec3f] | None = None,
+        kernel_block_dim: int = 64,
     ):
         """Render output images for all worlds and cameras.
 
@@ -241,6 +242,8 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 :func:`~newton.geometry.refit_bvh_particle` explicitly
                 before calling this method instead.
             hdr_color_image: Output for linear HDR color. None to skip.
+            kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
+                for the render megakernel.
         """
 
         # TODO: Remove this deprecation behaviour in the next release.
@@ -283,6 +286,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             albedo_image,
             clear_data=clear_data,
             hdr_color_image=hdr_color_image,
+            kernel_block_dim=kernel_block_dim,
         )
 
     def compute_pinhole_camera_rays(
