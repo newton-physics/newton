@@ -15,6 +15,7 @@ newton.utils
 
    EventTracer
    MeshAdjacency
+   OnnxRuntime
 
 .. rubric:: Functions
 

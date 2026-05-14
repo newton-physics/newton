@@ -41,6 +41,13 @@ sim = [
     "newton-actuators>=0.1.0",  # deprecated — kept for backward compat, will be removed
 ]
 
+# Optional: ONNX policy inference (used by ControllerNeuralMLP / ControllerNeuralLSTM
+# and the RL policy examples).  Only the pure protobuf parser is needed; inference
+# runs on Warp kernels, no `onnxruntime` is pulled in.
+onnx = [
+    "onnx>=1.16.0",
+]
+
 # Asset import and mesh processing dependencies
 importers = [
     # HTTP client for downloading meshes from URIs
@@ -75,6 +82,7 @@ remesh = [
 examples = [
     "newton[sim]",          # include simulation dependencies
     "newton[importers]",    # include import dependencies
+    "newton[onnx]",         # for RL policy examples
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
     "GitPython>=3.1.47",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
@@ -83,14 +91,16 @@ examples = [
     "Pillow>=11.3.0",
 ]
 
-# Extra dependency needed to run examples that inference an RL policy
+# PyTorch is no longer required to run RL policies (examples and actuators
+# load ONNX files via Newton's Warp-backed runtime).  These extras remain only
+# for the Kamino solver's RL training scripts.
 torch-cu12 = [
     "newton[examples]", # include example dependencies
-    "torch>=2.7.0",     # CUDA 12 PyTorch
+    "torch>=2.7.0",     # CUDA 12 PyTorch (Kamino RL only)
 ]
 torch-cu13 = [
     "newton[examples]", # include example dependencies
-    "torch>=2.10.0",    # CUDA 13 PyTorch
+    "torch>=2.10.0",    # CUDA 13 PyTorch (Kamino RL only)
 ]
 
 # Development and Testing
@@ -223,6 +233,7 @@ banned-module-level-imports = [
     "mujoco",
     "mujoco_warp",
     "networkx",
+    "onnx",
     "open3d",
     "openmesh",
     "PIL",
