@@ -131,11 +131,12 @@ with other packages:
 Running Examples
 ^^^^^^^^^^^^^^^^
 
-After installing Newton with the ``examples`` extra, run an example with:
+After installing Newton with the ``examples`` extra, launch the default
+``basic_pendulum`` example — you can browse other examples from the side panel:
 
 .. code-block:: console
 
-    python -m newton.examples basic_pendulum
+    python -m newton.examples
 
 Run an example that runs RL policy inference. Choose the extra matching your
 NVIDIA driver's CUDA support (``torch-cu12`` for CUDA 12.x, ``torch-cu13`` for
@@ -158,11 +159,11 @@ to check the supported CUDA version (shown in the top-right corner of the output
         pip install "newton[examples]"
         pip install torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cu124
 
-See a list of all available examples:
+See a list of all available examples (also browsable from the viewer's side panel):
 
 .. code-block:: console
 
-    python -m newton.examples
+    python -m newton.examples --list
 
 Quick Start
 ^^^^^^^^^^^
@@ -260,6 +261,6 @@ install the most specific set for your use case.
 Next Steps
 ----------
 
-- Run ``python -m newton.examples`` to see all available examples and check out the :doc:`visualization` guide to learn how to interact with the example simulations.
+- Run ``python -m newton.examples --list`` to see all available examples and check out the :doc:`visualization` guide to learn how to interact with the example simulations.
 - See the :doc:`compatibility` guide for Newton's supported platforms, versioning scheme, and deprecation policy.
 - Check out the :doc:`development` guide to learn how to contribute to Newton, or how to use alternative installation methods.

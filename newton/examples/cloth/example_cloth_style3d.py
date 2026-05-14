@@ -124,9 +124,6 @@ class Example:
             model=self.model,
             iterations=self.iterations,
         )
-        self.solver._precompute(
-            builder,
-        )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -186,6 +183,4 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create example and run
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

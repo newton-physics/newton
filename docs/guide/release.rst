@@ -60,7 +60,7 @@ Pre-release planning
      - Determine target version (``X.Y.Z``).
    * - ☐
      - Confirm dependency versions and availability: warp-lang, mujoco,
-       mujoco-warp, newton-usd-schemas, newton-actuators.
+       mujoco-warp, newton-usd-schemas.
    * - ☐
      - Set timeline: code freeze → RC1 → testing window → GA.
    * - ☐
@@ -72,6 +72,10 @@ Pre-release planning
          migration guidance (see :ref:`deprecation-policy`).
        - Confirm new public API has complete docstrings and is included in
          Sphinx docs (run ``uv run docs/generate_api.py``).
+
+       Run the ``release-audit`` Claude Code skill
+       (``.claude/skills/release-audit``) in **pre-release mode** to automate
+       this audit.
    * - ☐
      - Communicate the timeline to the community.
 
@@ -99,12 +103,13 @@ Code freeze and release branch creation
        the release wheel installs purely from PyPI, then regenerate
        ``uv.lock`` (``uv lock``) and commit.
    * - ☐
-     - Push tag ``vX.Y.Zrc1``.  This triggers the ``release.yml`` workflow
-       (build wheel → PyPI publish with manual approval).
+     - Run the ``release-audit`` skill in **release-candidate mode** against
+       ``release-X.Y``; address or acknowledge flagged entries before
+       tagging.
    * - ☐
      - Manually trigger the **minimum-dependency** and **multi-GPU** CI
        workflows on the ``release-X.Y`` branch (the nightly orchestrator
-       only runs on ``main``).  Verify both pass before announcing the RC.
+       only runs on ``main``).  Verify both pass before tagging.
 
        .. code-block:: bash
 
@@ -114,6 +119,9 @@ Code freeze and release branch creation
           # Multi-GPU tests (g7e.12xlarge = 4× L40S GPUs)
           gh workflow run aws_gpu_tests.yml --ref release-X.Y \
               -f instance-type=g7e.12xlarge
+   * - ☐
+     - Push tag ``vX.Y.Zrc1``.  This triggers the ``release.yml`` workflow
+       (build wheel → PyPI publish with manual approval).
    * - ☐
      - RC1 published to PyPI (approve in GitHub environment).
 
@@ -161,6 +169,9 @@ As a guideline, an RC is typically ready for GA when:
    * - ☐
      - All release-targeted fixes cherry-picked from ``main``.
    * - ☐
+     - Re-run the ``release-audit`` skill after final cherry-picks; confirm
+       no new flags since the last RC.
+   * - ☐
      - :ref:`Testing criteria <testing-criteria>` satisfied.
    * - ☐
      - No outstanding release-blocking issues.
@@ -195,6 +206,9 @@ otherwise.
          within the same release period (e.g. a bug fix for a feature added
          in the same cycle should not appear as both an "Added" and a "Fixed"
          entry).
+
+       The ``release-audit`` skill's CHANGELOG language review is a useful
+       first pass before this manual sweep.
    * - ☐
      - Update ``README.md`` documentation links to point to versioned URLs
        (e.g. ``/X.Y.Z/guide.html`` instead of ``/latest/``).

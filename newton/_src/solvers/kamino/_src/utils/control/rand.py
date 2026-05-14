@@ -80,19 +80,17 @@ class RandomJointControllerData:
 def _generate_random_control_inputs(
     # Inputs
     controller_seed: int,
-    controller_decimation: wp.array(dtype=int32),
-    controller_scale: wp.array(dtype=float32),
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_act_type: wp.array(dtype=int32),
-    model_joints_num_dofs: wp.array(dtype=int32),
-    model_joints_dofs_offset: wp.array(dtype=int32),
-    model_joints_tau_j_max: wp.array(dtype=float32),
-    state_time_steps: wp.array(dtype=int32),
+    controller_decimation: wp.array[int32],
+    controller_scale: wp.array[float32],
+    model_joints_wid: wp.array[int32],
+    model_joints_act_type: wp.array[int32],
+    model_joints_dofs_offset: wp.array[int32],
+    model_joints_tau_j_max: wp.array[float32],
+    state_time_steps: wp.array[int32],
     # Outputs
     # TODO: Add support for other control types
     # (e.g. position and velocity targets)
-    control_tau_j: wp.array(dtype=float32),
+    control_tau_j: wp.array[float32],
 ):
     """
     A kernel to generate random control inputs for testing and benchmarking purposes.
@@ -120,15 +118,9 @@ def _generate_random_control_inputs(
     if act_type == JointActuationType.PASSIVE or step % decimation != 0:
         return
 
-    # Retrieve the offset of the world's joints in the global DoF vector
-    world_dof_offset = model_info_joint_dofs_offset[wid]
-
     # Retrieve the number of DoFs and offset of the joint
-    num_dofs_j = model_joints_num_dofs[jid]
-    dofs_offset_j = model_joints_dofs_offset[jid]
-
-    # Compute the global DoF offset of the joint
-    dofs_start = world_dof_offset + dofs_offset_j
+    dofs_start = model_joints_dofs_offset[jid]
+    num_dofs_j = model_joints_dofs_offset[jid + 1] - dofs_start
 
     # Iterate over the DoFs of the joint
     for dof in range(num_dofs_j):
@@ -171,7 +163,6 @@ class RandomJointController:
     def __init__(
         self,
         model: ModelKamino | None = None,
-        device: wp.DeviceLike = None,
         decimation: int | IntArrayLike | None = None,
         scale: float | FloatArrayLike | None = None,
         seed: int | None = None,
@@ -184,9 +175,6 @@ class RandomJointController:
             model (`ModelKamino`, optional):
                 The model container describing the system to be simulated.\n
                 If `None`, a call to ``finalize()`` must be made later.
-            device (`wp.DeviceLike`, optional):
-                Device to use for allocations and execution.\n
-                Defaults to `None`, in which case the model device is used.
             decimation (`int` or `IntArrayLike`, optional):
                 Control decimation for each world expressed as a multiple of simulation steps.\n
                 Defaults to `1` for all worlds if `None`.
@@ -202,8 +190,10 @@ class RandomJointController:
         # for which this controller is created
         self._model: ModelKamino | None = None
 
+        # Declare the device cache
+        self._device: wp.DeviceLike = None
+
         # Cache constructor arguments for potential later
-        self._device: wp.DeviceLike = device
         self._decimation: int | IntArrayLike | None = decimation
         self._scale: float | FloatArrayLike | None = scale
         self._seed: int = seed
@@ -213,7 +203,7 @@ class RandomJointController:
 
         # If a model is provided, allocate the controller data
         if model is not None:
-            self.finalize(model=model, seed=seed, decimation=decimation, scale=scale, device=device)
+            self.finalize(model=model, seed=seed, decimation=decimation, scale=scale)
 
     ###
     # Properties
@@ -264,7 +254,6 @@ class RandomJointController:
         seed: int | None = None,
         decimation: int | IntArrayLike | None = None,
         scale: float | FloatArrayLike | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         Finalizes the random controller by allocating
@@ -273,9 +262,6 @@ class RandomJointController:
         Args:
             model (`ModelKamino`):
                 The model container describing the system to be simulated.
-            device (`wp.DeviceLike`, optional):
-                Device to use for allocations and execution.\n
-                Defaults to `None`, in which case the model device is used.
             decimation (`int` or `IntArrayLike`, optional):
                 Control decimation for each world expressed as a multiple of simulation steps.\n
                 Defaults to `1` for all worlds if `None`.
@@ -314,11 +300,8 @@ class RandomJointController:
             seed=seed if seed is not None else self._seed,
         )
 
-        # Override the device if provided, otherwise use the model device
-        if device is not None:
-            self._device = device
-        else:
-            self._device = model.device
+        # Use the model's device
+        self._device = model.device
 
         # Allocate the controller data
         with wp.ScopedDevice(self._device):
@@ -356,10 +339,8 @@ class RandomJointController:
                 self._data.seed,
                 self._data.decimation,
                 self._data.scale,
-                self._model.info.joint_dofs_offset,
                 self._model.joints.wid,
                 self._model.joints.act_type,
-                self._model.joints.num_dofs,
                 self._model.joints.dofs_offset,
                 self._model.joints.tau_j_max,
                 time.steps,
@@ -368,6 +349,7 @@ class RandomJointController:
                 # (e.g. position and velocity targets)
                 control.tau_j,
             ],
+            device=self._device,
         )
 
     ###

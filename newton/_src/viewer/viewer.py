@@ -65,6 +65,14 @@ class ViewerBase(ABC):
         """
         return False
 
+    def should_step(self) -> bool:
+        """Report whether the loop should advance one step.
+
+        Returns:
+            bool: True when the simulation should step forward.
+        """
+        return not self.is_paused()
+
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.
 
@@ -1008,6 +1016,9 @@ class ViewerBase(ABC):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        color: tuple[float, float, float] | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1021,6 +1032,12 @@ class ViewerBase(ABC):
             texture: Optional texture image array or path.
             hidden: Whether the mesh should be hidden.
             backface_culling: Whether back-face culling should be enabled.
+            color: Optional base color as an RGB tuple with values in
+                [0, 1]. Used when no texture is provided.
+            roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
+                smooth, ``1`` is fully rough.
+            metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
+                is metal.
         """
         pass
 
@@ -1199,6 +1216,30 @@ class ViewerBase(ABC):
             gaussian: The :class:`newton.Gaussian` asset to visualize.
             xform: Optional world-space transform applied to all splat centers.
             hidden: Whether the point cloud should be hidden.
+        """
+        return
+
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+        """
+        Log an image (or batch of images) for display in the viewer.
+
+        Args:
+            name: Stable identifier. Subsequent calls with the same *name*
+                update in place. In :class:`ViewerGL`, each name gets one
+                dockable window.
+            image: Image array. Accepted shapes:
+
+                * ``(H, W)`` -- single grayscale image
+                * ``(H, W, C)`` -- single color image, ``C in (1, 3, 4)``
+                * ``(N, H, W)`` -- batch of N grayscale images
+                * ``(N, H, W, C)`` -- batch of N color images, ``C in (1, 3, 4)``
+
+                Accepted dtypes: ``uint8`` (values in ``[0, 255]``) or
+                ``float32`` (values in ``[0, 1]``). Values outside the range
+                are clipped.
+
+        The base implementation is a no-op. Backends that render images
+        (currently only :class:`ViewerGL`) override this method.
         """
         return
 

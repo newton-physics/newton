@@ -54,6 +54,7 @@ from .kinematics.resets import (
     reset_state_from_bodies_state,
     reset_state_to_model_default,
     reset_time,
+    set_joint_state_masked,
 )
 from .linalg import ConjugateResidualSolver, IterativeSolver, LinearSolverNameToType
 from .solvers.fk import ForwardKinematicsSolver
@@ -195,7 +196,7 @@ class SolverKaminoImpl(SolverBase):
         self._data = self._model.data()
 
         # Allocate a joint-limits interface
-        self._limits = LimitsKamino(model=self._model, device=self._model.device)
+        self._limits = LimitsKamino(model=self._model)
 
         # Construct the unilateral constraints members in the model info
         make_unilateral_constraints_info(model=self._model, data=self._data, limits=self._limits, contacts=contacts)
@@ -206,14 +207,12 @@ class SolverKaminoImpl(SolverBase):
                 model=self._model,
                 limits=self._limits,
                 contacts=contacts,
-                device=self._model.device,
             )
         else:
             self._jacobians = DenseSystemJacobians(
                 model=self._model,
                 limits=self._limits,
                 contacts=contacts,
-                device=self._model.device,
             )
 
         # Allocate the dual problem data on the device
@@ -222,11 +221,11 @@ class SolverKaminoImpl(SolverBase):
             data=self._data,
             limits=self._limits,
             contacts=contacts,
+            jacobians=self._jacobians,
             config=problem_fd_config,
             solver=linear_solver_type,
             solver_kwargs=linear_solver_kwargs,
             sparse=self._config.sparse_dynamics,
-            device=self._model.device,
         )
 
         # Allocate the forward dynamics solver on the device
@@ -237,7 +236,6 @@ class SolverKaminoImpl(SolverBase):
             use_acceleration=self._config.padmm.use_acceleration,
             use_graph_conditionals=self._config.padmm.use_graph_conditionals,
             collect_info=self._config.collect_solver_info,
-            device=self._model.device,
         )
 
         # Allocate the forward kinematics solver on the device
@@ -656,6 +654,11 @@ class SolverKaminoImpl(SolverBase):
     def _read_step_inputs(self, state_in: StateKamino, control_in: ControlKamino):
         """
         Updates the internal solver data from the input state and control.
+
+        Control inputs (tau_j, q_j_ref, dq_j_ref, tau_j_ref) are aliased
+        directly to avoid redundant device-to-device copies since they are
+        only read during a step. State arrays must still be copied because
+        the solver modifies them in-place.
         """
         # TODO: Remove corresponding data copies
         # by directly using the input containers
@@ -667,10 +670,11 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(self._data.joints.q_j_p, state_in.q_j_p)
         wp.copy(self._data.joints.dq_j, state_in.dq_j)
         wp.copy(self._data.joints.lambda_j, state_in.lambda_j)
-        wp.copy(self._data.joints.tau_j, control_in.tau_j)
-        wp.copy(self._data.joints.q_j_ref, control_in.q_j_ref)
-        wp.copy(self._data.joints.dq_j_ref, control_in.dq_j_ref)
-        wp.copy(self._data.joints.tau_j_ref, control_in.tau_j_ref)
+        # Alias read-only control inputs
+        self._data.joints.tau_j = control_in.tau_j
+        self._data.joints.q_j_ref = control_in.q_j_ref
+        self._data.joints.dq_j_ref = control_in.dq_j_ref
+        self._data.joints.tau_j_ref = control_in.tau_j_ref
 
     def _write_step_output(self, state_out: StateKamino):
         """
@@ -851,14 +855,20 @@ class SolverKaminoImpl(SolverBase):
         reset_body_net_wrenches(model=self._model, body_w=state_out.w_i, world_mask=world_mask)
         reset_joint_constraint_reactions(model=self._model, lambda_j=state_out.lambda_j, world_mask=world_mask)
 
-        # If joint targets were provided, copy them to the output state
+        # If joint targets were provided, write them to the output state. The mask-aware
+        # write ensures worlds outside `world_mask` keep their previous values (notably
+        # `q_j_p`, the TWOPI angle-correction reference).
         if with_joint_targets:
-            # Copy the joint states to the output state
-            wp.copy(state_out.q_j_p, joint_q)
-            wp.copy(state_out.q_j, joint_q)
-            if joint_u is not None:
-                wp.copy(state_out.dq_j, joint_u)
-        # Otherwise, extract the joint states from the actuators
+            set_joint_state_masked(
+                model=self._model,
+                world_mask=world_mask,
+                src_q=joint_q,
+                src_u=joint_u,
+                dst_q=state_out.q_j,
+                dst_q_p=state_out.q_j_p,
+                dst_dq=state_out.dq_j,
+            )
+        # Otherwise, extract the joint states from the actuators and synchronize `q_j_p`
         else:
             extract_joints_state_from_actuators(
                 model=self._model,
@@ -868,7 +878,15 @@ class SolverKaminoImpl(SolverBase):
                 joint_q=state_out.q_j,
                 joint_u=state_out.dq_j,
             )
-            wp.copy(state_out.q_j_p, state_out.q_j)
+            set_joint_state_masked(
+                model=self._model,
+                world_mask=world_mask,
+                src_q=state_out.q_j,
+                src_u=None,
+                dst_q=state_out.q_j,
+                dst_q_p=state_out.q_j_p,
+                dst_dq=None,
+            )
 
     def _reset_post_process(self, world_mask: wp.array | None = None):
         """

@@ -1,0 +1,166 @@
+#usda 1.0
+(
+    defaultPrim = "test_cylindrical"
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "test_cylindrical"
+{
+    def Scope "RigidBodies"
+    {
+        def Xform "rb_a" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+            customData = {
+                string uuid = "21fdd865-4c3a-4e48-9522-ec1d774a453a"
+            }
+        )
+        {
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (0.000019991558, 0.00014980425, 0.0001545835)
+            float physics:mass = 0.2394738
+            quatf physics:principalAxes = (0.00092647114, -0.00092647114, 0.7071062, 0.7071062)
+            float3 xformOp:rotateXYZ = (0, 0, 0)
+            double3 xformOp:translate = (-0.09427321589043113, -0.014089340111240745, 0.019070848526958024)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+
+            def Scope "Geometry"
+            {
+                def Scope "Primary"
+                {
+                    def "mesh_0" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                        customData = {
+                            string layer = "Primary"
+                            string uuid = "2771e8ce-21b5-4df2-8a9c-d43b28830925"
+                        }
+                        prepend references = @Geometry/surfaces.usd@</Surfaces/mesh_2771e8ce_21b5_4df2_8a9c_d43b28830925>
+                    )
+                    {
+                        float3 xformOp:rotateXYZ = (0, 0, 0)
+                        double3 xformOp:translate = (0, 0, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+                    }
+                }
+            }
+        }
+
+        def Xform "rb_b" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+            customData = {
+                string uuid = "f1812023-c9cb-4d83-a7d1-f8eb4b69ef4d"
+            }
+        )
+        {
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (0.000014542198, 0.00013094745, 0.00013156794)
+            float physics:mass = 0.22844681
+            quatf physics:principalAxes = (0.9468445, -0.010130966, -0.029963981, -0.3201327)
+            float3 xformOp:rotateXYZ = (0, 0, 0)
+            double3 xformOp:translate = (-0.02063136860113871, -0.03964360447751959, -0.0004022133184051956)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+
+            def Scope "Geometry"
+            {
+                def Scope "Primary"
+                {
+                    def "mesh_0" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                        customData = {
+                            string layer = "Primary"
+                            string uuid = "5eea300d-dd9a-4b59-bc87-28d95f31bfe2"
+                        }
+                        prepend references = @Geometry/surfaces.usd@</Surfaces/mesh_5eea300d_dd9a_4b59_bc87_28d95f31bfe2>
+                    )
+                    {
+                        float3 xformOp:rotateXYZ = (0, 0, 0)
+                        double3 xformOp:translate = (0, 0, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+                    }
+                }
+            }
+        }
+    }
+
+    def Scope "FlexibleBodies"
+    {
+    }
+
+    def Scope "Joints"
+    {
+        def PhysicsFixedJoint "rb_a" (
+            customData = {
+                string uuid = "29142536-9248-49ab-8650-cdf213c62fd1"
+            }
+        )
+        {
+            rel physics:body1 = </test_cylindrical/RigidBodies/rb_a>
+            point3f physics:localPos0 = (-0.09427322, -0.01408934, 0.019070849)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+
+        def PhysicsJoint "cylindrical_1" (
+            customData = {
+                string dofs = "cylindrical"
+                string uuid = "eda31829-a4a6-49dc-9ba3-621b3f0c3715"
+            }
+            prepend apiSchemas = [
+                # NOTE: These enable the UsdPhysics.JointLimit(...) attributes
+                "PhysicsLimitAPI:transX",
+                "PhysicsLimitAPI:transY",
+                "PhysicsLimitAPI:transZ",
+                "PhysicsLimitAPI:rotX",
+                "PhysicsLimitAPI:rotY",
+                "PhysicsLimitAPI:rotZ",
+            ]
+        )
+        {
+            rel physics:body0 = </test_cylindrical/RigidBodies/rb_a>
+            rel physics:body1 = </test_cylindrical/RigidBodies/rb_b>
+            point3f physics:localPos0 = (0.040171407, 0, -0.00017049554)
+            point3f physics:localPos1 = (-0.033470437, 0.025554264, 0.019302566)
+            quatf physics:localRot0 = (-0.5, 0.5, -0.5, -0.5)
+            quatf physics:localRot1 = (-0.5, 0.5, -0.5, -0.5)
+
+            # transX is the first DoF of the cylindrical joint
+            float limit:transX:physics:low = -0.2
+            float limit:transX:physics:high = 0.2
+
+            # low > high makes transY a constraint axis
+            float limit:transY:physics:low = 1
+            float limit:transY:physics:high = -1
+
+            # low > high makes transZ a constraint axis
+            float limit:transZ:physics:low = 1
+            float limit:transZ:physics:high = -1
+
+            # rotX is the second DoF of the cylindrical joint
+            float limit:rotX:physics:low = -inf
+            float limit:rotX:physics:high = inf
+
+            # low > high makes rotY a constraint axis
+            float limit:rotY:physics:low = 1
+            float limit:rotY:physics:high = -1
+
+            # low > high makes rotZ a constraint axis
+            float limit:rotZ:physics:low = 1
+            float limit:rotZ:physics:high = -1
+        }
+    }
+
+    def Scope "Materials"
+    {
+    }
+
+    def Scope "Collisions"
+    {
+        def PhysicsCollisionGroup "DefaultGroup"
+        {
+            prepend rel collection:colliders:includes = </test_cylindrical>
+        }
+    }
+}
+
