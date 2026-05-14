@@ -102,7 +102,7 @@ supported GPU architectures, and so on — exist in one of the following
 states:
 
 * **Experimental**: A feature still under active development.  May
-  change without notice, including in patch releases.  Experimental
+  change without notice, including in micro releases.  Experimental
   features are available for early adopters who can tolerate breakage.
 * **Stable**: The default state for most features.  Changes follow the
   :ref:`deprecation-policy`.
@@ -118,7 +118,7 @@ Deprecation Policy
 
 A deprecated feature is maintained for **two full minor release cycles**
 after deprecation (e.g. deprecated in 1.2.0 → removed in 1.4.0).
-Deprecations and removals only happen in minor releases, never in patch
+Deprecations and removals only happen in minor releases, never in micro
 releases.
 
 Example timeline
@@ -129,7 +129,7 @@ Assuming a feature is deprecated in release ``1.2.0``:
 * ``1.2.0``: feature is deprecated.  It still works; using it emits a
   ``DeprecationWarning`` and the deprecation is noted in
   ``CHANGELOG.md``.
-* ``1.2.x`` (patch releases): deprecated feature remains fully
+* ``1.2.x`` (micro releases): deprecated feature remains fully
   functional.
 * ``1.3.0``: deprecated feature remains fully functional.  The release
   notes flag the upcoming removal.
@@ -163,14 +163,14 @@ Your installed Newton version is available via ``newton.__version__``.
 Release Support Policy
 ----------------------
 
-Only the most recent feature release line is actively maintained:
+Only the most recent minor release line is actively maintained:
 
 * **Active support**: Only the latest minor release line (e.g.,
-  ``1.4.x``) is eligible to receive bug-fix releases.
+  ``1.4.x``) is eligible to receive micro releases.
 * **No backporting**: Fixes are not backported to earlier minor release
   lines by default.
 * **Upgrade path**: Users who encounter bugs or need fixes should
-  upgrade to the latest feature release.
+  upgrade to the latest minor release.
 
 Public vs. Private API
 ----------------------
@@ -191,7 +191,7 @@ Python Version Support
 Newton supports Python versions that are in "bugfix" or "security"
 status according to the `Python release cycle
 <https://devguide.python.org/versions/>`__.  Support for newly released
-Python versions is added in the next Newton feature release after the
+Python versions is added in the next Newton minor release after the
 Python version reaches stable status.
 
 When a Python version reaches end-of-life, support is dropped following
