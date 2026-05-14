@@ -29,7 +29,7 @@ Minimum Requirements
      - 3.11+ recommended
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-     - macOS has no GPU acceleration; see :ref:`cpu-limitations` below
+     - macOS has no GPU acceleration; see :ref:`cpu-limitations`
    * - NVIDIA GPU
      - Compute capability 5.0+ (Maxwell)
      - Any GeForce GTX 9xx or newer
@@ -56,26 +56,6 @@ CUDA Compatibility
    * - 13
      - Supported
 
-Tested Configurations
-^^^^^^^^^^^^^^^^^^^^^
-
-Newton releases are tested on the following configurations:
-
-.. list-table::
-   :widths: 25 75
-   :header-rows: 1
-
-   * - Component
-     - Configuration
-   * - OS
-     - Ubuntu 22.04/24.04 (x86-64 + ARM64), Windows, macOS (CPU only)
-   * - GPU
-     - NVIDIA Ada Lovelace, Blackwell
-   * - Python
-     - 3.10, 3.12, 3.14 (import-only)
-   * - CUDA
-     - 12, 13
-
 Platform-Specific Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -89,21 +69,8 @@ X11 development libraries to build ``imgui_bundle`` from source:
     sudo apt-get update
     sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
 
-.. _cpu-limitations:
-
-CPU-Only Limitations
-^^^^^^^^^^^^^^^^^^^^
-
-Newton can run on CPU (including macOS), but the following features require an
-NVIDIA GPU and are unavailable in CPU-only mode:
-
-- **SDF collision** — signed-distance-field computation requires CUDA
-  (``wp.Volume`` is GPU-only).
-- **Mesh-mesh contacts** — SDF-based mesh-mesh collision is silently skipped on CPU.
-- **Hydroelastic contacts** — depends on the SDF system.
-- **Tiled camera sensor** — GPU-accelerated raytraced rendering.
-- **Implicit MPM solver** — designed for GPU execution with CUDA graph support.
-- **Tile-based VBD solve** — uses GPU tile API; gracefully disabled on CPU.
+For tested configurations and CPU-only feature limitations, see
+:doc:`compatibility`.
 
 Installing Newton
 -----------------
@@ -290,44 +257,9 @@ Some extras transitively include others. For example, ``examples`` pulls in both
 ``sim`` and ``importers``, and ``dev`` pulls in ``examples``. You only need to
 install the most specific set for your use case.
 
-.. _versioning:
-
-Versioning
-----------
-
-Newton currently uses the following versioning scheme. This may evolve
-depending on the needs of the project and its users.
-
-Newton uses a **major.minor.micro** versioning scheme, similar to
-`Python itself <https://devguide.python.org/developer-workflow/development-cycle/#devcycle>`__:
-
-* New **major** versions are reserved for major reworks of Newton causing
-  disruptive incompatibility (or reaching the 1.0 milestone).
-* New **minor** versions are feature releases with a new set of features.
-  May contain deprecations, breaking changes, and removals.
-* New **micro** versions are bug-fix releases. In principle, there are no
-  new features. The first release of a new minor version always includes
-  the micro version (e.g., ``1.1.0``), though informal references may
-  shorten it (e.g., "Newton 1.1").
-
-Prerelease Versions
-^^^^^^^^^^^^^^^^^^^
-
-In addition to stable releases, Newton uses the following prerelease
-version formats:
-
-* **Development builds** (``major.minor.micro.dev0``): The version string
-  used in the source code on the main branch between stable releases
-  (e.g., ``1.1.0.dev0``).
-* **Release candidates** (``major.minor.microrcN``): Pre-release versions
-  for QA testing before a stable release, starting with ``rc1`` and
-  incrementing (e.g., ``1.1.0rc1``). Usually not published to PyPI.
-
-Prerelease versions should be considered unstable and are not subject
-to the same compatibility guarantees as stable releases.
-
 Next Steps
 ----------
 
 - Run ``python -m newton.examples`` to see all available examples and check out the :doc:`visualization` guide to learn how to interact with the example simulations.
+- See the :doc:`compatibility` guide for Newton's supported platforms, versioning scheme, and deprecation policy.
 - Check out the :doc:`development` guide to learn how to contribute to Newton, or how to use alternative installation methods.

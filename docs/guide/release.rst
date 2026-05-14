@@ -10,8 +10,8 @@ release.  It is intended for release engineers and maintainers.
 Overview
 --------
 
-Newton follows PEP 440 versioning as described in the
-:ref:`versioning <versioning>` section of the installation guide.
+Newton follows PEP 440 versioning; see :ref:`versioning` in the
+compatibility guide for details.
 
 Releases are published to `PyPI <https://pypi.org/p/newton>`__ and
 documentation is deployed to
@@ -40,17 +40,13 @@ so patch releases are safe to pick up automatically.  ``main`` uses a
 version floor like other dependencies.
 
 
-.. _deprecation-timeline:
-
 Deprecation timeline
 ^^^^^^^^^^^^^^^^^^^^
 
-Following `Warp's deprecation policy
-<https://nvidia.github.io/warp/user_guide/compatibility.html#deprecation-timeline>`__,
-a deprecated feature is maintained for **two full minor release cycles**
-after deprecation (e.g. deprecated in 1.2.0 → removed in 1.4.0).
-Deprecations and removals only happen in minor releases, never in patch
-releases.
+The user-facing deprecation policy lives in
+:ref:`deprecation-policy`.  Release engineers should ensure that every
+deprecation in a minor release is reflected in ``CHANGELOG.md``, the API
+documentation, and a runtime ``DeprecationWarning`` where applicable.
 
 
 Pre-release planning
@@ -73,7 +69,7 @@ Pre-release planning
        - Review all new/changed symbols since the last release for unintended
          breaking changes.
        - Verify deprecated symbols carry proper deprecation warnings and
-         migration guidance (see :ref:`deprecation-timeline`).
+         migration guidance (see :ref:`deprecation-policy`).
        - Confirm new public API has complete docstrings and is included in
          Sphinx docs (run ``uv run docs/generate_api.py``).
    * - ☐
