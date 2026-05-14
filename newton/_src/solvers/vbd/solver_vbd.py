@@ -85,6 +85,25 @@ from .tri_mesh_collision import (
 __all__ = ["SolverVBD"]
 
 
+_vbd_migration_warned = {"value": False}
+
+
+def _uses_default_vbd_joint_modes(model: Model) -> bool:
+    vbd_attrs: Any = getattr(model, "vbd", None)
+    if vbd_attrs is None or not hasattr(vbd_attrs, "joint_is_hard"):
+        return True
+
+    joint_is_hard = vbd_attrs.joint_is_hard
+    if joint_is_hard is None:
+        return True
+
+    joint_is_hard_cpu = joint_is_hard.to("cpu") if hasattr(joint_is_hard, "to") else joint_is_hard
+    joint_is_hard_np = (
+        joint_is_hard_cpu.numpy() if hasattr(joint_is_hard_cpu, "numpy") else np.asarray(joint_is_hard_cpu)
+    )
+    return joint_is_hard_np.size == 0 or bool(np.all(joint_is_hard_np == 1))
+
+
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
@@ -101,7 +120,9 @@ class SolverVBD(SolverBase):
     Non-cable structural joint slots default to **hard mode** (augmented Lagrangian
     with persistent lambda and C0 stabilization). Cable stretch and bend default to
     **soft mode**. Joint hard/soft mode is initialized from the optional
-    ``model.vbd.joint_is_hard`` custom attribute.
+    ``model.vbd.joint_is_hard`` custom attribute. Runtime switching via
+    :meth:`set_joint_constraint_mode` and :class:`JointSlot` is deprecated and
+    retained only as a compatibility shim.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
@@ -173,6 +194,18 @@ class SolverVBD(SolverBase):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
     """
+
+    class JointSlot:
+        """Deprecated compatibility constants for :meth:`set_joint_constraint_mode`.
+
+        Configure joint hard/soft mode with ``model.vbd.joint_is_hard`` before
+        constructing :class:`SolverVBD` instead.
+        """
+
+        LINEAR = 0
+        ANGULAR = 1
+        STRETCH = 0
+        BEND = 1
 
     def __init__(
         self,
@@ -360,7 +393,12 @@ class SolverVBD(SolverBase):
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
 
-        if model.body_count > 0 and not integrate_with_external_rigid_solver:
+        if (
+            model.body_count > 0
+            and not integrate_with_external_rigid_solver
+            and not _vbd_migration_warned["value"]
+            and _uses_default_vbd_joint_modes(model)
+        ):
             warnings.warn(
                 "SolverVBD rigid-body defaults changed in Newton 1.2.0:\n"
                 "- Non-cable structural joints are now hard augmented-Lagrangian constraints by default. "
@@ -377,6 +415,7 @@ class SolverVBD(SolverBase):
                 UserWarning,
                 stacklevel=2,
             )
+            _vbd_migration_warned["value"] = True
 
         super().__init__(model)
 
@@ -1463,6 +1502,73 @@ class SolverVBD(SolverBase):
             update: If True, update rigid solver state. If False, reuse previous.
         """
         self._update_rigid_history = update
+
+    def set_joint_constraint_mode(self, joint_index: int, hard: bool, slot: int | None = None):
+        """Deprecated: set hard or soft constraint mode for a joint's structural slots at runtime.
+
+        Configure joint hard/soft mode with ``model.vbd.joint_is_hard`` before
+        constructing :class:`SolverVBD` instead. This compatibility method still
+        updates the solver's runtime state for existing callers.
+        """
+        warnings.warn(
+            "SolverVBD.set_joint_constraint_mode() and SolverVBD.JointSlot are deprecated and will be removed "
+            "in a future release. Set model.vbd.joint_is_hard before constructing SolverVBD instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        n_j = self.model.joint_count
+        if joint_index < 0 or joint_index >= n_j:
+            raise ValueError(f"joint_index={joint_index} out of range [0, {n_j}).")
+
+        with wp.ScopedDevice("cpu"):
+            c_start_np = self._to_numpy(self.joint_constraint_start, dtype=np.int32)
+            c_dim_np = self._to_numpy(self.joint_constraint_dim, dtype=np.int32)
+            is_hard_np = self._to_numpy(self.joint_is_hard, dtype=np.int32)
+
+            c0 = int(c_start_np[joint_index])
+            cdim = int(c_dim_np[joint_index])
+            val = 1 if hard else 0
+
+            if slot is not None:
+                if slot < 0 or slot >= 2:
+                    raise ValueError(
+                        f"Cannot set hard mode on slot={slot}. "
+                        "Only structural slots (LINEAR=0, ANGULAR=1) support hard mode."
+                    )
+                if slot >= cdim:
+                    raise ValueError(
+                        f"slot={slot} exceeds joint constraint dimension ({cdim}) for joint_index={joint_index}."
+                    )
+                is_hard_np[c0 + slot] = val
+            else:
+                structural_count = min(cdim, 2)
+                for s in range(structural_count):
+                    is_hard_np[c0 + s] = val
+
+                vbd_attrs: Any = getattr(self.model, "vbd", None)
+                if vbd_attrs is not None and hasattr(vbd_attrs, "joint_is_hard"):
+                    model_is_hard_np = self._to_numpy(vbd_attrs.joint_is_hard, dtype=np.int32)
+                    model_is_hard_np[joint_index] = val
+                    vbd_attrs.joint_is_hard = wp.array(model_is_hard_np, dtype=wp.int32, device=self.device)
+
+            self.joint_is_hard = wp.array(is_hard_np, dtype=wp.int32, device=self.device)
+
+            if not hard:
+                lam_lin_np = self._to_numpy(self.joint_lambda_lin)
+                lam_ang_np = self._to_numpy(self.joint_lambda_ang)
+                C0_lin_np = self._to_numpy(self.joint_C0_lin)
+                C0_ang_np = self._to_numpy(self.joint_C0_ang)
+                if slot is None or slot == 0:
+                    lam_lin_np[joint_index] = [0.0, 0.0, 0.0]
+                    C0_lin_np[joint_index] = [0.0, 0.0, 0.0]
+                if (slot is None or slot == 1) and cdim > 1:
+                    lam_ang_np[joint_index] = [0.0, 0.0, 0.0]
+                    C0_ang_np[joint_index] = [0.0, 0.0, 0.0]
+                self.joint_lambda_lin = wp.array(lam_lin_np, dtype=wp.vec3, device=self.device)
+                self.joint_lambda_ang = wp.array(lam_ang_np, dtype=wp.vec3, device=self.device)
+                self.joint_C0_lin = wp.array(C0_lin_np, dtype=wp.vec3, device=self.device)
+                self.joint_C0_ang = wp.array(C0_ang_np, dtype=wp.vec3, device=self.device)
 
     @override
     def step(
