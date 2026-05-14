@@ -97,6 +97,7 @@ jobs:
             macos-latest,
           ]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 120 || 60 }}
     env:
       OS: ${{ matrix.os }}
 
@@ -135,7 +136,13 @@ jobs:
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
-        run: uv run --extra dev -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: >
+          uv run --extra dev -m newton.tests
+          --parallel-timeout ${{ matrix.os == 'macos-latest' && 6900 || 3300 }}
+          --no-cache-clear
+          --junit-report-xml rspec.xml
+          --coverage
+          --coverage-xml coverage.xml
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
