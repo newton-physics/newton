@@ -120,11 +120,13 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        if hasattr(self.viewer, "picking"):
-            pick_state = self.viewer.picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = 0.2
+        picking = getattr(self.viewer, "picking", None)
+        if picking is not None:
+            picking.set_linear_only_bodies(self.graph_bodies)
+            pick_state = picking.pick_state.numpy()
+            pick_state[0]["pick_stiffness"] = 2.0
             pick_state[0]["pick_damping"] = 0.0
-            self.viewer.picking.pick_state.assign(pick_state)
+            picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(
             pos=wp.vec3(2.10, 0.0, z0 - 0.15),

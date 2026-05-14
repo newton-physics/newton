@@ -185,6 +185,11 @@ class ModelBuilder:
         (238, 153, 51),  # orange
         (0, 153, 136),  # teal
     )
+    _DEFAULT_ROD_COLOR = (
+        _SHAPE_COLOR_PALETTE[0][0] / 255.0,
+        _SHAPE_COLOR_PALETTE[0][1] / 255.0,
+        _SHAPE_COLOR_PALETTE[0][2] / 255.0,
+    )
     _BODY_ARMATURE_ARG_DEPRECATION_MESSAGE = (
         "ModelBuilder.add_link(..., armature=...) and ModelBuilder.add_body(..., armature=...) "
         "are deprecated and will be removed in a future release. "
@@ -6649,6 +6654,7 @@ class ModelBuilder:
         closed: bool = False,
         label: str | None = None,
         wrap_in_articulation: bool = True,
+        color: Vec3 | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by cable joints.
 
@@ -6680,6 +6686,8 @@ class ModelBuilder:
             label: Optional label prefix for bodies, shapes, and joints.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
+            color: Optional display RGB color for all generated capsule shapes. If None, the rod uses
+                the default rod color.
 
         Returns:
             A pair ``(body_indices, joint_indices)``. For an open chain,
@@ -6765,6 +6773,7 @@ class ModelBuilder:
             label=label,
             wrap_in_articulation=False,
             quaternions=quaternions,
+            color=color,
         )
 
         # Wrap all joints into an articulation if requested.
@@ -6833,6 +6842,7 @@ class ModelBuilder:
         wrap_in_articulation: bool = True,
         quaternions: list[Quat] | None = None,
         junction_collision_filter: bool = True,
+        color: Vec3 | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
 
@@ -6881,6 +6891,8 @@ class ModelBuilder:
                 bodies that are incident to a junction node (degree >= 3). This prevents immediate
                 self-collision impulses at welded junctions, even though the joint set is a spanning
                 tree (so not all incident body pairs are directly jointed).
+            color: Optional display RGB color for all generated capsule shapes. If None, the graph uses
+                the default rod color.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
@@ -6927,6 +6939,7 @@ class ModelBuilder:
         edge_v: list[int] = []
         edge_len: list[float] = []
         edge_bodies: list[int] = []
+        rod_color = color if color is not None else ModelBuilder._DEFAULT_ROD_COLOR
 
         # Create all edge bodies first.
         for e_idx, (u, v) in enumerate(edges):
@@ -6984,6 +6997,7 @@ class ModelBuilder:
                 half_height=half_height,
                 cfg=cfg,
                 label=shape_label,
+                color=rod_color,
             )
 
             edge_u.append(u)
