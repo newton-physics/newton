@@ -786,6 +786,7 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     dst = wp.atomic_add(active_count, 0, 1)
     if dst >= capacity:
         wp.atomic_min(active_count, 0, capacity)
+        wp.atomic_max(active_count_max, 0, capacity)
         return
     wp.atomic_max(active_count_max, 0, dst + 1)
 
@@ -1285,6 +1286,7 @@ def particle_particle_contacts_hashgrid_kernel(
         dst = wp.atomic_add(particle_contact_count, 0, 1)
         if dst >= capacity:
             wp.atomic_min(particle_contact_count, 0, capacity)
+            wp.atomic_max(particle_contact_count_max, 0, capacity)
             continue
         wp.atomic_max(particle_contact_count_max, 0, dst + 1)
 

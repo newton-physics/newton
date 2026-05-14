@@ -807,7 +807,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         iteration_restart = int(bool(restart))
-        if hasattr(self, "_coupling_proxy_body_q_prev"):
+        has_proxy_body_q_prev = hasattr(self, "_coupling_proxy_body_q_prev")
+        if has_proxy_body_q_prev:
             wp.copy(self._coupling_proxy_body_q_prev, self.body_q_prev)
 
         wp.launch(
@@ -825,6 +826,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             ],
             device=self.device,
         )
+        if iteration_restart != 0 and has_proxy_body_q_prev:
+            wp.copy(self._coupling_proxy_body_q_prev, self.body_q_prev)
 
     def coupling_prepare_proxy_contacts(
         self,
@@ -847,6 +850,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.model.body_flags,
                     self.model.body_inv_mass,
                     int(BodyFlags.PROXY),
+                    int(BodyFlags.KINEMATIC),
                 ],
                 device=self.device,
             )
@@ -3076,6 +3080,7 @@ def _filter_vbd_proxy_rigid_contacts_kernel(
     body_flags: wp.array[wp.int32],
     body_inv_mass: wp.array[float],
     proxy_flag: int,
+    kinematic_flag: int,
 ):
     contact_id = wp.tid()
     if contact_id >= rigid_contact_count[0]:
@@ -3096,11 +3101,15 @@ def _filter_vbd_proxy_rigid_contacts_kernel(
     is_static0 = 0
     if body0 < 0:
         is_static0 = 1
+    elif body0 < body_flags.shape[0] and (body_flags[body0] & kinematic_flag) != 0:
+        is_static0 = 1
     elif body0 < body_inv_mass.shape[0] and body_inv_mass[body0] == 0.0:
         is_static0 = 1
 
     is_static1 = 0
     if body1 < 0:
+        is_static1 = 1
+    elif body1 < body_flags.shape[0] and (body_flags[body1] & kinematic_flag) != 0:
         is_static1 = 1
     elif body1 < body_inv_mass.shape[0] and body_inv_mass[body1] == 0.0:
         is_static1 = 1
