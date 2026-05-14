@@ -100,7 +100,8 @@ class SolverVBD(SolverBase):
 
     Non-cable structural joint slots default to **hard mode** (augmented Lagrangian
     with persistent lambda and C0 stabilization). Cable stretch and bend default to
-    **soft mode**. The hard/soft mode can be changed per slot via :meth:`set_joint_constraint_mode`.
+    **soft mode**. Joint hard/soft mode is initialized from the optional
+    ``model.vbd.joint_is_hard`` custom attribute.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
@@ -172,23 +173,6 @@ class SolverVBD(SolverBase):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
     """
-
-    class JointSlot:
-        """Named constraint slot indices for :meth:`set_joint_constraint_mode`.
-
-        The first two solver constraint slots are structural where present:
-          - CABLE: LINEAR/STRETCH -> stretch, ANGULAR/BEND -> bend
-          - BALL: LINEAR only
-          - FIXED/REVOLUTE/PRISMATIC/D6: LINEAR and ANGULAR
-
-        Drive/limit slots start at slot 2 and are not represented here.
-        STRETCH and BEND are cable-only aliases for LINEAR and ANGULAR.
-        """
-
-        LINEAR = 0
-        ANGULAR = 1
-        STRETCH = 0
-        BEND = 1
 
     def __init__(
         self,
@@ -375,6 +359,24 @@ class SolverVBD(SolverBase):
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
+
+        if model.body_count > 0 and not integrate_with_external_rigid_solver:
+            warnings.warn(
+                "SolverVBD rigid-body defaults changed in Newton 1.2.0:\n"
+                "- Non-cable structural joints are now hard augmented-Lagrangian constraints by default. "
+                "To restore soft penalty behavior, set the relevant entries of model.vbd.joint_is_hard to 0 "
+                "before constructing SolverVBD.\n"
+                "- AVBD penalty ramping is now off by default. To restore the previous ramping default, "
+                "pass rigid_avbd_beta=1.0e5.\n"
+                "- Non-cable joint stiffness ceilings now default to 1.0e5 instead of 1.0e9 to make the "
+                "fixed-stiffness path (rigid_avbd_beta=0.0) safer. To restore the previous ceilings, pass "
+                "rigid_joint_linear_ke=1.0e9 and rigid_joint_angular_ke=1.0e9.\n"
+                "- Cable rod stretch/bend stiffness inputs are now interpreted as direct per-joint values; "
+                "the previous length normalization in rod helpers has been removed. To recover the previous "
+                "behavior, divide material stiffnesses by segment length before building the model.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         super().__init__(model)
 
@@ -1461,87 +1463,6 @@ class SolverVBD(SolverBase):
             update: If True, update rigid solver state. If False, reuse previous.
         """
         self._update_rigid_history = update
-
-    def set_joint_constraint_mode(self, joint_index: int, hard: bool, slot: int | None = None):
-        """Set hard or soft constraint mode for a joint's structural slots at runtime.
-
-        Hard mode (augmented Lagrangian): uses persistent lambda + C0 stabilization
-        to drive constraint violation toward zero across iterations.
-        Soft mode (penalty-only): uses penalty stiffness only (no lambda or C0 state).
-
-        Structural slots are LINEAR (slot 0) and ANGULAR (slot 1). Drive/limit slots
-        (slot 2+) are always soft and cannot be set to hard.
-
-        By default, cable stretch and bend slots are soft, while non-cable
-        structural slots are hard.
-
-        For bulk initialization of non-cable joints at build time (avoids
-        per-joint roundtrips), use the ``joint_is_hard`` model custom attribute::
-
-            SolverVBD.register_custom_attributes(builder)  # before adding joints
-            ...
-            model = builder.finalize()
-            model.vbd.joint_is_hard.numpy()[j] = 0  # set joint j to soft
-            solver = SolverVBD(model, ...)
-
-        Args:
-            joint_index: Index of the joint to modify.
-            hard: True for hard mode (AL), False for soft mode (penalty-only).
-            slot: Specific slot index to set. If None, sets all structural slots.
-                  Use JointSlot.LINEAR / JointSlot.ANGULAR (equivalently
-                  JointSlot.STRETCH / JointSlot.BEND for cables).
-
-        Raises:
-            ValueError: If the joint index is out of range, or the slot is a
-                drive/limit slot (>= 2), or the slot exceeds the joint's
-                constraint dimension.
-        """
-        n_j = self.model.joint_count
-        if joint_index < 0 or joint_index >= n_j:
-            raise ValueError(f"joint_index={joint_index} out of range [0, {n_j}).")
-
-        with wp.ScopedDevice("cpu"):
-            c_start_np = self._to_numpy(self.joint_constraint_start, dtype=np.int32)
-            c_dim_np = self._to_numpy(self.joint_constraint_dim, dtype=np.int32)
-            is_hard_np = self._to_numpy(self.joint_is_hard, dtype=np.int32)
-
-            c0 = int(c_start_np[joint_index])
-            cdim = int(c_dim_np[joint_index])
-            val = 1 if hard else 0
-
-            if slot is not None:
-                if slot < 0 or slot >= 2:
-                    raise ValueError(
-                        f"Cannot set hard mode on slot={slot}. "
-                        "Only structural slots (LINEAR=0, ANGULAR=1) support hard mode."
-                    )
-                if slot >= cdim:
-                    raise ValueError(
-                        f"slot={slot} exceeds joint constraint dimension ({cdim}) for joint_index={joint_index}."
-                    )
-                is_hard_np[c0 + slot] = val
-            else:
-                structural_count = min(cdim, 2)
-                for s in range(structural_count):
-                    is_hard_np[c0 + s] = val
-
-            self.joint_is_hard = wp.array(is_hard_np, dtype=wp.int32, device=self.device)
-
-            if not hard:
-                lam_lin_np = self._to_numpy(self.joint_lambda_lin)
-                lam_ang_np = self._to_numpy(self.joint_lambda_ang)
-                C0_lin_np = self._to_numpy(self.joint_C0_lin)
-                C0_ang_np = self._to_numpy(self.joint_C0_ang)
-                if slot is None or slot == 0:
-                    lam_lin_np[joint_index] = [0.0, 0.0, 0.0]
-                    C0_lin_np[joint_index] = [0.0, 0.0, 0.0]
-                if (slot is None or slot == 1) and cdim > 1:
-                    lam_ang_np[joint_index] = [0.0, 0.0, 0.0]
-                    C0_ang_np[joint_index] = [0.0, 0.0, 0.0]
-                self.joint_lambda_lin = wp.array(lam_lin_np, dtype=wp.vec3, device=self.device)
-                self.joint_lambda_ang = wp.array(lam_ang_np, dtype=wp.vec3, device=self.device)
-                self.joint_C0_lin = wp.array(C0_lin_np, dtype=wp.vec3, device=self.device)
-                self.joint_C0_ang = wp.array(C0_ang_np, dtype=wp.vec3, device=self.device)
 
     @override
     def step(
