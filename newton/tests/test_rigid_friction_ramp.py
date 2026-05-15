@@ -14,7 +14,7 @@ Two complementary tests share this file as the canonical friction benchmark:
 
   * ``test_friction_stopping_distance`` — sliding boxes on flat ground decelerate
     under kinetic Coulomb friction and stop at d = v0^2 / (2 mu g). Provides
-    the precise kinetic-friction oracle for Coulomb-cone solvers and a broader
+    the precise kinetic-friction oracle for Coulomb-cone solvers and a tight
     empirical regression envelope for VBD's penalty-friction model.
 """
 
@@ -98,8 +98,7 @@ STOPPING_PATCH_HX = 5.0  # comfortably exceeds d_stop(mu_min) ~ 1.02 m
 STOPPING_PATCH_HY = 0.6
 STOPPING_PATCH_HZ = 0.05
 STOPPING_BOX_PITCH_Y = 5.0
-STOPPING_V_FINAL_MAX = 0.05  # m/s - default sanity bound: box must have come to rest
-VBD_STOPPING_V_FINAL_MAX = 1.75  # m/s - VBD penalty friction is still decelerating low-mu boxes
+STOPPING_V_FINAL_MAX = 0.05  # m/s - sanity bound: box must have come to rest
 
 _ROW_COLORS = (
     (0.90, 0.30, 0.30),
@@ -224,7 +223,7 @@ def build_stopping_distance_scene(device):
         cfg = newton.ModelBuilder.ShapeConfig()
         cfg.mu = mu
         cfg.ke = 1.0e5
-        cfg.kd = 1.0e3
+        cfg.kd = 0.0
         cfg.kf = 0.0
         cfg.color = _ROW_COLORS[i % len(_ROW_COLORS)]
 
@@ -332,8 +331,8 @@ cuda_devices = get_selected_cuda_test_devices()
 # so the critical-angle criterion does not apply; excluded here.
 # stopping_distance_rel_tol: per-solver tolerance on d_measured/d_expected. Coulomb-cone
 # solvers (XPBD, MuJoCo) hit ~0.05-0.2% in practice. VBD uses penalty friction with
-# low-velocity regularization and saturation, so keep it as a loose regression bound
-# instead of a precise Coulomb stopping-distance oracle.
+# low-velocity regularization and saturation, so keep a small empirical margin
+# above the precise Coulomb stopping-distance oracle.
 _SOLVERS = {
     "xpbd": {
         "factory": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
@@ -380,8 +379,8 @@ _SOLVERS = {
         "mus": _VBD_MUS,
         "angles_deg": _VBD_ANGLES_DEG,
         "thresholds": _VBD_THRESHOLDS,
-        "stopping_distance_rel_tol": 3.0,
-        "stopping_distance_v_final_max": VBD_STOPPING_V_FINAL_MAX,
+        "stopping_distance_rel_tol": 0.02,
+        "stopping_distance_v_final_max": STOPPING_V_FINAL_MAX,
     },
 }
 
