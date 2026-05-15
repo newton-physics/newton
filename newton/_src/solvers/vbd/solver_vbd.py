@@ -88,22 +88,6 @@ __all__ = ["SolverVBD"]
 _vbd_migration_warned = {"value": False}
 
 
-def _uses_default_vbd_joint_modes(model: Model) -> bool:
-    vbd_attrs: Any = getattr(model, "vbd", None)
-    if vbd_attrs is None or not hasattr(vbd_attrs, "joint_is_hard"):
-        return True
-
-    joint_is_hard = vbd_attrs.joint_is_hard
-    if joint_is_hard is None:
-        return True
-
-    joint_is_hard_cpu = joint_is_hard.to("cpu") if hasattr(joint_is_hard, "to") else joint_is_hard
-    joint_is_hard_np = (
-        joint_is_hard_cpu.numpy() if hasattr(joint_is_hard_cpu, "numpy") else np.asarray(joint_is_hard_cpu)
-    )
-    return joint_is_hard_np.size == 0 or bool(np.all(joint_is_hard_np == 1))
-
-
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
@@ -393,12 +377,7 @@ class SolverVBD(SolverBase):
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
 
-        if (
-            model.body_count > 0
-            and not integrate_with_external_rigid_solver
-            and not _vbd_migration_warned["value"]
-            and _uses_default_vbd_joint_modes(model)
-        ):
+        if model.body_count > 0 and not integrate_with_external_rigid_solver and not _vbd_migration_warned["value"]:
             warnings.warn(
                 "SolverVBD rigid-body defaults changed in Newton 1.2.0:\n"
                 "- Non-cable structural joints are now hard augmented-Lagrangian constraints by default. "
