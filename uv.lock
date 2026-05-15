@@ -916,7 +916,7 @@ resolution-markers = [
     "python_full_version == '3.11.*' and platform_machine == 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/58/01/1253e6698a07380cd31a736d248a3f2a50a7c88779a1813da27503cadc2a/contourpy-1.3.3.tar.gz", hash = "sha256:083e12155b210502d0bca491432bb04d56dc3432f95a979b429f2848c3dbe880", size = 13466174, upload-time = "2025-07-26T12:03:12.549Z" }
 wheels = [
@@ -1219,15 +1219,15 @@ name = "dash"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "flask", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "importlib-metadata", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "nest-asyncio", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "plotly", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "requests", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "retrying", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "setuptools", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "typing-extensions", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "werkzeug", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "flask", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "importlib-metadata", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "nest-asyncio", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "plotly", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "requests", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "retrying", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "setuptools", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "werkzeug", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/20/dd/3aed9bfd81dfd8f44b3a5db0583080ac9470d5e92ee134982bd5c69e286e/dash-4.0.0.tar.gz", hash = "sha256:c5f2bca497af288f552aea3ae208f6a0cca472559003dac84ac21187a1c3a142", size = 6943263, upload-time = "2026-02-03T19:42:27.92Z" }
 wheels = [
@@ -1457,12 +1457,12 @@ name = "flask"
 version = "3.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "blinker", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "click", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "itsdangerous", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "jinja2", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "markupsafe", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "werkzeug", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "blinker", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "click", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "itsdangerous", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "jinja2", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "markupsafe", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "werkzeug", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/26/00/35d85dcce6c57fdc871f3867d465d780f302a175ea360f62533f12b27e2b/flask-3.1.3.tar.gz", hash = "sha256:0ef0e52b8a9cd932855379197dd8f94047b359ca0a78695144304cb45f87c9eb", size = 759004, upload-time = "2026-02-19T05:00:57.678Z" }
 wheels = [
@@ -2806,16 +2806,16 @@ version = "3.10.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "contourpy", version = "1.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "contourpy", version = "1.3.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "cycler", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "fonttools", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "kiwisolver", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "contourpy", version = "1.3.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "cycler", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "fonttools", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "kiwisolver", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "packaging", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "pillow", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "pyparsing", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "python-dateutil", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "packaging", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pillow", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pyparsing", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "python-dateutil", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8a/76/d3c6e3a13fe484ebe7718d14e269c9569c4eb0020a968a327acb3b9a8fe6/matplotlib-3.10.8.tar.gz", hash = "sha256:2299372c19d56bcd35cf05a2738308758d32b9eaed2371898d8f5bd33f084aa3", size = 34806269, upload-time = "2025-12-10T22:56:51.155Z" }
 wheels = [
@@ -3048,7 +3048,7 @@ wheels = [
 
 [[package]]
 name = "mujoco"
-version = "3.8.0"
+version = "3.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "absl-py" },
@@ -3059,38 +3059,38 @@ dependencies = [
     { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "pyopengl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e2/d8/9aae1a021b6e15ee69d805d893e01dda71cbaae1c75d5f8ec8e12916cb7c/mujoco-3.8.0.tar.gz", hash = "sha256:250afe57458d6881b2d7659fa0029a128cb57cbbb620268d95647fb9ad742183", size = 918250, upload-time = "2026-04-24T22:59:07.531Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/ba/ad135f7a4a71360072bc4f202f7ab3130d7d7827cff70ce3e1b382a1a410/mujoco-3.8.1.tar.gz", hash = "sha256:019a0b3406892bc98454eaf55cbd27f85d167758ad785f77c608a61f3a34ad17", size = 922269, upload-time = "2026-05-11T13:44:01.357Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1d/c0/250652d6ad5bb166d7ce519aad4f8d37b97f75562eb02d2f58afb48447ba/mujoco-3.8.0-cp310-cp310-macosx_10_16_x86_64.whl", hash = "sha256:e6c7978eb2719b3db3c0ee674feb6d41fb5482f5491fb66e01762f1e7bea4750", size = 7222479, upload-time = "2026-04-24T22:58:12.399Z" },
-    { url = "https://files.pythonhosted.org/packages/99/d8/fb5b7829be742084352942de7ad87751e790587626a7f0767c30a575d63c/mujoco-3.8.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:956aaaaa78d9402154eaba89a277d1c227bd532811b1eb42b0810573f263e65e", size = 7244062, upload-time = "2026-04-24T22:58:15.245Z" },
-    { url = "https://files.pythonhosted.org/packages/3c/07/a4ca7260159136c0032ee2588ad25175ac156faf4a8cd3a0c66ca886465e/mujoco-3.8.0-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:fa2a499277150a562c60e658a97ec1e8e8828b5075fdbe43745835d87e98b62e", size = 6691365, upload-time = "2026-04-24T22:58:17.055Z" },
-    { url = "https://files.pythonhosted.org/packages/3b/09/d06b7a352dd70b3d7c46781082b9ff485b65085d88caefa0bb0df1d4f0d9/mujoco-3.8.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:df8b5981d94efd6d99bc8eac7eb322c50d680f306f5e89a260b6d874992ffa7c", size = 7131040, upload-time = "2026-04-24T22:58:19.262Z" },
-    { url = "https://files.pythonhosted.org/packages/11/bc/cd52b2426a030db5bd8ef77d3482ab0a2f0b5c0350cd992f575cc0d4eaba/mujoco-3.8.0-cp310-cp310-win_amd64.whl", hash = "sha256:58f5c499abcf81eb3ab3d5e40dd98b2cc7433e032b81460279f808e517099cf2", size = 5714596, upload-time = "2026-04-24T22:58:21.53Z" },
-    { url = "https://files.pythonhosted.org/packages/83/46/e68d7a05c0c8367e38f5925fc85553df735c379dfbfe0c8adee4833e610b/mujoco-3.8.0-cp311-cp311-macosx_10_16_x86_64.whl", hash = "sha256:c3579cdbeb2bd157be43e13272953e941acdc59f4a74495a567fa4bc2b4f0166", size = 7235564, upload-time = "2026-04-24T22:58:24.097Z" },
-    { url = "https://files.pythonhosted.org/packages/7a/ae/aeda34f9e07b295be5757ffa006218be341f193138db1e6ee0e7f88a245e/mujoco-3.8.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:d400c0489d8b958eaba361af84d0315a642215e5236485a23460b9636d665730", size = 7255745, upload-time = "2026-04-24T22:58:26.066Z" },
-    { url = "https://files.pythonhosted.org/packages/1a/ae/89c113e77e25e4a5e76c9856c51229ea75d790ffc65f10f0aec794b2e4fe/mujoco-3.8.0-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0d4297fbd8bce087b52c47c4a4ef4a8e49e9e27db8e419f048c25ebe8d4ba0cb", size = 6705135, upload-time = "2026-04-24T22:58:27.735Z" },
-    { url = "https://files.pythonhosted.org/packages/b1/1f/046931077b28e62a5540f8a942c77fec323b7d5e713d3831d0d55edbe08f/mujoco-3.8.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4c764f37204219506ff0ed7acf7cc3848c65dcf39438cefbe26056b3fd649cd8", size = 7145390, upload-time = "2026-04-24T22:58:29.756Z" },
-    { url = "https://files.pythonhosted.org/packages/26/b4/fbe055a11cc98542a3f0c78051247ae2b34d0ed468cf85feb2c21b7ecde2/mujoco-3.8.0-cp311-cp311-win_amd64.whl", hash = "sha256:0d4521c322a1d1b4925610246548af42031c04ba0ca73956be0fb9fd0465aaa4", size = 5739709, upload-time = "2026-04-24T22:58:31.805Z" },
-    { url = "https://files.pythonhosted.org/packages/b4/0d/35aad24bef1f36e9ebf63367938b16abec82407338d612c37624ff20b0e3/mujoco-3.8.0-cp312-cp312-macosx_10_16_x86_64.whl", hash = "sha256:a495da0cd01aff6ac94ec97f0a1d913e1afe071daf107e220f81814435227982", size = 7265096, upload-time = "2026-04-24T22:58:33.475Z" },
-    { url = "https://files.pythonhosted.org/packages/60/d7/2ee5a123431eb50f234de2759e46f3d0c02876e0b1ffce1b26102ed388e7/mujoco-3.8.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:cc1d25b0cd47248fd39681310950b2bea0f6098f57358c0c02730d365bb80ba1", size = 7204862, upload-time = "2026-04-24T22:58:35.978Z" },
-    { url = "https://files.pythonhosted.org/packages/aa/62/a488e6e0963e0210b8262650d25e51c4c597ff7beed4fe01a7e88e3abfc5/mujoco-3.8.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:980ab5a2210777cf766e53eb574726f9360e2a87e47d83a6c8d801fb71f2fe52", size = 6743542, upload-time = "2026-04-24T22:58:38.137Z" },
-    { url = "https://files.pythonhosted.org/packages/6f/de/bc2271210dad5c6ab73af294779226308e9cf4ed8bc2dbe59922eb8702ed/mujoco-3.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:323fedd14905b73cfe56ea8ff916716ccf8b57cff348a7aa6932c8983a465d64", size = 7226045, upload-time = "2026-04-24T22:58:41.117Z" },
-    { url = "https://files.pythonhosted.org/packages/65/87/198a88747ff0c01e35070c0c80ae0c05ff8d1a61d6e6f379a4e5ff3e6185/mujoco-3.8.0-cp312-cp312-win_amd64.whl", hash = "sha256:8db22dbc5a6c98241549c8161f20a2b0c2ccc5d08fa42595e7a4b594e35a70dd", size = 5813167, upload-time = "2026-04-24T22:58:43.469Z" },
-    { url = "https://files.pythonhosted.org/packages/11/7d/41c73ebe93565ed196ec5ad012232138e3d10850e841ccd77d459afc4383/mujoco-3.8.0-cp313-cp313-macosx_10_16_x86_64.whl", hash = "sha256:d4a080aab0be4d02162e6fe3bcd7163c01cc751638f5a84ba05477b512d95cc0", size = 7265494, upload-time = "2026-04-24T22:58:45.119Z" },
-    { url = "https://files.pythonhosted.org/packages/7c/05/d21b43c31c5d9179c2d33e0d38896775b262a9d78729b760717927a02e28/mujoco-3.8.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:5aa987e70a6601ebf02d123d9842f2d1b8f8057163feec1f0a5a049de1cbe252", size = 7205049, upload-time = "2026-04-24T22:58:46.874Z" },
-    { url = "https://files.pythonhosted.org/packages/6d/9c/af181776d0ffb70ad6a4365f0613529f268782850dedab0569c6cce83fcc/mujoco-3.8.0-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8bd33b7e2382605012dfe41c00a8d3bb358153e5b019d920a52c31664472ce20", size = 6743578, upload-time = "2026-04-24T22:58:48.862Z" },
-    { url = "https://files.pythonhosted.org/packages/89/8a/c9b28784a7e51926d609b70842e16b85e286df87ad861dbbb26c4e49cacf/mujoco-3.8.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f2b3de0c9fed950c5080ea4b3ff1fb5c89f88e22798f1e1693ec8dbbd36de00b", size = 7226464, upload-time = "2026-04-24T22:58:51.039Z" },
-    { url = "https://files.pythonhosted.org/packages/50/3f/0a72c74dd766524b9f1b79f0d6d327b9a797d87b44fe62b3068b44123b54/mujoco-3.8.0-cp313-cp313-win_amd64.whl", hash = "sha256:de03d173f4d9c7341b5dcc10a8eddb36bb19989df68f24369dc7c782dc053f11", size = 5813265, upload-time = "2026-04-24T22:58:53.316Z" },
-    { url = "https://files.pythonhosted.org/packages/81/f7/afdbcb4ad50786ed7500205f29ffb5c3a5ef9d42e6b3ad8f9636c4911687/mujoco-3.8.0-cp314-cp314-macosx_10_16_x86_64.whl", hash = "sha256:09c27fc6ce1560912e920789bc121290e4c84919ae30f7b54da5efed4cd2804a", size = 7320672, upload-time = "2026-04-24T22:58:55.469Z" },
-    { url = "https://files.pythonhosted.org/packages/4a/8a/6299f6209084dda9469374461c77adad5d63041427b9b9bd4fadaf0c35b0/mujoco-3.8.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:5fc4e930cd1414f965381ac97ec054a001539e7aa462836145f6a3201b0dfe88", size = 7249791, upload-time = "2026-04-24T22:58:57.126Z" },
-    { url = "https://files.pythonhosted.org/packages/df/3c/a74d169b7725aee971962238d2aee767f64496ede1367cd558361c97d5ca/mujoco-3.8.0-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:14c32992267906d422ed2127e99aa9ad036a62324139da2a3bd25df1e928d0ee", size = 6754009, upload-time = "2026-04-24T22:59:00.375Z" },
-    { url = "https://files.pythonhosted.org/packages/66/36/f3610724bb35f6cfb2ffebe9d8d315975e5fa9722146ad58298df442da7e/mujoco-3.8.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1373c4744a3424f1aa224d2ad5201497ea150c4698beb9aaeb8c3560efa60fdb", size = 7227764, upload-time = "2026-04-24T22:59:02.722Z" },
-    { url = "https://files.pythonhosted.org/packages/92/5a/80f5347c322300e4402b08df74e7489756e9af060bb8b8d342086dd5b41c/mujoco-3.8.0-cp314-cp314-win_amd64.whl", hash = "sha256:f8da8fc4a2861f9d1eef64d83adcd783bfe5c02bdc78af2d963d942d097dfdce", size = 6144239, upload-time = "2026-04-24T22:59:05.329Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/68/fb807a3fcd1e19b03879d3af93c0b973e80604c8c9089cff0eab96bff9bd/mujoco-3.8.1-cp310-cp310-macosx_10_16_x86_64.whl", hash = "sha256:5ca31170eb8b58601c7041397d249d18aeb4c8f417275ddecee8a0ec76c654a6", size = 7314261, upload-time = "2026-05-11T13:43:09.316Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/84/869c953cb02e7c80a4cc48b3e20ce76ec198526395313d6bbe8820138f87/mujoco-3.8.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:ea230ad2240d7709d36f5485fbc13fe494103c8033905d2a341c60eab2c79c29", size = 7281414, upload-time = "2026-05-11T13:43:11.704Z" },
+    { url = "https://files.pythonhosted.org/packages/98/a2/1cce351c3544b698046f244e70601a84c576ff6985271add8e899a7f037e/mujoco-3.8.1-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9865049b44cf2b648ddf88987dd7bc7d805625036b8a8768cc700262a4a7da2d", size = 6730806, upload-time = "2026-05-11T13:43:13.58Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/96/021bd603d56cf24f088be15a4f250f0980f1cd9b1a207ea8bcfbf094b345/mujoco-3.8.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9c2d779d9c47cf53da8399493ca9059e068ccabb60bc4e5dc0c924ade8da6c65", size = 7226603, upload-time = "2026-05-11T13:43:15.976Z" },
+    { url = "https://files.pythonhosted.org/packages/84/52/9d710c0b51b549bcbe92976811c17e0383c7c903a6103052863d1015cc23/mujoco-3.8.1-cp310-cp310-win_amd64.whl", hash = "sha256:a42287b7f819888c1963337618c3612390e340e12269969a6274e283116aef30", size = 5799544, upload-time = "2026-05-11T13:43:17.859Z" },
+    { url = "https://files.pythonhosted.org/packages/01/4a/4738b2a3dca4ff636382cc66f796863a55e7909ec987e7863343b56fdcee/mujoco-3.8.1-cp311-cp311-macosx_10_16_x86_64.whl", hash = "sha256:0982269cd4cc6e3377401e7de25e47bedbc0d18764e714900e39e85271a6bee8", size = 7327275, upload-time = "2026-05-11T13:43:20.392Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/f3/80b5fda93084346adc7115ceadeaac4befd2fb1dd0d4fa2a1d6622aad2b1/mujoco-3.8.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:013071ee0a4984640437644a53f927a3bcce55e5d0be738210102f7fe30f61f7", size = 7292732, upload-time = "2026-05-11T13:43:22.581Z" },
+    { url = "https://files.pythonhosted.org/packages/20/32/2b40e2ee00f8366cc255f79d2248682c58c0a00e7b10ad677a697dca8c08/mujoco-3.8.1-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:63d8757ada42536fa481b1404603c91cb5c30ef1040c52c9cefe623e98ed42cf", size = 6744911, upload-time = "2026-05-11T13:43:24.534Z" },
+    { url = "https://files.pythonhosted.org/packages/01/a0/da51d5b12c2ea07b80f1a01fe2156999d8a7140bcdb36567a9babec34536/mujoco-3.8.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9347b9715ab26512d8bfce652ae554e8a667cf8271ebae840b97296bbfc1d840", size = 7240581, upload-time = "2026-05-11T13:43:27.012Z" },
+    { url = "https://files.pythonhosted.org/packages/40/1b/462d39e79c6caa71ccf0cca8b5e0c0b1c806ac06f2abbefdaf33b992b457/mujoco-3.8.1-cp311-cp311-win_amd64.whl", hash = "sha256:ca6aa25a97d55926bc82c38be6bd7e230935727d7fc0b017bcfe06a60c84aa40", size = 5823659, upload-time = "2026-05-11T13:43:28.954Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/4f/ccfaf99fab0042bef61da2cd21d47f41fcff069744b42bc6829d9da6b4fc/mujoco-3.8.1-cp312-cp312-macosx_10_16_x86_64.whl", hash = "sha256:b1c5213eb8fc53ee8c0713391eda5f0766088766025e8b46e1dfd3cb9f00db71", size = 7356297, upload-time = "2026-05-11T13:43:30.654Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/33/64e4de2ff6f0ead6c9d204efdd68aea3ca235058829f69b957625768495d/mujoco-3.8.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:06e36128883f484e173d02e6140ae09c1ff9845dbc7fb605b02361d9d2ecaccf", size = 7245562, upload-time = "2026-05-11T13:43:32.736Z" },
+    { url = "https://files.pythonhosted.org/packages/09/a1/597263af3519b1ac1c09bb8fc8f8985e90e4990c8aff62ca1a0c035e824c/mujoco-3.8.1-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9e4e951de3ab2ba5187b4807c648ac551fd6ae27ff04c7e25304b357d35d7fe8", size = 6784316, upload-time = "2026-05-11T13:43:34.837Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/2f/8a911be3ed84436bc46b5bdcf4ead6ac9590d0ddc82c006834c49ffd60c4/mujoco-3.8.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2970c90913a52b31eade56f27e5439905f08f1479e7991e257144ca829fa1267", size = 7322546, upload-time = "2026-05-11T13:43:37.074Z" },
+    { url = "https://files.pythonhosted.org/packages/83/58/d580c4abf7dda5231fed0886a626e1815e40c2d118bf7d0052a617435d6e/mujoco-3.8.1-cp312-cp312-win_amd64.whl", hash = "sha256:496b61c863d544e076990d1601555f71e522eb3b7aaae227dfbc5dea522f88a1", size = 5893327, upload-time = "2026-05-11T13:43:39.022Z" },
+    { url = "https://files.pythonhosted.org/packages/79/fb/55222063035a96748e78fcd690deb5ffbb4f000bbb24eec8220173f6101c/mujoco-3.8.1-cp313-cp313-macosx_10_16_x86_64.whl", hash = "sha256:1728de8572674cb146e134e96ecee8ed2c2f5e01d4aacacf42d703a441cfcea5", size = 7356742, upload-time = "2026-05-11T13:43:41.121Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/97/636a41e34f9a9bcae6c59e8d884b12762b6bc2a912e95a40e1e3e02884f2/mujoco-3.8.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:96811f3903f208b3facca4cb7be98207e4b481cafcc1c3082b1184c28f778665", size = 7245661, upload-time = "2026-05-11T13:43:42.935Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/0c/d8c164aef4a2d51ecb23a81db1ebac9e7da99233e6207ea4801b507ebc92/mujoco-3.8.1-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d64076a564455c68550e3bc1be4788e0e121c6e38db014eee39b1e1d7a733415", size = 6784309, upload-time = "2026-05-11T13:43:44.771Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/76/5b9d2a223d91c66a5ddf1aad2293c33ac795cabe8de0fa292550c28db374/mujoco-3.8.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ad3cfa1c809bf70a6308aa1db7b1e44d019f7a499c0b0ac8a4ddff102f4fae54", size = 7322830, upload-time = "2026-05-11T13:43:46.859Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/e8/e0432f14495d561aa0d1c77f05096a8c8a91f934b703a324c1abda0e57ba/mujoco-3.8.1-cp313-cp313-win_amd64.whl", hash = "sha256:9010b5929c2ad924537a528b0299c2dc552cdbb136cea6da24544793590c2487", size = 5893667, upload-time = "2026-05-11T13:43:48.987Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/83/757e83c9f8291e8ea84105cd76de076f674e120d98b6cd21716504d7bfec/mujoco-3.8.1-cp314-cp314-macosx_10_16_x86_64.whl", hash = "sha256:5717c8cdfe0360a42f8f65af53b2f5e3c38318f0c4ace181b81583db4e8fbc8f", size = 7412564, upload-time = "2026-05-11T13:43:51.538Z" },
+    { url = "https://files.pythonhosted.org/packages/27/cc/1feae64fb8dc40d2ebb5b8938a13acd3ba5dfb9acf49c3e5907d9d42faf8/mujoco-3.8.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:b7a311b25c8284729505d1dc130501633ee2b00249d0102009131a4b23f0ce2f", size = 7295087, upload-time = "2026-05-11T13:43:53.848Z" },
+    { url = "https://files.pythonhosted.org/packages/85/7c/ca2fc8f4d0054eeb7dafe7ed047bda47661f077c22dc09e6350e46a576fc/mujoco-3.8.1-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:804c66272e6ffd2223c7c69d020dc21e35986d2c633b20ec92087f34acfb40e2", size = 6794464, upload-time = "2026-05-11T13:43:56.357Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/9a/88e689fa5e21ff6e1fcd870429d33eb0f2ef58d5330db2ca0e6bea91b7d2/mujoco-3.8.1-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2d4fcdb57b4ea7d8730db3d995e900f5c6281fafbd552161c363e6ff9e839959", size = 7324034, upload-time = "2026-05-11T13:43:58.091Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/e5/8542d94dd3d73af37befc6b646c927f8448d851a61a5b9814371e581e0fb/mujoco-3.8.1-cp314-cp314-win_amd64.whl", hash = "sha256:e32717426b59e2619b5a44253856978a1312f12912e6404907acb551df3da4ff", size = 6227305, upload-time = "2026-05-11T13:43:59.932Z" },
 ]
 
 [[package]]
 name = "mujoco-warp"
-version = "3.8.0.3"
+version = "3.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "absl-py" },
@@ -3101,9 +3101,9 @@ dependencies = [
     { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "warp-lang" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e5/63/7dabf7f487c0946894a8ec85ea5d978c19e6b1afb6d6b6f63f457dff75ee/mujoco_warp-3.8.0.3.tar.gz", hash = "sha256:ca143a82f76b8df60984ca0d3c0f269a745886621cc2168beaa58e1d2c2358b8", size = 1938832, upload-time = "2026-05-08T23:27:41.058Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/a1/13004d9a034e9361675c14454b0790ab2bfbdc7695388fa1a1ff16691caa/mujoco_warp-3.8.1.tar.gz", hash = "sha256:d7a66c7e5f69b10de67d31cbfd9464b49e06b2ca142a061dd9cd79c84bc21462", size = 1938856, upload-time = "2026-05-11T14:38:39.976Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/f5/30c736dfe87ad7e8f7a7f8f43b80e0ff43c6af46cef65ba95d3ba172129a/mujoco_warp-3.8.0.3-py3-none-any.whl", hash = "sha256:dfbfa24e376e0b03bf6dcebaed7ef69b4885280a020e5f0fd805c125fae3d129", size = 2019908, upload-time = "2026-05-08T23:27:39.283Z" },
+    { url = "https://files.pythonhosted.org/packages/16/52/82ebe6ffde3bcaa341109d9fcf80dfc7c12a15706188b60b67d4be60b2d7/mujoco_warp-3.8.1-py3-none-any.whl", hash = "sha256:6aef7339ba3a8bf8e69659172d2d770169096e3a341f6b5b8a909b383c2581a2", size = 2019871, upload-time = "2026-05-11T14:38:37.757Z" },
 ]
 
 [[package]]
@@ -4292,23 +4292,23 @@ name = "open3d"
 version = "0.19.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "addict", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "configargparse", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "dash", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "flask", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "matplotlib", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "nbformat", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "addict", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "configargparse", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "dash", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "flask", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "matplotlib", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "nbformat", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "pandas", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "pillow", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "pyquaternion", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "pyyaml", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pandas", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pillow", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pyquaternion", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "pyyaml", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "tqdm", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "werkzeug", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "tqdm", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "werkzeug", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5c/4b/91e8a4100adf0ccd2f7ad21dd24c2e3d8f12925396528d0462cfb1735e5a/open3d-0.19.0-cp310-cp310-macosx_10_15_universal2.whl", hash = "sha256:f7128ded206e07987cc29d0917195fb64033dea31e0d60dead3629b33d3c175f", size = 103086005, upload-time = "2025-01-08T07:25:56.755Z" },
@@ -4424,9 +4424,9 @@ resolution-markers = [
     "python_full_version == '3.11.*' and platform_machine == 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "python-dateutil", marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "tzdata", marker = "(python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform == 'emscripten') or (python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform == 'win32') or (python_full_version < '3.11' and sys_platform == 'emscripten' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and sys_platform == 'emscripten' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version < '3.11' and sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "python-dateutil", marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "tzdata", marker = "(python_full_version >= '3.11' and python_full_version < '3.13' and sys_platform == 'emscripten') or (python_full_version >= '3.11' and python_full_version < '3.13' and sys_platform == 'win32') or (python_full_version < '3.11' and sys_platform == 'emscripten' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and sys_platform == 'emscripten' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version < '3.11' and sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and sys_platform == 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2e/0c/b28ed414f080ee0ad153f848586d61d1878f91689950f037f976ce15f6c8/pandas-3.0.1.tar.gz", hash = "sha256:4186a699674af418f655dbd420ed87f50d56b4cd6603784279d9eef6627823c8", size = 4641901, upload-time = "2026-02-17T22:20:16.434Z" }
 wheels = [
@@ -4621,8 +4621,8 @@ name = "plotly"
 version = "6.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "narwhals", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "packaging", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "narwhals", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "packaging", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/24/fb/41efe84970cfddefd4ccf025e2cbfafe780004555f583e93dba3dac2cdef/plotly-6.6.0.tar.gz", hash = "sha256:b897f15f3b02028d69f755f236be890ba950d0a42d7dfc619b44e2d8cea8748c", size = 7027956, upload-time = "2026-03-02T21:10:25.321Z" }
 wheels = [
@@ -5108,7 +5108,7 @@ version = "0.9.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7d/0d/3d092aa20efaedacb89c3221a92c6491be5b28f618a2c36b52b53e7446c2/pyquaternion-0.9.9.tar.gz", hash = "sha256:b1f61af219cb2fe966b5fb79a192124f2e63a3f7a777ac3cadf2957b1a81bea8", size = 15530, upload-time = "2020-10-05T01:31:30.327Z" }
 wheels = [
@@ -5696,10 +5696,10 @@ resolution-markers = [
     "python_full_version == '3.11.*' and platform_machine == 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "joblib", marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
-    { name = "threadpoolctl", marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "joblib", marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "threadpoolctl", marker = "(python_full_version >= '3.11' and python_full_version < '3.13') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.13' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0e/d4/40988bf3b8e34feec1d0e6a051446b1f66225f8529b9309becaeef62b6c4/scikit_learn-1.8.0.tar.gz", hash = "sha256:9bccbb3b40e3de10351f8f5068e105d0f4083b1a65fa07b6634fbc401a6287fd", size = 7335585, upload-time = "2025-12-10T07:08:53.618Z" }
 wheels = [
@@ -6898,7 +6898,7 @@ name = "werkzeug"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "markupsafe", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "markupsafe", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/f1/ee81806690a87dab5f5653c1f146c92bc066d7f4cebc603ef88eb9e13957/werkzeug-3.1.6.tar.gz", hash = "sha256:210c6bede5a420a913956b4791a7f4d6843a43b6fcee4dfa08a65e93007d0d25", size = 864736, upload-time = "2026-02-19T15:17:18.884Z" }
 wheels = [

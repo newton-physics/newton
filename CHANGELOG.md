@@ -77,6 +77,7 @@
 - Bump `mujoco` and `mujoco-warp` dependencies to `~=3.8.0` (`mujoco-warp` requires `>=3.8.0.3`)
 - Bump `GitPython` lower bound to `>=3.1.47` to pick up the fix for GHSA-x2qx-6953-8485 (`multi_options` argument injection in `Repo.clone_from`)
 - Bump `open3d` floor to `>=0.19.0`
+- Auto-scale `ViewerGL` contact arrows, joint axes, and COM markers by `Viewer.scene_scale`
 - Bump `meshio` floor to `>=5.3.5`; `5.3.0` calls `np.string_` which was removed in NumPy 2.0
 - Bump `newton-usd-schemas` to `>=0.2.0` introducing new experimental actuator schemas & re-aligning friction defaults
 - Restrict `usd-core` to `<26.5` to avoid deprecation warnings introduced in 26.5
