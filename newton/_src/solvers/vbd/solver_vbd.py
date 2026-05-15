@@ -104,9 +104,9 @@ class SolverVBD(SolverBase):
     Non-cable structural joint slots default to **hard mode** (augmented Lagrangian
     with persistent lambda and C0 stabilization). Cable stretch and bend default to
     **soft mode**. Joint hard/soft mode is initialized from the optional
-    ``model.vbd.joint_is_hard`` custom attribute. Runtime switching via
-    :meth:`set_joint_constraint_mode` and :class:`JointSlot` is deprecated and
-    retained only as a compatibility shim.
+    ``model.vbd.joint_is_hard`` custom attribute; use it for bulk configuration
+    before constructing the solver. The hard/soft mode can also be changed per slot
+    at runtime via :meth:`set_joint_constraint_mode`.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
@@ -180,10 +180,15 @@ class SolverVBD(SolverBase):
     """
 
     class JointSlot:
-        """Deprecated compatibility constants for :meth:`set_joint_constraint_mode`.
+        """Named constraint slot indices for :meth:`set_joint_constraint_mode`.
 
-        Configure joint hard/soft mode with ``model.vbd.joint_is_hard`` before
-        constructing :class:`SolverVBD` instead.
+        The first two solver constraint slots are structural where present:
+          - CABLE: LINEAR/STRETCH -> stretch, ANGULAR/BEND -> bend
+          - BALL: LINEAR only
+          - FIXED/REVOLUTE/PRISMATIC/D6: LINEAR and ANGULAR
+
+        Drive/limit slots start at slot 2 and are not represented here.
+        STRETCH and BEND are cable-only aliases for LINEAR and ANGULAR.
         """
 
         LINEAR = 0
@@ -1483,18 +1488,39 @@ class SolverVBD(SolverBase):
         self._update_rigid_history = update
 
     def set_joint_constraint_mode(self, joint_index: int, hard: bool, slot: int | None = None):
-        """Deprecated: set hard or soft constraint mode for a joint's structural slots at runtime.
+        """Set hard or soft constraint mode for a joint's structural slots at runtime.
 
-        Configure joint hard/soft mode with ``model.vbd.joint_is_hard`` before
-        constructing :class:`SolverVBD` instead. This compatibility method still
-        updates the solver's runtime state for existing callers.
+        Hard mode (augmented Lagrangian): uses persistent lambda + C0 stabilization
+        to drive constraint violation toward zero across iterations.
+        Soft mode (penalty-only): uses penalty stiffness only (no lambda or C0 state).
+
+        Structural slots are LINEAR (slot 0) and ANGULAR (slot 1). Drive/limit slots
+        (slot 2+) are always soft and cannot be set to hard.
+
+        By default, cable stretch and bend slots are soft, while non-cable
+        structural slots are hard.
+
+        For bulk initialization of non-cable joints at build time (avoids
+        per-joint roundtrips), use the ``joint_is_hard`` model custom attribute::
+
+            SolverVBD.register_custom_attributes(builder)  # before adding joints
+            ...
+            model = builder.finalize()
+            model.vbd.joint_is_hard.numpy()[j] = 0  # set joint j to soft
+            solver = SolverVBD(model, ...)
+
+        Args:
+            joint_index: Index of the joint to modify.
+            hard: True for hard mode (AL), False for soft mode (penalty-only).
+            slot: Specific slot index to set. If None, sets all structural slots.
+                Use JointSlot.LINEAR / JointSlot.ANGULAR (equivalently
+                JointSlot.STRETCH / JointSlot.BEND for cables).
+
+        Raises:
+            ValueError: If the joint index is out of range, or the slot is a
+                drive/limit slot (>= 2), or the slot exceeds the joint's
+                constraint dimension.
         """
-        warnings.warn(
-            "SolverVBD.set_joint_constraint_mode() and SolverVBD.JointSlot are deprecated and will be removed "
-            "in a future release. Set model.vbd.joint_is_hard before constructing SolverVBD instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
 
         n_j = self.model.joint_count
         if joint_index < 0 or joint_index >= n_j:
