@@ -8,6 +8,8 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
+from newton._warp_config import warp_verbose_enabled
+
 
 class ColoringAlgorithm(Enum):
     MCS = 0
@@ -344,7 +346,7 @@ def color_graph(
             particle_colors.__ctype__(),
         )
 
-        if max_min_ratio > target_max_min_color_ratio and wp.config.verbose:
+        if max_min_ratio > target_max_min_color_ratio and warp_verbose_enabled():
             warnings.warn(
                 f"Color balancing terminated early: max/min ratio {max_min_ratio:.3f} "
                 f"exceeds target {target_max_min_color_ratio:.3f}. "

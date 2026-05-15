@@ -6,9 +6,11 @@
 import contextlib
 import io
 import unittest
+import warnings
 
 import warp as wp
 
+from newton._warp_config import warp_verbose_enabled
 from newton.examples import _apply_warp_config, create_parser
 
 
@@ -16,7 +18,12 @@ class TestWarpConfigCLI(unittest.TestCase):
     """Tests for :func:`_apply_warp_config`."""
 
     def setUp(self):
-        self._saved_config = {attr: getattr(wp.config, attr) for attr in dir(wp.config) if not attr.startswith("__")}
+        deprecated_log_attrs = {"quiet", "verbose"} if hasattr(wp.config, "log_level") else set()
+        self._saved_config = {
+            attr: getattr(wp.config, attr)
+            for attr in dir(wp.config)
+            if not attr.startswith("__") and attr not in deprecated_log_attrs
+        }
 
     def tearDown(self):
         for attr, value in self._saved_config.items():
@@ -32,7 +39,10 @@ class TestWarpConfigCLI(unittest.TestCase):
         """No --warp-config flags should be a no-op."""
         parser, args = self._parse()
         _apply_warp_config(parser, args)
-        self.assertEqual(wp.config.verbose, self._saved_config["verbose"])
+        if hasattr(wp.config, "log_level"):
+            self.assertEqual(wp.config.log_level, self._saved_config["log_level"])
+        else:
+            self.assertEqual(warp_verbose_enabled(), self._saved_config["verbose"])
 
     def test_int_override(self):
         """Integer values should be parsed via literal_eval."""
@@ -49,8 +59,26 @@ class TestWarpConfigCLI(unittest.TestCase):
     def test_bool_override(self):
         """Boolean values should be parsed correctly."""
         parser, args = self._parse("--warp-config", "verbose=True")
-        _apply_warp_config(parser, args)
-        self.assertIs(wp.config.verbose, True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            _apply_warp_config(parser, args)
+        self.assertIs(warp_verbose_enabled(), True)
+
+    def test_legacy_verbose_flag_is_honored(self):
+        """A legacy verbose flag set outside Newton should still enable verbose behavior."""
+        if not hasattr(wp.config, "log_level"):
+            self.skipTest("log_level compatibility only applies to newer Warp versions")
+
+        config_dict = vars(wp.config)
+        old_verbose = config_dict.get("verbose", False)
+        old_log_level = wp.config.log_level
+        try:
+            config_dict["verbose"] = True
+            wp.config.log_level = wp.LOG_INFO
+            self.assertIs(warp_verbose_enabled(), True)
+        finally:
+            config_dict["verbose"] = old_verbose
+            wp.config.log_level = old_log_level
 
     def test_none_override(self):
         """None values should be accepted."""

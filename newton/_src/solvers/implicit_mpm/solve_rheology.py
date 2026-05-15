@@ -13,6 +13,8 @@ import warp.sparse as sp
 from warp.fem.linalg import array_axpy
 from warp.optim.linear import LinearOperator, cg, cr, gmres
 
+from newton._warp_config import warp_verbose_enabled
+
 from .contact_solver_kernels import (
     apply_nodal_impulse_warmstart,
     apply_subgrid_impulse,
@@ -1660,7 +1662,7 @@ def solve_rheology(
     jacobi_warmstart_smoother_iterations: int = 5,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph: bool = True,
-    verbose: bool = wp.config.verbose,
+    verbose: bool = warp_verbose_enabled(),
 ):
     """Solve coupled plasticity and collider contact to compute grid velocities.
 

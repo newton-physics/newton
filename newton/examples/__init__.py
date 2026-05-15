@@ -14,6 +14,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._warp_config import set_warp_config_value_compat, set_warp_quiet, warp_config_hasattr
 from newton.tests.unittest_utils import find_nan_members
 
 
@@ -631,7 +632,7 @@ def _apply_warp_config(parser, args):
 
         key, value_str = entry.split("=", 1)
 
-        if not hasattr(wp.config, key):
+        if not warp_config_hasattr(key):
             parser.error(f"invalid --warp-config key '{key}': not a recognized warp.config setting")
 
         try:
@@ -639,7 +640,7 @@ def _apply_warp_config(parser, args):
         except (ValueError, SyntaxError):
             value = value_str
 
-        setattr(wp.config, key, value)
+        set_warp_config_value_compat(key, value)
 
 
 def _raise_benchmark_priority(realtime=False):
@@ -716,7 +717,7 @@ def init(parser=None):
 
     # Suppress Warp compilation messages if requested
     if args.quiet:
-        wp.config.quiet = True
+        set_warp_quiet()
 
     # Set device if specified
     if args.device:

@@ -5,6 +5,8 @@
 
 import warp as wp
 
+from newton._warp_config import warp_verbose_enabled
+
 from ..geometry.flags import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
@@ -128,7 +130,7 @@ class SensorIMU:
             model: The model to use.
             sites: List of site indices, single pattern to match against site
                 labels, or list of patterns where any one matches.
-            verbose: If True, print details. If None, uses ``wp.config.verbose``.
+            verbose: If True, print details. If None, uses Warp debug logging.
             request_state_attributes: If True (default), transparently request the extended state attribute ``body_qdd`` from the model.
                 If False, ``model`` is not modified and the attribute must be requested elsewhere before calling ``model.state()``.
         Raises:
@@ -136,7 +138,7 @@ class SensorIMU:
         """
 
         self.model = model
-        self.verbose = verbose if verbose is not None else wp.config.verbose
+        self.verbose = verbose if verbose is not None else warp_verbose_enabled()
 
         original_sites = sites
         sites = match_labels(model.shape_label, sites)

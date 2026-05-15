@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import warp as wp
 
+from newton._warp_config import set_warp_config_value_compat
+
 ###
 # Module interface
 ###
@@ -53,7 +55,7 @@ def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None
     wp.init()
     wp.config.mode = "release"
     wp.config.enable_backward = False
-    wp.config.verbose = False
+    set_warp_config_value_compat("verbose", False)
     wp.config.verify_fp = False
     wp.config.verify_cuda = False
 

@@ -5,6 +5,8 @@
 
 import warp as wp
 
+from newton._warp_config import warp_verbose_enabled
+
 from ..geometry import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
@@ -134,13 +136,13 @@ class SensorFrameTransform:
             reference_sites: List of site indices, single pattern to match against
                 site labels, or list of patterns where any one matches. Must expand
                 to one site or the same number as ``shapes``.
-            verbose: If True, print details. If None, uses ``wp.config.verbose``.
+            verbose: If True, print details. If None, uses Warp debug logging.
 
         Raises:
             ValueError: If arguments are invalid or no labels match.
         """
         self.model = model
-        self.verbose = verbose if verbose is not None else wp.config.verbose
+        self.verbose = verbose if verbose is not None else warp_verbose_enabled()
 
         # Resolve label patterns to indices
         original_shapes = shapes

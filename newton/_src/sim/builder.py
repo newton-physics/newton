@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import numpy as np
 import warp as wp
 
+from newton._warp_config import warp_verbose_enabled
+
 from ..actuators.clamping.clamping_max_effort import ClampingMaxEffort
 from ..actuators.controllers.controller_pd import ControllerPD
 from ..actuators.controllers.controller_pid import ControllerPID
@@ -4829,12 +4831,12 @@ class ModelBuilder:
         plt.show()
 
     def collapse_fixed_joints(
-        self, verbose: bool = wp.config.verbose, joints_to_keep: list[str] | None = None
+        self, verbose: bool = warp_verbose_enabled(), joints_to_keep: list[str] | None = None
     ) -> dict[str, Any]:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
-            verbose: If True, print additional information about the collapsed joints. Defaults to the value of `wp.config.verbose`.
+            verbose: If True, print additional information about the collapsed joints. Defaults to Warp debug logging.
             joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
         """
 

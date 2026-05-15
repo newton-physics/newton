@@ -202,10 +202,11 @@ from typing import Any
 import numpy as np
 import warp as wp
 import newton
+from newton._warp_config import set_warp_quiet
 
 warnings.filterwarnings("ignore")
 
-wp.config.quiet = True
+set_warp_quiet()
 wp.init()
 """
 

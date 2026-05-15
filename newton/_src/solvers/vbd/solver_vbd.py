@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from newton._warp_config import warp_verbose_enabled
+
 from ...core.types import override
 from ...sim import (
     Contacts,
@@ -477,7 +479,7 @@ class SolverVBD(SolverBase):
         self.particle_q_rest = model.particle_q
 
         # Tile solve settings
-        if model.device.is_cpu and particle_enable_tile_solve and wp.config.verbose:
+        if model.device.is_cpu and particle_enable_tile_solve and warp_verbose_enabled():
             print("Info: Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
 
         self.use_particle_tile_solve = particle_enable_tile_solve and model.device.is_cuda

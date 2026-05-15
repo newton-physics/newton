@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 from warp.types import is_array
 
+from newton._warp_config import warp_verbose_enabled
+
 from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
 
 if TYPE_CHECKING:
@@ -515,7 +517,7 @@ class ArticulationView:
         self.device = model.device
 
         if verbose is None:
-            verbose = wp.config.verbose
+            verbose = warp_verbose_enabled()
 
         # FIXME: avoid/reduce this readback?
         model_articulation_start = model.articulation_start.numpy()
