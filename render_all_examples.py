@@ -17,6 +17,7 @@ EXAMPLES = [
     ("tendon_pulley", "newton.examples.cable.example_tendon_pulley", 240),
     ("tendon_pinhole_friction", "newton.examples.cable.example_tendon_pinhole_friction", 55),
     ("tendon_pinhole_routing", "newton.examples.cable.example_tendon_pinhole_routing", 240),
+    ("tendon_mujoco_wrap", "newton.examples.cable.example_tendon_mujoco_wrap", 220),
     ("tendon_rolling_pulley", "newton.examples.cable.example_tendon_rolling_pulley", 180),
     ("tendon_xy_table", "newton.examples.cable.example_tendon_xy_table", 600),
     ("tendon_capstan_dynamic", "newton.examples.cable.example_tendon_capstan_friction", 100),

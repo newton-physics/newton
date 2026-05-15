@@ -17,6 +17,7 @@ import newton
 from newton._src.sim.builder import Axis
 from newton._src.sim.tendon import TendonLinkType
 from newton.examples.cable.example_tendon_capstan_friction import Example as DynamicCapstanExample
+from newton.examples.cable.example_tendon_mujoco_wrap import Example as MujocoWrapExample
 from newton.tests.unittest_utils import sanitize_identifier
 
 
@@ -699,6 +700,71 @@ def _capstan_hysteresis_history(mu=0.2):
     return history
 
 
+def _run_mujoco_wrap_example(num_frames=220):
+    example = MujocoWrapExample(None, None)
+    for _ in range(num_frames):
+        example.step()
+    return example
+
+
+def test_mujoco_wrap_straight_bypass_activates_and_deactivates(test, device):
+    """Dynamic wrap candidates should start/end as the original straight vertical route."""
+    with wp.ScopedDevice(device):
+        example = _run_mujoco_wrap_example()
+        example.test_final()
+
+        active_history = np.array(example._active_history, dtype=np.int32)
+        test.assertEqual(example.candidate_count, 3, "MuJoCo-style wrap example should use three candidates")
+        test.assertTrue(np.all(active_history[0] == 0), f"Route should start inactive: {active_history[:8]}")
+        test.assertTrue(np.all(active_history[-1] == 0), f"Route should end inactive: {active_history[-8:]}")
+        test.assertTrue(np.all(np.max(active_history, axis=0) == 1), f"Every capstan should activate: {active_history}")
+        test.assertTrue(
+            np.any(np.all(active_history == 1, axis=1)),
+            f"All three capstans should be active simultaneously: {active_history}",
+        )
+        test.assertTrue(
+            np.all(example._transition_counts >= 2),
+            f"Expected activation/deactivation for each capstan: {example._transition_counts}",
+        )
+        test.assertEqual(
+            example._activation_mismatch_count,
+            0,
+            "Dynamic wrap active flags should be exactly determined by the straight-span intersection test",
+        )
+        test.assertLess(
+            example._max_inactive_x_error,
+            2.0e-3,
+            f"Inactive route should be exactly vertical: x_error={example._max_inactive_x_error:.6f}",
+        )
+        test.assertTrue(
+            np.all(example._max_active_lateral > example.radius * 0.35),
+            f"Active routes should visibly leave the straight vertical line: {example._max_active_lateral}",
+        )
+
+
+def test_mujoco_wrap_uses_expected_side_of_capstan(test, device):
+    """Each dynamic wrap candidate should use the side opposite capstan intrusion."""
+    with wp.ScopedDevice(device):
+        example = _run_mujoco_wrap_example()
+
+        test.assertTrue(
+            np.all(example._min_expected_side_clearance > example.radius * 0.20),
+            f"Active route wrapped on the wrong side of a capstan: {example._min_expected_side_clearance}",
+        )
+
+
+def test_mujoco_wrap_return_path_deactivates_before_centerline_overshoot(test, device):
+    """Active routes should return to bypass before crossing past the original line."""
+    with wp.ScopedDevice(device):
+        example = _run_mujoco_wrap_example()
+
+        test.assertTrue(
+            np.all(example._max_active_centerline_overshoot < 2.0e-3),
+            "Active return path should not cross beyond the straight centerline before deactivation: "
+            f"x={example._max_active_centerline_overshoot}",
+        )
+
+
 def test_pinhole_slip_atwood(test, device):
     """A pinhole is a frictionless slip waypoint: heavy descends, light rises."""
     with wp.ScopedDevice(device):
@@ -1260,6 +1326,24 @@ add_test(
     "simple_cable_gravity_balances_mass_load",
     devices,
     test_simple_cable_gravity_balances_mass_load,
+)
+add_test(
+    TestTendonCapstan,
+    "mujoco_wrap_straight_bypass_activates_and_deactivates",
+    devices,
+    test_mujoco_wrap_straight_bypass_activates_and_deactivates,
+)
+add_test(
+    TestTendonCapstan,
+    "mujoco_wrap_uses_expected_side_of_capstan",
+    devices,
+    test_mujoco_wrap_uses_expected_side_of_capstan,
+)
+add_test(
+    TestTendonCapstan,
+    "mujoco_wrap_return_path_deactivates_before_centerline_overshoot",
+    devices,
+    test_mujoco_wrap_return_path_deactivates_before_centerline_overshoot,
 )
 add_test(TestTendonCapstan, "motorized_pulley_drives_slider", devices, test_motorized_pulley_drives_slider)
 add_test(
