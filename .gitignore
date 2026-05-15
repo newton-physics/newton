@@ -69,6 +69,7 @@ MUJOCO_LOG.TXT
 imgui.ini
 newton/tests/outputs/
 reports/upstream-sync/
+DigitalInstron/processed/v2_cache/
 
 # Viser recordings
 docs/_static/recordings/

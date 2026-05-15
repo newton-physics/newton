@@ -1,85 +1,72 @@
-# Digital Instron
+# Digital Instron v2
 
-This folder contains the first calibration harness for matching physical Instron shoe tests with Newton pressure-field contact.
+This folder now hosts the experimental v2 restart for shoe Instron material
+identification. The deleted `projects.digital_instron` CLI and old example
+wrapper are intentionally not the contract for this workflow.
 
-## Current Decisions
+## v2 Boundary
 
-- Fullfoot indenter: `Instron Shoe Last Size 9 6drop merged attachment 1.STL`.
-- Rearfoot indenter: rigid flat-ended circular punch with radius `45 mm`.
-- Midsole geometry: `puma-fast-r-nitro-elite-3-3d-internal-wt-LR.obj`.
-- Units: source meshes are treated as millimeters and scaled by `0.001`.
-- Coordinate inference: longest mesh axis is shoe length, shortest axis is vertical thickness.
-- Fullfoot indenter pose: the STL is canonicalized, then rotated by `--fullfoot-rotation-deg` before SDF generation. The current default `90 0 0` turns the long missile axis vertical for this STL.
-- Fullfoot start pose: `--fullfoot-start-clearance` raises the indenter above the midsole at zero displacement. The auto-contact search rejects offsets that exceed `--fullfoot-initial-force-max` at the first frame.
-- Pressure profile: `--pressure-profile poisson` uses the default interior pressure field. `--pressure-profile layer` uses a one-sided local-Z foam-column field with `--layer-eta-lock`, `--layer-densification-power`, `--layer-cubic`, and `--layer-quintic`.
-- Rearfoot location: heel-side 20 percent region, implemented as the heel-side 30 percent x location with lateral center. Use `--heel-side min|max` if the first run hits the toe instead.
-- Physical target trace: averaged cycles `90-100`, compressive displacement and force positive.
-- Fit score: equal weighting of force-displacement loop RMSE and peak-force error.
-
-## Commands
-
-Preprocess the physical traces:
+- Trial setup lives in `manifest_v2.json`.
+- Reusable code lives under `projects/digital_instron_v2`.
+- The first runnable surface is a script/notebook workflow:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra examples -m newton.examples digital_instron --mode preprocess --viewer null
+UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step qc
 ```
 
-Run the rearfoot pressure-field sweep on a CUDA-capable machine:
+After QC writes frame configs, run the first force-model smoke:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra examples -m newton.examples digital_instron --mode run --test-case rearfoot --viewer null --kh 6.085e6
+UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-smoke
 ```
 
-Run the rearfoot sweep with the current phenomenological loop-shape, stiffness-scale, and hysteresis fits:
+Run the first autodiff material fit:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra examples -m newton.examples digital_instron --mode run --test-case rearfoot --viewer null --kh 6.085e6 --fit-elastic-force-power --fit-elastic-force-scale --fit-hysteresis-damping
+UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-autodiff --autodiff-iterations 25 --autodiff-sample-count 8
 ```
 
-Run a shared rearfoot plus fullfoot material calibration:
+This writes `processed/v2_cache/digital_instron_v2_autodiff_fit.json`
+with the fitted material and per-iteration loss/gradient history.
+
+To inspect orientation, ray casting, and the current 1D spring response:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra examples -m projects.digital_instron.cli calibrate --viewer null --sdf-resolution 64 --kh 6.085e6 --fit-elastic-force-power --fit-elastic-force-scale --fit-hysteresis-damping --fullfoot-contact-search-max 0.20 --fullfoot-contact-search-steps 101 --fullfoot-rotation-deg 90 0 0
+UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step visualize
 ```
 
-To fit damping against per-sample force error instead of total hysteresis energy:
+That writes:
 
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra examples -m projects.digital_instron.cli calibrate --viewer null --sdf-resolution 64 --kh 6.085e6 --fit-elastic-force-power --fit-elastic-force-scale --fit-hysteresis-damping --fit-damping-mode per-step --fullfoot-contact-search-max 0.20 --fullfoot-contact-search-steps 101 --fullfoot-rotation-deg 90 0 0
-```
+- `processed/v2_cache/digital_instron_v2_mesh_orientation.png`
+- `processed/v2_cache/digital_instron_v2_raycast_grid.png`
+- `processed/v2_cache/digital_instron_v2_spring_response.png`
+- `processed/v2_cache/digital_instron_v2_spring_snapshot.png`
+- `processed/v2_cache/digital_instron_v2_spring_grid.csv`
+- `processed/v2_cache/digital_instron_v2_spring_grid.npz`
+- `processed/v2_cache/digital_instron_v2_visualization.summary.json`
 
-Run the same calibration with the foam-layer pressure field:
+## Current v2 Choices
 
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra examples -m projects.digital_instron.cli calibrate --viewer null --sdf-resolution 64 --kh 6.085e6 --pressure-profile layer --layer-eta-lock 0.65 --layer-densification-power 0.0 --fit-elastic-force-power --fit-elastic-force-scale --fit-scale-min 0.05 --fit-scale-max 5.0 --fit-scale-steps 201 --fit-hysteresis-damping --fit-damping-mode per-step --fullfoot-contact-search-max 0.20 --fullfoot-contact-search-steps 101 --fullfoot-rotation-deg 90 0 0
-```
+- Train on all `include_in_fit` trials declared in the manifest.
+- Repair the midsole mesh with Newton's Poisson remesh path before fitting and
+  cache the repaired OBJ plus QC JSON under `processed/v2_cache`.
+- Fail before fitting when CSV frame columns are missing, frame spans are
+  implausible, or the conditioned midsole thickness is outside the manifest QC
+  bounds.
+- Start with a uniform 5 mm circular punch grid and keep the 3 mm grid as a
+  later convergence check for localized punch trials.
+- Place the rearfoot punch from the mesh footprint bounds with a 45 mm diameter:
+  local rearfoot lateral midpoint and `rearfoot_length_fraction` from the
+  configured `rearfoot_heel_side`.
+- Use a full-footprint raycast grid for the midsole foundation. Each valid
+  ray's top-to-bottom thickness is the slack length of that 1D spring.
+- Fit the vertical differentiable Warp foundation first: locked Ogden-style
+  compression plus compression-weighted viscous damping, with shared material
+  parameters across trials.
+- Keep MuJoCo out of training. The validation adapter applies learned foundation
+  wrenches through Newton `state.body_f`, which `SolverMuJoCo` maps to MuJoCo
+  `xfrc_applied`.
 
-This writes:
-
-- `processed/pressure_field_material.json`: reusable shared material parameters.
-- `processed/shoe_pressure_field_bundle.json`: ProtoMotions-oriented shoe asset bundle with geometry, fixture, material, calibration, and state-model sections.
-- `processed/digital_instron_hysteresis.png`: physical-vs-digital force-displacement loops.
-- `processed/digital_instron_calibration.summary.json`: combined calibration summary.
-- `processed/rearfoot_sim_pressure_field.csv` and `processed/fullfoot_sim_pressure_field.csv`: per-trial simulation traces.
-
-View the prescribed Instron compression and contact geometry:
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra examples -m newton.examples digital_instron --mode view --test-case fullfoot --viewer gl --sdf-resolution 64 --kh 6.085e6 --fullfoot-contact-search-max 0.20 --fullfoot-contact-search-steps 101 --fullfoot-rotation-deg 90 0 0
-```
-
-For a browser viewer:
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra examples -m newton.examples digital_instron --mode view --test-case fullfoot --viewer viser --sdf-resolution 64 --kh 6.085e6 --fullfoot-contact-search-max 0.20 --fullfoot-contact-search-steps 101 --fullfoot-rotation-deg 90 0 0
-```
-
-Run the fullfoot pressure-field sweep:
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra examples -m newton.examples digital_instron --mode run --test-case fullfoot --viewer null
-```
-
-## Notes
-
-The current pressure-field model is memoryless. It can fit an elastic force-displacement curve with `kh`, `elastic_force_power`, and `elastic_force_scale`, but true foam hysteresis will require a material-state or dissipative pressure-field extension after this baseline exposes the error.
+Full real-data calibration is deliberately manual/regression output for now:
+plots and JSON summaries should be checked in only when they represent a
+specific calibration run worth preserving.

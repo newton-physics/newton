@@ -17,8 +17,8 @@
 - Add Blender-style orbit, pan, and dolly controls to the GL viewer using middle-mouse drag combinations
 - Add opt-in max-compression pressure memory to reduced SDF hydroelastic
   contact export via :class:`newton.geometry.HydroelasticSDF.Config`, with
-  Digital Instron CLI controls for unloading loss, recovery time, and coarse
-  local memory grid.
+  experimental Digital Instron controls for unloading loss, recovery time, and
+  coarse local memory grid.
 - Add `SolverXPBD.update_contacts()` to populate `contacts.force` with per-contact spatial forces (linear force and torque) derived from XPBD constraint impulses
 - Add `body_parent_f` extended state attribute support to `SolverXPBD` so it populates per-body incoming joint wrenches in world frame at the body's COM (matches `SolverMuJoCo`'s convention; values are approximate due to XPBD's relaxation and non-momentum-conserving nature)
 - Add `body_parent_f` extended state attribute support to `SolverFeatherstone` populated directly from the RNEA backward pass (per-body net spatial wrench translated to the body's COM, matching the `SolverMuJoCo` convention)

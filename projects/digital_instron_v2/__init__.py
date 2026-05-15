@@ -1,0 +1,65 @@
+"""Experimental Digital Instron v2 elastic-foundation workflow."""
+
+from .foundation import (
+    FoundationFitResult,
+    FoundationFitSample,
+    FoundationGradientResult,
+    FoundationMaterial,
+    FoundationResult,
+    evaluate_foundation,
+    evaluate_foundation_lengths,
+    fit_foundation_material_autodiff,
+    foundation_lengths_loss_gradient,
+)
+from .frame_qc import FrameConfig, FrameQCError, infer_frame_config, load_trial_frame
+from .geometry import (
+    CylinderGrid,
+    MeshFrame,
+    MeshQCError,
+    PlacedCylinderGrid,
+    SpringSurfaceGrid,
+    build_raycast_spring_grid,
+    condition_midsole_mesh,
+    detect_mesh_frame,
+    make_cylinder_grid,
+    make_footprint_grid,
+    place_rearfoot_punch_grid,
+    raycast_grid_thickness,
+    rearfoot_punch_center_uv,
+)
+from .manifest import Trial, TrialManifest, load_manifest, validate_frame_config
+from .visualization import write_visualization_report
+
+__all__ = [
+    "CylinderGrid",
+    "FoundationFitResult",
+    "FoundationFitSample",
+    "FoundationGradientResult",
+    "FoundationMaterial",
+    "FoundationResult",
+    "FrameConfig",
+    "FrameQCError",
+    "MeshFrame",
+    "MeshQCError",
+    "PlacedCylinderGrid",
+    "SpringSurfaceGrid",
+    "Trial",
+    "TrialManifest",
+    "build_raycast_spring_grid",
+    "condition_midsole_mesh",
+    "evaluate_foundation",
+    "evaluate_foundation_lengths",
+    "fit_foundation_material_autodiff",
+    "foundation_lengths_loss_gradient",
+    "infer_frame_config",
+    "load_manifest",
+    "load_trial_frame",
+    "make_cylinder_grid",
+    "make_footprint_grid",
+    "place_rearfoot_punch_grid",
+    "detect_mesh_frame",
+    "raycast_grid_thickness",
+    "rearfoot_punch_center_uv",
+    "validate_frame_config",
+    "write_visualization_report",
+]
