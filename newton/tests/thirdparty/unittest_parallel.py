@@ -131,6 +131,13 @@ def main(argv=None):
         help="Use multiprocessing instead of concurrent.futures.",
     )  # NVIDIA Modification
     group_parallel.add_argument(
+        "--parallel-timeout",
+        metavar="SECONDS",
+        type=int,
+        default=3600,
+        help="Timeout in seconds for collecting all parallel test results (default is 3600)",
+    )  # NVIDIA Modification
+    group_parallel.add_argument(
         "--serial-fallback",
         action="store_true",
         default=False,
@@ -160,6 +167,8 @@ def main(argv=None):
         "Useful for faster iteration and avoiding interference with parallel sessions.",
     )
     args = parser.parse_args(args=argv)
+    if args.parallel_timeout <= 0:
+        parser.error("--parallel-timeout must be greater than 0")
 
     if args.coverage_branch:
         args.coverage = args.coverage_branch
@@ -234,7 +243,13 @@ def main(argv=None):
                         initargs=(manager.Lock(), shared_index, args, temp_dir),
                     ) as pool:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
-                        results = pool.map(test_manager.run_tests, test_suites)
+                        try:
+                            results = pool.map_async(test_manager.run_tests, test_suites).get(
+                                timeout=args.parallel_timeout
+                            )
+                        except multiprocessing.TimeoutError:
+                            pool.terminate()
+                            results = [_parallel_timeout_result(args.parallel_timeout)]
                 else:
                     # NVIDIA Modification added concurrent.futures
                     executor_kwargs = {
@@ -245,9 +260,21 @@ def main(argv=None):
                     }
                     if sys.version_info >= (3, 11) and (args.disable_process_pooling or wp.get_cuda_device_count() > 1):
                         executor_kwargs["max_tasks_per_child"] = 1
-                    with concurrent.futures.ProcessPoolExecutor(**executor_kwargs) as executor:
+                    executor = concurrent.futures.ProcessPoolExecutor(**executor_kwargs)
+                    try:
                         test_manager = ParallelTestManager(manager, args, temp_dir)
-                        results = list(executor.map(test_manager.run_tests, test_suites, timeout=3000))
+                        results = list(executor.map(test_manager.run_tests, test_suites, timeout=args.parallel_timeout))
+                    except concurrent.futures.TimeoutError:
+                        _shutdown_executor_after_timeout(executor)
+                        executor = None
+                        results = [_parallel_timeout_result(args.parallel_timeout)]
+                    except Exception:
+                        _shutdown_executor_after_timeout(executor)
+                        executor = None
+                        raise
+                    finally:
+                        if executor is not None:
+                            executor.shutdown()
         else:
             # This entire path is an NVIDIA Modification
 
@@ -359,6 +386,35 @@ def _convert_select_pattern(pattern):
     if "*" not in pattern:
         return f"*{pattern}*"
     return pattern
+
+
+def _parallel_timeout_result(timeout_seconds):
+    message = f"Parallel test run exceeded timeout of {timeout_seconds} seconds"
+    details = f"{message} while waiting for worker results. Increase --parallel-timeout or reduce the test workload."
+    return (
+        1,
+        [message],
+        [],
+        0,
+        0,
+        0,
+        [("unittest_parallel", "parallel_timeout", float(timeout_seconds), "ERROR", message, details)],
+    )
+
+
+def _shutdown_executor_after_timeout(executor):
+    terminate_workers = getattr(executor, "terminate_workers", None)
+    if terminate_workers is not None:
+        terminate_workers()
+        return
+
+    # ProcessPoolExecutor has no public process-termination API before Python 3.14.
+    processes = list((getattr(executor, "_processes", None) or {}).values())
+    executor.shutdown(wait=False, cancel_futures=True)
+    for process in processes:
+        process.terminate()
+    for process in processes:
+        process.join(timeout=5)
 
 
 @contextmanager

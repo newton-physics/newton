@@ -417,6 +417,27 @@ def _compute_per_world_shape_pairs_max(model: Model) -> int:
     return max(0, total)
 
 
+def _resolve_shape_pairs_max(model: Model, override: int | None) -> int:
+    """Pick the broad-phase candidate-pair buffer capacity.
+
+    ``override`` lets the caller cap the SAP/NXN pair buffer, which is
+    otherwise sized to the worst-case ``N*(N-1)/2`` per-world bound.
+    SAP and NXN scenes with thousands of bodies typically emit only a
+    tiny fraction of that bound, so the default sizing is grossly
+    wasteful (multi-GB on 10k+ shape scenes). ``None`` keeps the legacy
+    behaviour; a positive integer overrides it. ``0`` is rejected --
+    use ``None`` instead.  Values larger than the natural bound are
+    accepted as-is: allocating beyond the bound never produces more
+    pairs, but we honour the user's explicit capacity request rather
+    than silently shrinking it.
+    """
+    if override is None:
+        return _compute_per_world_shape_pairs_max(model)
+    if override <= 0:
+        raise ValueError(f"shape_pairs_max must be a positive integer or None, got {override}")
+    return int(override)
+
+
 BROAD_PHASE_MODES = ("nxn", "sap", "explicit")
 
 
@@ -477,6 +498,7 @@ class CollisionPipeline:
         | None = None,
         narrow_phase: NarrowPhase | None = None,
         sdf_hydroelastic_config: HydroelasticSDF.Config | None = None,
+        shape_pairs_max: int | None = None,
         deterministic: bool = False,
         contact_matching: Literal["disabled", "latest", "sticky"] = "disabled",
         contact_matching_pos_threshold: float = 0.0005,
@@ -514,6 +536,21 @@ class CollisionPipeline:
                 "nxn"/"sap" modes, ignored.
             sdf_hydroelastic_config: Configuration for
                 hydroelastic collision handling. Defaults to None.
+            shape_pairs_max: Override for the broad-phase candidate-pair
+                buffer capacity used by the ``"nxn"`` and ``"sap"`` modes.
+                Defaults to the worst-case ``N*(N-1)/2`` per-world bound,
+                which is rarely hit by either ``"nxn"`` or ``"sap"`` in
+                practice -- ``"nxn"`` still applies AABB overlap, group,
+                and excluded-pair filtering inside ``BroadPhaseAllPairs``
+                before writing, and ``"sap"`` is sparse by design -- so
+                the default sizing is typically 10-100x larger than what
+                gets emitted on real scenes. Set this to a tighter value
+                (e.g. measured peak with ~25% headroom) to avoid multi-GB
+                allocations on large scenes; a too-small value triggers
+                a buffer overflow warning at runtime. Ignored for the
+                ``"explicit"`` mode (which uses the filtered pair list
+                length directly) and for expert paths that pass a
+                pre-built ``narrow_phase``.
             deterministic: Sort contacts after the narrow phase so that results
                 are independent of GPU thread scheduling.  Adds a radix sort +
                 gather pass.  Hydroelastic contacts are not yet covered.
@@ -675,7 +712,7 @@ class CollisionPipeline:
                     raise ValueError("model.shape_world is required for broad_phase=NXN")
                 self.broad_phase = BroadPhaseAllPairs(shape_world, shape_flags=shape_flags, device=device)
                 self.shape_pairs_filtered = None
-                self.shape_pairs_max = _compute_per_world_shape_pairs_max(model)
+                self.shape_pairs_max = _resolve_shape_pairs_max(model, shape_pairs_max)
                 self.shape_pairs_excluded = self._build_excluded_pairs(model)
                 self.shape_pairs_excluded_count = (
                     self.shape_pairs_excluded.shape[0] if self.shape_pairs_excluded is not None else 0
@@ -685,7 +722,7 @@ class CollisionPipeline:
                     raise ValueError("model.shape_world is required for broad_phase=SAP")
                 self.broad_phase = BroadPhaseSAP(shape_world, shape_flags=shape_flags, device=device)
                 self.shape_pairs_filtered = None
-                self.shape_pairs_max = _compute_per_world_shape_pairs_max(model)
+                self.shape_pairs_max = _resolve_shape_pairs_max(model, shape_pairs_max)
                 self.shape_pairs_excluded = self._build_excluded_pairs(model)
                 self.shape_pairs_excluded_count = (
                     self.shape_pairs_excluded.shape[0] if self.shape_pairs_excluded is not None else 0
@@ -724,6 +761,14 @@ class CollisionPipeline:
             # Initialize narrow phase with pre-allocated buffers
             # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
             # Pass write_contact as custom writer to write directly to final Contacts format
+            #
+            # contact_max is passed explicitly so NarrowPhase sizes its internal
+            # deterministic sort buffers to rigid_contact_max (the same capacity
+            # the Contacts buffer uses) rather than falling back to the default
+            # max_candidate_pairs.  On SAP/NXN scenes with thousands of shapes
+            # the candidate-pair bound (N*(N-1)/2 per world) is orders of
+            # magnitude larger than the neighbor-budget contact estimate and
+            # allocating sorter scratch at that size burns multi-GB of VRAM.
             self.narrow_phase = NarrowPhase(
                 max_candidate_pairs=self.shape_pairs_max,
                 max_triangle_pairs=max_triangle_pairs,
@@ -738,6 +783,7 @@ class CollisionPipeline:
                 has_heightfields=has_heightfields,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
                 deterministic=deterministic,
+                contact_max=rigid_contact_max,
                 verify_buffers=verify_buffers,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf

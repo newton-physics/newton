@@ -27,27 +27,37 @@ from ...linalg.conjugate import BatchedLinearOperator, CGSolver
 from ...linalg.factorize.llt_blocked_semi_sparse import SemiSparseBlockCholeskySolverBatched
 from ...linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ...linalg.sparse_operator import BlockSparseLinearOperators
+from ...utils.tile import get_block_dim, get_num_tiles, get_tile_size
+from ...utils.world_equivalence import DiscreteSignature, compute_equivalence_classes
 from .kernels import (
+    _add_regularizer_to_diagonal,
     _apply_line_search_step,
+    _correct_actuator_coords,
+    _eval_actuator_coords,
     _eval_body_velocities,
     _eval_fk_actuated_dofs_or_coords,
+    _eval_incremental_target_actuator_coords,
     _eval_linear_combination,
     _eval_position_control_transformations,
+    _eval_regularizer_gradient,
     _eval_rhs,
     _eval_stepped_state,
     _eval_target_constraint_velocities,
     _eval_unit_quaternion_constraints,
     _eval_unit_quaternion_constraints_jacobian,
     _eval_unit_quaternion_constraints_sparse_jacobian,
+    _initialize_jacobian_update_masks,
     _line_search_check,
     _newton_check,
     _reset_state,
     _reset_state_base_q,
     _update_cg_tolerance_kernel,
+    create_1d_tile_based_kernels,
+    create_2d_tile_based_kernels,
     create_eval_joint_constraints_jacobian_kernel,
     create_eval_joint_constraints_kernel,
     create_eval_joint_constraints_sparse_jacobian_kernel,
-    create_tile_based_kernels,
+    create_eval_min_num_iterations_kernel,
 )
 from .types import FKJointDoFType, ForwardKinematicsPreconditionerType, ForwardKinematicsStatus
 
@@ -148,6 +158,12 @@ class ForwardKinematicsSolver:
         if self.model is None:
             raise ValueError("ForwardKinematicsSolver: error, provided model is None.")
 
+        # Validate config
+        try:
+            self.config.validate()
+        except Exception as e:
+            raise RuntimeError("Solver configuration is invalid.") from e
+
         # Initialize device
         self.device = self.model.device
 
@@ -174,6 +190,10 @@ class ForwardKinematicsSolver:
         # Retrieve / compute dimensions - Actuated coordinates/dofs (main model)
         actuated_coord_offsets_prev = self.model.joints.actuated_coords_offset.numpy().copy()
         actuated_dof_offsets_prev = self.model.joints.actuated_dofs_offset.numpy().copy()
+
+        # Determine which worlds are equivalent for FK (at least discrete data)
+        classes = compute_fk_equivalence_classes(self.model)
+        num_classes = len(classes)
 
         # Create a copy of the model's joints with added joints as needed:
         # - actuated free joints to reset the base position/orientation
@@ -359,6 +379,14 @@ class ForwardKinematicsSolver:
             ([0], joints_num_actuated_coords.cumsum())
         )  # First actuated coordinate offset per joint, among all actuated coordinates
         self.num_actuated_coords = actuated_coord_offsets[-1]
+        world_num_actuated_coords = np.array(
+            [
+                joints_num_actuated_coords[first_joint_id[wd_id] : first_joint_id[wd_id + 1]].sum()
+                for wd_id in range(self.num_worlds)
+            ]
+        )
+        world_actuated_coord_offsets = np.concatenate(([0], world_num_actuated_coords.cumsum()))
+        self.num_actuated_coords_max = np.max(world_num_actuated_coords)
 
         # Retrieve / compute dimensions - Actuated dofs (FK model)
         joints_num_actuated_dofs = np.array(joints_num_actuated_dofs)  # Number of actuated dofs per joint
@@ -371,68 +399,133 @@ class ForwardKinematicsSolver:
         num_constraints = num_bodies.copy()  # Number of kinematic constraints per world (unit quat. + joints)
         has_universal_joints = False  # Whether the model has a least one passive universal joint
         constraint_full_to_red_map = np.full(6 * self.num_joints_tot, -1, dtype=np.int32)
-        for wd_id in range(self.num_worlds):
+        for eq_class in classes:
+            # Count constraints for first world in equivalence class
+            wd_id = eq_class[0]
             ct_count = num_constraints[wd_id]
-            for jt_id_loc in range(num_joints[wd_id]):
-                jt_id_tot = first_joint_id[wd_id] + jt_id_loc  # Joint id among all joints
-                act_type = joints_act_type[jt_id_tot]
+            for jt_id in range(first_joint_id[wd_id], first_joint_id[wd_id + 1]):
+                act_type = joints_act_type[jt_id]
                 if act_type != JointActuationType.PASSIVE:  # Actuator: select all six constraints
                     for i in range(6):
-                        constraint_full_to_red_map[6 * jt_id_tot + i] = ct_count + i
+                        constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
                     ct_count += 6
                 else:
-                    dof_type = joints_dof_type[jt_id_tot]
+                    dof_type = joints_dof_type[jt_id]
                     if dof_type == FKJointDoFType.AXIS:
-                        constraint_full_to_red_map[6 * jt_id_tot + 3] = ct_count
+                        constraint_full_to_red_map[6 * jt_id + 3] = ct_count
                         ct_count += 1
                     elif dof_type == FKJointDoFType.CARTESIAN:
                         for i in range(3):
-                            constraint_full_to_red_map[6 * jt_id_tot + 3 + i] = ct_count + i
+                            constraint_full_to_red_map[6 * jt_id + 3 + i] = ct_count + i
                         ct_count += 3
                     elif dof_type == FKJointDoFType.CYLINDRICAL:
-                        constraint_full_to_red_map[6 * jt_id_tot + 1] = ct_count
-                        constraint_full_to_red_map[6 * jt_id_tot + 2] = ct_count + 1
-                        constraint_full_to_red_map[6 * jt_id_tot + 4] = ct_count + 2
-                        constraint_full_to_red_map[6 * jt_id_tot + 5] = ct_count + 3
+                        constraint_full_to_red_map[6 * jt_id + 1] = ct_count
+                        constraint_full_to_red_map[6 * jt_id + 2] = ct_count + 1
+                        constraint_full_to_red_map[6 * jt_id + 4] = ct_count + 2
+                        constraint_full_to_red_map[6 * jt_id + 5] = ct_count + 3
                         ct_count += 4
                     elif dof_type == FKJointDoFType.FIXED:
                         for i in range(6):
-                            constraint_full_to_red_map[6 * jt_id_tot + i] = ct_count + i
+                            constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
                         ct_count += 6
                     elif dof_type == FKJointDoFType.FREE:
                         pass
                     elif dof_type == FKJointDoFType.PRISMATIC:
-                        constraint_full_to_red_map[6 * jt_id_tot + 1] = ct_count
-                        constraint_full_to_red_map[6 * jt_id_tot + 2] = ct_count + 1
+                        constraint_full_to_red_map[6 * jt_id + 1] = ct_count
+                        constraint_full_to_red_map[6 * jt_id + 2] = ct_count + 1
                         for i in range(3):
-                            constraint_full_to_red_map[6 * jt_id_tot + 3 + i] = ct_count + 2 + i
+                            constraint_full_to_red_map[6 * jt_id + 3 + i] = ct_count + 2 + i
                         ct_count += 5
                     elif dof_type == FKJointDoFType.REVOLUTE:
                         for i in range(3):
-                            constraint_full_to_red_map[6 * jt_id_tot + i] = ct_count + i
-                        constraint_full_to_red_map[6 * jt_id_tot + 4] = ct_count + 3
-                        constraint_full_to_red_map[6 * jt_id_tot + 5] = ct_count + 4
+                            constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
+                        constraint_full_to_red_map[6 * jt_id + 4] = ct_count + 3
+                        constraint_full_to_red_map[6 * jt_id + 5] = ct_count + 4
                         ct_count += 5
                     elif dof_type == FKJointDoFType.SPHERICAL:
                         for i in range(3):
-                            constraint_full_to_red_map[6 * jt_id_tot + i] = ct_count + i
+                            constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
                         ct_count += 3
                     elif dof_type == FKJointDoFType.UNIVERSAL:
                         for i in range(3):
-                            constraint_full_to_red_map[6 * jt_id_tot + i] = ct_count + i
-                        constraint_full_to_red_map[6 * jt_id_tot + 5] = ct_count + 3
+                            constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
+                        constraint_full_to_red_map[6 * jt_id + 5] = ct_count + 3
                         ct_count += 4
                         has_universal_joints = True
                     else:
                         raise RuntimeError("Unknown joint dof type")
             num_constraints[wd_id] = ct_count
+
+            # Copy constraints counts/map data for other worlds in equivalence class
+            for wd_id_1 in eq_class[1:]:
+                constraint_full_to_red_map[6 * first_joint_id[wd_id_1] : 6 * first_joint_id[wd_id_1 + 1]] = (
+                    constraint_full_to_red_map[6 * first_joint_id[wd_id] : 6 * first_joint_id[wd_id + 1]]
+                )
+                num_constraints[wd_id_1] = num_constraints[wd_id]
         self.num_constraints_max = np.max(num_constraints)
 
+        # Initialize maximal step size per iteration in actuated coordinates
+        if self.config.use_incremental_solve:
+            delta_q_max = np.zeros(self.num_actuated_coords, dtype=np.float32)
+            max_step_linear = self.config.max_linear_incremental_step
+            max_step_angular = self.config.max_angular_incremental_step
+            half_angle = 0.5 * min(max_step_angular, np.pi)
+            max_step_quat = max(np.sin(half_angle), 1.0 - np.cos(half_angle))
+            for eq_class in classes:
+                # Initialize delta_q_max for first world in equivalence class
+                wd_id = eq_class[0]
+                for jt_id in range(first_joint_id[wd_id], first_joint_id[wd_id + 1]):
+                    if joints_num_actuated_coords[jt_id] == 0:
+                        continue
+                    dof_type = joints_dof_type[jt_id]
+                    coord_id = actuated_coord_offsets[jt_id]
+                    if dof_type == FKJointDoFType.CARTESIAN:
+                        for i in range(3):
+                            delta_q_max[coord_id + i] = max_step_linear
+                    elif dof_type == FKJointDoFType.CYLINDRICAL:
+                        delta_q_max[coord_id] = max_step_linear
+                        delta_q_max[coord_id + 1] = max_step_angular
+                    elif dof_type == FKJointDoFType.FIXED:
+                        pass
+                    elif dof_type == FKJointDoFType.FREE:
+                        for i in range(3):
+                            delta_q_max[coord_id + i] = max_step_linear
+                        for i in range(4):
+                            delta_q_max[coord_id + 3 + i] = max_step_quat
+                    elif dof_type == FKJointDoFType.PRISMATIC:
+                        delta_q_max[coord_id] = max_step_linear
+                    elif dof_type == FKJointDoFType.REVOLUTE:
+                        delta_q_max[coord_id] = max_step_angular
+                    elif dof_type == FKJointDoFType.SPHERICAL:
+                        for i in range(4):
+                            delta_q_max[coord_id + i] = max_step_quat
+                    elif dof_type == FKJointDoFType.UNIVERSAL:
+                        delta_q_max[coord_id] = max_step_angular
+                        delta_q_max[coord_id + 1] = max_step_angular
+                    else:
+                        raise RuntimeError("Invalid joint dof type for an actuator")
+
+                # Copy delta_q_max for other worlds in equivalence class
+                for wd_id_1 in eq_class[1:]:
+                    delta_q_max[world_actuated_coord_offsets[wd_id_1] : world_actuated_coord_offsets[wd_id_1 + 1]] = (
+                        delta_q_max[world_actuated_coord_offsets[wd_id] : world_actuated_coord_offsets[wd_id + 1]]
+                    )
+
         # Retrieve / compute dimensions - Number of tiles (for kernels using Tile API)
-        self.num_tiles_constraints = (
-            self.num_constraints_max + self.config.TILE_SIZE_CTS - 1
-        ) // self.config.TILE_SIZE_CTS
-        self.num_tiles_states = (self.num_states_max + self.config.TILE_SIZE_VRS - 1) // self.config.TILE_SIZE_VRS
+        # For 1d reduction kernels, large tiles yield the best performance
+        self.tile_size_cts_1d = get_tile_size(self.num_constraints_max)
+        self.num_tiles_cts_1d = get_num_tiles(self.num_constraints_max, self.tile_size_cts_1d)
+        self.tile_size_vrs_1d = get_tile_size(self.num_states_max)
+        self.num_tiles_vrs_1d = get_num_tiles(self.num_states_max, self.tile_size_vrs_1d)
+        # For 2d matrix product kernels, smaller 16x16 tiles give the best tradeoff (also for using sparsity)
+        self.tile_size_cts_2d = 16
+        self.num_tiles_cts_2d = get_num_tiles(self.num_constraints_max, self.tile_size_cts_2d)
+        self.tile_size_vrs_2d = 16
+        self.num_tiles_vrs_2d = get_num_tiles(self.num_states_max, self.tile_size_vrs_2d)
+        # For optional 1d reduction kernel over actuated coordinates
+        if self.config.use_incremental_solve:
+            self.tile_size_coords = get_tile_size(self.num_actuated_coords_max)
+            self.num_tiles_coords = get_num_tiles(self.num_actuated_coords_max, self.tile_size_coords)
 
         # Data allocation or transfer from numpy to warp
         with wp.ScopedDevice(self.device):
@@ -442,6 +535,7 @@ class ForwardKinematicsSolver:
             self.first_joint_id = wp.from_numpy(first_joint_id, dtype=wp.int32)
             self.actuated_coord_offsets = wp.from_numpy(actuated_coord_offsets, dtype=wp.int32)
             self.actuated_coords_map = wp.from_numpy(np.array(actuated_coords_map), dtype=wp.int32)
+            self.world_actuated_coord_offsets = wp.from_numpy(world_actuated_coord_offsets, dtype=wp.int32)
             self.actuated_dof_offsets = wp.from_numpy(actuated_dof_offsets, dtype=wp.int32)
             self.actuated_dofs_map = wp.from_numpy(np.array(actuated_dofs_map), dtype=wp.int32)
             self.num_states = wp.from_numpy(num_states, dtype=wp.int32)
@@ -482,16 +576,38 @@ class ForwardKinematicsSolver:
             # Gauss-Newton
             self.max_newton_iterations = wp.array(dtype=wp.int32, shape=(1,))  # Max iterations
             self.max_newton_iterations.fill_(self.config.max_newton_iterations)
+            self.min_newton_iterations = wp.zeros(dtype=wp.int32, shape=(self.num_worlds,))  # Min iterations
             self.newton_iteration = wp.array(dtype=wp.int32, shape=(self.num_worlds,))  # Iteration count
             self.newton_loop_condition = wp.array(dtype=wp.int32, shape=(1,))  # Loop condition
             self.newton_success = wp.array(dtype=wp.int32, shape=(self.num_worlds,))  # Convergence per world
             self.newton_mask = wp.array(dtype=wp.int32, shape=(self.num_worlds,))  # Flag to keep iterating per world
+            if self.config.use_regularization and self.config.use_incremental_solve:
+                # Flags to keep track of in what worlds Jacobians should be updated before/after controls
+                self.jacobian_early_update_mask = wp.array(dtype=wp.int32, shape=(self.num_worlds,))
+                self.jacobian_late_update_mask = wp.array(dtype=wp.int32, shape=(self.num_worlds,))
+            else:
+                self.jacobian_early_update_mask = wp.array(dtype=wp.int32, shape=0)
+                self.jacobian_late_update_mask = wp.array(dtype=wp.int32, shape=0)
             self.tolerance = wp.array(dtype=wp.float32, shape=(1,))  # Tolerance on max constraint
             self.tolerance.fill_(self.config.tolerance)
-            self.actuators_q = wp.array(dtype=wp.float32, shape=(self.num_actuated_coords,))  # Actuated coordinates
+            self.actuators_q_next = wp.array(
+                dtype=wp.float32, shape=(self.num_actuated_coords,)
+            )  # Actuated coordinates (target)
+            if self.config.use_incremental_solve:
+                self.actuators_q_prev = wp.array(
+                    dtype=wp.float32, shape=(self.num_actuated_coords,)
+                )  # Actuated coordinates (previous)
+                self.actuators_q_curr = wp.array(
+                    dtype=wp.float32, shape=(self.num_actuated_coords,)
+                )  # Actuated coordinates (incremental target)
+                self.delta_q_max = wp.from_numpy(delta_q_max, dtype=wp.float32)  # Maximal step in actuated coordinates
             self.pos_control_transforms = wp.array(
                 dtype=wp.transformf, shape=(self.num_joints_tot,)
             )  # Position-control transformations at joints
+            if self.config.use_regularization:
+                self.bodies_q_ref = wp.array(
+                    dtype=wp.transformf, shape=(self.model.size.sum_of_num_bodies,)
+                )  # Reference for regularizer
             self.constraints = wp.zeros(
                 dtype=wp.float32,
                 shape=(
@@ -499,7 +615,6 @@ class ForwardKinematicsSolver:
                     self.num_constraints_max,
                 ),
             )  # Constraints vector per world
-            self.max_constraint = wp.array(dtype=wp.float32, shape=(self.num_worlds,))  # Maximal constraint per world
             self.jacobian = wp.zeros(
                 dtype=wp.float32, shape=(self.num_worlds, self.num_constraints_max, self.num_states_max)
             )  # Constraints Jacobian per world
@@ -510,6 +625,9 @@ class ForwardKinematicsSolver:
             self.grad = wp.zeros(
                 dtype=wp.float32, shape=(self.num_worlds, self.num_states_max)
             )  # Merit function gradient w.r.t. state per world
+            self.max_residual = wp.array(
+                dtype=wp.float32, shape=(self.num_worlds,)
+            )  # Maximal constraint or gradient per world
             self.rhs = wp.zeros(
                 dtype=wp.float32, shape=(self.num_worlds, self.num_states_max)
             )  # Gauss-Newton right-hand side per world (=-grad)
@@ -546,20 +664,26 @@ class ForwardKinematicsSolver:
         )
         (
             self._eval_pattern_T_pattern_kernel,
-            self._eval_max_constraint_kernel,
             self._eval_jacobian_T_jacobian_kernel,
             self._eval_jacobian_T_constraints_kernel,
+        ) = create_2d_tile_based_kernels(self.tile_size_cts_2d, self.tile_size_vrs_2d)
+        (
+            self._eval_max_residual_kernel,
             self._eval_merit_function_kernel,
+            self._eval_regularizer_kernel,
             self._eval_merit_function_gradient_kernel,
-        ) = create_tile_based_kernels(self.config.TILE_SIZE_CTS, self.config.TILE_SIZE_VRS)
+        ) = create_1d_tile_based_kernels(self.tile_size_cts_1d, self.tile_size_vrs_1d, self.config.use_regularization)
+        if self.config.use_incremental_solve:
+            self._eval_min_num_iterations_kernel = create_eval_min_num_iterations_kernel(self.tile_size_coords)
 
         # Compute sparsity pattern and initialize linear solver for dense (semi-sparse) case
         if not self.config.use_sparsity:
             # Jacobian sparsity pattern
-            sparsity_pattern = np.zeros((self.num_worlds, self.num_constraints_max, self.num_states_max), dtype=int)
-            for wd_id in range(self.num_worlds):
+            sparsity_pattern = np.zeros((num_classes, self.num_constraints_max, self.num_states_max), dtype=int)
+            for class_id in range(num_classes):
+                wd_id = classes[class_id][0]  # Compute sparsity pattern for first world in equivalence class
                 for rb_id_loc in range(num_bodies[wd_id]):
-                    sparsity_pattern[wd_id, rb_id_loc, 7 * rb_id_loc + 3 : 7 * rb_id_loc + 7] = 1
+                    sparsity_pattern[class_id, rb_id_loc, 7 * rb_id_loc + 3 : 7 * rb_id_loc + 7] = 1
                 for jt_id_loc in range(num_joints[wd_id]):
                     jt_id_tot = first_joint_id[wd_id] + jt_id_loc
                     base_id_tot = joints_bid_B[jt_id_tot]
@@ -571,24 +695,29 @@ class ForwardKinematicsSolver:
                         for i in range(3):
                             ct_offset = constraint_full_to_red_map[6 * jt_id_tot + i]  # ith translation constraint
                             if ct_offset >= 0:
-                                sparsity_pattern[wd_id, ct_offset, state_offset : state_offset + 7] = 1
+                                sparsity_pattern[class_id, ct_offset, state_offset : state_offset + 7] = 1
                             ct_offset = constraint_full_to_red_map[6 * jt_id_tot + 3 + i]  # ith rotation constraint
                             if ct_offset >= 0:
-                                sparsity_pattern[wd_id, ct_offset, state_offset + 3 : state_offset + 7] = 1
+                                sparsity_pattern[class_id, ct_offset, state_offset + 3 : state_offset + 7] = 1
 
             # Jacobian^T * Jacobian sparsity pattern
             sparsity_pattern_wp = wp.from_numpy(sparsity_pattern, dtype=wp.float32, device=self.device)
             sparsity_pattern_lhs_wp = wp.zeros(
-                dtype=wp.float32, shape=(self.num_worlds, self.num_states_max, self.num_states_max), device=self.device
+                dtype=wp.float32, shape=(num_classes, self.num_states_max, self.num_states_max), device=self.device
             )
             wp.launch_tiled(
                 self._eval_pattern_T_pattern_kernel,
-                dim=(self.num_worlds, self.num_tiles_states, self.num_tiles_states),
+                dim=(num_classes, self.num_tiles_vrs_2d, self.num_tiles_vrs_2d),
                 inputs=[sparsity_pattern_wp, sparsity_pattern_lhs_wp],
-                block_dim=64,
+                block_dim=32,
                 device=self.device,
             )
             sparsity_pattern_lhs = sparsity_pattern_lhs_wp.numpy().astype("int32")
+            if self.config.use_regularization:  # Account for diagonal perturbation in sparsity pattern
+                for class_id in range(num_classes):
+                    wd_id = classes[class_id][0]
+                    N = num_states[wd_id]
+                    np.fill_diagonal(sparsity_pattern_lhs[class_id, :N, :N], 1)
 
             # Initialize linear solver (semi-sparse LLT)
             self.linear_solver_llt = SemiSparseBlockCholeskySolverBatched(
@@ -598,7 +727,24 @@ class ForwardKinematicsSolver:
                 device=self.device,
                 enable_reordering=True,
             )
-            self.linear_solver_llt.capture_sparsity_pattern(sparsity_pattern_lhs, num_states)
+            num_states_per_class = np.array([num_states[eq_class[0]] for eq_class in classes])
+            self.linear_solver_llt.capture_sparsity_pattern(sparsity_pattern_lhs, num_states_per_class, classes)
+
+            # Compute tile-level Jacobian sparsity pattern, to skip zero tiles in tile-based matrix products
+            tile_sparsity_pattern_np = np.zeros(
+                (self.num_worlds, self.num_tiles_cts_2d, self.num_tiles_vrs_2d), dtype=np.int32
+            )
+            for class_id, eq_class in enumerate(classes):
+                pattern = np.zeros((self.num_tiles_cts_2d, self.num_tiles_vrs_2d), dtype=np.int32)
+                for i in range(self.num_constraints_max):
+                    for j in range(self.num_states_max):
+                        if sparsity_pattern[class_id, i, j] != 0:
+                            tile_row = i // self.tile_size_cts_2d
+                            tile_col = j // self.tile_size_vrs_2d
+                            pattern[tile_row, tile_col] = 1
+                for wd_id in eq_class:
+                    tile_sparsity_pattern_np[wd_id] = pattern
+            self.tile_sparsity_pattern = wp.from_numpy(tile_sparsity_pattern_np, dtype=wp.int32, device=self.device)
 
         # Compute sparsity pattern and initialize linear solver for sparse case
         if self.config.use_sparsity:
@@ -724,6 +870,9 @@ class ForwardKinematicsSolver:
             def _cg_gemv_flat(x, y, world_active, alpha, beta):
                 self._eval_lhs_gemv(x.reshape((n_wd, n_st)), y.reshape((n_wd, n_st)), world_active, alpha, beta)
 
+            def _cg_matvec_flat(x, y, world_active):
+                self._eval_lhs_matvec(x.reshape((n_wd, n_st)), y.reshape((n_wd, n_st)), world_active)
+
             cg_op = BatchedLinearOperator(
                 n_worlds=self.num_worlds,
                 max_dim=self.num_states_max,
@@ -731,6 +880,7 @@ class ForwardKinematicsSolver:
                 dtype=wp.float32,
                 device=self.device,
                 gemv_fn=_cg_gemv_flat,
+                matvec_fn=_cg_matvec_flat,
                 vio=cg_vio,
                 total_vec_size=cg_total_vec_size,
             )
@@ -795,8 +945,10 @@ class ForwardKinematicsSolver:
             inputs=[
                 self.base_joint_id,
                 base_q,
+                self.joints_bid_F,
                 self.joints_X_j,
                 self.joints_B_r_Bj,
+                self.joints_F_r_Fj,
                 self.model.info.num_bodies,
                 self.first_body_id,
                 self.model.bodies.q_i_0,
@@ -806,31 +958,128 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
-    def _eval_position_control_transformations(
+    def _initialize_incremental_solve(self, bodies_q: wp.array[wp.transformf]):
+        """
+        Internal function running all necessary precomputations for the incremental solve.
+        Assumes without check that data related to incremental solve is allocated.
+        """
+        # Extract current actuator coordinates
+        wp.launch(
+            _eval_actuator_coords,
+            dim=(self.num_worlds, self.num_joints_max),
+            inputs=[
+                self.num_joints,
+                self.first_joint_id,
+                self.joints_dof_type,
+                self.joints_bid_B,
+                self.joints_bid_F,
+                self.joints_X_j,
+                self.joints_B_r_Bj,
+                self.joints_F_r_Fj,
+                bodies_q,
+                self.actuated_coord_offsets,
+                self.actuators_q_prev,
+            ],
+            device=self.device,
+        )
+        # Correct target actuator coordinates w.r.t. current
+        wp.launch(
+            _correct_actuator_coords,
+            dim=(self.num_joints_tot,),
+            inputs=[
+                self.actuated_coord_offsets,
+                self.joints_dof_type,
+                self.actuators_q_prev,
+                self.actuators_q_next,
+            ],
+            device=self.device,
+        )
+        # Compute necessary number of Newton steps, before the incremental target matches the true target
+        self.min_newton_iterations.zero_()
+        wp.launch_tiled(
+            self._eval_min_num_iterations_kernel,
+            dim=(self.num_worlds, self.num_tiles_coords),
+            block_dim=get_block_dim(self.tile_size_coords),
+            inputs=[
+                self.world_actuated_coord_offsets,
+                self.actuators_q_prev,
+                self.actuators_q_next,
+                self.delta_q_max,
+                self.min_newton_iterations,
+            ],
+            device=self.device,
+        )
+
+        # Initialize Jacobian update masks
+        if self.config.use_regularization:
+            wp.launch(
+                _initialize_jacobian_update_masks,
+                dim=(self.num_worlds,),
+                inputs=[
+                    self.newton_mask,
+                    self.min_newton_iterations,
+                    self.jacobian_early_update_mask,
+                    self.jacobian_late_update_mask,
+                ],
+                device=self.device,
+            )
+
+    def _eval_target_actuators_q(
         self,
-        base_q: wp.array[wp.transformf],
-        actuators_q: wp.array[wp.float32],
-        pos_control_transforms: wp.array[wp.transformf],
+        base_q_model: wp.array[wp.transformf],
+        actuators_q_model: wp.array[wp.float32],
+        actuators_q_next: wp.array[wp.float32],
     ):
         """
-        Internal evaluator for position control transformations, from actuated & base coordinates of the main model.
+        Internal evaluator, converting actuator and base coordinates of the main model, to actuator
+        coordinates of the FK model.
         """
-        # Compute actuators_q of fk model with modified joints
         wp.launch(
             _eval_fk_actuated_dofs_or_coords,
             dim=(self.num_actuated_coords,),
             inputs=[
                 wp.array(
-                    ptr=base_q.ptr, dtype=wp.float32, shape=(7 * self.num_worlds,), device=self.device, copy=False
+                    ptr=base_q_model.ptr, dtype=wp.float32, shape=(7 * self.num_worlds,), device=self.device, copy=False
                 ),
-                actuators_q,
+                actuators_q_model,
                 self.actuated_coords_map,
-                self.actuators_q,
+                actuators_q_next,
             ],
             device=self.device,
         )
 
-        # Compute position control transformations
+    def _update_incremental_target_actuators_q(
+        self,
+        iteration: wp.array[wp.int32],
+        world_mask: wp.array[wp.int32],
+    ):
+        """
+        Internal evaluator, updating the incremental target for actuator coordinates by interpolating
+        between previous and next actuator coordinates, based on the current Newton iteration.
+        """
+        wp.launch(
+            _eval_incremental_target_actuator_coords,
+            dim=(self.num_worlds, self.num_actuated_coords_max),
+            inputs=[
+                self.world_actuated_coord_offsets,
+                self.actuators_q_prev,
+                self.actuators_q_next,
+                self.delta_q_max,
+                iteration,
+                world_mask,
+                self.actuators_q_curr,
+            ],
+            device=self.device,
+        )
+
+    def _eval_position_control_transformations(
+        self,
+        actuators_q: wp.array[wp.float32],
+        pos_control_transforms: wp.array[wp.transformf],
+    ):
+        """
+        Internal evaluator for position control transformations, from actuated coordinates of the FK model.
+        """
         wp.launch(
             _eval_position_control_transformations,
             dim=(self.num_joints_tot,),
@@ -839,7 +1088,8 @@ class ForwardKinematicsSolver:
                 self.joints_act_type,
                 self.actuated_coord_offsets,
                 self.joints_X_j,
-                self.actuators_q,
+                actuators_q,
+                self.config.use_incremental_solve,  # Incremental solve may result in non-unit quaternions
                 pos_control_transforms,
             ],
             device=self.device,
@@ -886,18 +1136,36 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
-    def _eval_max_constraint(self, constraints: wp.array2d[wp.float32], max_constraint: wp.array[wp.float32]):
+    def _eval_max_residual(
+        self,
+        constraints: wp.array2d[wp.float32],
+        gradient: wp.array2d[wp.float32],
+        max_residual: wp.array[wp.float32],
+    ):
         """
-        Internal evaluator for the maximal absolute constraint, from the constraints vector, in each world
+        Internal evaluator for the maximal absolute residual in each world, from either the constraints
+        vector (by default) or the gradient vector (if regularization is enabled).
+
+        Indeed, if a regularizer is added to the constraints squared norm objective, we cannot expect
+        Gauss-Newton to converge to zero constraints anymore.
         """
-        max_constraint.zero_()
-        wp.launch_tiled(
-            self._eval_max_constraint_kernel,
-            dim=(self.num_worlds, self.num_tiles_constraints),
-            inputs=[constraints, max_constraint],
-            block_dim=64,
-            device=self.device,
-        )
+        max_residual.zero_()
+        if self.config.use_regularization:
+            wp.launch_tiled(
+                self._eval_max_residual_kernel,
+                dim=(self.num_worlds, self.num_tiles_vrs_1d),
+                inputs=[gradient, max_residual],
+                block_dim=get_block_dim(self.tile_size_vrs_1d),
+                device=self.device,
+            )
+        else:
+            wp.launch_tiled(
+                self._eval_max_residual_kernel,
+                dim=(self.num_worlds, self.num_tiles_cts_1d),
+                inputs=[constraints, max_residual],
+                block_dim=get_block_dim(self.tile_size_cts_1d),
+                device=self.device,
+            )
 
     def _eval_kinematic_constraints_jacobian(
         self,
@@ -954,7 +1222,7 @@ class ForwardKinematicsSolver:
         and position-control transformations
         """
 
-        self.sparse_jacobian.zero()
+        self.sparse_jacobian.zero(world_mask)
 
         # Evaluate unit norm quaternion constraints Jacobian
         wp.launch(
@@ -996,6 +1264,94 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
+    def _update_jacobian(
+        self,
+        bodies_q: wp.array[wp.transformf],
+        pos_control_transforms: wp.array[wp.transformf],
+        world_mask: wp.array[wp.int32],
+    ):
+        """
+        Convenience function updating the constraints Jacobian, given body poses and position-control
+        transforms
+        Solver configuration (sparsity, regularization) are taken into account.
+        """
+        if self.config.use_sparsity:
+            self._assemble_sparse_jacobian(bodies_q, pos_control_transforms, world_mask)
+        else:
+            self._eval_kinematic_constraints_jacobian(bodies_q, pos_control_transforms, world_mask, self.jacobian)
+
+    def _update_lhs(
+        self,
+        world_mask: wp.array[wp.int32],
+    ):
+        """
+        Convenience function updating the system left-hand side (J^T * J + regularization, optionally),
+        using the lastly assembled Jacobian
+        Solver configuration (sparsity, regularization) are taken into account.
+        """
+        if self.config.use_sparsity:
+            return  # No lhs to assemble for the sparse case (represented implicitly as an operator)
+
+        wp.launch_tiled(
+            self._eval_jacobian_T_jacobian_kernel,
+            dim=(self.num_worlds, self.num_tiles_vrs_2d, self.num_tiles_vrs_2d),
+            inputs=[self.jacobian, self.tile_sparsity_pattern, world_mask, self.lhs],
+            block_dim=32,
+            device=self.device,
+        )
+        if self.config.use_regularization:
+            wp.launch(
+                _add_regularizer_to_diagonal,
+                dim=(self.num_worlds, self.num_states_max),
+                inputs=[self.config.regularization_weight, self.num_states, world_mask, self.lhs],
+                device=self.device,
+            )
+
+    def _update_gradient(
+        self,
+        bodies_q: wp.array[wp.transformf],
+        world_mask: wp.array[wp.int32],
+    ):
+        """
+        Convenience function updating the objective gradient (J^T * constraints + regularization, optionally),
+        given body poses and using the lastly assembled Jacobian and constraints.
+        Solver configuration (sparsity, regularization) are taken into account.
+        """
+        if self.config.use_sparsity:
+            self.sparse_jacobian_op.matvec_transpose(self.constraints, self.grad, world_mask)
+        else:
+            wp.launch_tiled(
+                self._eval_jacobian_T_constraints_kernel,
+                dim=(self.num_worlds, self.num_tiles_vrs_2d),
+                inputs=[self.jacobian, self.constraints, self.tile_sparsity_pattern, world_mask, self.grad],
+                block_dim=32,
+                device=self.device,
+            )
+
+        if self.config.use_regularization:
+            wp.launch(
+                _eval_regularizer_gradient,
+                dim=(self.num_worlds, self.num_states_max),
+                inputs=[
+                    self.model.info.num_bodies,
+                    self.first_body_id,
+                    self.config.regularization_weight,
+                    wp.array(
+                        ptr=bodies_q.ptr, dtype=wp.float32, shape=(self.num_states_tot,), device=self.device, copy=False
+                    ),
+                    wp.array(
+                        ptr=self.bodies_q_ref.ptr,
+                        dtype=wp.float32,
+                        shape=(self.num_states_tot,),
+                        device=self.device,
+                        copy=False,
+                    ),
+                    world_mask,
+                    self.grad,
+                ],
+                device=self.device,
+            )
+
     def _eval_lhs_gemv(
         self,
         x: wp.array2d[wp.float32],
@@ -1005,10 +1361,26 @@ class ForwardKinematicsSolver:
         beta: wp.float32,
     ):
         """
-        Internal evaluator for y = alpha * J^T * J * x + beta * y, using the assembled sparse Jacobian J
+        Internal evaluator for y = alpha * lhs * x + beta * y, using the assembled sparse Jacobian J,
+        and with lhs = J^T * J (plus optionally the regularizer Hessian reg_weight * I)
         """
         self.sparse_jacobian_op.matvec(x, self.jacobian_times_vector, world_mask)
         self.sparse_jacobian_op.matvec_transpose(self.jacobian_times_vector, self.lhs_times_vector, world_mask)
+        if self.config.use_regularization:
+            wp.launch(
+                _eval_linear_combination,
+                dim=(self.num_worlds, self.num_states_max),
+                inputs=[
+                    1.0,
+                    self.lhs_times_vector,
+                    self.config.regularization_weight,
+                    x,
+                    self.num_constraints,
+                    world_mask,
+                    self.lhs_times_vector,
+                ],
+                device=self.device,
+            )
         wp.launch(
             _eval_linear_combination,
             dim=(self.num_worlds, self.num_states_max),
@@ -1016,19 +1388,75 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
-    def _eval_merit_function(self, constraints: wp.array2d[wp.float32], error: wp.array[wp.float32]):
+    def _eval_lhs_matvec(
+        self,
+        x: wp.array2d[wp.float32],
+        y: wp.array2d[wp.float32],
+        world_mask: wp.array[wp.int32],
+    ):
         """
-        Internal evaluator for the line search merit function, i.e. the least-squares error 1/2 * ||C||^2,
+        Internal evaluator for y = lhs * x, using the assembled sparse Jacobian J,
+        and with lhs = J^T * J (plus optionally the regularizer Hessian reg_weight * I)
+        """
+        self.sparse_jacobian_op.matvec(x, self.jacobian_times_vector, world_mask)
+        self.sparse_jacobian_op.matvec_transpose(self.jacobian_times_vector, y, world_mask)
+        if self.config.use_regularization:
+            wp.launch(
+                _eval_linear_combination,
+                dim=(self.num_worlds, self.num_states_max),
+                inputs=[
+                    1.0,
+                    y,
+                    self.config.regularization_weight,
+                    x,
+                    self.num_constraints,
+                    world_mask,
+                    y,
+                ],
+                device=self.device,
+            )
+
+    def _eval_merit_function(
+        self,
+        constraints: wp.array2d[wp.float32],
+        merit_function: wp.array[wp.float32],
+        bodies_q: wp.array[wp.transformf] | None = None,
+    ):
+        """
+        Internal evaluator for the line search merit function, i.e. the least-squares error
+        1/2 * ||C||^2, plus optionally the regularizer 1/2 * reg_weight * ||s - s_ref||^2,
         from the constraints vector C, in each world
         """
-        error.zero_()
+        merit_function.zero_()
         wp.launch_tiled(
             self._eval_merit_function_kernel,
-            dim=(self.num_worlds, self.num_tiles_constraints),
-            inputs=[constraints, error],
-            block_dim=64,
+            dim=(self.num_worlds, self.num_tiles_cts_1d),
+            inputs=[constraints, merit_function],
+            block_dim=get_block_dim(self.tile_size_cts_1d),
             device=self.device,
         )
+        if self.config.use_regularization and bodies_q is not None:
+            wp.launch_tiled(
+                self._eval_regularizer_kernel,
+                dim=(self.num_worlds, self.num_tiles_vrs_1d),
+                inputs=[
+                    self.first_body_id,
+                    self.config.regularization_weight,
+                    wp.array(
+                        ptr=bodies_q.ptr, dtype=wp.float32, shape=(self.num_states_tot,), device=self.device, copy=False
+                    ),
+                    wp.array(
+                        ptr=self.bodies_q_ref.ptr,
+                        dtype=wp.float32,
+                        shape=(self.num_states_tot,),
+                        device=self.device,
+                        copy=False,
+                    ),
+                    merit_function,
+                ],
+                block_dim=get_block_dim(self.tile_size_vrs_1d),
+                device=self.device,
+            )
 
     def _eval_merit_function_gradient(
         self,
@@ -1038,14 +1466,15 @@ class ForwardKinematicsSolver:
     ):
         """
         Internal evaluator for the merit function gradient w.r.t. line search step size, from the step direction
-        and the gradient in state space (= dC_ds^T * C). This is simply the dot product between these two vectors.
+        and the gradient in state space (= dC_ds^T * C, plus optionally reg_weight * (s - s_ref)).
+        This is simply the dot product between these two vectors.
         """
         error_grad.zero_()
         wp.launch_tiled(
             self._eval_merit_function_gradient_kernel,
-            dim=(self.num_worlds, self.num_tiles_states),
+            dim=(self.num_worlds, self.num_tiles_vrs_1d),
             inputs=[step, grad, error_grad],
-            block_dim=64,
+            block_dim=get_block_dim(self.tile_size_vrs_1d),
             device=self.device,
         )
 
@@ -1081,7 +1510,7 @@ class ForwardKinematicsSolver:
         self._eval_kinematic_constraints(
             self.bodies_q_alpha, self.pos_control_transforms, self.line_search_mask, self.constraints
         )
-        self._eval_merit_function(self.constraints, self.val_alpha)
+        self._eval_merit_function(self.constraints, self.val_alpha, self.bodies_q_alpha)
 
         # Check decrease and update step
         self.line_search_loop_condition.zero_()
@@ -1108,7 +1537,7 @@ class ForwardKinematicsSolver:
         world_mask: wp.array[wp.int32],
     ):
         """
-        Internal function heuristically adapting the CG tolerance based on the current constraint residual
+        Internal function heuristically adapting the CG tolerance based on the current constraint/gradient residual
         (starting with a loose tolerance, and tightening it as we converge)
         Note: needs to be refined, until then we are still using a fixed tolerance
         """
@@ -1124,32 +1553,24 @@ class ForwardKinematicsSolver:
         Internal function running one iteration of Gauss-Newton. Assumes the constraints vector to be already
         up-to-date (because we will already have checked convergence before the first loop iteration)
         """
-        # Evaluate constraints Jacobian
-        if self.config.use_sparsity:
-            self._assemble_sparse_jacobian(bodies_q, self.pos_control_transforms, self.newton_mask)
-        else:
-            self._eval_kinematic_constraints_jacobian(
-                bodies_q, self.pos_control_transforms, self.newton_mask, self.jacobian
-            )
+        # Update actuators_q and kinematic constraints, for incremental solve
+        if self.config.use_incremental_solve:
+            self._update_incremental_target_actuators_q(self.newton_iteration, self.newton_mask)
+            self._eval_position_control_transformations(self.actuators_q_curr, self.pos_control_transforms)
+            self._eval_kinematic_constraints(bodies_q, self.pos_control_transforms, self.newton_mask, self.constraints)
+
+        # Evaluate constraints Jacobian if needed
+        if not self.config.use_regularization:
+            self._update_jacobian(bodies_q, self.pos_control_transforms, self.newton_mask)
+        elif self.config.use_incremental_solve:
+            self._update_jacobian(bodies_q, self.pos_control_transforms, self.jacobian_late_update_mask)
 
         # Evaluate Gauss-Newton left-hand side (J^T * J) if needed, and right-hand side (-J^T * C)
-        if self.config.use_sparsity:
-            self.sparse_jacobian_op.matvec_transpose(self.constraints, self.grad, self.newton_mask)
-        else:
-            wp.launch_tiled(
-                self._eval_jacobian_T_jacobian_kernel,
-                dim=(self.num_worlds, self.num_tiles_states, self.num_tiles_states),
-                inputs=[self.jacobian, self.newton_mask, self.lhs],
-                block_dim=64,
-                device=self.device,
-            )
-            wp.launch_tiled(
-                self._eval_jacobian_T_constraints_kernel,
-                dim=(self.num_worlds, self.num_tiles_states),
-                inputs=[self.jacobian, self.constraints, self.newton_mask, self.grad],
-                block_dim=64,
-                device=self.device,
-            )
+        self._update_lhs(self.newton_mask)
+        if not self.config.use_regularization:
+            self._update_gradient(bodies_q, self.newton_mask)
+        elif self.config.use_incremental_solve:
+            self._update_gradient(bodies_q, self.jacobian_late_update_mask)
         wp.launch(
             _eval_rhs,
             dim=(self.num_worlds, self.num_states_max),
@@ -1159,15 +1580,19 @@ class ForwardKinematicsSolver:
 
         # Compute step (system solve)
         if self.config.use_sparsity:
+            offset = self.config.regularization_weight if self.config.use_regularization else 0.0
             if self._preconditioner_type == ForwardKinematicsSolver.PreconditionerType.JACOBI_DIAGONAL:
-                block_sparse_ATA_inv_diagonal_2d(self.sparse_jacobian, self.jacobian_diag_inv, self.newton_mask)
+                block_sparse_ATA_inv_diagonal_2d(
+                    self.sparse_jacobian, self.jacobian_diag_inv, self.newton_mask, diag_offset=offset
+                )
             elif self._preconditioner_type == ForwardKinematicsSolver.PreconditionerType.JACOBI_BLOCK_DIAGONAL:
                 block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
-                    self.sparse_jacobian, self.inv_blocks_3, self.inv_blocks_4, self.newton_mask
+                    self.sparse_jacobian, self.inv_blocks_3, self.inv_blocks_4, self.newton_mask, diag_offset=offset
                 )
+
             self.step.zero_()
             if self.config.use_adaptive_cg_tolerance:
-                self._update_cg_tolerance(self.max_constraint, self.newton_mask)
+                self._update_cg_tolerance(self.max_residual, self.newton_mask)
             else:
                 self.cg_atol.fill_(1e-8)
                 self.cg_rtol.fill_(1e-8)
@@ -1187,7 +1612,7 @@ class ForwardKinematicsSolver:
         self.line_search_success.zero_()
         wp.copy(self.line_search_mask, self.newton_mask)
         self.line_search_loop_condition.fill_(1)
-        self._eval_merit_function(self.constraints, self.val_0)
+        self._eval_merit_function(self.constraints, self.val_0, bodies_q)
         self._eval_merit_function_gradient(self.step, self.grad, self.grad_0)
         self.alpha.fill_(1.0)
         wp.capture_while(self.line_search_loop_condition, lambda: self._run_line_search_iteration(bodies_q))
@@ -1205,7 +1630,11 @@ class ForwardKinematicsSolver:
             ],
             device=self.device,
         )
-        self._eval_max_constraint(self.constraints, self.max_constraint)
+        if self.config.use_regularization:
+            mask = self.jacobian_early_update_mask if self.config.use_incremental_solve else self.newton_mask
+            self._update_jacobian(bodies_q, self.pos_control_transforms, mask)
+            self._update_gradient(bodies_q, mask)
+        self._eval_max_residual(self.constraints, self.grad, self.max_residual)
 
         # Check convergence
         self.newton_loop_condition.zero_()
@@ -1213,14 +1642,17 @@ class ForwardKinematicsSolver:
             _newton_check,
             dim=(self.num_worlds,),
             inputs=[
-                self.max_constraint,
+                self.max_residual,
                 self.tolerance,
                 self.newton_iteration,
+                self.min_newton_iterations,
                 self.max_newton_iterations,
                 self.line_search_success,
                 self.newton_success,
                 self.newton_mask,
                 self.newton_loop_condition,
+                self.jacobian_early_update_mask,
+                self.jacobian_late_update_mask,
             ],
             device=self.device,
         )
@@ -1276,37 +1708,32 @@ class ForwardKinematicsSolver:
         )
 
         # Update constraints Jacobian
-        if self.config.use_sparsity:
-            self._assemble_sparse_jacobian(bodies_q, pos_control_transforms, world_mask)
-        else:
-            self._eval_kinematic_constraints_jacobian(bodies_q, pos_control_transforms, world_mask, self.jacobian)
+        self._update_jacobian(bodies_q, pos_control_transforms, world_mask)
 
-        # Evaluate system left-hand side (J^T * J) if needed, and right-hand side (J^T * targets_cts_u)
+        # Evaluate system left-hand side (for the dense solver) and right-hand side
+        # These are J^T * J (+ regularizer Hessian), and J^T * targets_cts_u
+        self._update_lhs(world_mask)
         if self.config.use_sparsity:
             self.sparse_jacobian_op.matvec_transpose(self.target_cts_u, self.rhs, world_mask)
         else:
             wp.launch_tiled(
-                self._eval_jacobian_T_jacobian_kernel,
-                dim=(self.num_worlds, self.num_tiles_states, self.num_tiles_states),
-                inputs=[self.jacobian, world_mask, self.lhs],
-                block_dim=64,
-                device=self.device,
-            )
-            wp.launch_tiled(
                 self._eval_jacobian_T_constraints_kernel,
-                dim=(self.num_worlds, self.num_tiles_states),
-                inputs=[self.jacobian, self.target_cts_u, world_mask, self.rhs],
-                block_dim=64,
+                dim=(self.num_worlds, self.num_tiles_vrs_2d),
+                inputs=[self.jacobian, self.target_cts_u, self.tile_sparsity_pattern, world_mask, self.rhs],
+                block_dim=32,
                 device=self.device,
             )
 
         # Compute body velocities (system solve)
         if self.config.use_sparsity:
+            offset = self.config.regularization_weight if self.config.use_regularization else 0.0
             if self._preconditioner_type == ForwardKinematicsSolver.PreconditionerType.JACOBI_DIAGONAL:
-                block_sparse_ATA_inv_diagonal_2d(self.sparse_jacobian, self.jacobian_diag_inv, world_mask)
+                block_sparse_ATA_inv_diagonal_2d(
+                    self.sparse_jacobian, self.jacobian_diag_inv, world_mask, diag_offset=offset
+                )
             elif self._preconditioner_type == ForwardKinematicsSolver.PreconditionerType.JACOBI_BLOCK_DIAGONAL:
                 block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
-                    self.sparse_jacobian, self.inv_blocks_3, self.inv_blocks_4, world_mask
+                    self.sparse_jacobian, self.inv_blocks_3, self.inv_blocks_4, world_mask, diag_offset=offset
                 )
             self.bodies_q_dot.zero_()
             self.cg_atol.fill_(1e-8)
@@ -1346,8 +1773,14 @@ class ForwardKinematicsSolver:
         if base_q is None:
             base_q = self.base_q_default
 
+        # Convert base_q, actuators_q from the main model to actuators_q for the FK model
+        actuators_q_fk = wp.array(dtype=wp.float32, shape=(self.num_actuated_coords,), device=self.device)
+        self._eval_target_actuators_q(base_q, actuators_q, actuators_q_fk)
+
+        # Evaluate position-control transformations
         pos_control_transforms = wp.array(dtype=wp.transformf, shape=(self.num_joints_tot,), device=self.device)
-        self._eval_position_control_transformations(base_q, actuators_q, pos_control_transforms)
+        self._eval_position_control_transformations(actuators_q_fk, pos_control_transforms)
+
         return pos_control_transforms
 
     def eval_kinematic_constraints(
@@ -1514,22 +1947,14 @@ class ForwardKinematicsSolver:
                 "run_fk_solve: actuators_u must be provided to solve for velocities (i.e. if bodies_u is provided)."
             )
 
-        # Use default base state if not provided
-        if base_q is None:
-            base_q = self.base_q_default
-        if bodies_u is not None and base_u is None:
-            base_u = self.base_u_default
-
-        # Compute position control transforms (independent of body poses, depends on controls only)
-        self._eval_position_control_transformations(base_q, actuators_q, self.pos_control_transforms)
-
         # Reset iteration count and success/continuation flags
-        self.newton_iteration.fill_(-1)  # The initial loop condition check will increment this to zero
+        self.newton_iteration.fill_(-1)  # The initial Newton convergence check will increment this to zero
         self.newton_success.zero_()
         if world_mask is not None:
             self.newton_mask.assign(world_mask)
         else:
             self.newton_mask.fill_(1)
+        self.min_newton_iterations.fill_(-1)  # To disregard min iterations in initial Newton check
 
         # Optionally reset state
         if self.config.reset_state:
@@ -1538,26 +1963,50 @@ class ForwardKinematicsSolver:
             else:
                 self._reset_state_base_q(bodies_q, base_q, self.newton_mask)
 
+        # Optionally initialize the reference pose for the regularizer
+        if self.config.use_regularization:
+            wp.copy(self.bodies_q_ref, bodies_q)
+
+        # Use default base state if not provided
+        if base_q is None:
+            base_q = self.base_q_default
+        if bodies_u is not None and base_u is None:
+            base_u = self.base_u_default
+
+        # Compute target actuator coordinates and corresponding transforms
+        self._eval_target_actuators_q(base_q, actuators_q, self.actuators_q_next)
+        self._eval_position_control_transformations(self.actuators_q_next, self.pos_control_transforms)
+
         # Evaluate constraints, and initialize loop condition (might not even need to loop)
         self._eval_kinematic_constraints(bodies_q, self.pos_control_transforms, self.newton_mask, self.constraints)
-        self._eval_max_constraint(self.constraints, self.max_constraint)
+        if self.config.use_regularization:  # Update Jacobian and gradient for stopping criterion
+            self._update_jacobian(bodies_q, self.pos_control_transforms, self.newton_mask)
+            self._update_gradient(bodies_q, self.newton_mask)
+        self._eval_max_residual(self.constraints, self.grad, self.max_residual)
         self.newton_loop_condition.zero_()
-        wp.copy(self.line_search_success, self.newton_mask)  # Newton check will abort in case of line search failure
+        wp.copy(self.line_search_success, self.newton_mask)  # To disregard line search success in initial Newton check
         wp.launch(
             _newton_check,
             dim=(self.num_worlds,),
             inputs=[
-                self.max_constraint,
+                self.max_residual,
                 self.tolerance,
                 self.newton_iteration,
+                self.min_newton_iterations,
                 self.max_newton_iterations,
                 self.line_search_success,
                 self.newton_success,
                 self.newton_mask,
                 self.newton_loop_condition,
+                self.jacobian_early_update_mask,
+                self.jacobian_late_update_mask,
             ],
             device=self.device,
         )
+
+        # Initialize incremental solve
+        if self.config.use_incremental_solve:
+            wp.capture_if(self.newton_loop_condition, lambda: self._initialize_incremental_solve(bodies_q))
 
         # Main loop
         wp.capture_while(self.newton_loop_condition, lambda: self._run_newton_iteration(bodies_q))
@@ -1651,15 +2100,73 @@ class ForwardKinematicsSolver:
         if verbose or return_status:
             success = self.newton_success.numpy().copy()
             iterations = self.newton_iteration.numpy().copy()
-            max_constraints = self.max_constraint.numpy().copy()
+            max_residual = self.max_residual.numpy().copy()
             num_active_worlds = self.num_worlds if world_mask is None else world_mask.numpy().sum()
             if verbose:
                 sys.__stdout__.write(f"Newton success for {success.sum()}/{num_active_worlds} worlds; ")
                 sys.__stdout__.write(f"num iterations={iterations.max()}; ")
-                sys.__stdout__.write(f"max constraint={max_constraints.max()}\n")
+                sys.__stdout__.write(f"max residual={max_residual.max()}\n")
 
         # Return solver status
         if return_status:
-            return ForwardKinematicsSolver.Status(
-                iterations=iterations, max_constraints=max_constraints, success=success
-            )
+            return ForwardKinematicsSolver.Status(iterations=iterations, max_residual=max_residual, success=success)
+
+
+###
+# Functions
+###
+
+
+def compute_fk_equivalence_classes(model: ModelKamino) -> list[list[int]]:
+    """Groups world that are equivalent for FK discrete information"""
+    sig_num_bodies = DiscreteSignature(num_worlds=model.size.num_worlds, data=model.info.num_bodies)
+    sig_joint_act_type = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.joints.act_type,
+        world_offset=model.info.joints_offset,
+        world_size=model.info.num_joints,
+    )
+    sig_joint_dof_type = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.joints.dof_type,
+        world_offset=model.info.joints_offset,
+        world_size=model.info.num_joints,
+    )
+    sig_joint_bid_B = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.joints.bid_B,
+        world_offset=model.info.joints_offset,
+        world_size=model.info.num_joints,
+        world_delta=model.info.bodies_offset,
+        ignore_negative=True,
+    )
+    sig_joint_bid_F = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.joints.bid_F,
+        world_offset=model.info.joints_offset,
+        world_size=model.info.num_joints,
+        world_delta=model.info.bodies_offset,
+    )
+    sig_base_body = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.info.base_body_index,
+        world_delta=model.info.bodies_offset,
+        ignore_negative=True,
+    )
+    sig_base_joint = DiscreteSignature(
+        num_worlds=model.size.num_worlds,
+        data=model.info.base_joint_index,
+        world_delta=model.info.joints_offset,
+        ignore_negative=True,
+    )
+    return compute_equivalence_classes(
+        [
+            sig_num_bodies,
+            sig_joint_act_type,
+            sig_joint_dof_type,
+            sig_joint_bid_B,
+            sig_joint_bid_F,
+            sig_base_body,
+            sig_base_joint,
+        ]
+    )

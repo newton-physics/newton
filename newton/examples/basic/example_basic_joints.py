@@ -125,6 +125,7 @@ class Example:
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, +cuboid_hz), q=wp.quat_identity()),
             limit_lower=-0.3,
             limit_upper=0.3,
+            limit_kd=1.0e-1,
             label="prismatic_a_b",
         )
         # Create articulation from joints
