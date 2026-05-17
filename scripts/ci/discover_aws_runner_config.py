@@ -21,6 +21,7 @@ from typing import Any
 
 AwsCall = Callable[..., Any]
 Warn = Callable[[str], None]
+AWS_CLI_TIMEOUT_SECONDS = 120
 
 
 def warning(message: str) -> None:
@@ -46,7 +47,16 @@ def aws(region: str, *args: str) -> Any | None:
     """
     cmd = ["aws", "ec2", *args, "--region", region, "--output", "json"]
     try:
-        completed = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        completed = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=AWS_CLI_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        warning(f"{region}: AWS CLI command timed out after {AWS_CLI_TIMEOUT_SECONDS}s: {' '.join(cmd[:4])}")
+        return None
     except subprocess.CalledProcessError as exc:
         warning(f"{region}: AWS CLI command failed: {' '.join(cmd[:4])}")
         if exc.stderr:
