@@ -10,12 +10,13 @@ name: GPU Unit Tests on AWS EC2 (Reusable)
 # Workflow configuration variables
 env:
   AWS_REGION: us-east-2
+  AWS_REGION_CANDIDATES: us-east-1 us-east-2 us-west-2 ap-northeast-1 ap-northeast-2
   AWS_INSTANCE_TYPE: ${{ inputs.instance-type || 'g7e.2xlarge' }}
   AWS_VOLUME_SIZE: ${{ inputs.volume-size || '92' }}
   AWS_VOLUME_TYPE: gp3
-  AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
   AWS_ROLE_DURATION: 7200
+  AWS_RUNNER_RESOURCE_TAG: newton-github-runner
   HOME: /actions-runner
 
 on:
@@ -52,7 +53,7 @@ on:
 jobs:
   start-runner:
     name: Start self-hosted EC2 runner
-    if: github.repository == 'newton-physics/newton'
+    if: ${{ github.repository == 'newton-physics/newton' || github.repository == 'shi-eric/newton' }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -60,6 +61,7 @@ jobs:
     outputs:
       label: ${{ steps.start-ec2-runner.outputs.label }}
       ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
+      region: ${{ steps.start-ec2-runner.outputs.region }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
@@ -72,20 +74,185 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
-      - name: Get the latest AWS Deep Learning Base GPU AMI
+
+      - name: Discover AWS runner networking
+        id: discover-runner-config
         run: |
-          echo "Finding the latest AWS Deep Learning Base GPU AMI..."
-          LATEST_AMI_ID=$(aws ec2 describe-images --region ${{ env.AWS_REGION }} \
-            --owners amazon \
-            --filters 'Name=name,Values=Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) ????????' 'Name=state,Values=available' \
-            --query 'reverse(sort_by(Images, &CreationDate))[:1].ImageId' \
-            --output text)
-          if [[ -z "$LATEST_AMI_ID" ]]; then
-            echo "❌ No AMI ID found. Exiting."
-            exit 1
-          fi
-          echo "Latest AMI ID found: $LATEST_AMI_ID"
-          echo "LATEST_AMI_ID=$LATEST_AMI_ID" >> "$GITHUB_ENV"
+          python <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+
+          def warning(message):
+              print(f"::warning::{message}")
+
+
+          def error(message):
+              print(f"::error::{message}")
+
+
+          def aws(region, *args):
+              cmd = ["aws", "ec2", *args, "--region", region, "--output", "json"]
+              try:
+                  completed = subprocess.run(cmd, check=True, capture_output=True, text=True)
+              except subprocess.CalledProcessError as exc:
+                  warning(f"{region}: AWS CLI command failed: {' '.join(cmd[:4])}")
+                  if exc.stderr:
+                      print(exc.stderr, file=sys.stderr)
+                  return None
+
+              output = completed.stdout.strip()
+              if not output:
+                  return None
+              return json.loads(output)
+
+
+          def allows_outbound_internet(security_group):
+              for permission in security_group.get("IpPermissionsEgress", []):
+                  for ip_range in permission.get("IpRanges", []):
+                      if ip_range.get("CidrIp") == "0.0.0.0/0":
+                          return True
+              return False
+
+
+          regions = os.environ["AWS_REGION_CANDIDATES"].split()
+          instance_type = os.environ["AWS_INSTANCE_TYPE"]
+          tag_key = os.environ["AWS_RUNNER_RESOURCE_TAG"]
+          candidates = []
+
+          for region in regions:
+              print(f"Checking {region} for {instance_type}")
+
+              offered_zone_ids = aws(
+                  region,
+                  "describe-instance-type-offerings",
+                  "--location-type",
+                  "availability-zone-id",
+                  "--filters",
+                  f"Name=instance-type,Values={instance_type}",
+                  "--query",
+                  "InstanceTypeOfferings[].Location",
+              )
+              if not offered_zone_ids:
+                  warning(f"{region}: {instance_type} is not offered in any availability zone; skipping region")
+                  continue
+              offered_zone_ids = set(offered_zone_ids)
+              print(f"{region}: {instance_type} offered AZ IDs: {', '.join(sorted(offered_zone_ids))}")
+
+              images = aws(
+                  region,
+                  "describe-images",
+                  "--owners",
+                  "amazon",
+                  "--filters",
+                  "Name=name,Values=Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) ????????",
+                  "Name=state,Values=available",
+                  "--query",
+                  "reverse(sort_by(Images, &CreationDate))[:1].ImageId",
+              )
+              if not images:
+                  warning(f"{region}: no Deep Learning Base GPU AMI found; skipping region")
+                  continue
+              image_id = images[0]
+
+              subnets = aws(
+                  region,
+                  "describe-subnets",
+                  "--filters",
+                  f"Name=tag:{tag_key},Values=true",
+                  "--query",
+                  "Subnets[]",
+              )
+              if not subnets:
+                  warning(f"{region}: no tagged subnets found; skipping region")
+                  continue
+
+              security_groups = aws(
+                  region,
+                  "describe-security-groups",
+                  "--filters",
+                  f"Name=tag:{tag_key},Values=true",
+                  "--query",
+                  "SecurityGroups[]",
+              )
+              groups_by_vpc = {}
+              for security_group in security_groups or []:
+                  if not allows_outbound_internet(security_group):
+                      warning(
+                          f"{region}: security group {security_group['GroupId']} "
+                          "does not allow outbound traffic to 0.0.0.0/0; skipping security group"
+                      )
+                      continue
+                  groups_by_vpc.setdefault(security_group["VpcId"], []).append(security_group)
+              for vpc_groups in groups_by_vpc.values():
+                  vpc_groups.sort(key=lambda security_group: security_group["GroupId"])
+
+              seen_zone_ids = set()
+              eligible_count = 0
+              subnets.sort(key=lambda subnet: (subnet.get("AvailabilityZoneId", ""), subnet["SubnetId"]))
+
+              for subnet in subnets:
+                  subnet_id = subnet["SubnetId"]
+                  vpc_id = subnet["VpcId"]
+                  zone_name = subnet.get("AvailabilityZone", "")
+                  zone_id = subnet.get("AvailabilityZoneId", "")
+
+                  if not zone_id:
+                      warning(f"{region}: subnet {subnet_id} has no AvailabilityZoneId; skipping subnet")
+                      continue
+
+                  if zone_id not in offered_zone_ids:
+                      warning(
+                          f"{region}: {instance_type} is not offered in {zone_name} "
+                          f"({zone_id}); skipping subnet {subnet_id}"
+                      )
+                      continue
+
+                  if zone_id in seen_zone_ids:
+                      warning(f"{region}: skipping duplicate subnet {subnet_id} for availability zone ID {zone_id}")
+                      continue
+
+                  vpc_groups = groups_by_vpc.get(vpc_id, [])
+                  if not vpc_groups:
+                      warning(f"{region}: subnet {subnet_id} in VPC {vpc_id} has no tagged security group; skipping subnet")
+                      continue
+
+                  security_group_id = vpc_groups[0]["GroupId"]
+                  seen_zone_ids.add(zone_id)
+                  eligible_count += 1
+                  candidates.append(
+                      {
+                          "imageId": image_id,
+                          "subnetId": subnet_id,
+                          "securityGroupId": security_group_id,
+                          "region": region,
+                      }
+                  )
+                  print(
+                      "Candidate: "
+                      f"region={region} az={zone_name} az_id={zone_id} "
+                      f"vpc={vpc_id} subnet={subnet_id} security_group={security_group_id}"
+                  )
+
+              if eligible_count == 0:
+                  warning(f"{region}: no eligible subnet/security-group pairs found")
+
+          if not candidates:
+              error("No eligible EC2 runner candidates were discovered.")
+              sys.exit(1)
+
+          config = json.dumps(candidates, separators=(",", ":"))
+          json.loads(config)
+
+          print("Generated availability-zones-config:")
+          print(json.dumps(candidates, indent=2))
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
+              output_file.write(f"availability-zones-config={config}\n")
+          PY
+
       - name: Start EC2 runner
         id: start-ec2-runner
         uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
@@ -95,11 +262,7 @@ jobs:
           ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
           ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
           ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
-          availability-zones-config: >
-            [
-              {"imageId": "${{ env.LATEST_AMI_ID }}", "subnetId": "subnet-051b9d2e71acf8047", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"},
-              {"imageId": "${{ env.LATEST_AMI_ID }}", "subnetId": "subnet-0c98bd06abe8ee5eb", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"}
-            ]
+          availability-zones-config: ${{ steps.discover-runner-config.outputs.availability-zones-config }}
           pre-runner-script: |
             if [ -d /opt/dlami/nvme ]; then
               mkdir -p /opt/dlami/nvme/actions-runner/_work
@@ -129,6 +292,7 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
@@ -153,7 +317,12 @@ jobs:
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
-        run: uv run --extra dev --extra torch-cu13 -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: |
+          if [[ "${{ github.repository }}" == "shi-eric/newton" ]]; then
+            uv run --extra dev --extra torch-cu13 -m newton.tests -k test_basic.example_basic_shapes --junit-report-xml rspec.xml
+          else
+            uv run --extra dev --extra torch-cu13 -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+          fi
 
       - name: Check disk space (post-test)
         if: always()
@@ -167,7 +336,7 @@ jobs:
           show: "fail"
 
       - name: Upload coverage reports to Codecov
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.repository == 'newton-physics/newton' }}
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
         with:
           disable_search: true
@@ -223,21 +392,29 @@ jobs:
     needs:
       - start-runner
       - gpu-unit-tests
-    if: always() && needs.start-runner.result != 'skipped' && github.repository == 'newton-physics/newton'
+    if: ${{ always() && needs.start-runner.result != 'skipped' && (github.repository == 'newton-physics/newton' || github.repository == 'shi-eric/newton') }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
         with:
           egress-policy: audit
 
+      - name: Validate launch region
+        if: ${{ needs.start-runner.outputs.ec2-instance-id != '' && needs.start-runner.outputs.region == '' }}
+        run: |
+          echo "::error::EC2 instance ID exists but the launch region output is empty."
+          exit 1
+
       - name: Configure AWS credentials
+        if: ${{ needs.start-runner.outputs.ec2-instance-id != '' }}
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
         with:
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ needs.start-runner.outputs.region || env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
 
       - name: Stop EC2 runner
+        if: ${{ needs.start-runner.outputs.ec2-instance-id != '' }}
         uses: machulav/ec2-github-runner@343a1b2ae682e681c3cec9a235d882da17ff04ef  # v2.6.1
         with:
           mode: stop
