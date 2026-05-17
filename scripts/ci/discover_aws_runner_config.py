@@ -81,8 +81,8 @@ def discover_candidates(
         regions: Ordered AWS regions to inspect.
         instance_type: EC2 instance type requested by the workflow.
         tag_key: Tag key used to find eligible subnets and security groups.
-        aws_call: AWS EC2 call helper, injectable for tests.
-        warn: Warning callback, injectable for tests.
+        aws_call: AWS EC2 call helper.
+        warn: Warning callback.
 
     Returns:
         Candidate objects accepted by ``machulav/ec2-github-runner``.
