@@ -53,7 +53,7 @@ on:
 jobs:
   start-runner:
     name: Start self-hosted EC2 runner
-    if: ${{ github.repository == 'newton-physics/newton' || github.repository == 'shi-eric/newton' }}
+    if: github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -317,12 +317,7 @@ jobs:
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
-        run: |
-          if [[ "${{ github.repository }}" == "shi-eric/newton" ]]; then
-            uv run --extra dev --extra torch-cu13 -m newton.tests -k test_basic.example_basic_shapes --junit-report-xml rspec.xml
-          else
-            uv run --extra dev --extra torch-cu13 -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
-          fi
+        run: uv run --extra dev --extra torch-cu13 -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
       - name: Check disk space (post-test)
         if: always()
@@ -336,7 +331,7 @@ jobs:
           show: "fail"
 
       - name: Upload coverage reports to Codecov
-        if: ${{ !cancelled() && github.repository == 'newton-physics/newton' }}
+        if: ${{ !cancelled() }}
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
         with:
           disable_search: true
@@ -392,7 +387,7 @@ jobs:
     needs:
       - start-runner
       - gpu-unit-tests
-    if: ${{ always() && needs.start-runner.result != 'skipped' && (github.repository == 'newton-physics/newton' || github.repository == 'shi-eric/newton') }}
+    if: always() && needs.start-runner.result != 'skipped' && github.repository == 'newton-physics/newton'
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
