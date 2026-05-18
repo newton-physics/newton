@@ -29,7 +29,7 @@ Minimum Requirements
      - 3.11+ recommended
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-     - macOS has no GPU acceleration; see :ref:`cpu-limitations`
+     - macOS has no GPU acceleration
    * - NVIDIA GPU
      - Compute capability 5.0+ (Maxwell)
      - Any GeForce GTX 9xx or newer
@@ -53,8 +53,8 @@ X11 development libraries to build ``imgui_bundle`` from source:
     sudo apt-get update
     sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
 
-For tested configurations, CPU-only feature limitations, and CUDA
-version-specific notes, see :doc:`compatibility`.
+For tested configurations and CUDA version-specific notes, see
+:doc:`compatibility`.
 
 Installing Newton
 -----------------

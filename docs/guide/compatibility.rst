@@ -33,18 +33,6 @@ Newton releases are tested on the following configurations:
 For the minimum requirements to install Newton, see
 :ref:`system-requirements` in the installation guide.
 
-.. _cpu-limitations:
-
-CPU-Only Limitations
---------------------
-
-Newton can run on CPU (including macOS), but the following features require an
-NVIDIA GPU and are unavailable in CPU-only mode:
-
-- **Tiled camera sensor** — GPU-accelerated raytraced rendering.
-- **Implicit MPM solver** — designed for GPU execution with CUDA graph support.
-- **Tile-based VBD solve** — uses GPU tile API; gracefully disabled on CPU.
-
 Inherited Platform Support
 --------------------------
 
