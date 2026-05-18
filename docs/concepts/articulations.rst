@@ -708,7 +708,7 @@ Newton can evaluate the **manipulator equation** for an articulated rigid-body s
    * - :math:`M(q)`
      - Joint-space mass matrix, shape ``(articulation_count, max_dofs_per_articulation, max_dofs_per_articulation)``.
    * - :math:`g(q) = \partial U / \partial q`
-     - Gravity force, where :math:`U(q) = \sum_i m_i\, \mathbf{g} \cdot \mathbf{x}_{\text{com},i}` is the system's gravitational potential energy (sum over bodies of mass × gravity-vector · CoM position). Equivalently, the feed-forward joint-space force a controller must apply to hold the articulation static under gravity.
+     - Gravity force, where :math:`U(q) = \sum_i -m_i\, \mathbf{g} \cdot \mathbf{x}_{\text{com},i}` is the system's gravitational potential energy (sum over bodies of mass × gravity-vector · CoM position). Equivalently, the feed-forward joint-space force a controller must apply to hold the articulation static under gravity.
    * - :math:`C(q, \dot{q})\, \dot{q}`
      - Coriolis + centrifugal force.
 
@@ -744,7 +744,7 @@ This allocates both :class:`~newton.InverseDynamics` and a complementary contain
     c = inverse_dynamics.coriolis_force  # (joint_dof_count,)
 
     # combine into tau = M*qddot + C*qdot + g for a user-supplied qddot
-    qddot = wp.zeros(model.joint_dof_count, dtype=wp.float32)
+    qddot = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
     newton.eval_inverse_dynamics_force(
         model, M, qddot, c, g, inverse_dynamics.tau,
     )
@@ -773,7 +773,7 @@ own ``mask=`` argument.
     )
 
     # optionally narrow further with a per-world submask (shape [world_count])
-    per_world_mask = wp.array([True], dtype=bool)
+    per_world_mask = wp.array([True], dtype=bool, device=model.device)
     view.eval_inverse_dynamics(
         state, newton.InverseDynamics.EvalType.ALL,
         inverse_dynamics, scratch, mask=per_world_mask,

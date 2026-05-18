@@ -430,7 +430,7 @@ def eval_inverse_dynamics(
       kg·m^2, depending on the joint types of the row/column DOFs];
     * ``gravity_force`` ← the gravity force ``g(q) = ∂U/∂q`` [N or N·m,
       depending on joint type], where ``U(q)`` is the system's
-      gravitational potential energy ``sum_i m_i * g . x_com_i``. This is
+      gravitational potential energy ``sum_i -m_i * g . x_com_i``. This is
       the joint-space force that holds the articulation static under
       gravity;
     * ``coriolis_force`` ← the Coriolis + centrifugal force
