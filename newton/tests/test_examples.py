@@ -778,6 +778,30 @@ add_example_test(
     test_options={"num-frames": 200},
     use_viewer=True,
 )
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 180, "solver": "xpbd"},
+    use_viewer=True,
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 180, "solver": "semi_implicit"},
+    use_viewer=True,
+    test_suffix="semi_implicit",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 180, "solver": "vbd"},
+    use_viewer=True,
+    test_suffix="vbd",
+)
 
 
 class TestSoftbodyExamples(unittest.TestCase):
