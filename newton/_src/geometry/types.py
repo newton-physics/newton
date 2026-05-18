@@ -969,13 +969,19 @@ class Mesh:
         self._cached_hash = None
 
     # construct simulation ready buffers from points
-    def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
+    def finalize(
+        self,
+        device: Devicelike = None,
+        requires_grad: bool = False,
+        bvh_constructor: str | None = None,
+    ) -> wp.uint64:
         """
         Construct a simulation-ready Warp Mesh object from the mesh data and return its ID.
 
         Args:
             device: Device on which to allocate mesh buffers.
             requires_grad: If True, mesh points and velocities are allocated with gradient tracking.
+            bvh_constructor: Optional Warp mesh BVH constructor backend. If ``None``, Warp's default is used.
 
         Returns:
             The ID of the simulation-ready Warp Mesh.
@@ -985,7 +991,7 @@ class Mesh:
             vel = wp.zeros_like(pos)
             indices = wp.array(self.indices, dtype=wp.int32)
 
-            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices)
+            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices, bvh_constructor=bvh_constructor)
             return self.mesh.id
 
     def compute_convex_hull(self, replace: bool = False) -> "Mesh":
@@ -1915,11 +1921,12 @@ class Gaussian:
 
     # ---- Finalize (GPU upload) -----------------------------------------------
 
-    def finalize(self, device: Devicelike = None) -> Data:
+    def finalize(self, device: Devicelike = None, bvh_constructor: str | None = None) -> Data:
         """Upload Gaussian data to the GPU as Warp arrays.
 
         Args:
             device: Device on which to allocate buffers.
+            bvh_constructor: Optional Warp BVH constructor backend. If ``None``, Warp's default is used.
 
         Returns:
             Gaussian.Data struct containing the Warp arrays.
@@ -1948,7 +1955,7 @@ class Gaussian:
                 inputs=[self.warp_data, lowers, uppers],
             )
 
-            self.warp_bvh = wp.Bvh(lowers, uppers)
+            self.warp_bvh = wp.Bvh(lowers, uppers, constructor=bvh_constructor)
             self.warp_data.bvh_id = self.warp_bvh.id
         return self.warp_data
 
