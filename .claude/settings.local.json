@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Bash(uv run python:*)",
+      "Bash(ln:*)",
+      "Bash(uvx pre-commit run:*)",
+      "Bash(uv run:*)",
+      "Bash(wc:*)",
+      "Bash(tree:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:nvidia.github.io)",
+      "WebSearch"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  }
+}
