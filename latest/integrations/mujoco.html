@@ -1,0 +1,1477 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>MuJoCo Integration &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=68e7ce64" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=e5de4b90"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'integrations/mujoco';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="prev" title="Isaac Lab Integration" href="isaac-lab.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.3.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../concepts/worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../concepts/extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1 current active"><a class="reference internal" href="index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Newton Integrations</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">MuJoCo Integration</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="mujoco-integration">
+<h1>MuJoCo Integration<a class="headerlink" href="#mujoco-integration" title="Link to this heading">#</a></h1>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> wraps <a class="reference external" href="https://github.com/google-deepmind/mujoco_warp">mujoco_warp</a> behind Newton’s standard
+solver interface. Newton uses compatible-release pins (<code class="docutils literal notranslate"><span class="pre">~=</span></code>) on both <code class="docutils literal notranslate"><span class="pre">mujoco</span></code>
+and <code class="docutils literal notranslate"><span class="pre">mujoco-warp</span></code> to keep the two version-aligned; see
+<a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/pyproject.toml">pyproject.toml</a> for the current pins.</p>
+<p>Because MuJoCo has its own modeling conventions, many Newton properties
+are mapped differently or not at all. The sections below describe which
+Newton concepts the solver supports, how each is mapped to MuJoCo, how
+state is exchanged at every step, and where each piece of the conversion
+lives in the source. MuJoCo-specific behavior that has no Newton-core
+equivalent is exposed through the <a class="reference internal" href="#mujoco-custom-attributes"><span class="std std-ref">custom-attribute namespace</span></a>. A <a class="reference internal" href="#mujoco-code-pointers"><span class="std std-ref">code pointers</span></a>
+section at the bottom collects the most useful anchor points.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>References to <code class="docutils literal notranslate"><span class="pre">mjModel</span></code> / <code class="docutils literal notranslate"><span class="pre">mjData</span></code> fields below (e.g.
+<code class="docutils literal notranslate"><span class="pre">mjData.contact</span></code>, <code class="docutils literal notranslate"><span class="pre">mjData.mocap_pos</span></code>) use the canonical names
+from MuJoCo’s <a class="reference external" href="https://mujoco.readthedocs.io/en/stable/APIreference/APItypes.html#mjmodel">mjModel</a>
+and <a class="reference external" href="https://mujoco.readthedocs.io/en/stable/APIreference/APItypes.html#mjdata">mjData</a>
+reference. <code class="docutils literal notranslate"><span class="pre">mujoco_warp</span></code> exposes the same fields on its
+GPU-resident analogues.</p>
+</div>
+<section id="joint-types">
+<h2>Joint types<a class="headerlink" href="#joint-types" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 35.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Newton type</p></th>
+<th class="head"><p>MuJoCo equivalent</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.FREE" title="newton.JointType.FREE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">FREE</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjJNT_FREE</span></code></p></td>
+<td><p>Initial pose taken from <code class="docutils literal notranslate"><span class="pre">body_q</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.BALL" title="newton.JointType.BALL"><code class="xref py py-attr docutils literal notranslate"><span class="pre">BALL</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjJNT_BALL</span></code></p></td>
+<td><p>Per-axis actuators mapped via <code class="docutils literal notranslate"><span class="pre">gear</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.REVOLUTE" title="newton.JointType.REVOLUTE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">REVOLUTE</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjJNT_HINGE</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.PRISMATIC" title="newton.JointType.PRISMATIC"><code class="xref py py-attr docutils literal notranslate"><span class="pre">PRISMATIC</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjJNT_SLIDE</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.D6" title="newton.JointType.D6"><code class="xref py py-attr docutils literal notranslate"><span class="pre">D6</span></code></a></p></td>
+<td><p>Up to 3 × <code class="docutils literal notranslate"><span class="pre">mjJNT_SLIDE</span></code> + 3 × <code class="docutils literal notranslate"><span class="pre">mjJNT_HINGE</span></code></p></td>
+<td><p>Each active linear/angular DOF becomes a separate MuJoCo joint with
+a <code class="docutils literal notranslate"><span class="pre">_lin</span></code> or <code class="docutils literal notranslate"><span class="pre">_ang</span></code> suffix; a numeric index is appended when more
+than one axis is active in the same group (e.g. <code class="docutils literal notranslate"><span class="pre">_lin0</span></code>,
+<code class="docutils literal notranslate"><span class="pre">_lin1</span></code>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.FIXED" title="newton.JointType.FIXED"><code class="xref py py-attr docutils literal notranslate"><span class="pre">FIXED</span></code></a></p></td>
+<td><p><em>(no joint)</em></p></td>
+<td><p>The child body is nested directly under its parent. A fixed joint
+connecting to the world produces a <strong>mocap</strong> body, driven via
+<code class="docutils literal notranslate"><span class="pre">mjData.mocap_pos</span></code> / <code class="docutils literal notranslate"><span class="pre">mjData.mocap_quat</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.DISTANCE" title="newton.JointType.DISTANCE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">DISTANCE</span></code></a></p></td>
+<td><p><em>(no joint)</em></p></td>
+<td><p>The distance constraint is dropped, but the body bookkeeping is
+handled like a free body (counted in MuJoCo’s free-body slots).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.CABLE" title="newton.JointType.CABLE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">CABLE</span></code></a></p></td>
+<td><p><em>unsupported</em></p></td>
+<td><p>Not forwarded to MuJoCo.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="geometry-types">
+<h2>Geometry types<a class="headerlink" href="#geometry-types" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 25.0%" />
+<col style="width: 50.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Newton type</p></th>
+<th class="head"><p>MuJoCo equivalent</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.SPHERE" title="newton.GeoType.SPHERE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">SPHERE</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_SPHERE</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.CAPSULE" title="newton.GeoType.CAPSULE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">CAPSULE</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_CAPSULE</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.CYLINDER" title="newton.GeoType.CYLINDER"><code class="xref py py-attr docutils literal notranslate"><span class="pre">CYLINDER</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_CYLINDER</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.BOX" title="newton.GeoType.BOX"><code class="xref py py-attr docutils literal notranslate"><span class="pre">BOX</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_BOX</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.ELLIPSOID" title="newton.GeoType.ELLIPSOID"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ELLIPSOID</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_ELLIPSOID</span></code></p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.PLANE" title="newton.GeoType.PLANE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">PLANE</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_PLANE</span></code></p></td>
+<td><p>Must be attached to a static body (<code class="docutils literal notranslate"><span class="pre">body=-1</span></code>); attaching to a
+non-static body raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> at conversion time. Planes
+are infinite for collision in MuJoCo regardless of size; the
+configured <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_scale" title="newton.Model.shape_scale"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_scale</span></code></a> only affects rendering, defaulting to
+<code class="docutils literal notranslate"><span class="pre">5</span> <span class="pre">×</span> <span class="pre">5</span> <span class="pre">×</span> <span class="pre">5</span></code> when unset.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.HFIELD" title="newton.GeoType.HFIELD"><code class="xref py py-attr docutils literal notranslate"><span class="pre">HFIELD</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_HFIELD</span></code></p></td>
+<td><p>Heightfield data is stored normalized to <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">1]</span></code> on the Newton
+<a class="reference internal" href="../api/_generated/newton.Heightfield.html#newton.Heightfield" title="newton.Heightfield"><code class="xref py py-class docutils literal notranslate"><span class="pre">Heightfield</span></code></a> source and forwarded as-is. The geom
+origin is shifted by <code class="docutils literal notranslate"><span class="pre">min_z</span></code> so the lowest point is at the
+correct world height.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.MESH" title="newton.GeoType.MESH"><code class="xref py py-attr docutils literal notranslate"><span class="pre">MESH</span></code></a> / <a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.CONVEX_MESH" title="newton.GeoType.CONVEX_MESH"><code class="xref py py-attr docutils literal notranslate"><span class="pre">CONVEX_MESH</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjGEOM_MESH</span></code></p></td>
+<td><p>MuJoCo only supports <strong>convex</strong> collision meshes. Non-convex
+meshes are convex-hulled by MuJoCo’s compiler (not by Newton),
+which changes the collision boundary. The mesh source’s
+<code class="docutils literal notranslate"><span class="pre">maxhullvert</span></code> is forwarded.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.CONE" title="newton.GeoType.CONE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">CONE</span></code></a>, <a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType.GAUSSIAN" title="newton.GeoType.GAUSSIAN"><code class="xref py py-attr docutils literal notranslate"><span class="pre">GAUSSIAN</span></code></a></p></td>
+<td><p><em>unsupported</em></p></td>
+<td><p>Not present in the MuJoCo geom-type map.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Sites</strong> (shapes with the <code class="docutils literal notranslate"><span class="pre">SITE</span></code> flag) are converted to MuJoCo sites —
+non-colliding reference frames used for sensor attachment and spatial
+tendon wrap anchors. Only <code class="docutils literal notranslate"><span class="pre">SPHERE</span></code>, <code class="docutils literal notranslate"><span class="pre">CAPSULE</span></code>, <code class="docutils literal notranslate"><span class="pre">CYLINDER</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">BOX</span></code> are MuJoCo-native site geom types; other types silently fall
+back to <code class="docutils literal notranslate"><span class="pre">SPHERE</span></code>.</p>
+<p>Several Newton collision features — for example non-convex trimesh,
+SDF-based contacts, and hydroelastic contacts — are not part of the
+MuJoCo geometry model. They are only available through Newton’s
+collision pipeline (see <a class="reference internal" href="#collision-pipeline">Collision pipeline</a> below).</p>
+</section>
+<section id="actuators">
+<h2>Actuators<a class="headerlink" href="#actuators" title="Link to this heading">#</a></h2>
+<p>Newton’s per-DOF <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_target_mode" title="newton.Model.joint_target_mode"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_mode</span></code></a> creates MuJoCo general actuators:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 75.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Mode</p></th>
+<th class="head"><p>MuJoCo actuator(s)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.JointTargetMode.html#newton.JointTargetMode.POSITION" title="newton.JointTargetMode.POSITION"><code class="xref py py-attr docutils literal notranslate"><span class="pre">POSITION</span></code></a></p></td>
+<td><p>One actuator: <code class="docutils literal notranslate"><span class="pre">gainprm</span> <span class="pre">=</span> <span class="pre">[kp]</span></code>, <code class="docutils literal notranslate"><span class="pre">biasprm</span> <span class="pre">=</span> <span class="pre">[0,</span> <span class="pre">-kp,</span> <span class="pre">-kd]</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.JointTargetMode.html#newton.JointTargetMode.VELOCITY" title="newton.JointTargetMode.VELOCITY"><code class="xref py py-attr docutils literal notranslate"><span class="pre">VELOCITY</span></code></a></p></td>
+<td><p>One actuator: <code class="docutils literal notranslate"><span class="pre">gainprm</span> <span class="pre">=</span> <span class="pre">[kd]</span></code>, <code class="docutils literal notranslate"><span class="pre">biasprm</span> <span class="pre">=</span> <span class="pre">[0,</span> <span class="pre">0,</span> <span class="pre">-kd]</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.JointTargetMode.html#newton.JointTargetMode.POSITION_VELOCITY" title="newton.JointTargetMode.POSITION_VELOCITY"><code class="xref py py-attr docutils literal notranslate"><span class="pre">POSITION_VELOCITY</span></code></a></p></td>
+<td><p>Two actuators — a position actuator (<code class="docutils literal notranslate"><span class="pre">gainprm</span> <span class="pre">=</span> <span class="pre">[kp]</span></code>,
+<code class="docutils literal notranslate"><span class="pre">biasprm</span> <span class="pre">=</span> <span class="pre">[0,</span> <span class="pre">-kp,</span> <span class="pre">0]</span></code>) and a velocity actuator
+(<code class="docutils literal notranslate"><span class="pre">gainprm</span> <span class="pre">=</span> <span class="pre">[kd]</span></code>, <code class="docutils literal notranslate"><span class="pre">biasprm</span> <span class="pre">=</span> <span class="pre">[0,</span> <span class="pre">0,</span> <span class="pre">-kd]</span></code>).</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.JointTargetMode.html#newton.JointTargetMode.NONE" title="newton.JointTargetMode.NONE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">NONE</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.JointTargetMode.html#newton.JointTargetMode.EFFORT" title="newton.JointTargetMode.EFFORT"><code class="xref py py-attr docutils literal notranslate"><span class="pre">EFFORT</span></code></a></p></td>
+<td><p>No MuJoCo actuator created.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_effort_limit" title="newton.Model.joint_effort_limit"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_effort_limit</span></code></a> is forwarded as <code class="docutils literal notranslate"><span class="pre">actfrcrange</span></code> on the joint
+(prismatic, revolute, and D6) or as <code class="docutils literal notranslate"><span class="pre">forcerange</span></code> on the actuator (ball).</p>
+<p>The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
+and parameters, explicit transmission targets, ctrl/force/act ranges) is
+only reachable through the <code class="docutils literal notranslate"><span class="pre">mujoco</span></code> <a class="reference internal" href="#mujoco-custom-attributes"><span class="std std-ref">custom-attribute namespace</span></a>.
+Additional actuators declared this way are appended after the joint-target
+actuators — see <code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._init_actuators</span></code>.</p>
+</section>
+<section id="equality-constraints">
+<h2>Equality constraints<a class="headerlink" href="#equality-constraints" title="Link to this heading">#</a></h2>
+<p>Each row’s <code class="docutils literal notranslate"><span class="pre">data[...]</span></code> reference below points into MuJoCo’s
+<a class="reference external" href="https://mujoco.readthedocs.io/en/stable/XMLreference.html#equality">equality.data</a>
+array; slot layout depends on the constraint type.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 25.0%" />
+<col style="width: 55.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Newton type</p></th>
+<th class="head"><p>MuJoCo equivalent</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.EqType.html#newton.EqType.CONNECT" title="newton.EqType.CONNECT"><code class="xref py py-attr docutils literal notranslate"><span class="pre">CONNECT</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjEQ_CONNECT</span></code></p></td>
+<td><p>Anchor forwarded in <code class="docutils literal notranslate"><span class="pre">data[0:3]</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.EqType.html#newton.EqType.WELD" title="newton.EqType.WELD"><code class="xref py py-attr docutils literal notranslate"><span class="pre">WELD</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjEQ_WELD</span></code></p></td>
+<td><p>Anchor forwarded in <code class="docutils literal notranslate"><span class="pre">data[0:3]</span></code>, relative pose in <code class="docutils literal notranslate"><span class="pre">data[3:10]</span></code>,
+torque scale in <code class="docutils literal notranslate"><span class="pre">data[10]</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.EqType.html#newton.EqType.JOINT" title="newton.EqType.JOINT"><code class="xref py py-attr docutils literal notranslate"><span class="pre">JOINT</span></code></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjEQ_JOINT</span></code></p></td>
+<td><p>Polynomial coefficients forwarded in <code class="docutils literal notranslate"><span class="pre">data[0:5]</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Mimic</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjEQ_JOINT</span></code></p></td>
+<td><p>Added via <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_constraint_mimic" title="newton.ModelBuilder.add_constraint_mimic"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_constraint_mimic()</span></code></a>. Maps
+<code class="docutils literal notranslate"><span class="pre">coef0</span></code> / <code class="docutils literal notranslate"><span class="pre">coef1</span></code> to polynomial coefficients. Only
+<a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.REVOLUTE" title="newton.JointType.REVOLUTE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">REVOLUTE</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.PRISMATIC" title="newton.JointType.PRISMATIC"><code class="xref py py-attr docutils literal notranslate"><span class="pre">PRISMATIC</span></code></a> joints are supported.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Loop closures.</strong> Newton joints with no associated articulation
+(<code class="docutils literal notranslate"><span class="pre">joint_articulation</span> <span class="pre">==</span> <span class="pre">-1</span></code>) are treated as loop closures rather than
+tree joints. They are not emitted as MuJoCo joints; instead, the solver
+synthesises equality constraints:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.FIXED" title="newton.JointType.FIXED"><code class="xref py py-attr docutils literal notranslate"><span class="pre">FIXED</span></code></a> → <code class="docutils literal notranslate"><span class="pre">mjEQ_WELD</span></code> (constrains all 6 DOFs).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.REVOLUTE" title="newton.JointType.REVOLUTE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">REVOLUTE</span></code></a> → two <code class="docutils literal notranslate"><span class="pre">mjEQ_CONNECT</span></code> constraints,
+the second offset by 0.1 m along the hinge axis, so 5 DOFs are
+constrained and one rotational DOF remains free.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.JointType.html#newton.JointType.BALL" title="newton.JointType.BALL"><code class="xref py py-attr docutils literal notranslate"><span class="pre">BALL</span></code></a> → one <code class="docutils literal notranslate"><span class="pre">mjEQ_CONNECT</span></code> (3 translational
+DOFs constrained, all 3 rotational DOFs free).</p></li>
+</ul>
+<p>Other joint types in this configuration are not supported and produce a
+warning. Loop-joint DOFs and coordinates are excluded from MuJoCo’s
+<code class="docutils literal notranslate"><span class="pre">nq</span></code> / <code class="docutils literal notranslate"><span class="pre">nv</span></code>.</p>
+</section>
+<section id="tendons">
+<h2>Tendons<a class="headerlink" href="#tendons" title="Link to this heading">#</a></h2>
+<p>Newton’s core API does not currently expose tendons (fixed or spatial)
+as first-class concepts. They are implemented through the MuJoCo
+<a class="reference internal" href="#mujoco-custom-attributes"><span class="std std-ref">custom-attribute namespace</span></a>: populated
+on import from MJCF/USD and parsed into MuJoCo’s tendon structures by
+<code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._init_tendons</span></code>. Spatial tendons support <code class="docutils literal notranslate"><span class="pre">site</span></code>,
+<code class="docutils literal notranslate"><span class="pre">geom</span></code>, and <code class="docutils literal notranslate"><span class="pre">pulley</span></code> wrap elements; any other wrap type and any
+degenerate tendon definition produces a warning and is skipped rather
+than raising.</p>
+</section>
+<section id="collision-pipeline">
+<h2>Collision pipeline<a class="headerlink" href="#collision-pipeline" title="Link to this heading">#</a></h2>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> uses MuJoCo’s built-in collision
+detection by default. Construct it with <code class="docutils literal notranslate"><span class="pre">use_mujoco_contacts=False</span></code>
+to feed contacts computed by Newton’s own collision pipeline into
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.step" title="newton.solvers.SolverMuJoCo.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">step()</span></code></a> instead.
+Newton’s pipeline supports non-convex meshes, SDF-based contacts, and
+hydroelastic contacts, which are not available through MuJoCo’s collision
+detection.</p>
+<p><strong>Multi-contact CCD.</strong> Constructing
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> with <code class="docutils literal notranslate"><span class="pre">enable_multiccd=True</span></code>
+allows up to four contact points per geom pair instead of one. Pairs
+where either geom has non-zero MuJoCo <code class="docutils literal notranslate"><span class="pre">geom_margin</span></code> still fall back
+to a single contact regardless of the flag (see <em>Margin zeroing</em>
+below for how Newton’s <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_margin" title="newton.Model.shape_margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_margin</span></code></a> is forwarded
+to it).</p>
+<p><strong>Margin zeroing.</strong> <code class="docutils literal notranslate"><span class="pre">mujoco_warp</span></code> rejects non-zero geom margins on
+box-box pairs (its default NATIVECCD path) and on any box/mesh pair
+when <code class="docutils literal notranslate"><span class="pre">enable_multiccd=True</span></code>. To stay compatible <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> zeroes
+<code class="docutils literal notranslate"><span class="pre">geom_margin</span></code> model-wide at compile time whenever a box geom exists,
+or whenever <code class="docutils literal notranslate"><span class="pre">enable_multiccd=True</span></code> is combined with mesh geoms; geoms
+with non-zero authored margins emit a warning when
+<code class="docutils literal notranslate"><span class="pre">use_mujoco_contacts=True</span></code>. The Newton model’s <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_margin" title="newton.Model.shape_margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_margin</span></code></a> array
+is left untouched, and when <code class="docutils literal notranslate"><span class="pre">use_mujoco_contacts=False</span></code> the authored
+margins are restored at runtime through <code class="docutils literal notranslate"><span class="pre">update_geom_properties_kernel</span></code>.</p>
+</section>
+<section id="contact-pairs">
+<h2>Contact pairs<a class="headerlink" href="#contact-pairs" title="Link to this heading">#</a></h2>
+<p>Newton’s core API does not expose explicit MuJoCo-style <code class="docutils literal notranslate"><span class="pre">&lt;pair&gt;</span></code>
+contact overrides. They are implemented through the MuJoCo
+<a class="reference internal" href="#mujoco-custom-attributes"><span class="std std-ref">custom-attribute namespace</span></a> and
+parsed into MuJoCo’s geom-pair contact structures by
+<code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._init_pairs</span></code>.</p>
+</section>
+<section id="multi-world-support">
+<h2>Multi-world support<a class="headerlink" href="#multi-world-support" title="Link to this heading">#</a></h2>
+<p>Constructing <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> with
+<code class="docutils literal notranslate"><span class="pre">separate_worlds=True</span></code> (the default for GPU mode with multiple
+worlds) builds a MuJoCo model from the <strong>first world</strong> only and
+replicates it across all worlds via <code class="docutils literal notranslate"><span class="pre">mujoco_warp</span></code>. This requires
+all Newton worlds to be structurally identical (same bodies, joints,
+and shapes); <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> validates this at
+construction and raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> on a mismatch.</p>
+<p>Bodies, joints, equality constraints, and mimic constraints cannot have
+a negative world index — assigning any of them to the global world
+raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>. Only shapes may live in the global world (-1);
+they are shared across all worlds without replication.</p>
+</section>
+<section id="runtime-state-synchronization">
+<h2>Runtime state synchronization<a class="headerlink" href="#runtime-state-synchronization" title="Link to this heading">#</a></h2>
+<p>Each call to <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.step" title="newton.solvers.SolverMuJoCo.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">step()</span></code></a> goes through the
+same three-phase cycle:</p>
+<ol class="arabic simple">
+<li><p><strong>Push Newton → MuJoCo.</strong> <code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._apply_mjc_control</span></code> and
+<code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._update_mjc_data</span></code> transfer the Newton <code class="docutils literal notranslate"><span class="pre">State</span></code>
+and <code class="docutils literal notranslate"><span class="pre">Control</span></code> inputs to MuJoCo’s working data. When
+<code class="docutils literal notranslate"><span class="pre">use_mujoco_contacts=False</span></code>, Newton-side contacts are also
+converted before the integrator runs. The joint-state re-sync
+frequency can be controlled via the <code class="docutils literal notranslate"><span class="pre">update_data_interval</span></code>
+kwarg for substepping schemes.</p></li>
+<li><p><strong>Integrate.</strong> <code class="docutils literal notranslate"><span class="pre">mujoco_warp</span></code> steps the MuJoCo model forward by <code class="docutils literal notranslate"><span class="pre">dt</span></code>.</p></li>
+<li><p><strong>Pull MuJoCo → Newton.</strong> <code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._update_newton_state</span></code>
+populates the output <code class="docutils literal notranslate"><span class="pre">State</span></code> from the integrated MuJoCo data.
+Kinematic roots pass through unchanged from <code class="docutils literal notranslate"><span class="pre">state_in</span></code> (see
+<a class="reference internal" href="#kinematic-links-and-fixed-roots">Kinematic links and fixed roots</a>).</p></li>
+</ol>
+<p>Contacts are <strong>not</strong> pulled back into a Newton <code class="docutils literal notranslate"><span class="pre">Contacts</span></code> object
+automatically. Call <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.update_contacts" title="newton.solvers.SolverMuJoCo.update_contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update_contacts()</span></code></a>
+when you need contact points, forces, or material indices in Newton form.</p>
+<p>Push, pull, and contact-conversion are implemented by
+<code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._apply_mjc_control</span></code>, <code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._update_newton_state</span></code>,
+and <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.update_contacts" title="newton.solvers.SolverMuJoCo.update_contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update_contacts()</span></code></a>, using kernels
+from <a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/kernels.py">newton/_src/solvers/mujoco/kernels.py</a> — see
+<a class="reference internal" href="#code-pointers">Code pointers</a> for the full anchor list.</p>
+</section>
+<section id="solver-options">
+<h2>Solver options<a class="headerlink" href="#solver-options" title="Link to this heading">#</a></h2>
+<p>MuJoCo solver parameters follow a three-level resolution priority:</p>
+<ol class="arabic simple">
+<li><p><strong>Constructor argument</strong> passed to <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>
+— one value, applied to all worlds. The full list of kwargs, their
+types, and their defaults is documented on the class itself.</p></li>
+<li><p><strong>Custom attribute</strong> (<code class="docutils literal notranslate"><span class="pre">model.mujoco.&lt;option&gt;</span></code>) — supports per-world
+values. Typically populated automatically by USD or MJCF import.</p></li>
+<li><p><strong>Default</strong> — if neither of the above is set, the MuJoCo default is
+used, with one Newton-opinionated exception: <code class="docutils literal notranslate"><span class="pre">integrator</span></code> defaults
+to <code class="docutils literal notranslate"><span class="pre">implicitfast</span></code> (MuJoCo’s default is <code class="docutils literal notranslate"><span class="pre">euler</span></code>) for better
+stability on stiff systems.</p></li>
+</ol>
+<p>These values are read once during <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>
+construction. Editing <code class="docutils literal notranslate"><span class="pre">model.mujoco.&lt;option&gt;</span></code> afterwards has no
+effect — the resolved value is already baked into the underlying
+MuJoCo model.</p>
+<p>See MuJoCo’s <a class="reference external" href="https://mujoco.readthedocs.io/en/stable/computation/index.html">solver documentation</a> and
+<a class="reference external" href="https://mujoco.readthedocs.io/en/stable/XMLreference.html#option">&lt;option&gt; XML reference</a> for
+what each parameter does and when to tune it.</p>
+</section>
+<section id="mujoco-specific-parameters-in-usd-and-mjcf">
+<span id="mujoco-custom-attributes"></span><h2>MuJoCo-specific parameters in USD and MJCF<a class="headerlink" href="#mujoco-specific-parameters-in-usd-and-mjcf" title="Link to this heading">#</a></h2>
+<p>MuJoCo has parameters with no counterpart in Newton’s core API.
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a> handles them during MJCF / USD import
+via two mechanisms.</p>
+<p><strong>Custom-attribute namespace.</strong> A dedicated <code class="docutils literal notranslate"><span class="pre">mujoco</span></code> custom-attribute
+namespace (<code class="docutils literal notranslate"><span class="pre">model.mujoco.&lt;name&gt;</span></code>) is populated from MJCF elements
+and from attributes in the OpenUSD MuJoCo schema (<code class="docutils literal notranslate"><span class="pre">mjc:*</span></code>). To
+enable the namespace, call
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.register_custom_attributes" title="newton.solvers.SolverMuJoCo.register_custom_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a> on the
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a> <strong>before</strong> adding anything to it:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.solvers</span><span class="w"> </span><span class="kn">import</span> <span class="n">SolverMuJoCo</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">SolverMuJoCo</span><span class="o">.</span><span class="n">register_custom_attributes</span><span class="p">(</span><span class="n">builder</span><span class="p">)</span>
+<span class="c1"># ...then add anything (e.g. import MJCF / USD, add joints, ...)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>The authoritative list of registered attributes — names, defaults,
+dtypes, MJCF / USD source names, and the category each belongs to —
+is the body of
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.register_custom_attributes" title="newton.solvers.SolverMuJoCo.register_custom_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a>
+itself. See <a class="reference internal" href="../concepts/custom_attributes.html"><span class="doc">Custom Attributes</span></a> for how Newton’s
+custom-attribute system works in general.</p>
+<p><strong>Direct mapping to Newton built-ins.</strong> Some MuJoCo-specific
+attributes are mapped onto Newton’s built-in properties during import
+(rather than the <code class="docutils literal notranslate"><span class="pre">mujoco</span></code> namespace) — for example, joint-limit
+stiffness and damping derived from <code class="docutils literal notranslate"><span class="pre">solreflimit</span></code>. The MJCF parser
+handles this inline (<a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/utils/import_mjcf.py">newton/_src/utils/import_mjcf.py</a>); USD
+goes through <a class="reference internal" href="../api/_generated/newton.usd.SchemaResolverMjc.html#newton.usd.SchemaResolverMjc" title="newton.usd.SchemaResolverMjc"><code class="xref py py-class docutils literal notranslate"><span class="pre">SchemaResolverMjc</span></code></a>
+(<a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/usd/schemas.py">newton/_src/usd/schemas.py</a>).</p>
+</section>
+<section id="unsupported-mujoco-features">
+<h2>Unsupported MuJoCo features<a class="headerlink" href="#unsupported-mujoco-features" title="Link to this heading">#</a></h2>
+<p>The sections above describe what Newton forwards <em>into</em> MuJoCo. In the
+other direction, MuJoCo has several modeling concepts that are not
+imported when loading an MJCF or USD asset into Newton, and that
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> does not reconstruct during conversion:</p>
+<ul class="simple">
+<li><p><strong>Sensors</strong> (<code class="docutils literal notranslate"><span class="pre">&lt;sensor&gt;</span></code> — force/torque, IMU, gyro, accelerometer,
+rangefinder, touch, camera-based, …). Newton has its own sensor
+pipeline (<a class="reference internal" href="../concepts/sensors.html"><span class="doc">Sensors</span></a>) that is independent of the MuJoCo
+solver.</p></li>
+<li><p><strong>Cameras and lights</strong> declared in MJCF/USD. Newton uses its own viewer
+and lighting pipeline; camera/light primitives in the source asset are
+ignored.</p></li>
+<li><p><strong>Keyframes</strong> (<code class="docutils literal notranslate"><span class="pre">&lt;keyframe&gt;</span></code>) — MuJoCo’s saved-state / reset mechanism
+is not imported.</p></li>
+<li><p><strong>Composite and flex</strong> (<code class="docutils literal notranslate"><span class="pre">&lt;composite&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;flex&gt;</span></code>) — MuJoCo’s built-in
+deformables and soft bodies. Newton has dedicated solvers for cloth,
+MPM, and FEM; they are not part of the MuJoCo integration.</p></li>
+<li><p><strong>Skinned meshes</strong> (<code class="docutils literal notranslate"><span class="pre">&lt;skin&gt;</span></code>) — visualization-only, not imported.</p></li>
+<li><p><strong>User plugins</strong> (<code class="docutils literal notranslate"><span class="pre">&lt;plugin&gt;</span></code>) — MuJoCo’s plugin mechanism for custom
+passive forces or dynamics is not supported.</p></li>
+<li><p><strong>User data and arbitrary custom elements</strong> (<code class="docutils literal notranslate"><span class="pre">&lt;custom&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;numeric&gt;</span></code>,
+<code class="docutils literal notranslate"><span class="pre">&lt;text&gt;</span></code>) — not imported. Newton-specific user data should use the
+Newton custom-attribute system instead.</p></li>
+<li><p><strong>Actuator transmissions</strong> — only <code class="docutils literal notranslate"><span class="pre">joint</span></code>, <code class="docutils literal notranslate"><span class="pre">tendon</span></code>, <code class="docutils literal notranslate"><span class="pre">site</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">body</span></code> transmissions are supported (see
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.TrnType" title="newton.solvers.SolverMuJoCo.TrnType"><code class="xref py py-class docutils literal notranslate"><span class="pre">TrnType</span></code></a> for the enum). MuJoCo’s
+<code class="docutils literal notranslate"><span class="pre">jointinparent</span></code> and <code class="docutils literal notranslate"><span class="pre">slidercrank</span></code> transmissions are not converted;
+actuators using them are skipped at construction with a warning.</p></li>
+</ul>
+<p>Smaller limitations are documented inline where they are most relevant —
+see <a class="reference internal" href="#caveats">Caveats</a> below for <code class="docutils literal notranslate"><span class="pre">gap</span></code>, collision-radius, convex-hull fallback,
+and velocity limits; and the unsupported rows in <a class="reference internal" href="#joint-types">Joint types</a> and
+<a class="reference internal" href="#geometry-types">Geometry types</a>.</p>
+</section>
+<section id="caveats">
+<h2>Caveats<a class="headerlink" href="#caveats" title="Link to this heading">#</a></h2>
+<dl class="simple">
+<dt><strong>geom_gap is always zero.</strong></dt><dd><p>MuJoCo’s <code class="docutils literal notranslate"><span class="pre">gap</span></code> parameter controls <em>inactive</em> contact generation —
+contacts that are detected but do not produce constraint forces until
+penetration exceeds the gap threshold. Newton does not use this concept:
+when the MuJoCo collision pipeline is active it runs every step, so
+there is no benefit to keeping inactive contacts around. Setting
+<code class="docutils literal notranslate"><span class="pre">geom_gap</span> <span class="pre">&gt;</span> <span class="pre">0</span></code> would inflate <code class="docutils literal notranslate"><span class="pre">geom_margin</span></code>, which disables MuJoCo’s
+multicontact and degrades contact quality. Therefore
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> always sets <code class="docutils literal notranslate"><span class="pre">geom_gap</span> <span class="pre">=</span> <span class="pre">0</span></code>
+regardless of the Newton
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">gap</span></code> value. MJCF/USD <code class="docutils literal notranslate"><span class="pre">gap</span></code>
+values are still imported into
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">gap</span></code> on the Newton model, but
+they are not forwarded to the MuJoCo solver.</p>
+</dd>
+<dt><strong>shape_collision_radius is ignored.</strong></dt><dd><p>MuJoCo computes bounding-sphere radii (<code class="docutils literal notranslate"><span class="pre">geom_rbound</span></code>) internally from
+the geometry definition. Newton’s <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_collision_radius" title="newton.Model.shape_collision_radius"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_collision_radius</span></code></a> is not
+forwarded.</p>
+</dd>
+<dt><strong>Non-convex meshes are convex-hulled.</strong></dt><dd><p>MuJoCo only supports convex collision geometry. Non-convex <code class="docutils literal notranslate"><span class="pre">MESH</span></code>
+shapes are automatically convex-hulled at conversion time, changing the
+effective collision boundary.</p>
+</dd>
+<dt><strong>Velocity limits are not forwarded.</strong></dt><dd><p>Newton’s <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_velocity_limit" title="newton.Model.joint_velocity_limit"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_velocity_limit</span></code></a> has no MuJoCo equivalent and is
+ignored.</p>
+</dd>
+<dt><strong>Kinematic-root armature override.</strong></dt><dd><p>DOFs of kinematic articulation roots have their
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_armature" title="newton.Model.joint_armature"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_armature</span></code></a> replaced with a very large
+internal value (<code class="docutils literal notranslate"><span class="pre">1e10</span></code>) so MuJoCo treats them as effectively
+prescribed. The user-supplied armature on those DOFs is silently
+discarded. See <a class="reference internal" href="#kinematic-links-and-fixed-roots">Kinematic links and fixed roots</a>.</p>
+</dd>
+<dt><strong>Collision filtering bitmask fallback.</strong></dt><dd><p>Newton’s <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_collision_group" title="newton.Model.shape_collision_group"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_collision_group</span></code></a> (see
+<a class="reference internal" href="../concepts/collisions.html#collision-groups"><span class="std std-ref">Collision Groups</span></a>) is translated to MuJoCo’s <code class="docutils literal notranslate"><span class="pre">contype</span></code> /
+<code class="docutils literal notranslate"><span class="pre">conaffinity</span></code> via graph coloring
+(<a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/graph_coloring.py">newton/_src/sim/graph_coloring.py</a>). Up to 32 colors are
+supported (one per <code class="docutils literal notranslate"><span class="pre">contype</span></code> bit). If the filtering graph requires
+more, shapes with color index ≥ 32 fall back to <code class="docutils literal notranslate"><span class="pre">contype=1</span></code> /
+<code class="docutils literal notranslate"><span class="pre">conaffinity=1</span></code> and silently collide with every other shape,
+bypassing the intended filtering and adding extra contact pairs to
+the broadphase.</p>
+</dd>
+</dl>
+</section>
+<section id="kinematic-links-and-fixed-roots">
+<span id="mujoco-kinematic-links-and-fixed-roots"></span><h2>Kinematic links and fixed roots<a class="headerlink" href="#kinematic-links-and-fixed-roots" title="Link to this heading">#</a></h2>
+<p>Newton only allows <code class="docutils literal notranslate"><span class="pre">is_kinematic=True</span></code> on articulation roots, so a
+“kinematic link” in this section always means a kinematic root body.
+Any descendants of that root can still be dynamic and are converted
+normally.</p>
+<p>At runtime, <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> keeps kinematic roots
+user-prescribed rather than dynamically integrated:</p>
+<ul class="simple">
+<li><p>When converting MuJoCo state back to Newton, the previous Newton
+<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_q" title="newton.State.joint_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_q</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_qd" title="newton.State.joint_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_qd</span></code></a> values
+are passed through for kinematic roots instead of being overwritten
+from MuJoCo’s integrated <code class="docutils literal notranslate"><span class="pre">qpos</span></code> and <code class="docutils literal notranslate"><span class="pre">qvel</span></code>.</p></li>
+<li><p>Applied body wrenches and joint forces targeting kinematic bodies
+are ignored on the MuJoCo side.</p></li>
+<li><p>Kinematic bodies still participate in contacts, so they can act as
+moving or fixed obstacles for dynamic bodies.</p></li>
+</ul>
+<p>During Newton-to-MuJoCo conversion (at
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> construction), roots are mapped
+by joint type:</p>
+<ul class="simple">
+<li><p><strong>Kinematic roots with non-fixed joints</strong> become ordinary MuJoCo
+joints with the same Newton joint type and DOFs. A very large
+internal armature is assigned to those DOFs so MuJoCo treats them
+as prescribed, effectively infinite-mass coordinates.</p></li>
+<li><p><strong>Roots attached to world with a fixed joint</strong> become MuJoCo mocap
+bodies (whether kinematic or not). MuJoCo has no joint coordinates
+for a fixed root, so Newton drives the pose through
+<code class="docutils literal notranslate"><span class="pre">mjData.mocap_pos</span></code> and <code class="docutils literal notranslate"><span class="pre">mjData.mocap_quat</span></code> instead.</p></li>
+<li><p><strong>World-attached shapes that are not part of an articulation</strong>
+remain ordinary static MuJoCo geometry rather than mocap bodies.</p></li>
+</ul>
+<p>If you edit <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_X_p" title="newton.Model.joint_X_p"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_X_p</span></code></a> or <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_X_c" title="newton.Model.joint_X_c"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_X_c</span></code></a>
+for a fixed-root articulation after constructing the solver, call
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.notify_model_changed" title="newton.solvers.SolverBase.notify_model_changed"><code class="xref py py-meth docutils literal notranslate"><span class="pre">notify_model_changed()</span></code></a> with the
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverNotifyFlags.html#newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES" title="newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES"><code class="xref py py-attr docutils literal notranslate"><span class="pre">JOINT_PROPERTIES</span></code></a> flag to
+synchronize the updated fixed-root poses into MuJoCo.</p>
+</section>
+<section id="code-pointers">
+<span id="mujoco-code-pointers"></span><h2>Code pointers<a class="headerlink" href="#code-pointers" title="Link to this heading">#</a></h2>
+<p>For readers navigating the source, the following symbols are the most
+useful entry points. Symbols with a leading underscore are <strong>internal
+entry points</strong> — stable enough to navigate to, but not part of the public
+API and subject to change.</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.register_custom_attributes" title="newton.solvers.SolverMuJoCo.register_custom_attributes"><code class="xref py py-meth docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a> —
+authoritative registry of every MuJoCo-specific custom attribute and
+frequency.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.step" title="newton.solvers.SolverMuJoCo.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">step()</span></code></a> — per-step integration entry
+point.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._convert_to_mjc</span></code> — Newton <code class="docutils literal notranslate"><span class="pre">Model</span></code> (and optional
+<code class="docutils literal notranslate"><span class="pre">State</span></code>) → MuJoCo <code class="docutils literal notranslate"><span class="pre">mjModel</span></code> / <code class="docutils literal notranslate"><span class="pre">mjData</span></code> (orchestrator).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._init_pairs</span></code> / <code class="docutils literal notranslate"><span class="pre">_init_actuators</span></code> / <code class="docutils literal notranslate"><span class="pre">_init_tendons</span></code> —
+category-specific parsers that consume the MuJoCo custom attributes.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._apply_mjc_control</span></code>,
+<code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._update_mjc_data</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">SolverMuJoCo._update_newton_state</span></code> — per-step control, data, and
+state sync between Newton and MuJoCo.</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo.update_contacts" title="newton.solvers.SolverMuJoCo.update_contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update_contacts()</span></code></a> — explicit pull
+of MuJoCo’s resolved contacts into a Newton <code class="docutils literal notranslate"><span class="pre">Contacts</span></code> object
+(default per-step path does not pull contacts back).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.notify_model_changed" title="newton.solvers.SolverBase.notify_model_changed"><code class="xref py py-meth docutils literal notranslate"><span class="pre">notify_model_changed()</span></code></a> —
+re-synchronize MuJoCo state after editing the Newton <code class="docutils literal notranslate"><span class="pre">Model</span></code> (e.g.
+fixed-root pose changes via <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_X_p" title="newton.Model.joint_X_p"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_X_p</span></code></a> / <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_X_c" title="newton.Model.joint_X_c"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_X_c</span></code></a>).</p></li>
+<li><p><a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/kernels.py">newton/_src/solvers/mujoco/kernels.py</a> — Warp kernels for
+coordinate, contact, and state conversion (<code class="docutils literal notranslate"><span class="pre">quat_wxyz_to_xyzw</span></code>,
+<code class="docutils literal notranslate"><span class="pre">convert_mj_coords_to_warp_kernel</span></code>,
+<code class="docutils literal notranslate"><span class="pre">convert_newton_contacts_to_mjwarp_kernel</span></code>, <code class="docutils literal notranslate"><span class="pre">convert_solref</span></code>, …).</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.usd.SchemaResolverMjc.html#newton.usd.SchemaResolverMjc" title="newton.usd.SchemaResolverMjc"><code class="xref py py-class docutils literal notranslate"><span class="pre">SchemaResolverMjc</span></code></a>
+(<a class="extlink-github reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/usd/schemas.py">newton/_src/usd/schemas.py</a>) — USD <code class="docutils literal notranslate"><span class="pre">mjc:*</span></code> attribute →
+Newton built-in property mapping.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#joint-types">Joint types</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#geometry-types">Geometry types</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#actuators">Actuators</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#equality-constraints">Equality constraints</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tendons">Tendons</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-pipeline">Collision pipeline</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-pairs">Contact pairs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-world-support">Multi-world support</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#runtime-state-synchronization">Runtime state synchronization</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-options">Solver options</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mujoco-specific-parameters-in-usd-and-mjcf">MuJoCo-specific parameters in USD and MJCF</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unsupported-mujoco-features">Unsupported MuJoCo features</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#caveats">Caveats</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#kinematic-links-and-fixed-roots">Kinematic links and fixed roots</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-pointers">Code pointers</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

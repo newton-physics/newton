@@ -1,0 +1,6 @@
+﻿newton.usd.type\_to\_warp
+=========================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: type_to_warp

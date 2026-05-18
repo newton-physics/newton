@@ -1,0 +1,6 @@
+﻿newton.math.quat\_between\_axes
+===============================
+
+.. currentmodule:: newton.math
+
+.. autofunction:: quat_between_axes

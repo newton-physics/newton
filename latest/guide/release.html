@@ -1,0 +1,1225 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Release Process &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=68e7ce64" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=e5de4b90"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'guide/release';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Worlds" href="../concepts/worlds.html" />
+    <link rel="prev" title="Development" href="development.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.3.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="development.html">
+    Development
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tutorials.html">Tutorials</a></li>
+<li class="toctree-l1 current active"><a class="reference internal" href="development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../concepts/worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../concepts/extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="development.html" class="nav-link">Development</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Release Process</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="release-process">
+<h1>Release Process<a class="headerlink" href="#release-process" title="Link to this heading">#</a></h1>
+<p>This document describes how to prepare, publish, and follow up on a Newton
+release.  It is intended for release engineers and maintainers.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>Newton follows PEP 440 versioning as described in the
+<a class="reference internal" href="installation.html#versioning"><span class="std std-ref">versioning</span></a> section of the installation guide.</p>
+<p>Releases are published to <a class="reference external" href="https://pypi.org/p/newton">PyPI</a> and
+documentation is deployed to
+<a class="reference external" href="https://newton-physics.github.io/newton/">GitHub Pages</a>.</p>
+<section id="version-source-of-truth">
+<h3>Version source of truth<a class="headerlink" href="#version-source-of-truth" title="Link to this heading">#</a></h3>
+<p>The version string lives in the <code class="docutils literal notranslate"><span class="pre">[project]</span></code> table of <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code>.
+All other version references (PyPI metadata, documentation) are derived from
+this file.  At runtime, <code class="docutils literal notranslate"><span class="pre">newton/_version.py</span></code> reads the version from
+installed package metadata via <code class="docutils literal notranslate"><span class="pre">importlib.metadata</span></code>.</p>
+</section>
+<section id="dependency-versioning-strategy">
+<h3>Dependency versioning strategy<a class="headerlink" href="#dependency-versioning-strategy" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> specifies <strong>minimum</strong> compatible versions
+(e.g. <code class="docutils literal notranslate"><span class="pre">warp-lang&gt;=1.12.0</span></code>).  <code class="docutils literal notranslate"><span class="pre">uv.lock</span></code> pins the <strong>latest known-good</strong>
+versions for reproducible installs.</p>
+<p>Exception: on the <strong>release branch</strong>, <code class="docutils literal notranslate"><span class="pre">mujoco</span></code> and <code class="docutils literal notranslate"><span class="pre">mujoco-warp</span></code> use
+<strong>compatible-release</strong> pins (e.g. <code class="docutils literal notranslate"><span class="pre">mujoco~=3.5.0</span></code>) to allow patch
+updates while locking the minor version.  MuJoCo follows
+<a class="reference external" href="https://github.com/google-deepmind/mujoco/blob/main/VERSIONING.md#from-350--semantic-versioning">semantic versioning from 3.5.0 onward</a>,
+so patch releases are safe to pick up automatically.  <code class="docutils literal notranslate"><span class="pre">main</span></code> uses a
+version floor like other dependencies.</p>
+</section>
+<section id="deprecation-timeline">
+<span id="id1"></span><h3>Deprecation timeline<a class="headerlink" href="#deprecation-timeline" title="Link to this heading">#</a></h3>
+<p>Following <a class="reference external" href="https://nvidia.github.io/warp/user_guide/compatibility.html#deprecation-timeline">Warp’s deprecation policy</a>,
+a deprecated feature is maintained for <strong>two full minor release cycles</strong>
+after deprecation (e.g. deprecated in 1.2.0 → removed in 1.4.0).
+Deprecations and removals only happen in minor releases, never in patch
+releases.</p>
+</section>
+</section>
+<section id="pre-release-planning">
+<h2>Pre-release planning<a class="headerlink" href="#pre-release-planning" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 5.0%" />
+<col style="width: 95.0%" />
+</colgroup>
+<tbody>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Determine target version (<code class="docutils literal notranslate"><span class="pre">X.Y.Z</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>Confirm dependency versions and availability: warp-lang, mujoco,
+mujoco-warp, newton-usd-schemas.</p></td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Set timeline: code freeze → RC1 → testing window → GA.</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>Conduct public API audit:</p>
+<ul class="simple">
+<li><p>Review all new/changed symbols since the last release for unintended
+breaking changes.</p></li>
+<li><p>Verify deprecated symbols carry proper deprecation warnings and
+migration guidance (see <a class="reference internal" href="#deprecation-timeline"><span class="std std-ref">Deprecation timeline</span></a>).</p></li>
+<li><p>Confirm new public API has complete docstrings and is included in
+Sphinx docs (run <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span> <span class="pre">docs/generate_api.py</span></code>).</p></li>
+</ul>
+<p>Run the <code class="docutils literal notranslate"><span class="pre">release-audit</span></code> Claude Code skill
+(<code class="docutils literal notranslate"><span class="pre">.claude/skills/release-audit</span></code>) in <strong>pre-release mode</strong> to automate
+this audit.</p>
+</td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Communicate the timeline to the community.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="code-freeze-and-release-branch-creation">
+<h2>Code freeze and release branch creation<a class="headerlink" href="#code-freeze-and-release-branch-creation" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 5.0%" />
+<col style="width: 95.0%" />
+</colgroup>
+<tbody>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Create <code class="docutils literal notranslate"><span class="pre">release-X.Y</span></code> branch from <code class="docutils literal notranslate"><span class="pre">main</span></code> and push it.</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>On <strong>main</strong>: bump the version in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> to <code class="docutils literal notranslate"><span class="pre">X.(Y+1).0.dev0</span></code> and run
+<code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span> <span class="pre">docs/generate_api.py</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>On <strong>release-X.Y</strong>: bump the version in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> to <code class="docutils literal notranslate"><span class="pre">X.Y.ZrcN</span></code> and
+run <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span> <span class="pre">docs/generate_api.py</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>On <strong>release-X.Y</strong>: update dependencies in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> from dev
+to RC versions where applicable and remove the NVIDIA package index
+(<code class="docutils literal notranslate"><span class="pre">[[tool.uv.index]]</span></code> entry for <code class="docutils literal notranslate"><span class="pre">nvidia</span></code> <strong>and</strong> the
+<code class="docutils literal notranslate"><span class="pre">warp-lang</span></code> entry in <code class="docutils literal notranslate"><span class="pre">[tool.uv.sources]</span></code> that references it) so
+the release wheel installs purely from PyPI, then regenerate
+<code class="docutils literal notranslate"><span class="pre">uv.lock</span></code> (<code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">lock</span></code>) and commit.</p></td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Run the <code class="docutils literal notranslate"><span class="pre">release-audit</span></code> skill in <strong>release-candidate mode</strong> against
+<code class="docutils literal notranslate"><span class="pre">release-X.Y</span></code>; address or acknowledge flagged entries before
+tagging.</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>Manually trigger the <strong>minimum-dependency</strong> and <strong>multi-GPU</strong> CI
+workflows on the <code class="docutils literal notranslate"><span class="pre">release-X.Y</span></code> branch (the nightly orchestrator
+only runs on <code class="docutils literal notranslate"><span class="pre">main</span></code>).  Verify both pass before tagging.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Minimum-dependency tests (lowest compatible PyPI versions)</span>
+gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>minimum_deps_tests.yml<span class="w"> </span>--ref<span class="w"> </span>release-X.Y
+
+<span class="c1"># Multi-GPU tests (g7e.12xlarge = 4× L40S GPUs)</span>
+gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>aws_gpu_tests.yml<span class="w"> </span>--ref<span class="w"> </span>release-X.Y<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-f<span class="w"> </span>instance-type<span class="o">=</span>g7e.12xlarge
+</pre></div>
+</div>
+</td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Push tag <code class="docutils literal notranslate"><span class="pre">vX.Y.Zrc1</span></code>.  This triggers the <code class="docutils literal notranslate"><span class="pre">release.yml</span></code> workflow
+(build wheel → PyPI publish with manual approval).</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>RC1 published to PyPI (approve in GitHub environment).</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="release-candidate-stabilization">
+<h2>Release candidate stabilization<a class="headerlink" href="#release-candidate-stabilization" title="Link to this heading">#</a></h2>
+<p>Bug fixes merge to <code class="docutils literal notranslate"><span class="pre">main</span></code> first, then are cherry-picked to
+<code class="docutils literal notranslate"><span class="pre">release-X.Y</span></code>.  Cherry-pick relevant commits from <code class="docutils literal notranslate"><span class="pre">main</span></code> onto a feature
+branch and open a pull request targeting <code class="docutils literal notranslate"><span class="pre">release-X.Y</span></code> — never push
+directly to the release branch.</p>
+<p>For each new RC (<code class="docutils literal notranslate"><span class="pre">rc2</span></code>, <code class="docutils literal notranslate"><span class="pre">rc3</span></code>, …) bump the version in
+<code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> and run <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span> <span class="pre">docs/generate_api.py</span></code>, then tag and push.
+Resolve any cherry-pick conflicts or missing dependent cherry-picks that
+cause CI failures before tagging.</p>
+<section id="testing-criteria">
+<span id="id2"></span><h3>Testing criteria<a class="headerlink" href="#testing-criteria" title="Link to this heading">#</a></h3>
+<p>The release engineer and maintainers decide which issues must be fixed
+before GA and which can ship as known issues documented in the release
+notes.  Features explicitly marked <strong>experimental</strong> have a lower bar —
+regressions in experimental APIs do not necessarily block a release.</p>
+<p>As a guideline, an RC is typically ready for GA when:</p>
+<ul class="simple">
+<li><p>All examples run without crashes, excessive warnings, or visual
+artifacts (<code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span> <span class="pre">-m</span> <span class="pre">newton.examples</span> <span class="pre">&lt;name&gt;</span></code>).</p></li>
+<li><p>Testing covers <strong>Windows and Linux</strong>, <strong>all supported Python versions</strong>,
+and both <strong>latest and minimum-spec CUDA drivers</strong> (see
+<a class="reference internal" href="installation.html#system-requirements"><span class="std std-ref">system requirements</span></a> in the installation guide).</p></li>
+<li><p>PyPI installation of the RC works in a clean environment: <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span></code>
+succeeds, <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">newton</span></code> works, and examples and tests can be run from
+the installed wheel (<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">newton==X.Y.ZrcN</span></code>).</p></li>
+<li><p>No unexpected regressions compared to the previous release have been
+identified.</p></li>
+</ul>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 5.0%" />
+<col style="width: 95.0%" />
+</colgroup>
+<tbody>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>All release-targeted fixes cherry-picked from <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>Re-run the <code class="docutils literal notranslate"><span class="pre">release-audit</span></code> skill after final cherry-picks; confirm
+no new flags since the last RC.</p></td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p><a class="reference internal" href="#testing-criteria"><span class="std std-ref">Testing criteria</span></a> satisfied.</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>No outstanding release-blocking issues.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+<section id="final-ga-release">
+<span id="final-release"></span><h2>Final GA release<a class="headerlink" href="#final-ga-release" title="Link to this heading">#</a></h2>
+<p>Before proceeding, obtain explicit go/no-go approval from the
+maintainers.  Do not start the final release steps until sign-off is
+confirmed.</p>
+<p>All steps below are performed on the <strong>release-X.Y</strong> branch unless noted
+otherwise.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 5.0%" />
+<col style="width: 95.0%" />
+</colgroup>
+<tbody>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Go/no-go approval obtained from maintainers.</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>Finalize <code class="docutils literal notranslate"><span class="pre">CHANGELOG.md</span></code>: rename <code class="docutils literal notranslate"><span class="pre">[Unreleased]</span></code> →
+<code class="docutils literal notranslate"><span class="pre">[X.Y.Z]</span> <span class="pre">-</span> <span class="pre">YYYY-MM-DD</span></code>.  Review the entries for:</p>
+<ul class="simple">
+<li><p><strong>Missing entries</strong> — cross-check merged PRs since the last GA
+release (or patch) to catch changes that were not recorded in the
+changelog.</p></li>
+<li><p><strong>Redundant entries</strong> — consolidate or remove duplicates for changes
+within the same release period (e.g. a bug fix for a feature added
+in the same cycle should not appear as both an “Added” and a “Fixed”
+entry).</p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">release-audit</span></code> skill’s CHANGELOG language review is a useful
+first pass before this manual sweep.</p>
+</td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Update <code class="docutils literal notranslate"><span class="pre">README.md</span></code> documentation links to point to versioned URLs
+(e.g. <code class="docutils literal notranslate"><span class="pre">/X.Y.Z/guide.html</span></code> instead of <code class="docutils literal notranslate"><span class="pre">/latest/</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>Verify all dependency pins in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> use stable
+(non-pre-release) versions.</p></td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Regenerate <code class="docutils literal notranslate"><span class="pre">uv.lock</span></code> (<code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">lock</span></code>) and verify that no pre-release
+dependencies remain in the lock file.</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>Bump the version in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> to <code class="docutils literal notranslate"><span class="pre">X.Y.Z</span></code> (remove the RC suffix) and
+run <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span> <span class="pre">docs/generate_api.py</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Commit and push tag <code class="docutils literal notranslate"><span class="pre">vX.Y.Z</span></code>.  Automated workflows trigger:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">release.yml</span></code>: builds wheel, publishes to PyPI (requires manual
+approval), creates a draft GitHub Release.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">docs-release.yml</span></code>: deploys docs to <code class="docutils literal notranslate"><span class="pre">/X.Y.Z/</span></code> and <code class="docutils literal notranslate"><span class="pre">/stable/</span></code>
+on gh-pages, updates <code class="docutils literal notranslate"><span class="pre">switcher.json</span></code>.</p></li>
+</ul>
+</td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>PyPI publish approved and verified: <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">newton==X.Y.Z</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>GitHub Release un-drafted and published.</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>Docs live at <code class="docutils literal notranslate"><span class="pre">/X.Y.Z/</span></code> and <code class="docutils literal notranslate"><span class="pre">/stable/</span></code>: verify links and version
+switcher.</p></td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Release announcement posted.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="post-release">
+<h2>Post-release<a class="headerlink" href="#post-release" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 5.0%" />
+<col style="width: 95.0%" />
+</colgroup>
+<tbody>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Merge back the changelog from <code class="docutils literal notranslate"><span class="pre">release-X.Y</span></code> to <code class="docutils literal notranslate"><span class="pre">main</span></code>: move
+entries included in the release from <code class="docutils literal notranslate"><span class="pre">[Unreleased]</span></code> to a new
+<code class="docutils literal notranslate"><span class="pre">[X.Y.Z]</span></code> section.  (<code class="docutils literal notranslate"><span class="pre">[Unreleased]</span></code> is a permanent header in
+the changelog that always exists on <code class="docutils literal notranslate"><span class="pre">main</span></code>.)</p></td>
+</tr>
+<tr class="row-even"><td><p>☐</p></td>
+<td><p>Verify PyPI installation works in a clean environment.</p></td>
+</tr>
+<tr class="row-odd"><td><p>☐</p></td>
+<td><p>Verify published docs render correctly.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="patch-releases">
+<h2>Patch releases<a class="headerlink" href="#patch-releases" title="Link to this heading">#</a></h2>
+<p>Patch releases continue cherry-picking fixes to the existing
+<code class="docutils literal notranslate"><span class="pre">release-X.Y</span></code> branch.  For example, <code class="docutils literal notranslate"><span class="pre">1.0.1</span></code> follows <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code>.
+Follow the same <a class="reference internal" href="#final-release"><span class="std std-ref">Final GA release</span></a> flow — bump version, update changelog,
+tag, and push.  There is no need to create a new branch or bump <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#version-source-of-truth">Version source of truth</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dependency-versioning-strategy">Dependency versioning strategy</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecation-timeline">Deprecation timeline</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pre-release-planning">Pre-release planning</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-freeze-and-release-branch-creation">Code freeze and release branch creation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#release-candidate-stabilization">Release candidate stabilization</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-criteria">Testing criteria</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#final-ga-release">Final GA release</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#post-release">Post-release</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#patch-releases">Patch releases</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

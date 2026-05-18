@@ -1,0 +1,8 @@
+﻿newton.utils.OnnxRuntime
+========================
+
+.. autoclass:: newton.utils.OnnxRuntime
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

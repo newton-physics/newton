@@ -1,0 +1,6 @@
+﻿newton.utils.compute\_world\_offsets
+====================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: compute_world_offsets

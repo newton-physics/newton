@@ -1,0 +1,6 @@
+﻿newton.geometry.refit\_bvh\_particle
+====================================
+
+.. currentmodule:: newton.geometry
+
+.. autofunction:: refit_bvh_particle
