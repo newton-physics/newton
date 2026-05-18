@@ -33,10 +33,10 @@ Dependency versioning strategy
 versions for reproducible installs.
 
 Exception: on the **release branch**, ``mujoco`` and ``mujoco-warp`` use
-**compatible-release** pins (e.g. ``mujoco~=3.5.0``) to allow patch
+**compatible-release** pins (e.g. ``mujoco~=3.5.0``) to allow micro
 updates while locking the minor version.  MuJoCo follows
 `semantic versioning from 3.5.0 onward <https://github.com/google-deepmind/mujoco/blob/main/VERSIONING.md#from-350--semantic-versioning>`__,
-so patch releases are safe to pick up automatically.  ``main`` uses a
+so micro releases are safe to pick up automatically.  ``main`` uses a
 version floor like other dependencies.
 
 
@@ -204,7 +204,7 @@ otherwise.
        ``[X.Y.Z] - YYYY-MM-DD``.  Review the entries for:
 
        - **Missing entries** — cross-check merged PRs since the last GA
-         release (or patch) to catch changes that were not recorded in the
+         release (or micro release) to catch changes that were not recorded in the
          changelog.
        - **Redundant entries** — consolidate or remove duplicates for changes
          within the same release period (e.g. a bug fix for a feature added
