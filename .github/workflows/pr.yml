@@ -44,6 +44,75 @@ jobs:
       - name: Check uv lockfile
         run: uv lock --check
 
+  check-licenses:
+    name: License Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            proxy.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - name: Check code license headers (Apache-2.0)
+        uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1  # v0.8.0
+      - name: Check docs license headers (CC-BY-4.0)
+        uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1  # v0.8.0
+        with:
+          config: .licenserc-docs.yaml
+      - name: Check notebook license headers (CC-BY-4.0)
+        run: |
+          status=0
+          for nb in $(find docs -name '*.ipynb' -not -path '*/.*' -not -path '*/_build/*'); do
+            if ! grep -q 'SPDX-License-Identifier: CC-BY-4.0' "$nb"; then
+              echo "ERROR: $nb missing CC-BY-4.0 SPDX header"
+              status=1
+            fi
+          done
+          exit $status
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - name: Dependency review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          comment-summary-in-pr: always
+          show-openssf-scorecard: false
+          allow-licenses: >-
+            Apache-2.0,
+            MIT,
+            BSD-2-Clause,
+            BSD-2-Clause-Views,
+            BSD-3-Clause,
+            ISC,
+            MPL-2.0,
+            PSF-2.0,
+            Python-2.0,
+            Zlib,
+            CC0-1.0,
+            CC-BY-4.0
+
   run-newton-tests:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
