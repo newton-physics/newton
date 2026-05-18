@@ -635,7 +635,7 @@ class SolverImplicitMPM(SolverBase):
         config: Solver configuration. See :class:`SolverImplicitMPM.Config`.
         temporary_store: Optional Warp FEM temporary store for reusing scratch
             allocations across steps.
-        verbose: Enable verbose solver output. Defaults to ``wp.config.verbose``.
+        verbose: Enable verbose solver output. Defaults to Warp debug logging.
         enable_timers: Enable per-section wall-clock timings.
     """
 
@@ -929,7 +929,7 @@ class SolverImplicitMPM(SolverBase):
         self.tolerance = float(config.tolerance)
 
         self.temporary_store = temporary_store
-        self.verbose = verbose if verbose is not None else wp.config.verbose
+        self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
         self.enable_timers = enable_timers
 
         self.velocity_basis = "Q1"

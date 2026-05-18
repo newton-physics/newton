@@ -359,7 +359,7 @@ class SensorContact:
                 against shape labels, or list of patterns where any one matches.
             measure_total: If True (default), :attr:`total_force` and :attr:`total_force_friction` are allocated.
                 If False, both are None.
-            verbose: If True, print details. If None, uses ``wp.config.verbose``.
+            verbose: If True, print details. If None, uses Warp debug logging.
             request_contact_attributes: If True (default), transparently request the extended contact attribute
                 ``force`` from the model.
             include_total: Deprecated. Use ``measure_total`` instead.
@@ -379,7 +379,7 @@ class SensorContact:
             raise ValueError("At most one of `counterpart_bodies` and `counterpart_shapes` may be specified.")
 
         self.device = model.device
-        self.verbose = verbose if verbose is not None else wp.config.verbose
+        self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
 
         # request contact force attribute
         if request_contact_attributes:

@@ -1660,7 +1660,7 @@ def solve_rheology(
     jacobi_warmstart_smoother_iterations: int = 5,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph: bool = True,
-    verbose: bool = wp.config.verbose,
+    verbose: bool = wp.config.log_level <= wp.LOG_DEBUG,
 ):
     """Solve coupled plasticity and collider contact to compute grid velocities.
 
