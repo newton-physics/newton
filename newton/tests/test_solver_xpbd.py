@@ -1033,7 +1033,7 @@ def test_xpbd_parent_force_zero_for_free_body(test, device):
     )
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 
 
 class TestSolverXPBD(unittest.TestCase):
