@@ -14,6 +14,14 @@ class ColoringAlgorithm(Enum):
     GREEDY = 1
 
 
+def _to_warp_coloring_algorithm(algorithm: ColoringAlgorithm | wp.utils.GraphColoringAlgorithm):
+    if isinstance(algorithm, wp.utils.GraphColoringAlgorithm):
+        return algorithm
+    if isinstance(algorithm, ColoringAlgorithm):
+        return wp.utils.GraphColoringAlgorithm[algorithm.name]
+    return wp.utils.GraphColoringAlgorithm(algorithm)
+
+
 @wp.kernel
 def validate_graph_coloring(edge_indices: wp.array2d[int], colors: wp.array[int]):
     edge_idx = wp.tid()
@@ -23,67 +31,15 @@ def validate_graph_coloring(edge_indices: wp.array2d[int], colors: wp.array[int]
     wp.expect_neq(colors[e_v_1], colors[e_v_2])
 
 
-@wp.kernel
-def count_color_group_size(
-    colors: wp.array[int],
-    group_sizes: wp.array[int],
-):
-    for particle_idx in range(colors.shape[0]):
-        particle_color = colors[particle_idx]
-        group_sizes[particle_color] = group_sizes[particle_color] + 1
-
-
-@wp.kernel
-def fill_color_groups(
-    colors: wp.array[int],
-    group_fill_count: wp.array[int],
-    group_offsets: wp.array[int],
-    # flattened color groups
-    color_groups_flatten: wp.array[int],
-):
-    for particle_idx in range(colors.shape[0]):
-        particle_color = colors[particle_idx]
-        group_offset = group_offsets[particle_color]
-        group_idx = group_fill_count[particle_color]
-        color_groups_flatten[group_idx + group_offset] = wp.int32(particle_idx)
-
-        group_fill_count[particle_color] = group_idx + 1
-
-
-def convert_to_color_groups(num_colors, particle_colors, return_wp_array=False, device="cpu") -> list[int]:
-    group_sizes = wp.zeros(shape=(num_colors,), dtype=int, device="cpu")
-    wp.launch(kernel=count_color_group_size, inputs=[particle_colors, group_sizes], device="cpu", dim=1)
-
-    group_sizes_np = group_sizes.numpy()
-    group_offsets_np = np.concatenate([np.array([0]), np.cumsum(group_sizes_np)])
-    group_offsets = wp.array(group_offsets_np, dtype=int, device="cpu")
-
-    group_fill_count = wp.zeros(shape=(num_colors,), dtype=int, device="cpu")
-    color_groups_flatten = wp.empty(shape=(group_sizes_np.sum(),), dtype=int, device="cpu")
-    wp.launch(
-        kernel=fill_color_groups,
-        inputs=[particle_colors, group_fill_count, group_offsets, color_groups_flatten],
-        device="cpu",
-        dim=1,
+def convert_to_color_groups(num_colors, particle_colors, return_wp_array=False, device="cpu"):
+    return list(
+        wp.utils.graph_coloring_get_groups(
+            particle_colors,
+            num_colors,
+            return_wp_array,
+            device,
+        )
     )
-
-    color_groups_flatten_np = color_groups_flatten.numpy()
-
-    color_groups = []
-    if return_wp_array:
-        for color_idx in range(num_colors):
-            color_groups.append(
-                wp.array(
-                    color_groups_flatten_np[group_offsets_np[color_idx] : group_offsets_np[color_idx + 1]],
-                    dtype=int,
-                    device=device,
-                )
-            )
-    else:
-        for color_idx in range(num_colors):
-            color_groups.append(color_groups_flatten_np[group_offsets_np[color_idx] : group_offsets_np[color_idx + 1]])
-
-    return color_groups
 
 
 def _canonicalize_edges_np(edges_np: np.ndarray) -> np.ndarray:
@@ -328,20 +284,18 @@ def color_graph(
     else:
         indices = wp.clone(graph_edge_indices, device="cpu")
 
-    num_colors = wp._src.context.runtime.core.wp_graph_coloring(
-        num_nodes,
-        indices.__ctype__(),
-        algorithm.value,
-        particle_colors.__ctype__(),
+    num_colors = wp.utils.graph_coloring_assign(
+        indices,
+        particle_colors,
+        _to_warp_coloring_algorithm(algorithm),
     )
 
     if balance_colors:
-        max_min_ratio = wp._src.context.runtime.core.wp_balance_coloring(
-            num_nodes,
-            indices.__ctype__(),
+        max_min_ratio = wp.utils.graph_coloring_balance(
+            indices,
+            particle_colors,
             num_colors,
             target_max_min_color_ratio,
-            particle_colors.__ctype__(),
         )
 
         if max_min_ratio > target_max_min_color_ratio and wp.config.verbose:
