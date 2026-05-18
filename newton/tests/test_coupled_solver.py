@@ -589,7 +589,7 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(model.particle_mass.shape[0], 1)
 
     def test_disable_body_dynamics(self):
-        """disable_body_dynamics should zero inverse inertia and mark bodies kinematic."""
+        """disable_body_dynamics should zero inverse inertia without changing flags."""
         view = ModelView(self.model, "test")
         indices = wp.array([1], dtype=int, device="cpu")
         view.disable_body_dynamics(indices)
@@ -612,8 +612,8 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(inv_mass[1], 0.0)
         np.testing.assert_allclose(inertia[1], self.model.body_inertia.numpy()[1])
         np.testing.assert_allclose(inv_inertia[1], np.zeros((3, 3)))
-        self.assertEqual(flags[1] & dynamic, 0)
-        self.assertNotEqual(flags[1] & kinematic, 0)
+        self.assertNotEqual(flags[1] & dynamic, 0)
+        self.assertEqual(flags[1] & kinematic, 0)
         self.assertNotEqual(parent_flags[1] & dynamic, 0)
         self.assertEqual(parent_flags[1] & kinematic, 0)
 
@@ -809,7 +809,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(view_b.body_inv_mass.numpy()[0], 0.0)
         self.assertGreater(view_b.body_inv_mass.numpy()[1], 0.0)
         self.assertGreater(view_b.body_mass.numpy()[0], 0.0)
-        self.assertNotEqual(view_b.body_flags.numpy()[0] & int(newton.BodyFlags.KINEMATIC), 0)
+        self.assertEqual(view_b.body_flags.numpy()[0] & int(newton.BodyFlags.KINEMATIC), 0)
+        self.assertNotEqual(view_b.body_flags.numpy()[0] & int(newton.BodyFlags.DYNAMIC), 0)
 
     def test_entry_shapes_filter_shape_contact_pairs(self):
         """Entry shape masks should prune explicit contact pairs in each view."""
@@ -1147,14 +1148,13 @@ class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
 
         mjc_view = coupled.view("mjc")
         vbd_view = coupled.view("vbd")
-        kinematic = int(newton.BodyFlags.KINEMATIC)
         proxy = int(newton.BodyFlags.PROXY)
 
         mjc_flags = mjc_view.body_flags.numpy()
         mjc_inv_mass = mjc_view.body_inv_mass.numpy()
         for body in vbd_bodies:
             self.assertEqual(mjc_inv_mass[body], 0.0)
-            self.assertNotEqual(mjc_flags[body] & kinematic, 0)
+            self.assertEqual(mjc_flags[body] & int(newton.BodyFlags.KINEMATIC), 0)
 
         vbd_flags = vbd_view.body_flags.numpy()
         vbd_inv_mass = vbd_view.body_inv_mass.numpy()

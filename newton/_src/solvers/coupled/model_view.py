@@ -358,11 +358,10 @@ class ModelView:
     def disable_body_dynamics(self, body_indices: wp.array[int]) -> None:
         """Disable dynamics for the given body indices in this view.
 
-        Creates overridden copies of ``body_inv_mass``, ``body_inv_inertia``
-        and ``body_flags``. Inverse inertial properties are zeroed, while the
-        bodies are marked :attr:`~newton.BodyFlags.KINEMATIC` so solvers that
-        branch on body flags also treat them as immovable. Forward mass and
-        inertia are left intact as inertial metadata for solver conversion.
+        Creates overridden copies of ``body_inv_mass`` and
+        ``body_inv_inertia``. Inverse inertial properties are zeroed, while
+        forward mass, inertia, and body flags are left intact as metadata for
+        solver conversion.
 
         Args:
             body_indices: 1-D int array of body indices to immobilize.
@@ -373,18 +372,14 @@ class ModelView:
 
         inv_mass = self._cow_array("body_inv_mass")
         inv_inertia = self._cow_array("body_inv_inertia")
-        body_flags = self._cow_array("body_flags")
 
         wp.launch(
-            _disable_body_dynamics_kernel,
+            _zero_body_inverse_dynamics_kernel,
             dim=body_indices.shape[0],
             inputs=[
                 body_indices,
                 inv_mass,
                 inv_inertia,
-                body_flags,
-                int(BodyFlags.DYNAMIC),
-                int(BodyFlags.KINEMATIC),
             ],
             device=parent.device,
         )
@@ -712,19 +707,15 @@ class _TemporaryStateArrayOverrides:
 
 
 @wp.kernel(enable_backward=False)
-def _disable_body_dynamics_kernel(
+def _zero_body_inverse_dynamics_kernel(
     indices: wp.array[int],
     inv_mass: wp.array[float],
     inv_inertia: wp.array[wp.mat33],
-    body_flags: wp.array[wp.int32],
-    dynamic_flag: int,
-    kinematic_flag: int,
 ):
     i = wp.tid()
     idx = indices[i]
     inv_mass[idx] = 0.0
     inv_inertia[idx] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    body_flags[idx] = (body_flags[idx] & ~dynamic_flag) | kinematic_flag
 
 
 @wp.kernel(enable_backward=False)
