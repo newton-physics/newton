@@ -547,6 +547,7 @@ class SolverFeatherstone(SolverBase):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        None,  # articulation_mask: solver runs on all articulations
                         model.joint_type,
                         model.joint_parent,
                         model.joint_child,
@@ -628,6 +629,7 @@ class SolverFeatherstone(SolverBase):
                         dim=model.articulation_count,
                         inputs=[
                             model.articulation_start,
+                            None,  # articulation_mask: solver runs on all articulations
                             model.joint_type,
                             model.joint_parent,
                             model.joint_child,
