@@ -115,13 +115,20 @@ class Example:
         self.sim_substeps = max(1, int(args.substeps))
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.use_graph = bool(args.graph_capture)
+        self.world_count = max(1, int(args.world_count))
+
+        template = newton.ModelBuilder(gravity=-9.81)
+        SolverKamino.register_custom_attributes(template)
+        self._joint_checks: list[tuple[int, np.ndarray, int, np.ndarray]] = []
+        self._emit_four_bar(template)
+
+        bodies_per_world = template.body_count
+        joints_per_world = template.joint_count
 
         builder = newton.ModelBuilder(gravity=-9.81)
-        SolverKamino.register_custom_attributes(builder)
+        builder.replicate(template, world_count=self.world_count)
         builder.add_ground_plane()
-
-        self._joint_checks: list[tuple[int, np.ndarray, int, np.ndarray]] = []
-        self._emit_four_bar(builder)
+        self._expand_world_indices(bodies_per_world, joints_per_world)
 
         builder.color()
         self.model = builder.finalize()
@@ -166,8 +173,10 @@ class Example:
         self.control = self.model.control()
 
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets((1.35, 1.35, 0.0))
         if isinstance(self.viewer, newton.viewer.ViewerGL):
-            self.viewer.set_camera(pos=wp.vec3(0.55, -2.4, 1.45), pitch=-14.0, yaw=105.0)
+            scale = max(1.0, float(np.sqrt(self.world_count)))
+            self.viewer.set_camera(pos=wp.vec3(0.55 * scale, -2.4 * scale, 1.45 * scale), pitch=-14.0, yaw=105.0)
             if hasattr(self.viewer.camera, "look_at"):
                 self.viewer.camera.look_at(wp.vec3(0.05, 0.0, 1.25))
 
@@ -242,6 +251,22 @@ class Example:
         self.kamino_joints = [self.kamino_crank_joint, self.kamino_rocker_joint]
         self.mujoco_bodies = [self.mujoco_ground, self.mujoco_coupler]
         self.mujoco_joints = [self.mujoco_ground_joint, self.mujoco_coupler_joint]
+
+    def _expand_world_indices(self, bodies_per_world: int, joints_per_world: int) -> None:
+        """Expand one-world body/joint ids to all replicated worlds."""
+
+        def expand(ids: list[int], stride: int) -> list[int]:
+            return [world * stride + id_ for world in range(self.world_count) for id_ in ids]
+
+        self.kamino_bodies = expand(self.kamino_bodies, bodies_per_world)
+        self.kamino_joints = expand(self.kamino_joints, joints_per_world)
+        self.mujoco_bodies = expand(self.mujoco_bodies, bodies_per_world)
+        self.mujoco_joints = expand(self.mujoco_joints, joints_per_world)
+        self._joint_checks = [
+            (world * bodies_per_world + parent, parent_point, world * bodies_per_world + child, child_point)
+            for world in range(self.world_count)
+            for parent, parent_point, child, child_point in self._joint_checks
+        ]
 
     def _add_bar(
         self,
@@ -332,6 +357,8 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        parser.set_defaults(world_count=4)
         parser.add_argument("--substeps", type=int, default=3, help="Coupled substeps per rendered frame.")
         parser.add_argument("--admm-iterations", type=int, default=2, help="ADMM iterations per coupled substep.")
         parser.add_argument("--rho", type=float, default=80.0, help="ADMM penalty parameter.")

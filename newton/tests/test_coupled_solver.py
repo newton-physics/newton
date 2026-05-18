@@ -29,8 +29,10 @@ from newton._src.solvers.coupled.proxy_utils import (
 from newton._src.solvers.vbd.rigid_vbd_kernels import forward_step_rigid_bodies
 from newton.solvers import (
     SolverBase,
+    SolverMuJoCo,
     SolverNotifyFlags,
     SolverSemiImplicit,
+    SolverVBD,
     SolverXPBD,
     coupled_experimental,
 )
@@ -1066,6 +1068,99 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(len(solver.input_qd), 2)
         np.testing.assert_allclose(solver.input_qd[0], np.zeros(6))
         np.testing.assert_allclose(solver.input_qd[1], np.zeros(6))
+
+
+class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
+    """Regression tests for multi-world MuJoCo/VBD solver partitions."""
+
+    def test_proxy_coupled_multi_world_rigid_views_accept_noncontiguous_bodies(self):
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        world_count = 2
+        template = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(template)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
+
+        mjc_body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label="mjc_body")
+        mjc_joint = template.add_joint_free(child=mjc_body, label="mjc_free")
+        template.add_articulation([mjc_joint])
+        template.add_shape_box(body=mjc_body, hx=0.05, hy=0.05, hz=0.05, cfg=shape_cfg)
+
+        vbd_body = template.add_link(
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+            xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity()),
+            label="vbd_body",
+        )
+        vbd_joint = template.add_joint_free(child=vbd_body, label="vbd_free")
+        template.add_articulation([vbd_joint])
+        template.add_shape_box(body=vbd_body, hx=0.05, hy=0.05, hz=0.05, cfg=shape_cfg)
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        builder.replicate(template, world_count=world_count, spacing=(2.0, 0.0, 0.0))
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        bodies_per_world = model.body_count // world_count
+        joints_per_world = model.joint_count // world_count
+        shapes_per_world = model.shape_count // world_count
+        mjc_bodies = [world * bodies_per_world for world in range(world_count)]
+        vbd_bodies = [world * bodies_per_world + 1 for world in range(world_count)]
+        mjc_joints = [world * joints_per_world for world in range(world_count)]
+        vbd_joints = [world * joints_per_world + 1 for world in range(world_count)]
+        mjc_shapes = [world * shapes_per_world for world in range(world_count)]
+        vbd_shapes = [world * shapes_per_world + 1 for world in range(world_count)]
+
+        self.assertEqual(mjc_bodies, [0, 2])
+        self.assertEqual(vbd_bodies, [1, 3])
+
+        coupled = SolverProxyCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="mjc",
+                    solver=lambda view: SolverMuJoCo(model=view, iterations=1, disable_contacts=True),
+                    bodies=mjc_bodies,
+                    joints=mjc_joints,
+                    shapes=mjc_shapes,
+                ),
+                SolverCoupled.Entry(
+                    name="vbd",
+                    solver=lambda view: SolverVBD(model=view, iterations=1),
+                    bodies=vbd_bodies,
+                    joints=vbd_joints,
+                    shapes=vbd_shapes,
+                ),
+            ],
+            coupling=SolverProxyCoupled.Config(
+                proxies=[
+                    SolverProxyCoupled.Proxy(source="mjc", destination="vbd", bodies=mjc_bodies),
+                ],
+            ),
+        )
+
+        self.assertIsInstance(coupled.solver("mjc"), SolverMuJoCo)
+        self.assertIsInstance(coupled.solver("vbd"), SolverVBD)
+
+        mjc_view = coupled.view("mjc")
+        vbd_view = coupled.view("vbd")
+        kinematic = int(newton.BodyFlags.KINEMATIC)
+        proxy = int(newton.BodyFlags.PROXY)
+
+        mjc_flags = mjc_view.body_flags.numpy()
+        mjc_inv_mass = mjc_view.body_inv_mass.numpy()
+        for body in vbd_bodies:
+            self.assertEqual(mjc_inv_mass[body], 0.0)
+            self.assertNotEqual(mjc_flags[body] & kinematic, 0)
+
+        vbd_flags = vbd_view.body_flags.numpy()
+        vbd_inv_mass = vbd_view.body_inv_mass.numpy()
+        for body in mjc_bodies:
+            self.assertGreater(vbd_inv_mass[body], 0.0)
+            self.assertNotEqual(vbd_flags[body] & proxy, 0)
 
 
 class TestSolverAdmmContactKernels(unittest.TestCase):
