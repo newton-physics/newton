@@ -134,6 +134,7 @@
 - Fix the deterministic narrow-phase sort buffer being sized to the broad-phase candidate-pair bound (`N*(N-1)/2` per world for NXN/SAP) instead of `rigid_contact_max`, which wasted multi-GB of VRAM on scenes with thousands of shapes
 - Fix `SensorRaycast` ignoring `PLANE` geometry
 - Fix `nut_bolt_hydro` example threading regression where some nuts were pinned in static friction; nuts now thread reliably down the bolt under both MuJoCo and XPBD solvers (#2702)
+- Fix swapped kinetic and potential energy labels in `example_basic_plotting` (column 0 of `mjData.energy` is potential, not kinetic); report world 0 directly instead of averaging across identical replicated worlds, and drop energy-plot smoothing so the live overlay matches the side-panel readout
 - Fix VRAM leak when resetting examples that allocate large GPU state (e.g. `diffsim_bear`)
 - Fix `SensorRaycast` and viewer picking ignoring `HFIELD` (heightfield) geometry
 - Fix `SensorTiledCamera` textured albedo output rendering flat colors when color and normal outputs are disabled
