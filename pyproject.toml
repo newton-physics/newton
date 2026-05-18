@@ -318,3 +318,8 @@ pnd = "pnd"
 PNGs = "PNGs"
 Haa = "Haa"
 iy = "iy"
+# Wonik Allegro thumb-adduction joint names
+tha0 = "tha0"
+tha1 = "tha1"
+tha2 = "tha2"
+tha3 = "tha3"
