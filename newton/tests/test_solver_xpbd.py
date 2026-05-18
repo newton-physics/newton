@@ -369,6 +369,331 @@ def test_particle_shape_restitution_accounts_for_body_velocity(test, device):
     )
 
 
+def test_rigid_restitution_zero_settles(test, device):
+    """
+    Regression test: per-shape restitution coefficients are respected when
+    ``enable_restitution=True`` is passed to the solver.
+
+    Setup:
+    - Two spheres dropped from z=0.3 onto the ground plane (Z-up, default gravity).
+    - restitution=0.0 (inelastic) and restitution=1.0 (elastic), mu=0.0.
+    - Before the energy-explosion fix, both behaved identically because the
+      velocity-from-position-delta update was not running before the restitution pass.
+    - 25 frames at 60 fps with 16 substeps.
+
+    Assert: restitution=0.0 must not bounce above its impact minimum; restitution=1.0
+    must bounce back up and reach a meaningfully higher peak.
+    """
+    radius = 0.05
+    drop_z = 0.3
+    fps, substeps = 60, 16
+    dt = 1.0 / fps / substeps
+    n_frames = 25
+
+    def simulate(restitution):
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.restitution = restitution
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
+        cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=restitution, mu=0.0)
+        builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+        model = builder.finalize(device=device)
+        solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+        state_0, state_1 = model.state(), model.state()
+        control, contacts = model.control(), model.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        zs = []
+        for _ in range(n_frames):
+            for _ in range(substeps):
+                state_0.clear_forces()
+                model.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+            zs.append(float(state_0.body_q.numpy()[0][2]))
+        return zs
+
+    zs_inelastic = simulate(restitution=0.0)
+    zs_elastic = simulate(restitution=1.0)
+
+    # Inelastic run anchors contact_frame; min(post_impact) finds the true bottom
+    # since the frame sample may catch the sphere mid-descent at 2*radius.
+    contact_frame = next((i for i, z in enumerate(zs_inelastic) if z < 2.0 * radius), None)
+    test.assertIsNotNone(contact_frame, "Sphere never reached the ground in the simulation.")
+
+    post_impact_inelastic = zs_inelastic[contact_frame:]
+    post_impact_elastic = zs_elastic[contact_frame:]
+
+    # restitution=0.0: sphere must not rise above its post-impact minimum.
+    z_min_inelastic = min(post_impact_inelastic)
+    z_min_idx = post_impact_inelastic.index(z_min_inelastic)
+    bounced_up = any(z > z_min_inelastic + 0.001 for z in post_impact_inelastic[z_min_idx + 1 :])
+    test.assertFalse(
+        bounced_up,
+        msg=(
+            f"With restitution=0.0, sphere should not rise above its impact minimum "
+            f"(z_min={z_min_inelastic:.4f} m). Post-impact z values: {post_impact_inelastic}. "
+            f"Before the fix, the restitution pass never ran so this bounced like restitution=1.0."
+        ),
+    )
+
+    # restitution=1.0: sphere must rise above its post-impact minimum.
+    z_min_elastic = min(post_impact_elastic)
+    z_min_idx_elastic = post_impact_elastic.index(z_min_elastic)
+    did_bounce = any(z > z_min_elastic + 0.005 for z in post_impact_elastic[z_min_idx_elastic + 1 :])
+    test.assertTrue(
+        did_bounce,
+        msg=(
+            f"With restitution=1.0, sphere should bounce back up after impact minimum "
+            f"(z_min={z_min_elastic:.4f} m). Post-impact z values: {post_impact_elastic}."
+        ),
+    )
+
+    # Elastic peak must be meaningfully higher than inelastic.
+    peak_inelastic = max(post_impact_inelastic)
+    peak_elastic = max(post_impact_elastic)
+    test.assertGreater(
+        peak_elastic,
+        peak_inelastic + 0.02,
+        msg=(
+            f"Elastic peak ({peak_elastic:.4f} m) should be > inelastic peak ({peak_inelastic:.4f} m) "
+            f"by at least 2 cm. Before the fix both were identical (restitution values ignored)."
+        ),
+    )
+
+
+def test_rigid_restitution_elastic_no_explosion(test, device):
+    """
+    Regression test for Bug 2: energy explosion when enable_restitution=True with
+    high restitution coefficient.
+
+    Setup:
+    - Box dropped from z=0.3 onto the ground plane (Z-up, default gravity).
+    - restitution=1.0 (fully elastic), mu=0.0, enable_restitution=True.
+
+    Without the fix, XPBD positional corrections fed unnormalized velocities into the
+    restitution pass (Δv = Δq/dt per substep), sending bodies to ~1e29 m.
+
+    With the fix, update_body_velocities runs first and bounds the velocity to
+    (q_final - q_init)/dt. The box should bounce finite and well below 2x drop height.
+    """
+    hz = 0.05
+    drop_z = 0.3
+
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.restitution = 1.0
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
+    cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=1.0, mu=0.0)
+    builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=hz, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    fps, substeps = 60, 16
+    dt = 1.0 / fps / substeps
+
+    z_history = []
+    for _ in range(60):
+        for _ in range(substeps):
+            state_0.clear_forces()
+            model.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+        z_history.append(float(state_0.body_q.numpy()[0][2]))
+
+    for i, z in enumerate(z_history):
+        test.assertTrue(
+            np.isfinite(z),
+            msg=f"Body Z is not finite at frame {i}: {z}. The bug caused explosion to ~1e29 m.",
+        )
+
+    # 2x drop_z is a generous bound: the bug sent bodies to ~1e29 m.
+    max_z = max(z_history)
+    test.assertLess(
+        max_z,
+        2.0 * drop_z,
+        msg=(
+            f"With restitution=1.0, peak height should be < {2.0 * drop_z:.2f} m; "
+            f"got {max_z:.4f} m. "
+            f"The bug (inflated body_qd in restitution pass) caused ~1e29 m."
+        ),
+    )
+
+    # Positive rebound: guards against a fix that silently suppresses restitution —
+    # the finite/bound checks above would pass even if the box just settled at z≈hz.
+    contact_idx = next((i for i, z in enumerate(z_history) if z < hz * 1.5), None)
+    test.assertIsNotNone(contact_idx, "Box never contacted the ground — check simulation length.")
+    post_impact = z_history[contact_idx:]
+    z_min_box = min(post_impact)
+    z_min_box_idx = post_impact.index(z_min_box)
+    peak_after_impact = max(post_impact[z_min_box_idx:])
+    # XPBD dissipates energy so restitution=1.0 yields only ~2 cm of rebound;
+    # 1 cm still distinguishes working from suppressed (sub-mm gravity noise).
+    test.assertGreater(
+        peak_after_impact,
+        z_min_box + 0.01,
+        msg=(
+            f"With restitution=1.0, box should rebound at least 1 cm above its impact minimum "
+            f"(z_min={z_min_box:.4f} m, peak after={peak_after_impact:.4f} m). "
+            f"A fix that suppresses restitution would leave the box resting on the ground."
+        ),
+    )
+
+
+def test_rigid_restitution_runs_with_requires_grad(test, device):
+    """
+    Regression test for grad-enabled rigid restitution.
+
+    Setup:
+    - Two runs with the same sphere (z=0.3, restitution=1.0, mu=0.0):
+      requires_grad=True vs requires_grad=False, 50 frames at 60 fps / 16 substeps.
+
+    Assert: both paths must bounce without exploding. The grad-enabled path uses a
+    cloned velocity buffer for the position-delta velocity update so restitution
+    sees corrected impact velocities without overwriting recorded arrays in place.
+    """
+    radius = 0.05
+    drop_z = 0.3
+    fps, substeps = 60, 16
+    dt = 1.0 / fps / substeps
+    n_frames = 50
+
+    def simulate(requires_grad):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, drop_z), wp.quat_identity()))
+        cfg = newton.ModelBuilder.ShapeConfig(density=500.0, restitution=1.0, mu=0.0)
+        builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+        model = builder.finalize(device=device)
+        solver = newton.solvers.SolverXPBD(model, enable_restitution=True)
+        state_0 = model.state(requires_grad=requires_grad)
+        state_1 = model.state(requires_grad=requires_grad)
+        control, contacts = model.control(), model.contacts()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        zs = []
+        for _ in range(n_frames):
+            for _ in range(substeps):
+                state_0.clear_forces()
+                model.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+            zs.append(float(state_0.body_q.numpy()[0][2]))
+        return zs
+
+    zs_grad = simulate(requires_grad=True)
+    zs_no_grad = simulate(requires_grad=False)
+
+    # Anchor to the grad trajectory: the settling sphere reliably frames below 2*radius.
+    # The elastic no-grad sphere bounces within each frame and may never sample below
+    # 2*radius, so per-trajectory contact detection would fail to find a contact_frame.
+    contact_frame = next((i for i, z in enumerate(zs_grad) if z < 2.0 * radius), None)
+    test.assertIsNotNone(contact_frame, "Sphere never reached the ground in the simulation.")
+
+    post_impact_grad = zs_grad[contact_frame:]
+    post_impact_no_grad = zs_no_grad[contact_frame:]
+
+    def assert_rebounds(name, zs):
+        z_min = zs[0]
+        for z in zs[1:]:
+            if z > z_min + 0.001:
+                return
+            z_min = min(z_min, z)
+        test.fail(
+            f"With {name}, sphere should rise after an impact minimum "
+            f"(latest z_min={z_min:.4f} m). Post-impact z values: {zs}."
+        )
+
+    assert_rebounds("requires_grad=True", post_impact_grad)
+    assert_rebounds("requires_grad=False", post_impact_no_grad)
+
+    peak_grad = max(post_impact_grad)
+    peak_no_grad = max(post_impact_no_grad)
+    test.assertLess(
+        peak_grad,
+        2.0 * drop_z,
+        msg=(
+            f"With requires_grad=True, restitution should not explode above {2.0 * drop_z:.2f} m; "
+            f"peak was {peak_grad:.4f} m. Post-impact z values: {post_impact_grad}."
+        ),
+    )
+    test.assertLess(
+        peak_no_grad,
+        2.0 * drop_z,
+        msg=(
+            f"With requires_grad=False, restitution should not explode above {2.0 * drop_z:.2f} m; "
+            f"peak was {peak_no_grad:.4f} m. Post-impact z values: {post_impact_no_grad}."
+        ),
+    )
+
+
+def test_particle_shape_restitution_runs_with_requires_grad(test, device):
+    """
+    Regression test ensuring particle-body restitution runs (and does not NaN) with requires_grad=True.
+
+    Before the fix, apply_particle_shape_restitution was gated behind ``not requires_grad``,
+    so particles against dynamic bodies never bounced on the grad path.  After the fix the
+    kernel writes into a cloned output buffer (same pattern as rigid restitution), keeping
+    the tape-recorded array intact.
+
+    Setup:
+    - A dynamic rigid box moving upward at 5 m/s.
+    - A stationary particle sitting just above the top face of the box.
+    - Restitution = 1.0, gravity disabled.
+
+    Assert (both grad and non-grad paths):
+    - No NaN / Inf in particle velocity after one step.
+    - Particle receives a restitution impulse (upward velocity > 7 m/s).
+    """
+    builder = newton.ModelBuilder(up_axis="Y")
+
+    body_id = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_box(body=body_id, hx=1.0, hy=0.5, hz=1.0)
+
+    particle_radius = 0.1
+    builder.add_particle(
+        pos=(0.0, 0.5 + particle_radius, 0.0),
+        vel=(0.0, 0.0, 0.0),
+        mass=1.0,
+        radius=particle_radius,
+    )
+
+    for requires_grad in [False, True]:
+        model = builder.finalize(device=device, requires_grad=requires_grad)
+        model.set_gravity((0.0, 0.0, 0.0))
+        model.soft_contact_restitution = 1.0
+
+        solver = newton.solvers.SolverXPBD(model, iterations=10, enable_restitution=True)
+
+        state0 = model.state(requires_grad=requires_grad)
+        state1 = model.state(requires_grad=requires_grad)
+
+        body_vel = np.array([[0.0, 5.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+        state0.body_qd.assign(wp.array(body_vel, dtype=wp.spatial_vector, device=device))
+
+        contacts = model.contacts()
+        model.collide(state0, contacts)
+        control = model.control()
+        solver.step(state0, state1, control, contacts, 1.0 / 60.0)
+
+        vel = state1.particle_qd.numpy()
+
+        label = f"requires_grad={requires_grad}"
+        test.assertTrue(
+            np.all(np.isfinite(vel)),
+            msg=f"[{label}] Particle velocity is not finite after restitution: {vel}",
+        )
+        test.assertGreater(
+            float(vel[0, 1]),
+            7.0,
+            msg=f"[{label}] Particle should receive restitution impulse (expected ~10 m/s, got {float(vel[0, 1]):.2f})",
+        )
+
+
 def test_articulation_contact_drift(test, device):
     """
     Regression test for articulated bodies drifting laterally on the ground (#2030).
@@ -1073,6 +1398,38 @@ add_function_test(
     check_output=False,
 )
 
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_zero_settles",
+    test_rigid_restitution_zero_settles,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_elastic_no_explosion",
+    test_rigid_restitution_elastic_no_explosion,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_runs_with_requires_grad",
+    test_rigid_restitution_runs_with_requires_grad,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_particle_shape_restitution_runs_with_requires_grad",
+    test_particle_shape_restitution_runs_with_requires_grad,
+    devices=devices,
+    check_output=False,
+)
 
 add_function_test(
     TestSolverXPBD,

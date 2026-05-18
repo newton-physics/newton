@@ -114,6 +114,8 @@
 - Fix the example viewer's Reset button discarding user-provided CLI options (e.g. `--world-count`) and rebuilding the example with parser defaults instead
 - Fix `SolverMuJoCo` Newton-contact conversion to use geometry-surface contact anchors
 - Fix `ModelBuilder.finalize()` crashing with 3+ articulations after `collapse_fixed_joints()` reordered `articulation_start` and dropped per-articulation metadata
+- Fix `SolverXPBD` energy explosion when `enable_restitution=True` and a body had large positional corrections: velocity-from-position-delta update now runs before the restitution pass so restitution reads physically bounded velocities
+- Fix `SolverXPBD` restitution (both rigid and particle) being silently skipped when `requires_grad=True`; corrected velocities are now written to cloned buffers so the autodiff tape is not mutated in place
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration
 - Fix `SolverStyle3D` initialization to precompute its fixed PD matrix from the finalized model
 - Fix `SolverMuJoCo` generated MuJoCo joint names for multi-axis D6 joints to avoid duplicate names
