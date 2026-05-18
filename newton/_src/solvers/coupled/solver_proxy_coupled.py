@@ -413,9 +413,17 @@ class SolverProxyCoupled(SolverCoupled):
         self,
         config: _ProxyCollisionConfig,
         state: State,
+        *,
+        iteration_restart: bool = False,
     ) -> tuple[Contacts, bool]:
         if config.pipeline is None or config.contacts is None:
             raise RuntimeError("Proxy collision pipeline was not initialized")
+
+        # Inner proxy iterations reuse the contacts detected at iteration 0.
+        # Detection margin/gap handles small proxy motion between relaxation
+        # passes, so the collision cadence remains an outer-step policy.
+        if iteration_restart:
+            return config.contacts, False
 
         contacts_freshly_detected = config.collide_counter % config.collide_interval == 0
         if contacts_freshly_detected:
@@ -511,7 +519,7 @@ class SolverProxyCoupled(SolverCoupled):
             # distributed input state and only carries harvested feedback
             # buffers forward.
             self._distribute_state(state_in, dt=dt, restart=k > 0)
-            self._step_proxy(state_in, control, contacts, dt)
+            self._step_proxy(state_in, control, contacts, dt, iteration_restart=k > 0)
 
     def _build_proxy_groups(self) -> dict[tuple[str, str], dict[str, list]]:
         """Bucket proxy mappings by (src, dst) once at construction."""
@@ -530,6 +538,7 @@ class SolverProxyCoupled(SolverCoupled):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
+        iteration_restart: bool = False,
     ) -> None:
         """Run one lagged-impulse proxy coupling pass."""
         for (src_name, dst_name), group in self._proxy_groups.items():
@@ -672,7 +681,9 @@ class SolverProxyCoupled(SolverCoupled):
             contacts_freshly_detected = False
             collision_config = self._proxy_collision_configs.get((src_name, dst_name))
             if collision_config is not None:
-                dst_contacts, contacts_freshly_detected = self._proxy_collision_contacts(collision_config, dst.state_0)
+                dst_contacts, contacts_freshly_detected = self._proxy_collision_contacts(
+                    collision_config, dst.state_0, iteration_restart=iteration_restart
+                )
 
             restore_filtered_contacts = False
             try:

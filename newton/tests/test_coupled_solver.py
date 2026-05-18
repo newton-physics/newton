@@ -1515,15 +1515,19 @@ class TestSolverCoupledProxyContactHooks(unittest.TestCase):
         )
 
         coupled.step(model.state(), model.state(), control=None, contacts=None, dt=1.0 / 60.0)
+        coupled.step(model.state(), model.state(), control=None, contacts=None, dt=1.0 / 60.0)
 
+        # collide_interval is an outer-step cadence. Inner relaxation
+        # iterations reuse the contact set detected at iteration 0; the
+        # detection gap handles small proxy motion between iterations.
         self.assertEqual(len(factory_models), 1)
         self.assertEqual(factory_models[0].name, "dst")
         self.assertEqual(len(pipeline_holder), 1)
         self.assertEqual(pipeline_holder[0].contacts_calls, 1)
-        self.assertEqual(pipeline_holder[0].collide_calls, 2)
+        self.assertEqual(pipeline_holder[0].collide_calls, 1)
         dst_solver = _StepCountingCopySolver.instances["dst"]
-        self.assertEqual(dst_solver.prepare_contact_calls, 3)
-        self.assertEqual(dst_solver.prepare_contact_fresh_flags, [True, False, True])
+        self.assertEqual(dst_solver.prepare_contact_calls, 6)
+        self.assertEqual(dst_solver.prepare_contact_fresh_flags, [True, False, False, False, False, False])
 
     def test_proxy_collision_pipeline_none_return_uses_outer_contacts(self):
         _StepCountingCopySolver.instances.clear()
