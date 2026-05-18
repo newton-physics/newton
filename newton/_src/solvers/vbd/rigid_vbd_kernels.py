@@ -2756,6 +2756,91 @@ def compute_rigid_contact_forces(
 
 
 @wp.kernel
+def accumulate_body_particle_contact_forces_on_proxy_bodies(
+    dt: float,
+    body_local_to_proxy_global: wp.array[int],
+    # Particle state
+    particle_q: wp.array[wp.vec3],
+    particle_q_prev: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    # Rigid body state
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    # AVBD body-particle soft contact penalties and material properties
+    friction_epsilon: float,
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
+    # Soft contact data (body-particle)
+    body_particle_contact_count: wp.array[int],
+    body_particle_contact_particle: wp.array[int],
+    body_particle_contact_shape: wp.array[int],
+    body_particle_contact_body_pos: wp.array[wp.vec3],
+    body_particle_contact_body_vel: wp.array[wp.vec3],
+    body_particle_contact_normal: wp.array[wp.vec3],
+    shape_body: wp.array[wp.int32],
+    # Outputs
+    out_body_f: wp.array[wp.spatial_vector],
+):
+    """Accumulate final body-particle contact wrenches on proxy bodies."""
+    contact_idx = wp.tid()
+    if contact_idx >= body_particle_contact_count[0]:
+        return
+
+    shape_idx = body_particle_contact_shape[contact_idx]
+    if shape_idx < 0 or shape_idx >= shape_body.shape[0]:
+        return
+
+    body_idx = shape_body[shape_idx]
+    if body_idx < 0 or body_idx >= body_local_to_proxy_global.shape[0]:
+        return
+
+    proxy_global = body_local_to_proxy_global[body_idx]
+    if proxy_global < 0:
+        return
+
+    particle_idx = body_particle_contact_particle[contact_idx]
+    if particle_idx < 0:
+        return
+
+    X_wb = body_q[body_idx]
+    X_wb_prev = body_q_prev[body_idx]
+    cp_local = body_particle_contact_body_pos[contact_idx]
+    cp_world = wp.transform_point(X_wb, cp_local)
+    n = body_particle_contact_normal[contact_idx]
+    radius = particle_radius[particle_idx]
+    penetration_depth = -(wp.dot(n, particle_q[particle_idx] - cp_world) - radius)
+
+    if penetration_depth <= 0.0:
+        return
+
+    cp_world_prev = wp.transform_point(X_wb_prev, cp_local)
+    body_velocity = (cp_world - cp_world_prev) / dt + wp.transform_vector(
+        X_wb, body_particle_contact_body_vel[contact_idx]
+    )
+    particle_displacement = particle_q[particle_idx] - particle_q_prev[particle_idx]
+    relative_translation = particle_displacement - body_velocity * dt
+
+    force_on_particle, _hessian_particle = _compute_body_particle_contact_force(
+        penetration_depth,
+        n,
+        relative_translation,
+        body_particle_contact_penalty_k[contact_idx],
+        body_particle_contact_material_kd[contact_idx],
+        body_particle_contact_material_mu[contact_idx],
+        friction_epsilon,
+        dt,
+    )
+
+    force_on_body = -force_on_particle
+    com_world = wp.transform_point(X_wb, body_com[body_idx])
+    torque_on_body = wp.cross(cp_world - com_world, force_on_body)
+
+    wp.atomic_add(out_body_f, proxy_global, wp.spatial_vector(force_on_body, torque_on_body))
+
+
+@wp.kernel
 def accumulate_body_particle_contacts_per_body(
     dt: float,
     color_group: wp.array[wp.int32],

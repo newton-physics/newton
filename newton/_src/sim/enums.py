@@ -9,10 +9,11 @@ class BodyFlags(IntEnum):
     """
     Per-body dynamic state flags.
 
-    Each body must store exactly one runtime state flag:
-    :attr:`DYNAMIC` or :attr:`KINEMATIC`. :attr:`ALL` is a convenience
-    filter mask for APIs such as :func:`newton.eval_fk` and is not a valid
-    stored body state.
+    Each finalized model body must store exactly one runtime state flag:
+    :attr:`DYNAMIC` or :attr:`KINEMATIC`. Coupled solver views may OR in
+    :attr:`PROXY` on view-local ``body_flags`` overrides. :attr:`ALL` is a
+    convenience filter mask for APIs such as :func:`newton.eval_fk` and is not
+    a valid stored body state.
     """
 
     DYNAMIC = 1 << 0
@@ -21,8 +22,11 @@ class BodyFlags(IntEnum):
     KINEMATIC = 1 << 1
     """User-prescribed body that does not respond to applied forces."""
 
-    ALL = DYNAMIC | KINEMATIC
-    """Filter bitmask selecting both dynamic and kinematic bodies."""
+    PROXY = 1 << 2
+    """View-local proxy body marker for coupled simulations."""
+
+    ALL = DYNAMIC | KINEMATIC | PROXY
+    """Filter bitmask selecting all body types."""
 
 
 # Types of joints linking rigid bodies

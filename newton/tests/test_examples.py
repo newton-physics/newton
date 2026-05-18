@@ -778,6 +778,20 @@ add_example_test(
     test_options={"num-frames": 200},
     use_viewer=True,
 )
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_vbd_admm_solver",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 30},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_admm_contact_solver",
+    devices=test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
 
 
 class TestSoftbodyExamples(unittest.TestCase):

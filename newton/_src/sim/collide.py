@@ -523,7 +523,8 @@ class CollisionPipeline:
                 scenes with large/complex meshes or heightfields report
                 triangle-pair overflow warnings.
             soft_contact_max: Maximum number of soft contacts to allocate.
-                If None, computed as shape_count * particle_count.
+                If None, computed as shape_count * particle_count. Set to 0
+                to disable particle-shape soft-contact generation.
             soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
             requires_grad: Whether to enable gradient computation. If None, uses model.requires_grad.
             broad_phase:
@@ -1191,9 +1192,12 @@ class CollisionPipeline:
                 device=self.device,
             )
 
-        # Generate soft contacts for particles and shapes
+        # Generate soft contacts for particles and shapes. A zero-capacity
+        # soft buffer is an explicit opt-out; avoid launching the all
+        # particle-shape pass just to increment a counter that no solver can
+        # consume.
         particle_count = len(state.particle_q) if state.particle_q else 0
-        if state.particle_q and model.shape_count > 0:
+        if contacts.soft_contact_max > 0 and state.particle_q and model.shape_count > 0:
             wp.launch(
                 kernel=create_soft_contacts,
                 dim=particle_count * model.shape_count,
@@ -1210,7 +1214,7 @@ class CollisionPipeline:
                     model.shape_source_ptr,
                     model.shape_world,
                     soft_contact_margin,
-                    self.soft_contact_max,
+                    contacts.soft_contact_max,
                     model.shape_count,
                     model.shape_flags,
                     model.shape_heightfield_index,

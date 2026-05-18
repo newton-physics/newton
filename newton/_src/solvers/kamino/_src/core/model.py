@@ -12,6 +12,7 @@ import warp as wp
 
 # Newton imports
 from .....sim import Model
+from ....coupled.model_view import ModelView
 
 # Kamino imports
 from .bodies import RigidBodiesData, RigidBodiesModel, convert_geom_offset_origin_to_com
@@ -671,16 +672,19 @@ class ModelKamino:
         return control
 
     @staticmethod
-    def from_newton(model: Model) -> ModelKamino:
+    def from_newton(model: Model | ModelView) -> ModelKamino:
         """
-        Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
+        Finalizes the :class:`ModelKamino` from a Newton model or model view.
         """
 
-        # Ensure the base model is valid
+        # Ensure the base model is valid. Coupled solvers pass ModelView
+        # instances, which are intentionally accepted alongside full Models.
         if model is None:
-            raise ValueError("Cannot finalize ModelKamino from a None newton.Model instance.")
-        elif not isinstance(model, Model):
-            raise TypeError("Cannot finalize ModelKamino from an invalid newton.Model instance.")
+            raise ValueError("ModelKamino.from_newton() requires a newton.Model or ModelView instance, got None.")
+        if not isinstance(model, (Model, ModelView)):
+            raise TypeError(
+                f"ModelKamino.from_newton() requires a newton.Model or ModelView instance, got {type(model).__name__}."
+            )
 
         # Single-world Newton models may have world index -1 (unassigned).
         # Normalize to 0 so downstream world-based grouping works correctly.

@@ -23,6 +23,7 @@ from ...sim import (
     ModelBuilder,
     State,
 )
+from ..coupled.interface import CouplingInterface
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 
@@ -48,7 +49,7 @@ __all__ = ["SolverKamino"]
 ###
 
 
-class SolverKamino(SolverBase):
+class SolverKamino(SolverBase, CouplingInterface):
     """
     A physics solver for simulating constrained multi-body systems containing kinematic loops,
     under-/overactuation, joint-limits, hard frictional contacts and restitutive impacts.
@@ -95,6 +96,13 @@ class SolverKamino(SolverBase):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
     """
+
+    coupling_unsupported = frozenset(
+        {
+            CouplingInterface.Hook.BODY_PROXY_HARVEST,
+            CouplingInterface.Hook.PARTICLE_PROXY_HARVEST,
+        }
+    )
 
     @dataclass
     class Config:

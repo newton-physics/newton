@@ -406,10 +406,12 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
 .. toctree::
    :hidden:
 
+   newton_solvers_coupled_experimental
    newton_solvers_style3d
 
 .. rubric:: Submodules
 
+- :doc:`newton.solvers.coupled_experimental <newton_solvers_coupled_experimental>`
 - :doc:`newton.solvers.style3d <newton_solvers_style3d>`
 
 .. rubric:: Classes

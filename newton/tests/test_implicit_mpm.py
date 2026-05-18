@@ -210,6 +210,38 @@ def test_finite_difference_collider_velocity(test, device):
     )
 
 
+def test_deformable_mesh_collider_mass(test, device):
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    SolverImplicitMPM.register_custom_attributes(builder)
+
+    collider_particle_ids = [
+        builder.add_particle(wp.vec3(-0.5, 0.0, -0.5), wp.vec3(0.0), mass=2.0),
+        builder.add_particle(wp.vec3(0.5, 0.0, -0.5), wp.vec3(0.0), mass=3.0),
+        builder.add_particle(wp.vec3(0.0, 0.0, 0.5), wp.vec3(0.0), mass=4.0),
+    ]
+    builder.add_particle(wp.vec3(0.0, 0.5, 0.0), wp.vec3(0.0), mass=1.0)
+    model = builder.finalize(device=device)
+
+    points = wp.array(
+        [wp.vec3(-0.5, 0.0, -0.5), wp.vec3(0.5, 0.0, -0.5), wp.vec3(0.0, 0.0, 0.5)],
+        dtype=wp.vec3,
+        device=device,
+    )
+    indices = wp.array([0, 1, 2], dtype=int, device=device)
+    velocities = wp.zeros(3, dtype=wp.vec3, device=device)
+    mesh = wp.Mesh(points=points, indices=indices, velocities=velocities)
+
+    options = SolverImplicitMPM.Config()
+    options.grid_type = "dense"
+    solver = SolverImplicitMPM(model, options)
+    solver.setup_collider(collider_meshes=[mesh], collider_particle_ids=[collider_particle_ids])
+
+    test.assertTrue(solver._mpm_model.has_compliant_colliders)
+    test.assertEqual(solver._mpm_model.collider.collider_particle_ids.shape[0], len(collider_particle_ids))
+    test.assertEqual(solver._mpm_model.deformable_collider_vertex_ranges, [(0, 0, 3)])
+    test.assertAlmostEqual(float(solver._mpm_model.min_collider_mass), 2.0)
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -225,6 +257,14 @@ add_function_test(
     TestImplicitMPM,
     "test_finite_difference_collider_velocity",
     test_finite_difference_collider_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_deformable_mesh_collider_mass",
+    test_deformable_mesh_collider_mass,
     devices=devices,
     check_output=False,
 )

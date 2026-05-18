@@ -48,6 +48,7 @@ MODULES: list[str] = [
     "newton.selection",
     "newton.sensors",
     "newton.solvers",
+    "newton.solvers.coupled_experimental",
     "newton.usd",
     "newton.utils",
     "newton.viewer",
@@ -115,14 +116,25 @@ def write_module_page(mod_name: str) -> None:
     """Create an .rst file for *mod_name* under *OUTPUT_DIR*."""
 
     is_solver_submodule = mod_name.startswith("newton.solvers.") and mod_name != "newton.solvers"
+    uses_internal_solver_module = False
     if is_solver_submodule:
         sub_name = mod_name.split(".", 2)[2]
-        module = importlib.import_module(f"newton._src.solvers.{sub_name}")
+        try:
+            module = importlib.import_module(mod_name)
+        except ModuleNotFoundError as exc:
+            if exc.name != mod_name:
+                raise
+            # Some public solver helpers are exposed as attributes on
+            # ``newton.solvers`` even though it is a module, not a package.
+            # Document those from their implementation module while keeping the
+            # public page name stable.
+            module = importlib.import_module(f"newton._src.solvers.{sub_name}")
+            uses_internal_solver_module = True
     else:
         module = importlib.import_module(mod_name)
 
     symbols = public_symbols(module)
-    if is_solver_submodule:
+    if uses_internal_solver_module:
         # Keep solver classes centralized in newton.solvers.
         symbols = [name for name in symbols if not name.startswith("Solver")]
 
@@ -178,7 +190,7 @@ def write_module_page(mod_name: str) -> None:
     if doc:
         lines.extend([doc, ""])
 
-    if is_solver_submodule:
+    if uses_internal_solver_module:
         lines.extend(
             [
                 ".. note::",
@@ -222,7 +234,7 @@ def write_module_page(mod_name: str) -> None:
     if classes:
         classes.sort()
         lines.extend([".. rubric:: Classes", ""])
-        if is_solver_submodule:
+        if uses_internal_solver_module:
             for cls in classes:
                 lines.extend([f".. autoclass:: {cls}", ""])
         else:
@@ -240,7 +252,7 @@ def write_module_page(mod_name: str) -> None:
     if functions:
         functions.sort()
         lines.extend([".. rubric:: Functions", ""])
-        if is_solver_submodule:
+        if uses_internal_solver_module:
             for fn in functions:
                 lines.extend([f".. autofunction:: {fn}", ""])
         else:

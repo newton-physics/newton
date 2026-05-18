@@ -51,6 +51,12 @@ class Collider:
     collider_body_index: wp.array[int]
     """Body index of each collider. Shape (collider_count,)"""
 
+    collider_particle_offsets: wp.array[int]
+    """Offsets into collider_particle_ids for deformable collider mesh vertices. Shape (collider_count + 1,)"""
+
+    collider_particle_ids: wp.array[int]
+    """Model particle index for each deformable collider mesh vertex. Shape (sum(deformable mesh vertex counts),)"""
+
     face_material_index: wp.array[int]
     """Material index for each collider mesh face. Shape (sum(mesh.face_count for mesh in meshes),)"""
 
@@ -432,14 +438,23 @@ def rasterize_collider_kernel(
     collider_velocity[i] = sdf_vel
 
 
+@wp.func
+def collider_is_deformable(collider_id: int, collider: Collider):
+    if collider_id < 0:
+        return False
+    return collider.collider_particle_offsets[collider_id + 1] > collider.collider_particle_offsets[collider_id]
+
+
 @wp.kernel
-def fill_collider_rigidity_matrices(
+def fill_collider_coupling_matrices(
     node_positions: wp.array[wp.vec3],
     collider: Collider,
     body_q: wp.array[wp.transform],
     body_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
+    particle_mass: wp.array[float],
     cell_volume: float,
+    particle_block_offset: int,
     collider_ids: wp.array[int],
     J_rows: wp.array[int],
     J_cols: wp.array[int],
@@ -447,16 +462,24 @@ def fill_collider_rigidity_matrices(
     IJtm_values: wp.array[wp.mat33],
 ):
     i = wp.tid()
+    slot = 3 * i
+
+    J_rows[slot + 0] = -1
+    J_rows[slot + 1] = -1
+    J_rows[slot + 2] = -1
+    J_cols[slot + 0] = -1
+    J_cols[slot + 1] = -1
+    J_cols[slot + 2] = -1
 
     collider_id = collider_ids[i]
 
     if collider_is_dynamic(collider_id, collider, body_mass):
         body_id = collider.collider_body_index[collider_id]
 
-        J_rows[2 * i] = i
-        J_rows[2 * i + 1] = i
-        J_cols[2 * i] = 2 * body_id
-        J_cols[2 * i + 1] = 2 * body_id + 1
+        J_rows[slot + 0] = i
+        J_rows[slot + 1] = i
+        J_cols[slot + 0] = 2 * body_id
+        J_cols[slot + 1] = 2 * body_id + 1
 
         b_pos = wp.transform_get_translation(body_q[body_id])
         b_rot = wp.transform_get_rotation(body_q[body_id])
@@ -466,20 +489,60 @@ def fill_collider_rigidity_matrices(
         W = wp.skew(b_pos + R * collider.body_com[body_id] - x)
 
         Id = wp.identity(n=3, dtype=float)
-        J_values[2 * i] = W
-        J_values[2 * i + 1] = Id
+        J_values[slot + 0] = W
+        J_values[slot + 1] = Id
 
         # Grid impulses need to be scaled by cell_volume
 
         world_inv_inertia = R @ body_inv_inertia[body_id] @ wp.transpose(R)
-        IJtm_values[2 * i] = -cell_volume * world_inv_inertia @ W
-        IJtm_values[2 * i + 1] = (cell_volume / body_mass[body_id]) * Id
+        IJtm_values[slot + 0] = -cell_volume * world_inv_inertia @ W
+        IJtm_values[slot + 1] = (cell_volume / body_mass[body_id]) * Id
 
-    else:
-        J_cols[2 * i] = -1
-        J_cols[2 * i + 1] = -1
-        J_rows[2 * i] = -1
-        J_rows[2 * i + 1] = -1
+    elif collider_is_deformable(collider_id, collider):
+        mesh = collider.collider_mesh[collider_id]
+        x = node_positions[i]
+        max_dist = collider.query_max_dist + collider.collider_max_thickness[collider_id]
+        query = wp.mesh_query_point_no_sign(mesh, x, max_dist)
+        if not query.result:
+            return
+
+        indices = wp.mesh_get(mesh).indices
+        face = query.face
+        local_i = indices[3 * face + 0]
+        local_j = indices[3 * face + 1]
+        local_k = indices[3 * face + 2]
+
+        offset = collider.collider_particle_offsets[collider_id]
+        particle_i = collider.collider_particle_ids[offset + local_i]
+        particle_j = collider.collider_particle_ids[offset + local_j]
+        particle_k = collider.collider_particle_ids[offset + local_k]
+
+        w_j = query.u
+        w_k = query.v
+        w_i = 1.0 - w_j - w_k
+
+        Id = wp.identity(n=3, dtype=float)
+
+        m_i = particle_mass[particle_i]
+        if m_i > 0.0 and w_i > 0.0:
+            J_rows[slot + 0] = i
+            J_cols[slot + 0] = particle_block_offset + particle_i
+            J_values[slot + 0] = w_i * Id
+            IJtm_values[slot + 0] = (cell_volume * w_i / m_i) * Id
+
+        m_j = particle_mass[particle_j]
+        if m_j > 0.0 and w_j > 0.0:
+            J_rows[slot + 1] = i
+            J_cols[slot + 1] = particle_block_offset + particle_j
+            J_values[slot + 1] = w_j * Id
+            IJtm_values[slot + 1] = (cell_volume * w_j / m_j) * Id
+
+        m_k = particle_mass[particle_k]
+        if m_k > 0.0 and w_k > 0.0:
+            J_rows[slot + 2] = i
+            J_cols[slot + 2] = particle_block_offset + particle_k
+            J_values[slot + 2] = w_k * Id
+            IJtm_values[slot + 2] = (cell_volume * w_k / m_k) * Id
 
 
 @fem.integrand
@@ -659,20 +722,20 @@ def build_rigidity_operator(
     body_q: wp.array[wp.transform],
     body_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
+    particle_mass: wp.array[float],
     collider_ids: wp.array[int],
 ) -> tuple[wps.BsrMatrix, wps.BsrMatrix]:
-    """Build the collider rigidity operator that couples collider impulses to rigid DOFs.
+    """Build the collider operator that couples collider impulses to finite-mass DOFs.
 
-    Builds a block-sparse matrix of size (3 N_vel_nodes) x (3 N_vel_nodes) that
-    maps nodal impulses to collider rigid-body displacements. Only nodes
-    with a valid collider id and only dynamic colliders (finite mass) produce
-    non-zero blocks.
+    Builds block-sparse maps between active collider nodes and finite-mass
+    collider DOFs. Only nodes with a valid collider id and only finite-mass
+    colliders produce non-zero blocks.
 
     Internally constructs:
-      - J: kinematic Jacobian blocks per node relating rigid velocity to nodal velocity.
+      - J: kinematic Jacobian blocks per node relating collider DOF velocity to nodal velocity.
       - IJtm: mass- and inertia-scaled transpose mapping.
 
-    The returned operator is (J @ IJtm) and corresponds the rigid-body Delassus operator.
+    The returned operator is (J @ IJtm) and corresponds the collider Delassus operator.
 
     Args:
         cell_volume: Grid cell volume as scaling factor to node_volumes.
@@ -682,6 +745,7 @@ def build_rigidity_operator(
         body_q: Rigid body transforms.
         body_mass: Rigid body masses.
         body_inv_inertia: Rigid body inverse inertia tensors.
+        particle_mass: Particle masses for deformable mesh colliders.
         collider_ids: Per-velocity-node collider id, or `_NULL_COLLIDER_ID` when not active.
 
     Returns:
@@ -690,14 +754,17 @@ def build_rigidity_operator(
 
     vel_node_count = node_volumes.shape[0]
     body_count = body_q.shape[0]
+    particle_count = particle_mass.shape[0]
+    particle_block_offset = 2 * body_count
 
-    J_rows = wp.empty(vel_node_count * 2, dtype=int)
-    J_cols = wp.empty(vel_node_count * 2, dtype=int)
-    J_values = wp.empty(vel_node_count * 2, dtype=wp.mat33)
-    IJtm_values = wp.empty(vel_node_count * 2, dtype=wp.mat33)
+    max_blocks_per_node = 3
+    J_rows = wp.empty(vel_node_count * max_blocks_per_node, dtype=int)
+    J_cols = wp.empty(vel_node_count * max_blocks_per_node, dtype=int)
+    J_values = wp.empty(vel_node_count * max_blocks_per_node, dtype=wp.mat33)
+    IJtm_values = wp.empty(vel_node_count * max_blocks_per_node, dtype=wp.mat33)
 
     wp.launch(
-        fill_collider_rigidity_matrices,
+        fill_collider_coupling_matrices,
         dim=vel_node_count,
         inputs=[
             node_positions,
@@ -705,7 +772,9 @@ def build_rigidity_operator(
             body_q,
             body_mass,
             body_inv_inertia,
+            particle_mass,
             cell_volume,
+            particle_block_offset,
             collider_ids,
             J_rows,
             J_cols,
@@ -716,7 +785,7 @@ def build_rigidity_operator(
 
     J = wps.bsr_from_triplets(
         rows_of_blocks=vel_node_count,
-        cols_of_blocks=2 * body_count,
+        cols_of_blocks=particle_block_offset + particle_count,
         rows=J_rows,
         columns=J_cols,
         values=J_values,
@@ -724,7 +793,7 @@ def build_rigidity_operator(
 
     IJtm = wps.bsr_from_triplets(
         cols_of_blocks=vel_node_count,
-        rows_of_blocks=2 * body_count,
+        rows_of_blocks=particle_block_offset + particle_count,
         columns=J_rows,
         rows=J_cols,
         values=IJtm_values,

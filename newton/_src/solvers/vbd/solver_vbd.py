@@ -11,6 +11,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import (
+    BodyFlags,
     Contacts,
     Control,
     JointType,
@@ -18,6 +19,8 @@ from ...sim import (
     ModelBuilder,
     State,
 )
+from ..coupled.interface import CouplingInputStateFlags, CouplingInterface
+from ..coupled.proxy_utils import harvest_proxy_wrenches_kernel
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
@@ -57,6 +60,7 @@ from .rigid_vbd_kernels import (
     _count_num_adjacent_joints,
     _fill_adjacent_joints,
     accumulate_body_body_contacts_per_body,
+    accumulate_body_particle_contact_forces_on_proxy_bodies,
     accumulate_body_particle_contacts_per_body,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
@@ -85,7 +89,7 @@ from .tri_mesh_collision import (
 __all__ = ["SolverVBD"]
 
 
-class SolverVBD(SolverBase):
+class SolverVBD(SolverBase, CouplingInterface):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
     This unified solver supports:
@@ -435,6 +439,15 @@ class SolverVBD(SolverBase):
         # Defaults to True and is reset to True when consumed by step().
         self._update_rigid_history = True
 
+        # Conditional coupling hooks: the notify and body-proxy harvest hooks
+        # only have meaningful implementations when VBD owns rigid-body AVBD
+        # state. Hide them on this instance otherwise so the coupled wrapper
+        # falls back to its generic logic.
+        if not hasattr(self, "body_q_prev"):
+            self.coupling_notify_input_state_update = None
+        if not (hasattr(self, "body_forces") and hasattr(self, "body_torques")):
+            self.coupling_harvest_proxy_wrenches = None
+
     def _init_particle_system(
         self,
         model: Model,
@@ -635,6 +648,7 @@ class SolverVBD(SolverBase):
             # Kinematic bodies: set body_q.
             # Dynamic teleportation: also set body_q_prev and body_qd.
             self.body_q_prev = wp.clone(model.body_q, device=self.device)
+            self._coupling_proxy_body_q_prev = wp.clone(model.body_q, device=self.device)
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
 
             # Adjacency and dimensions
@@ -772,6 +786,155 @@ class SolverVBD(SolverBase):
     def notify_model_changed(self, flags: int) -> None:
         if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
+
+    def coupling_notify_input_state_update(
+        self,
+        state: State,
+        flags: CouplingInputStateFlags | int,
+        *,
+        restart: bool = False,
+        dt: float = 0.0,
+    ) -> None:
+        """Convert input body pose updates into VBD-compatible history updates."""
+        flags = CouplingInputStateFlags(flags)
+        if (
+            dt <= 0.0
+            or not (flags & CouplingInputStateFlags.BODY_Q)
+            or not (flags & CouplingInputStateFlags.BODY_QD)
+            or state.body_q is None
+            or state.body_qd is None
+            or not hasattr(self, "body_q_prev")
+        ):
+            return
+
+        iteration_restart = int(bool(restart))
+        has_proxy_body_q_prev = hasattr(self, "_coupling_proxy_body_q_prev")
+        if has_proxy_body_q_prev:
+            wp.copy(self._coupling_proxy_body_q_prev, self.body_q_prev)
+
+        wp.launch(
+            _update_vbd_body_input_state_kernel,
+            dim=self.model.body_count,
+            inputs=[
+                float(dt),
+                self.model.body_flags,
+                int(BodyFlags.KINEMATIC),
+                int(BodyFlags.PROXY),
+                iteration_restart,
+                state.body_q,
+                self.body_q_prev,
+                state.body_qd,
+            ],
+            device=self.device,
+        )
+        if iteration_restart != 0 and has_proxy_body_q_prev:
+            wp.copy(self._coupling_proxy_body_q_prev, self.body_q_prev)
+
+    def coupling_prepare_proxy_contacts(
+        self,
+        state: State,
+        contacts: Contacts | None,
+        *,
+        contacts_freshly_detected: bool = False,
+    ) -> Contacts | None:
+        """Filter freshly detected proxy contacts and update rigid history cadence."""
+        del state
+        if contacts_freshly_detected and contacts is not None and contacts.rigid_contact_count is not None:
+            wp.launch(
+                _filter_vbd_proxy_rigid_contacts_kernel,
+                dim=contacts.rigid_contact_shape0.shape[0],
+                inputs=[
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    self.model.shape_body,
+                    self.model.body_flags,
+                    self.model.body_inv_mass,
+                    int(BodyFlags.PROXY),
+                    int(BodyFlags.KINEMATIC),
+                ],
+                device=self.device,
+            )
+
+        self.set_rigid_history_update(bool(contacts_freshly_detected))
+        return contacts
+
+    def coupling_harvest_proxy_wrenches(
+        self,
+        body_local_to_proxy_global: wp.array[int],
+        out_body_f: wp.array[wp.spatial_vector],
+        *,
+        state=None,
+        state_out=None,
+        contacts=None,
+        dt: float = 0.0,
+    ) -> None:
+        """Harvest contact-only proxy-body wrenches."""
+        del state
+        if not hasattr(self, "body_q_prev") or not hasattr(self, "_coupling_proxy_body_q_prev"):
+            raise NotImplementedError("VBD proxy contact harvest requires rigid-body AVBD state")
+
+        if contacts is None or state_out is None:
+            return
+
+        body_q_prev = self._coupling_proxy_body_q_prev
+
+        if contacts.rigid_contact_max > 0:
+            body0, body1, point0, point1, force_on_body1, rigid_contact_count = self.collect_rigid_contact_forces(
+                state_out.body_q,
+                body_q_prev,
+                contacts,
+                dt,
+            )
+            wp.launch(
+                harvest_proxy_wrenches_kernel,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    rigid_contact_count,
+                    body0,
+                    body1,
+                    point0,
+                    point1,
+                    force_on_body1,
+                    self.model.body_inv_mass,
+                    self.model.body_flags,
+                    body_local_to_proxy_global,
+                    int(BodyFlags.PROXY),
+                    self.model.body_com,
+                    state_out.body_q,
+                    out_body_f,
+                ],
+                device=self.device,
+            )
+
+        if contacts.soft_contact_max > 0 and self.body_particle_contact_penalty_k.shape[0] >= contacts.soft_contact_max:
+            wp.launch(
+                accumulate_body_particle_contact_forces_on_proxy_bodies,
+                dim=contacts.soft_contact_max,
+                inputs=[
+                    float(dt),
+                    body_local_to_proxy_global,
+                    state_out.particle_q,
+                    self.particle_q_prev,
+                    self.model.particle_radius,
+                    state_out.body_q,
+                    body_q_prev,
+                    self.model.body_com,
+                    float(self.friction_epsilon),
+                    self.body_particle_contact_penalty_k,
+                    self.body_particle_contact_material_kd,
+                    self.body_particle_contact_material_mu,
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_particle,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_body_vel,
+                    contacts.soft_contact_normal,
+                    self.model.shape_body,
+                    out_body_f,
+                ],
+                device=self.device,
+            )
 
     # =====================================================
     # Initialization Helper Methods
@@ -2812,3 +2975,107 @@ class SolverVBD(SolverBase):
         """
         if self.particle_enable_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)
+
+
+@wp.func
+def _vbd_proxy_quat_velocity(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
+    q1 = wp.normalize(q_now)
+    q0 = wp.normalize(q_prev)
+    if wp.dot(q1, q0) < 0.0:
+        q0 = wp.quat(-q0[0], -q0[1], -q0[2], -q0[3])
+    dq = wp.normalize(wp.mul(q1, wp.quat_inverse(q0)))
+    axis, angle = wp.quat_to_axis_angle(dq)
+    return axis * (angle / dt)
+
+
+@wp.kernel(enable_backward=False)
+def _update_vbd_body_input_state_kernel(
+    dt: float,
+    body_flags: wp.array[wp.int32],
+    kinematic_flag: int,
+    proxy_flag: int,
+    iteration_restart: int,
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    local_body = wp.tid()
+    if (body_flags[local_body] & kinematic_flag) != 0:
+        return
+
+    q_teleported = body_q[local_body]
+    if iteration_restart != 0:
+        body_q_prev[local_body] = q_teleported
+        return
+
+    if (body_flags[local_body] & proxy_flag) == 0:
+        return
+
+    q_prev = body_q_prev[local_body]
+
+    p_teleported = wp.transform_get_translation(q_teleported)
+    p_prev = wp.transform_get_translation(q_prev)
+    dv = (p_teleported - p_prev) / dt
+
+    r_teleported = wp.transform_get_rotation(q_teleported)
+    r_prev = wp.transform_get_rotation(q_prev)
+    dw = _vbd_proxy_quat_velocity(r_teleported, r_prev, dt)
+
+    body_qd[local_body] = body_qd[local_body] + wp.spatial_vector(dv, dw)
+    body_q[local_body] = q_prev
+
+
+@wp.kernel(enable_backward=False)
+def _filter_vbd_proxy_rigid_contacts_kernel(
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[wp.int32],
+    rigid_contact_shape1: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    body_flags: wp.array[wp.int32],
+    body_inv_mass: wp.array[float],
+    proxy_flag: int,
+    kinematic_flag: int,
+):
+    contact_id = wp.tid()
+    if contact_id >= rigid_contact_count[0]:
+        return
+
+    s0 = rigid_contact_shape0[contact_id]
+    s1 = rigid_contact_shape1[contact_id]
+    body0 = shape_body[s0] if s0 >= 0 and s0 < shape_body.shape[0] else -1
+    body1 = shape_body[s1] if s1 >= 0 and s1 < shape_body.shape[0] else -1
+
+    is_proxy0 = 0
+    if body0 >= 0 and body0 < body_flags.shape[0] and (body_flags[body0] & proxy_flag) != 0:
+        is_proxy0 = 1
+    is_proxy1 = 0
+    if body1 >= 0 and body1 < body_flags.shape[0] and (body_flags[body1] & proxy_flag) != 0:
+        is_proxy1 = 1
+
+    is_static0 = 0
+    if body0 < 0:
+        is_static0 = 1
+    elif body0 < body_flags.shape[0] and (body_flags[body0] & kinematic_flag) != 0:
+        is_static0 = 1
+    elif body0 < body_inv_mass.shape[0] and body_inv_mass[body0] == 0.0:
+        is_static0 = 1
+
+    is_static1 = 0
+    if body1 < 0:
+        is_static1 = 1
+    elif body1 < body_flags.shape[0] and (body_flags[body1] & kinematic_flag) != 0:
+        is_static1 = 1
+    elif body1 < body_inv_mass.shape[0] and body_inv_mass[body1] == 0.0:
+        is_static1 = 1
+
+    discard = 0
+    if is_proxy0 == 1 and is_proxy1 == 1:
+        discard = 1
+    if is_proxy0 == 1 and is_static1 == 1:
+        discard = 1
+    if is_proxy1 == 1 and is_static0 == 1:
+        discard = 1
+
+    if discard == 1:
+        rigid_contact_shape0[contact_id] = -1
+        rigid_contact_shape1[contact_id] = -1

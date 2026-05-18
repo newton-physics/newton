@@ -210,7 +210,29 @@ devices = get_cuda_test_devices(mode="basic")
 
 
 class TestCollisionPipeline(unittest.TestCase):
-    pass
+    def test_soft_contact_max_zero_disables_soft_contact_generation(self):
+        builder = newton.ModelBuilder(gravity=0.0)
+        builder.add_ground_plane()
+        builder.add_particle(pos=(0.0, 0.0, 0.025), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+
+        enabled_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1)
+        enabled_contacts = enabled_pipeline.contacts()
+        enabled_pipeline.collide(state, enabled_contacts)
+        self.assertGreater(int(enabled_contacts.soft_contact_count.numpy()[0]), 0)
+
+        disabled_pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            soft_contact_max=0,
+            soft_contact_margin=0.1,
+        )
+        disabled_contacts = disabled_pipeline.contacts()
+        disabled_pipeline.collide(state, disabled_contacts)
+
+        self.assertEqual(disabled_contacts.soft_contact_max, 0)
+        self.assertEqual(int(disabled_contacts.soft_contact_count.numpy()[0]), 0)
 
 
 # Collision pipeline tests - now supports both MESH and CONVEX_MESH
