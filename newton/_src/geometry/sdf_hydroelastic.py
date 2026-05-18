@@ -509,7 +509,9 @@ class HydroelasticSDF:
                 raise ValueError(f"Hydroelastic shape {idx} requires SDF data but has no attached/generated SDF.")
             if not texture_sdf_data[sdf_idx]["scale_baked"]:
                 sx, sy, sz = shape_scale[idx]
-                if not (np.isclose(sx, 1.0) and np.isclose(sy, 1.0) and np.isclose(sz, 1.0)):
+                # Allow mirrored unit scale (e.g. (-1, 1, 1)) since the SDF gradient
+                # is correctly remapped at runtime via the sign-preserving safe inverse.
+                if not (np.isclose(abs(sx), 1.0) and np.isclose(abs(sy), 1.0) and np.isclose(abs(sz), 1.0)):
                     raise ValueError(
                         f"Hydroelastic shape {idx} uses non-unit scale but its SDF is not scale-baked. "
                         "Build a scale-baked SDF for hydroelastic use."

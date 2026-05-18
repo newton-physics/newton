@@ -1112,6 +1112,15 @@ def get_triangle_shape_from_mesh(
     idx1 = mesh.indices[tri_idx * 3 + 1]
     idx2 = mesh.indices[tri_idx * 3 + 2]
 
+    # Mirror parity (det(scale) < 0) reflects the geometry, which would invert
+    # triangle winding and flip the face-normal sign. Swap the second and third
+    # indices so downstream code (back-face culling, GJK/MPR triangle support)
+    # always sees a consistently-wound (outward-facing) triangle.
+    if mesh_scale[0] * mesh_scale[1] * mesh_scale[2] < 0.0:
+        tmp = idx1
+        idx1 = idx2
+        idx2 = tmp
+
     # Get vertex positions in mesh local space (with scale applied)
     v0_local = wp.cw_mul(mesh.points[idx0], mesh_scale)
     v1_local = wp.cw_mul(mesh.points[idx1], mesh_scale)

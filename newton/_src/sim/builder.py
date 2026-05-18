@@ -5470,6 +5470,11 @@ class ModelBuilder:
             xform: The transform of the shape in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             scale: The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
+                Negative components are accepted and silently absorbed via ``abs()`` for symmetric primitives
+                (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian) since these shapes are point-symmetric.
+                Mesh-class shapes (``MESH``, ``CONVEX_MESH``, SDF, hydroelastic) preserve the sign and treat
+                ``det(scale) < 0`` as a mirror; the same :class:`Mesh` instance can be shared across shapes with
+                different signed scales. Cone and heightfield shapes raise :class:`ValueError` on negative components.
             src: The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH`. Defaults to `None`.
             is_static: If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If `None`, mesh-backed shapes fall back to :attr:`~newton.Mesh.color`; otherwise the per-shape palette sequence is used.
@@ -5504,6 +5509,37 @@ class ModelBuilder:
                 )
         if scale is None:
             scale = (1.0, 1.0, 1.0)
+
+        # Normalize / validate negative scale components by shape type. Symmetric
+        # primitives (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian)
+        # are point-symmetric and produce identical geometry under sign flip of any
+        # scale component, so we silently absorb the sign. Cones are asymmetric
+        # along their height axis (apex vs. base), so negative components would
+        # change the geometry and are rejected. Heightfields are not yet supported
+        # with mirroring (row/col ordering semantics). Mesh-class shapes carry
+        # signed scale natively through the collision pipeline.
+        if type in (
+            GeoType.SPHERE,
+            GeoType.BOX,
+            GeoType.CAPSULE,
+            GeoType.CYLINDER,
+            GeoType.ELLIPSOID,
+            GeoType.PLANE,
+            GeoType.GAUSSIAN,
+        ):
+            scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
+        elif type == GeoType.CONE:
+            if any(float(s) < 0.0 for s in scale):
+                raise ValueError(
+                    f"Cone shape requires non-negative scale; got {tuple(float(s) for s in scale)}. "
+                    "Negative components would flip the apex/base or invalidate the slope test."
+                )
+        elif type == GeoType.HFIELD:
+            if any(float(s) < 0.0 for s in scale):
+                raise ValueError(
+                    f"Heightfield shape requires non-negative scale; got {tuple(float(s) for s in scale)}. "
+                    "Mirroring of heightfields is not yet supported."
+                )
 
         # Validate site invariants
         if cfg.is_site:
