@@ -17,7 +17,7 @@ from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
 from ..geometry import Mesh
 from ..sim import ModelBuilder
-from ..sim.enums import JointTargetMode
+from ..sim.enums import JointTargetMode, JointType
 from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content, should_show_collider
 from .mesh import load_meshes_from_file
@@ -880,5 +880,45 @@ def parse_urdf(
             for j in range(i + 1, end_shape_count):
                 builder.add_shape_collision_filter_pair(i, j)
 
+    # A massless dummy root connected to the physical base by fixed joints is
+    # immovable in maximal-coordinate solvers. Collapse that fixed subtree so
+    # the free root carries the imported mass and inertia.
+    auto_collapse_fixed_joint_indices: set[int] = set()
+    if (
+        floating
+        and base_parent == -1
+        and builder.body_mass[root] <= 0.0
+        and any(
+            builder.joint_type[joint_idx] == JointType.FIXED and builder.joint_parent[joint_idx] == root
+            for joint_idx in joint_indices
+        )
+    ):
+        massless_root_chain_parents = {root}
+        while True:
+            added_joint = False
+            for joint_idx in joint_indices:
+                if joint_idx in auto_collapse_fixed_joint_indices:
+                    continue
+                if builder.joint_type[joint_idx] != JointType.FIXED:
+                    continue
+                if builder.joint_parent[joint_idx] not in massless_root_chain_parents:
+                    continue
+
+                auto_collapse_fixed_joint_indices.add(joint_idx)
+                child = builder.joint_child[joint_idx]
+                if child >= 0 and builder.body_mass[child] <= 0.0:
+                    massless_root_chain_parents.add(child)
+                added_joint = True
+
+            if not added_joint:
+                break
+
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
+    elif auto_collapse_fixed_joint_indices:
+        fixed_joints_to_keep = {
+            joint_idx
+            for joint_idx in range(builder.joint_count)
+            if builder.joint_type[joint_idx] == JointType.FIXED and joint_idx not in auto_collapse_fixed_joint_indices
+        }
+        builder.collapse_fixed_joints(joint_indices_to_keep=fixed_joints_to_keep)

@@ -4829,13 +4829,17 @@ class ModelBuilder:
         plt.show()
 
     def collapse_fixed_joints(
-        self, verbose: bool = wp.config.verbose, joints_to_keep: list[str] | None = None
+        self,
+        verbose: bool = wp.config.verbose,
+        joints_to_keep: list[str] | None = None,
+        joint_indices_to_keep: set[int] | None = None,
     ) -> dict[str, Any]:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
             verbose: If True, print additional information about the collapsed joints. Defaults to the value of `wp.config.verbose`.
             joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
+            joint_indices_to_keep: An optional set of joint indices to be excluded from the collapse process.
         """
 
         body_data = {}
@@ -4957,7 +4961,9 @@ class ModelBuilder:
             # Don't merge fixed joints listed in joints_to_keep list
             if joints_to_keep is None:
                 joints_to_keep = []
-            joint_in_keep_list = joint["label"] in joints_to_keep
+            joint_in_keep_list = joint["label"] in joints_to_keep or (
+                joint_indices_to_keep is not None and joint["original_id"] in joint_indices_to_keep
+            )
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint
