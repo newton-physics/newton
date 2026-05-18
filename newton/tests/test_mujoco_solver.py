@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 import xml.etree.ElementTree as ET
+from unittest import mock
 
 import numpy as np  # For numerical operations and random values
 import warp as wp
@@ -75,6 +76,48 @@ class TestMuJoCoSolver(unittest.TestCase):
             places=5,
             msg=f"ls_tolerance should be {custom_ls_tolerance}",
         )
+
+    def test_timestep_option_from_mjcf(self):
+        """Test that MJCF timestep options propagate to per-world MuJoCo solver state."""
+        robot_a = newton.ModelBuilder()
+        robot_a.add_mjcf("""
+<mujoco>
+    <option timestep="0.002"/>
+    <worldbody>
+        <body name="a" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+
+        robot_b = newton.ModelBuilder()
+        robot_b.add_mjcf("""
+<mujoco>
+    <option timestep="0.005"/>
+    <worldbody>
+        <body name="b" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+
+        builder = newton.ModelBuilder()
+        builder.add_world(robot_a)
+        builder.add_world(robot_b)
+        model = builder.finalize()
+
+        with mock.patch.object(SolverMuJoCo, "_update_geom_properties", autospec=True, return_value=None):
+            with mock.patch.object(SolverMuJoCo, "_update_pair_properties", autospec=True, return_value=None):
+                solver = SolverMuJoCo(model, disable_contacts=True)
+        timestep = solver.mjw_model.opt.timestep.numpy()
+
+        self.assertEqual(len(timestep), 2)
+        self.assertAlmostEqual(float(timestep[0]), 0.002, places=6)
+        self.assertAlmostEqual(float(timestep[1]), 0.005, places=6)
 
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
