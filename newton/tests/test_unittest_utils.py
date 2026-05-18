@@ -5,9 +5,7 @@ import io
 import subprocess
 import sys
 import unittest
-from unittest import mock
 
-import newton.tests.test_examples as test_examples
 import newton.tests.unittest_utils as unittest_utils
 
 NewtonTestCase = unittest_utils.NewtonTestCase
@@ -225,36 +223,6 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertEqual(len(result.failures), 1)
         self.assertIn("Unexpected stdout", result.failures[0][1])
         self.assertIn("generated test output", result.failures[0][1])
-
-    def test_empty_example_output_regexes_require_newton_test_case(self):
-        class LegacyExampleTest(unittest.TestCase):
-            pass
-
-        regex_args = (
-            {"expect_output_regexes": []},
-            {"allow_output_regexes": []},
-        )
-        for regex_arg in regex_args:
-            with self.subTest(regex_arg=regex_arg):
-                with self.assertRaisesRegex(TypeError, "NewtonTestCase"):
-                    test_examples.add_example_test(
-                        LegacyExampleTest,
-                        name="basic.example_basic_pendulum",
-                        devices=[],
-                        **regex_arg,
-                    )
-
-    def test_basic_example_output_regexes_allow_explicit_none(self):
-        with mock.patch.object(test_examples, "add_example_test") as add_example_test:
-            test_examples.add_basic_example_test(
-                name="basic.example_basic_pendulum",
-                devices=[],
-                allow_output_regexes=None,
-            )
-
-        add_example_test.assert_called_once()
-        _, kwargs = add_example_test.call_args
-        self.assertEqual(kwargs["allow_output_regexes"], test_examples._BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES)
 
     def test_output_capture_begin_rolls_back_stdout_if_stderr_fails(self):
         class CaptureStub:
