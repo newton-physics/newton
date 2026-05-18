@@ -388,7 +388,8 @@ def _reset_joints_of_select_worlds(
     model_joint_bid_F: wp.array[int32],
     model_joint_B_r_Bj: wp.array[vec3f],
     model_joint_F_r_Fj: wp.array[vec3f],
-    model_joint_X_j: wp.array[mat33f],
+    model_joint_X_p_j: wp.array[mat33f],
+    model_joint_X_c_j: wp.array[mat33f],
     model_joint_q_j_ref: wp.array[float32],
     state_q_i: wp.array[transformf],
     state_u_i: wp.array[vec6f],
@@ -426,7 +427,8 @@ def _reset_joints_of_select_worlds(
     bid_F = model_joint_bid_F[jid]
     B_r_Bj = model_joint_B_r_Bj[jid]
     F_r_Fj = model_joint_F_r_Fj[jid]
-    X_j = model_joint_X_j[jid]
+    X_p_j = model_joint_X_p_j[jid]
+    X_c_j = model_joint_X_c_j[jid]
 
     # If the Base body is the world (bid=-1), use the identity transform (frame
     # of the world's origin), otherwise retrieve the Base body's pose and twist
@@ -441,7 +443,9 @@ def _reset_joints_of_select_worlds(
     u_F_j = state_u_i[bid_F]
 
     # Compute the joint frame pose and relative motion
-    p_j, j_r_j, j_q_j, j_u_j = compute_joint_pose_and_relative_motion(T_B_j, T_F_j, u_B_j, u_F_j, B_r_Bj, F_r_Fj, X_j)
+    p_j, j_r_j, j_q_j, j_u_j = compute_joint_pose_and_relative_motion(
+        T_B_j, T_F_j, u_B_j, u_F_j, B_r_Bj, F_r_Fj, X_p_j, X_c_j
+    )
 
     # Store the absolute pose of the joint frame in world coordinates
     data_p_j[jid] = p_j
@@ -836,7 +840,8 @@ def reset_select_worlds_to_initial_state(
             model.joints.bid_F,
             model.joints.B_r_Bj,
             model.joints.F_r_Fj,
-            model.joints.X_j,
+            model.joints.X_p_j,
+            model.joints.X_c_j,
             model.joints.q_j_0,
             model.bodies.q_i_0,
             model.bodies.u_i_0,
@@ -930,7 +935,8 @@ def reset_select_worlds_to_state(
             model.joints.bid_F,
             model.joints.B_r_Bj,
             model.joints.F_r_Fj,
-            model.joints.X_j,
+            model.joints.X_p_j,
+            model.joints.X_c_j,
             model.joints.q_j_0,
             state.q_i,
             state.u_i,

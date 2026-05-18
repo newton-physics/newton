@@ -26,7 +26,7 @@ from .joints import (
 )
 from .materials import MaterialDescriptor, MaterialManager
 from .shapes import max_contacts_for_shape_pair
-from .types import float32, int32, mat33f, mat63f, quatf, transformf, vec2i, vec3f, vec6f
+from .types import float32, int32, mat33f, mat63f, transformf, vec2i, vec3f, vec6f
 
 if TYPE_CHECKING:
     from ..core.model import ModelKamino, ModelKaminoInfo
@@ -49,113 +49,6 @@ __all__ = [
 ###
 # Kernels
 ###
-
-
-@wp.kernel
-def entity_local_transform_conversion_kernel(
-    # Inputs:
-    model_joint_world_start: wp.array[int32],
-    model_joint_parent: wp.array[int32],
-    model_joint_child: wp.array[int32],
-    # Outputs:
-    body_corr: wp.array[quatf],
-    body_com: wp.array[vec3f],
-    body_q: wp.array[transformf],
-    body_qd: wp.array[vec6f],
-    body_inertia: wp.array[mat33f],
-    body_inv_inertia: wp.array[mat33f],
-    joint_X_p: wp.array[transformf],
-    joint_X_c: wp.array[transformf],
-):
-    # Retrieve the world index
-    world_id = wp.tid()
-    # Retrieve the joint index range for this world
-    joint_id_start = model_joint_world_start[world_id]
-    joint_id_end = model_joint_world_start[world_id + 1] - 1
-
-    for joint_id in range(joint_id_start, joint_id_end + 1):
-        parent_id = model_joint_parent[joint_id]
-        child_id = model_joint_child[joint_id]
-
-        # If the parent body was previously corrected, first update this
-        # joint's parent-side transform to the new parent frame.
-        joint_X_p_j = joint_X_p[joint_id]
-        if parent_id >= 0:
-            parent_corr = body_corr[parent_id]
-            if not parent_corr[3] == 1.0:
-                p_pos = wp.transform_get_translation(joint_X_p_j)
-                wp.transform_set_translation(joint_X_p_j, wp.quat_rotate_inv(parent_corr, p_pos))
-                p_quat = wp.transform_get_rotation(joint_X_p_j)
-                wp.transform_set_rotation(joint_X_p_j, wp.quat_inverse(parent_corr) * p_quat)
-                joint_X_p[joint_id] = joint_X_p_j
-
-        # Now compute the correction for this joint's child body
-        joint_X_c_j = joint_X_c[joint_id]
-        q_cj = wp.transform_get_rotation(joint_X_c_j)
-        q_pj = wp.transform_get_rotation(joint_X_p_j)
-        q_corr = q_cj * wp.quat_inverse(q_pj)
-
-        if child_id < 0 or wp.abs(q_corr[3] - 1.0) < 1e-5:
-            continue
-
-        if not body_corr[child_id][3] == 1.0:
-            print(
-                "A body is the child of multiple joints requiring joint_X_c "
-                "correction. The previous correction will be overwritten, which "
-                "may produce incorrect joint constraints for loop-closing joints."
-            )
-        body_corr[child_id] = q_corr
-
-        # Update child-side joint transform: rotation becomes identity,
-        # position re-expressed in the new child frame
-        q_corr_inv = wp.quat_inverse(q_corr)
-        c_pos = wp.transform_get_translation(joint_X_c_j)
-        wp.transform_set_translation(joint_X_c_j, wp.quat_rotate(q_corr_inv, c_pos))
-        wp.transform_set_rotation(joint_X_c_j, wp.quat_identity())
-        joint_X_c[joint_id] = joint_X_c_j
-
-        # Rotate the child body's local quantities
-        body_q_c = body_q[child_id]
-        q_old = wp.transform_get_rotation(body_q_c)
-        wp.transform_set_rotation(body_q_c, q_old * q_corr)
-        body_q[child_id] = body_q_c
-
-        body_com[child_id] = wp.quat_rotate(q_corr_inv, body_com[child_id])
-
-        R_inv_corr = wp.quat_to_matrix(q_corr_inv)
-        body_inertia[child_id] = R_inv_corr @ body_inertia[child_id] @ wp.transpose(R_inv_corr)
-        body_inv_inertia[child_id] = R_inv_corr @ body_inv_inertia[child_id] @ wp.transpose(R_inv_corr)
-
-        # TODO: Do these need be converted? Aren't they already computed at body CoM?
-        body_qd_c = body_qd[child_id]
-        body_qd_c[0:3] = R_inv_corr @ body_qd_c[0:3]
-        body_qd_c[3:6] = R_inv_corr @ body_qd_c[3:6]
-        body_qd[child_id] = body_qd_c
-
-
-@wp.kernel
-def shape_transform_conversion_kernel(
-    # Inputs:
-    model_shape_body: wp.array[int32],
-    body_corr: wp.array[quatf],
-    # Outputs:
-    shape_transform: wp.array[transformf],
-):
-    # Retrieve the shape index
-    shape_id = wp.tid()
-
-    body_id = model_shape_body[shape_id]
-    if body_id < 0:
-        return
-
-    q_corr_inv = wp.quat_inverse(body_corr[body_id])
-
-    st = shape_transform[shape_id]
-    s_pos = wp.transform_get_translation(st)
-    s_quat = wp.transform_get_rotation(st)
-    wp.transform_set_translation(st, wp.quat_rotate(q_corr_inv, s_pos))
-    wp.transform_set_rotation(st, q_corr_inv * s_quat)
-    shape_transform[shape_id] = st
 
 
 @wp.kernel
@@ -288,8 +181,8 @@ def joint_conversion_kernel(
     model_joint_target_kd: wp.array[float32],
     joint_axis: wp.array[vec3f],
     body_com: wp.array[vec3f],
-    joint_X_p: wp.array[transformf],
-    joint_X_c: wp.array[transformf],
+    model_joint_X_p: wp.array[transformf],
+    model_joint_X_c: wp.array[transformf],
     joint_limit_lower: wp.array[float32],
     joint_limit_upper: wp.array[float32],
     joint_velocity_limit: wp.array[float32],
@@ -305,7 +198,8 @@ def joint_conversion_kernel(
     joint_num_kinematic_cts: wp.array[int32],
     joint_B_r_B: wp.array[vec3f],
     joint_F_r_F: wp.array[vec3f],
-    joint_X: wp.array[mat33f],
+    joint_X_p: wp.array[mat33f],
+    joint_X_c: wp.array[mat33f],
 ):
     # Retrieve the joint index
     joint_id = wp.tid()
@@ -365,11 +259,12 @@ def joint_conversion_kernel(
     parent_bid = model_joint_parent[joint_id]
     p_r_p_com = vec3f(body_com[parent_bid]) if parent_bid >= 0 else vec3f(0.0, 0.0, 0.0)
     c_r_c_com = vec3f(body_com[model_joint_child[joint_id]])
-    X_p_j = joint_X_p[joint_id]
-    X_c_j = joint_X_c[joint_id]
-    q_p_j = wp.transform_get_rotation(X_p_j)
-    p_r_p_j = wp.transform_get_translation(X_p_j)
-    c_r_c_j = wp.transform_get_translation(X_c_j)
+    T_X_p_j = model_joint_X_p[joint_id]
+    T_X_c_j = model_joint_X_c[joint_id]
+    q_p_j = wp.transform_get_rotation(T_X_p_j)
+    q_c_j = wp.transform_get_rotation(T_X_c_j)
+    p_r_p_j = wp.transform_get_translation(T_X_p_j)
+    c_r_c_j = wp.transform_get_translation(T_X_c_j)
 
     dof_axes_j = mat63f()
     for i in range(ndofs_j):
@@ -377,10 +272,13 @@ def joint_conversion_kernel(
     R_axis_j = JointDoFType.axes_matrix_from_joint_type(dof_type_j, dof_axes_j)
     B_r_Bj = p_r_p_j - p_r_p_com
     F_r_Fj = c_r_c_j - c_r_c_com
-    X_j = wp.quat_to_matrix(q_p_j) @ R_axis_j
+    # Parent- and follower-side joint frames including the DoF axis basis.
+    X_p_j = wp.quat_to_matrix(q_p_j) @ R_axis_j
+    X_c_j = wp.quat_to_matrix(q_c_j) @ R_axis_j
     joint_B_r_B[joint_id] = B_r_Bj
     joint_F_r_F[joint_id] = F_r_Fj
-    joint_X[joint_id] = X_j
+    joint_X_p[joint_id] = X_p_j
+    joint_X_c[joint_id] = X_c_j
 
     # Clip joint limits and effort/velocity limits to supported ranges
     for i in range(qd_count_j):
@@ -679,103 +577,31 @@ def write_coeff_kernel(a: wp.array[int32], idx: int, v: int):
 
 def convert_entity_local_transforms(model: Model) -> dict[str, wp.array]:
     """
-    Converts all entity-local transforms (i.e. of bodies, joints and shapes) in the
-    given Newton model to a format that is compatible with Kamino's constraint system.
+    Returns working copies of Newton's entity-local transform arrays for the Kamino model.
 
-    This involves absorbing any non-identity :attr:`Model.joint_X_c`
-    rotations into the child body frames, and updating all downstream
-    :attr:`Model.joint_X_p` and :attr:`Model.shape_transform` accordingly.
+    Kamino's joint constraint formulation accepts non-aligned base/follower joint frames
+    (``q_pj != q_cj``) natively via the per-joint :attr:`JointsModel.X_p_j` and
+    :attr:`JointsModel.X_c_j` matrices, so no body-frame absorption is needed: each
+    output array is a plain clone of the corresponding Newton array.
 
     Args:
-        model (Model): Newton model to be modified in-place.
+        model (Model): Newton model whose entity-local transforms should be cloned.
+
+    Returns:
+        A dictionary containing clones of ``body_q``, ``body_qd``, ``body_com``,
+        ``body_inertia``, ``body_inv_inertia``, ``shape_transform``, ``joint_X_p``,
+        and ``joint_X_c`` so that downstream conversion may consume them without
+        mutating the original Newton model.
     """
-    # ---------------------------------------------------------------------------
-    # Pre-processing: absorb non-identity joint_X_c rotations into child body
-    # frames so that Kamino sees aligned joint frames on both sides.
-    #
-    # Kamino's constraint system assumes a single joint frame X_j valid for both
-    # the base (parent) and follower (child) bodies.  At q = 0 it requires
-    #   q_base^{-1} * q_follower = identity
-    #
-    # Newton, however, allows different parent / child joint-frame orientations
-    # via joint_X_p and joint_X_c.  At q = 0 Newton's FK gives:
-    #   q_follower = q_parent * q_pj * inv(q_cj)
-    # so q_base^{-1} * q_follower = q_pj * inv(q_cj) which is generally not
-    # identity.
-    #
-    # To fix this we apply a per-body correction rotation q_corr = q_cj * inv(q_pj)
-    # (applied on the right) to each child body's frame:
-    #   q_body_new = q_body_old * q_corr
-    #
-    # This makes q_base^{-1} * q_follower_new = identity at q = 0, and the joint
-    # rotation axis R(q_pj) * axis is preserved.
-    #
-    # All body-local quantities (CoM, inertia, shapes) are re-expressed in the
-    # rotated frame, and downstream joint_X_p transforms are updated to account
-    # for the parent body's frame change.
-    # ---------------------------------------------------------------------------
-
-    # Work on copies so the original Newton model is not mutated
-    body_com = wp.clone(model.body_com)
-    body_q = wp.clone(model.body_q)
-    body_qd = wp.clone(model.body_qd)
-    body_inertia = wp.clone(model.body_inertia)
-    body_inv_inertia = wp.clone(model.body_inv_inertia)
-    joint_X_p = wp.clone(model.joint_X_p)
-    joint_X_c = wp.clone(model.joint_X_c)
-    shape_transform = wp.clone(model.shape_transform)
-
-    # Process joints in tree order (Newton stores them parent-before-child).
-    # For each joint whose q_pj * inv(q_cj) is not identity, we apply a
-    # correction q_corr to the child body's frame and immediately propagate
-    # to all downstream joints that reference the corrected body as parent.
-    # body_corr: dict[int, np.ndarray] = {}  # body_index -> cumulative q_corr
-    body_corr = wp.full(
-        shape=(model.body_count,), value=wp.quat_identity(dtype=float32), dtype=quatf, device=model.device
-    )
-
-    # Convert bodies, sequentially per world
-    wp.launch(
-        kernel=entity_local_transform_conversion_kernel,
-        dim=model.world_count,
-        inputs=[
-            model.joint_world_start,
-            model.joint_parent,
-            model.joint_child,
-        ],
-        outputs=[
-            body_corr,
-            body_com,
-            body_q,
-            body_qd,
-            body_inertia,
-            body_inv_inertia,
-            joint_X_p,
-            joint_X_c,
-        ],
-        device=model.device,
-    )
-
-    # Convert shapes based on body corrections
-    wp.launch(
-        kernel=shape_transform_conversion_kernel,
-        dim=model.shape_count,
-        inputs=[model.shape_body, body_corr],
-        outputs=[shape_transform],
-        device=model.device,
-    )
-
-    # Return the converted transforms as warp arrays
-    # to be used for constructing the Kamino model
     return {
-        "body_q": body_q,
-        "body_qd": body_qd,
-        "body_com": body_com,
-        "body_inertia": body_inertia,
-        "body_inv_inertia": body_inv_inertia,
-        "shape_transform": shape_transform,
-        "joint_X_p": joint_X_p,
-        "joint_X_c": joint_X_c,
+        "body_q": wp.clone(model.body_q),
+        "body_qd": wp.clone(model.body_qd),
+        "body_com": wp.clone(model.body_com),
+        "body_inertia": wp.clone(model.body_inertia),
+        "body_inv_inertia": wp.clone(model.body_inv_inertia),
+        "shape_transform": wp.clone(model.shape_transform),
+        "joint_X_p": wp.clone(model.joint_X_p),
+        "joint_X_c": wp.clone(model.joint_X_c),
     }
 
 
@@ -841,13 +667,13 @@ def compute_required_contact_capacity(
 
 
 # TODO: Re-implement this using a kernel to run in parallel on the GPU if possible
-# TODO: FIX THIS: This is not correct, it is not using the new joint_X_p and joint_X_c transforms.
 def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     """
     Converts the joint model parameterization of Newton's to Kamino's format.
 
-    This essentially involves computing the B_r_Bj, F_r_Fj and
-    X_j arrays from the joint_X_p and joint_X_c transforms.
+    Computes :attr:`JointsModel.B_r_Bj`, :attr:`JointsModel.F_r_Fj`, :attr:`JointsModel.X_p_j`
+    and :attr:`JointsModel.X_c_j` from Newton's ``model.joint_X_p`` / ``model.joint_X_c``
+    transforms and writes them in-place into ``joints``.
 
     Args:
     - model (Model):
@@ -868,7 +694,8 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     n_joints = model.joint_count
     B_r_Bj_np = np.zeros((n_joints, 3), dtype=np.float32)
     F_r_Fj_np = np.zeros((n_joints, 3), dtype=np.float32)
-    X_j_np = np.zeros((n_joints, 9), dtype=np.float32)
+    X_p_j_np = np.zeros((n_joints, 9), dtype=np.float32)
+    X_c_j_np = np.zeros((n_joints, 9), dtype=np.float32)
 
     for j in range(n_joints):
         dof_type_j = JointDoFType(int(dof_type_np[j]))
@@ -881,19 +708,22 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
         p_r_p_com = wp.vec3f(body_com_np[parent_bid]) if parent_bid >= 0 else wp.vec3f(0.0)
         c_r_c_com = wp.vec3f(body_com_np[int(joint_child_np[j])])
 
-        X_p_j = wp.transformf(*joint_X_p_np[j, :])
-        X_c_j = wp.transformf(*joint_X_c_np[j, :])
-        q_p_j = wp.transform_get_rotation(X_p_j)
-        p_r_p_j = wp.transform_get_translation(X_p_j)
-        c_r_c_j = wp.transform_get_translation(X_c_j)
+        T_X_p_j = wp.transformf(*joint_X_p_np[j, :])
+        T_X_c_j = wp.transformf(*joint_X_c_np[j, :])
+        q_p_j = wp.transform_get_rotation(T_X_p_j)
+        q_c_j = wp.transform_get_rotation(T_X_c_j)
+        p_r_p_j = wp.transform_get_translation(T_X_p_j)
+        c_r_c_j = wp.transform_get_translation(T_X_c_j)
 
         B_r_Bj_np[j, :] = p_r_p_j - p_r_p_com
         F_r_Fj_np[j, :] = c_r_c_j - c_r_c_com
-        X_j_np[j, :] = wp.quat_to_matrix(q_p_j) @ R_axis_j
+        X_p_j_np[j, :] = wp.quat_to_matrix(q_p_j) @ R_axis_j
+        X_c_j_np[j, :] = wp.quat_to_matrix(q_c_j) @ R_axis_j
 
     joints.B_r_Bj.assign(B_r_Bj_np)
     joints.F_r_Fj.assign(F_r_Fj_np)
-    joints.X_j.assign(X_j_np.reshape((n_joints, 3, 3)))
+    joints.X_p_j.assign(X_p_j_np.reshape((n_joints, 3, 3)))
+    joints.X_c_j.assign(X_c_j_np.reshape((n_joints, 3, 3)))
 
 
 def convert_rigid_bodies(
@@ -911,19 +741,15 @@ def convert_rigid_bodies(
     will create a new `RigidBodiesModel` object and fill in the rigid body and shape
     entries of the provided `SizeKamino` and `ModelKaminoInfo` objects.
 
-    This function requires that the preprocessing that absorbs non-identity joint
-    rotations into child body frames has already been computed, and the conversion
-    result is passed in as arguments.
-
     Args:
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
-        body_com: Preprocessed rigid body center of mass positions.
-        body_q: Preprocessed initial rigid body poses.
-        body_qd: Preprocessed initial rigid body velocities.
-        body_inertia: Preprocessed rigid body inertias.
-        body_inv_inertia: Preprocessed inverse rigid body inertias.
+        body_com: Rigid body center-of-mass offsets in body-local frame.
+        body_q: Initial rigid body poses (body-origin world poses).
+        body_qd: Initial rigid body twists.
+        body_inertia: Rigid body inertia tensors in body-local frame.
+        body_inv_inertia: Inverse rigid body inertia tensors in body-local frame.
 
     Returns:
         Fully converted rigid bodies model in Kamino's format.
@@ -1034,25 +860,21 @@ def convert_joints(
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
     body_com: wp.array,
-    joint_X_p: wp.array,
-    joint_X_c: wp.array,
+    model_joint_X_p: wp.array,
+    model_joint_X_c: wp.array,
 ) -> JointsModel:
     """
     Converts the joints from a Newton model into Kamino's format. The function will
     create a new `JointsModel` object and fill in the joint entries of the provided
     `SizeKamino` and `ModelKaminoInfo` objects.
 
-    This function requires that the preprocessing that absorbs non-identity joint
-    rotations into child body frames has already been computed, and the conversion
-    result is passed in as arguments.
-
     Args:
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
-        body_com: Preprocessed rigid body center of mass positions.
-        joint_X_p: Preprocessed joint frames in parent frame.
-        joint_X_c: Preprocessed joint frames in child frame.
+        body_com: Rigid body center-of-mass offsets in body-local frame.
+        model_joint_X_p: Newton's per-joint parent-side joint frame transforms.
+        model_joint_X_c: Newton's per-joint follower-side joint frame transforms.
 
     Returns:
         Fully converted joints model in Kamino's format.
@@ -1073,7 +895,8 @@ def convert_joints(
         joint_num_kinematic_cts = wp.zeros(shape=(model.joint_count,), dtype=int32)
         joint_B_r_B = wp.empty(shape=(model.joint_count,), dtype=vec3f)
         joint_F_r_F = wp.empty(shape=(model.joint_count,), dtype=vec3f)
-        joint_X = wp.empty(shape=(model.joint_count,), dtype=mat33f)
+        joint_X_p = wp.empty(shape=(model.joint_count,), dtype=mat33f)
+        joint_X_c = wp.empty(shape=(model.joint_count,), dtype=mat33f)
 
     # Copy limit arrays
     joint_limit_lower = wp.clone(model.joint_limit_lower)
@@ -1101,8 +924,8 @@ def convert_joints(
             model.joint_target_kd,
             model.joint_axis,
             body_com,
-            joint_X_p,
-            joint_X_c,
+            model_joint_X_p,
+            model_joint_X_c,
             joint_limit_lower,
             joint_limit_upper,
             joint_velocity_limit,
@@ -1118,7 +941,8 @@ def convert_joints(
             joint_num_kinematic_cts,
             joint_B_r_B,
             joint_F_r_F,
-            joint_X,
+            joint_X_p,
+            joint_X_c,
         ],
         device=model.device,
     )
@@ -1460,7 +1284,8 @@ def convert_joints(
         bid_F=model.joint_child,
         B_r_Bj=joint_B_r_B,
         F_r_Fj=joint_F_r_F,
-        X_j=joint_X,
+        X_p_j=joint_X_p,
+        X_c_j=joint_X_c,
         q_j_min=joint_limit_lower,
         q_j_max=joint_limit_upper,
         dq_j_max=joint_velocity_limit,

@@ -702,33 +702,11 @@ class ModelKamino:
                     arr_start_np[-2] = arr_start_np[-1]
                     arr_start.assign(arr_start_np)
 
-        # ---------------------------------------------------------------------------
-        # Pre-processing: absorb non-identity joint_X_c rotations into child body
-        # frames so that Kamino sees aligned joint frames on both sides.
-        #
-        # Kamino's constraint system assumes a single joint frame X_j valid for both
-        # the base (parent) and follower (child) bodies.  At q = 0 it requires
-        #   q_base^{-1} * q_follower = identity
-        # Newton, however, allows different parent / child joint-frame orientations
-        # via joint_X_p and joint_X_c.  At q = 0 Newton's FK gives:
-        #   q_follower = q_parent * q_pj * inv(q_cj)
-        # so q_base^{-1} * q_follower = q_pj * inv(q_cj) which is generally not
-        # identity.
-        #
-        # To fix this we apply a per-body correction rotation q_corr = q_cj * inv(q_pj)
-        # (applied on the right) to each child body's frame:
-        #   q_body_new = q_body_old * q_corr
-        # This makes q_base^{-1} * q_follower_new = identity at q = 0, and the joint
-        # rotation axis R(q_pj) * axis is preserved.
-        #
-        # All body-local quantities (CoM, inertia, shapes) are re-expressed in the
-        # rotated frame, and downstream joint_X_p transforms are updated to account
-        # for the parent body's frame change.
-        # ---------------------------------------------------------------------------
+        # Get working copies of Newton's entity-local transforms. These remain in
+        # Newton's frame end-to-end: the joint constraint formulation consumes
+        # ``X_p_j`` and ``X_c_j`` separately, so no body-frame rotation absorption
+        # is needed. See :func:`convert_entity_local_transforms`.
         converted = convert_entity_local_transforms(model)
-        # ----------------------------------------------------------------------------
-
-        # Unpack converted quantities
         body_q = converted["body_q"]
         body_qd = converted["body_qd"]
         body_com = converted["body_com"]
@@ -764,7 +742,14 @@ class ModelKamino:
 
             # Bodies
             model_bodies = convert_rigid_bodies(
-                model, model_size, model_info, body_com, body_q, body_qd, body_inertia, body_inv_inertia
+                model,
+                model_size,
+                model_info,
+                body_com,
+                body_q,
+                body_qd,
+                body_inertia,
+                body_inv_inertia,
             )
 
             # Joints
@@ -780,15 +765,6 @@ class ModelKamino:
         ###
         # Post-processing
         ###
-
-        # Modify the model's body COM and shape transform properties in-place to convert from body-frame-relative
-        # NOTE: These are modified only so that the visualizer correctly
-        # shows the shape poses, joints frames and body inertial properties
-        wp.copy(model.body_com, body_com)
-        wp.copy(model.body_inertia, body_inertia)
-        wp.copy(model.shape_transform, shape_transform)
-        wp.copy(model.joint_X_p, joint_X_p)
-        wp.copy(model.joint_X_c, joint_X_c)
 
         # Convert shape offsets from body-frame-relative to COM-relative
         convert_geom_offset_origin_to_com(

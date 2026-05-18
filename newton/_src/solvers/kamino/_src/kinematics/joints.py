@@ -640,7 +640,8 @@ def compute_joint_pose_and_relative_motion(
     u_F_j: vec6f,
     B_r_Bj: vec3f,
     F_r_Fj: vec3f,
-    X_j: mat33f,
+    X_p_j: mat33f,
+    X_c_j: mat33f,
 ) -> tuple[transformf, vec3f, quatf, vec6f]:
     """
     Computes the relative motion of a joint given the states of its Base and Follower bodies.
@@ -652,15 +653,17 @@ def compute_joint_pose_and_relative_motion(
         u_F_j (vec6f): The absolute twist of the Follower body in world coordinates.
         B_r_Bj (vec3f): The position of the joint frame in the Base body's local coordinates.
         F_r_Fj (vec3f): The position of the joint frame in the Follower body's local coordinates.
-        X_j (mat33f): The joint transformation matrix.
+        X_p_j (mat33f): The joint axes matrix expressed in the Base body's local frame.
+        X_c_j (mat33f): The joint axes matrix expressed in the Follower body's local frame.
 
     Returns:
         tuple[transformf, vec6f, vec6f]: The absolute pose of the joint frame in world coordinates,
         and two 6D vectors encoding the relative motion of the bodies in the frame of the joint.
     """
 
-    # Joint frame as quaternion
-    q_X_j = wp.quat_from_matrix(X_j)
+    # Joint frames as quaternions, on the parent and follower sides
+    q_X_p_j = wp.quat_from_matrix(X_p_j)
+    q_X_c_j = wp.quat_from_matrix(X_c_j)
 
     # Extract the decomposed state of the Base body
     r_B_j = wp.transform_get_translation(T_B_j)
@@ -676,9 +679,9 @@ def compute_joint_pose_and_relative_motion(
 
     # Local joint frame quantities
     r_Bj = wp.quat_rotate(q_B_j, B_r_Bj)
-    q_Bj = q_B_j * q_X_j
+    q_Bj = q_B_j * q_X_p_j
     r_Fj = wp.quat_rotate(q_F_j, F_r_Fj)
-    q_Fj = q_F_j * q_X_j
+    q_Fj = q_F_j * q_X_c_j
 
     # Compute the pose of the joint frame via the Base body
     r_j_B = r_B_j + r_Bj
@@ -788,7 +791,8 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         model_joint_bid_F: wp.array[int32],
         model_joint_B_r_Bj: wp.array[vec3f],
         model_joint_F_r_Fj: wp.array[vec3f],
-        model_joint_X_j: wp.array[mat33f],
+        model_joint_X_p_j: wp.array[mat33f],
+        model_joint_X_c_j: wp.array[mat33f],
         model_joint_a_j: wp.array[float32],
         model_joint_b_j: wp.array[float32],
         model_joint_k_p_j: wp.array[float32],
@@ -819,7 +823,8 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         bid_F = model_joint_bid_F[jid]
         B_r_Bj = model_joint_B_r_Bj[jid]
         F_r_Fj = model_joint_F_r_Fj[jid]
-        X_j = model_joint_X_j[jid]
+        X_p_j = model_joint_X_p_j[jid]
+        X_c_j = model_joint_X_c_j[jid]
 
         # Retrieve the time step
         dt = model_time_dt[wid]
@@ -845,7 +850,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
 
         # Compute the joint frame pose and relative motion
         p_j, j_r_j, j_q_j, j_u_j = compute_joint_pose_and_relative_motion(
-            T_B_j, T_F_j, u_B_j, u_F_j, B_r_Bj, F_r_Fj, X_j
+            T_B_j, T_F_j, u_B_j, u_F_j, B_r_Bj, F_r_Fj, X_p_j, X_c_j
         )
 
         # Store the absolute pose of the joint frame in world coordinates
@@ -1037,7 +1042,8 @@ def compute_joints_data(
             model.joints.bid_F,
             model.joints.B_r_Bj,
             model.joints.F_r_Fj,
-            model.joints.X_j,
+            model.joints.X_p_j,
+            model.joints.X_c_j,
             model.joints.a_j,
             model.joints.b_j,
             model.joints.k_p_j,
