@@ -172,6 +172,10 @@ As a guideline, an RC is typically ready for GA when:
      - Re-run the ``release-audit`` skill after final cherry-picks; confirm
        no new flags since the last RC.
    * - ☐
+     - Prepare release-notes inputs: known issues approved to ship,
+       deprecations scheduled for removal in the next minor release, and the
+       required migration guidance.
+   * - ☐
      - :ref:`Testing criteria <testing-criteria>` satisfied.
    * - ☐
      - No outstanding release-blocking issues.
