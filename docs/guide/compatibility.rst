@@ -23,6 +23,8 @@ Newton releases are tested on the following configurations:
      - Ubuntu 22.04/24.04 (x86-64 + ARM64), Windows, macOS (CPU only)
    * - GPU
      - NVIDIA Ada Lovelace, Blackwell
+   * - Python
+     - 3.10+; full tests use ``.python-version``; CI imports 3.10-3.14 and resolves deps on 3.10-3.13
    * - CUDA
      - 12, 13
 
