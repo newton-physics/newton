@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Iterable
+
 import numpy as np
 import warp as wp
 
@@ -70,6 +72,10 @@ class Picking:
 
         self._default_on_mouse_drag = None
 
+        body_count = model.body_count if model else 0
+        device = model.device if model else "cpu"
+        self._linear_only_body_mask = wp.zeros(body_count, dtype=wp.int32, device=device)
+
         # Pre-compute effective mass per body for picking force clamping.
         # For articulated bodies, use the total articulation mass so that
         # picking a light link (e.g. fingertip) still allows enough force
@@ -100,9 +106,54 @@ class Picking:
                 self.model.body_com,
                 self.model.body_mass,
                 self._pick_effective_mass,
+                self._linear_only_body_mask,
             ],
             device=self.model.device,
         )
+
+    def set_linear_only_bodies(self, body_ids: Iterable[int] | None) -> None:
+        """Configure bodies that should receive no torque from mouse picking.
+
+        Mouse picking normally applies an offset-induced torque whenever the
+        click point is off-center relative to the body's COM. Bodies listed
+        here only receive the linear (translation) component, which is useful
+        for cables and other low-inertia articulated chains where spurious
+        picking torques would destabilize the solver.
+
+        Args:
+            body_ids: Iterable of body indices into ``model.body_q``. Pass
+                ``None`` (or call :meth:`clear_linear_only_bodies`) to
+                restore normal picking torque for every body.
+
+        Raises:
+            ValueError: If any ``body_id`` falls outside
+                ``[0, model.body_count)``.
+        """
+        if self.model is None:
+            return
+        if body_ids is None:
+            self.clear_linear_only_bodies()
+            return
+
+        mask = np.zeros(self.model.body_count, dtype=np.int32)
+        for raw_body_id in body_ids:
+            body_id = int(raw_body_id)
+            if body_id < 0 or body_id >= self.model.body_count:
+                raise ValueError(f"Body id {body_id} is outside the model body range [0, {self.model.body_count}).")
+            mask[body_id] = 1
+
+        self._linear_only_body_mask.assign(mask)
+
+    def clear_linear_only_bodies(self) -> None:
+        """Restore normal mouse picking torque for all bodies.
+
+        Reverts any previous :meth:`set_linear_only_bodies` configuration so
+        every picked body once again receives both linear force and the
+        offset-induced torque.
+        """
+        if self.model is None:
+            return
+        self._linear_only_body_mask.fill_(0)
 
     @staticmethod
     def _compute_effective_mass(model: newton.Model) -> wp.array:
