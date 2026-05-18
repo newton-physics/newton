@@ -3792,6 +3792,16 @@ class ModelBuilder:
                 f"but current world is {self.current_world}"
             )
 
+        if joint_type == JointType.FREE and parent != -1:
+            warnings.warn(
+                f"Free joint '{label or f'joint_{self.joint_count}'}' has parent body {parent} "
+                "instead of the world (-1). This is accepted by most Newton solvers, but "
+                "SolverMuJoCo requires free joints to attach directly to the world and will "
+                "fail to compile this model.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         self.joint_type.append(joint_type)
         joint_idx = self.joint_count - 1
         self.joint_parent.append(parent)
