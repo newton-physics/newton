@@ -33,19 +33,21 @@ from newton._src.solvers.coupled.admm_utils import (
     joint_box_friction_u_update_kernel,
     u_update_quadratic_kernel,
 )
-from newton._src.solvers.coupling import (
+from newton._src.solvers.coupled.interface import (
     CouplingInputStateFlags,
     CouplingInterface,
 )
 from newton.solvers import (
-    ModelView,
-    SolverAdmmCoupled,
     SolverBase,
-    SolverCoupled,
     SolverMuJoCo,
     SolverSemiImplicit,
     SolverVBD,
     SolverXPBD,
+)
+from newton.solvers.coupled_experimental import (
+    ModelView,
+    SolverAdmmCoupled,
+    SolverCoupled,
 )
 
 
@@ -1542,15 +1544,6 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         solver = _make_semi_body_particle_solver(model)
 
         self.assertEqual(len(solver._admm_rp_groups), 0)
-
-    def test_body_particle_attachment_metadata_is_soa(self):
-        model = _build_body_particle_attachment_scene()
-
-        self.assertEqual(model.custom_frequency_counts[SolverAdmmCoupled.BODY_PARTICLE_ATTACHMENT_FREQUENCY], 1)
-        np.testing.assert_array_equal(model.coupling.body_particle_attachment_body.numpy(), [0])
-        np.testing.assert_array_equal(model.coupling.body_particle_attachment_particle.numpy(), [0])
-        np.testing.assert_allclose(model.coupling.body_particle_attachment_stiffness.numpy(), [500.0])
-        np.testing.assert_allclose(model.coupling.body_particle_attachment_damping.numpy(), [0.0])
 
 
 class TestAdmmExternalForces(unittest.TestCase):

@@ -6,7 +6,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, State
-from ..coupling import CouplingInterface
+from ..coupled.interface import CouplingInterface
 from ..flags import SolverNotifyFlags
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,

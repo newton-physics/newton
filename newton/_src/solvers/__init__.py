@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .coupled import (
+    CouplingInterface,
     ModelView,
     SolverAdmmCoupled,
     SolverCoupled,
     SolverProxyCoupled,
 )
-from .coupling import CouplingInterface
 from .featherstone import SolverFeatherstone
 from .flags import SolverNotifyFlags
 from .implicit_mpm import SolverImplicitMPM

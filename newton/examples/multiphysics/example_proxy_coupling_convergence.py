@@ -26,10 +26,11 @@ from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
+from newton.solvers.coupled_experimental import CouplingInterface, SolverProxyCoupled
 
 import newton
 import newton.examples
-from newton.solvers import CouplingInterface, SolverBase, SolverProxyCoupled
+from newton.solvers import SolverBase
 
 
 @wp.kernel(enable_backward=False)

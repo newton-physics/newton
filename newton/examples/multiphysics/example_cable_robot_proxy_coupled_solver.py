@@ -47,6 +47,7 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
+from newton.solvers.coupled_experimental import ModelView, SolverCoupled, SolverProxyCoupled
 
 import newton
 import newton.examples
@@ -855,7 +856,7 @@ class Example:
 
     def _make_robot_fk_view(self):
         """Return a model view whose FK traversal is limited to robot articulations."""
-        view = newton.solvers.ModelView(self.model, "robot_fk")
+        view = ModelView(self.model, "robot_fk")
         view.body_count = self._mujoco_body_count
         view.shape_count = self._mujoco_shape_count
         view.joint_count = self._mujoco_joint_count
@@ -1374,7 +1375,7 @@ class Example:
             "rigid_joint_angular_k_start": self.vbd_rigid_joint_angular_k_start,
         }
         entries = [
-            newton.solvers.SolverCoupled.Entry(
+            SolverCoupled.Entry(
                 name="mjc",
                 solver=lambda v: newton.solvers.SolverMuJoCo(model=v, **mujoco_kwargs),
                 bodies=self._mujoco_body_ids,
@@ -1382,7 +1383,7 @@ class Example:
                 shapes=self._mujoco_shape_ids,
                 configure_view=self._configure_mujoco_solver_view,
             ),
-            newton.solvers.SolverCoupled.Entry(
+            SolverCoupled.Entry(
                 name="vbd",
                 solver=lambda v: newton.solvers.SolverVBD(model=v, **vbd_kwargs),
                 bodies=self._vbd_body_ids,
@@ -1394,12 +1395,12 @@ class Example:
 
         if not self.proxy_body_ids:
             raise RuntimeError("SolverProxyCoupled requires at least one proxy body")
-        self.solver = newton.solvers.SolverProxyCoupled(
+        self.solver = SolverProxyCoupled(
             model=self.model,
             entries=entries,
-            coupling=newton.solvers.SolverProxyCoupled.Config(
+            coupling=SolverProxyCoupled.Config(
                 proxies=[
-                    newton.solvers.SolverProxyCoupled.Proxy(
+                    SolverProxyCoupled.Proxy(
                         source="mjc",
                         destination="vbd",
                         bodies=self.proxy_body_ids,

@@ -18,7 +18,7 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
-from ..coupling import CouplingInputStateFlags, CouplingInterface
+from ..coupled.interface import CouplingInputStateFlags, CouplingInterface
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel

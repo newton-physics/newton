@@ -22,10 +22,11 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
+from newton.solvers.coupled_experimental import ModelView, SolverProxyCoupled
 
 import newton
 import newton.examples
-from newton.solvers import ModelView, SolverProxyCoupled, SolverVBD, SolverXPBD
+from newton.solvers import SolverVBD, SolverXPBD
 
 
 class _VBDXPBDParticleProxyCoupled(SolverProxyCoupled):

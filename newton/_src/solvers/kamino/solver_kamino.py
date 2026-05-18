@@ -23,7 +23,7 @@ from ...sim import (
     ModelBuilder,
     State,
 )
-from ..coupling import CouplingInterface
+from ..coupled.interface import CouplingInterface
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 

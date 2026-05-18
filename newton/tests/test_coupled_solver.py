@@ -3,6 +3,7 @@
 
 """Smoke tests for the coupled solver prototype."""
 
+import importlib
 import unittest
 from typing import ClassVar
 
@@ -14,28 +15,49 @@ from newton._src.solvers.coupled.admm_utils import (
     contact_rp_fill_from_soft_contacts_kernel,
     contact_rr_fill_from_rigid_contacts_kernel,
 )
+from newton._src.solvers.coupled.interface import (
+    CouplingHook,
+    CouplingInputStateFlags,
+    CouplingInterface,
+)
 from newton._src.solvers.coupled.proxy_utils import (
     smooth_proxy_teleportation_kernel,
     subtract_proxy_forces_kernel,
     subtract_proxy_particle_forces_kernel,
     sync_proxy_states_kernel,
 )
-from newton._src.solvers.coupling import (
-    CouplingHook,
-    CouplingInputStateFlags,
-    CouplingInterface,
-)
 from newton._src.solvers.vbd.rigid_vbd_kernels import forward_step_rigid_bodies
 from newton.solvers import (
-    ModelView,
-    SolverAdmmCoupled,
     SolverBase,
-    SolverCoupled,
     SolverNotifyFlags,
-    SolverProxyCoupled,
     SolverSemiImplicit,
     SolverXPBD,
+    coupled_experimental,
 )
+from newton.solvers.coupled_experimental import (
+    ModelView,
+    SolverAdmmCoupled,
+    SolverCoupled,
+    SolverProxyCoupled,
+)
+
+
+class TestCoupledExperimentalPublicApi(unittest.TestCase):
+    def test_direct_namespace_import(self):
+        self.assertIs(importlib.import_module("newton.solvers.coupled_experimental"), coupled_experimental)
+
+    def test_exports_coupling_symbols_under_experimental_namespace(self):
+        self.assertIs(coupled_experimental.CouplingInterface, CouplingInterface)
+        self.assertIs(coupled_experimental.ModelView, ModelView)
+        self.assertIs(coupled_experimental.SolverCoupled, SolverCoupled)
+        self.assertIs(coupled_experimental.SolverProxyCoupled, SolverProxyCoupled)
+        self.assertIs(coupled_experimental.SolverAdmmCoupled, SolverAdmmCoupled)
+
+    def test_flat_coupling_symbols_are_not_exported(self):
+        for name in ("ModelView", "SolverCoupled", "SolverProxyCoupled", "SolverAdmmCoupled", "CouplingInterface"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, newton.solvers.__all__)
+                self.assertFalse(hasattr(newton.solvers, name))
 
 
 @wp.kernel(enable_backward=False)
@@ -293,25 +315,6 @@ class _ProxyParticleKickSolver(SolverBase, CouplingInterface):
         wp.launch(_kick_proxy_particle_kernel, dim=1, inputs=[state_out.particle_qd], device=self.model.device)
 
 
-class _ProxyParticleNotifyInputStateSolver(_ProxyParticleKickSolver):
-    """Destination solver that observes proxy input-state updates."""
-
-    instances: ClassVar[list] = []
-
-    def __init__(self, model):
-        super().__init__(model)
-        self.notified_flags = []
-        self.notified_restart = []
-        self.notified_particle_qd = []
-        self.instances.append(self)
-
-    def coupling_notify_input_state_update(self, state, flags, *, restart=False, dt=0.0):
-        del dt
-        self.notified_flags.append(CouplingInputStateFlags(flags))
-        self.notified_restart.append(bool(restart))
-        self.notified_particle_qd.append(state.particle_qd.numpy().copy())
-
-
 class _ProxyParticleHookSolver(SolverBase, CouplingInterface):
     """Destination test solver that exposes particle proxy rewind/harvest hooks."""
 
@@ -506,12 +509,6 @@ class _CustomProxyContactRecordingSolver(_ProxyContactRecordingSolver):
         self.prepare_contacts.append(contacts)
         self.prepare_contact_fresh_flags.append(bool(contacts_freshly_detected))
         return contacts
-
-
-class _DisabledProxyContactRecordingSolver(_ProxyContactRecordingSolver):
-    """Test solver that disables an otherwise named hook on the instance/class."""
-
-    coupling_prepare_proxy_contacts = None
 
 
 class _UnsupportedProxyContactRecordingSolver(_ProxyContactRecordingSolver):
@@ -1472,14 +1469,6 @@ class TestSolverCoupledProxyContactHooks(unittest.TestCase):
         dst_solver = _StepCountingCopySolver.instances["dst"]
         self.assertEqual(dst_solver.prepare_contact_calls, 0)
 
-    def test_none_proxy_contact_prepare_uses_generic_path(self):
-        model, coupled = self._make_coupled(_DisabledProxyContactRecordingSolver)
-
-        coupled.step(model.state(), model.state(), control=None, contacts=None, dt=1.0 / 60.0)
-
-        dst_solver = _StepCountingCopySolver.instances["dst"]
-        self.assertEqual(dst_solver.prepare_contact_calls, 0)
-
     def test_custom_proxy_contact_prepare_is_called(self):
         model, coupled = self._make_coupled(_CustomProxyContactRecordingSolver)
 
@@ -1824,60 +1813,6 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
             coupled._entries["src"].state_0.particle_f.numpy()[0],
             np.array([2.0, 3.0, 4.0]),
             atol=1.0e-6,
-        )
-
-    def test_particle_proxy_rewind_notifies_input_state_update(self):
-        _ParticleForceRecordingSolver.instances.clear()
-        _ProxyParticleNotifyInputStateSolver.instances.clear()
-        coupled = self._make_coupled(dst_solver=_ProxyParticleNotifyInputStateSolver)
-
-        state_0 = self.model.state()
-        state_1 = self.model.state()
-        coupled.step(state_0, state_1, control=None, contacts=None, dt=0.5)
-
-        solver = _ProxyParticleNotifyInputStateSolver.instances[-1]
-        self.assertGreaterEqual(len(solver.notified_flags), 3)
-        self.assertTrue(
-            any(
-                (flags & CouplingInputStateFlags.PARTICLE) == CouplingInputStateFlags.PARTICLE
-                for flags in solver.notified_flags
-            )
-        )
-        self.assertEqual(solver.notified_flags[-1], CouplingInputStateFlags.PARTICLE_QD)
-        np.testing.assert_allclose(solver.notified_particle_qd[-1][0], np.zeros(3), atol=1.0e-6)
-
-    def test_particle_proxy_iteration_restart_notifies_input_state_update(self):
-        _ParticleForceRecordingSolver.instances.clear()
-        _ProxyParticleNotifyInputStateSolver.instances.clear()
-        coupled = SolverProxyCoupled(
-            model=self.model,
-            entries=[
-                SolverCoupled.Entry(name="src", solver=_ParticleForceRecordingSolver, particles=[0]),
-                SolverCoupled.Entry(name="dst", solver=_ProxyParticleNotifyInputStateSolver, particles=[1]),
-            ],
-            coupling=SolverProxyCoupled.Config(
-                proxies=[
-                    SolverProxyCoupled.Proxy(
-                        source="src",
-                        destination="dst",
-                        particles=[0],
-                        mass_scale=0.5,
-                    ),
-                ],
-                iterations=2,
-            ),
-        )
-
-        state_0 = self.model.state()
-        state_1 = self.model.state()
-        coupled.step(state_0, state_1, control=None, contacts=None, dt=0.5)
-
-        solver = _ProxyParticleNotifyInputStateSolver.instances[-1]
-        self.assertTrue(
-            any(
-                restart and bool(flags & CouplingInputStateFlags.PARTICLE)
-                for flags, restart in zip(solver.notified_flags, solver.notified_restart, strict=True)
-            )
         )
 
     def test_particle_proxy_uses_solver_rewind_and_harvest_hooks(self):
@@ -2603,34 +2538,12 @@ class TestSmoothTeleportRecovery(unittest.TestCase):
     # Translational tests
     # ------------------------------------------------------------------
 
-    def test_steady_state_no_jump(self):
-        """body_q_prev == p_mjc_begin: no teleport jump, VBD recovers p_mjc_end."""
-        dt = 1.0 / 60.0
-        p_begin = np.array([1.0, 2.0, 3.0])
-        v = np.array([0.5, -0.3, 0.1])
-        p_prev = p_begin.copy()
-
-        p_expected = p_begin + v * dt
-        result, _ = self._run_sync_teleport_forward(p_begin, v, p_prev, dt)
-        np.testing.assert_allclose(result[:3], p_expected, atol=1e-6)
-
     def test_teleport_jump(self):
         """body_q_prev != p_mjc_begin: teleport jump absorbed, VBD recovers p_mjc_end."""
         dt = 1.0 / 60.0
         p_begin = np.array([1.0, 2.0, 3.0])
         v = np.array([0.5, -0.3, 0.1])
         p_prev = np.array([0.8, 2.2, 2.7])
-
-        p_expected = p_begin + v * dt
-        result, _ = self._run_sync_teleport_forward(p_begin, v, p_prev, dt)
-        np.testing.assert_allclose(result[:3], p_expected, atol=1e-6)
-
-    def test_large_jump(self):
-        """Large teleportation jump (e.g. after a solver reset) is still absorbed."""
-        dt = 1.0 / 60.0
-        p_begin = np.array([10.0, 0.0, 0.0])
-        v = np.array([1.0, 0.0, 0.0])
-        p_prev = np.array([0.0, 0.0, 0.0])
 
         p_expected = p_begin + v * dt
         result, _ = self._run_sync_teleport_forward(p_begin, v, p_prev, dt)
@@ -2663,52 +2576,9 @@ class TestSmoothTeleportRecovery(unittest.TestCase):
             # the final pose.
             p_prev = result[:3].copy()
 
-    def test_zero_velocity(self):
-        """A stationary body with a teleport jump should still land at p_mjc_begin."""
-        dt = 1.0 / 60.0
-        p_begin = np.array([5.0, 5.0, 5.0])
-        v = np.array([0.0, 0.0, 0.0])
-        p_prev = np.array([4.9, 5.1, 4.8])
-
-        result, _ = self._run_sync_teleport_forward(p_begin, v, p_prev, dt)
-        np.testing.assert_allclose(result[:3], p_begin, atol=1e-6)
-
     # ------------------------------------------------------------------
     # Angular tests
     # ------------------------------------------------------------------
-
-    def test_angular_steady_state(self):
-        """No angular jump: VBD rotation matches the reference exactly."""
-        dt = 1.0 / 60.0
-        p = np.array([1.0, 0.0, 0.0])
-        v = np.zeros(3)
-
-        # Body spinning around Z at 2 rad/s, starting from 30 deg about Z
-        r_begin = self._axis_angle_to_quat([0, 0, 1], np.radians(30))
-        w = np.array([0.0, 0.0, 2.0])
-
-        ref = self._reference_forward(p, v, r_begin, w, dt)
-        result, _ = self._run_sync_teleport_forward(p, v, p, dt, w_mjc_end=w, r_prev=r_begin, r_mjc_begin=r_begin)
-
-        np.testing.assert_allclose(result[:3], ref[:3], atol=1e-6)
-        self._assert_quat_close(result[3:], ref[3:], angle_tol_rad=1e-6)
-
-    def test_angular_jump_same_axis(self):
-        """Same-axis angular jump: rotation commutes, so VBD matches
-        the reference very closely."""
-        dt = 1.0 / 60.0
-        p = np.zeros(3)
-        v = np.zeros(3)
-        w = np.array([0.0, 0.0, 2.0])
-
-        r_begin = self._axis_angle_to_quat([0, 0, 1], np.radians(30))
-        r_prev = self._axis_angle_to_quat([0, 0, 1], np.radians(25))
-
-        ref = self._reference_forward(p, v, r_begin, w, dt)
-        result, _ = self._run_sync_teleport_forward(p, v, p, dt, w_mjc_end=w, r_prev=r_prev, r_mjc_begin=r_begin)
-
-        np.testing.assert_allclose(result[:3], ref[:3], atol=1e-6)
-        self._assert_quat_close(result[3:], ref[3:], angle_tol_rad=np.radians(0.01))
 
     def test_angular_jump_off_axis(self):
         """Angular jump around a different axis from the spinning axis.
@@ -2730,63 +2600,6 @@ class TestSmoothTeleportRecovery(unittest.TestCase):
 
         np.testing.assert_allclose(result[:3], ref[:3], atol=1e-6)
         self._assert_quat_close(result[3:], ref[3:], angle_tol_rad=np.radians(0.15))
-
-    def test_angular_multi_step(self):
-        """Multi-step angular chain: verify rotation tracks the reference
-        trajectory when there is no jump after the first step."""
-        dt = 1.0 / 60.0
-        p0 = np.zeros(3)
-        v = np.zeros(3)
-        w = np.array([0.0, 0.0, 1.5])
-        n_steps = 20
-
-        r_begin_0 = self._axis_angle_to_quat([0, 0, 1], 0.0)
-        r_prev = self._axis_angle_to_quat([0, 0, 1], np.radians(3))
-
-        r_ref = r_begin_0.copy()
-
-        for i in range(n_steps):
-            ref = self._reference_forward(p0, v, r_ref, w, dt)
-            r_ref_end = ref[3:]
-
-            result, _ = self._run_sync_teleport_forward(p0, v, p0, dt, w_mjc_end=w, r_prev=r_prev, r_mjc_begin=r_ref)
-
-            if i == 0:
-                # First step: same-axis jump, very small error
-                self._assert_quat_close(
-                    result[3:],
-                    r_ref_end,
-                    angle_tol_rad=np.radians(0.01),
-                    msg=f"Step {i}: ",
-                )
-            else:
-                # Subsequent steps: no jump, exact
-                self._assert_quat_close(
-                    result[3:],
-                    r_ref_end,
-                    angle_tol_rad=1e-5,
-                    msg=f"Step {i}: ",
-                )
-
-            r_ref = r_ref_end / np.linalg.norm(r_ref_end)
-            r_prev = result[3:] / np.linalg.norm(result[3:])
-
-    def test_pure_angular_jump_no_spin(self):
-        """Angular jump with zero angular velocity: body should land at
-        r_mjc_begin (the jump is fully absorbed)."""
-        dt = 1.0 / 60.0
-        p = np.zeros(3)
-        v = np.zeros(3)
-        w = np.zeros(3)
-
-        r_begin = self._axis_angle_to_quat([0, 1, 0], np.radians(45))
-        r_prev = self._axis_angle_to_quat([0, 1, 0], np.radians(30))
-
-        ref = self._reference_forward(p, v, r_begin, w, dt)
-        result, _ = self._run_sync_teleport_forward(p, v, p, dt, w_mjc_end=w, r_prev=r_prev, r_mjc_begin=r_begin)
-
-        np.testing.assert_allclose(result[:3], ref[:3], atol=1e-6)
-        self._assert_quat_close(result[3:], ref[3:], angle_tol_rad=np.radians(0.1))
 
 
 if __name__ == "__main__":

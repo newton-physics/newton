@@ -14,11 +14,6 @@ import warp as wp
 
 from ...geometry.flags import ShapeFlags
 from ...sim import JointType
-from ..coupling import (
-    CouplingEndpointKind,
-    CouplingHook,
-    CouplingInputStateFlags,
-)
 from ..flags import SolverNotifyFlags
 from .admm_contact_stream import (
     AdmmContactStream,
@@ -66,6 +61,11 @@ from .admm_utils import (
     velocity_proximal_shift_body_kernel,
     velocity_proximal_shift_joint_kernel,
     velocity_proximal_shift_particle_kernel,
+)
+from .interface import (
+    CouplingEndpointKind,
+    CouplingHook,
+    CouplingInputStateFlags,
 )
 from .model_view import ModelView
 from .solver_coupled import SolverCoupled, SolverEntry, _copy_prefix

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Coupling protocol for multi-solver simulations.
+"""Interface contract for multi-solver coupling.
 
 Solvers that participate in coupled simulations inherit
 :class:`CouplingInterface` and override the hook methods they want to provide a

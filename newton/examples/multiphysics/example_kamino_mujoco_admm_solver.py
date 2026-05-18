@@ -19,10 +19,11 @@ from collections.abc import Callable
 
 import numpy as np
 import warp as wp
+from newton.solvers.coupled_experimental import ModelView, SolverAdmmCoupled, SolverCoupled
 
 import newton
 import newton.examples
-from newton.solvers import ModelView, SolverAdmmCoupled, SolverCoupled, SolverKamino, SolverMuJoCo
+from newton.solvers import SolverKamino, SolverMuJoCo
 
 
 def _configure_kamino_rigid_view(view: ModelView) -> None:

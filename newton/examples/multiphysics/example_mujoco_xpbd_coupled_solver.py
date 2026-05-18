@@ -23,10 +23,11 @@ from collections.abc import Callable
 
 import numpy as np
 import warp as wp
+from newton.solvers.coupled_experimental import SolverProxyCoupled
 
 import newton
 import newton.examples
-from newton.solvers import SolverKamino, SolverMuJoCo, SolverProxyCoupled, SolverXPBD
+from newton.solvers import SolverKamino, SolverMuJoCo, SolverXPBD
 
 
 def _add_rigid_solver_arg(parser) -> None:

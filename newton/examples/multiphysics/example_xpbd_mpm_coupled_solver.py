@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
+from newton.solvers.coupled_experimental import SolverCoupled, SolverProxyCoupled
 
 import newton
 import newton.examples
-from newton.solvers import SolverCoupled, SolverImplicitMPM, SolverProxyCoupled, SolverXPBD
+from newton.solvers import SolverImplicitMPM, SolverXPBD
 
 
 @wp.kernel(enable_backward=False)

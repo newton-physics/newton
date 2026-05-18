@@ -19,7 +19,7 @@ from ...sim import (
     ModelBuilder,
     State,
 )
-from ..coupling import CouplingInputStateFlags, CouplingInterface
+from ..coupled.interface import CouplingInputStateFlags, CouplingInterface
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces

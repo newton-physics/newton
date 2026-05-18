@@ -14,7 +14,7 @@ import numpy as np
 import warp as wp
 
 from ...sim import BodyFlags
-from ..coupling import (
+from .interface import (
     CouplingEndpointKind,
     CouplingHook,
     CouplingInputStateFlags,

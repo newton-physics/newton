@@ -242,31 +242,6 @@ def test_deformable_mesh_collider_mass(test, device):
     test.assertAlmostEqual(float(solver._mpm_model.min_collider_mass), 2.0)
 
 
-def test_proxy_particles_excluded_from_material_transfer(test, device):
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
-    SolverImplicitMPM.register_custom_attributes(builder)
-    builder.add_particle(wp.vec3(0.0), wp.vec3(0.0), mass=1.0)
-    builder.add_particle(wp.vec3(0.2, 0.2, 0.2), wp.vec3(0.0), mass=1.0)
-    builder.add_particle(wp.vec3(1.0, 1.0, 1.0), wp.vec3(0.0), mass=1.0)
-    model = builder.finalize(device=device)
-
-    flags = model.particle_flags.numpy()
-    flags[2] = flags[2] | int(newton.ParticleFlags.PROXY)
-    model.particle_flags.assign(flags)
-
-    options = SolverImplicitMPM.Config()
-    options.grid_type = "dense"
-    solver = SolverImplicitMPM(model, options)
-
-    transfer_flags = solver._mpm_model.particle_flags.numpy()
-    material_flags = solver._mpm_model.material_particle_flags.numpy()
-    test.assertTrue(transfer_flags[0] & int(newton.ParticleFlags.ACTIVE))
-    test.assertTrue(transfer_flags[1] & int(newton.ParticleFlags.ACTIVE))
-    test.assertTrue(transfer_flags[2] & int(newton.ParticleFlags.ACTIVE))
-    test.assertFalse(material_flags[2] & int(newton.ParticleFlags.ACTIVE))
-    test.assertTrue(model.particle_flags.numpy()[2] & int(newton.ParticleFlags.ACTIVE))
-
-
 devices = get_test_devices(mode="basic")
 
 
@@ -290,14 +265,6 @@ add_function_test(
     TestImplicitMPM,
     "test_deformable_mesh_collider_mass",
     test_deformable_mesh_collider_mass,
-    devices=devices,
-    check_output=False,
-)
-
-add_function_test(
-    TestImplicitMPM,
-    "test_proxy_particles_excluded_from_material_transfer",
-    test_proxy_particles_excluded_from_material_transfer,
     devices=devices,
     check_output=False,
 )

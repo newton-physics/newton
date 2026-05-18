@@ -400,42 +400,38 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
 """
 
 # solver types
+import sys
+
 from ._src.solvers import (
-    CouplingInterface,
-    ModelView,
-    SolverAdmmCoupled,
     SolverBase,
-    SolverCoupled,
     SolverFeatherstone,
     SolverImplicitMPM,
     SolverKamino,
     SolverMuJoCo,
-    SolverProxyCoupled,
     SolverSemiImplicit,
     SolverStyle3D,
     SolverVBD,
     SolverXPBD,
     style3d,
 )
+from ._src.solvers import coupled as coupled_experimental
 
 # solver flags
 from ._src.solvers.flags import SolverNotifyFlags
 
+sys.modules[f"{__name__}.coupled_experimental"] = coupled_experimental
+
 __all__ = [
-    "CouplingInterface",
-    "ModelView",
-    "SolverAdmmCoupled",
     "SolverBase",
-    "SolverCoupled",
     "SolverFeatherstone",
     "SolverImplicitMPM",
     "SolverKamino",
     "SolverMuJoCo",
     "SolverNotifyFlags",
-    "SolverProxyCoupled",
     "SolverSemiImplicit",
     "SolverStyle3D",
     "SolverVBD",
     "SolverXPBD",
+    "coupled_experimental",
     "style3d",
 ]

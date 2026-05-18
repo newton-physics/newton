@@ -22,10 +22,11 @@ import math
 
 import numpy as np
 import warp as wp
+from newton.solvers.coupled_experimental import CouplingInterface, SolverAdmmCoupled, SolverCoupled
 
 import newton
 import newton.examples
-from newton.solvers import CouplingInterface, SolverAdmmCoupled, SolverBase, SolverCoupled, SolverSemiImplicit
+from newton.solvers import SolverBase, SolverSemiImplicit
 
 
 @wp.kernel(enable_backward=False)

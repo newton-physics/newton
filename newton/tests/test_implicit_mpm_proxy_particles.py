@@ -9,7 +9,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverCoupled, SolverImplicitMPM, SolverProxyCoupled, SolverXPBD
+from newton.solvers import SolverImplicitMPM, SolverXPBD
+from newton.solvers.coupled_experimental import SolverCoupled, SolverProxyCoupled
 
 
 class TestImplicitMPMProxyParticles(unittest.TestCase):

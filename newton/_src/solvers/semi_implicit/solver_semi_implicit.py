@@ -5,7 +5,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
-from ..coupling import CouplingInterface
+from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from .kernels_body import (
     eval_body_joint_forces,

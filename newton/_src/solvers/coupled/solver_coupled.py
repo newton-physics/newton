@@ -13,15 +13,15 @@ import numpy as np
 import warp as wp
 
 from ...geometry import ShapeFlags
-from ..coupling import (
+from ..flags import SolverNotifyFlags
+from ..solver import SolverBase
+from .interface import (
     COUPLING_HOOK_METHOD,
     CouplingEndpointKind,
     CouplingHook,
     CouplingInputStateFlags,
     CouplingInterface,
 )
-from ..flags import SolverNotifyFlags
-from ..solver import SolverBase
 from .model_view import ModelView
 
 if TYPE_CHECKING:
@@ -128,8 +128,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
     ``Model``, ``ModelView`` and ``State``: per-solver views, ownership masks,
     state distribution/reconciliation, per-entry substeps, and shared coupling
     hook dispatch helpers. Algorithm-specific couplers such as
-    :class:`~newton.solvers.SolverAdmmCoupled` and
-    :class:`~newton.solvers.SolverProxyCoupled` derive from this base class.
+    :class:`~newton.solvers.coupled_experimental.SolverAdmmCoupled` and
+    :class:`~newton.solvers.coupled_experimental.SolverProxyCoupled` derive from this base class.
 
     Args:
         model: Shared model.
