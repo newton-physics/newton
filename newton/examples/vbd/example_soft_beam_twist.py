@@ -42,7 +42,7 @@ class Example:
     K_MU = 1.0e4
     K_LAMBDA = 1.0e4
     K_DAMP = 1.0e-3
-    TWIST_ANGLE = np.pi  # 180°
+    TWIST_ANGLE = 2.0 * np.pi  # 360°
     RAMP_FRAMES = 200
 
     def __init__(self, viewer, args=None):
