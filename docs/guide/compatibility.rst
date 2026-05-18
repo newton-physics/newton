@@ -168,9 +168,10 @@ What to do when you see a DeprecationWarning
 
 #. Read the warning message for the suggested replacement.
 #. Check the ``Deprecated`` section of ``CHANGELOG.md`` to confirm the
-   release in which the deprecation was first announced.
-#. Migrate to the replacement.  The deprecated feature remains
-   functional for two minor releases (see the example above).
+   release in which the deprecation was first announced and to read any
+   migration guidance.
+#. Follow the warning and changelog migration guidance.  The deprecated
+   feature remains functional for two minor releases (see the example above).
 #. If migration is blocked by a gap in the replacement, open a
    `GitHub issue <https://github.com/newton-physics/newton/issues>`__.
 
