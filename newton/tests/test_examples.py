@@ -105,7 +105,7 @@ def add_example_test(
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase."""
 
-    if (expect_output_regexes or allow_output_regexes) and not issubclass(cls, NewtonTestCase):
+    if (expect_output_regexes is not None or allow_output_regexes is not None) and not issubclass(cls, NewtonTestCase):
         raise TypeError("Output regex expectations require a NewtonTestCase subclass")
 
     # verify the module exists (use package-relative path so this works from any CWD)
@@ -262,7 +262,8 @@ class TestBasicExamples(NewtonTestCase):
 
 
 def add_basic_example_test(**kwargs):
-    allow_output_regexes = [*_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES, *(kwargs.pop("allow_output_regexes", ()))]
+    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
+    allow_output_regexes = [*_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES, *extra_allow_output_regexes]
     add_example_test(TestBasicExamples, allow_output_regexes=allow_output_regexes, **kwargs)
 
 

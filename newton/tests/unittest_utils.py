@@ -240,7 +240,11 @@ class _OutputCapture:
 
     def begin(self):
         self.stdout_capture.begin()
-        self.stderr_capture.begin()
+        try:
+            self.stderr_capture.begin()
+        except BaseException:
+            self.stdout_capture.end()
+            raise
         self.active = True
 
     def add_pattern(self, pattern: str, *, stream: str, required: bool):

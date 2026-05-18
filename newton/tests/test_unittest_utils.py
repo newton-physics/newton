@@ -5,7 +5,9 @@ import io
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
+import newton.tests.test_examples as test_examples
 import newton.tests.unittest_utils as unittest_utils
 
 NewtonTestCase = unittest_utils.NewtonTestCase
@@ -223,6 +225,66 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertEqual(len(result.failures), 1)
         self.assertIn("Unexpected stdout", result.failures[0][1])
         self.assertIn("generated test output", result.failures[0][1])
+
+    def test_empty_example_output_regexes_require_newton_test_case(self):
+        class LegacyExampleTest(unittest.TestCase):
+            pass
+
+        regex_args = (
+            {"expect_output_regexes": []},
+            {"allow_output_regexes": []},
+        )
+        for regex_arg in regex_args:
+            with self.subTest(regex_arg=regex_arg):
+                with self.assertRaisesRegex(TypeError, "NewtonTestCase"):
+                    test_examples.add_example_test(
+                        LegacyExampleTest,
+                        name="basic.example_basic_pendulum",
+                        devices=[],
+                        **regex_arg,
+                    )
+
+    def test_basic_example_output_regexes_allow_explicit_none(self):
+        with mock.patch.object(test_examples, "add_example_test") as add_example_test:
+            test_examples.add_basic_example_test(
+                name="basic.example_basic_pendulum",
+                devices=[],
+                allow_output_regexes=None,
+            )
+
+        add_example_test.assert_called_once()
+        _, kwargs = add_example_test.call_args
+        self.assertEqual(kwargs["allow_output_regexes"], test_examples._BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES)
+
+    def test_output_capture_begin_rolls_back_stdout_if_stderr_fails(self):
+        class CaptureStub:
+            def __init__(self, *, raises=False):
+                self.raises = raises
+                self.begin_called = False
+                self.end_called = False
+
+            def begin(self):
+                self.begin_called = True
+                if self.raises:
+                    raise RuntimeError("stderr capture failed")
+
+            def end(self):
+                self.end_called = True
+                return ""
+
+        output_capture = unittest_utils._OutputCapture()
+        stdout_capture = CaptureStub()
+        stderr_capture = CaptureStub(raises=True)
+        output_capture.stdout_capture = stdout_capture
+        output_capture.stderr_capture = stderr_capture
+
+        with self.assertRaisesRegex(RuntimeError, "stderr capture failed"):
+            output_capture.begin()
+
+        self.assertTrue(stdout_capture.begin_called)
+        self.assertTrue(stderr_capture.begin_called)
+        self.assertTrue(stdout_capture.end_called)
+        self.assertFalse(output_capture.active)
 
 
 if __name__ == "__main__":
