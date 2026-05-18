@@ -85,6 +85,9 @@ from .tri_mesh_collision import (
 __all__ = ["SolverVBD"]
 
 
+_vbd_migration_warned = {"value": False}
+
+
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
@@ -100,7 +103,10 @@ class SolverVBD(SolverBase):
 
     Non-cable structural joint slots default to **hard mode** (augmented Lagrangian
     with persistent lambda and C0 stabilization). Cable stretch and bend default to
-    **soft mode**. The hard/soft mode can be changed per slot via :meth:`set_joint_constraint_mode`.
+    **soft mode**. Joint hard/soft mode is initialized from the optional
+    ``model.vbd.joint_is_hard`` custom attribute; use it for bulk configuration
+    before constructing the solver. The hard/soft mode can also be changed per slot
+    at runtime via :meth:`set_joint_constraint_mode`.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
@@ -375,6 +381,25 @@ class SolverVBD(SolverBase):
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
+
+        if model.body_count > 0 and not integrate_with_external_rigid_solver and not _vbd_migration_warned["value"]:
+            warnings.warn(
+                "SolverVBD rigid-body defaults changed in Newton 1.2.0:\n"
+                "- Non-cable structural joints are now hard augmented-Lagrangian constraints by default. "
+                "To restore soft penalty behavior, set the relevant entries of model.vbd.joint_is_hard to 0 "
+                "before constructing SolverVBD.\n"
+                "- AVBD penalty ramping is now off by default. To restore the previous ramping default, "
+                "pass rigid_avbd_beta=1.0e5.\n"
+                "- Non-cable joint stiffness ceilings now default to 1.0e5 instead of 1.0e9 to make the "
+                "fixed-stiffness path (rigid_avbd_beta=0.0) safer. To restore the previous ceilings, pass "
+                "rigid_joint_linear_ke=1.0e9 and rigid_joint_angular_ke=1.0e9.\n"
+                "- Cable rod stretch/bend stiffness inputs are now interpreted as direct per-joint values; "
+                "the previous length normalization in rod helpers has been removed. To recover the previous "
+                "behavior, divide material stiffnesses by segment length before building the model.",
+                UserWarning,
+                stacklevel=2,
+            )
+            _vbd_migration_warned["value"] = True
 
         super().__init__(model)
 
@@ -1488,14 +1513,15 @@ class SolverVBD(SolverBase):
             joint_index: Index of the joint to modify.
             hard: True for hard mode (AL), False for soft mode (penalty-only).
             slot: Specific slot index to set. If None, sets all structural slots.
-                  Use JointSlot.LINEAR / JointSlot.ANGULAR (equivalently
-                  JointSlot.STRETCH / JointSlot.BEND for cables).
+                Use JointSlot.LINEAR / JointSlot.ANGULAR (equivalently
+                JointSlot.STRETCH / JointSlot.BEND for cables).
 
         Raises:
             ValueError: If the joint index is out of range, or the slot is a
                 drive/limit slot (>= 2), or the slot exceeds the joint's
                 constraint dimension.
         """
+
         n_j = self.model.joint_count
         if joint_index < 0 or joint_index >= n_j:
             raise ValueError(f"joint_index={joint_index} out of range [0, {n_j}).")
@@ -1524,6 +1550,12 @@ class SolverVBD(SolverBase):
                 structural_count = min(cdim, 2)
                 for s in range(structural_count):
                     is_hard_np[c0 + s] = val
+
+                vbd_attrs: Any = getattr(self.model, "vbd", None)
+                if vbd_attrs is not None and hasattr(vbd_attrs, "joint_is_hard"):
+                    model_is_hard_np = self._to_numpy(vbd_attrs.joint_is_hard, dtype=np.int32)
+                    model_is_hard_np[joint_index] = val
+                    vbd_attrs.joint_is_hard = wp.array(model_is_hard_np, dtype=wp.int32, device=self.device)
 
             self.joint_is_hard = wp.array(is_hard_np, dtype=wp.int32, device=self.device)
 

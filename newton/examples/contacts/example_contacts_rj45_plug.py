@@ -239,6 +239,7 @@ class Example:
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
         builder = newton.ModelBuilder(gravity=-9.81)
+        SolverVBD.register_custom_attributes(builder)
         builder.rigid_gap = 0.005
 
         builder.add_ground_plane()
@@ -381,14 +382,14 @@ class Example:
 
         self._initial_body_q = self.state_0.body_q.numpy().copy()
 
+        self.model.vbd.joint_is_hard = wp.zeros_like(self.model.vbd.joint_is_hard)
+
         self.solver = SolverVBD(
             self.model,
             iterations=12,
             rigid_contact_hard=False,
             rigid_body_contact_buffer_size=256,
         )
-        for j in range(self.model.joint_count):
-            self.solver.set_joint_constraint_mode(j, False)
 
         self._rest_pos = plug_pos
         self.gizmo_tf = wp.transform(plug_pos, wp.quat_identity())
