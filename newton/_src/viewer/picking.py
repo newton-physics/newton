@@ -83,7 +83,13 @@ class Picking:
         Args:
             state: The simulation state.
         """
-        if self.model is None or self.model.body_count == 0 or state.body_q is None or state.body_f is None:
+        if (
+            self.model is None
+            or self.model.body_count == 0
+            or state.body_q is None
+            or state.body_qd is None
+            or state.body_f is None
+        ):
             return
 
         # Launch kernel always because of graph capture

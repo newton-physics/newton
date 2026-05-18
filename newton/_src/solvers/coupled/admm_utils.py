@@ -1078,6 +1078,7 @@ def contact_rp_fill_from_soft_contacts_kernel(
         if prev_active[j] != 0 and prev_particle_id[j] == p and prev_shape_id[j] == s:
             u0 = prev_u[j]
             lambda0 = prev_lambda[j]
+            break
 
     active[dst] = 1
     body_id[dst] = b_local
@@ -1351,6 +1352,7 @@ def contact_pp_fill_from_particle_contacts_kernel(
         if prev_active[j] != 0 and prev_particle_a[j] == pa and prev_particle_b[j] == pb:
             u0 = prev_u[j]
             lambda0 = prev_lambda[j]
+            break
 
     particle_a[dst] = pa
     particle_b[dst] = pb

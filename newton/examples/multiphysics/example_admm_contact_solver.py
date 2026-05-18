@@ -170,12 +170,16 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
+        if not self.model.device.is_cuda:
+            self.graph = None
+            return
+
+        with wp.ScopedDevice(self.model.device):
             with wp.ScopedCapture() as capture:
                 self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        self.graph = capture.graph
+        if self.graph is None:
+            raise RuntimeError(f"CUDA graph capture failed on device {self.model.device}")
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -186,7 +190,8 @@ class Example:
 
     def step(self):
         if self.graph:
-            wp.capture_launch(self.graph)
+            with wp.ScopedDevice(self.model.device):
+                wp.capture_launch(self.graph)
         else:
             self.simulate()
         if self.track_gap:
