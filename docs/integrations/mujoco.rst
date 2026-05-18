@@ -168,6 +168,8 @@ Additional actuators declared this way are appended after the joint-target
 actuators — see ``SolverMuJoCo._init_actuators``.
 
 
+.. _mujoco-equality-constraints:
+
 Equality constraints
 --------------------
 

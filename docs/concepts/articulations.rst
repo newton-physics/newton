@@ -712,3 +712,250 @@ To proceed with orphan joints, skip this validation:
 
 Only maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`) support orphan joints.
 Generalized-coordinate solvers (:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverMuJoCo`) require every joint to belong to an articulation.
+
+
+.. _Loop closure:
+
+Loop closure
+------------
+
+Newton's :meth:`~newton.ModelBuilder.add_joint_*` methods author **kinematic
+trees**: each body has at most one parent joint, so the joints alone cannot
+form a closed kinematic loop (for example a four-bar linkage or a parallel
+mechanism). Closed loops must instead be expressed by declaring the topology
+as a tree and adding a separate constraint that re-couples the open end.
+
+There are two ways to add a loop-closing constraint. The first is to call
+one of the typed equality-constraint methods —
+:meth:`~newton.ModelBuilder.add_equality_constraint_connect`,
+:meth:`~newton.ModelBuilder.add_equality_constraint_weld`, or
+:meth:`~newton.ModelBuilder.add_equality_constraint_joint` (or the generic
+:meth:`~newton.ModelBuilder.add_equality_constraint`) — which introduces the
+constraint outside the kinematic tree. The second is to create the
+loop-closing joint with :meth:`~newton.ModelBuilder.add_joint_*` but omit it
+from the ``joint_list`` passed to :meth:`~newton.ModelBuilder.add_articulation`
+— the joint then becomes an :ref:`orphan joint <Orphan joints>` that closes
+the loop without breaking the underlying tree structure.
+
+Closing a loop with ``add_equality_constraint``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Newton provides three equality-constraint types — ``CONNECT``, ``WELD``, and
+``JOINT`` — each modelling a different physical coupling between bodies or
+joints. They map directly onto MuJoCo's equality-constraint types; see
+:ref:`mujoco-equality-constraints` for the per-type ``data[...]`` layout and
+the MuJoCo-side semantics.
+
+.. list-table::
+   :header-rows: 1
+   :widths: auto
+   :stub-columns: 0
+
+   * - Constraint type
+     - Builder method
+     - Physical purpose
+   * - ``EqType.CONNECT``
+     - :meth:`~newton.ModelBuilder.add_equality_constraint_connect`
+     - Pins a point on ``body1`` to a point on ``body2`` (or the world).
+       Relative rotation remains free — equivalent to a ball joint outside
+       the kinematic tree.
+   * - ``EqType.WELD``
+     - :meth:`~newton.ModelBuilder.add_equality_constraint_weld`
+     - Constrains the full relative pose (position and orientation) of two
+       bodies. Equivalent to a soft fixed joint.
+   * - ``EqType.JOINT``
+     - :meth:`~newton.ModelBuilder.add_equality_constraint_joint`
+     - Couples two scalar (revolute or prismatic) joints via a quartic
+       polynomial. Used for gear ratios, mimic joints, and other scalar
+       linkage relationships.
+
+.. note::
+
+   Equality constraints are quite unlike joints added with
+   :meth:`~newton.ModelBuilder.add_joint_*`. In particular, they:
+
+   - do not contribute generalized coordinates to :attr:`~newton.State.joint_q`
+     or :attr:`~newton.State.joint_qd`,
+   - cannot be actuated or driven (no position/velocity targets, no
+     :attr:`~newton.Control.joint_f` slot, no PD gains),
+   - cannot carry armature, joint friction, or joint limits,
+   - act as bilateral constraints enforced by the solver, not as integrated
+     dynamic DOFs,
+   - are ignored by :func:`newton.eval_fk` (and :func:`newton.eval_ik`) —
+     forward/inverse kinematics walks only the articulation tree, so any
+     loop-closure error must be reconciled by the solver at step time,
+   - are invisible to :class:`~newton.selection.ArticulationView` — view
+     selection, indexing, and batched getters/setters operate purely on
+     articulation-tree joints, so equality constraints contribute no entries
+     and cannot be queried or edited through the view.
+
+   Use them only to express loop closures or kinematic couplings, not as
+   substitutes for regular joints.
+
+.. note::
+
+   Equality constraints are not supported by every solver. Only
+   :class:`~newton.solvers.SolverMuJoCo` currently enforces them during
+   integration. The other solvers
+   (:class:`~newton.solvers.SolverFeatherstone`,
+   :class:`~newton.solvers.SolverSemiImplicit`,
+   :class:`~newton.solvers.SolverXPBD`,
+   :class:`~newton.solvers.SolverVBD`,
+   :class:`~newton.solvers.SolverKamino`) accept the constraint data on the
+   :class:`~newton.Model` but do not apply it at step time, so closed loops
+   will drift apart. See :doc:`/api/newton_solvers` for the authoritative
+   support matrix.
+
+The snippet below builds a fixed-root articulation with two
+revolute children and uses a weld equality constraint to lock the two
+children together, forcing them to move as one:
+
+.. testcode::
+
+  builder = newton.ModelBuilder()
+
+  # Fixed root attached to the world.
+  root = builder.add_link()
+  builder.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1)
+  j_root = builder.add_joint_fixed(parent=-1, child=root)
+
+  # Child A: revolute about Z, hinged on the root at +X.
+  child_a = builder.add_link()
+  builder.add_shape_box(child_a, hx=0.5, hy=0.05, hz=0.05)
+  j_a = builder.add_joint_revolute(
+      parent=root,
+      child=child_a,
+      axis=newton.Axis.Z,
+      parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+  )
+
+  # Child B: revolute about Z, hinged on the root at -X.
+  child_b = builder.add_link()
+  builder.add_shape_box(child_b, hx=0.5, hy=0.05, hz=0.05)
+  j_b = builder.add_joint_revolute(
+      parent=root,
+      child=child_b,
+      axis=newton.Axis.Z,
+      parent_xform=wp.transform(wp.vec3(-1.0, 0.0, 0.0), wp.quat_identity()),
+  )
+
+  # Group the three joints into a single (tree-structured) articulation.
+  builder.add_articulation([j_root, j_a, j_b])
+
+  # Loop closure: weld the two children together so they move as one body.
+  builder.add_equality_constraint_weld(body1=child_a, body2=child_b)
+
+  model = builder.finalize()
+
+Closing a loop with ``add_articulation``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The same fixed-root / two-revolute-child topology can be closed with a regular
+joint instead of an equality constraint. The trick is to create the
+loop-closing joint with :meth:`~newton.ModelBuilder.add_joint_*` but **omit it
+from the ``joint_list`` passed to**
+:meth:`~newton.ModelBuilder.add_articulation`, so the articulation graph
+remains a tree and the closing joint becomes an :ref:`orphan joint <Orphan joints>`:
+
+.. testcode::
+
+  builder = newton.ModelBuilder()
+
+  # Fixed root attached to the world.
+  root = builder.add_link()
+  builder.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1)
+  j_root = builder.add_joint_fixed(parent=-1, child=root)
+
+  # Child A: revolute about Z, hinged on the root at +X.
+  child_a = builder.add_link()
+  builder.add_shape_box(child_a, hx=0.5, hy=0.05, hz=0.05)
+  j_a = builder.add_joint_revolute(
+      parent=root,
+      child=child_a,
+      axis=newton.Axis.Z,
+      parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+  )
+
+  # Child B: revolute about Z, hinged on the root at -X.
+  child_b = builder.add_link()
+  builder.add_shape_box(child_b, hx=0.5, hy=0.05, hz=0.05)
+  j_b = builder.add_joint_revolute(
+      parent=root,
+      child=child_b,
+      axis=newton.Axis.Z,
+      parent_xform=wp.transform(wp.vec3(-1.0, 0.0, 0.0), wp.quat_identity()),
+  )
+
+  # Loop-closing joint: a fixed joint between the two children. Authored with
+  # add_joint_* exactly like a tree joint, but deliberately left out of the
+  # articulation below so it stays an orphan joint that closes the loop.
+  j_loop = builder.add_joint_fixed(parent=child_a, child=child_b)
+
+  # Only the tree joints (j_root, j_a, j_b) go into the articulation;
+  # j_loop is excluded so the articulation graph remains a tree.
+  builder.add_articulation([j_root, j_a, j_b])
+
+  model = builder.finalize()
+
+**Importing from USD.** The same omit-from-articulation pattern is the
+standard way UsdPhysics expresses loop closures, and Newton's USD importer
+honors it. Set the ``physics:excludeFromArticulation`` attribute to ``true``
+on a ``PhysicsJoint`` prim, and :meth:`~newton.ModelBuilder.add_usd` will
+register the joint with the builder via the normal ``add_joint_*`` path but
+leave it out of the surrounding :meth:`~newton.ModelBuilder.add_articulation`
+call — producing exactly the orphan-joint topology shown above. This is what
+lets a USD asset author a four-bar linkage or other parallel mechanism
+without ever creating an equality constraint.
+
+.. note::
+
+   Omitting a joint from :meth:`~newton.ModelBuilder.add_articulation` is
+   accepted by every Newton solver (after the default ``finalize()``
+   orphan-joint check is disabled with ``skip_validation_joints=True``), but
+   each solver handles the resulting orphan joint differently:
+
+   - **Maximal-coordinate solvers** track state as per-body transforms
+     (:attr:`~newton.State.body_q` / :attr:`~newton.State.body_qd`) and
+     enforce joints as pairwise body constraints, so the orphan joint is
+     solved alongside the tree joints with no special-casing. Under
+     :class:`~newton.solvers.SolverXPBD` and
+     :class:`~newton.solvers.SolverSemiImplicit`, ``j_loop`` keeps its full
+     joint behaviour — drive (``joint_target_ke``/``joint_target_kd``,
+     ``control.joint_f``) and joint limits are applied alongside the
+     loop-closure constraint, subject to each solver's general joint-feature
+     support (see :ref:`Joint feature support`).
+     :class:`~newton.solvers.SolverVBD` and
+     :class:`~newton.solvers.SolverKamino` use the same flat per-joint
+     iteration but support a narrower set of joint types and features, so
+     the same orphan-joint pattern works only within their respective
+     supported subsets.
+
+   - **Generalized-coordinate solvers** carry only tree-joint coordinates in
+     their state vector and must handle the loop closure separately.
+     :class:`~newton.solvers.SolverMuJoCo` synthesizes each orphan joint into
+     a MuJoCo equality constraint at compile time, which restricts the
+     supported joint types and drops joint-level features (see the note
+     below). :class:`~newton.solvers.SolverFeatherstone` has no such
+     synthesis path: the orphan joint contributes no DOFs and the loop
+     closure is silently not enforced.
+
+   In all cases the orphan joint is invisible to :func:`newton.eval_fk`,
+   :func:`newton.eval_ik`, and :class:`~newton.selection.ArticulationView` —
+   those walk the articulation tree only.
+
+.. note::
+
+   :class:`~newton.solvers.SolverMuJoCo` supports only ``FIXED``, ``REVOLUTE``,
+   and ``BALL`` as loop-closing (orphan) joint types, each synthesized into
+   one or more MuJoCo equality constraints at compile time. See
+   :ref:`mujoco-equality-constraints` for the per-type mapping. Other joint
+   types used as loop closures (``PRISMATIC``, ``FREE``, ``DISTANCE``, ``D6``,
+   ``CABLE``) emit a warning and are silently skipped — the loop is *not*
+   closed.
+
+   Because the joint is implemented as an equality constraint inside MuJoCo,
+   it loses everything that makes it joint-like: any drive
+   (``joint_target_pos``/``joint_target_vel``, PD gains, ``control.joint_f``),
+   joint limits, armature, friction, and effort/velocity limits authored on
+   ``j_loop`` are **ignored** by :class:`~newton.solvers.SolverMuJoCo`. Only
+   the kinematic coupling implied by the joint type is enforced.
