@@ -56,7 +56,6 @@ from .rigid_vbd_kernels import (
     RigidForceElementAdjacencyInfo,
     _count_num_adjacent_joints,
     _fill_adjacent_joints,
-    accumulate_body_body_contacts_per_body,
     accumulate_body_particle_contacts_per_body,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
@@ -69,6 +68,7 @@ from .rigid_vbd_kernels import (
     init_body_particle_contacts,
     snapshot_body_body_contact_history,
     solve_rigid_body,
+    sort_body_body_contact_indices,
     step_body_body_contact_C0_lambda,
     step_joint_C0_lambda,
     update_body_velocity,
@@ -635,6 +635,7 @@ class SolverVBD(SolverBase):
             # Kinematic bodies: set body_q.
             # Dynamic teleportation: also set body_q_prev and body_qd.
             self.body_q_prev = wp.clone(model.body_q, device=self.device)
+            self.body_q_contact = wp.empty_like(model.body_q, device=self.device)
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
 
             # Adjacency and dimensions
@@ -1812,7 +1813,16 @@ class SolverVBD(SolverBase):
                         inputs=[self.body_body_contact_overflow_max, self.body_body_contact_buffer_pre_alloc, 0],
                         device=self.device,
                     )
-
+                    wp.launch(
+                        kernel=sort_body_body_contact_indices,
+                        dim=model.body_count,
+                        inputs=[
+                            self.body_body_contact_counts,
+                            self.body_body_contact_indices,
+                            self.body_body_contact_buffer_pre_alloc,
+                        ],
+                        device=self.device,
+                    )
                     # Restore AVBD body-body contact state from history and pre-compute material properties
                     if self.rigid_contact_history:
                         if contacts.rigid_contact_match_index is None:
@@ -2336,18 +2346,34 @@ class SolverVBD(SolverBase):
                 )
             return
 
-        # Zero out forces and hessians
-        self.body_torques.zero_()
-        self.body_forces.zero_()
-        self.body_hessian_aa.zero_()
-        self.body_hessian_al.zero_()
-        self.body_hessian_ll.zero_()
+        # Body force/Hessian arrays carry only body-particle contact contributions.
+        # Rigid body-body contacts are accumulated inside solve_rigid_body.
+        if model.particle_count > 0:
+            self.body_torques.zero_()
+            self.body_forces.zero_()
+            self.body_hessian_aa.zero_()
+            self.body_hessian_al.zero_()
+            self.body_hessian_ll.zero_()
 
         body_color_groups = model.body_color_groups
+        has_rigid_contacts = contacts is not None and contacts.rigid_contact_max > 0
+        body_q_contact = self.body_q_contact if has_rigid_contacts else state_in.body_q
+        rigid_contact_count = contacts.rigid_contact_count if has_rigid_contacts else None
+        rigid_contact_shape0 = contacts.rigid_contact_shape0 if has_rigid_contacts else None
+        rigid_contact_shape1 = contacts.rigid_contact_shape1 if has_rigid_contacts else None
+        rigid_contact_point0 = contacts.rigid_contact_point0 if has_rigid_contacts else None
+        rigid_contact_point1 = contacts.rigid_contact_point1 if has_rigid_contacts else None
+        rigid_contact_normal = contacts.rigid_contact_normal if has_rigid_contacts else None
+        rigid_contact_margin0 = contacts.rigid_contact_margin0 if has_rigid_contacts else None
+        rigid_contact_margin1 = contacts.rigid_contact_margin1 if has_rigid_contacts else None
 
         # Gauss-Seidel-style per-color updates
         for color in range(len(body_color_groups)):
             color_group = body_color_groups[color]
+
+            # Snapshot contact poses because body colors are joint-based, not contact-based.
+            if has_rigid_contacts:
+                wp.copy(self.body_q_contact, state_in.body_q)
 
             # Accumulate body-particle contact forces/hessians for bodies in this color
             if model.particle_count > 0 and contacts is not None:
@@ -2387,55 +2413,13 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
 
-            # Accumulate body-body (rigid-rigid) contact forces and Hessians on bodies (per-body, per-color)
-            if contacts is not None:
-                wp.launch(
-                    kernel=accumulate_body_body_contacts_per_body,
-                    dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
-                    inputs=[
-                        dt,
-                        color_group,
-                        self.body_q_prev,
-                        state_in.body_q,
-                        model.body_com,
-                        self.body_inv_mass_effective,
-                        self.friction_epsilon,
-                        self.body_body_contact_penalty_k,
-                        self.body_body_contact_material_kd,
-                        self.body_body_contact_material_mu,
-                        self.body_body_contact_lambda,
-                        self.body_body_contact_C0,
-                        self.rigid_contact_alpha,
-                        self.rigid_contact_hard,
-                        contacts.rigid_contact_count,
-                        contacts.rigid_contact_shape0,
-                        contacts.rigid_contact_shape1,
-                        contacts.rigid_contact_point0,
-                        contacts.rigid_contact_point1,
-                        contacts.rigid_contact_normal,
-                        contacts.rigid_contact_margin0,
-                        contacts.rigid_contact_margin1,
-                        model.shape_body,
-                        self.body_body_contact_buffer_pre_alloc,
-                        self.body_body_contact_counts,
-                        self.body_body_contact_indices,
-                    ],
-                    outputs=[
-                        self.body_forces,
-                        self.body_torques,
-                        self.body_hessian_ll,
-                        self.body_hessian_al,
-                        self.body_hessian_aa,
-                    ],
-                    device=self.device,
-                )
-
             wp.launch(
                 kernel=solve_rigid_body,
                 inputs=[
                     dt,
                     color_group,
                     state_in.body_q,
+                    body_q_contact,
                     self.body_q_prev,
                     model.body_q,
                     model.body_mass,
@@ -2478,6 +2462,26 @@ class SolverVBD(SolverBase):
                     self.body_hessian_ll,
                     self.body_hessian_al,
                     self.body_hessian_aa,
+                    self.friction_epsilon,
+                    self.body_body_contact_penalty_k,
+                    self.body_body_contact_material_kd,
+                    self.body_body_contact_material_mu,
+                    self.body_body_contact_lambda,
+                    self.body_body_contact_C0,
+                    self.rigid_contact_alpha,
+                    self.rigid_contact_hard,
+                    rigid_contact_count,
+                    rigid_contact_shape0,
+                    rigid_contact_shape1,
+                    rigid_contact_point0,
+                    rigid_contact_point1,
+                    rigid_contact_normal,
+                    rigid_contact_margin0,
+                    rigid_contact_margin1,
+                    model.shape_body,
+                    self.body_body_contact_buffer_pre_alloc,
+                    self.body_body_contact_counts,
+                    self.body_body_contact_indices,
                 ],
                 outputs=[
                     state_in.body_q,
