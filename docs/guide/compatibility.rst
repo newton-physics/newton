@@ -112,6 +112,9 @@ Components of Newton — public API symbols, supported Python versions,
 supported GPU architectures, and so on — exist in one of the following
 states:
 
+Here, **feature** includes functionality, public API, defaults, support
+targets, and simulation behavior that user code or simulations may rely on.
+
 * **Experimental**: A feature still under active development.  May
   change without notice, including in micro releases.  Experimental
   features are available for early adopters who can tolerate breakage.
