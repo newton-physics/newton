@@ -22,7 +22,7 @@
     "model": "locked_ogden_vertical_foundation_v2",
     "initial_stiffness_pa": 2000000.0,
     "initial_ogden_alpha": 2.0,
-    "initial_lock_strain": 0.85,
+    "initial_lock_strain": 0.98,
     "initial_damping_pa_s": 10000.0,
     "initial_damping_power": 1.0,
     "nominal_midsole_thickness_m": 0.069

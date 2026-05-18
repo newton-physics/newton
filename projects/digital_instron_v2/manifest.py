@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -46,11 +46,53 @@ def _resolve_path(base: Path, value: str, field: str) -> Path:
     return path
 
 
+def _validate_grid(grid: dict[str, Any]) -> None:
+    """Validate grid section fields."""
+    axis = grid.get("force_thickness_axis")
+    if axis is not None:
+        if not isinstance(axis, int) or axis not in {0, 1, 2}:
+            raise ValueError(f"grid.force_thickness_axis must be 0, 1, or 2, got {axis!r}")
+
+
 def _require_mapping(data: dict[str, Any], key: str) -> dict[str, Any]:
     value = data.get(key)
     if not isinstance(value, dict):
         raise ValueError(f"Manifest field {key!r} must be an object")
     return value
+
+
+_VALID_INDENTER_TYPES = frozenset({"flat_plate", "cylinder", "stl"})
+
+
+def _validate_indenter(indenter: dict[str, Any], trial_name: str, base: Path) -> dict[str, Any]:
+    """Validate indenter configuration fields by type."""
+    resolved = dict(indenter)
+    indenter_type = indenter.get("type")
+    if not isinstance(indenter_type, str) or indenter_type not in _VALID_INDENTER_TYPES:
+        raise ValueError(
+            f"Trial {trial_name!r} indenter type {indenter_type!r} must be one of {sorted(_VALID_INDENTER_TYPES)}"
+        )
+
+    if indenter_type == "flat_plate":
+        plate_height = indenter.get("plate_height")
+        if not isinstance(plate_height, (int, float)):
+            raise ValueError(f"Trial {trial_name!r} flat_plate indenter must define a numeric 'plate_height' field")
+
+    elif indenter_type == "cylinder":
+        radius_m = indenter.get("radius_m")
+        if not isinstance(radius_m, (int, float)):
+            raise ValueError(f"Trial {trial_name!r} cylinder indenter must define a numeric 'radius_m' field")
+
+    elif indenter_type == "stl":
+        path = indenter.get("path")
+        if not isinstance(path, str) or not path:
+            raise ValueError(f"Trial {trial_name!r} stl indenter must define a non-empty string 'path' field")
+        resolved_path = _resolve_path(base, path, f"Trial {trial_name!r} indenter.path")
+        if not resolved_path.exists():
+            raise FileNotFoundError(f"Trial {trial_name!r} indenter STL does not exist: {resolved_path}")
+        resolved["path"] = str(resolved_path)
+
+    return resolved
 
 
 def _require_trial(data: dict[str, Any], index: int, base: Path) -> Trial:
@@ -65,6 +107,7 @@ def _require_trial(data: dict[str, Any], index: int, base: Path) -> Trial:
     indenter = data.get("indenter")
     if not isinstance(indenter, dict):
         raise ValueError(f"Trial {name!r} must define an indenter object")
+    indenter = _validate_indenter(indenter, name, base)
 
     frame_config = data.get("frame_config_path")
     return Trial(
@@ -111,12 +154,15 @@ def load_manifest(path: str | Path) -> TrialManifest:
     if not fit_trial_names:
         raise ValueError("Manifest must include at least one trial in the fit")
 
+    grid = _require_mapping(data, "grid")
+    _validate_grid(grid)
+
     return TrialManifest(
         path=manifest_path,
         midsole_mesh=midsole_mesh,
         cache_dir=_resolve_path(base, str(data.get("cache_dir", "processed/v2_cache")), "cache_dir"),
         qc=_require_mapping(data, "qc"),
-        grid=_require_mapping(data, "grid"),
+        grid=grid,
         fit=fit,
         trials=trials,
     )

@@ -26,8 +26,15 @@ Run the first autodiff material fit:
 UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-autodiff --autodiff-iterations 25 --autodiff-sample-count 8
 ```
 
-This writes `processed/v2_cache/digital_instron_v2_autodiff_fit.json`
-with the fitted material and per-iteration loss/gradient history.
+This writes:
+
+- `processed/v2_cache/digital_instron_v2_autodiff_fit.json`
+- `processed/v2_cache/digital_instron_v2_autodiff_hysteresis.png`
+- `processed/v2_cache/digital_instron_v2_autodiff_hysteresis.csv`
+- `processed/v2_cache/digital_instron_v2_autodiff_hysteresis_trials.csv`
+
+The JSON contains the fitted material, per-iteration loss/gradient history, and
+paths to the measured-vs-predicted hysteresis replay outputs.
 
 To inspect orientation, ray casting, and the current 1D spring response:
 

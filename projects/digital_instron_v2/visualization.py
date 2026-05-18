@@ -63,7 +63,7 @@ def _spring_forces(
 def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) -> dict[str, Any]:
     """Write mesh, raycast, and spring diagnostics as PNGs plus JSON."""
 
-    import matplotlib.pyplot as plt  # noqa: PLC0415
+    import matplotlib.pyplot as plt
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -73,6 +73,7 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
         faces,
         spacing_m=float(manifest.grid.get("coarse_spacing_m", 0.005)),
         min_slack_length_m=float(manifest.qc.get("min_spring_slack_length_m", 0.001)),
+        thickness_axis=manifest.grid.get("force_thickness_axis"),
     )
     frame = footprint_grid.frame
     rearfoot_grid = place_rearfoot_punch_grid(
@@ -199,6 +200,23 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
     fig.savefig(snapshot_png, dpi=180)
     plt.close(fig)
 
+    force_heatmap_png = output / "digital_instron_v2_force_heatmap.png"
+    fig, ax = plt.subplots(figsize=(6, 5), constrained_layout=True)
+    sc = ax.scatter(
+        footprint_grid.xy_m[:, 0],
+        footprint_grid.xy_m[:, 1],
+        c=cell_force,
+        s=18,
+        cmap="coolwarm",
+    )
+    ax.set_title("Per-Cylinder Force Distribution")
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel(f"axis {frame.plane_axes[0]} [m]")
+    ax.set_ylabel(f"axis {frame.plane_axes[1]} [m]")
+    fig.colorbar(sc, ax=ax, label="Force [N]")
+    fig.savefig(force_heatmap_png, dpi=180)
+    plt.close(fig)
+
     spring_grid_csv = output / "digital_instron_v2_spring_grid.csv"
     spring_grid_npz = output / "digital_instron_v2_spring_grid.npz"
     spring_grid_table = np.column_stack(
@@ -258,6 +276,7 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
             "raycast_grid_png": str(ray_png),
             "spring_response_png": str(response_png),
             "spring_snapshot_png": str(snapshot_png),
+            "force_heatmap_png": str(force_heatmap_png),
             "spring_grid_csv": str(spring_grid_csv),
             "spring_grid_npz": str(spring_grid_npz),
         },

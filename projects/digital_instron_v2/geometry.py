@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -82,26 +82,48 @@ def make_cylinder_grid(radius_m: float, spacing_m: float = 0.005) -> CylinderGri
     return CylinderGrid(xy_m=xy, cell_area_m2=spacing_m * spacing_m, spacing_m=spacing_m, radius_m=radius_m)
 
 
-def detect_mesh_frame(vertices_m: np.ndarray) -> MeshFrame:
-    """Infer thickness axis as the shortest mesh extent."""
+def detect_mesh_frame(
+    vertices_m: np.ndarray,
+    thickness_axis: int | None = None,
+) -> MeshFrame:
+    """Infer thickness axis as the shortest mesh extent.
 
-    extents = np.ptp(vertices_m, axis=0)
-    thickness_axis = int(np.argmin(extents))
+    Args:
+        vertices_m: Nx3 vertex positions.
+        thickness_axis: Override the auto-detected thickness axis. If
+            ``None``, the axis with the smallest extent is used.
+
+    Returns:
+        Detected :class:`MeshFrame`.
+    """
+
+    if thickness_axis is not None and thickness_axis not in (0, 1, 2):
+        raise ValueError(f"thickness_axis must be 0, 1, or 2, got {thickness_axis}")
+    if thickness_axis is None:
+        extents = np.ptp(vertices_m, axis=0)
+        thickness_axis = int(np.argmin(extents))
+    else:
+        extents = np.ptp(vertices_m, axis=0)
     plane_axes = tuple(axis for axis in range(3) if axis != thickness_axis)
     return MeshFrame(
         plane_axes=(int(plane_axes[0]), int(plane_axes[1])),
-        thickness_axis=thickness_axis,
+        thickness_axis=int(thickness_axis),
         center_m=np.mean(vertices_m, axis=0),
         extents_m=extents,
     )
 
 
-def make_footprint_grid(vertices_m: np.ndarray, spacing_m: float = 0.005) -> tuple[np.ndarray, MeshFrame]:
+def make_footprint_grid(
+    vertices_m: np.ndarray,
+    spacing_m: float = 0.005,
+    *,
+    thickness_axis: int | None = None,
+) -> tuple[np.ndarray, MeshFrame]:
     """Build a rectangular grid over the detected midsole footprint bounds."""
 
     if spacing_m <= 0.0:
         raise ValueError("Grid spacing must be positive")
-    frame = detect_mesh_frame(vertices_m)
+    frame = detect_mesh_frame(vertices_m, thickness_axis=thickness_axis)
     plane = vertices_m[:, frame.plane_axes]
     mins = np.min(plane, axis=0)
     maxs = np.max(plane, axis=0)
@@ -297,10 +319,11 @@ def build_raycast_spring_grid(
     *,
     spacing_m: float = 0.005,
     min_slack_length_m: float = 0.001,
+    thickness_axis: int | None = None,
 ) -> SpringSurfaceGrid:
     """Build a full-footprint spring grid with raycast thickness as slack length."""
 
-    grid_uv, frame = make_footprint_grid(vertices_m, spacing_m=spacing_m)
+    grid_uv, frame = make_footprint_grid(vertices_m, spacing_m=spacing_m, thickness_axis=thickness_axis)
     ray = raycast_grid_thickness(vertices_m, faces, grid_uv, frame=frame)
     slack = ray["thickness_m"]
     valid = np.isfinite(slack) & (slack >= min_slack_length_m)
@@ -392,13 +415,13 @@ def condition_midsole_mesh(
             f"Midsole thickness {thickness_m:.4g} m is outside [{min_thickness_m:.4g}, {max_thickness_m:.4g}] m"
         )
 
-    import newton
+    import newton  # noqa: PLC0415
 
     mesh = newton.Mesh(vertices, faces.reshape(-1))
     input_watertight = bool(mesh.is_watertight)
     repaired_mesh = mesh
     if remesh and not input_watertight:
-        from newton.utils import remesh_mesh
+        from newton.utils import remesh_mesh  # noqa: PLC0415
 
         repaired_mesh = remesh_mesh(
             mesh,

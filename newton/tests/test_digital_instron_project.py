@@ -1,21 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import argparse
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import warp as wp
 
 from projects.digital_instron_v2 import (
     FoundationMaterial,
+    FoundationResult,
     FrameQCError,
     build_raycast_spring_grid,
     condition_midsole_mesh,
     detect_mesh_frame,
     evaluate_foundation,
     evaluate_foundation_lengths,
+    evaluate_foundation_sdf,
     fit_foundation_material_autodiff,
     foundation_lengths_loss_gradient,
     infer_frame_config,
@@ -25,9 +30,28 @@ from projects.digital_instron_v2 import (
     raycast_grid_thickness,
     rearfoot_punch_center_uv,
     validate_frame_config,
+    write_visualization_report,
 )
-from projects.digital_instron_v2.foundation import FoundationFitSample, finite_difference_loss_gradient, warp_loss_gradient
-from projects.digital_instron_v2.mujoco_adapter import apply_foundation_wrench_to_body_f
+from projects.digital_instron_v2.foundation import (
+    FoundationFitSample,
+    _foundation_sdf_kernel,
+    finite_difference_loss_gradient,
+    warp_loss_gradient,
+)
+from projects.digital_instron_v2.geometry import _load_obj_mesh
+from projects.digital_instron_v2.mujoco_adapter import (
+    apply_foundation_wrench_to_body_f,
+    apply_sdf_foundation_wrench,
+)
+from projects.digital_instron_v2.sdf_utils import build_indenter_sdf
+from projects.digital_instron_v2.workflow import (
+    _hysteresis_segments,
+    _spring_state_for_trial_frame,
+    _trial_contact_surface_cache,
+    run_fit_autodiff,
+)
+
+_cuda_available = wp.is_cuda_available()
 
 
 def _write_box_obj(path: Path, *, size=(0.12, 0.05, 0.03), omit_top: bool = False) -> None:
@@ -60,6 +84,25 @@ def _write_box_obj(path: Path, *, size=(0.12, 0.05, 0.03), omit_top: bool = Fals
         faces = faces[:2] + faces[4:]
     lines = [f"v {x} {y} {z}" for x, y, z in vertices]
     lines.extend(f"f {a} {b} {c}" for a, b, c in faces)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _write_sloped_plate_stl(path: Path) -> None:
+    vertices = [
+        (-0.03, 0.004, -0.03),
+        (0.03, 0.024, -0.03),
+        (0.03, 0.024, 0.03),
+        (-0.03, 0.004, 0.03),
+    ]
+    faces = [(0, 1, 2), (0, 2, 3)]
+    lines = ["solid sloped_plate"]
+    for face in faces:
+        lines.extend(["facet normal 0 1 0", "outer loop"])
+        for index in face:
+            x, y, z = vertices[index]
+            lines.append(f"vertex {x} {y} {z}")
+        lines.extend(["endloop", "endfacet"])
+    lines.append("endsolid sloped_plate")
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -105,8 +148,6 @@ class TestDigitalInstronV2Geometry(unittest.TestCase):
                 remesh=False,
             )
 
-            from projects.digital_instron_v2.geometry import _load_obj_mesh
-
             loaded_vertices, loaded_faces = _load_obj_mesh(Path(str(mesh_report["repaired_mesh"])))
             frame = detect_mesh_frame(loaded_vertices)
             grid = make_cylinder_grid(radius_m=0.01, spacing_m=0.005)
@@ -119,6 +160,23 @@ class TestDigitalInstronV2Geometry(unittest.TestCase):
             np.testing.assert_allclose(ray["thickness_m"], np.full(len(grid.xy_m), 0.03), atol=1.0e-9)
             self.assertGreater(len(spring_grid.xy_m), len(grid.xy_m))
             np.testing.assert_allclose(spring_grid.slack_length_m, np.full(len(spring_grid.xy_m), 0.03), atol=1.0e-9)
+
+    def test_raycast_spring_grid_applies_thickness_axis_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mesh_path = Path(tmp) / "box.obj"
+            _write_box_obj(mesh_path, size=(0.12, 0.05, 0.03))
+
+            vertices, faces = _load_obj_mesh(mesh_path)
+            auto_grid = build_raycast_spring_grid(vertices, faces, spacing_m=0.02)
+            override_grid = build_raycast_spring_grid(vertices, faces, spacing_m=0.02, thickness_axis=1)
+
+            self.assertEqual(auto_grid.frame.thickness_axis, 2)
+            self.assertEqual(override_grid.frame.thickness_axis, 1)
+            np.testing.assert_allclose(auto_grid.slack_length_m, np.full(len(auto_grid.slack_length_m), 0.03))
+            np.testing.assert_allclose(
+                override_grid.slack_length_m,
+                np.full(len(override_grid.slack_length_m), 0.05),
+            )
 
     def test_rearfoot_punch_center_uses_heel_side_length_fraction(self):
         vertices = np.asarray(
@@ -168,6 +226,187 @@ class TestDigitalInstronV2Geometry(unittest.TestCase):
 
 
 class TestDigitalInstronV2Foundation(unittest.TestCase):
+    def test_hysteresis_segments_split_downsampled_cycle_jumps(self):
+        displacement = np.asarray([0.0, 0.001, 0.002, 0.003, 0.018, 0.019, 0.020], dtype=np.float64)
+
+        segments = _hysteresis_segments(displacement)
+
+        self.assertEqual([segment.tolist() for segment in segments], [[0, 1, 2, 3], [4, 5, 6]])
+
+    def _launch_sdf_foundation(
+        self,
+        *,
+        xy: np.ndarray,
+        top_z: np.ndarray,
+        slack_length_m: np.ndarray | None = None,
+        velocity_mps: np.ndarray | None = None,
+        cell_area_m2: np.ndarray,
+        indenter_sdf,
+        material: FoundationMaterial,
+        indenter_pos=(0.0, 0.0, 0.0),
+    ) -> tuple[float, np.ndarray]:
+        device = "cuda:0"
+        force_out = wp.zeros(1, dtype=wp.float32, device=device)
+        wrench_out = wp.zeros(6, dtype=wp.float32, device=device)
+        params = wp.array(
+            [
+                material.stiffness_pa,
+                material.ogden_alpha,
+                material.lock_strain,
+                material.damping_pa_s,
+                material.damping_power,
+            ],
+            dtype=wp.float32,
+            device=device,
+        )
+        wp.launch(
+            _foundation_sdf_kernel,
+            dim=len(xy),
+            inputs=[
+                wp.array(top_z.astype(np.float32), dtype=wp.float32, device=device),
+                wp.array(
+                    (
+                        np.full(len(xy), 0.02, dtype=np.float32)
+                        if slack_length_m is None
+                        else slack_length_m.astype(np.float32)
+                    ),
+                    dtype=wp.float32,
+                    device=device,
+                ),
+                wp.array(
+                    (np.zeros(len(xy), dtype=np.float32) if velocity_mps is None else velocity_mps.astype(np.float32)),
+                    dtype=wp.float32,
+                    device=device,
+                ),
+                wp.array([wp.vec2(float(x), float(y)) for x, y in xy], dtype=wp.vec2, device=device),
+                wp.array(cell_area_m2.astype(np.float32), dtype=wp.float32, device=device),
+                indenter_sdf,
+                wp.vec3(*indenter_pos),
+                wp.quat_identity(),
+                params,
+                force_out,
+                wrench_out,
+            ],
+            device=device,
+        )
+        return float(force_out.numpy()[0]), wrench_out.numpy()
+
+    @unittest.skipIf(not _cuda_available, "Requires CUDA")
+    def test_sdf_kernel_flat_plate_matches_analytical(self):
+        xy = np.asarray([[0.0, 0.0]], dtype=np.float32)
+        top_z = np.asarray([0.0], dtype=np.float32)
+        cell_area = np.asarray([1.0e-4], dtype=np.float32)
+        material = FoundationMaterial(2.0e6, 2.0, 0.65, 0.0)
+        sdf = build_indenter_sdf(
+            "flat_plate",
+            bounds=((-0.02, -0.02), (0.02, 0.02)),
+            target_voxel_size=0.0005,
+            margin=0.004,
+            narrow_band_range=(-0.004, 0.004),
+            device="cuda:0",
+        )
+
+        force, wrench = self._launch_sdf_foundation(
+            xy=xy,
+            top_z=top_z,
+            cell_area_m2=cell_area,
+            indenter_sdf=sdf,
+            material=material,
+        )
+
+        thickness_m = 0.02
+        penetration_m = 0.001
+        strain = penetration_m / thickness_m
+        expected_stress = (
+            material.stiffness_pa
+            * ((1.0 - strain / material.lock_strain) ** (-material.ogden_alpha) - 1.0)
+            / material.ogden_alpha
+        )
+        expected_force = float(cell_area[0] * expected_stress)
+        self.assertGreater(force, 0.0)
+        self.assertAlmostEqual(force, expected_force, delta=expected_force * 0.25)
+        self.assertAlmostEqual(float(wrench[2]), force, delta=max(1.0e-5, abs(force) * 1.0e-5))
+
+        static_damped_force, _ = self._launch_sdf_foundation(
+            xy=xy,
+            top_z=top_z,
+            cell_area_m2=cell_area,
+            indenter_sdf=sdf,
+            material=FoundationMaterial(2.0e6, 2.0, 0.65, 1.0e6),
+        )
+        self.assertAlmostEqual(static_damped_force, force, delta=max(1.0e-4, force * 0.05))
+
+        moving_damped_force, _ = self._launch_sdf_foundation(
+            xy=xy,
+            top_z=top_z,
+            velocity_mps=np.asarray([-0.01], dtype=np.float32),
+            cell_area_m2=cell_area,
+            indenter_sdf=sdf,
+            material=FoundationMaterial(2.0e6, 2.0, 0.65, 1.0e6),
+        )
+        self.assertGreater(moving_damped_force, force)
+
+    @unittest.skipIf(not _cuda_available, "Requires CUDA")
+    def test_sdf_kernel_cylinder_penetration(self):
+        xy = np.asarray([[0.0, 0.0], [0.03, 0.0]], dtype=np.float32)
+        top_z = np.asarray([0.0, 0.0], dtype=np.float32)
+        cell_area = np.asarray([1.0e-4, 1.0e-4], dtype=np.float32)
+        material = FoundationMaterial(2.0e6, 2.0, 0.65, 0.0)
+        sdf = build_indenter_sdf(
+            "cylinder",
+            radius_m=0.0225,
+            height_m=0.004,
+            target_voxel_size=0.0005,
+            margin=0.004,
+            narrow_band_range=(-0.004, 0.004),
+            device="cuda:0",
+        )
+
+        total_force, total_wrench = self._launch_sdf_foundation(
+            xy=xy,
+            top_z=top_z,
+            cell_area_m2=cell_area,
+            indenter_sdf=sdf,
+            material=material,
+        )
+        center_force, _ = self._launch_sdf_foundation(
+            xy=xy[:1],
+            top_z=top_z[:1],
+            cell_area_m2=cell_area[:1],
+            indenter_sdf=sdf,
+            material=material,
+        )
+
+        self.assertGreater(center_force, 0.0)
+        self.assertAlmostEqual(total_force, center_force, delta=max(1.0e-4, center_force * 0.05))
+        self.assertAlmostEqual(float(total_wrench[4]), 0.0, delta=max(1.0e-4, center_force * 0.05))
+
+    @unittest.skipIf(not _cuda_available, "Requires CUDA")
+    def test_sdf_kernel_no_penetration_above_indenter(self):
+        xy = np.asarray([[0.0, 0.0], [0.005, 0.0]], dtype=np.float32)
+        top_z = np.asarray([0.004, 0.005], dtype=np.float32)
+        cell_area = np.asarray([1.0e-4, 1.0e-4], dtype=np.float32)
+        material = FoundationMaterial(2.0e6, 2.0, 0.65, 0.0)
+        sdf = build_indenter_sdf(
+            "flat_plate",
+            bounds=((-0.02, -0.02), (0.02, 0.02)),
+            target_voxel_size=0.0005,
+            margin=0.004,
+            narrow_band_range=(-0.004, 0.004),
+            device="cuda:0",
+        )
+
+        force, wrench = self._launch_sdf_foundation(
+            xy=xy,
+            top_z=top_z,
+            cell_area_m2=cell_area,
+            indenter_sdf=sdf,
+            material=material,
+        )
+
+        self.assertAlmostEqual(force, 0.0, places=6)
+        np.testing.assert_allclose(wrench, np.zeros(6), atol=1.0e-6)
+
     def test_foundation_force_loss_and_gradients_are_differentiable(self):
         grid = make_cylinder_grid(radius_m=0.01, spacing_m=0.005)
         material = FoundationMaterial(
@@ -340,6 +579,95 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
         self.assertLess(final_loss, initial_loss)
         self.assertGreater(result.material.stiffness_pa, initial.stiffness_pa)
 
+    def test_fit_with_per_cylinder_area(self):
+        xy = np.asarray([[0.0, 0.0], [0.01, 0.0]], dtype=np.float64)
+        slack = np.asarray([0.03, 0.04], dtype=np.float64)
+        velocity = np.zeros(2, dtype=np.float64)
+        per_cell_area = np.asarray([1e-4, 2e-4], dtype=np.float64)
+        true_material = FoundationMaterial(2.0e6, 2.0, 0.65, 0.0)
+        initial = FoundationMaterial(8.0e5, 2.0, 0.65, 0.0)
+        samples = []
+        for compression in (0.002, 0.004, 0.006):
+            current = slack - compression
+            measured = evaluate_foundation_lengths(
+                xy, current, slack, velocity, cell_area_m2=per_cell_area, material=true_material
+            ).force_n
+            samples.append(FoundationFitSample(current, slack, velocity, measured, cell_area_m2=per_cell_area))
+
+        result = fit_foundation_material_autodiff(
+            xy,
+            samples,
+            cell_area_m2=1.0e-4,
+            initial_material=initial,
+            iterations=15,
+            learning_rates=(0.1, 0.0, 0.0, 0.0, 0.0),
+        )
+
+        self.assertGreater(result.material.stiffness_pa, initial.stiffness_pa)
+        self.assertLess(abs(result.material.stiffness_pa - 2.0e6) / 2.0e6, 0.5)
+
+    def test_fit_backward_compat_uniform_area(self):
+        xy = np.asarray([[0.0, 0.0], [0.01, 0.0]], dtype=np.float64)
+        slack = np.asarray([0.03, 0.04], dtype=np.float64)
+        velocity = np.zeros(2, dtype=np.float64)
+        true_material = FoundationMaterial(2.0e6, 2.0, 0.65, 0.0)
+        initial = FoundationMaterial(8.0e5, 2.0, 0.65, 0.0)
+        samples = []
+        for compression in (0.002, 0.004, 0.006):
+            current = slack - compression
+            measured = evaluate_foundation_lengths(
+                xy, current, slack, velocity, cell_area_m2=1.0e-4, material=true_material
+            ).force_n
+            samples.append(FoundationFitSample(current, slack, velocity, measured))
+
+        result = fit_foundation_material_autodiff(
+            xy,
+            samples,
+            cell_area_m2=1.0e-4,
+            initial_material=initial,
+            iterations=12,
+            learning_rates=(0.1, 0.0, 0.0, 0.0, 0.0),
+        )
+
+        self.assertGreater(result.material.stiffness_pa, initial.stiffness_pa)
+
+    def test_fullfoot_stl_contact_uses_surface_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mesh_path = root / "midsole.obj"
+            stl_path = root / "sloped_plate.stl"
+            _write_box_obj(mesh_path, size=(0.04, 0.02, 0.04))
+            _write_sloped_plate_stl(stl_path)
+
+            vertices, faces = _load_obj_mesh(mesh_path)
+            spring_grid = build_raycast_spring_grid(vertices, faces, spacing_m=0.01)
+            trial = SimpleNamespace(
+                name="fullfoot_stl",
+                fixture="fullfoot_last",
+                include_in_fit=True,
+                indenter={
+                    "type": "stl",
+                    "path": str(stl_path),
+                    "units": "m",
+                    "rotation_deg": [0.0, 0.0, 0.0],
+                },
+            )
+            contact_surfaces = _trial_contact_surface_cache(SimpleNamespace(trials=(trial,)), spring_grid)
+            current_length, velocity = _spring_state_for_trial_frame(
+                spring_grid,
+                trial,
+                np.zeros(len(spring_grid.xy_m), dtype=bool),
+                contact_surfaces,
+                displacement_m=0.004,
+                displacement_velocity_mps=0.01,
+            )
+            compression = spring_grid.slack_length_m - current_length
+
+            self.assertGreater(float(np.max(compression)), 0.0)
+            self.assertGreater(float(np.max(compression) - np.min(compression)), 0.001)
+            self.assertGreater(int(np.count_nonzero(compression == 0.0)), 0)
+            self.assertEqual(int(np.count_nonzero(velocity < 0.0)), int(np.count_nonzero(compression > 0.0)))
+
     def test_mujoco_adapter_adds_wrench_to_body_force(self):
         body_f = np.zeros((2, 6), dtype=np.float64)
         wrench = np.asarray([1.0, 2.0, 3.0, 0.1, 0.2, 0.3])
@@ -348,6 +676,170 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
 
         np.testing.assert_allclose(body_f[1], wrench)
         np.testing.assert_allclose(body_f[0], np.zeros(6))
+
+    @unittest.skipIf(not _cuda_available, "Requires CUDA")
+    def test_evaluate_foundation_sdf_returns_result(self):
+        xy = np.asarray([[0.0, 0.0]], dtype=np.float32)
+        top_z = np.asarray([0.0], dtype=np.float32)
+        cell_area = np.asarray([1.0e-4], dtype=np.float32)
+        material = FoundationMaterial(2.0e6, 2.0, 0.65, 0.0)
+        sdf = build_indenter_sdf(
+            "flat_plate",
+            bounds=((-0.02, -0.02), (0.02, 0.02)),
+            target_voxel_size=0.0005,
+            margin=0.004,
+            narrow_band_range=(-0.004, 0.004),
+            device="cuda:0",
+        )
+
+        result = evaluate_foundation_sdf(
+            xy_m=xy,
+            top_z_m=top_z,
+            slack_length_m=np.full(len(xy), 0.02, dtype=np.float32),
+            velocity_mps=np.zeros(len(xy), dtype=np.float32),
+            cell_area_m2=cell_area,
+            material=material,
+            indenter_sdf=sdf,
+            indenter_pos=(0.0, 0.0, 0.0),
+            device="cuda:0",
+        )
+
+        self.assertIsInstance(result, FoundationResult)
+        self.assertGreater(result.force_n, 0.0)
+        self.assertEqual(result.wrench.shape, (6,))
+        self.assertGreaterEqual(result.loss, 0.0)
+
+    @unittest.skipIf(not _cuda_available, "Requires CUDA")
+    def test_evaluate_foundation_sdf_force_scales_with_area(self):
+        xy = np.asarray([[0.0, 0.0]], dtype=np.float32)
+        top_z = np.asarray([0.0], dtype=np.float32)
+        material = FoundationMaterial(2.0e6, 2.0, 0.65, 0.0)
+        sdf = build_indenter_sdf(
+            "flat_plate",
+            bounds=((-0.02, -0.02), (0.02, 0.02)),
+            target_voxel_size=0.0005,
+            margin=0.004,
+            narrow_band_range=(-0.004, 0.004),
+            device="cuda:0",
+        )
+
+        result_small = evaluate_foundation_sdf(
+            xy_m=xy,
+            top_z_m=top_z,
+            slack_length_m=np.full(len(xy), 0.02, dtype=np.float32),
+            velocity_mps=np.zeros(len(xy), dtype=np.float32),
+            cell_area_m2=1e-4,
+            material=material,
+            indenter_sdf=sdf,
+            indenter_pos=(0.0, 0.0, 0.0),
+            device="cuda:0",
+        )
+        result_large = evaluate_foundation_sdf(
+            xy_m=xy,
+            top_z_m=top_z,
+            slack_length_m=np.full(len(xy), 0.02, dtype=np.float32),
+            velocity_mps=np.zeros(len(xy), dtype=np.float32),
+            cell_area_m2=1e-3,
+            material=material,
+            indenter_sdf=sdf,
+            indenter_pos=(0.0, 0.0, 0.0),
+            device="cuda:0",
+        )
+
+        self.assertGreater(result_small.force_n, 0.0)
+        self.assertGreater(result_large.force_n, 0.0)
+        self.assertAlmostEqual(
+            result_large.force_n / result_small.force_n,
+            10.0,
+            delta=0.5,
+        )
+
+    def test_workflow_fit_autodiff_with_per_cylinder(self):
+        """Integration: run_fit_autodiff produces per_cylinder_area in output."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_dir = root / "cache"
+
+            # 1. Create synthetic box mesh (watertight, 120x50x30 mm)
+            mesh_path = root / "midsole.obj"
+            _write_box_obj(mesh_path, size=(0.12, 0.05, 0.03))
+
+            # 2. Condition mesh (produces repaired mesh in cache_dir)
+            mesh_report = condition_midsole_mesh(mesh_path, cache_dir, source_units="m", remesh=False)
+            self.assertIn("repaired_mesh", mesh_report)
+
+            # 3. Build SpringSurfaceGrid to verify grid is viable
+            vertices, faces = _load_obj_mesh(Path(str(mesh_report["repaired_mesh"])))
+            spring_grid = build_raycast_spring_grid(vertices, faces, spacing_m=0.02)
+            self.assertGreater(len(spring_grid.xy_m), 0)
+
+            # 4. Create synthetic CSV with time, position (mm), force (N)
+            csv_path = root / "rearfoot_punch.csv"
+            time_s = np.linspace(0, 1, 100)
+            force_n = np.linspace(0, 200, 100)
+            position_mm = np.linspace(0, 5, 100)
+            header = "Total Time,Position,Force\n"
+            data = "\n".join(f"{t},{p},{f}" for t, p, f in zip(time_s, position_mm, force_n, strict=True))
+            csv_path.write_text(header + data)
+
+            # 5. Create manifest JSON
+            manifest_path = root / "manifest.json"
+            manifest = {
+                "midsole_mesh": str(mesh_path),
+                "cache_dir": str(cache_dir),
+                "qc": {"mesh_source_units": "m"},
+                "grid": {"coarse_spacing_m": 0.02},
+                "fit": {
+                    "initial_stiffness_pa": 2.0e6,
+                    "initial_ogden_alpha": 2.0,
+                    "initial_lock_strain": 0.65,
+                    "initial_damping_pa_s": 1.0e4,
+                    "initial_damping_power": 1.0,
+                },
+                "trials": [
+                    {
+                        "name": "rearfoot_punch",
+                        "csv_path": str(csv_path),
+                        "fixture": "rearfoot_punch",
+                        "indenter": {"type": "cylinder", "radius_m": 0.0225},
+                        "include_in_fit": True,
+                    }
+                ],
+            }
+            manifest_path.write_text(json.dumps(manifest, indent=2))
+
+            # 6. Run fit-autodiff workflow step
+            args = argparse.Namespace(
+                manifest=str(manifest_path),
+                output_dir=None,
+                step="fit-autodiff",
+                autodiff_iterations=2,
+                autodiff_sample_count=2,
+                hysteresis_sample_count=12,
+            )
+            report = run_fit_autodiff(args)
+
+            # 7. Verify output material has per_cylinder_area field
+            self.assertIn("material", report)
+            self.assertIn("per_cylinder_area", report["material"])
+            self.assertTrue(report["material"]["per_cylinder_area"])
+
+            # 8. Verify saved JSON includes per_cylinder_area
+            output_path = cache_dir / "digital_instron_v2_autodiff_fit.json"
+            self.assertTrue(output_path.exists())
+            saved = json.loads(output_path.read_text())
+            self.assertIn("material", saved)
+            self.assertIn("per_cylinder_area", saved["material"])
+            self.assertTrue(saved["material"]["per_cylinder_area"])
+            self.assertIn("hysteresis", saved)
+            hysteresis_png = Path(saved["hysteresis"]["hysteresis_png"])
+            hysteresis_csv = Path(saved["hysteresis"]["hysteresis_csv"])
+            hysteresis_trials_csv = Path(saved["hysteresis"]["hysteresis_trials_csv"])
+            self.assertTrue(hysteresis_png.exists())
+            self.assertGreater(hysteresis_png.stat().st_size, 0)
+            self.assertTrue(hysteresis_csv.exists())
+            self.assertTrue(hysteresis_trials_csv.exists())
+            self.assertGreaterEqual(len(saved["hysteresis"]["trials"]), 1)
 
 
 class TestDigitalInstronV2ManifestAndFrames(unittest.TestCase):
@@ -386,15 +878,137 @@ class TestDigitalInstronV2ManifestAndFrames(unittest.TestCase):
             self.assertTrue(manifest.midsole_mesh.is_absolute())
             self.assertTrue(manifest.trials[0].csv_path.exists())
 
+    def test_manifest_parses_sdf_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            csv_path = root / "trail.csv"
+            csv_path.write_text('"Total Time (s)","Position (mm)","Force (N)"\n0,0,0\n')
+            mesh_path = root / "mesh.obj"
+            _write_box_obj(mesh_path)
+            stl_path = root / "indenter.stl"
+            stl_path.write_text(
+                "solid indenter\n"
+                "facet normal 0 0 1\n"
+                "outer loop\n"
+                "vertex 0 0 0\n"
+                "vertex 0.001 0 0\n"
+                "vertex 0 0.001 0\n"
+                "endloop\n"
+                "endfacet\n"
+                "endsolid indenter\n"
+            )
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "midsole_mesh": "mesh.obj",
+                        "cache_dir": "cache",
+                        "qc": {},
+                        "grid": {
+                            "coarse_spacing_m": 0.005,
+                            "force_thickness_axis": 1,
+                        },
+                        "fit": {"model": "locked_ogden_vertical_foundation_v2"},
+                        "trials": [
+                            {
+                                "name": "flatplate_trial",
+                                "csv_path": "trail.csv",
+                                "fixture": "rearfoot_punch",
+                                "include_in_fit": True,
+                                "indenter": {
+                                    "type": "flat_plate",
+                                    "plate_height": 0.01,
+                                },
+                            },
+                            {
+                                "name": "cylinder_trial",
+                                "csv_path": "trail.csv",
+                                "fixture": "rearfoot_punch",
+                                "include_in_fit": True,
+                                "indenter": {
+                                    "type": "cylinder",
+                                    "radius_m": 0.0225,
+                                    "height_m": 0.05,
+                                },
+                            },
+                            {
+                                "name": "stl_trial",
+                                "csv_path": "trail.csv",
+                                "fixture": "rearfoot_punch",
+                                "include_in_fit": True,
+                                "indenter": {
+                                    "type": "stl",
+                                    "path": "indenter.stl",
+                                    "rotation_deg": [0.0, 0.0, 0.0],
+                                },
+                            },
+                        ],
+                    }
+                )
+            )
+
+            manifest = load_manifest(manifest_path)
+
+            # Verify force_thickness_axis in grid
+            self.assertEqual(manifest.grid["force_thickness_axis"], 1)
+
+            # Verify each indenter type
+            trials_by_name = {t.name: t for t in manifest.trials}
+
+            fp = trials_by_name["flatplate_trial"]
+            self.assertEqual(fp.indenter["type"], "flat_plate")
+            self.assertEqual(fp.indenter["plate_height"], 0.01)
+
+            cy = trials_by_name["cylinder_trial"]
+            self.assertEqual(cy.indenter["type"], "cylinder")
+            self.assertEqual(cy.indenter["radius_m"], 0.0225)
+            self.assertEqual(cy.indenter["height_m"], 0.05)
+
+            st = trials_by_name["stl_trial"]
+            self.assertEqual(st.indenter["type"], "stl")
+            self.assertEqual(st.indenter["path"], str(stl_path.resolve()))
+
+    def test_manifest_parses_thickness_axis_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            csv_path = root / "trial.csv"
+            csv_path.write_text('"Total Time (s)","Position (mm)","Force (N)"\n0,0,0\n')
+            mesh_path = root / "mesh.obj"
+            _write_box_obj(mesh_path)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "midsole_mesh": "mesh.obj",
+                        "cache_dir": "cache",
+                        "qc": {},
+                        "grid": {
+                            "coarse_spacing_m": 0.005,
+                            "force_thickness_axis": 2,
+                        },
+                        "fit": {"model": "locked_ogden_vertical_foundation_v2"},
+                        "trials": [
+                            {
+                                "name": "test",
+                                "csv_path": "trial.csv",
+                                "fixture": "rearfoot_punch",
+                                "include_in_fit": True,
+                                "indenter": {"type": "cylinder", "radius_m": 0.02},
+                            }
+                        ],
+                    }
+                )
+            )
+
+            manifest = load_manifest(manifest_path)
+
+            self.assertEqual(manifest.grid["force_thickness_axis"], 2)
+            self.assertIn("coarse_spacing_m", manifest.grid)
+
     def test_frame_qc_infers_and_applies_saved_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = Path(tmp) / "trace.csv"
-            csv_path.write_text(
-                '"Total Time (s)","Position (mm)","Force (N)"\n'
-                "0,10,-5\n"
-                "0.1,8,-80\n"
-                "0.2,6,-160\n"
-            )
+            csv_path.write_text('"Total Time (s)","Position (mm)","Force (N)"\n0,10,-5\n0.1,8,-80\n0.2,6,-160\n')
 
             frame = infer_frame_config(csv_path, min_force_span_n=50.0, min_position_span_mm=1.0)
             trace = load_trial_frame(csv_path, frame)
@@ -412,6 +1026,106 @@ class TestDigitalInstronV2ManifestAndFrames(unittest.TestCase):
                 infer_frame_config(csv_path)
             with self.assertRaisesRegex(ValueError, "missing"):
                 validate_frame_config({"time_column": "Time"})
+
+
+class TestDigitalInstronV2MujocoAdapter(unittest.TestCase):
+    """Tests for the MuJoCo adapter convenience wrappers."""
+
+    def test_apply_sdf_wrench_to_body_f(self):
+        body_f = np.zeros((3, 6), dtype=np.float64)
+        result = FoundationResult(
+            force_n=100.0,
+            wrench=np.array([0.0, 0.0, 100.0, 5.0, -3.0, 0.0]),
+            loss=0.5,
+        )
+        apply_sdf_foundation_wrench(body_f, 1, result)
+
+        np.testing.assert_array_equal(body_f[1], [0.0, 0.0, 100.0, 5.0, -3.0, 0.0])
+        np.testing.assert_array_equal(body_f[0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(body_f[2], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+    def test_apply_foundation_wrench_to_body_f_still_works(self):
+        body_f = np.zeros((3, 6), dtype=np.float64)
+        wrench = np.array([10.0, 20.0, 30.0, -1.0, -2.0, -3.0])
+        apply_foundation_wrench_to_body_f(body_f, 0, wrench)
+        np.testing.assert_array_equal(body_f[0], [10.0, 20.0, 30.0, -1.0, -2.0, -3.0])
+        np.testing.assert_array_equal(body_f[1], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+    def test_apply_sdf_wrench_raises_on_bad_body_index(self):
+        body_f = np.zeros((2, 6), dtype=np.float64)
+        result = FoundationResult(
+            force_n=100.0,
+            wrench=np.array([0.0, 0.0, 100.0, 0.0, 0.0, 0.0]),
+            loss=0.5,
+        )
+        with self.assertRaises(IndexError):
+            apply_sdf_foundation_wrench(body_f, 5, result)
+
+    def test_apply_sdf_wrench_raises_on_bad_shape(self):
+        body_f = np.zeros((3, 4), dtype=np.float64)
+        result = FoundationResult(
+            force_n=100.0,
+            wrench=np.array([0.0, 0.0, 100.0, 0.0, 0.0, 0.0]),
+            loss=0.5,
+        )
+        with self.assertRaises(ValueError):
+            apply_sdf_foundation_wrench(body_f, 1, result)
+
+
+class TestDigitalInstronV2Visualization(unittest.TestCase):
+    """Tests for offline visual diagnostics."""
+
+    def test_visualization_per_cylinder_force_map(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            # 1. Create synthetic box mesh
+            mesh_path = root / "midsole.obj"
+            _write_box_obj(mesh_path, size=(0.12, 0.05, 0.03))
+
+            # 2. Dummy CSV (required by load_manifest)
+            csv_path = root / "trial.csv"
+            csv_path.write_text('"Total Time (s)","Position (mm)","Force (N)"\n0,0,0\n1,2,-100\n')
+
+            # 3. Minimal manifest
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "midsole_mesh": str(mesh_path),
+                        "cache_dir": "cache",
+                        "qc": {
+                            "mesh_source_units": "m",
+                            "min_midsole_thickness_m": 0.005,
+                            "max_midsole_thickness_m": 0.08,
+                        },
+                        "grid": {"coarse_spacing_m": 0.02},
+                        "fit": {
+                            "initial_stiffness_pa": 2.0e6,
+                            "initial_ogden_alpha": 2.0,
+                            "initial_lock_strain": 0.65,
+                            "initial_damping_pa_s": 1.0e4,
+                            "initial_damping_power": 1.0,
+                        },
+                        "trials": [
+                            {
+                                "name": "rearfoot_punch",
+                                "csv_path": str(csv_path),
+                                "fixture": "rearfoot_punch",
+                                "indenter": {"type": "cylinder", "radius_m": 0.0225},
+                                "include_in_fit": True,
+                            }
+                        ],
+                    }
+                )
+            )
+
+            manifest = load_manifest(manifest_path)
+            write_visualization_report(manifest, root)
+
+            force_heatmap = root / "digital_instron_v2_force_heatmap.png"
+            self.assertTrue(force_heatmap.exists(), msg="force heatmap PNG should exist")
+            self.assertGreater(force_heatmap.stat().st_size, 0, msg="force heatmap should be non-empty")
 
 
 if __name__ == "__main__":
