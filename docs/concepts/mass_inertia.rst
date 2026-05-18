@@ -220,6 +220,13 @@ The following checks are applied in order:
    :meth:`~newton.ModelBuilder.collapse_fixed_joints` merges mass and inertia
    across collapsed bodies *before* validation runs.
 
+   The solver-level equivalent (``collapse_fixed_joints=True`` on
+   :class:`~newton.solvers.SolverXPBD` and
+   :class:`~newton.solvers.SolverSemiImplicit`) accumulates inertia at solver
+   construction time, *after* :meth:`~newton.ModelBuilder.finalize` has already
+   validated individual body inertias.  The original
+   :class:`~newton.Model` body hierarchy is preserved.
+
 
 .. _Shape inertia reference:
 

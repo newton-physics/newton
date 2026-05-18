@@ -501,8 +501,35 @@ def eval_body_joints(
 
 
 def eval_body_joint_forces(
-    model: Model, state: State, control: Control, body_f: wp.array, joint_attach_ke: float, joint_attach_kd: float
+    model: Model,
+    state: State,
+    control: Control,
+    body_f: wp.array,
+    joint_attach_ke: float,
+    joint_attach_kd: float,
+    joint_enabled_override: wp.array[wp.bool] | None = None,
+    body_com_override: wp.array[wp.vec3] | None = None,
+    joint_parent_override: wp.array[wp.int32] | None = None,
+    joint_child_override: wp.array[wp.int32] | None = None,
+    joint_X_p_override: wp.array[wp.transform] | None = None,
+    joint_X_c_override: wp.array[wp.transform] | None = None,
 ):
+    """Compute and accumulate joint forces into ``body_f``.
+
+    Args:
+        model: The simulation model.
+        state: Current simulation state.
+        control: Control inputs providing joint targets and feedforward forces.
+        body_f: Output spatial force array, accumulated via atomic adds.
+        joint_attach_ke: Joint attachment spring stiffness.
+        joint_attach_kd: Joint attachment spring damping.
+        joint_enabled_override: Optional override for :attr:`~newton.Model.joint_enabled`.
+        body_com_override: Optional override for :attr:`~newton.Model.body_com`.
+        joint_parent_override: Optional override for :attr:`~newton.Model.joint_parent`.
+        joint_child_override: Optional override for :attr:`~newton.Model.joint_child`.
+        joint_X_p_override: Optional override for :attr:`~newton.Model.joint_X_p`.
+        joint_X_c_override: Optional override for :attr:`~newton.Model.joint_X_c`.
+    """
     if model.joint_count:
         wp.launch(
             kernel=eval_body_joints,
@@ -510,14 +537,14 @@ def eval_body_joint_forces(
             inputs=[
                 state.body_q,
                 state.body_qd,
-                model.body_com,
+                body_com_override if body_com_override is not None else model.body_com,
                 model.joint_qd_start,
                 model.joint_type,
-                model.joint_enabled,
-                model.joint_child,
-                model.joint_parent,
-                model.joint_X_p,
-                model.joint_X_c,
+                joint_enabled_override if joint_enabled_override is not None else model.joint_enabled,
+                joint_child_override if joint_child_override is not None else model.joint_child,
+                joint_parent_override if joint_parent_override is not None else model.joint_parent,
+                joint_X_p_override if joint_X_p_override is not None else model.joint_X_p,
+                joint_X_c_override if joint_X_c_override is not None else model.joint_X_c,
                 model.joint_axis,
                 model.joint_dof_dim,
                 control.joint_f,
