@@ -6,7 +6,13 @@ from typing import Any
 import warp as wp
 
 from ..geometry.contact_data import SHAPE_PAIR_HFIELD_BIT, SHAPE_PAIR_INDEX_MASK, ContactData
-from ..geometry.sdf_texture import TextureSDFData, texture_sample_sdf, texture_sample_sdf_grad
+from ..geometry.sdf_texture import (
+    TextureSDFData,
+    texture_sample_sdf_grad_only_hw,
+)
+from ..geometry.sdf_texture import (
+    texture_sample_sdf_hw as texture_sample_sdf,
+)
 from ..geometry.types import GeoType
 from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield, sample_sdf_heightfield
 from .contact_reduction_global import GlobalContactReducerData, export_and_reduce_contact_centered
@@ -533,13 +539,21 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
         sdf_is_heightfield: bool,
         hfd_sdf: HeightfieldData,
         elevation_data: wp.array[wp.float32],
+        precision_target: float,
     ) -> tuple[float, wp.vec3]:
         """Find the deepest point on an edge relative to an SDF volume.
 
-        Uses Brent's method (5 iterations) to minimize the SDF value along the
-        edge parameterized as ``p(t) = v0 + t * edge_dir`` for t in [0, 1].
-        The initial midpoint SDF value is provided by the caller (cached from
-        culling) to avoid a redundant evaluation.
+        Uses Brent's method (up to 5 iterations) to minimize the SDF value
+        along the edge parameterized as ``p(t) = v0 + t * edge_dir`` for
+        t in [0, 1]. The initial midpoint SDF value is provided by the
+        caller (cached from culling) to avoid a redundant evaluation.
+
+        ``precision_target`` is the world-space precision the caller cares
+        about (typically the contact gap). Brent's tolerance floor is set
+        to ``precision_target / edge_length / 2`` in parametric space so
+        edges much shorter than the target precision exit Brent in 0
+        iters (the midpoint is already accurate enough). Long edges still
+        run the full 5 iters to converge.
 
         After the interior search, evaluates the more promising endpoint
         (the one closer to the unconverged bracket boundary) so that vertex
@@ -550,6 +564,13 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
         """
         golden = 0.3819660112501051  # (3 - sqrt(5)) / 2
         edge_dir = v1 - v0
+        edge_length = wp.length(edge_dir)
+
+        # Parametric tolerance floor: skip Brent for edges where the
+        # midpoint already meets ``precision_target``. ``+ 1e-12`` keeps
+        # zero-length edges from dividing by zero (they trivially meet
+        # any positive precision).
+        tol_floor = 0.5 * precision_target / (edge_length + 1.0e-12)
 
         # Initialize Brent's method at the midpoint (SDF value from culling)
         a = float(0.0)
@@ -565,7 +586,7 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
 
         for _iter in range(5):
             m = 0.5 * (a + b)
-            tol = 1.0e-2 * wp.abs(x) + 1.0e-8
+            tol = wp.max(1.0e-2 * wp.abs(x) + 1.0e-8, tol_floor)
             tol2 = 2.0 * tol
 
             if wp.abs(x - m) <= tol2 - 0.5 * (b - a):
@@ -1088,6 +1109,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 sdf_is_hfield,
                                 hfd_sdf,
                                 heightfield_elevations,
+                                contact_threshold_unscaled,
                             )
 
                             # Quick threshold check before computing the gradient
@@ -1103,7 +1125,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             mesh_id_sdf, point_unscaled
                                         )
                                     else:
-                                        dist_unscaled, direction_unscaled = texture_sample_sdf_grad(
+                                        # Brent already produced the SDF value at
+                                        # ``point_unscaled``; skip the redundant value
+                                        # sample inside the gradient call and reuse
+                                        # ``dist_unscaled`` from Brent.
+                                        direction_unscaled = texture_sample_sdf_grad_only_hw(
                                             texture_sdf, point_unscaled
                                         )
                                 else:
@@ -1112,7 +1138,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             mesh_id_sdf, point_unscaled
                                         )
                                     else:
-                                        dist_unscaled, direction_unscaled = texture_sample_sdf_grad(
+                                        # Brent already produced the SDF value at
+                                        # ``point_unscaled``; skip the redundant value
+                                        # sample inside the gradient call and reuse
+                                        # ``dist_unscaled`` from Brent.
+                                        direction_unscaled = texture_sample_sdf_grad_only_hw(
                                             texture_sdf, point_unscaled
                                         )
 
@@ -1442,6 +1472,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 sdf_is_hfield,
                                 hfd_sdf,
                                 heightfield_elevations,
+                                contact_threshold_unscaled,
                             )
 
                             # Quick threshold check before computing the gradient
@@ -1457,7 +1488,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             mesh_id_sdf, point_unscaled
                                         )
                                     else:
-                                        dist_unscaled, direction_unscaled = texture_sample_sdf_grad(
+                                        # Brent already produced the SDF value at
+                                        # ``point_unscaled``; skip the redundant value
+                                        # sample inside the gradient call and reuse
+                                        # ``dist_unscaled`` from Brent.
+                                        direction_unscaled = texture_sample_sdf_grad_only_hw(
                                             texture_sdf, point_unscaled
                                         )
                                 else:
@@ -1466,7 +1501,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             mesh_id_sdf, point_unscaled
                                         )
                                     else:
-                                        dist_unscaled, direction_unscaled = texture_sample_sdf_grad(
+                                        # Brent already produced the SDF value at
+                                        # ``point_unscaled``; skip the redundant value
+                                        # sample inside the gradient call and reuse
+                                        # ``dist_unscaled`` from Brent.
+                                        direction_unscaled = texture_sample_sdf_grad_only_hw(
                                             texture_sdf, point_unscaled
                                         )
 

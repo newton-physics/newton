@@ -184,6 +184,11 @@ def mc_calc_face_texture(
 class HydroelasticSDF:
     """Hydroelastic contact generation with SDF-based collision detection.
 
+    .. warning::
+        Hydroelastic contact handling is **experimental**.  The API, default
+        configuration, and numerical behaviour may change without notice.
+        Validate accuracy and stability on your scene before relying on it.
+
     This class implements hydroelastic contact modeling between shapes represented
     by Signed Distance Fields (SDFs). It uses an octree-based broadphase to identify
     potentially colliding regions, then applies marching cubes to extract the
@@ -227,7 +232,13 @@ class HydroelasticSDF:
 
     @dataclass
     class Config:
-        """Controls properties of SDF hydroelastic collision handling."""
+        """Controls properties of SDF hydroelastic collision handling.
+
+        .. warning::
+            Hydroelastic contact handling is **experimental**; the fields
+            on this dataclass may be renamed, retyped, or removed without
+            notice.
+        """
 
         reduce_contacts: bool = True
         """Whether to reduce contacts to a smaller representative set per shape pair.

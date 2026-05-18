@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
+import math
 import os
 import warnings
 from collections.abc import Sequence
@@ -16,6 +17,35 @@ from ..utils.texture import compute_texture_hash
 if TYPE_CHECKING:
     from ..sim.model import Model
     from .sdf_utils import SDF
+
+
+def _resolve_relative_or_absolute(
+    abs_value: float | None,
+    rel_value: float | None,
+    *,
+    default_rel: float,
+    name: str,
+    diagonal: float,
+) -> float:
+    """Resolve a half-extent given mutually exclusive absolute and relative options.
+
+    ``abs_value`` is interpreted in metres; ``rel_value`` as a fraction of
+    the supplied ``diagonal``. Exactly one of the two may be supplied. When
+    both are ``None`` the default relative fraction is used. Negative inputs
+    raise :class:`ValueError`.
+    """
+    if abs_value is not None and rel_value is not None:
+        raise ValueError(
+            f"{name}: pass either {name} (absolute, m) or {name}_rel (fraction of AABB diagonal), not both."
+        )
+    if abs_value is not None:
+        if abs_value < 0.0:
+            raise ValueError(f"{name} must be non-negative, got {abs_value}.")
+        return float(abs_value)
+    rel = float(rel_value) if rel_value is not None else float(default_rel)
+    if rel < 0.0:
+        raise ValueError(f"{name}_rel must be non-negative, got {rel}.")
+    return rel * diagonal
 
 
 def _normalize_texture_input(texture: str | os.PathLike[str] | np.ndarray | None) -> str | np.ndarray | None:
@@ -193,6 +223,7 @@ class Mesh:
         self._cached_hash = None
         self._texture_hash = None
         self._edges = None
+        self._collision_edges: np.ndarray | None = None
         self._is_watertight: bool | None = None
         self.sdf = sdf
 
@@ -728,51 +759,74 @@ class Mesh:
         scale: tuple[float, float, float] | None = None,
         texture_format: str = "uint16",
         cache_dir: str | os.PathLike[str] | None = None,
+        edge_lower_angle_threshold_rad: float = math.radians(0.1),
+        edge_upper_angle_threshold_rad: float = math.radians(10.0),
+        edge_box_absorption: bool = False,
+        edge_box_half_normal: float | None = None,
+        edge_box_half_normal_rel: float | None = None,
+        edge_box_half_lateral: float | None = None,
+        edge_box_half_lateral_rel: float | None = None,
     ) -> "SDF":
         """Build and attach an SDF for this mesh.
 
+        Also simplifies the precomputed mesh edges used by the SDF-mesh
+        contact pipeline and caches the kept set on the mesh, so the
+        resulting :class:`Model` ships with the simplified edge set.
+
         Args:
-            device: CUDA device for SDF allocation. When ``None``, uses the
-                current :class:`wp.ScopedDevice` or the Warp default device.
+            device: CUDA device for SDF allocation. Defaults to the current
+                :class:`wp.ScopedDevice` or the Warp default device.
             narrow_band_range: Signed narrow-band distance range [m] as
-                ``(inner, outer)``. Uses ``(-0.1, 0.1)`` when not provided.
-            target_voxel_size: Target sparse-grid voxel size [m]. If provided,
-                takes precedence over ``max_resolution``.
-            max_resolution: Maximum sparse-grid dimension [voxel] along the longest
-                AABB axis, used when ``target_voxel_size`` is not provided. Must be
-                divisible by 8.
-            margin: Extra AABB padding [m] added before discretization. Uses
-                ``0.05`` when not provided.
-            shape_margin: Shape margin offset [m] to subtract from SDF values.
-                When non-zero, the SDF surface is effectively shrunk inward by
-                this amount. Useful for modeling compliant layers in hydroelastic
-                collision. Defaults to ``0.0``.
-            scale: Scale factors ``(sx, sy, sz)`` to bake into the SDF. When
-                provided, the mesh vertices are scaled before SDF generation
-                and ``scale_baked`` is set to ``True`` in the resulting SDF.
-                Required for hydroelastic collision with non-unit shape scale.
-                Defaults to ``None`` (no scale baking, scale applied at runtime).
-            texture_format: Subgrid texture storage format for the SDF.
-                ``"uint16"`` (default) stores subgrid voxels in 16-bit
-                normalized textures (half the memory of float32).
-                ``"float32"`` stores full-precision values. ``"uint8"`` uses
-                8-bit textures for minimum memory at lower precision.
-            cache_dir: Optional directory used to cache cooked SDF data on
-                disk. When provided, the cooked sparse SDF (the data that
-                backs the GPU 3D textures) is keyed by mesh content +
-                build parameters and persisted as a single
-                ``{hash}.sdf.npz`` file (an uncompressed ``np.savez``
-                bundle of typed numpy arrays). Subsequent calls with
-                identical inputs reload from disk and skip the expensive
-                mesh-SDF cook. ``shape_margin`` is applied at sample
-                time and is *not* part of the cache key. Defaults to
-                ``None`` (cache disabled).
+                ``(inner, outer)``. Defaults to ``(-0.1, 0.1)``.
+            target_voxel_size: Target sparse-grid voxel size [m]. Takes
+                precedence over ``max_resolution`` when provided.
+            max_resolution: Maximum sparse-grid dimension [voxel] along the
+                longest AABB axis. Must be divisible by 8.
+            margin: Extra AABB padding [m] added before discretization.
+                Defaults to ``0.05``.
+            shape_margin: SDF surface offset [m]. Non-zero values shrink the
+                SDF surface inward; used for compliant hydroelastic layers.
+            scale: Scale factors ``(sx, sy, sz)`` baked into the SDF.
+                Required for hydroelastic collision with non-unit shape
+                scale. Defaults to runtime scaling.
+            texture_format: Subgrid texture storage: ``"uint16"`` (default,
+                half the memory of float32), ``"float32"`` (full precision),
+                or ``"uint8"`` (minimum memory, lower precision).
+            cache_dir: Optional directory for on-disk caching of the cooked
+                sparse SDF. Keyed by mesh content and build parameters
+                (``shape_margin`` is applied at sample time and is *not*
+                part of the cache key). Defaults to no caching.
+            edge_lower_angle_threshold_rad: Drop internal edges whose
+                dihedral angle is below this value [rad]. Set to 0 to keep
+                every manifold edge. A negative value opts out of edge
+                simplification entirely and caches the full :attr:`edges`
+                set as-is (matching the pre-simplification behaviour); it
+                is rejected when ``edge_box_absorption=True``.
+            edge_upper_angle_threshold_rad: Maximum dihedral angle [rad] for
+                an absorbed edge to be removed. Only consulted when
+                ``edge_box_absorption`` is ``True``.
+            edge_box_absorption: Drop manifold edges fully covered by
+                another edge's oriented box.
+            edge_box_half_normal: Absolute box half-extent [m] along the
+                edge normal. Mutually exclusive with
+                ``edge_box_half_normal_rel``.
+            edge_box_half_normal_rel: Box half-extent along the edge normal
+                as a fraction of the AABB diagonal. Defaults to ``1e-3``.
+            edge_box_half_lateral: Absolute box half-extent [m] in-plane
+                (across the edge and as per-end overhang along it).
+                Mutually exclusive with ``edge_box_half_lateral_rel``.
+            edge_box_half_lateral_rel: Box half-extent in-plane as a fraction
+                of the AABB diagonal. Defaults to ``5e-3``.
 
         Returns:
             The attached :class:`SDF` instance.
 
         Raises:
             RuntimeError: If this mesh already has an SDF attached.
+            ValueError: If both an absolute and relative half-extent are
+                supplied for the same axis, if any half-extent is
+                negative, or if ``edge_lower_angle_threshold_rad`` is
+                negative while ``edge_box_absorption=True``.
         """
         if self.sdf is not None:
             raise RuntimeError("Mesh already has an SDF. Call clear_sdf() before rebuilding.")
@@ -795,7 +849,103 @@ class Mesh:
             texture_format=texture_format,
             cache_dir=cache_dir,
         )
+
+        self._build_collision_edges(
+            lower_angle_threshold_rad=edge_lower_angle_threshold_rad,
+            upper_angle_threshold_rad=edge_upper_angle_threshold_rad,
+            enable_box_absorption=edge_box_absorption,
+            half_normal_abs=edge_box_half_normal,
+            half_normal_rel=edge_box_half_normal_rel,
+            half_lateral_abs=edge_box_half_lateral,
+            half_lateral_rel=edge_box_half_lateral_rel,
+        )
+
         return self.sdf
+
+    def _build_collision_edges(
+        self,
+        *,
+        lower_angle_threshold_rad: float,
+        upper_angle_threshold_rad: float,
+        enable_box_absorption: bool,
+        half_normal_abs: float | None,
+        half_normal_rel: float | None,
+        half_lateral_abs: float | None,
+        half_lateral_rel: float | None,
+    ) -> None:
+        """Compute and cache the precomputed-edge set used by SDF-mesh contacts.
+
+        The baseline is the full dihedral-filtered edge set from
+        :meth:`_filter_edges_by_dihedral_angle` — boundary edges and
+        non-manifold edges are always preserved. When
+        ``enable_box_absorption`` is ``True`` the manifold-only absorption
+        pass runs on top and removes the manifold edges that
+        ``resolve_edge_removals`` flags.
+
+        A negative ``lower_angle_threshold_rad`` (with
+        ``enable_box_absorption=False``) opts out of edge simplification
+        entirely: ``_collision_edges`` is left ``None`` so the builder
+        falls back to the lazily-computed :attr:`edges` set, matching the
+        pre-simplification behaviour without paying for an eager edge
+        computation here. Use this when the simplification cost is
+        undesirable (e.g. benchmarks that isolate the SDF cook).
+        Combining a negative threshold with ``enable_box_absorption=True``
+        is rejected because the absorption pass relies on a non-negative
+        dihedral gate to identify manifold edges and would otherwise
+        silently no-op.
+        """
+        if lower_angle_threshold_rad < 0.0:
+            if enable_box_absorption:
+                raise ValueError(
+                    "edge_lower_angle_threshold_rad < 0 disables edge simplification, "
+                    "which is incompatible with edge_box_absorption=True."
+                )
+            self._collision_edges = None
+            return
+
+        if self._vertices.size > 0:
+            aabb_min = self._vertices.min(axis=0)
+            aabb_max = self._vertices.max(axis=0)
+            diagonal = float(np.linalg.norm(aabb_max - aabb_min))
+        else:
+            diagonal = 0.0
+
+        half_normal = _resolve_relative_or_absolute(
+            half_normal_abs, half_normal_rel, default_rel=1.0e-3, name="edge_box_half_normal", diagonal=diagonal
+        )
+        half_lateral = _resolve_relative_or_absolute(
+            half_lateral_abs, half_lateral_rel, default_rel=5.0e-3, name="edge_box_half_lateral", diagonal=diagonal
+        )
+
+        full_edges = self._filter_edges_by_dihedral_angle(lower_angle_threshold_rad)
+
+        if not enable_box_absorption or len(full_edges) == 0:
+            self._collision_edges = np.ascontiguousarray(full_edges, dtype=np.int32)
+            return
+
+        from .edge_redundancy import find_redundant_edges, resolve_edge_removals  # noqa: PLC0415
+
+        result = find_redundant_edges(
+            self,
+            enable_box_absorption=True,
+            half_normal=half_normal,
+            half_lateral=half_lateral,
+            lower_angle_threshold_rad=lower_angle_threshold_rad,
+            upper_angle_threshold_rad=upper_angle_threshold_rad,
+        )
+        resolution = resolve_edge_removals(result)
+        if not np.any(resolution.to_remove):
+            self._collision_edges = np.ascontiguousarray(full_edges, dtype=np.int32)
+            return
+
+        # Project absorption removals back into the full edge set. Both arrays
+        # encode the same raw (a, b) vertex pairs in identical orientation,
+        # so packing each row into a single int64 key gives a cheap np.isin.
+        to_remove_pairs = result.edge_indices[resolution.to_remove]
+        full_keys = (full_edges[:, 0].astype(np.int64) << 32) | full_edges[:, 1].astype(np.int64)
+        remove_keys = (to_remove_pairs[:, 0].astype(np.int64) << 32) | to_remove_pairs[:, 1].astype(np.int64)
+        keep_mask = ~np.isin(full_keys, remove_keys)
+        self._collision_edges = np.ascontiguousarray(full_edges[keep_mask], dtype=np.int32)
 
     def clear_sdf(self) -> None:
         """Detach and release the currently attached SDF.
@@ -814,6 +964,7 @@ class Mesh:
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
         self._cached_hash = None
         self._edges = None
+        self._collision_edges = None
         self._is_watertight = None
 
     @property
@@ -825,7 +976,18 @@ class Mesh:
         self._indices = np.array(value, dtype=np.int32).flatten()
         self._cached_hash = None
         self._edges = None
+        self._collision_edges = None
         self._is_watertight = None
+
+    def _canonical_vertex_ids(self) -> np.ndarray:
+        """Per-vertex canonical IDs that fold geometrically coincident vertices
+        together. Vertex positions are quantized to the nearest 1e-7 m bucket
+        before hashing, so vertices closer than 100 nm collapse to one id."""
+        q = np.round(self._vertices * 1e7).astype(np.int64)
+        q_contig = np.ascontiguousarray(q)
+        void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
+        _, canonical = np.unique(void_verts, return_inverse=True)
+        return canonical.ravel()
 
     @property
     def edges(self) -> np.ndarray:
@@ -840,12 +1002,7 @@ class Mesh:
                 return self._edges
             tris = self._indices.reshape(-1, 3)
             n = len(tris)
-            # Canonical vertex ids via quantized coordinates (overflow-safe)
-            q = np.round(self._vertices * 1e7).astype(np.int64)
-            q_contig = np.ascontiguousarray(q)
-            void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
-            _, canonical = np.unique(void_verts, return_inverse=True)
-            canonical = canonical.ravel()
+            canonical = self._canonical_vertex_ids()
             # Build edges with (min, max) canonical ordering, keep original indices
             c = canonical[tris]
             canon_edges = np.empty((n * 3, 2), dtype=np.int64)
@@ -863,6 +1020,226 @@ class Mesh:
             first_idx.sort()
             self._edges = orig_edges[first_idx]
         return self._edges
+
+    def _filter_edges_by_dihedral_angle(
+        self,
+        lower_angle_threshold_rad: float,
+        *,
+        return_diagnostics: bool = False,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return unique edge vertex pairs, dropping near-coplanar internal edges.
+
+        Internal edges (shared by exactly 2 triangles) are dropped when the
+        dihedral angle between the two adjacent face normals is strictly
+        below ``lower_angle_threshold_rad``. Boundary, non-manifold, and
+        degenerate-adjacent edges are always kept. ``<= 0`` returns the
+        unfiltered :attr:`edges`.
+
+        Args:
+            lower_angle_threshold_rad: Lower dihedral-angle threshold [rad].
+            return_diagnostics: If ``True``, also return per-kept-edge
+                ``(angles, average_normals, adjacent_face_area_sum)`` with NaN
+                sentinels for edges not shared by exactly two non-degenerate
+                triangles.
+
+        Returns:
+            ``edges`` ``(N, 2)`` int32, or
+            ``(edges, angles, average_normals, adjacent_face_area_sum)`` if
+            ``return_diagnostics``.
+        """
+
+        def _full_with_optional_diagnostics() -> np.ndarray | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+            edges = self.edges
+            if not return_diagnostics:
+                return edges
+            return self._compute_edge_dihedral_diagnostics(edges)
+
+        if lower_angle_threshold_rad <= 0.0:
+            return _full_with_optional_diagnostics()
+        if self._indices.size == 0 or self._vertices.size == 0:
+            return _full_with_optional_diagnostics()
+
+        tris = self._indices.reshape(-1, 3)
+        n = len(tris)
+        canonical = self._canonical_vertex_ids()
+
+        c = canonical[tris]
+        canon_edges = np.empty((n * 3, 2), dtype=np.int64)
+        orig_edges = np.empty((n * 3, 2), dtype=np.int32)
+        for k, (a, b) in enumerate(((0, 1), (1, 2), (0, 2))):
+            ca, cb = c[:, a], c[:, b]
+            canon_edges[k::3, 0] = np.minimum(ca, cb)
+            canon_edges[k::3, 1] = np.maximum(ca, cb)
+            orig_edges[k::3, 0] = tris[:, a]
+            orig_edges[k::3, 1] = tris[:, b]
+
+        # Pack each canonical edge pair into a single int64 key (vertex ids fit in 32 bits).
+        keys = (canon_edges[:, 0] << 32) | canon_edges[:, 1]
+        order = np.argsort(keys, kind="stable")
+        keys_sorted = keys[order]
+
+        # Group boundaries via change points in the sorted keys.
+        change = np.empty(keys_sorted.size, dtype=bool)
+        change[0] = True
+        change[1:] = keys_sorted[1:] != keys_sorted[:-1]
+        group_starts = np.flatnonzero(change)
+        group_ends = np.empty_like(group_starts)
+        group_ends[:-1] = group_starts[1:]
+        group_ends[-1] = keys_sorted.size
+        group_counts = group_ends - group_starts
+
+        verts = self._vertices.astype(np.float64, copy=False)
+        v0 = verts[tris[:, 0]]
+        v1 = verts[tris[:, 1]]
+        v2 = verts[tris[:, 2]]
+        face_normals = np.cross(v1 - v0, v2 - v0)
+        face_norms = np.linalg.norm(face_normals, axis=1)
+
+        cos_threshold = float(np.cos(lower_angle_threshold_rad))
+
+        # Per-slot keep mask over the n*3 edge slots; one slot wins per group.
+        keep_slot = np.zeros(n * 3, dtype=bool)
+
+        if return_diagnostics:
+            slot_angle = np.full(n * 3, np.nan, dtype=np.float64)
+            slot_avg_normal = np.full((n * 3, 3), np.nan, dtype=np.float64)
+            slot_area_sum = np.full(n * 3, np.nan, dtype=np.float64)
+
+        # Boundary and non-manifold groups: always keep the first slot.
+        non_pair_mask = group_counts != 2
+        keep_slot[order[group_starts[non_pair_mask]]] = True
+
+        # Pair groups: keep the first slot iff the dihedral angle clears the threshold.
+        pair_mask = group_counts == 2
+        if np.any(pair_mask):
+            pair_starts = group_starts[pair_mask]
+            slots_a = order[pair_starts]
+            slots_b = order[pair_starts + 1]
+            # Slot encodes the source triangle as slot // 3 (slot = 3*tri + k).
+            tri_a = slots_a // 3
+            tri_b = slots_b // 3
+            n_a = face_normals[tri_a]
+            n_b = face_normals[tri_b]
+            norm_a = face_norms[tri_a]
+            norm_b = face_norms[tri_b]
+            # Degenerate adjacent triangles -> conservatively keep the edge.
+            valid = (norm_a > 0.0) & (norm_b > 0.0)
+            denom = np.where(valid, norm_a * norm_b, 1.0)
+            cos_ab = np.clip(np.einsum("ij,ij->i", n_a, n_b) / denom, -1.0, 1.0)
+            # angle >= threshold  <=>  cos(angle) <= cos(threshold).
+            keep_pair = (~valid) | (cos_ab <= cos_threshold)
+            keep_slot[slots_a[keep_pair]] = True
+
+            if return_diagnostics:
+                angles_pair = np.where(valid, np.arccos(cos_ab), np.nan)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    unit_a = n_a / np.where(norm_a[:, None] > 0.0, norm_a[:, None], 1.0)
+                    unit_b = n_b / np.where(norm_b[:, None] > 0.0, norm_b[:, None], 1.0)
+                avg = unit_a + unit_b
+                avg_norm = np.linalg.norm(avg, axis=1)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    unit_avg = avg / np.where(avg_norm[:, None] > 0.0, avg_norm[:, None], 1.0)
+                # Opposing normals (avg ~= 0) or degenerate triangle -> NaN.
+                unit_avg[(~valid) | (avg_norm == 0.0)] = np.nan
+                # Cross-product magnitude = 2 * triangle area, so the sum of the
+                # two adjacent triangle areas is 0.5 * (||n_a|| + ||n_b||). NaN
+                # when either adjacent triangle is degenerate.
+                area_sum_pair = np.where(valid, 0.5 * (norm_a + norm_b), np.nan)
+                slot_angle[slots_a] = angles_pair
+                slot_avg_normal[slots_a] = unit_avg
+                slot_area_sum[slots_a] = area_sum_pair
+
+        # Sort to preserve the first-occurrence order used by ``edges``.
+        kept_indices = np.flatnonzero(keep_slot)
+        kept_indices.sort()
+        kept_edges = orig_edges[kept_indices]
+        if not return_diagnostics:
+            return kept_edges
+
+        kept_angles = slot_angle[kept_indices].astype(np.float32)
+        kept_avg_normals = slot_avg_normal[kept_indices].astype(np.float32)
+        kept_area_sums = slot_area_sum[kept_indices].astype(np.float32)
+        return kept_edges, kept_angles, kept_avg_normals, kept_area_sums
+
+    def _compute_edge_dihedral_diagnostics(
+        self, edges: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Per-edge dihedral angle, averaged adjacent-face normal, and area sum.
+
+        Used by :meth:`_filter_edges_by_dihedral_angle` when diagnostics are
+        requested without filtering. Non-pair edges use NaN sentinels.
+        ``edges`` must be the deduplicated pairs from :attr:`edges`.
+        """
+        n_edges = len(edges)
+        angles = np.full(n_edges, np.nan, dtype=np.float32)
+        avg_normals = np.full((n_edges, 3), np.nan, dtype=np.float32)
+        area_sums = np.full(n_edges, np.nan, dtype=np.float32)
+
+        if n_edges == 0 or self._indices.size == 0 or self._vertices.size == 0:
+            return edges, angles, avg_normals, area_sums
+
+        tris = self._indices.reshape(-1, 3)
+        n = len(tris)
+        canonical = self._canonical_vertex_ids()
+
+        c = canonical[tris]
+        slot_canon = np.empty((n * 3, 2), dtype=np.int64)
+        for k, (a, b) in enumerate(((0, 1), (1, 2), (0, 2))):
+            ca, cb = c[:, a], c[:, b]
+            slot_canon[k::3, 0] = np.minimum(ca, cb)
+            slot_canon[k::3, 1] = np.maximum(ca, cb)
+        slot_keys = (slot_canon[:, 0] << 32) | slot_canon[:, 1]
+
+        edge_canon0 = np.minimum(canonical[edges[:, 0]], canonical[edges[:, 1]])
+        edge_canon1 = np.maximum(canonical[edges[:, 0]], canonical[edges[:, 1]])
+        edge_keys = (edge_canon0.astype(np.int64) << 32) | edge_canon1.astype(np.int64)
+
+        order = np.argsort(slot_keys, kind="stable")
+        keys_sorted = slot_keys[order]
+
+        # Run length per query edge gives its triangle-share count.
+        left = np.searchsorted(keys_sorted, edge_keys, side="left")
+        right = np.searchsorted(keys_sorted, edge_keys, side="right")
+        counts = right - left
+
+        verts = self._vertices.astype(np.float64, copy=False)
+        v0 = verts[tris[:, 0]]
+        v1 = verts[tris[:, 1]]
+        v2 = verts[tris[:, 2]]
+        face_normals = np.cross(v1 - v0, v2 - v0)
+        face_norms = np.linalg.norm(face_normals, axis=1)
+
+        pair_mask = counts == 2
+        if np.any(pair_mask):
+            pair_left = left[pair_mask]
+            # Slot encodes the source triangle as slot // 3.
+            tri_a = order[pair_left] // 3
+            tri_b = order[pair_left + 1] // 3
+            n_a = face_normals[tri_a]
+            n_b = face_normals[tri_b]
+            norm_a = face_norms[tri_a]
+            norm_b = face_norms[tri_b]
+            valid = (norm_a > 0.0) & (norm_b > 0.0)
+            denom = np.where(valid, norm_a * norm_b, 1.0)
+            cos_ab = np.clip(np.einsum("ij,ij->i", n_a, n_b) / denom, -1.0, 1.0)
+            angles_pair = np.where(valid, np.arccos(cos_ab), np.nan)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                unit_a = n_a / np.where(norm_a[:, None] > 0.0, norm_a[:, None], 1.0)
+                unit_b = n_b / np.where(norm_b[:, None] > 0.0, norm_b[:, None], 1.0)
+            avg = unit_a + unit_b
+            avg_norm = np.linalg.norm(avg, axis=1)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                unit_avg = avg / np.where(avg_norm[:, None] > 0.0, avg_norm[:, None], 1.0)
+            bad = (~valid) | (avg_norm == 0.0)
+            unit_avg[bad] = np.nan
+
+            pair_indices = np.flatnonzero(pair_mask)
+            angles[pair_indices] = angles_pair.astype(np.float32)
+            avg_normals[pair_indices] = unit_avg.astype(np.float32)
+            # Cross-product magnitude = 2 * triangle area.
+            area_sums[pair_indices] = np.where(valid, 0.5 * (norm_a + norm_b), np.nan).astype(np.float32)
+
+        return edges, angles, avg_normals, area_sums
 
     @property
     def is_watertight(self) -> bool:
@@ -891,11 +1268,7 @@ class Mesh:
                 self._is_watertight = False
                 return self._is_watertight
             tris = self._indices.reshape(-1, 3)
-            q = np.round(self._vertices * 1e7).astype(np.int64)
-            q_contig = np.ascontiguousarray(q)
-            void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
-            _, canonical = np.unique(void_verts, return_inverse=True)
-            c = canonical.ravel()[tris]
+            c = self._canonical_vertex_ids()[tris]
             pairs = np.empty((len(tris) * 3, 2), dtype=np.int64)
             for k, (a, b) in enumerate(((0, 1), (1, 2), (0, 2))):
                 pairs[k::3, 0] = np.minimum(c[:, a], c[:, b])

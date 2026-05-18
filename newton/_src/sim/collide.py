@@ -478,6 +478,12 @@ class CollisionPipeline:
         ``requires_grad`` is enabled) are **experimental**. The narrow phase stays
         frozen and gradients are a tangent approximation; validate accuracy and
         usefulness on your workflow before relying on them in optimization loops.
+
+    .. note::
+        Hydroelastic contact handling (enabled per shape via
+        :attr:`ShapeConfig.is_hydroelastic` and configured through
+        ``sdf_hydroelastic_config``) is **experimental**; API, defaults,
+        and numerical behaviour may change without notice.
     """
 
     def __init__(
@@ -534,8 +540,9 @@ class CollisionPipeline:
             shape_pairs_filtered: Precomputed shape pairs for EXPLICIT mode.
                 When broad_phase is "explicit", uses model.shape_contact_pairs if not provided. For
                 "nxn"/"sap" modes, ignored.
-            sdf_hydroelastic_config: Configuration for
-                hydroelastic collision handling. Defaults to None.
+            sdf_hydroelastic_config: Configuration for hydroelastic
+                collision handling (**experimental**; see
+                :class:`~newton.geometry.HydroelasticSDF`). Defaults to None.
             shape_pairs_max: Override for the broad-phase candidate-pair
                 buffer capacity used by the ``"nxn"`` and ``"sap"`` modes.
                 Defaults to the worst-case ``N*(N-1)/2`` per-world bound,

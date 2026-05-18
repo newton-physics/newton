@@ -1493,6 +1493,13 @@ pipeline. When ``contacts`` is omitted from ``collide``, a buffer is allocated a
 Hydroelastic Contacts
 ---------------------
 
+.. warning::
+   Hydroelastic contact handling is **experimental**.  The configuration
+   surface (``ShapeConfig.is_hydroelastic``, ``ShapeConfig.kh``, and
+   :class:`~newton.geometry.HydroelasticSDF.Config`) and the numerical
+   behaviour may change without notice.  Validate accuracy and stability
+   on your scene before relying on it in production simulations.
+
 Hydroelastic contacts are an **opt-in** feature that generates contact areas (not just points) using SDF-based collision detection. This provides more realistic and continuous force distribution, particularly useful for robotic manipulation scenarios.
 
 **Default behavior (hydroelastic disabled):**
