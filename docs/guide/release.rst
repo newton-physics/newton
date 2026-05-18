@@ -173,8 +173,8 @@ As a guideline, an RC is typically ready for GA when:
      - Re-run the ``release-audit`` skill after final cherry-picks; confirm
        no new flags since the last RC.
    * - ☐
-     - Prepare ``CHANGELOG.md`` inputs: deprecations/removals, dependency
-       updates, and required migration guidance.
+     - Prepare draft GitHub Release notes: summary, a few highlights, link
+       to ``CHANGELOG.md``, acknowledgments.
    * - ☐
      - :ref:`Testing criteria <testing-criteria>` satisfied.
    * - ☐
