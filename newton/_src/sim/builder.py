@@ -227,7 +227,7 @@ class ModelBuilder:
         delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
-    @dataclass
+    @dataclass(slots=True)
     class ShapeConfig:
         """
         Represents the properties of a collision shape used in simulation.
