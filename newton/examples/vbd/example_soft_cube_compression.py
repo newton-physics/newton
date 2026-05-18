@@ -5,10 +5,10 @@
 # Example Soft Cube Compression — Extreme Compression + Recovery
 #
 # A tetrahedral cube with its bottom face pinned. The top face is driven
-# downward to 10% of the rest height over 150 frames, then released.
-# The stable Neo-Hookean material should survive the near-planar
-# compression without NaN or inversion, and recover toward the rest
-# height after release.
+# downward to 50% of the rest height over 150 frames, then released.
+# The stable Neo-Hookean material should survive the compression
+# without NaN or inversion, and recover toward the rest height after
+# release.
 #
 # Command: python -m newton.examples vbd.example_soft_cube_compression
 #
@@ -41,7 +41,7 @@ class Example:
     K_MU = 1.0e4
     K_LAMBDA = 1.0e4
     K_DAMP = 1.0e-2
-    COMPRESS_RATIO = 0.10
+    COMPRESS_RATIO = 0.50
     COMPRESS_FRAMES = 150
     RELEASE_FRAME = 150
 
