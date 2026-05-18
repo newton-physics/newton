@@ -54,8 +54,8 @@ CABLE_MU = 2.0
 LATCH_LIMIT_LOWER = -0.2  # max inward deflection [rad]
 LATCH_LIMIT_UPPER = 0.3  # max outward deflection [rad]
 LATCH_SPRING_KE = 0.15  # angular return-spring stiffness [N*m/rad]
-LATCH_SPRING_KD = 0.2  # dimensionless damping ratio (VBD: D = kd * ke)
-LATCH_LIMIT_KD = 1.0e-4  # dimensionless limit damping (VBD: D = kd * limit_ke)
+LATCH_SPRING_KD = 0.03  # angular return-spring damping [N*m*s/rad]
+LATCH_LIMIT_KD = 1.0e-4  # angular limit damping [N*m*s/rad]
 
 
 @wp.kernel
@@ -324,7 +324,7 @@ class Example:
                 mu=CABLE_MU,
             ),
             bend_stiffness=bend_stiffness,
-            bend_damping=1.0e-1,
+            bend_damping=1.0e0,
             label="cable",
         )
 

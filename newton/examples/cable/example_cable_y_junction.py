@@ -48,7 +48,7 @@ class Example:
         segment_length = 0.03
 
         bend_stiffness = 1.0e3
-        bend_damping = 1.0e-1
+        bend_damping = 1.0e2
 
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1.0e4

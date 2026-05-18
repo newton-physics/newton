@@ -9,10 +9,14 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.vbd.particle_vbd_kernels import evaluate_self_contact_force_norm
+from newton._src.solvers.vbd.particle_vbd_kernels import (
+    evaluate_self_contact_force_norm,
+    evaluate_vertex_triangle_collision_force_hessian_4_vertices,
+)
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
     evaluate_angular_constraint_force_hessian,
+    evaluate_body_particle_contact,
     evaluate_linear_constraint_force_hessian,
     init_body_body_contacts_avbd,
     snapshot_body_body_contact_history,
@@ -88,6 +92,86 @@ def _eval_directional_joint_projection_kernel(
         0.01,
     )
     angular_torque_out[0] = torque
+
+
+@wp.kernel
+def _eval_body_particle_contact_damping_kernel(
+    particle_radius: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[wp.int32],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    forces: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    ke = wp.where(i < 2, 400.0, 100.0)
+    kd = wp.where((i & 1) == 0, 20.0, 0.0)
+    force, _hessian = evaluate_body_particle_contact(
+        0,
+        wp.vec3(0.0, 0.0, 0.04),
+        wp.vec3(0.0, 0.0, 0.05),
+        0,
+        ke,
+        kd,
+        0.0,
+        0.01,
+        particle_radius,
+        shape_material_mu,
+        shape_body,
+        body_q,
+        body_q_prev,
+        body_qd,
+        body_com,
+        contact_shape,
+        contact_body_pos,
+        contact_body_vel,
+        contact_normal,
+        0.1,
+    )
+    forces[i] = force
+
+
+@wp.kernel
+def _eval_vertex_triangle_uniform_motion_kernel(
+    pos: wp.array[wp.vec3],
+    pos_prev: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    forces: wp.array[wp.vec3],
+    hessians: wp.array[wp.mat33],
+):
+    i = wp.tid()
+    kd = wp.where(i == 1, 50.0, 0.0)
+    (
+        _has_contact,
+        _force_0,
+        _force_1,
+        _force_2,
+        force_3,
+        _hessian_0,
+        _hessian_1,
+        _hessian_2,
+        hessian_3,
+    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+        3,
+        0,
+        pos,
+        pos_prev,
+        tri_indices,
+        0.1,
+        100.0,
+        kd,
+        0.0,
+        0.01,
+        0.1,
+    )
+    forces[i] = force_3
+    hessians[i] = hessian_3
 
 
 def test_self_contact_barrier_c2_at_tau(test, device):
@@ -401,6 +485,79 @@ def _joint_force_projection_filters_free_direction(test, device):
         test.assertGreater(np.linalg.norm(angular_torque_np[:, 1:]), 0.0)
 
 
+def _body_particle_contact_damping_is_absolute(test, device):
+    """Changing contact stiffness should not change the damping contribution."""
+    with wp.ScopedDevice(device):
+        particle_radius = wp.array([0.1], dtype=float, device=device)
+        shape_material_mu = wp.array([0.0], dtype=float, device=device)
+        shape_body = wp.array([-1], dtype=wp.int32, device=device)
+        body_q = wp.zeros(0, dtype=wp.transform, device=device)
+        body_q_prev = wp.zeros(0, dtype=wp.transform, device=device)
+        body_qd = wp.zeros(0, dtype=wp.spatial_vector, device=device)
+        body_com = wp.zeros(0, dtype=wp.vec3, device=device)
+        contact_shape = wp.array([0], dtype=wp.int32, device=device)
+        contact_body_pos = wp.zeros(1, dtype=wp.vec3, device=device)
+        contact_body_vel = wp.zeros(1, dtype=wp.vec3, device=device)
+        contact_normal = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
+        forces = wp.zeros(4, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            _eval_body_particle_contact_damping_kernel,
+            dim=4,
+            inputs=[
+                particle_radius,
+                shape_material_mu,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                body_com,
+                contact_shape,
+                contact_body_pos,
+                contact_body_vel,
+                contact_normal,
+            ],
+            outputs=[forces],
+            device=device,
+        )
+
+        force_np = forces.numpy()
+        damping_low_ke = force_np[0] - force_np[1]
+        damping_high_ke = force_np[2] - force_np[3]
+        np.testing.assert_allclose(damping_low_ke, damping_high_ke, rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(damping_low_ke, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
+
+
+def _self_contact_damping_uses_relative_gap_rate(test, device):
+    """Uniform motion of a contact stencil should not add normal damping."""
+    with wp.ScopedDevice(device):
+        pos_np = np.array(
+            [
+                [-1.0, -1.0, 0.0],
+                [1.0, -1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.05],
+            ],
+            dtype=np.float32,
+        )
+        pos = wp.array(pos_np, dtype=wp.vec3, device=device)
+        pos_prev = wp.array(pos_np + np.array([0.0, 0.0, 0.01], dtype=np.float32), dtype=wp.vec3, device=device)
+        tri_indices = wp.array(np.array([[0, 1, 2]], dtype=np.int32), dtype=wp.int32, ndim=2, device=device)
+        forces = wp.zeros(2, dtype=wp.vec3, device=device)
+        hessians = wp.zeros(2, dtype=wp.mat33, device=device)
+
+        wp.launch(
+            _eval_vertex_triangle_uniform_motion_kernel,
+            dim=2,
+            inputs=[pos, pos_prev, tri_indices],
+            outputs=[forces, hessians],
+            device=device,
+        )
+
+        np.testing.assert_allclose(forces.numpy()[1], forces.numpy()[0], rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(hessians.numpy()[1], hessians.numpy()[0], rtol=1.0e-6, atol=1.0e-6)
+
+
 def _d6_fully_free_structural_slots_are_inactive(test, device):
     """D6 structural slots should be inactive when all axes are free."""
     builder = newton.ModelBuilder(gravity=0.0)
@@ -611,6 +768,18 @@ add_function_test(
     TestSolverVBD,
     "test_joint_force_projection_filters_free_direction",
     _joint_force_projection_filters_free_direction,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_contact_damping_is_absolute",
+    _body_particle_contact_damping_is_absolute,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_self_contact_damping_uses_relative_gap_rate",
+    _self_contact_damping_uses_relative_gap_rate,
     devices=devices,
 )
 add_function_test(

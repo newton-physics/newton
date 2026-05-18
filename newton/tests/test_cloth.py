@@ -290,7 +290,7 @@ class ClothSim:
         self.use_cuda_graph = self.device.is_cuda and use_cuda_graph
         self.builder = newton.ModelBuilder(up_axis="Y")
         self.builder.default_shape_cfg.ke = 1.0e5
-        self.builder.default_shape_cfg.kd = 1.0e3
+        self.builder.default_shape_cfg.kd = 1.0e8 if solver == "vbd" else 1.0e3
 
         self.solver_name = solver
         self.do_rendering = do_rendering
@@ -316,16 +316,16 @@ class ClothSim:
         vertices = [wp.vec3(v) * self.input_scale_factor for v in CLOTH_POINTS]
         faces_flatten = [fv - 1 for fv in CLOTH_FACES]
 
-        kd = 1.0e-7
-
         if self.solver_name != "semi_implicit":
             stretching_stiffness = 1e4
             spring_ke = 1e3
             bending_ke = 10
+            kd = 1.0e-3
         else:
             stretching_stiffness = 1e5
             spring_ke = 1e2
             bending_ke = 0.0
+            kd = 1.0e-7
 
         self.builder.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
@@ -352,8 +352,16 @@ class ClothSim:
 
     def set_up_bending_experiment(self):
         stretching_stiffness = 1e4
-        stretching_damping = 1e-6
-        bending_damping = 1e-3
+        if self.solver_name == "vbd":
+            stretching_damping = 1e-2
+            bending_damping_10 = 1e-2
+            bending_damping_100 = 1e-1
+            bending_damping_1000 = 1e0
+        else:
+            stretching_damping = 1e-6
+            bending_damping_10 = 1e-3
+            bending_damping_100 = 1e-3
+            bending_damping_1000 = 1e-3
         # fmt: off
         vs = [[-6.0, 0.0, -6.0], [-3.6, 0.0, -6.0], [-1.2, 0.0, -6.0], [1.2, 0.0, -6.0], [3.6, 0.0, -6.0], [6.0, 0.0, -6.0],
          [-6.0, 0.0, -3.6], [-3.6, 0.0, -3.6], [-1.2, 0.0, -3.6], [1.2, 0.0, -3.6], [3.6, 0.0, -3.6], [6.0, 0.0, -3.6],
@@ -384,7 +392,7 @@ class ClothSim:
             tri_ka=stretching_stiffness,
             tri_kd=stretching_damping,
             edge_ke=10,
-            edge_kd=bending_damping,
+            edge_kd=bending_damping_10,
             add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
@@ -402,7 +410,7 @@ class ClothSim:
             tri_ka=stretching_stiffness,
             tri_kd=stretching_damping,
             edge_ke=100,
-            edge_kd=bending_damping,
+            edge_kd=bending_damping_100,
             add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
@@ -420,7 +428,7 @@ class ClothSim:
             tri_ka=stretching_stiffness,
             tri_kd=stretching_damping,
             edge_ke=1000,
-            edge_kd=bending_damping,
+            edge_kd=bending_damping_1000,
             add_springs=self.solver_name == "xpbd",
             spring_ke=1.0e3,
             spring_kd=0.0,
@@ -432,7 +440,7 @@ class ClothSim:
 
     def set_collision_experiment(self):
         elasticity_ke = 1e4
-        elasticity_kd = 1e-6
+        elasticity_kd = 1e-2 if self.solver_name == "vbd" else 1e-6
 
         vs1 = [wp.vec3(v) for v in [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]]]
         fs1 = [0, 1, 2, 0, 2, 3]
@@ -476,7 +484,7 @@ class ClothSim:
 
         self.finalize(particle_enable_self_contact=True, ground=False)
         self.model.soft_contact_ke = 1e4
-        self.model.soft_contact_kd = 1e-3
+        self.model.soft_contact_kd = 1e1 if self.solver_name == "vbd" else 1e-3
         self.model.soft_contact_mu = 0.2
         self.model.set_gravity((0.0, -1000.0, 0.0))
         self.num_test_frames = 30
@@ -522,9 +530,13 @@ class ClothSim:
         # fmt: on
 
         stretching_stiffness = 1e5
-        stretching_damping = 1e-5
         edge_ke = 100
-        bending_damping = 1e-4
+        if self.solver_name == "vbd":
+            stretching_damping = 1e0
+            bending_damping = 1e-2
+        else:
+            stretching_damping = 1e-5
+            bending_damping = 1e-4
         vs = [wp.vec3(v) for v in vs]
 
         self.builder.add_cloth_mesh(
@@ -826,7 +838,7 @@ class ClothSim:
         self.model = builder.finalize(device=self.device)
         self.model.set_gravity((0.0, -1000.0 if use_gravity else 0.0, 0.0))
         self.model.soft_contact_ke = 1.0e4
-        self.model.soft_contact_kd = 1.0e-2
+        self.model.soft_contact_kd = 1.0e2 if self.solver_name == "vbd" else 1.0e-2
 
         self.set_points_fixed(self.model, self.fixed_particles)
 
@@ -1002,8 +1014,9 @@ def test_cloth_bending_consistent_angle_computation(test, device, solver):
 
 def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
+    tri_kd = 1e1 if solver == "vbd" else 1e-2
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e3, tri_kd=1e-2, edge_ke=1e3, edge_kd=0.0, fixed_particles=[1], use_gravity=True
+        tri_ke=1e3, tri_kd=tri_kd, edge_ke=1e3, edge_kd=0.0, fixed_particles=[1], use_gravity=True
     )
 
     # Store rest angles for comparison
@@ -1025,8 +1038,10 @@ def test_cloth_bending_with_complex_rest_angles(test, device, solver):
 # Internal forces and damping should not affect free-fall behavior.
 def test_cloth_free_fall_with_internal_forces_and_damping(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
+    tri_kd = 5e0 if solver == "vbd" else 1e-1
+    edge_kd = 1e0 if solver == "vbd" else 1e-1
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=5e1, tri_kd=1e-1, edge_ke=1e1, edge_kd=1e-1, fixed_particles=None, use_gravity=True
+        tri_ke=5e1, tri_kd=tri_kd, edge_ke=1e1, edge_kd=edge_kd, fixed_particles=None, use_gravity=True
     )
 
     # Store initial vertex positions and rest angles for comparison

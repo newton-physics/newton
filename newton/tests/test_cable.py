@@ -324,7 +324,7 @@ def _build_cable_chain(
     num_links: int = 6,
     pin_first: bool = True,
     bend_stiffness: float = 5.0e1,
-    bend_damping: float = 1.0e-2,
+    bend_damping: float = 5.0e-1,
     segment_length: float = 0.2,
 ):
     """Build a simple cable.
@@ -403,7 +403,7 @@ def _build_cable_loop(device, num_links: int = 6):
         quaternions=edge_q,
         radius=0.05,
         bend_stiffness=1.0e1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-1,
         closed=True,
         label="test_cable_loop",
     )
@@ -747,7 +747,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
             quaternions=edge_q,
             radius=0.05,
             bend_stiffness=k,
-            bend_damping=1.0e1,
+            bend_damping=1.0e1 * k,
             label=f"bend_stiffness_{k:.0e}",
         )
 
@@ -1102,7 +1102,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
                 quaternions=edge_q,
                 radius=cable_radius,
                 bend_stiffness=bend_stiffness,
-                bend_damping=1.0e-1,
+                bend_damping=2.0e3,
                 label=f"pile_l{layer}_{lane}",
             )
             cable_bodies.extend(rod_bodies)
@@ -1240,7 +1240,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=2.0e0,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_ball_joint_attach",
     )
@@ -1390,7 +1390,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         quaternions=edge_q_x,
         radius=rod_radius,
         bend_stiffness=2.0e0,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_fixed_joint_attach_x",
     )
@@ -1416,7 +1416,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         quaternions=edge_q_y,
         radius=rod_radius,
         bend_stiffness=2.0e0,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_fixed_joint_attach_y",
     )
@@ -1577,7 +1577,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
         quaternions=edge_q_x,
         radius=rod_radius,
         bend_stiffness=2.0e0,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_revolute_joint_attach_x",
     )
@@ -1606,7 +1606,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
         quaternions=edge_q_y,
         radius=rod_radius,
         bend_stiffness=2.0e0,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_revolute_joint_attach_y",
     )
@@ -1776,14 +1776,14 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_revolute_drive",
     )
 
     target_angle = 0.4  # rad
     drive_ke = 2000.0
-    drive_kd = 0.05
+    drive_kd = 100.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -1900,7 +1900,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_revolute_drive_limit",
     )
@@ -1908,7 +1908,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     target_angle = 1.5  # rad -- beyond limits
     ang_limit = 0.3
     drive_ke = 2000.0
-    drive_kd = 0.05
+    drive_kd = 100.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -1924,7 +1924,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
         limit_lower=-ang_limit,
         limit_upper=ang_limit,
         limit_ke=1.0e5,
-        limit_kd=1.0e-4,
+        limit_kd=1.0e1,
     )
     builder.add_articulation([*rod_joints, j_revolute])
 
@@ -2037,7 +2037,7 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=2.0e0,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_prismatic_joint_attach",
     )
@@ -2176,14 +2176,14 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_prismatic_drive",
     )
 
     target_displacement = 0.1  # m
     drive_ke = 5000.0
-    drive_kd = 0.04
+    drive_kd = 200.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -2300,7 +2300,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_prismatic_drive_limit",
     )
@@ -2308,7 +2308,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     target_displacement = 0.5  # m -- beyond limits
     lin_limit = 0.05
     drive_ke = 5000.0
-    drive_kd = 0.04
+    drive_kd = 200.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -2324,7 +2324,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
         limit_lower=-lin_limit,
         limit_upper=lin_limit,
         limit_ke=1.0e5,
-        limit_kd=1.0e-3,
+        limit_kd=1.0e2,
     )
     builder.add_articulation([*rod_joints, j_prismatic])
 
@@ -2443,7 +2443,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e0,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_joint_attach",
     )
@@ -2594,7 +2594,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e0,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_all_locked",
     )
@@ -2724,7 +2724,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e0,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_locked_x",
     )
@@ -2883,7 +2883,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_d6_drive",
     )
@@ -2891,9 +2891,9 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     target_displacement = 0.1  # m
     target_angle = 0.4  # rad
     lin_drive_ke = 5000.0
-    lin_drive_kd = 0.04
+    lin_drive_kd = 200.0
     ang_drive_ke = 2000.0
-    ang_drive_kd = 0.05
+    ang_drive_kd = 100.0
 
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
@@ -3023,7 +3023,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_d6_drive_limit",
     )
@@ -3048,22 +3048,22 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
             JointDofConfig(
                 axis=(1, 0, 0),
                 target_ke=5000.0,
-                target_kd=0.04,
+                target_kd=200.0,
                 limit_lower=-lin_limit,
                 limit_upper=lin_limit,
                 limit_ke=1.0e5,
-                limit_kd=1.0e-3,
+                limit_kd=1.0e2,
             )
         ],
         angular_axes=[
             JointDofConfig(
                 axis=(0, 1, 0),
                 target_ke=2000.0,
-                target_kd=0.05,
+                target_kd=100.0,
                 limit_lower=-ang_limit,
                 limit_upper=ang_limit,
                 limit_ke=1.0e5,
-                limit_kd=1.0e-4,
+                limit_kd=1.0e1,
             )
         ],
     )
@@ -3163,6 +3163,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
     # Contact/friction: large mu to encourage sticking if kinematic friction is working.
     builder.default_shape_cfg.mu = 1.0e3
     builder.default_shape_cfg.ke = 1.0e4
+    builder.default_shape_cfg.kd = 1.0e6
 
     # Payload: capsule sized to match old box AABB (0.20, 0.10, 0.10) in (X,Y,Z)
     box_hx = 0.10
@@ -3345,7 +3346,7 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
         radius=cable_radius,
         cfg=builder.default_shape_cfg.copy(),
         bend_stiffness=5.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=5.0e0,
         label="ut_cable_graph_y",
         wrap_in_articulation=True,
     )
@@ -3465,7 +3466,7 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
         radius=cable_radius,
         cfg=builder.default_shape_cfg.copy(),
         bend_stiffness=7.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=7.0e0,
         closed=True,
         label="ut_cable_rod_ring_closed",
         wrap_in_articulation=True,
@@ -3732,7 +3733,7 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
             quaternions=edge_q,
             radius=rod_radius,
             bend_stiffness=2.0e0,
-            bend_damping=1.0e-2,
+            bend_damping=2.0e-2,
             wrap_in_articulation=False,
             label=f"test_cable_world_{joint_kind}",
         )
@@ -3906,7 +3907,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_joint_enabled_cable",
     )
@@ -4003,7 +4004,7 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=2.0e0,
-        bend_damping=1.0e-2,
+        bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_kinematic_track",
     )
