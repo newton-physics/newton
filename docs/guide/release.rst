@@ -45,9 +45,9 @@ Deprecation and removal timeline
 
 The user-facing deprecation and removal policy lives in
 :ref:`deprecation-policy`.  Release engineers should ensure that every
-deprecation or removal in a minor release is reflected in
-``CHANGELOG.md`` and the API documentation, and that deprecations emit
-a runtime ``DeprecationWarning`` where applicable.
+deprecation, removal, or other breaking change in a minor release is
+reflected in ``CHANGELOG.md`` and the API documentation, and that
+deprecations emit a runtime ``DeprecationWarning`` where applicable.
 
 
 Pre-release planning

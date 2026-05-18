@@ -6,7 +6,7 @@ Compatibility and Support
 
 This page describes which platforms and configurations Newton supports,
 Newton's versioning scheme, and the policy that governs deprecations
-and removals of public API.
+removals, and other breaking changes.
 
 Tested Configurations
 ---------------------
@@ -123,7 +123,8 @@ targets, and simulation behavior that user code or simulations may rely on.
 * **Deprecated**: A feature scheduled for removal in a future release.
   Remains fully functional during the deprecation window.
 * **Removed**: A feature no longer in the library.  Attempting to use
-  it raises an error.
+  it raises an error.  Removals are breaking changes, but not all
+  breaking changes are removals.
 
 .. _deprecation-policy:
 
@@ -132,8 +133,8 @@ Deprecation Policy
 
 A deprecated feature is maintained for **two full minor release cycles**
 after deprecation (e.g. deprecated in 1.2.0 → removed in 1.4.0).
-Deprecations and removals only happen in minor releases, never in micro
-releases.
+Deprecations, removals, and other breaking changes only happen in minor
+releases, never in micro releases.
 
 Example timeline
 ^^^^^^^^^^^^^^^^
@@ -149,12 +150,13 @@ Assuming a feature is deprecated in release ``1.2.0``:
   notes flag the upcoming removal.
 * ``1.4.0``: feature is removed.  Using it raises an error.
 
-How deprecations are communicated
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+How deprecations and breaking changes are communicated
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 * **CHANGELOG.md**: every deprecation and removal is recorded in the
-  ``Deprecated`` and ``Removed`` sections of ``CHANGELOG.md``, with
-  migration guidance.
+  ``Deprecated`` and ``Removed`` sections of ``CHANGELOG.md``.  Breaking
+  changes without removals are recorded in ``Changed``.  Include
+  migration guidance where applicable.
 * **Runtime warnings**: using a deprecated feature emits a
   ``DeprecationWarning`` pointing at a replacement when one exists.
 * **API documentation**: deprecated symbols are marked with
