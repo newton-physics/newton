@@ -231,6 +231,11 @@ otherwise.
    * - ☐
      - PyPI publish approved and verified: ``pip install newton==X.Y.Z``.
    * - ☐
+     - Review the draft GitHub Release notes against ``CHANGELOG.md`` before
+       publishing.  For minor releases, explicitly mention deprecations
+       scheduled for removal in the next minor release (see
+       :ref:`deprecation-policy`) and include migration guidance.
+   * - ☐
      - GitHub Release un-drafted and published.
    * - ☐
      - Docs live at ``/X.Y.Z/`` and ``/stable/``: verify links and version
