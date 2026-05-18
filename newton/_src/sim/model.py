@@ -315,10 +315,6 @@ class Model:
         # SDF storage (compact table + per-shape index indirection)
         self.shape_sdf_index: wp.array[wp.int32] | None = None
         """Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF."""
-        self.sdf_block_coords: wp.array[wp.vec3us] | None = None
-        """Compact flat array of active SDF block coordinates."""
-        self.sdf_index2blocks: wp.array[wp.vec2i] | None = None
-        """Per-SDF [start, end) indices into sdf_block_coords, shape [num_sdfs, 2]."""
 
         # Texture SDF storage
         self.texture_sdf_data = None

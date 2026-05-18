@@ -19,7 +19,6 @@ from newton import GeoType, Mesh
 from newton._src.geometry.sdf_texture import (
     QuantizationMode,
     TextureSDFData,
-    block_coords_from_subgrid_required,
     compute_isomesh_from_texture_sdf,
     create_empty_texture_sdf_data,
     create_texture_sdf_from_mesh,
@@ -290,7 +289,7 @@ def _build_texture_and_nanovdb(mesh, resolution=64, margin=0.05, narrow_band_ran
     )
 
     # Build texture SDF
-    tex_sdf, coarse_tex, subgrid_tex, _block_coords = create_texture_sdf_from_mesh(
+    tex_sdf, coarse_tex, subgrid_tex = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=margin,
         narrow_band_range=narrow_band_range,
@@ -517,14 +516,14 @@ def test_texture_sdf_array_indexing(test, device):
         support_winding_number=True,
     )
 
-    tex_sdf1, _coarse1, _sub1, _ = create_texture_sdf_from_mesh(
+    tex_sdf1, _coarse1, _sub1 = create_texture_sdf_from_mesh(
         wp_mesh1,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
         max_resolution=32,
         device=device,
     )
-    tex_sdf2, _coarse2, _sub2, _ = create_texture_sdf_from_mesh(
+    tex_sdf2, _coarse2, _sub2 = create_texture_sdf_from_mesh(
         wp_mesh2,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -583,7 +582,7 @@ def test_texture_sdf_multi_resolution(test, device):
             indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
             support_winding_number=True,
         )
-        tex_sdf, _coarse_tex, _subgrid_tex, _ = create_texture_sdf_from_mesh(
+        tex_sdf, _coarse_tex, _subgrid_tex = create_texture_sdf_from_mesh(
             wp_mesh,
             margin=0.05,
             narrow_band_range=(-0.1, 0.1),
@@ -652,7 +651,7 @@ def test_texture_sdf_quantization_uint16(test, device):
         support_winding_number=True,
     )
 
-    tex_sdf_f32, _, _, _ = create_texture_sdf_from_mesh(
+    tex_sdf_f32, _, _ = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -660,7 +659,7 @@ def test_texture_sdf_quantization_uint16(test, device):
         quantization_mode=QuantizationMode.FLOAT32,
         device=device,
     )
-    tex_sdf_u16, _, _, _ = create_texture_sdf_from_mesh(
+    tex_sdf_u16, _, _ = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -698,7 +697,7 @@ def test_texture_sdf_quantization_uint8(test, device):
         support_winding_number=True,
     )
 
-    tex_sdf_f32, _, _, _ = create_texture_sdf_from_mesh(
+    tex_sdf_f32, _, _ = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -706,7 +705,7 @@ def test_texture_sdf_quantization_uint8(test, device):
         quantization_mode=QuantizationMode.FLOAT32,
         device=device,
     )
-    tex_sdf_u8, _, _, _ = create_texture_sdf_from_mesh(
+    tex_sdf_u8, _, _ = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -745,7 +744,7 @@ def test_texture_sdf_isomesh_extraction(test, device):
         support_winding_number=True,
     )
 
-    tex_sdf, _coarse_tex, _subgrid_tex, _block_coords = create_texture_sdf_from_mesh(
+    tex_sdf, _coarse_tex, _subgrid_tex = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -788,7 +787,7 @@ def test_texture_sdf_isomesh_with_isovalue(test, device):
         support_winding_number=True,
     )
 
-    tex_sdf, _coarse_tex, _subgrid_tex, _block_coords = create_texture_sdf_from_mesh(
+    tex_sdf, _coarse_tex, _subgrid_tex = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -827,30 +826,6 @@ def test_texture_sdf_isomesh_with_isovalue(test, device):
     )
 
 
-def test_block_coords_from_subgrid_required(test, device):
-    """Verify block_coords_from_subgrid_required produces correct coordinates."""
-    coarse_dims = (3, 2, 2)
-    subgrid_size = 4
-    w, h, d = coarse_dims
-    total = w * h * d
-
-    subgrid_required = np.zeros(total, dtype=np.int32)
-    subgrid_required[0] = 1  # (0,0,0)
-    subgrid_required[5] = 1  # bx=2, by=1, bz=0
-
-    coords = block_coords_from_subgrid_required(subgrid_required, coarse_dims, subgrid_size)
-    test.assertEqual(len(coords), 2)
-    test.assertEqual(coords[0], wp.vec3us(0 * subgrid_size, 0 * subgrid_size, 0 * subgrid_size))
-    test.assertEqual(coords[1], wp.vec3us(2 * subgrid_size, 1 * subgrid_size, 0 * subgrid_size))
-
-    # With subgrid_occupied, all occupied subgrids are included
-    subgrid_occupied = np.ones(total, dtype=np.int32)
-    coords_all = block_coords_from_subgrid_required(
-        subgrid_required, coarse_dims, subgrid_size, subgrid_occupied=subgrid_occupied
-    )
-    test.assertEqual(len(coords_all), total)
-
-
 def test_texture_sdf_scale_baked(test, device):
     """Verify scale_baked flag propagates through construction."""
     mesh = _create_box_mesh()
@@ -860,7 +835,7 @@ def test_texture_sdf_scale_baked(test, device):
         support_winding_number=True,
     )
 
-    tex_sdf_unbaked, _, _, _ = create_texture_sdf_from_mesh(
+    tex_sdf_unbaked, _, _ = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -868,7 +843,7 @@ def test_texture_sdf_scale_baked(test, device):
         scale_baked=False,
         device=device,
     )
-    tex_sdf_baked, _, _, _ = create_texture_sdf_from_mesh(
+    tex_sdf_baked, _, _ = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -956,7 +931,7 @@ def _build_texture_sdf_with_mode(
         indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
         support_winding_number=True,
     )
-    tex_sdf, coarse_tex, subgrid_tex, _block_coords = create_texture_sdf_from_mesh(
+    tex_sdf, coarse_tex, subgrid_tex = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=margin,
         narrow_band_range=narrow_band_range,
@@ -1133,7 +1108,7 @@ def test_texture_sdf_vs_ground_truth_distance(test, device):
         indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
         support_winding_number=True,
     )
-    tex_sdf, _ct, _st, _bc = create_texture_sdf_from_mesh(
+    tex_sdf, _ct, _st = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -1179,7 +1154,7 @@ def test_texture_sdf_vs_ground_truth_gradient(test, device):
         indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
         support_winding_number=True,
     )
-    tex_sdf, _ct, _st, _bc = create_texture_sdf_from_mesh(
+    tex_sdf, _ct, _st = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -1260,27 +1235,25 @@ def test_texture_sdf_target_voxel_size_scales(test, device):
 
     counts = []
     for vox in (0.2, 0.1, 0.05):
-        _tex_sdf, _ct, _st, block_coords = create_texture_sdf_from_mesh(
+        _tex_sdf, ct, _st = create_texture_sdf_from_mesh(
             wp_mesh,
             margin=0.05,
             narrow_band_range=(-0.1, 0.1),
             target_voxel_size=vox,
             device=device,
         )
-        counts.append(len(block_coords))
+        counts.append(ct.width * ct.height * ct.depth)
 
-    # Block count must strictly increase as voxels get smaller — the old
-    # bug produced identical counts across all target_voxel_size values.
     test.assertLess(
         counts[0],
         counts[1],
-        f"target_voxel_size=0.2 produced {counts[0]} blocks but 0.1 produced {counts[1]}; "
+        f"target_voxel_size=0.2 produced {counts[0]} coarse texels but 0.1 produced {counts[1]}; "
         f"target_voxel_size was likely ignored (see #2407).",
     )
     test.assertLess(
         counts[1],
         counts[2],
-        f"target_voxel_size=0.1 produced {counts[1]} blocks but 0.05 produced {counts[2]}; "
+        f"target_voxel_size=0.1 produced {counts[1]} coarse texels but 0.05 produced {counts[2]}; "
         f"target_voxel_size was likely ignored (see #2407).",
     )
 
@@ -1301,7 +1274,7 @@ def test_texture_sdf_target_voxel_size_takes_precedence(test, device):
     )
 
     # Low max_resolution alone produces a coarse SDF.
-    _s1, _c1, _sub1, blocks_low_res = create_texture_sdf_from_mesh(
+    _s1, c_low_res, _sub1 = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -1310,9 +1283,9 @@ def test_texture_sdf_target_voxel_size_takes_precedence(test, device):
     )
 
     # A small target_voxel_size paired with the same low max_resolution
-    # must produce a higher-resolution SDF (more blocks), because
-    # target_voxel_size takes precedence.
-    _s2, _c2, _sub2, blocks_override = create_texture_sdf_from_mesh(
+    # must produce a higher-resolution SDF, because target_voxel_size
+    # takes precedence.
+    _s2, c_override, _sub2 = create_texture_sdf_from_mesh(
         wp_mesh,
         margin=0.05,
         narrow_band_range=(-0.1, 0.1),
@@ -1321,23 +1294,22 @@ def test_texture_sdf_target_voxel_size_takes_precedence(test, device):
         device=device,
     )
 
+    n_low = c_low_res.width * c_low_res.height * c_low_res.depth
+    n_over = c_override.width * c_override.height * c_override.depth
     test.assertGreater(
-        len(blocks_override),
-        len(blocks_low_res),
+        n_over,
+        n_low,
         f"target_voxel_size=0.05 with max_resolution=8 produced "
-        f"{len(blocks_override)} blocks, but max_resolution=8 alone produced "
-        f"{len(blocks_low_res)}; target_voxel_size should take precedence (see #2407).",
+        f"{n_over} coarse texels, but max_resolution=8 alone produced "
+        f"{n_low}; target_voxel_size should take precedence (see #2407).",
     )
 
 
 def test_mesh_build_sdf_target_voxel_size_propagates_to_texture(test, device):
     """Regression test for #2407: Mesh.build_sdf(target_voxel_size=...) must
     drive the texture SDF resolution, not just the sparse SDF.
-
-    Validates the end-to-end user-facing path: the reporter's observation was
-    that ``SDF.texture_block_coords`` did not vary with ``target_voxel_size``.
     """
-    counts = []
+    sizes = []
     for vox in (0.2, 0.1, 0.05):
         mesh = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
         sdf = mesh.build_sdf(
@@ -1346,20 +1318,18 @@ def test_mesh_build_sdf_target_voxel_size_propagates_to_texture(test, device):
             narrow_band_range=(-0.1, 0.1),
             margin=0.05,
         )
-        test.assertIsNotNone(sdf.texture_block_coords)
-        counts.append(len(sdf.texture_block_coords))
+        test.assertIsNotNone(sdf._coarse_texture)
+        sizes.append(sdf._coarse_texture.width * sdf._coarse_texture.height * sdf._coarse_texture.depth)
 
     test.assertLess(
-        counts[0],
-        counts[1],
-        f"Mesh.build_sdf(target_voxel_size=0.2) -> {counts[0]} texture blocks, "
-        f"target_voxel_size=0.1 -> {counts[1]}; expected strict increase (see #2407).",
+        sizes[0],
+        sizes[1],
+        f"target_voxel_size=0.2 -> {sizes[0]} coarse texels, 0.1 -> {sizes[1]}; expected strict increase.",
     )
     test.assertLess(
-        counts[1],
-        counts[2],
-        f"Mesh.build_sdf(target_voxel_size=0.1) -> {counts[1]} texture blocks, "
-        f"target_voxel_size=0.05 -> {counts[2]}; expected strict increase (see #2407).",
+        sizes[1],
+        sizes[2],
+        f"target_voxel_size=0.1 -> {sizes[1]} coarse texels, 0.05 -> {sizes[2]}; expected strict increase.",
     )
 
 
@@ -1418,12 +1388,6 @@ add_function_test(
 )
 add_function_test(
     TestTextureSDF, "test_texture_sdf_isomesh_with_isovalue", test_texture_sdf_isomesh_with_isovalue, devices=devices
-)
-add_function_test(
-    TestTextureSDF,
-    "test_block_coords_from_subgrid_required",
-    test_block_coords_from_subgrid_required,
-    devices=devices,
 )
 add_function_test(TestTextureSDF, "test_texture_sdf_scale_baked", test_texture_sdf_scale_baked, devices=devices)
 add_function_test(TestTextureSDF, "test_texture_sdf_from_volume", test_texture_sdf_from_volume, devices=devices)

@@ -218,7 +218,6 @@ class TestSDFDiskCachePure(unittest.TestCase):
             "subgrid_data": np.zeros((1, 1, 1), dtype=np.float32),
             "subgrid_start_slots": np.zeros((2, 2, 2), dtype=np.uint32),
             "subgrid_required": np.zeros(8, dtype=np.int32),
-            "subgrid_occupied": np.zeros(8, dtype=np.int32),
             "coarse_dims": (2, 2, 2),
             "subgrid_tex_size": 1,
             "num_subgrids": 0,
@@ -267,7 +266,6 @@ class TestSDFDiskCachePure(unittest.TestCase):
                 "subgrid_data",
                 "subgrid_start_slots",
                 "subgrid_required",
-                "subgrid_occupied",
             ):
                 self.assertIn(required, present)
             self.assertEqual(int(npz["__cache_format_version__"].item()), _sdf_cache.CACHE_FORMAT_VERSION)
@@ -418,9 +416,6 @@ def test_disk_cache_hit_matches_live(test, device) -> None:
             atol=1e-5,
             err_msg="cached SDF samples must match the freshly cooked SDF",
         )
-
-        test.assertIsNotNone(sdf_cached.texture_block_coords)
-        test.assertGreater(len(sdf_cached.texture_block_coords), 0)
     finally:
         _remove_cache_dir(cache_path)
 

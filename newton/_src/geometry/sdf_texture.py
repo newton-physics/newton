@@ -1077,12 +1077,6 @@ def build_sparse_sdf_from_mesh(
         device=device,
     )
 
-    # GPU-side snapshot of occupancy before linearity kernel zeroes entries.
-    # block_coords_from_subgrid_required() uses this pre-linearity mask so
-    # that flat subgrids demoted to linear interpolation still contribute
-    # to the broadphase contact surface.
-    subgrid_occupied_gpu = wp.clone(subgrid_required)
-
     if linearization_error_threshold is None:
         extents = max_corner - min_corner
         linearization_error_threshold = float(1e-6 * np.linalg.norm(extents))
@@ -1267,9 +1261,6 @@ def build_sparse_sdf_from_mesh(
         subgrid_texture_data = subgrid_texture_gpu.numpy().reshape((tex_size, tex_size, tex_size))
         subgrid_start_slots = subgrid_start_slots_gpu.numpy()
 
-    # --- Single batch of host readbacks (all GPU work is complete) ---
-    subgrid_occupied = subgrid_occupied_gpu.numpy()
-
     # Tag subgrids demoted by the linearity pass with the sentinel SLOT_LINEAR
     # so samplers fall back to coarse-grid interpolation and skip the (now
     # absent) packed subgrid texture slot. Vectorized index math mirrors the
@@ -1304,7 +1295,6 @@ def build_sparse_sdf_from_mesh(
         "subgrids_min_sdf_value": final_sdf_min,
         "subgrids_sdf_value_range": final_sdf_range,
         "subgrid_required": required_np,
-        "subgrid_occupied": subgrid_occupied,
     }
 
 
@@ -1421,12 +1411,10 @@ def create_texture_sdf_from_mesh(
             return signature.
 
     Returns:
-        Tuple of ``(texture_sdf, coarse_texture, subgrid_texture, block_coords)``.
+        Tuple of ``(texture_sdf, coarse_texture, subgrid_texture)``.
         When ``return_sparse_data`` is ``True``, an additional trailing
         ``sparse_data`` element is included.
         Caller must keep texture references alive to prevent GC.
-        ``block_coords`` is a list of ``wp.vec3us`` block coordinates for
-        hydroelastic broadphase.
     """
     if device is None:
         device = str(mesh.device)
@@ -1442,7 +1430,7 @@ def create_texture_sdf_from_mesh(
     ext = max_ext - min_ext
     max_ext_scalar = np.max(ext)
     if max_ext_scalar < 1e-10:
-        empty = (create_empty_texture_sdf_data(), None, None, [])
+        empty = (create_empty_texture_sdf_data(), None, None)
         return (*empty, None) if return_sparse_data else empty
 
     # Resolve max_resolution, honoring target_voxel_size when provided.
@@ -1490,19 +1478,9 @@ def create_texture_sdf_from_mesh(
     sdf_params, coarse_tex, subgrid_tex = create_sparse_sdf_textures(sparse_data, device)
     sdf_params.scale_baked = scale_baked
 
-    # Dilate the non-linear subgrid set by one ring of occupied neighbors so
-    # the hydroelastic broadphase explores flat box faces (which are linear
-    # but adjacent to non-linear edges/corners).
-    block_coords = block_coords_from_subgrid_required(
-        sparse_data["subgrid_required"],
-        sparse_data["coarse_dims"],
-        sparse_data["subgrid_size"],
-        subgrid_occupied=sparse_data["subgrid_occupied"],
-    )
-
     if return_sparse_data:
-        return sdf_params, coarse_tex, subgrid_tex, block_coords, sparse_data
-    return sdf_params, coarse_tex, subgrid_tex, block_coords
+        return sdf_params, coarse_tex, subgrid_tex, sparse_data
+    return sdf_params, coarse_tex, subgrid_tex
 
 
 def create_texture_sdf_from_volume(
@@ -1622,9 +1600,6 @@ def create_texture_sdf_from_volume(
             subgrid_required[idx] = 1 if val < threshold_outer else 0
         else:
             subgrid_required[idx] = 1 if val > threshold_inner else 0
-
-    # Snapshot occupancy before linearization (see GPU path comment).
-    subgrid_occupied = subgrid_required.copy()
 
     # Demote occupied subgrids whose SDF is well-approximated by the coarse
     # grid (linear field).
@@ -1851,54 +1826,12 @@ def create_texture_sdf_from_volume(
         "subgrids_min_sdf_value": 0.0,
         "subgrids_sdf_value_range": 1.0,
         "subgrid_required": subgrid_required,
-        "subgrid_occupied": subgrid_occupied,
     }
 
     sdf_params, coarse_tex, subgrid_tex = create_sparse_sdf_textures(sparse_data, device)
     sdf_params.scale_baked = scale_baked
 
     return sdf_params, coarse_tex, subgrid_tex
-
-
-def block_coords_from_subgrid_required(
-    subgrid_required: np.ndarray,
-    coarse_dims: tuple[int, int, int],
-    subgrid_size: int,
-    subgrid_occupied: np.ndarray | None = None,
-) -> list:
-    """Derive SDF block coordinates from texture subgrid occupancy.
-
-    This converts the texture subgrid occupancy array into voxel-space block
-    coordinates compatible with the hydroelastic broadphase pipeline.
-
-    When *subgrid_occupied* is supplied (the pre-linearization narrow-band
-    mask), all occupied subgrids are included — matching the behavior of
-    NanoVDB active tiles.  This ensures full contact surface coverage for
-    flat faces that were demoted to linear interpolation.
-
-    Args:
-        subgrid_required: 1D array of occupancy flags for non-linear subgrids.
-        coarse_dims: tuple (w, h, d) number of subgrids per axis.
-        subgrid_size: cells per subgrid.
-        subgrid_occupied: optional 1D array of full narrow-band occupancy
-            (before linearization).  When provided, all occupied subgrids
-            are included in the output.
-
-    Returns:
-        List of ``wp.vec3us`` block coordinates for selected subgrids.
-    """
-    w, h, _d = coarse_dims
-    include = subgrid_occupied if subgrid_occupied is not None else subgrid_required
-
-    coords = []
-    for idx in range(len(include)):
-        if include[idx]:
-            bz = idx // (w * h)
-            rem = idx - bz * w * h
-            by = rem // w
-            bx = rem - by * w
-            coords.append(wp.vec3us(bx * subgrid_size, by * subgrid_size, bz * subgrid_size))
-    return coords
 
 
 def create_empty_texture_sdf_data() -> TextureSDFData:

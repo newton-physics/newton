@@ -202,8 +202,6 @@ class HydroelasticSDF:
         num_shape_pairs: Maximum number of hydroelastic shape pairs to process.
         total_num_tiles: Total number of SDF blocks across all hydroelastic shapes.
         max_num_blocks_per_shape: Maximum block count for any single shape.
-        shape_sdf_block_coords: Block coordinates for each shape's SDF representation.
-        shape_sdf_shape2blocks: Mapping from shape index to (start, end) block range.
         shape_material_kh: Hydroelastic stiffness coefficient for each shape.
         n_shapes: Total number of shapes in the simulation.
         config: Configuration options controlling buffer sizes, contact reduction,
@@ -319,8 +317,6 @@ class HydroelasticSDF:
         num_shape_pairs: int,
         total_num_tiles: int,
         max_num_blocks_per_shape: int,
-        shape_sdf_block_coords: wp.array[wp.vec3us],
-        shape_sdf_shape2blocks: wp.array[wp.vec2i],
         shape_material_kh: wp.array[wp.float32],
         n_shapes: int,
         config: HydroelasticSDF.Config | None = None,
@@ -335,9 +331,6 @@ class HydroelasticSDF:
             device = wp.get_device()
         self.device = device
 
-        # keep local references for model arrays
-        self.shape_sdf_block_coords = shape_sdf_block_coords
-        self.shape_sdf_shape2blocks = shape_sdf_shape2blocks
         self.shape_material_kh = shape_material_kh
 
         self.n_shapes = n_shapes
@@ -390,7 +383,6 @@ class HydroelasticSDF:
             # Broadphase buffers
             self.block_start_prefix = wp.zeros((self.max_num_shape_pairs,), dtype=wp.int32)
             self.num_blocks_per_pair = wp.zeros((self.max_num_shape_pairs,), dtype=wp.int32)
-            self.block_broad_idx = wp.empty((self.max_num_blocks_broad,), dtype=wp.int32)
             self.block_broad_collide_coords = self.iso_buffer_coords[0]
             self.block_broad_collide_shape_pair = self.iso_buffer_shape_pairs[0]
 
@@ -492,9 +484,9 @@ class HydroelasticSDF:
             return None
 
         shape_sdf_index = model.shape_sdf_index.numpy()
-        sdf_index2blocks = model.sdf_index2blocks.numpy()
         texture_sdf_data = model.texture_sdf_data.numpy()
         shape_scale = model.shape_scale.numpy()
+        coarse_textures = model.texture_sdf_coarse_textures
 
         # Get indices of shapes that can collide and are hydroelastic
         hydroelastic_indices = [
@@ -515,17 +507,16 @@ class HydroelasticSDF:
                         "Build a scale-baked SDF for hydroelastic use."
                     )
 
-        # Count total tiles and max blocks per shape for hydroelastic shapes
+        # Count total subgrids and max-per-shape for hydroelastic shapes.
+        # Every shape contributes (cw-1) * (ch-1) * (cd-1) blocks to the
+        # broadphase — the broadphase visits every subgrid because the
+        # contact iso-surface can sit anywhere inside the SDF box.
         total_num_tiles = 0
         max_num_blocks_per_shape = 0
-        shape_sdf_shape2blocks = np.zeros((model.shape_count, 2), dtype=np.int32)
-        for shape_idx in range(model.shape_count):
-            sdf_idx = shape_sdf_index[shape_idx]
-            if sdf_idx >= 0:
-                shape_sdf_shape2blocks[shape_idx] = sdf_index2blocks[sdf_idx]
         for idx in hydroelastic_indices:
-            start_block, end_block = shape_sdf_shape2blocks[idx]
-            num_blocks = end_block - start_block
+            sdf_idx = int(shape_sdf_index[idx])
+            tex = coarse_textures[sdf_idx]
+            num_blocks = (tex.width - 1) * (tex.height - 1) * (tex.depth - 1)
             total_num_tiles += num_blocks
             max_num_blocks_per_shape = max(max_num_blocks_per_shape, num_blocks)
 
@@ -533,8 +524,6 @@ class HydroelasticSDF:
             num_shape_pairs=num_hydroelastic_pairs,
             total_num_tiles=total_num_tiles,
             max_num_blocks_per_shape=max_num_blocks_per_shape,
-            shape_sdf_block_coords=model.sdf_block_coords,
-            shape_sdf_shape2blocks=wp.array(shape_sdf_shape2blocks, dtype=wp.vec2i, device=model.device),
             shape_material_kh=model.shape_material_kh,
             n_shapes=model.shape_count,
             config=config,
@@ -682,7 +671,6 @@ class HydroelasticSDF:
                 shape_sdf_data,
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
-                self.shape_sdf_shape2blocks,
             ],
             outputs=[
                 self.num_blocks_per_pair,
@@ -708,28 +696,10 @@ class HydroelasticSDF:
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
                 shape_sdf_data,
-                self.shape_sdf_shape2blocks,
                 self.max_num_blocks_broad,
             ],
             outputs=[
                 self.block_broad_collide_shape_pair,
-                self.block_broad_idx,
-            ],
-            device=self.device,
-            record_tape=False,
-        )
-
-        wp.launch(
-            kernel=broadphase_get_block_coords,
-            dim=[self.grid_size],
-            inputs=[
-                self.grid_size,
-                self.block_broad_collide_count,
-                self.block_broad_idx,
-                self.shape_sdf_block_coords,
-                self.max_num_blocks_broad,
-            ],
-            outputs=[
                 self.block_broad_collide_coords,
             ],
             device=self.device,
@@ -917,13 +887,28 @@ class HydroelasticSDF:
         )
 
 
+@wp.func
+def shape_subgrid_dims(sdf: TextureSDFData) -> wp.vec3i:
+    """Number of subgrids per axis for an SDF shape.
+
+    The coarse texture stores SDF samples at every subgrid corner, so each
+    axis has ``num_subgrids + 1`` corner texels.  The hydroelastic broadphase
+    visits every subgrid (no narrow-band filter), so this is also the number
+    of broadphase blocks per shape.
+    """
+    return wp.vec3i(
+        sdf.coarse_texture.width - 1,
+        sdf.coarse_texture.height - 1,
+        sdf.coarse_texture.depth - 1,
+    )
+
+
 @wp.kernel(enable_backward=False)
 def broadphase_collision_pairs_count(
     shape_transform: wp.array[wp.transform],
     shape_sdf_data: wp.array[TextureSDFData],
     shape_pairs_sdf_sdf: wp.array[wp.vec2i],
     shape_pairs_sdf_sdf_count: wp.array[wp.int32],
-    shape2blocks: wp.array[wp.vec2i],
     # outputs
     thread_num_blocks: wp.array[wp.int32],
 ):
@@ -942,8 +927,6 @@ def broadphase_collision_pairs_count(
     center_offset_a = 0.5 * (sdf_a.sdf_box_lower + sdf_a.sdf_box_upper)
     center_offset_b = 0.5 * (sdf_b.sdf_box_lower + sdf_b.sdf_box_upper)
 
-    does_collide = wp.bool(False)
-
     world_transform_a = shape_transform[shape_a]
     world_transform_b = shape_transform[shape_b]
 
@@ -953,15 +936,12 @@ def broadphase_collision_pairs_count(
 
     does_collide = sat_box_intersection(centered_transform_a, half_extents_a, centered_transform_b, half_extents_b)
 
-    # Sort shapes so shape with smaller voxel size is shape_b (must match scatter kernel)
-    voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
-    voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
-    if voxel_radius_b > voxel_radius_a:
-        shape_b, shape_a = shape_a, shape_b
+    # Pick whichever SDF has the smaller voxel as shape_b (must match scatter kernel)
+    if sdf_b.voxel_radius > sdf_a.voxel_radius:
+        sdf_b = sdf_a
 
-    shape_b_idx = shape2blocks[shape_b]
-    block_start, block_end = shape_b_idx[0], shape_b_idx[1]
-    num_blocks = block_end - block_start
+    dims_b = shape_subgrid_dims(sdf_b)
+    num_blocks = dims_b[0] * dims_b[1] * dims_b[2]
 
     if does_collide:
         thread_num_blocks[tid] = num_blocks
@@ -977,11 +957,10 @@ def broadphase_collision_pairs_scatter(
     shape_pairs_sdf_sdf: wp.array[wp.vec2i],
     shape_pairs_sdf_sdf_count: wp.array[wp.int32],
     shape_sdf_data: wp.array[TextureSDFData],
-    shape2blocks: wp.array[wp.vec2i],
     max_num_blocks_broad: int,
     # outputs
     block_broad_collide_shape_pair: wp.array[wp.vec2i],
-    block_broad_idx: wp.array[wp.int32],
+    block_broad_collide_coords: wp.array[wp.vec3us],
 ):
     offset = wp.tid()
     total_blocks = wp.min(block_broad_collide_count[0], max_num_blocks_broad)
@@ -1006,34 +985,31 @@ def broadphase_collision_pairs_scatter(
         shape_b = pair[1]
 
         # Sort shapes so the one with smaller voxel size is shape_b
-        voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
-        voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
-        if voxel_radius_b > voxel_radius_a:
-            shape_b, shape_a = shape_a, shape_b
+        sdf_a = shape_sdf_data[shape_a]
+        sdf_b = shape_sdf_data[shape_b]
+        if sdf_b.voxel_radius > sdf_a.voxel_radius:
+            shape_a, shape_b = shape_b, shape_a
+            sdf_a, sdf_b = sdf_b, sdf_a
 
-        shape_b_idx = shape2blocks[shape_b]
-        shape_b_block_start = shape_b_idx[0]
         block_in_pair = block_tid - block_start_prefix[pair_idx]
 
+        # Decode the (bx, by, bz) subgrid index from the linear block_in_pair.
+        # Layout matches the host-side row-major layout: bz outer, by middle,
+        # bx inner — same as subgrid_start_slots indexing.
+        dims_b = shape_subgrid_dims(sdf_b)
+        plane = dims_b[0] * dims_b[1]
+        bz = block_in_pair // plane
+        rem = block_in_pair - bz * plane
+        by = rem // dims_b[0]
+        bx = rem - by * dims_b[0]
+        sgs = wp.int32(sdf_b.subgrid_size)
+
         block_broad_collide_shape_pair[block_tid] = wp.vec2i(shape_a, shape_b)
-        block_broad_idx[block_tid] = shape_b_block_start + block_in_pair
-
-
-@wp.kernel(enable_backward=False)
-def broadphase_get_block_coords(
-    grid_size: int,
-    block_count: wp.array[wp.int32],
-    block_broad_idx: wp.array[wp.int32],
-    block_coords: wp.array[wp.vec3us],
-    max_num_blocks_broad: int,
-    # outputs
-    block_broad_collide_coords: wp.array[wp.vec3us],
-):
-    offset = wp.tid()
-    num_blocks = wp.min(block_count[0], max_num_blocks_broad)
-    for tid in range(offset, num_blocks, grid_size):
-        block_idx = block_broad_idx[tid]
-        block_broad_collide_coords[tid] = block_coords[block_idx]
+        block_broad_collide_coords[block_tid] = wp.vec3us(
+            wp.uint16(bx * sgs),
+            wp.uint16(by * sgs),
+            wp.uint16(bz * sgs),
+        )
 
 
 @wp.func

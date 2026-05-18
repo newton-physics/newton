@@ -184,7 +184,6 @@ class SDF:
         sparse_volume: wp.Volume | None = None,
         coarse_volume: wp.Volume | None = None,
         block_coords: np.ndarray | Sequence[wp.vec3us] | None = None,
-        texture_block_coords: Sequence[wp.vec3us] | None = None,
         texture_data: "TextureSDFData | None" = None,
         shape_margin: float = 0.0,
         _coarse_texture: wp.Texture3D | None = None,
@@ -199,7 +198,6 @@ class SDF:
         self.sparse_volume = sparse_volume
         self.coarse_volume = coarse_volume
         self.block_coords = block_coords
-        self.texture_block_coords = texture_block_coords
         self.texture_data = texture_data
         self.shape_margin = shape_margin
         # Keep texture references alive to prevent GC
@@ -446,7 +444,6 @@ class SDF:
 
         from .sdf_texture import (  # noqa: PLC0415
             QuantizationMode,
-            block_coords_from_subgrid_required,
             create_sparse_sdf_textures,
             create_texture_sdf_from_mesh,
         )
@@ -490,12 +487,6 @@ class SDF:
                 sdf_device = str(wp.get_device())
                 sdf_params, coarse_texture, subgrid_texture = create_sparse_sdf_textures(loaded_sparse_data, sdf_device)
                 sdf_params.scale_baked = bake_scale
-                tex_block_coords = block_coords_from_subgrid_required(
-                    loaded_sparse_data["subgrid_required"],
-                    loaded_sparse_data["coarse_dims"],
-                    loaded_sparse_data["subgrid_size"],
-                    subgrid_occupied=loaded_sparse_data["subgrid_occupied"],
-                )
                 texture_data = sdf_params
             else:
                 verts = mesh.vertices * np.array(effective_scale)[None, :]
@@ -525,18 +516,17 @@ class SDF:
                     return_sparse_data=want_sparse,
                 )
                 if want_sparse:
-                    texture_data, coarse_texture, subgrid_texture, tex_block_coords, sparse_data = result
+                    texture_data, coarse_texture, subgrid_texture, sparse_data = result
                     if sparse_data is not None:
                         _sdf_cache.write(cache_dir, cache_hash, sparse_data)
                 else:
-                    texture_data, coarse_texture, subgrid_texture, tex_block_coords = result
+                    texture_data, coarse_texture, subgrid_texture = result
 
         sdf = SDF(
             data=create_empty_sdf_data(),
             sparse_volume=None,
             coarse_volume=None,
             block_coords=[],
-            texture_block_coords=tex_block_coords,
             texture_data=texture_data,
             shape_margin=shape_margin,
             _coarse_texture=coarse_texture,
