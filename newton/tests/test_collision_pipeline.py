@@ -100,7 +100,7 @@ class CollisionSetup:
 
         self.graph = None
         if wp.get_device(device).is_cuda:
-            with wp.ScopedCapture() as capture:
+            with wp.ScopedCapture(device=device) as capture:
                 self.simulate()
             self.graph = capture.graph
 
@@ -140,8 +140,8 @@ class CollisionSetup:
             raise NotImplementedError(f"Shape type {shape_type} not implemented")
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
+        if wp.get_device(self._device).is_cuda:
+            with wp.ScopedCapture(device=self._device) as capture:
                 self.simulate()
             self.graph = capture.graph
         else:
@@ -206,6 +206,8 @@ class CollisionSetup:
             )
 
 
+# The exhaustive shape/broad-phase matrix is one of the heaviest GPU suites.
+# Keep it on one CUDA device; targeted deterministic tests below use all selected CUDA devices.
 devices = get_cuda_test_devices(mode="basic")
 
 
@@ -1330,7 +1332,7 @@ def test_deterministic_pipeline_500_steps(test, device):
         # ``example_basic_pendulum``).
         _frame()
 
-        with wp.ScopedCapture() as capture:
+        with wp.ScopedCapture(device=device) as capture:
             _frame()
         graph = capture.graph
 
@@ -1459,7 +1461,7 @@ def test_deterministic_pipeline_sticky_500_steps(test, device):
         # the same warm-up state).
         _frame()
 
-        with wp.ScopedCapture() as capture:
+        with wp.ScopedCapture(device=device) as capture:
             _frame()
         graph = capture.graph
 

@@ -237,7 +237,7 @@ PYRAMID_PARTICLES = [
 ]
 
 
-def _build_model_with_soft_mesh(vertices: list[tuple[float, float, float]], tets: np.ndarray):
+def _build_model_with_soft_mesh(vertices: list[tuple[float, float, float]], tets: np.ndarray, device):
     """Use add_soft_mesh (full builder path) to create a soft-body model."""
     builder = ModelBuilder()
     builder.add_soft_mesh(
@@ -253,7 +253,7 @@ def _build_model_with_soft_mesh(vertices: list[tuple[float, float, float]], tets
         k_damp=0.0,
     )
     builder.color()
-    return builder.finalize(device="cpu")
+    return builder.finalize(device=device)
 
 
 def _expected_tet_adjacency(particle_count: int, tet_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -329,7 +329,7 @@ def test_tet_adjacency_single_tet(test, device):
         (0.0, 1.0, 0.0),
         (0.0, 0.0, 1.0),
     ]
-    model = _build_model_with_soft_mesh(particles, tet_indices)
+    model = _build_model_with_soft_mesh(particles, tet_indices, device)
 
     solver = SolverVBD(model)
 
@@ -342,7 +342,7 @@ def test_tet_adjacency_single_tet(test, device):
 
 
 def test_tet_adjacency_complex_pyramid(test, device):
-    model = _build_model_with_soft_mesh(PYRAMID_PARTICLES, PYRAMID_TET_INDICES)
+    model = _build_model_with_soft_mesh(PYRAMID_PARTICLES, PYRAMID_TET_INDICES, device)
 
     solver = SolverVBD(model)
 
@@ -419,10 +419,10 @@ def test_tet_energy(test, device):
         )
         dt = 0.001666
 
-        model = builder.finalize(requires_grad=True)
-        tet_energy = wp.zeros(1, dtype=float, requires_grad=True)
-        particle_forces = wp.zeros(12, dtype=float, requires_grad=True)
-        particle_hessian = wp.zeros(4, dtype=wp.mat33, requires_grad=False)
+        model = builder.finalize(device=device, requires_grad=True)
+        tet_energy = wp.zeros(1, dtype=float, device=device, requires_grad=True)
+        particle_forces = wp.zeros(12, dtype=float, device=device, requires_grad=True)
+        particle_hessian = wp.zeros(4, dtype=wp.mat33, device=device, requires_grad=False)
 
         state = model.state(requires_grad=True)
         state.particle_q.assign(state.particle_q.numpy() + rng.standard_normal((4, 3)))
@@ -467,6 +467,7 @@ def test_tet_energy(test, device):
             x[i] = 1.0
             return wp.array(
                 x,
+                device=device,
             )
 
         for v_counter in range(4):
@@ -519,7 +520,7 @@ def test_tet_energy(test, device):
             )
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 add_function_test(TestSoftBody, "test_tet_adjacency_single_tet", test_tet_adjacency_single_tet, devices=devices)
 add_function_test(
     TestSoftBody, "test_tet_adjacency_complex_pyramid", test_tet_adjacency_complex_pyramid, devices=devices

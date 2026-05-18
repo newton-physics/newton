@@ -238,7 +238,7 @@ class TestSdfPrimitive(unittest.TestCase):
     pass
 
 
-_devices = get_test_devices(mode="basic")
+_devices = get_test_devices()
 add_function_test(
     TestSdfPrimitive,
     "test_sdf_sphere_grad_matches_finite_difference",
