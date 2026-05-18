@@ -16,6 +16,7 @@ newton.viewer
    ViewerBase
    ViewerFile
    ViewerGL
+   ViewerLayer
    ViewerNull
    ViewerRerun
    ViewerUSD

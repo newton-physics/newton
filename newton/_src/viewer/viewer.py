@@ -26,6 +26,117 @@ from .kernels import (
     repack_shape_colors,
 )
 
+#: Sentinel layer id used when no user-defined layer has been activated.
+#: Preserves the legacy behavior of unprefixed object names so that existing
+#: examples, tests, and viewer backends keep working unchanged.
+_DEFAULT_LAYER_ID = "__default__"
+
+#: Per-model attribute names that are part of "layer state". Used by
+#: :meth:`ViewerBase.activate` to snapshot/restore everything that belongs
+#: to one model when switching layers. These are exactly the attributes
+#: initialized by :meth:`ViewerBase.clear_model`.
+_LAYER_STATE_ATTRS: tuple[str, ...] = (
+    "model",
+    "model_changed",
+    "_shape_instances",
+    "_inertia_box_points0",
+    "_inertia_box_points1",
+    "_inertia_box_colors",
+    "_geometry_cache",
+    "_contact_points0",
+    "_contact_points1",
+    "_joint_points0",
+    "_joint_points1",
+    "_joint_colors",
+    "_com_positions",
+    "_com_colors",
+    "_com_radii",
+    "world_offsets",
+    "_user_spacing",
+    "_visible_worlds",
+    "_visible_worlds_mask",
+    "show_joints",
+    "show_com",
+    "show_particles",
+    "show_contacts",
+    "show_springs",
+    "show_triangles",
+    "show_gaussians",
+    "show_collision",
+    "show_visual",
+    "show_static",
+    "show_inertia_boxes",
+    "show_hydro_contact_surface",
+    "sdf_margin_mode",
+    "gaussians_max_points",
+    "_hydro_surface_line_starts",
+    "_hydro_surface_line_ends",
+    "_hydro_surface_line_colors",
+    "model_shape_color",
+    "_shape_to_slot",
+    "_slot_to_shape",
+    "_slot_to_shape_wp",
+    "_shape_to_batch",
+    "_isomesh_cache",
+    "_gaussian_instances",
+    "_sdf_isomesh_instances",
+    "_sdf_isomesh_populated",
+    "_shape_sdf_index_host",
+    "_sdf_margin_mesh_cache",
+    "_sdf_margin_vdata_cache",
+    "_sdf_margin_edge_caches",
+)
+
+
+class ViewerLayer:
+    """Container holding per-model viewer state for one layer.
+
+    A layer represents the rendering output of a single model/solver inside
+    a viewer. The layer owns the model reference, all shape-instance batches,
+    contact/joint/COM caches, world offsets, visibility toggles, and any
+    other state that is normally bound to one model.
+
+    Each layer carries a ``visible`` flag and a stable ``layer_id`` string
+    that is used as a prefix for every backend object name emitted while the
+    layer is active. The prefix prevents name collisions when more than one
+    layer logs into the same backend.
+
+    Layers are managed by :class:`ViewerBase`. Use
+    :meth:`ViewerBase.activate` to switch which layer receives subsequent
+    ``set_model`` / ``log_state`` / ``log_*`` calls; use
+    :meth:`ViewerBase.set_layer_visible` to toggle visibility independently
+    per layer.
+    """
+
+    def __init__(self, layer_id: str):
+        """Initialize an empty layer.
+
+        Args:
+            layer_id: Stable identifier used as a name prefix for objects
+                logged while this layer is active.
+        """
+        self.layer_id = layer_id
+        self.visible = True
+        self.state: dict[str, Any] = {}
+
+    @property
+    def name_prefix(self) -> str:
+        """Backend-name prefix applied to every logged object in this layer.
+
+        Whitespace in ``layer_id`` is replaced with underscores so the
+        prefix remains a valid path segment in backends that disallow
+        spaces (e.g. USD prim paths). The original ``layer_id`` (with any
+        spaces) is still used for UI display.
+
+        Returns:
+            Empty string for the default sentinel layer (preserves legacy
+            unprefixed paths), otherwise ``"/layers/<sanitized_layer_id>"``.
+        """
+        if self.layer_id == _DEFAULT_LAYER_ID:
+            return ""
+        sanitized = "_".join(self.layer_id.split())
+        return f"/layers/{sanitized}"
+
 
 class ViewerBase(ABC):
     class SDFMarginMode(enum.IntEnum):
@@ -46,8 +157,213 @@ class ViewerBase(ABC):
         self.device = wp.get_device()
         self.picking_enabled = True
 
+        # Layer registry. The default layer is always present and has an
+        # empty name prefix to keep backward compatibility for code that
+        # never calls activate().
+        self._layers: dict[str, ViewerLayer] = {}
+        self._active_layer_id: str = _DEFAULT_LAYER_ID
+        self._layers[_DEFAULT_LAYER_ID] = ViewerLayer(_DEFAULT_LAYER_ID)
+
         # All model-dependent state is initialized by clear_model()
         self.clear_model()
+
+    # ------------------------------------------------------------------
+    # Layer management
+    # ------------------------------------------------------------------
+
+    @property
+    def layer(self) -> ViewerLayer:
+        """The currently active :class:`ViewerLayer`.
+
+        Returns:
+            ViewerLayer: The layer that subsequent ``set_model`` / ``log_*``
+            calls will be routed into. Always non-None: the default layer
+            is created automatically.
+        """
+        return self._layers[self._active_layer_id]
+
+    @property
+    def layers(self) -> dict[str, ViewerLayer]:
+        """All registered layers keyed by layer id.
+
+        Returns:
+            dict[str, ViewerLayer]: Mapping from layer id to layer object.
+            Includes the internal default layer; callers iterating for UI
+            display typically want to filter it out via
+            :attr:`ViewerLayer.layer_id`.
+        """
+        return self._layers
+
+    def activate(self, layer_id: str) -> ViewerLayer:
+        """Activate a layer; create it on first use.
+
+        Switches the "current write target" of the viewer. After this call,
+        every subsequent :meth:`set_model`, :meth:`log_state`,
+        :meth:`log_contacts`, and other ``log_*`` invocation is routed into
+        the activated layer without changing call sites. Object names sent
+        to backends are automatically prefixed with ``/layers/<layer_id>``
+        so multiple layers can render simultaneously without name clashes.
+
+        The state of the previously active layer (model, shape batches,
+        caches, visibility toggles) is preserved and restored when the
+        layer is activated again.
+
+        Args:
+            layer_id: Stable identifier for the layer. Re-activates an
+                existing layer when the id is already known.
+
+        Returns:
+            ViewerLayer: The activated layer object.
+        """
+        if not isinstance(layer_id, str) or not layer_id:
+            raise ValueError("layer_id must be a non-empty string")
+        if layer_id == self._active_layer_id and layer_id in self._layers:
+            return self._layers[layer_id]
+
+        # Snapshot the current layer state from self.
+        self._snapshot_layer(self._layers[self._active_layer_id])
+
+        # Create the target layer if needed.
+        if layer_id not in self._layers:
+            self._layers[layer_id] = ViewerLayer(layer_id)
+            # Initialize default per-model state directly on ``self`` (without
+            # invoking subclass ``clear_model`` overrides, which would destroy
+            # backend resources owned by other live layers).
+            self._init_layer_state()
+            self._snapshot_layer(self._layers[layer_id])
+
+        # Restore the target layer's state onto self.
+        self._active_layer_id = layer_id
+        self._restore_layer(self._layers[layer_id])
+        return self._layers[layer_id]
+
+    def remove_layer(self, layer_id: str) -> None:
+        """Remove a layer and all its associated render state.
+
+        Destroys every backend object (meshes, instancers, lines, arrows,
+        wireframes, …) that the removed layer owns so the layer stops
+        rendering immediately and no GPU resources leak. If the removed
+        layer is currently active, the default layer is re-activated. The
+        internal default layer cannot be removed.
+
+        Args:
+            layer_id: Identifier of the layer to remove.
+        """
+        if layer_id == _DEFAULT_LAYER_ID:
+            raise ValueError("Cannot remove the default layer")
+        if layer_id not in self._layers:
+            return
+
+        # Snapshot the active layer so we can restore it after destroying
+        # the target layer's backend state. When the active layer is the
+        # one being removed, fall back to the default layer.
+        prev_active = self._active_layer_id
+        if prev_active == layer_id:
+            prev_active = _DEFAULT_LAYER_ID
+
+        # Activate the to-be-removed layer so ``_is_layer_owned_path``
+        # matches its objects, then drop its model — backend ``clear_model``
+        # overrides destroy only resources owned by the active layer.
+        if self._active_layer_id != layer_id:
+            self.activate(layer_id)
+        # ``clear_model`` is the canonical "free everything this layer
+        # owns" entry point and is overridden by backends (e.g. ViewerGL)
+        # to destroy GL handles for meshes/instancers/lines/wireframes.
+        self.clear_model()
+
+        # Re-snapshot the now-empty layer state into the registry entry so
+        # the upcoming activate() doesn't try to read a stale snapshot.
+        self._snapshot_layer(self._layers[layer_id])
+
+        # Move off the removed layer before deleting its registry entry.
+        self.activate(prev_active)
+        del self._layers[layer_id]
+
+    def set_layer_visible(self, layer_id: str, visible: bool) -> None:
+        """Set the visibility of a layer.
+
+        When a layer is hidden, every object it owns is sent to the backend
+        with ``hidden=True`` on the next ``log_state`` / ``log_contacts``
+        cycle. The layer state is preserved so toggling back on restores
+        the previous rendering.
+
+        Args:
+            layer_id: Identifier of the layer to toggle.
+            visible: ``True`` to show the layer, ``False`` to hide it.
+        """
+        if layer_id not in self._layers:
+            raise KeyError(f"Unknown layer: {layer_id}")
+        self._layers[layer_id].visible = bool(visible)
+        # Force a re-emit of all owned objects on the next frame so the
+        # hidden flag is propagated through the cached log_* calls.
+        if layer_id == self._active_layer_id:
+            self.model_changed = True
+
+    def _snapshot_layer(self, layer: ViewerLayer) -> None:
+        """Copy all per-model attributes from ``self`` into ``layer.state``."""
+        for attr in _LAYER_STATE_ATTRS:
+            if hasattr(self, attr):
+                layer.state[attr] = getattr(self, attr)
+        for attr in self._extra_layer_state_attrs():
+            if hasattr(self, attr):
+                layer.state[attr] = getattr(self, attr)
+
+    def _restore_layer(self, layer: ViewerLayer) -> None:
+        """Copy all per-model attributes from ``layer.state`` onto ``self``."""
+        for attr in _LAYER_STATE_ATTRS:
+            if attr in layer.state:
+                object.__setattr__(self, attr, layer.state[attr])
+        for attr in self._extra_layer_state_attrs():
+            if attr in layer.state:
+                object.__setattr__(self, attr, layer.state[attr])
+
+    def _extra_layer_state_attrs(self) -> tuple[str, ...]:
+        """Hook for backends to declare additional per-layer attributes.
+
+        Backends that maintain per-model caches outside of the base class
+        attribute set declared in :data:`_LAYER_STATE_ATTRS` override this
+        method to include those attribute names. They will be included in
+        the snapshot/restore cycle so each layer keeps an independent copy.
+
+        Returns:
+            tuple[str, ...]: Names of additional ``self``-attributes to track.
+        """
+        return ()
+
+    def _qualify(self, name: str | None) -> str | None:
+        """Prefix a backend object name with the active layer's namespace.
+
+        Idempotent: when the name is already qualified with the active
+        layer's prefix (e.g. because an internal caller already qualified
+        it before forwarding through a public ``log_*`` method), the name
+        is returned unchanged. Names targeting a *different* layer's
+        namespace (``/layers/<other>/...``) are also returned unchanged,
+        which lets layer-aware backends address other layers explicitly.
+
+        Returns ``name`` unchanged when no user-defined layer is active so
+        legacy code paths (and existing snapshot files / USD layers / Rerun
+        entity paths) remain identical.
+
+        Args:
+            name: Object path/name. ``None`` is passed through unchanged.
+
+        Returns:
+            The qualified name, or ``None`` if ``name`` was ``None``.
+        """
+        if name is None:
+            return None
+        prefix = self.layer.name_prefix
+        if not prefix:
+            return name
+        # Already qualified (with the active layer's prefix or any other
+        # layer's prefix) — do not double-qualify.
+        if name == prefix or name.startswith(prefix + "/") or name.startswith("/layers/"):
+            return name
+        return f"{prefix}{name}" if name.startswith("/") else f"{prefix}/{name}"
+
+    def _layer_force_hidden(self) -> bool:
+        """Return True when objects of the active layer must be force-hidden."""
+        return not self.layer.visible
 
     def is_running(self) -> bool:
         """Report whether the viewer backend should keep running.
@@ -90,6 +406,40 @@ class ViewerBase(ABC):
         Called from ``__init__`` to establish initial values and whenever the
         current model needs to be discarded (e.g. before :meth:`set_model` or
         when switching examples).
+
+        When more than one layer is active, only resources owned by the
+        currently active layer are released — other layers remain intact.
+        """
+        self._init_layer_state()
+
+    def _is_layer_owned_path(self, name: str) -> bool:
+        """Return True when ``name`` was generated by the active layer.
+
+        Backend ``clear_model`` overrides use this predicate to decide which
+        cached backend objects belong to the active layer and may be safely
+        destroyed when the layer's model is cleared. Names emitted from the
+        default sentinel layer (which has no prefix) are matched by
+        excluding any ``/layers/...`` prefix.
+
+        Args:
+            name: Backend object name (path).
+
+        Returns:
+            bool: True if the object belongs to the active layer.
+        """
+        prefix = self.layer.name_prefix
+        if prefix:
+            return name.startswith(prefix + "/") or name == prefix
+        # Default layer: own everything that is NOT inside a "/layers/" namespace.
+        return not name.startswith("/layers/")
+
+    def _init_layer_state(self) -> None:
+        """Initialize all per-model (layer) attributes to defaults on ``self``.
+
+        Split out from :meth:`clear_model` so :meth:`activate` can spin up a
+        fresh layer's state without invoking backend-specific overrides of
+        ``clear_model`` (which destroy GL resources that belong to other,
+        still-live layers).
         """
         self.model = None
         self.model_changed = True
@@ -515,9 +865,11 @@ class ViewerBase(ABC):
 
         self._sync_shape_colors_from_model()
 
+        layer_hidden = self._layer_force_hidden()
+
         # compute shape transforms and render
         for shapes in self._shape_instances.values():
-            visible = self._should_show_shape(shapes.flags, shapes.static)
+            visible = self._should_show_shape(shapes.flags, shapes.static) and not layer_hidden
 
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets)
@@ -588,9 +940,12 @@ class ViewerBase(ABC):
 
         body_q_np = None
         offsets_np = None
+        layer_hidden = self._layer_force_hidden()
 
         for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
-            visible = self._should_show_shape(flags, is_static) and self._should_render_world(world_idx)
+            visible = (
+                self._should_show_shape(flags, is_static) and self._should_render_world(world_idx) and not layer_hidden
+            )
             if not visible or not self.show_gaussians:
                 self.log_gaussian(gname, gaussian, hidden=True)
                 continue
@@ -622,8 +977,10 @@ class ViewerBase(ABC):
             self._sdf_isomesh_populated = True
             sdf_isomesh_just_populated = True
 
+        layer_hidden = self._layer_force_hidden()
+
         for shapes in self._sdf_isomesh_instances.values():
-            visible = self.show_collision
+            visible = self.show_collision and not layer_hidden
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets)
             send_appearance = self.model_changed or sdf_isomesh_just_populated
@@ -657,8 +1014,8 @@ class ViewerBase(ABC):
             state: The current state of the simulation.
         """
 
-        if not self.show_contacts:
-            self.log_arrows("/contacts", None, None, None)
+        if not self.show_contacts or self._layer_force_hidden():
+            self.log_arrows(self._qualify("/contacts"), None, None, None)
             return
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
@@ -710,7 +1067,7 @@ class ViewerBase(ABC):
 
         colors = (0.0, 1.0, 0.0)
 
-        self.log_arrows("/contacts", starts, ends, colors)
+        self.log_arrows(self._qualify("/contacts"), starts, ends, colors)
 
     def log_hydro_contact_surface(
         self,
@@ -726,19 +1083,19 @@ class ViewerBase(ABC):
                 collision is not enabled.
             penetrating_only: If True, only render penetrating contacts (depth < 0).
         """
-        if not self.show_hydro_contact_surface:
-            self.log_lines("/hydro_contact_surface", None, None, None)
+        if not self.show_hydro_contact_surface or self._layer_force_hidden():
+            self.log_lines(self._qualify("/hydro_contact_surface"), None, None, None)
             return
 
         if contact_surface_data is None:
-            self.log_lines("/hydro_contact_surface", None, None, None)
+            self.log_lines(self._qualify("/hydro_contact_surface"), None, None, None)
             return
 
         # Get the number of face contacts (triangles)
         num_contacts = int(contact_surface_data.face_contact_count.numpy()[0])
 
         if num_contacts == 0:
-            self.log_lines("/hydro_contact_surface", None, None, None)
+            self.log_lines(self._qualify("/hydro_contact_surface"), None, None, None)
             return
 
         # Each triangle has 3 edges -> 3 line segments per contact
@@ -778,7 +1135,7 @@ class ViewerBase(ABC):
 
         # Render as lines
         self.log_lines(
-            "/hydro_contact_surface",
+            self._qualify("/hydro_contact_surface"),
             self._hydro_surface_line_starts[:num_lines],
             self._hydro_surface_line_ends[:num_lines],
             self._hydro_surface_line_colors[:num_lines],
@@ -827,6 +1184,10 @@ class ViewerBase(ABC):
                 return [float(value)]
 
         geo_scale = _as_float_list(geo_scale)
+
+        # Route user-supplied object names through the active layer so two
+        # layers can call ``log_shapes`` with the same path without colliding.
+        name = self._qualify(name)
 
         # ensure mesh exists (shared with populate path)
         mesh_path = self._populate_geometry(
@@ -902,6 +1263,8 @@ class ViewerBase(ABC):
                 by ``geo_type``.
             hidden: Whether the created mesh should be hidden.
         """
+        # Route user-supplied object names through the active layer.
+        name = self._qualify(name)
 
         if geo_type == newton.GeoType.GAUSSIAN:
             if geo_src is None:
@@ -1064,6 +1427,11 @@ class ViewerBase(ABC):
         """
         Register or update a mesh prototype in the viewer backend.
 
+        Backends that support :meth:`activate` must route ``name`` through
+        :meth:`_qualify` so that two layers logging the same path receive
+        distinct backend objects. ``_qualify`` is idempotent and a no-op
+        on the default layer.
+
         Args:
             name: Unique path/name for the mesh asset.
             points: Vertex positions as a Warp vec3 array.
@@ -1095,6 +1463,10 @@ class ViewerBase(ABC):
     ):
         """
         Log a batch of mesh instances.
+
+        Backends that support :meth:`activate` must route ``name`` and
+        ``mesh`` through :meth:`_qualify` so that two layers logging the
+        same path receive distinct backend objects.
 
         Args:
             name: Unique path/name for the instance batch.
@@ -1132,7 +1504,7 @@ class ViewerBase(ABC):
             materials: Optional per-capsule material parameters as a Warp vec4 array.
             hidden: Whether the capsule batch should be hidden.
         """
-        self.log_instances(name, mesh, xforms, scales, colors, materials, hidden=hidden)
+        self.log_instances(self._qualify(name), mesh, xforms, scales, colors, materials, hidden=hidden)
 
     @abstractmethod
     def log_lines(
@@ -1188,7 +1560,7 @@ class ViewerBase(ABC):
                 via the renderer (e.g. ``RendererGL.arrow_scale``).
             hidden: Whether the arrow batch should be hidden.
         """
-        self.log_lines(name, starts, ends, colors, width=width, hidden=hidden)
+        self.log_lines(self._qualify(name), starts, ends, colors, width=width, hidden=hidden)
 
     def log_wireframe_shape(  # noqa: B027
         self,
@@ -1520,7 +1892,7 @@ class ViewerBase(ABC):
         if base_name is None:
             raise ValueError(f"Unsupported geo_type for ensure_geometry: {geo_type}")
 
-        mesh_path = f"/geometry/{base_name}_{len(self._geometry_cache)}"
+        mesh_path = self._qualify(f"/geometry/{base_name}_{len(self._geometry_cache)}")
         self.log_geo(
             mesh_path,
             int(geo_type),
@@ -1568,7 +1940,7 @@ class ViewerBase(ABC):
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
                     xform = wp.transform_expand(shape_transform[s])
-                    gname = f"/model/gaussians/gaussian_{len(self._gaussian_instances)}"
+                    gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
                     self._gaussian_instances.append(
                         (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
                     )
@@ -1627,7 +1999,7 @@ class ViewerBase(ABC):
 
             # ensure batch exists
             if shape_hash not in self._shape_instances:
-                shape_name = f"/model/shapes/shape_{len(self._shape_instances)}"
+                shape_name = self._qualify(f"/model/shapes/shape_{len(self._shape_instances)}")
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
                 batch.geo_type = geo_type
                 self._shape_instances[shape_hash] = batch
@@ -1791,7 +2163,7 @@ class ViewerBase(ABC):
 
             # Use the geo_hash as the batch key for SDF isomesh instances
             if geo_hash not in self._sdf_isomesh_instances:
-                shape_name = f"/model/sdf_isomesh/isomesh_{len(self._sdf_isomesh_instances)}"
+                shape_name = self._qualify(f"/model/sdf_isomesh/isomesh_{len(self._sdf_isomesh_instances)}")
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
                 batch.geo_type = geo_type
                 self._sdf_isomesh_instances[geo_hash] = batch
@@ -1856,8 +2228,8 @@ class ViewerBase(ABC):
 
     def _log_inertia_boxes(self, state: newton.State):
         """Render inertia boxes as wireframe lines."""
-        if not self.show_inertia_boxes:
-            self.log_lines("/model/inertia_boxes", None, None, None)
+        if not self.show_inertia_boxes or self._layer_force_hidden():
+            self.log_lines(self._qualify("/model/inertia_boxes"), None, None, None)
             return
 
         body_count = self.model.body_count
@@ -1896,7 +2268,10 @@ class ViewerBase(ABC):
         )
 
         self.log_lines(
-            "/model/inertia_boxes", self._inertia_box_points0, self._inertia_box_points1, self._inertia_box_colors
+            self._qualify("/model/inertia_boxes"),
+            self._inertia_box_points0,
+            self._inertia_box_points1,
+            self._inertia_box_colors,
         )
 
     def _compute_shape_offset_mesh(
@@ -2063,7 +2438,7 @@ class ViewerBase(ABC):
     def _log_sdf_margin_wireframes(self, state: newton.State):
         """Update and render SDF margin wireframe edges."""
         mode = self.sdf_margin_mode
-        visible = mode != self.SDFMarginMode.OFF
+        visible = mode != self.SDFMarginMode.OFF and not self._layer_force_hidden()
 
         if self.model_changed:
             self._sdf_margin_edge_caches.clear()
@@ -2080,14 +2455,14 @@ class ViewerBase(ABC):
 
                 identity = np.eye(4, dtype=np.float32).ravel(order="F")
                 for s, (vertex_data, _body_idx, _shape_xf, _world_idx) in edge_cache.items():
-                    name = f"/model/sdf_margin_wf/{mode.value}/{s}"
+                    name = self._qualify(f"/model/sdf_margin_wf/{mode.value}/{s}")
                     self.log_wireframe_shape(name, vertex_data, identity, hidden=False)
 
         # Hide inactive modes, show active mode
         for cached_mode, cached_edges in self._sdf_margin_edge_caches.items():
             hidden = not visible or cached_mode != mode
             for s in cached_edges:
-                name = f"/model/sdf_margin_wf/{cached_mode.value}/{s}"
+                name = self._qualify(f"/model/sdf_margin_wf/{cached_mode.value}/{s}")
                 self.log_wireframe_shape(name, None, None, hidden=hidden)
 
         if not visible:
@@ -2098,7 +2473,7 @@ class ViewerBase(ABC):
         offsets_np = self.world_offsets.numpy() if self.world_offsets is not None else None
 
         for s, (_vertex_data, body_idx, shape_xf, world_idx) in edge_cache.items():
-            name = f"/model/sdf_margin_wf/{mode.value}/{s}"
+            name = self._qualify(f"/model/sdf_margin_wf/{mode.value}/{s}")
             shape_mat = self._transform_to_mat44(shape_xf)
             if body_idx >= 0 and body_q is not None:
                 body_mat = self._transform_to_mat44(body_q[body_idx])
@@ -2119,8 +2494,8 @@ class ViewerBase(ABC):
         Args:
             state: Current simulation state
         """
-        if not self.show_joints:
-            self.log_lines("/model/joints", None, None, None)
+        if not self.show_joints or self._layer_force_hidden():
+            self.log_lines(self._qualify("/model/joints"), None, None, None)
             return
 
         # Get the number of joints
@@ -2166,7 +2541,7 @@ class ViewerBase(ABC):
         )
 
         # Log all joint lines in a single call
-        self.log_lines("/model/joints", self._joint_points0, self._joint_points1, self._joint_colors)
+        self.log_lines(self._qualify("/model/joints"), self._joint_points0, self._joint_points1, self._joint_colors)
 
     def _log_com(self, state: newton.State):
         num_bodies = self.model.body_count
@@ -2195,15 +2570,21 @@ class ViewerBase(ABC):
             device=self.device,
         )
 
-        self.log_points("/model/com", self._com_positions, com_radius, self._com_colors, hidden=not self.show_com)
+        self.log_points(
+            self._qualify("/model/com"),
+            self._com_positions,
+            com_radius,
+            self._com_colors,
+            hidden=not self.show_com or self._layer_force_hidden(),
+        )
 
     def _log_triangles(self, state: newton.State):
         if self.model.tri_count:
             self.log_mesh(
-                "/model/triangles",
+                self._qualify("/model/triangles"),
                 state.particle_q,
                 self.model.tri_indices.flatten(),
-                hidden=not self.show_triangles,
+                hidden=not self.show_triangles or self._layer_force_hidden(),
                 backface_culling=False,
             )
 
@@ -2226,7 +2607,7 @@ class ViewerBase(ABC):
                 # Slice to transfer only the last element instead of the full array.
                 active_count = int(offsets[-1:].numpy()[0]) + int(mask[-1:].numpy()[0])
                 if active_count == 0:
-                    self.log_points(name="/model/particles", points=None, hidden=True)
+                    self.log_points(name=self._qualify("/model/particles"), points=None, hidden=True)
                     return
                 if active_count < n:
                     points_out = wp.empty(active_count, dtype=wp.vec3, device=self.device)
@@ -2243,11 +2624,11 @@ class ViewerBase(ABC):
                 colors = None
 
             self.log_points(
-                name="/model/particles",
+                name=self._qualify("/model/particles"),
                 points=points,
                 radii=radii,
                 colors=colors,
-                hidden=not self.show_particles,
+                hidden=not self.show_particles or self._layer_force_hidden(),
             )
 
     @staticmethod

@@ -24,9 +24,22 @@ Example usage:
 
     viewer.close()
     ```
+
+Layers:
+    The viewer supports rendering multiple models/solvers as overlays in a
+    single window via the layer system. Call :meth:`ViewerBase.activate`
+    to switch the "current write target"; every subsequent ``set_model`` /
+    ``log_state`` / ``log_*`` call is routed into the active layer and
+    object names are prefixed with ``/layers/<layer_id>`` so layers do not
+    collide. Toggle visibility per layer via
+    :meth:`ViewerBase.set_layer_visible` or the "Layers" group in the
+    ``ViewerGL`` sidebar. See ``example_basic_multi_solver_overlay``.
+
+    Picking, wind, and ``apply_forces`` are bound to the most recently
+    activated layer's model.
 """
 
-from .viewer import ViewerBase
+from .viewer import ViewerBase, ViewerLayer
 from .viewer_file import ViewerFile
 from .viewer_gl import ViewerGL
 from .viewer_null import ViewerNull
@@ -38,6 +51,7 @@ __all__ = [
     "ViewerBase",
     "ViewerFile",
     "ViewerGL",
+    "ViewerLayer",
     "ViewerNull",
     "ViewerRerun",
     "ViewerUSD",
