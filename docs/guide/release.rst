@@ -147,7 +147,7 @@ Testing criteria
 
 The release engineer and maintainers decide which issues must be fixed
 before GA and which can ship as known issues documented in the release
-notes.  Features explicitly marked **experimental** have a lower bar —
+materials.  Features explicitly marked **experimental** have a lower bar —
 regressions in experimental APIs do not necessarily block a release.
 
 As a guideline, an RC is typically ready for GA when:
@@ -173,9 +173,8 @@ As a guideline, an RC is typically ready for GA when:
      - Re-run the ``release-audit`` skill after final cherry-picks; confirm
        no new flags since the last RC.
    * - ☐
-     - Prepare release-notes inputs: known issues approved to ship,
-       deprecations scheduled for removal in the next minor release, and the
-       required migration guidance.
+     - Prepare ``CHANGELOG.md`` inputs: deprecations/removals, dependency
+       updates, and required migration guidance.
    * - ☐
      - :ref:`Testing criteria <testing-criteria>` satisfied.
    * - ☐
@@ -236,10 +235,9 @@ otherwise.
    * - ☐
      - PyPI publish approved and verified: ``pip install newton==X.Y.Z``.
    * - ☐
-     - Review the draft GitHub Release notes against ``CHANGELOG.md`` before
-       publishing.  For minor releases, explicitly mention deprecations
-       scheduled for removal in the next minor release (see
-       :ref:`deprecation-policy`) and include migration guidance.
+     - Review the draft GitHub Release notes before publishing.  Keep them
+       concise: summary, a few highlights, link to ``CHANGELOG.md``,
+       acknowledgments.
    * - ☐
      - GitHub Release un-drafted and published.
    * - ☐
