@@ -61,6 +61,7 @@
 - Add Kamino-specific simulation examples in `newton/examples/kamino`
 - Add per-mesh `color` override to `ViewerBase.log_mesh()` for tinting individual meshes without authoring per-vertex colors
 - Add per-mesh `roughness` and `metallic` PBR overrides to `ViewerBase.log_mesh()`
+- Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 
 ### Changed
 
