@@ -39515,3 +39515,37 @@ index e9a1cb24040df53e1f4111158cd2f65ae272fd22..5e781d50286aaf3ae2828bd78af367f5
  2026-05-18: Ran `prepare`; no queued failures remained. Nothing was fixed or left broken, no validation ran, and no branch was pushed.
 +2026-05-18: Ran `prepare`; no queued failures remained. Nothing was fixed or left broken, no validation ran, and no branch was pushed.
 
+OpenAI Codex v0.130.0
+--------
+workdir: /home/jkuzm/biomotions/newton
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e3ba7-a108-71e1-8d72-360587ad6ccb
+--------
+user
+Read AGENTS.md and then prepare exactly one queued repair:
+
+uv run --script scripts/nightly_upstream_repair.py prepare
+
+If there are no queued failures, append a short dated note to this automation's `memory.md` and stop.
+
+If a repair is prepared:
+1. Open `.codex/automations/nightly-upstream-repair/current_repair.json`.
+2. Work only inside the listed `worktree_path`.
+3. If `merge_status` is `merge_conflict`, resolve the conflicts first.
+4. If the queue item came from a test failure, fix the code until the listed `validation_commands` pass.
+5. Keep the run bounded: attempt at most 3 edit/test cycles for this branch.
+6. If you get the branch green, run:
+
+   uv run --script scripts/nightly_upstream_repair.py finalize --success --push
+
+7. If you cannot get it green within the bounded attempt budget, run:
+
+   uv run --script scripts/nightly_upstream_repair.py finalize --failure --message "short reason"
+
+8. Append a short dated summary to this automation's `memory.md` describing what you fixed, what remains broken, and whether the branch was pushed.
+

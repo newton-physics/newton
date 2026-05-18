@@ -20,6 +20,7 @@ class Trial:
     fixture: str
     indenter: dict[str, Any]
     include_in_fit: bool
+    averaged_cycle_path: Path | None = None
     frame_config_path: Path | None = None
     frame: dict[str, Any] | None = None
 
@@ -91,6 +92,18 @@ def _validate_indenter(indenter: dict[str, Any], trial_name: str, base: Path) ->
         if not resolved_path.exists():
             raise FileNotFoundError(f"Trial {trial_name!r} indenter STL does not exist: {resolved_path}")
         resolved["path"] = str(resolved_path)
+        height_offset_m = indenter.get("height_offset_m")
+        if height_offset_m is not None and not isinstance(height_offset_m, (int, float)):
+            raise ValueError(f"Trial {trial_name!r} stl indenter height_offset_m must be numeric")
+        if height_offset_m is not None:
+            resolved["height_offset_m"] = height_offset_m
+        contact_percentile = indenter.get("contact_percentile")
+        if contact_percentile is not None:
+            if not isinstance(contact_percentile, (int, float)):
+                raise ValueError(f"Trial {trial_name!r} stl indenter contact_percentile must be numeric")
+            if not 0.0 < float(contact_percentile) <= 100.0:
+                raise ValueError(f"Trial {trial_name!r} stl indenter contact_percentile must be in (0, 100]")
+            resolved["contact_percentile"] = contact_percentile
 
     return resolved
 
@@ -109,6 +122,15 @@ def _require_trial(data: dict[str, Any], index: int, base: Path) -> Trial:
         raise ValueError(f"Trial {name!r} must define an indenter object")
     indenter = _validate_indenter(indenter, name, base)
 
+    averaged_cycle = data.get("averaged_cycle_path")
+    averaged_cycle_path = (
+        _resolve_path(base, averaged_cycle, f"trials[{index}].averaged_cycle_path")
+        if isinstance(averaged_cycle, str)
+        else None
+    )
+    if averaged_cycle_path is not None and not averaged_cycle_path.exists():
+        raise FileNotFoundError(f"Trial {name!r} averaged cycle CSV does not exist: {averaged_cycle_path}")
+
     frame_config = data.get("frame_config_path")
     return Trial(
         name=name,
@@ -116,6 +138,7 @@ def _require_trial(data: dict[str, Any], index: int, base: Path) -> Trial:
         fixture=fixture,
         indenter=indenter,
         include_in_fit=bool(data.get("include_in_fit", True)),
+        averaged_cycle_path=averaged_cycle_path,
         frame_config_path=_resolve_path(base, frame_config, f"trials[{index}].frame_config_path")
         if isinstance(frame_config, str)
         else None,

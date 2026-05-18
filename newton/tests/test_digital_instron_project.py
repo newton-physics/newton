@@ -34,8 +34,11 @@ from projects.digital_instron_v2 import (
 )
 from projects.digital_instron_v2.foundation import (
     FoundationFitSample,
+    FoundationTrialBatch,
     _foundation_sdf_kernel,
+    evaluate_foundation_lengths_batch,
     finite_difference_loss_gradient,
+    fit_foundation_material_batches_autodiff,
     warp_loss_gradient,
 )
 from projects.digital_instron_v2.geometry import _load_obj_mesh
@@ -45,6 +48,7 @@ from projects.digital_instron_v2.mujoco_adapter import (
 )
 from projects.digital_instron_v2.sdf_utils import build_indenter_sdf
 from projects.digital_instron_v2.workflow import (
+    _fullfoot_contact_diagnostics,
     _hysteresis_segments,
     _spring_state_for_trial_frame,
     _trial_contact_surface_cache,
@@ -579,6 +583,89 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
         self.assertLess(final_loss, initial_loss)
         self.assertGreater(result.material.stiffness_pa, initial.stiffness_pa)
 
+    def test_batch_fit_updates_shape_and_state_parameters(self):
+        xy = np.asarray([[0.0, 0.0], [0.012, 0.0], [0.0, 0.012]], dtype=np.float64)
+        slack = np.asarray([0.032, 0.038, 0.044], dtype=np.float64)
+        compression = np.asarray([0.001, 0.004, 0.009, 0.014, 0.018, 0.011, 0.005], dtype=np.float64)
+        current = slack[None, :] - compression[:, None]
+        current_velocity = np.gradient(current, axis=0) / 0.01
+        cell_area = np.full(len(slack), 1.5e-4, dtype=np.float64)
+        weights = np.full(len(compression), 1.0 / len(compression), dtype=np.float64)
+        phase = ("baseline_pre", "loading", "loading", "peak", "peak", "unloading", "baseline_post")
+        true_material = FoundationMaterial(
+            stiffness_pa=1.8e6,
+            ogden_alpha=3.4,
+            lock_strain=0.82,
+            damping_pa_s=8.0e4,
+            damping_power=1.6,
+            state_beta=0.5,
+            state_tau_s=0.05,
+            state_warmup_cycles=2,
+        )
+        initial = FoundationMaterial(
+            stiffness_pa=6.0e5,
+            ogden_alpha=1.2,
+            lock_strain=0.55,
+            damping_pa_s=1.0e4,
+            damping_power=0.5,
+            state_beta=0.2,
+            state_tau_s=0.02,
+            state_warmup_cycles=true_material.state_warmup_cycles,
+        )
+        template = FoundationTrialBatch(
+            name="synthetic_batch",
+            current_length_m=current,
+            slack_length_m=slack,
+            velocity_mps=current_velocity,
+            measured_force_n=np.zeros(len(compression), dtype=np.float64),
+            sample_weight=weights,
+            cell_area_m2=cell_area,
+            time_s=np.arange(len(compression), dtype=np.float64) * 0.01,
+            dt_s=np.concatenate(([0.0], np.full(len(compression) - 1, 0.01))),
+            displacement_m=compression,
+            phase=phase,
+        )
+        measured = evaluate_foundation_lengths_batch(
+            xy, template, material=true_material, device="cpu"
+        ).predicted_force_n
+        batch = FoundationTrialBatch(
+            name=template.name,
+            current_length_m=template.current_length_m,
+            slack_length_m=template.slack_length_m,
+            velocity_mps=template.velocity_mps,
+            measured_force_n=measured,
+            sample_weight=template.sample_weight,
+            cell_area_m2=template.cell_area_m2,
+            time_s=template.time_s,
+            dt_s=template.dt_s,
+            displacement_m=template.displacement_m,
+            phase=template.phase,
+        )
+
+        result = fit_foundation_material_batches_autodiff(
+            xy,
+            [batch],
+            initial_material=initial,
+            iterations=4,
+            per_cylinder_area=True,
+            device="cpu",
+        )
+
+        self.assertNotEqual(result.material.ogden_alpha, initial.ogden_alpha)
+        self.assertNotEqual(result.material.lock_strain, initial.lock_strain)
+        self.assertNotEqual(result.material.damping_power, initial.damping_power)
+        self.assertNotEqual(result.material.state_beta, initial.state_beta)
+        self.assertNotEqual(result.material.state_tau_s, initial.state_tau_s)
+        self.assertEqual(result.material.state_warmup_cycles, initial.state_warmup_cycles)
+        self.assertIn("grad_ogden_alpha", result.history[0])
+        self.assertIn("grad_lock_strain", result.history[0])
+        self.assertIn("grad_damping_power", result.history[0])
+        self.assertIn("grad_state_beta", result.history[0])
+        self.assertIn("grad_state_tau_s", result.history[0])
+        self.assertTrue(np.isfinite(result.history[0]["grad_state_beta"]))
+        self.assertTrue(np.isfinite(result.history[0]["grad_state_tau_s"]))
+        self.assertNotEqual(result.history[0]["grad_state_beta"], 0.0)
+
     def test_fit_with_per_cylinder_area(self):
         xy = np.asarray([[0.0, 0.0], [0.01, 0.0]], dtype=np.float64)
         slack = np.asarray([0.03, 0.04], dtype=np.float64)
@@ -667,6 +754,57 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
             self.assertGreater(float(np.max(compression) - np.min(compression)), 0.001)
             self.assertGreater(int(np.count_nonzero(compression == 0.0)), 0)
             self.assertEqual(int(np.count_nonzero(velocity < 0.0)), int(np.count_nonzero(compression > 0.0)))
+
+    def test_fullfoot_stl_height_offset_and_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mesh_path = root / "midsole.obj"
+            stl_path = root / "sloped_plate.stl"
+            _write_box_obj(mesh_path, size=(0.04, 0.02, 0.04))
+            _write_sloped_plate_stl(stl_path)
+
+            vertices, faces = _load_obj_mesh(mesh_path)
+            spring_grid = build_raycast_spring_grid(vertices, faces, spacing_m=0.01)
+            base_trial = SimpleNamespace(
+                name="fullfoot_base",
+                fixture="fullfoot_last",
+                include_in_fit=True,
+                indenter={"type": "stl", "path": str(stl_path), "units": "m"},
+            )
+            offset_trial = SimpleNamespace(
+                name="fullfoot_offset",
+                fixture="fullfoot_last",
+                include_in_fit=True,
+                indenter={"type": "stl", "path": str(stl_path), "units": "m", "height_offset_m": 0.003},
+            )
+            contact_surfaces = _trial_contact_surface_cache(
+                SimpleNamespace(trials=(base_trial, offset_trial)), spring_grid
+            )
+
+            base_surface, base_valid = contact_surfaces["fullfoot_base"]
+            offset_surface, offset_valid = contact_surfaces["fullfoot_offset"]
+            np.testing.assert_array_equal(base_valid, offset_valid)
+            diff = offset_surface[base_valid] - base_surface[base_valid]
+            # height_offset_m shifts by exactly 0.003 for non-clamped points;
+            # clamped points (pinned at top_m) show 0.0 difference.
+            self.assertTrue(
+                np.all((diff >= 0.0) & (diff <= 0.003 + 1e-9)),
+                f"height_offset shift should be in [0, 0.003], got {diff}",
+            )
+            self.assertGreater(np.max(diff), 0.001, "at least some points should reflect the height_offset shift")
+
+            diagnostics = _fullfoot_contact_diagnostics(
+                spring_grid,
+                {"fullfoot_base": contact_surfaces["fullfoot_base"]},
+                displacement_m=0.004,
+            )["fullfoot_base"]
+            clearance_mm = (spring_grid.top_m[base_valid] - (base_surface[base_valid] - 0.004)) * 1000.0
+            self.assertEqual(diagnostics["valid_count"], float(np.count_nonzero(base_valid)))
+            self.assertEqual(diagnostics["active_count"], float(np.count_nonzero(clearance_mm > 0.0)))
+            self.assertAlmostEqual(
+                diagnostics["valid_area_mm2"], np.count_nonzero(base_valid) * spring_grid.cell_area_m2 * 1.0e6
+            )
+            self.assertAlmostEqual(diagnostics["contact_p50_mm"], float(np.percentile(clearance_mm, 50.0)))
 
     def test_mujoco_adapter_adds_wrench_to_body_force(self):
         body_f = np.zeros((2, 6), dtype=np.float64)
@@ -781,6 +919,26 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
             header = "Total Time,Position,Force\n"
             data = "\n".join(f"{t},{p},{f}" for t, p, f in zip(time_s, position_mm, force_n, strict=True))
             csv_path.write_text(header + data)
+            avg_path = root / "rearfoot_avg.csv"
+            avg_time_s = np.linspace(0.0, 0.2, 21)
+            avg_displacement_m = np.concatenate((np.linspace(0.0, 0.004, 11), np.linspace(0.0036, 0.0, 10)))
+            avg_force_n = np.concatenate((np.linspace(0.0, 200.0, 11), np.linspace(180.0, 0.0, 10)))
+            avg_velocity_m_s = np.gradient(avg_displacement_m, avg_time_s)
+            avg_rows = [
+                "phase,time_s,displacement_m,displacement_mm,force_n,position_mm_raw,force_n_raw,velocity_m_s,cycle_energy_j"
+            ]
+            for phase, time, displacement, force, velocity in zip(
+                np.linspace(0.0, 1.0, len(avg_time_s)),
+                avg_time_s,
+                avg_displacement_m,
+                avg_force_n,
+                avg_velocity_m_s,
+                strict=True,
+            ):
+                avg_rows.append(
+                    f"{phase},{time},{displacement},{displacement * 1000.0},{force},0,{-force},{velocity},0"
+                )
+            avg_path.write_text("\n".join(avg_rows) + "\n")
 
             # 5. Create manifest JSON
             manifest_path = root / "manifest.json"
@@ -795,11 +953,15 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
                     "initial_lock_strain": 0.65,
                     "initial_damping_pa_s": 1.0e4,
                     "initial_damping_power": 1.0,
+                    "state_beta": 0.5,
+                    "state_tau_s": 0.05,
+                    "state_warmup_cycles": 1,
                 },
                 "trials": [
                     {
                         "name": "rearfoot_punch",
                         "csv_path": str(csv_path),
+                        "averaged_cycle_path": str(avg_path),
                         "fixture": "rearfoot_punch",
                         "indenter": {"type": "cylinder", "radius_m": 0.0225},
                         "include_in_fit": True,
@@ -815,6 +977,7 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
                 step="fit-autodiff",
                 autodiff_iterations=2,
                 autodiff_sample_count=2,
+                autodiff_device="cpu",
                 hysteresis_sample_count=12,
             )
             report = run_fit_autodiff(args)
@@ -823,6 +986,10 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
             self.assertIn("material", report)
             self.assertIn("per_cylinder_area", report["material"])
             self.assertTrue(report["material"]["per_cylinder_area"])
+            self.assertAlmostEqual(report["material"]["state_beta"], 0.5, delta=0.2)
+            self.assertGreater(report["material"]["state_beta"], 0.0)
+            self.assertLess(report["material"]["state_beta"], 1.0)
+            self.assertEqual(report["material"]["state_warmup_cycles"], 1)
 
             # 8. Verify saved JSON includes per_cylinder_area
             output_path = cache_dir / "digital_instron_v2_autodiff_fit.json"
@@ -832,6 +999,13 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
             self.assertIn("per_cylinder_area", saved["material"])
             self.assertTrue(saved["material"]["per_cylinder_area"])
             self.assertIn("hysteresis", saved)
+            self.assertEqual(saved["fit_source"], "averaged_cycle")
+            self.assertEqual(saved["sample_count"], len(avg_time_s))
+            self.assertIn("acceptance", saved)
+            material_path = Path(saved["foundation_material_json"])
+            self.assertTrue(material_path.exists())
+            material_artifact = json.loads(material_path.read_text())
+            self.assertEqual(material_artifact["schema_version"], "digital_instron_v2_foundation_material_1")
             hysteresis_png = Path(saved["hysteresis"]["hysteresis_png"])
             hysteresis_csv = Path(saved["hysteresis"]["hysteresis_csv"])
             hysteresis_trials_csv = Path(saved["hysteresis"]["hysteresis_trials_csv"])
@@ -863,6 +1037,7 @@ class TestDigitalInstronV2ManifestAndFrames(unittest.TestCase):
                             {
                                 "name": "rearfoot",
                                 "csv_path": "trial.csv",
+                                "averaged_cycle_path": "trial.csv",
                                 "fixture": "rearfoot_punch",
                                 "include_in_fit": True,
                                 "indenter": {"type": "cylinder", "radius_m": 0.045},
@@ -877,6 +1052,7 @@ class TestDigitalInstronV2ManifestAndFrames(unittest.TestCase):
             self.assertEqual(manifest.trials[0].name, "rearfoot")
             self.assertTrue(manifest.midsole_mesh.is_absolute())
             self.assertTrue(manifest.trials[0].csv_path.exists())
+            self.assertTrue(manifest.trials[0].averaged_cycle_path.exists())
 
     def test_manifest_parses_sdf_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -940,6 +1116,7 @@ class TestDigitalInstronV2ManifestAndFrames(unittest.TestCase):
                                     "type": "stl",
                                     "path": "indenter.stl",
                                     "rotation_deg": [0.0, 0.0, 0.0],
+                                    "height_offset_m": -0.002,
                                 },
                             },
                         ],
@@ -967,6 +1144,7 @@ class TestDigitalInstronV2ManifestAndFrames(unittest.TestCase):
             st = trials_by_name["stl_trial"]
             self.assertEqual(st.indenter["type"], "stl")
             self.assertEqual(st.indenter["path"], str(stl_path.resolve()))
+            self.assertEqual(st.indenter["height_offset_m"], -0.002)
 
     def test_manifest_parses_thickness_axis_override(self):
         with tempfile.TemporaryDirectory() as tmp:

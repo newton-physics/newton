@@ -20,17 +20,21 @@
   },
   "fit": {
     "model": "locked_ogden_vertical_foundation_v2",
-    "initial_stiffness_pa": 2000000.0,
-    "initial_ogden_alpha": 2.0,
-    "initial_lock_strain": 0.98,
+    "initial_stiffness_pa": 200000.0,
+    "initial_ogden_alpha": 1.0,
+    "initial_lock_strain": 0.75,
     "initial_damping_pa_s": 10000.0,
     "initial_damping_power": 1.0,
+    "state_beta": 0.25,
+    "state_tau_s": 0.025,
+    "state_warmup_cycles": 5,
     "nominal_midsole_thickness_m": 0.069
   },
   "trials": [
     {
       "name": "rearfoot_140ms",
       "csv_path": "04-07-2025_FR3_140ms_Rearfoot_100Cycle.steps.tracking.csv",
+      "averaged_cycle_path": "processed/rearfoot_avg_cycles_90_100.csv",
       "fixture": "rearfoot_punch",
       "include_in_fit": true,
       "frame_config_path": "processed/v2_cache/rearfoot_140ms.frame_config.json",
@@ -43,13 +47,14 @@
     {
       "name": "fullfoot_185ms",
       "csv_path": "04-07-2025_FR3_185ms_Fullfoot_100Cycle.steps.tracking.csv",
+      "averaged_cycle_path": "processed/fullfoot_avg_cycles_90_100.csv",
       "fixture": "fullfoot_last",
       "include_in_fit": true,
       "frame_config_path": "processed/v2_cache/fullfoot_185ms.frame_config.json",
       "indenter": {
         "type": "stl",
         "path": "Instron Shoe Last Size 9 6drop merged attachment 1.STL",
-        "rotation_deg": [90.0, 0.0, 0.0]
+        "rotation_deg": [0.0, 0.0, 0.0]
       }
     }
   ]

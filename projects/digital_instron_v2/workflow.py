@@ -12,11 +12,11 @@ from pathlib import Path
 import numpy as np
 
 from .foundation import (
-    FoundationFitSample,
     FoundationMaterial,
+    FoundationTrialBatch,
     evaluate_foundation,
-    evaluate_foundation_lengths,
-    fit_foundation_material_autodiff,
+    evaluate_foundation_lengths_batch,
+    fit_foundation_material_batches_autodiff,
 )
 from .frame_qc import infer_frame_config, load_trial_frame
 from .geometry import (
@@ -42,8 +42,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--autodiff-sample-count",
         type=int,
         default=8,
-        help="Number of positive-force samples per trial for --step fit-autodiff",
+        help="Deprecated; fit-autodiff now uses every frame in each averaged-cycle CSV",
     )
+    parser.add_argument("--autodiff-device", default="cuda:0", help="Warp device for --step fit-autodiff")
     parser.add_argument(
         "--hysteresis-sample-count",
         type=int,
@@ -144,6 +145,9 @@ def _initial_material(manifest, *, per_cylinder_area: bool = False) -> Foundatio
         damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
         damping_power=float(manifest.fit.get("initial_damping_power", 1.0)),
         per_cylinder_area=per_cylinder_area,
+        state_beta=float(manifest.fit.get("state_beta", 0.0)),
+        state_tau_s=float(manifest.fit.get("state_tau_s", 0.05)),
+        state_warmup_cycles=int(manifest.fit.get("state_warmup_cycles", 0)),
     )
 
 
@@ -257,8 +261,13 @@ def _indenter_contact_surface_m(spring_grid, trial) -> tuple[np.ndarray, np.ndar
         raise ValueError(f"Fullfoot STL indenter {trial.name!r} does not overlap the spring grid")
 
     initial_clearance = float(trial.indenter.get("initial_clearance_m", 0.0))
-    thickness_offset = float(np.max(spring_grid.top_m[valid] - contact_raw[valid]) + initial_clearance)
-    return contact_raw + thickness_offset, valid
+    height_offset = float(trial.indenter.get("height_offset_m", 0.0))
+    contact_percentile = float(trial.indenter.get("contact_percentile", 75.0))
+    clearance_raw = spring_grid.top_m[valid] - contact_raw[valid]
+    thickness_offset = float(np.percentile(clearance_raw, contact_percentile) + initial_clearance + height_offset)
+    contact_surface = contact_raw + thickness_offset
+    contact_surface[valid] = np.maximum(contact_surface[valid], spring_grid.top_m[valid])
+    return contact_surface, valid
 
 
 def _trial_contact_surface_cache(manifest, spring_grid) -> dict[str, tuple[np.ndarray, np.ndarray]]:
@@ -267,6 +276,44 @@ def _trial_contact_surface_cache(manifest, spring_grid) -> dict[str, tuple[np.nd
         if trial.include_in_fit and trial.fixture == "fullfoot_last" and trial.indenter.get("type") == "stl":
             surfaces[trial.name] = _indenter_contact_surface_m(spring_grid, trial)
     return surfaces
+
+
+def _fullfoot_contact_diagnostics(
+    spring_grid,
+    contact_surfaces: dict[str, tuple[np.ndarray, np.ndarray]],
+    *,
+    displacement_m: float = 0.0,
+) -> dict[str, dict[str, float]]:
+    """Compute fullfoot STL contact coverage diagnostics at a displacement."""
+
+    diagnostics: dict[str, dict[str, float]] = {}
+    for trial_name, (contact_surface_0, valid) in contact_surfaces.items():
+        contact_surface = contact_surface_0 - float(displacement_m)
+        clearance_mm = (spring_grid.top_m[valid] - contact_surface[valid]) * 1000.0
+        active_count = int(np.count_nonzero(clearance_mm > 0.0))
+        valid_count = int(np.count_nonzero(valid))
+        if valid_count:
+            percentiles = np.percentile(clearance_mm, [1.0, 5.0, 50.0, 95.0, 99.0])
+            contact_min_mm = float(np.min(clearance_mm))
+            contact_max_mm = float(np.max(clearance_mm))
+        else:
+            percentiles = np.full(5, np.nan, dtype=np.float64)
+            contact_min_mm = float("nan")
+            contact_max_mm = float("nan")
+        diagnostics[trial_name] = {
+            "valid_count": float(valid_count),
+            "active_count": float(active_count),
+            "valid_area_mm2": float(valid_count * spring_grid.cell_area_m2 * 1.0e6),
+            "active_area_mm2": float(active_count * spring_grid.cell_area_m2 * 1.0e6),
+            "contact_min_mm": contact_min_mm,
+            "contact_p01_mm": float(percentiles[0]),
+            "contact_p05_mm": float(percentiles[1]),
+            "contact_p50_mm": float(percentiles[2]),
+            "contact_p95_mm": float(percentiles[3]),
+            "contact_p99_mm": float(percentiles[4]),
+            "contact_max_mm": contact_max_mm,
+        }
+    return diagnostics
 
 
 def _trial_frame_config(manifest, output_dir: Path, trial) -> dict[str, object]:
@@ -338,138 +385,372 @@ def _hysteresis_segments(displacement_m: np.ndarray) -> list[np.ndarray]:
     return [np.arange(start, stop, dtype=np.int64) for start, stop in zip(starts, stops, strict=True) if stop > start]
 
 
-def _autodiff_samples(
+_PHASE_WEIGHTS = {
+    "baseline_pre": 0.25,
+    "loading": 1.0,
+    "peak": 2.0,
+    "unloading": 1.5,
+    "baseline_post": 0.25,
+}
+
+
+_ACCEPTANCE_GATES = {
+    "rearfoot_rmse_n": 150.0,
+    "fullfoot_rmse_n": 400.0,
+    "loop_area_relative_error": 0.35,
+    "peak_force_ratio_upper": 1.5,
+    "peak_force_ratio_lower": 0.67,
+    "baseline_rmse_n": 50.0,
+}
+
+
+def _load_averaged_cycle(path: Path) -> dict[str, np.ndarray]:
+    data = np.genfromtxt(path, delimiter=",", names=True, dtype=np.float64)
+    if data.shape == ():
+        data = np.asarray([data], dtype=data.dtype)
+    required = ("time_s", "displacement_m", "force_n", "velocity_m_s")
+    missing = [name for name in required if name not in data.dtype.names]
+    if missing:
+        raise ValueError(f"Averaged cycle CSV {path} is missing columns: {', '.join(missing)}")
+    trace = {name: np.asarray(data[name], dtype=np.float64) for name in required}
+    finite = np.isfinite(trace["time_s"]) & np.isfinite(trace["displacement_m"])
+    finite &= np.isfinite(trace["force_n"]) & np.isfinite(trace["velocity_m_s"])
+    if int(np.count_nonzero(finite)) < 3:
+        raise ValueError(f"Averaged cycle CSV {path} has fewer than three finite samples")
+    trace = {name: values[finite] for name, values in trace.items()}
+    if np.any(np.diff(trace["time_s"]) <= 0.0):
+        raise ValueError(f"Averaged cycle CSV {path} time_s must be strictly increasing")
+    gradient_velocity = np.gradient(trace["displacement_m"], trace["time_s"])
+    candidates = (trace["velocity_m_s"], -trace["velocity_m_s"])
+    errors = [np.abs(gradient_velocity - candidate) for candidate in candidates]
+    best_index = int(np.argmin([np.percentile(error, 95.0) for error in errors]))
+    best_error = errors[best_index]
+    if float(np.percentile(best_error, 95.0)) > 0.03 or float(np.max(best_error)) > 0.05:
+        raise ValueError(
+            f"Averaged cycle velocity in {path} disagrees with displacement derivative: "
+            f"p95={np.percentile(best_error, 95.0):.4g} m/s max={np.max(best_error):.4g} m/s"
+        )
+    trace["velocity_m_s"] = candidates[best_index]
+    force_zero_n = float(np.min(trace["force_n"]))
+    trace["raw_force_n"] = trace["force_n"].copy()
+    trace["force_zero_n"] = np.full_like(trace["force_n"], force_zero_n)
+    trace["force_n"] = trace["force_n"] - force_zero_n
+    return trace
+
+
+def _phase_labels_and_weights(
+    displacement_m: np.ndarray,
+    force_n: np.ndarray,
+    *,
+    low_force_limit_n: float = 20.0,
+    peak_fraction: float = 0.95,
+) -> tuple[np.ndarray, np.ndarray]:
+    displacement = np.asarray(displacement_m, dtype=np.float64)
+    force = np.asarray(force_n, dtype=np.float64)
+    if displacement.shape != force.shape or displacement.ndim != 1:
+        raise ValueError("displacement_m and force_n must be matching 1D arrays")
+    phases = np.full(len(force), "ignored", dtype=object)
+    active = force > low_force_limit_n
+    if not np.any(active):
+        raise ValueError("Averaged cycle has no force-active frames")
+
+    peak_force = float(np.max(force[active]))
+    peak_displacement = float(np.max(displacement[active]))
+    peak = active & ((force >= peak_fraction * peak_force) | (displacement >= peak_fraction * peak_displacement))
+    if not np.any(peak):
+        peak[np.argmax(force)] = True
+    peak_start = int(np.nonzero(peak)[0][0])
+    peak_stop = int(np.nonzero(peak)[0][-1])
+
+    baseline = force <= low_force_limit_n
+    phases[baseline & (np.arange(len(force)) < peak_start)] = "baseline_pre"
+    phases[baseline & (np.arange(len(force)) > peak_stop)] = "baseline_post"
+    phases[active & (np.arange(len(force)) < peak_start)] = "loading"
+    phases[peak] = "peak"
+    phases[active & (np.arange(len(force)) > peak_stop)] = "unloading"
+
+    weights = np.zeros(len(force), dtype=np.float64)
+    present_weight_sum = 0.0
+    for phase, phase_weight in _PHASE_WEIGHTS.items():
+        count = int(np.count_nonzero(phases == phase))
+        if count == 0:
+            continue
+        present_weight_sum += phase_weight
+        weights[phases == phase] = phase_weight / count
+    if present_weight_sum <= 0.0:
+        raise ValueError("Averaged cycle phase split produced no weighted frames")
+    weights /= present_weight_sum
+    return phases, weights
+
+
+def _trial_averaged_cycle_path(trial) -> Path:
+    if trial.averaged_cycle_path is None:
+        raise ValueError(f"Trial {trial.name!r} must define averaged_cycle_path for fit-autodiff")
+    return trial.averaged_cycle_path
+
+
+def _autodiff_batches(
     manifest,
-    output_dir: Path,
     spring_grid,
     vertices,
-    *,
-    sample_count: int,
-) -> list[FoundationFitSample]:
-    samples: list[FoundationFitSample] = []
-    sample_count = max(int(sample_count), 1)
-    rearfoot_mask = _rearfoot_mask(manifest, spring_grid, vertices)
-    contact_surfaces = _trial_contact_surface_cache(manifest, spring_grid)
-    # Per-cylinder cell area (uniform spacing broadcast to all cells)
-    n_cells = len(spring_grid.xy_m)
-    cell_area = np.full(n_cells, spring_grid.cell_area_m2, dtype=np.float64)
-    for trial in manifest.trials:
-        if not trial.include_in_fit:
-            continue
-        frame_config = _trial_frame_config(manifest, output_dir, trial)
-        trace = load_trial_frame(trial.csv_path, frame_config)
-        displacement_velocity = np.gradient(trace["displacement_m"], trace["time_s"])
-        positive = np.nonzero((trace["force_n"] > 0.0) & (trace["displacement_m"] > 0.0))[0]
-        if len(positive) == 0:
-            continue
-        selected = positive[np.linspace(0, len(positive) - 1, min(sample_count, len(positive)), dtype=np.int64)]
-        for index in selected:
-            current_length, velocity = _spring_state_for_trial_frame(
-                spring_grid,
-                trial,
-                rearfoot_mask,
-                contact_surfaces,
-                float(trace["displacement_m"][index]),
-                float(displacement_velocity[index]),
-            )
-            samples.append(
-                FoundationFitSample(
-                    current_length_m=current_length,
-                    slack_length_m=spring_grid.slack_length_m,
-                    velocity_mps=velocity,
-                    measured_force_n=float(trace["force_n"][index]),
-                    weight=1.0,
-                    cell_area_m2=cell_area,
-                )
-            )
-    return samples
-
-
-def _write_autodiff_hysteresis_plot(
-    manifest,
-    output_dir: Path,
-    spring_grid,
-    vertices,
-    material: FoundationMaterial,
-    *,
-    sample_count: int,
-) -> dict[str, object]:
-    import matplotlib.pyplot as plt
-
-    sample_count = max(int(sample_count), 2)
+) -> list[FoundationTrialBatch]:
+    batches: list[FoundationTrialBatch] = []
     rearfoot_mask = _rearfoot_mask(manifest, spring_grid, vertices)
     contact_surfaces = _trial_contact_surface_cache(manifest, spring_grid)
     cell_area = np.full(len(spring_grid.xy_m), spring_grid.cell_area_m2, dtype=np.float64)
-    rows: list[tuple[str, int, float, float, float, float, float]] = []
-    trial_summaries: list[dict[str, object]] = []
-
-    fig, ax = plt.subplots(figsize=(8.0, 5.0), constrained_layout=True)
     for trial in manifest.trials:
         if not trial.include_in_fit:
             continue
-        frame_config = _trial_frame_config(manifest, output_dir, trial)
-        trace = load_trial_frame(trial.csv_path, frame_config)
-        if len(trace["time_s"]) == 0:
-            continue
-        displacement_velocity = np.gradient(trace["displacement_m"], trace["time_s"])
-        frame_indices = np.linspace(
-            0,
-            len(trace["time_s"]) - 1,
-            min(sample_count, len(trace["time_s"])),
-            dtype=np.int64,
-        )
-        measured = trace["force_n"][frame_indices].astype(np.float64)
-        displacement = trace["displacement_m"][frame_indices].astype(np.float64)
-        predicted = np.empty_like(measured)
-        losses = np.empty_like(measured)
-
-        for out_index, frame_index in enumerate(frame_indices):
+        trace = _load_averaged_cycle(_trial_averaged_cycle_path(trial))
+        phases, weights = _phase_labels_and_weights(trace["displacement_m"], trace["force_n"])
+        current_rows = []
+        velocity_rows = []
+        for displacement, displacement_velocity in zip(trace["displacement_m"], trace["velocity_m_s"], strict=True):
             current_length, velocity = _spring_state_for_trial_frame(
                 spring_grid,
                 trial,
                 rearfoot_mask,
                 contact_surfaces,
-                float(trace["displacement_m"][frame_index]),
-                float(displacement_velocity[frame_index]),
+                float(displacement),
+                float(displacement_velocity),
             )
-            result = evaluate_foundation_lengths(
-                spring_grid.xy_m,
-                current_length,
-                spring_grid.slack_length_m,
-                velocity,
+            current_rows.append(current_length)
+            velocity_rows.append(velocity)
+        batches.append(
+            FoundationTrialBatch(
+                name=trial.name,
+                current_length_m=np.asarray(current_rows, dtype=np.float64),
+                slack_length_m=spring_grid.slack_length_m,
+                velocity_mps=np.asarray(velocity_rows, dtype=np.float64),
+                measured_force_n=trace["force_n"],
+                sample_weight=weights,
                 cell_area_m2=cell_area,
-                material=material,
-                measured_force_n=float(trace["force_n"][frame_index]),
+                time_s=trace["time_s"],
+                dt_s=np.concatenate(([0.0], np.diff(trace["time_s"]))),
+                displacement_m=trace["displacement_m"],
+                phase=tuple(str(phase) for phase in phases),
+                force_zero_n=float(trace["force_zero_n"][0]),
             )
-            predicted[out_index] = result.force_n
-            losses[out_index] = result.loss
+        )
+    return batches
+
+
+def _phase_diagnostics(batch: FoundationTrialBatch, predicted: np.ndarray) -> dict[str, dict[str, float]]:
+    diagnostics: dict[str, dict[str, float]] = {}
+    phase_array = np.asarray(batch.phase, dtype=object)
+    measured = np.asarray(batch.measured_force_n, dtype=np.float64)
+    for phase in _PHASE_WEIGHTS:
+        mask = phase_array == phase
+        if not np.any(mask):
+            diagnostics[phase] = {"frame_count": 0}
+            continue
+        residual = predicted[mask] - measured[mask]
+        diagnostics[phase] = {
+            "frame_count": int(np.count_nonzero(mask)),
+            "rmse_n": float(np.sqrt(np.mean(residual**2))),
+            "mean_loss": float(np.mean(0.5 * residual**2)),
+        }
+    return diagnostics
+
+
+def _acceptance_summary(trial_summaries: list[dict[str, object]]) -> dict[str, object]:
+    checks: list[dict[str, object]] = []
+    for summary in trial_summaries:
+        trial = str(summary["trial"])
+        rmse_limit = (
+            _ACCEPTANCE_GATES["rearfoot_rmse_n"] if "rearfoot" in trial else _ACCEPTANCE_GATES["fullfoot_rmse_n"]
+        )
+        rmse = float(summary["rmse_n"])
+        checks.append(
+            {
+                "trial": trial,
+                "metric": "rmse_n",
+                "value": rmse,
+                "limit": rmse_limit,
+                "passed": rmse < rmse_limit,
+            }
+        )
+
+        measured_area = abs(float(summary["measured_loop_area_j"]))
+        loop_area_relative_error = abs(float(summary["loop_area_error_j"])) / max(measured_area, 1.0e-9)
+        checks.append(
+            {
+                "trial": trial,
+                "metric": "loop_area_relative_error",
+                "value": loop_area_relative_error,
+                "limit": _ACCEPTANCE_GATES["loop_area_relative_error"],
+                "passed": loop_area_relative_error < _ACCEPTANCE_GATES["loop_area_relative_error"],
+            }
+        )
+
+        peak_ratio = float(summary["predicted_machine_peak_force_n"]) / max(
+            float(summary["measured_machine_peak_force_n"]), 1.0
+        )
+        checks.append(
+            {
+                "trial": trial,
+                "metric": "peak_force_ratio_upper",
+                "value": peak_ratio,
+                "limit": _ACCEPTANCE_GATES["peak_force_ratio_upper"],
+                "passed": peak_ratio < _ACCEPTANCE_GATES["peak_force_ratio_upper"],
+            }
+        )
+        checks.append(
+            {
+                "trial": trial,
+                "metric": "peak_force_ratio_lower",
+                "value": peak_ratio,
+                "limit": _ACCEPTANCE_GATES["peak_force_ratio_lower"],
+                "passed": peak_ratio > _ACCEPTANCE_GATES["peak_force_ratio_lower"],
+            }
+        )
+
+        phases = summary["phases"]
+        baseline_rmse = 0.0
+        baseline_counts = 0
+        for phase in ("baseline_pre", "baseline_post"):
+            phase_summary = phases[phase]
+            count = int(phase_summary.get("frame_count", 0))
+            if count == 0:
+                continue
+            baseline_rmse += float(phase_summary["rmse_n"]) * count
+            baseline_counts += count
+        if baseline_counts > 0:
+            baseline_rmse /= baseline_counts
+            checks.append(
+                {
+                    "trial": trial,
+                    "metric": "baseline_rmse_n",
+                    "value": baseline_rmse,
+                    "limit": _ACCEPTANCE_GATES["baseline_rmse_n"],
+                    "passed": baseline_rmse < _ACCEPTANCE_GATES["baseline_rmse_n"],
+                }
+            )
+    return {
+        "passed": all(bool(check["passed"]) for check in checks),
+        "gates": dict(_ACCEPTANCE_GATES),
+        "checks": checks,
+    }
+
+
+def _write_foundation_material_artifact(
+    output_dir: Path,
+    manifest,
+    spring_grid,
+    material: FoundationMaterial,
+    hysteresis: dict[str, object],
+    acceptance: dict[str, object],
+) -> Path:
+    preload = {
+        str(trial_summary["trial"]): {"force_zero_n": float(trial_summary["force_zero_n"])}
+        for trial_summary in hysteresis["trials"]
+    }
+    artifact = {
+        "schema_version": "digital_instron_v2_foundation_material_1",
+        "manifest": str(manifest.path),
+        "fit_source": "averaged_cycle",
+        "material": material.__dict__,
+        "grid": {
+            "spring_count": int(len(spring_grid.xy_m)),
+            "cell_area_m2": float(spring_grid.cell_area_m2),
+            "spacing_m": float(spring_grid.spacing_m),
+        },
+        "preload_policy": {
+            "type": "per_trial_force_zero_subtraction",
+            "trials": preload,
+        },
+        "acceptance": acceptance,
+        "hysteresis": hysteresis,
+    }
+    path = output_dir / "digital_instron_v2_foundation_material.json"
+    _write_json(path, artifact)
+    return path
+
+
+def _write_autodiff_hysteresis_plot(
+    output_dir: Path,
+    xy_m: np.ndarray,
+    material: FoundationMaterial,
+    batches: list[FoundationTrialBatch],
+    *,
+    device: str,
+) -> dict[str, object]:
+    import matplotlib.pyplot as plt
+
+    rows: list[tuple[str, int, float, float, str, float, float, float, float, float, float]] = []
+    trial_summaries: list[dict[str, object]] = []
+
+    fig, ax = plt.subplots(figsize=(8.0, 5.0), constrained_layout=True)
+    for batch in batches:
+        result = evaluate_foundation_lengths_batch(
+            xy_m,
+            batch,
+            material=material,
+            device=device,
+        )
+        predicted = result.predicted_force_n
+        measured = np.asarray(batch.measured_force_n, dtype=np.float64)
+        force_zero = float(batch.force_zero_n)
+        measured_machine = measured + force_zero
+        predicted_machine = predicted + force_zero
+        displacement = np.asarray(batch.displacement_m, dtype=np.float64)
+        losses = 0.5 * (predicted - measured) ** 2
+
+        for frame_index, (
+            time,
+            disp,
+            phase,
+            measured_force,
+            predicted_force,
+            measured_machine_force,
+            predicted_machine_force,
+            loss,
+            weight,
+        ) in enumerate(
+            zip(
+                batch.time_s,
+                displacement,
+                batch.phase,
+                measured,
+                predicted,
+                measured_machine,
+                predicted_machine,
+                losses,
+                batch.sample_weight,
+                strict=True,
+            )
+        ):
             rows.append(
                 (
-                    trial.name,
+                    batch.name,
                     int(frame_index),
-                    float(trace["time_s"][frame_index]),
-                    float(trace["displacement_m"][frame_index]),
-                    float(trace["force_n"][frame_index]),
-                    result.force_n,
-                    result.loss,
+                    float(time),
+                    float(disp),
+                    str(phase),
+                    float(measured_force),
+                    float(predicted_force),
+                    float(measured_machine_force),
+                    float(predicted_machine_force),
+                    float(loss),
+                    float(weight),
                 )
             )
 
         segments = _hysteresis_segments(displacement)
         measured_points = ax.scatter(
             displacement * 1000.0,
-            measured,
+            measured_machine,
             s=10.0,
             alpha=0.75,
-            label=f"{trial.name} measured",
+            label=f"{batch.name} measured",
         )
         predicted_points = ax.scatter(
             displacement * 1000.0,
-            predicted,
+            predicted_machine,
             s=10.0,
             alpha=0.85,
             marker="x",
-            label=f"{trial.name} predicted",
+            label=f"{batch.name} predicted",
         )
         measured_color = measured_points.get_facecolors()[0]
         predicted_color = predicted_points.get_facecolors()[0]
@@ -478,28 +759,39 @@ def _write_autodiff_hysteresis_plot(
                 continue
             ax.plot(
                 displacement[segment] * 1000.0,
-                measured[segment],
+                measured_machine[segment],
                 linewidth=1.2,
                 alpha=0.35,
                 color=measured_color,
             )
             ax.plot(
                 displacement[segment] * 1000.0,
-                predicted[segment],
+                predicted_machine[segment],
                 linewidth=1.2,
                 linestyle="--",
                 alpha=0.45,
                 color=predicted_color,
             )
         rmse = float(np.sqrt(np.mean((predicted - measured) ** 2)))
+        measured_loop_area = float(np.trapezoid(measured_machine, displacement))
+        predicted_loop_area = float(np.trapezoid(predicted_machine, displacement))
         trial_summaries.append(
             {
-                "trial": trial.name,
-                "frame_count": int(len(frame_indices)),
+                "trial": batch.name,
+                "frame_count": int(len(measured)),
+                "force_zero_n": float(getattr(batch, "force_zero_n", 0.0)),
                 "segment_count": int(len(segments)),
                 "rmse_n": rmse,
+                "normalized_rmse": float(rmse / max(float(np.max(np.abs(measured))), 1.0)),
                 "measured_peak_force_n": float(np.max(measured)),
                 "predicted_peak_force_n": float(np.max(predicted)),
+                "peak_force_error_n": float(np.max(predicted) - np.max(measured)),
+                "measured_machine_peak_force_n": float(np.max(measured_machine)),
+                "predicted_machine_peak_force_n": float(np.max(predicted_machine)),
+                "measured_loop_area_j": measured_loop_area,
+                "predicted_loop_area_j": predicted_loop_area,
+                "loop_area_error_j": predicted_loop_area - measured_loop_area,
+                "phases": _phase_diagnostics(batch, predicted),
             }
         )
 
@@ -515,65 +807,168 @@ def _write_autodiff_hysteresis_plot(
     plt.close(fig)
     np.savetxt(
         csv_path,
-        np.asarray([row[1:] for row in rows], dtype=np.float64) if rows else np.empty((0, 6), dtype=np.float64),
+        np.asarray([row[1:4] + row[5:] for row in rows], dtype=np.float64)
+        if rows
+        else np.empty((0, 9), dtype=np.float64),
         delimiter=",",
-        header="frame_index,time_s,displacement_m,measured_force_n,predicted_force_n,loss",
+        header=(
+            "frame_index,time_s,displacement_m,measured_force_n,predicted_force_n,"
+            "measured_machine_force_n,predicted_machine_force_n,loss,sample_weight"
+        ),
         comments="",
     )
     if rows:
         trial_path = output_dir / "digital_instron_v2_autodiff_hysteresis_trials.csv"
         trial_path.write_text(
-            "trial,frame_index,time_s,displacement_m,measured_force_n,predicted_force_n,loss\n"
+            "trial,frame_index,time_s,displacement_m,phase,measured_force_n,predicted_force_n,"
+            "measured_machine_force_n,predicted_machine_force_n,loss,sample_weight\n"
             + "\n".join(
-                f"{trial},{frame},{time},{displacement},{measured},{predicted},{loss}"
-                for trial, frame, time, displacement, measured, predicted, loss in rows
+                f"{trial},{frame},{time},{displacement},{phase},{measured},{predicted},"
+                f"{measured_machine},{predicted_machine},{loss},{weight}"
+                for (
+                    trial,
+                    frame,
+                    time,
+                    displacement,
+                    phase,
+                    measured,
+                    predicted,
+                    measured_machine,
+                    predicted_machine,
+                    loss,
+                    weight,
+                ) in rows
             )
             + "\n"
         )
     else:
         trial_path = output_dir / "digital_instron_v2_autodiff_hysteresis_trials.csv"
-        trial_path.write_text("trial,frame_index,time_s,displacement_m,measured_force_n,predicted_force_n,loss\n")
+        trial_path.write_text(
+            "trial,frame_index,time_s,displacement_m,phase,measured_force_n,predicted_force_n,"
+            "measured_machine_force_n,predicted_machine_force_n,loss,sample_weight\n"
+        )
 
-    return {
+    hysteresis = {
         "hysteresis_png": str(png_path),
         "hysteresis_csv": str(csv_path),
         "hysteresis_trials_csv": str(trial_path),
         "trials": trial_summaries,
     }
+    hysteresis["acceptance"] = _acceptance_summary(trial_summaries)
+    return hysteresis
+
+
+def _write_autodiff_loss_plot(
+    output_dir: Path,
+    history: list[dict[str, float]],
+) -> str:
+    """Write a loss-by-iteration plot from the autodiff fit history."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    iterations = [h["iteration"] for h in history]
+    losses = [h["loss"] for h in history]
+
+    # Check if state_beta/state_tau_s exist in history (for dual-plot)
+    has_state = "state_beta" in history[0] if history else False
+
+    if has_state:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.0, 6.0), constrained_layout=True, sharex=True)
+    else:
+        fig, ax1 = plt.subplots(figsize=(8.0, 4.0), constrained_layout=True)
+
+    ax1.plot(iterations, losses, "b-", linewidth=0.8)
+    ax1.set_ylabel("Loss")
+    ax1.set_yscale("log")
+    ax1.set_title("Autodiff Fit — Loss per Iteration")
+    ax1.grid(True, alpha=0.3)
+
+    if has_state:
+        betas = [h["state_beta"] for h in history]
+        taus = [h["state_tau_s"] for h in history]
+        ax2.plot(iterations, betas, "r-", label="state_beta", linewidth=0.8)
+        ax2.plot(iterations, taus, "g-", label="state_tau_s", linewidth=0.8)
+        ax2.set_xlabel("Iteration")
+        ax2.set_ylabel("Parameter value")
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+    png_path = output_dir / "digital_instron_v2_autodiff_loss.png"
+    fig.savefig(png_path, dpi=150)
+    plt.close(fig)
+    return str(png_path)
 
 
 def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
     manifest = load_manifest(args.manifest)
     output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
     spring_grid, vertices = _load_spring_grid(manifest, output_dir)
-    samples = _autodiff_samples(
+    device = str(getattr(args, "autodiff_device", "cuda:0"))
+    batches = _autodiff_batches(
         manifest,
-        output_dir,
         spring_grid,
         vertices,
-        sample_count=int(args.autodiff_sample_count),
     )
-    result = fit_foundation_material_autodiff(
+    contact_surfaces = _trial_contact_surface_cache(manifest, spring_grid)
+    contact_diagnostics: dict[str, dict[str, float]] = {}
+    for batch in batches:
+        if batch.name not in contact_surfaces:
+            continue
+        peak_index = int(np.argmax(batch.measured_force_n))
+        displacement_m = float(batch.displacement_m[peak_index])
+        trial_diagnostics = _fullfoot_contact_diagnostics(
+            spring_grid,
+            {batch.name: contact_surfaces[batch.name]},
+            displacement_m=displacement_m,
+        )
+        contact_diagnostics.update(trial_diagnostics)
+        stats = trial_diagnostics[batch.name]
+        print(
+            f"Contact diagnostics {batch.name}: "
+            f"active_area={stats['active_area_mm2']:.0f} mm² "
+            f"valid_area={stats['valid_area_mm2']:.0f} mm² "
+            f"contact_mm min={stats['contact_min_mm']:.1f} "
+            f"p50={stats['contact_p50_mm']:.1f} "
+            f"max={stats['contact_max_mm']:.1f}"
+        )
+    _write_json(output_dir / "digital_instron_v2_contact_diagnostics.json", contact_diagnostics)
+    result = fit_foundation_material_batches_autodiff(
         spring_grid.xy_m,
-        samples,
-        cell_area_m2=spring_grid.cell_area_m2,
+        batches,
         initial_material=_initial_material(manifest),
         iterations=int(args.autodiff_iterations),
         per_cylinder_area=True,
+        device=device,
     )
+    loss_plot_path = _write_autodiff_loss_plot(output_dir, list(result.history))
     hysteresis = _write_autodiff_hysteresis_plot(
-        manifest,
         output_dir,
-        spring_grid,
-        vertices,
+        spring_grid.xy_m,
         result.material,
-        sample_count=int(getattr(args, "hysteresis_sample_count", 250)),
+        batches,
+        device=device,
+    )
+    material_artifact_path = _write_foundation_material_artifact(
+        output_dir,
+        manifest,
+        spring_grid,
+        result.material,
+        hysteresis,
+        hysteresis["acceptance"],
     )
     report = {
         "manifest": str(manifest.path),
-        "sample_count": len(samples),
+        "sample_count": int(sum(len(batch.measured_force_n) for batch in batches)),
+        "fit_source": "averaged_cycle",
+        "autodiff_device": device,
         "spring_grid_cells": int(len(spring_grid.xy_m)),
         "material": result.material.__dict__,
+        "foundation_material_json": str(material_artifact_path),
+        "acceptance": hysteresis["acceptance"],
+        "contact_diagnostics": contact_diagnostics,
+        "loss_plot": loss_plot_path,
         "history": list(result.history),
         "hysteresis": hysteresis,
     }
