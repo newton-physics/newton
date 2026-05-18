@@ -361,6 +361,54 @@ add_example_test(
 )
 
 
+class TestVolumetricExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestVolumetricExamples,
+    name="vbd.example_soft_beam_extension",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 300},
+    use_viewer=True,
+)
+add_example_test(
+    TestVolumetricExamples,
+    name="vbd.example_soft_beam_stretch",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 400},
+    use_viewer=True,
+)
+add_example_test(
+    TestVolumetricExamples,
+    name="vbd.example_soft_beam_twist",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 400},
+    use_viewer=True,
+)
+add_example_test(
+    TestVolumetricExamples,
+    name="vbd.example_soft_cube_compression",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 400},
+    use_viewer=True,
+)
+add_example_test(
+    TestVolumetricExamples,
+    name="vbd.example_soft_convergence_refinement",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 50},
+    use_viewer=True,
+)
+add_example_test(
+    TestVolumetricExamples,
+    name="vbd.example_soft_sliver_elements",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 200},
+    use_viewer=True,
+)
+
+
 class TestRobotExamples(unittest.TestCase):
     pass
 
