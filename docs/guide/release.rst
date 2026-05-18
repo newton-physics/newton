@@ -69,6 +69,8 @@ Pre-release planning
 
        - Review all new/changed symbols since the last release for unintended
          breaking changes.
+       - Confirm intended public API changes and breaking changes have
+         maintainer approval.
        - Verify deprecated symbols carry proper deprecation warnings and
          migration guidance (see :ref:`deprecation-policy`).
        - Confirm new public API has complete docstrings and is included in
