@@ -9,13 +9,12 @@ newton.solvers.coupled_experimental
 
 .. rubric:: Classes
 
-.. autoclass:: CouplingInterface
+.. autosummary::
+   :toctree: _generated
+   :nosignatures:
 
-.. autoclass:: ModelView
-
-.. autoclass:: SolverAdmmCoupled
-
-.. autoclass:: SolverCoupled
-
-.. autoclass:: SolverProxyCoupled
-
+   CouplingInterface
+   ModelView
+   SolverAdmmCoupled
+   SolverCoupled
+   SolverProxyCoupled
