@@ -10,8 +10,8 @@ release.  It is intended for release engineers and maintainers.
 Overview
 --------
 
-Newton follows PEP 440 versioning as described in the
-:ref:`versioning <versioning>` section of the installation guide.
+Newton follows PEP 440 versioning; see :ref:`versioning` in the
+compatibility guide for details.
 
 Releases are published to `PyPI <https://pypi.org/p/newton>`__ and
 documentation is deployed to
@@ -33,24 +33,21 @@ Dependency versioning strategy
 versions for reproducible installs.
 
 Exception: on the **release branch**, ``mujoco`` and ``mujoco-warp`` use
-**compatible-release** pins (e.g. ``mujoco~=3.5.0``) to allow patch
+**compatible-release** pins (e.g. ``mujoco~=3.5.0``) to allow micro
 updates while locking the minor version.  MuJoCo follows
 `semantic versioning from 3.5.0 onward <https://github.com/google-deepmind/mujoco/blob/main/VERSIONING.md#from-350--semantic-versioning>`__,
-so patch releases are safe to pick up automatically.  ``main`` uses a
+so micro releases are safe to pick up automatically.  ``main`` uses a
 version floor like other dependencies.
 
 
-.. _deprecation-timeline:
+Deprecation and removal timeline
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Deprecation timeline
-^^^^^^^^^^^^^^^^^^^^
-
-Following `Warp's deprecation policy
-<https://nvidia.github.io/warp/user_guide/compatibility.html#deprecation-timeline>`__,
-a deprecated feature is maintained for **two full minor release cycles**
-after deprecation (e.g. deprecated in 1.2.0 → removed in 1.4.0).
-Deprecations and removals only happen in minor releases, never in patch
-releases.
+The user-facing deprecation and removal policy lives in
+:ref:`deprecation-policy`.  Release engineers should ensure that every
+deprecation, removal, or other breaking change in a minor release is
+reflected in ``CHANGELOG.md`` and the API documentation, and that
+deprecations emit a runtime ``DeprecationWarning`` where applicable.
 
 
 Pre-release planning
@@ -72,16 +69,16 @@ Pre-release planning
 
        - Review all new/changed symbols since the last release for unintended
          breaking changes.
+       - Confirm intended public API changes and breaking changes have
+         maintainer approval.
        - Verify deprecated symbols carry proper deprecation warnings and
-         migration guidance (see :ref:`deprecation-timeline`).
+         migration guidance (see :ref:`deprecation-policy`).
        - Confirm new public API has complete docstrings and is included in
          Sphinx docs (run ``uv run docs/generate_api.py``).
 
        Run the ``release-audit`` Claude Code skill
        (``.claude/skills/release-audit``) in **pre-release mode** to automate
        this audit.
-   * - ☐
-     - Communicate the timeline to the community.
 
 
 Code freeze and release branch creation
@@ -150,7 +147,7 @@ Testing criteria
 
 The release engineer and maintainers decide which issues must be fixed
 before GA and which can ship as known issues documented in the release
-notes.  Features explicitly marked **experimental** have a lower bar —
+materials.  Features explicitly marked **experimental** have a lower bar —
 regressions in experimental APIs do not necessarily block a release.
 
 As a guideline, an RC is typically ready for GA when:
@@ -175,6 +172,9 @@ As a guideline, an RC is typically ready for GA when:
    * - ☐
      - Re-run the ``release-audit`` skill after final cherry-picks; confirm
        no new flags since the last RC.
+   * - ☐
+     - Prepare draft GitHub Release notes: summary, a few highlights, link
+       to ``CHANGELOG.md``, acknowledgments.
    * - ☐
      - :ref:`Testing criteria <testing-criteria>` satisfied.
    * - ☐
@@ -204,7 +204,7 @@ otherwise.
        ``[X.Y.Z] - YYYY-MM-DD``.  Review the entries for:
 
        - **Missing entries** — cross-check merged PRs since the last GA
-         release (or patch) to catch changes that were not recorded in the
+         release (or micro release) to catch changes that were not recorded in the
          changelog.
        - **Redundant entries** — consolidate or remove duplicates for changes
          within the same release period (e.g. a bug fix for a feature added
@@ -234,6 +234,10 @@ otherwise.
          on gh-pages, updates ``switcher.json``.
    * - ☐
      - PyPI publish approved and verified: ``pip install newton==X.Y.Z``.
+   * - ☐
+     - Review the draft GitHub Release notes before publishing.  Keep them
+       concise: summary, a few highlights, link to ``CHANGELOG.md``,
+       acknowledgments.
    * - ☐
      - GitHub Release un-drafted and published.
    * - ☐
