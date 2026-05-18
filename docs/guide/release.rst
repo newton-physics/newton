@@ -77,8 +77,6 @@ Pre-release planning
        Run the ``release-audit`` Claude Code skill
        (``.claude/skills/release-audit``) in **pre-release mode** to automate
        this audit.
-   * - ☐
-     - Communicate the timeline to the community.
 
 
 Code freeze and release branch creation
