@@ -62,6 +62,10 @@ _UNSUPPORTED = object()
 declared the hook unsupported and ``raise_on_unsupported`` is False."""
 
 
+_SENTINEL_UNCACHED = object()
+"""Sentinel marking an entry-level hook lookup that has not been resolved yet."""
+
+
 def _require_supports_coupling(solver: SolverBase) -> None:
     if not isinstance(solver, CouplingInterface):
         raise TypeError(
@@ -71,12 +75,12 @@ def _require_supports_coupling(solver: SolverBase) -> None:
 
 
 def _coupling_method_or_fallback(
-    solver: SolverBase,
+    entry: SolverEntry,
     hook: CouplingHook,
     *,
     raise_on_unsupported: bool = True,
 ):
-    """Look up a solver's hook method.
+    """Look up an entry solver's hook method, caching the result on the entry.
 
     Returns the bound method to call if the solver overrides the hook, ``None``
     if the solver supports the hook but expects the wrapper fallback, or
@@ -85,13 +89,25 @@ def _coupling_method_or_fallback(
     when the hook is unsupported and ``raise_on_unsupported`` is True, or
     :class:`TypeError` when the solver does not inherit :class:`CouplingInterface`.
     """
-    _require_supports_coupling(solver)
-    if hook in solver.coupling_unsupported:
+    cache = entry.hook_methods
+    cached = cache.get(hook, _SENTINEL_UNCACHED)
+    if cached is _SENTINEL_UNCACHED:
+        solver = entry.solver
+        _require_supports_coupling(solver)
+        if hook in solver.coupling_unsupported:
+            cached = _UNSUPPORTED
+        else:
+            method = getattr(solver, COUPLING_HOOK_METHOD[hook], None)
+            cached = method if callable(method) else None
+        cache[hook] = cached
+
+    if cached is _UNSUPPORTED:
         if raise_on_unsupported:
-            raise NotImplementedError(f"{type(solver).__name__} declared coupling hook {hook.name} as unsupported")
+            raise NotImplementedError(
+                f"{type(entry.solver).__name__} declared coupling hook {hook.name} as unsupported"
+            )
         return _UNSUPPORTED
-    method = getattr(solver, COUPLING_HOOK_METHOD[hook], None)
-    return method if callable(method) else None
+    return cached
 
 
 @dataclass
@@ -119,6 +135,7 @@ class SolverEntry:
     state_tmp_1: State | None = None
     body_force_input: wp.array = field(default=None)
     particle_force_input: wp.array = field(default=None)
+    hook_methods: dict = field(default_factory=dict)
 
 
 class SolverCoupled(SolverBase, CouplingInterface):
@@ -409,37 +426,49 @@ class SolverCoupled(SolverBase, CouplingInterface):
         proxy_particle_keep: set[int],
     ) -> None:
         """Expose compact body/joint view counts when visible entities form a prefix."""
-        model = self.model
-
         visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
+        visible_particles = {int(i) for i in cfg.particles} | {int(i) for i in proxy_particle_keep}
+
+        self._apply_body_prefix_limit(view, visible_bodies)
+        self._apply_particle_prefix_limit(view, visible_particles)
+        self._apply_joint_prefix_limit(view, cfg)
+        self._apply_shape_prefix_limit(view, cfg, visible_bodies)
+
+    def _apply_body_prefix_limit(self, view: ModelView, visible_bodies: set[int]) -> None:
         body_prefix = self._prefix_length(visible_bodies)
-        if body_prefix is not None and body_prefix < model.body_count:
+        if body_prefix is not None and body_prefix < self.model.body_count:
             view.body_count = body_prefix
 
+    def _apply_particle_prefix_limit(self, view: ModelView, visible_particles: set[int]) -> None:
         # Keep particle arrays globally indexed for now. Particle contacts and
         # deformable element connectivity still commonly carry global particle
         # ids. The pure-rigid case is the exception: expose zero particles and
         # zero deformable element counts so rigid-only solvers never see stale
         # particle metadata.
-        visible_particles = {int(i) for i in cfg.particles} | {int(i) for i in proxy_particle_keep}
-        if not visible_particles and model.particle_count:
-            view.particle_count = 0
-            view.spring_count = 0
-            view.tri_count = 0
-            view.edge_count = 0
-            view.tet_count = 0
-            view.muscle_count = 0
+        if visible_particles or not self.model.particle_count:
+            return
+        view.particle_count = 0
+        view.spring_count = 0
+        view.tri_count = 0
+        view.edge_count = 0
+        view.tet_count = 0
+        view.muscle_count = 0
 
+    def _apply_joint_prefix_limit(self, view: ModelView, cfg: SolverCoupled.Entry) -> None:
         visible_joints = {int(i) for i in cfg.joints}
         joint_prefix = self._prefix_length(visible_joints)
-        if joint_prefix is not None and joint_prefix < model.joint_count:
-            articulation_prefix = self._articulation_prefix_count(joint_prefix)
-            if articulation_prefix is not None:
-                view.joint_count = joint_prefix
-                view.joint_coord_count = int(model.joint_q_start.numpy()[joint_prefix])
-                view.joint_dof_count = int(model.joint_qd_start.numpy()[joint_prefix])
-                view.articulation_count = articulation_prefix
+        if joint_prefix is None or joint_prefix >= self.model.joint_count:
+            return
+        articulation_prefix = self._articulation_prefix_count(joint_prefix)
+        if articulation_prefix is None:
+            return
+        view.joint_count = joint_prefix
+        view.joint_coord_count = int(self.model.joint_q_start.numpy()[joint_prefix])
+        view.joint_dof_count = int(self.model.joint_qd_start.numpy()[joint_prefix])
+        view.articulation_count = articulation_prefix
 
+    def _apply_shape_prefix_limit(self, view: ModelView, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> None:
+        model = self.model
         visible_shapes = {int(i) for i in cfg.shapes}
         if model.shape_count and model.shape_body is not None and visible_bodies:
             shape_body = model.shape_body.numpy()
@@ -448,10 +477,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 for shape_id, body_id in enumerate(shape_body)
                 if int(body_id) < 0 or int(body_id) in visible_bodies
             )
-        if visible_shapes:
-            shape_prefix = self._prefix_length(visible_shapes)
-            if shape_prefix is not None and shape_prefix < model.shape_count:
-                view.shape_count = shape_prefix
+        if not visible_shapes:
+            return
+        shape_prefix = self._prefix_length(visible_shapes)
+        if shape_prefix is not None and shape_prefix < model.shape_count:
+            view.shape_count = shape_prefix
 
     def _articulation_prefix_count(self, joint_prefix: int) -> int | None:
         """Return articulation count for a joint prefix, if it ends on a boundary."""
@@ -484,7 +514,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return []
 
         method = _coupling_method_or_fallback(
-            entry.solver,
+            entry,
             CouplingHook.EFFECTIVE_MASS_DIAGONAL,
             raise_on_unsupported=raise_on_unsupported,
         )
@@ -531,7 +561,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         indices = [int(i) for i in body_indices.numpy()]
         block_method = _coupling_method_or_fallback(
-            entry.solver,
+            entry,
             CouplingHook.EFFECTIVE_MASS_BLOCK,
             raise_on_unsupported=raise_on_unsupported,
         )
@@ -731,11 +761,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _uses_custom_coupling_hook(solver: SolverBase, hook: CouplingHook) -> bool:
-        _require_supports_coupling(solver)
-        if hook in solver.coupling_unsupported:
-            raise NotImplementedError(f"{type(solver).__name__} declared coupling hook {hook.name} as unsupported")
-        return callable(getattr(solver, COUPLING_HOOK_METHOD[hook], None))
+    def _uses_custom_coupling_hook(entry: SolverEntry, hook: CouplingHook) -> bool:
+        return _coupling_method_or_fallback(entry, hook) is not None
 
     def _clear_body_force_input(self, entry: SolverEntry) -> None:
         """Clear an entry's public body force input before mapped additions."""
@@ -845,7 +872,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         flags = CouplingInputStateFlags(flags)
         if flags == 0 and not restart:
             return
-        if self._uses_custom_coupling_hook(entry.solver, CouplingHook.NOTIFY_INPUT_STATE_UPDATE):
+        if self._uses_custom_coupling_hook(entry, CouplingHook.NOTIFY_INPUT_STATE_UPDATE):
             entry.solver.coupling_notify_input_state_update(entry.state_0, flags, restart=restart, dt=dt)
 
     def _step_entry(

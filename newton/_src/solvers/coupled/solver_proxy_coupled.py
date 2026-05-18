@@ -161,10 +161,10 @@ class SolverProxyCoupled(SolverCoupled):
         if len(entries) > 2:
             raise ValueError("Proxy coupling currently supports at most two solver entries")
 
-        self._proxy_coupling = coupling
         self._proxy_mappings = self._build_proxy_mappings(model, coupling)
         self._proxy_particle_mappings = self._build_proxy_particle_mappings(model, coupling)
         self._proxy_collision_configs = self._build_proxy_collision_configs(coupling)
+        self._proxy_groups = self._build_proxy_groups()
 
         super().__init__(
             model=model,
@@ -503,7 +503,7 @@ class SolverProxyCoupled(SolverCoupled):
     ) -> None:
         """Run lagged-impulse proxy iterations for one coupled step."""
         del state_out
-        iterations = max(1, int(self._proxy_coupling.iterations))
+        iterations = max(1, int(self._coupling.iterations))
         for k in range(iterations):
             # Some solvers use state_in arrays as temporary buffers during a
             # step. Proxy iterations are repeated solves over the same top-level
@@ -513,6 +513,17 @@ class SolverProxyCoupled(SolverCoupled):
             self._distribute_state(state_in, dt=dt, restart=k > 0)
             self._step_proxy(state_in, control, contacts, dt)
 
+    def _build_proxy_groups(self) -> dict[tuple[str, str], dict[str, list]]:
+        """Bucket proxy mappings by (src, dst) once at construction."""
+        groups: dict[tuple[str, str], dict[str, list]] = {}
+        for proxy in self._proxy_mappings:
+            groups.setdefault((proxy.src_name, proxy.dst_name), {"bodies": [], "particles": []})["bodies"].append(proxy)
+        for proxy in self._proxy_particle_mappings:
+            groups.setdefault((proxy.src_name, proxy.dst_name), {"bodies": [], "particles": []})["particles"].append(
+                proxy
+            )
+        return groups
+
     def _step_proxy(
         self,
         state_in: State,
@@ -521,20 +532,7 @@ class SolverProxyCoupled(SolverCoupled):
         dt: float,
     ) -> None:
         """Run one lagged-impulse proxy coupling pass."""
-        groups: dict[tuple[str, str], dict[str, list]] = {}
-
-        def group_for(src_name: str, dst_name: str) -> dict[str, list]:
-            key = (src_name, dst_name)
-            if key not in groups:
-                groups[key] = {"bodies": [], "particles": []}
-            return groups[key]
-
-        for proxy in self._proxy_mappings:
-            group_for(proxy.src_name, proxy.dst_name)["bodies"].append(proxy)
-        for proxy in self._proxy_particle_mappings:
-            group_for(proxy.src_name, proxy.dst_name)["particles"].append(proxy)
-
-        for (src_name, dst_name), group in groups.items():
+        for (src_name, dst_name), group in self._proxy_groups.items():
             body_proxies = group["bodies"]
             particle_proxies = group["particles"]
             src = self._entries[src_name]
@@ -587,20 +585,18 @@ class SolverProxyCoupled(SolverCoupled):
                     dt=dt,
                 )
 
-                body_qd_rewound = False
-                if not is_staggered:
-                    rewind_method = _coupling_method_or_fallback(dst.solver, CouplingHook.BODY_PROXY_REWIND_VELOCITY)
-                else:
-                    rewind_method = None
-                if rewind_method is not None and not is_staggered:
+                if is_staggered:
+                    continue
+
+                rewind_method = _coupling_method_or_fallback(dst, CouplingHook.BODY_PROXY_REWIND_VELOCITY)
+                if rewind_method is not None:
                     rewind_method(
                         proxy.destination_local_to_proxy_global,
                         dst.state_0,
                         proxy.coupling_forces,
                         dt,
                     )
-                    body_qd_rewound = True
-                elif not is_staggered:
+                else:
                     wp.launch(
                         subtract_proxy_forces_kernel,
                         dim=proxy.destination_local_to_proxy_global.shape[0],
@@ -618,9 +614,7 @@ class SolverProxyCoupled(SolverCoupled):
                         ],
                         device=self.model.device,
                     )
-                    body_qd_rewound = True
-                if body_qd_rewound:
-                    self._notify_input_state_update(dst, CouplingInputStateFlags.BODY_QD, dt=dt)
+                self._notify_input_state_update(dst, CouplingInputStateFlags.BODY_QD, dt=dt)
 
             for proxy in particle_proxies:
                 is_staggered = int(proxy.mode) == int(_ProxyMode.STAGGERED)
@@ -645,22 +639,18 @@ class SolverProxyCoupled(SolverCoupled):
                     dt=dt,
                 )
 
-                particle_qd_rewound = False
-                if not is_staggered:
-                    rewind_method = _coupling_method_or_fallback(
-                        dst.solver, CouplingHook.PARTICLE_PROXY_REWIND_VELOCITY
-                    )
-                else:
-                    rewind_method = None
-                if rewind_method is not None and not is_staggered:
+                if is_staggered:
+                    continue
+
+                rewind_method = _coupling_method_or_fallback(dst, CouplingHook.PARTICLE_PROXY_REWIND_VELOCITY)
+                if rewind_method is not None:
                     rewind_method(
                         proxy.destination_local_to_proxy_global,
                         dst.state_0,
                         proxy.coupling_forces,
                         dt,
                     )
-                    particle_qd_rewound = True
-                elif not is_staggered:
+                else:
                     wp.launch(
                         subtract_proxy_particle_forces_kernel,
                         dim=proxy.destination_local_to_proxy_global.shape[0],
@@ -676,9 +666,7 @@ class SolverProxyCoupled(SolverCoupled):
                         ],
                         device=self.model.device,
                     )
-                    particle_qd_rewound = True
-                if particle_qd_rewound:
-                    self._notify_input_state_update(dst, CouplingInputStateFlags.PARTICLE_QD, dt=dt)
+                self._notify_input_state_update(dst, CouplingInputStateFlags.PARTICLE_QD, dt=dt)
 
             dst_contacts = contacts
             contacts_freshly_detected = False
@@ -689,7 +677,7 @@ class SolverProxyCoupled(SolverCoupled):
             restore_filtered_contacts = False
             try:
                 if body_proxies:
-                    if self._uses_custom_coupling_hook(dst.solver, CouplingHook.PROXY_CONTACT_PREPARE):
+                    if self._uses_custom_coupling_hook(dst, CouplingHook.PROXY_CONTACT_PREPARE):
                         dst_contacts = dst.solver.coupling_prepare_proxy_contacts(
                             dst.state_0,
                             dst_contacts,
@@ -734,7 +722,7 @@ class SolverProxyCoupled(SolverCoupled):
 
             for proxy in body_proxies:
                 proxy.coupling_forces.zero_()
-                if self._uses_custom_coupling_hook(dst.solver, CouplingHook.BODY_PROXY_HARVEST):
+                if self._uses_custom_coupling_hook(dst, CouplingHook.BODY_PROXY_HARVEST):
                     dst.solver.coupling_harvest_proxy_wrenches(
                         proxy.destination_local_to_proxy_global,
                         proxy.coupling_forces,
@@ -764,7 +752,7 @@ class SolverProxyCoupled(SolverCoupled):
 
             for proxy in particle_proxies:
                 proxy.coupling_forces.zero_()
-                if self._uses_custom_coupling_hook(dst.solver, CouplingHook.PARTICLE_PROXY_HARVEST):
+                if self._uses_custom_coupling_hook(dst, CouplingHook.PARTICLE_PROXY_HARVEST):
                     dst.solver.coupling_harvest_proxy_particle_forces(
                         proxy.destination_local_to_proxy_global,
                         proxy.coupling_forces,

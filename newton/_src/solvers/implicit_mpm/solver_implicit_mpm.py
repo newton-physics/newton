@@ -1106,7 +1106,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         dt: float = 0.0,
     ) -> None:
         """Synchronize deformable collider meshes after particle input-state updates."""
-        del dt, restart
+        del dt
         flags = CouplingInputStateFlags(flags)
         update_points = bool(flags & CouplingInputStateFlags.PARTICLE_Q)
         update_velocities = bool(flags & CouplingInputStateFlags.PARTICLE_QD)
@@ -1116,6 +1116,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         sync_points = update_points and state.particle_q is not None
         sync_velocities = update_velocities and state.particle_qd is not None
         if not (sync_points or sync_velocities):
+            return
+
+        # On iteration restart the source state is the same as at the start of
+        # the outer step, so the collider mesh and its BVH are still valid from
+        # the first call this step — skip the resync and refit.
+        if restart:
             return
 
         for collider_id, vertex_start, vertex_end in self._mpm_model.deformable_collider_vertex_ranges:

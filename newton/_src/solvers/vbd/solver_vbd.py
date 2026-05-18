@@ -20,6 +20,7 @@ from ...sim import (
     State,
 )
 from ..coupled.interface import CouplingInputStateFlags, CouplingInterface
+from ..coupled.proxy_utils import harvest_proxy_wrenches_kernel
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
@@ -886,18 +887,21 @@ class SolverVBD(SolverBase, CouplingInterface):
                 dt,
             )
             wp.launch(
-                _harvest_vbd_proxy_rigid_contact_wrenches_kernel,
+                harvest_proxy_wrenches_kernel,
                 dim=contacts.rigid_contact_max,
                 inputs=[
-                    body_local_to_proxy_global,
                     rigid_contact_count,
                     body0,
                     body1,
                     point0,
                     point1,
                     force_on_body1,
-                    state_out.body_q,
+                    self.model.body_inv_mass,
+                    self.model.body_flags,
+                    body_local_to_proxy_global,
+                    int(BodyFlags.PROXY),
                     self.model.body_com,
+                    state_out.body_q,
                     out_body_f,
                 ],
                 device=self.device,
@@ -2971,56 +2975,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         """
         if self.particle_enable_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)
-
-
-@wp.kernel(enable_backward=False)
-def _harvest_vbd_proxy_rigid_contact_wrenches_kernel(
-    body_local_to_proxy_global: wp.array[int],
-    rigid_contact_count: wp.array[int],
-    contact_body0: wp.array[wp.int32],
-    contact_body1: wp.array[wp.int32],
-    contact_point0_world: wp.array[wp.vec3],
-    contact_point1_world: wp.array[wp.vec3],
-    force_on_body1: wp.array[wp.vec3],
-    body_q: wp.array[wp.transform],
-    body_com: wp.array[wp.vec3],
-    out_body_f: wp.array[wp.spatial_vector],
-):
-    contact_id = wp.tid()
-    if contact_id >= rigid_contact_count[0]:
-        return
-
-    body0 = contact_body0[contact_id]
-    body1 = contact_body1[contact_id]
-
-    proxy0 = int(-1)
-    if body0 >= 0 and body0 < body_local_to_proxy_global.shape[0]:
-        proxy0 = body_local_to_proxy_global[body0]
-
-    proxy1 = int(-1)
-    if body1 >= 0 and body1 < body_local_to_proxy_global.shape[0]:
-        proxy1 = body_local_to_proxy_global[body1]
-
-    if proxy0 >= 0 and proxy1 >= 0:
-        return
-    if proxy0 < 0 and proxy1 < 0:
-        return
-
-    body = body0
-    proxy = proxy0
-    point = contact_point0_world[contact_id]
-    force = -force_on_body1[contact_id]
-    if proxy1 >= 0:
-        body = body1
-        proxy = proxy1
-        point = contact_point1_world[contact_id]
-        force = force_on_body1[contact_id]
-
-    X_wb = body_q[body]
-    com_world = wp.transform_point(X_wb, body_com[body])
-    torque = wp.cross(point - com_world, force)
-
-    wp.atomic_add(out_body_f, proxy, wp.spatial_vector(force, torque))
 
 
 @wp.func

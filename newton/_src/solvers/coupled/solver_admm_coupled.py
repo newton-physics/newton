@@ -548,7 +548,6 @@ class SolverAdmmCoupled(SolverCoupled):
         entries: Sequence[SolverCoupled.Entry],
         coupling: SolverAdmmCoupled.Config,
     ) -> None:
-        self._admm_coupling = coupling
         self._admm_buffers: dict[str, _AdmmBuffers] = {}
         self._admm_rr_groups: list[_AdmmRigidRigidAttachmentGroup] = []
         self._admm_rr_angular_groups: list[_AdmmRigidRigidAngularAttachmentGroup] = []
@@ -568,7 +567,6 @@ class SolverAdmmCoupled(SolverCoupled):
         self._admm_internal_contacts = None
         self._admm_particle_contact_grid = None
         self._admm_particle_contact_query_radius = 0.0
-        self._admm_collision_contact_count_max = 0
         self._entry_body_sets: dict[str, set[int]] = {}
         self._entry_particle_sets: dict[str, set[int]] = {}
         self._admm_rigid_particle_shape_filters: dict[int, set[int] | None] = {}
@@ -577,48 +575,42 @@ class SolverAdmmCoupled(SolverCoupled):
         super().__init__(
             model=model,
             entries=entries,
-            coupling=None,
+            coupling=coupling,
         )
-        self._coupling = coupling
 
         self._setup_admm(coupling)
+
+    def _sum_active_count(self, attr: str) -> int:
+        """Sum a per-group active-count array across all dynamic contact groups.
+
+        Each `.numpy()` call is a device-to-host sync — paid once per group per call.
+        """
+        total = 0
+        for groups in (
+            self._admm_dynamic_rr_contact_groups,
+            self._admm_dynamic_rp_contact_groups,
+            self._admm_dynamic_pp_contact_groups,
+        ):
+            for group in groups:
+                counter = getattr(group, attr)
+                if counter is not None:
+                    total += min(int(counter.numpy()[0]), group.count)
+        return total
 
     @property
     def collision_contact_count(self) -> int:
         """Number of collision-detected ADMM contacts active in the last step."""
-        count = 0
-        for group in self._admm_dynamic_rr_contact_groups:
-            if group.active_count is not None:
-                count += min(int(group.active_count.numpy()[0]), group.count)
-        for group in self._admm_dynamic_rp_contact_groups:
-            if group.active_count is not None:
-                count += min(int(group.active_count.numpy()[0]), group.count)
-        for group in self._admm_dynamic_pp_contact_groups:
-            if group.active_count is not None:
-                count += min(int(group.active_count.numpy()[0]), group.count)
-        self._admm_collision_contact_count_max = max(self._admm_collision_contact_count_max, count)
-        return count
+        return self._sum_active_count("active_count")
 
     @property
     def collision_contact_count_max(self) -> int:
         """Maximum collision-detected ADMM contact count observed so far."""
-        count = 0
-        for group in self._admm_dynamic_rr_contact_groups:
-            if group.active_count_max is not None:
-                count += min(int(group.active_count_max.numpy()[0]), group.count)
-        for group in self._admm_dynamic_rp_contact_groups:
-            if group.active_count_max is not None:
-                count += min(int(group.active_count_max.numpy()[0]), group.count)
-        for group in self._admm_dynamic_pp_contact_groups:
-            if group.active_count_max is not None:
-                count += min(int(group.active_count_max.numpy()[0]), group.count)
-        self._admm_collision_contact_count_max = max(self._admm_collision_contact_count_max, count)
-        return self._admm_collision_contact_count_max
+        return self._sum_active_count("active_count_max")
 
     def _customize_view(self, name: str, view: ModelView, body_indices: wp.array) -> None:
         """Apply ADMM proximal mass scaling before sub-solver construction."""
         del name
-        gamma = float(self._admm_coupling.gamma)
+        gamma = float(self._coupling.gamma)
         if gamma <= 0.0:
             return
         scale = 1.0 + gamma
@@ -1544,7 +1536,7 @@ class SolverAdmmCoupled(SolverCoupled):
     ) -> None:
         """Run ADMM iterations over all sub-solvers."""
         del state_out
-        coupling = self._admm_coupling
+        coupling = self._coupling
         iters = max(1, int(coupling.iterations))
         self._refresh_collision_contact_groups(state_in)
 
@@ -2125,7 +2117,7 @@ class SolverAdmmCoupled(SolverCoupled):
         return groups
 
     def _admm_begin_step(self, dt: float) -> None:
-        coupling = self._admm_coupling
+        coupling = self._coupling
         for group in self._admm_rr_groups:
             if group.count == 0:
                 continue
@@ -2333,7 +2325,7 @@ class SolverAdmmCoupled(SolverCoupled):
         *,
         iteration_restart: bool = False,
     ) -> None:
-        gamma = float(self._admm_coupling.gamma)
+        gamma = float(self._coupling.gamma)
         apply_proximal = gamma > 0.0
         flags = CouplingInputStateFlags(0)
 
@@ -2376,7 +2368,7 @@ class SolverAdmmCoupled(SolverCoupled):
 
     def _accumulate_admm_forces(self, iteration_k: int, dt: float) -> None:
         del iteration_k
-        coupling = self._admm_coupling
+        coupling = self._coupling
         for group in self._admm_rr_groups:
             if group.count == 0:
                 continue
@@ -2707,7 +2699,7 @@ class SolverAdmmCoupled(SolverCoupled):
 
     def _update_admm_dual(self, iteration_k: int, dt: float) -> None:
         del iteration_k, dt
-        coupling = self._admm_coupling
+        coupling = self._coupling
         for group in self._admm_rr_groups:
             if group.count == 0:
                 continue
