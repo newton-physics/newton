@@ -57,7 +57,7 @@ A typical example for using this module is:
     ...
 
     # Create a forward-dynamics DualProblem to be solved
-    dual = DualProblem(model, limits, contacts)
+    dual = DualProblem(model, limits, contacts, jacobians)
     dual.build(model, data, limits, contacts, jacobians)
 
     # Create a forward-dynamics PADMM solver

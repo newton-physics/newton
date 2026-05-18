@@ -143,19 +143,16 @@ class Example:
 
         return positions
 
-    def __init__(
-        self,
-        viewer,
-        args=None,
-        num_cables: int = 7,
-        segments: int = 40,
-        with_dahl: bool = True,
-        eps_max: float = 2.0,
-        tau: float = 0.1,
-    ):
+    def __init__(self, viewer, args):
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
+
+        # CLI-driven configuration. Read here (not from the __main__ block)
+        # so the example browser's reset/switch produces a faithful re-run.
+        eps_max = args.eps_max
+        tau = args.tau
+        with_dahl = not args.no_dahl and eps_max > 0.0 and tau > 0.0
 
         # Simulation cadence
         self.fps = 60
@@ -167,8 +164,8 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         # Cable bundle parameters
-        self.num_cables = num_cables
-        self.num_elements = segments
+        self.num_cables = 7
+        self.num_elements = args.segments
         self.cable_length = 4.0
         self.cable_radius = 0.02
         self.cable_gap_multiplier = 1.1
@@ -422,15 +419,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
-    example = Example(
-        viewer,
-        args,
-        num_cables=7,
-        segments=args.segments,
-        with_dahl=not args.no_dahl and args.eps_max > 0.0 and args.tau > 0.0,
-        eps_max=args.eps_max,
-        tau=args.tau,
-    )
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

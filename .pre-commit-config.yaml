@@ -43,4 +43,4 @@ repos:
         entry: python scripts/check_warp_array_syntax.py
         language: python
         types: [python]
-        exclude: ^(scripts/check_warp_array_syntax\.py|newton/_src/solvers/kamino/)
+        exclude: ^(scripts/check_warp_array_syntax\.py)

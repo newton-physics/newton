@@ -1058,10 +1058,10 @@ class ModelBuilder:
         # rigid joints
         self.joint_parent: list[int] = []
         """Parent body indices accumulated for :attr:`Model.joint_parent`."""
-        self.joint_parents: dict[int, list[int]] = {}
-        """Mapping from child body index to parent body indices used while composing articulations."""
-        self.joint_children: dict[int, list[int]] = {}
-        """Mapping from parent body index to child body indices used while composing articulations."""
+        self.joint_parents: dict[int, list[tuple[int, int]]] = {}
+        """Mapping from child body index to ``(parent_body, joint_idx)`` pairs (one per joint, no dedup)."""
+        self.joint_children: dict[int, list[tuple[int, int]]] = {}
+        """Mapping from parent body index to ``(child_body, joint_idx)`` pairs (one per joint, no dedup)."""
         self.joint_child: list[int] = []
         """Child body indices accumulated for :attr:`Model.joint_child`."""
         self.joint_axis: list[Vec3] = []
@@ -1119,6 +1119,9 @@ class ModelBuilder:
 
         self.joint_enabled: list[bool] = []
         """Joint enabled flags accumulated for :attr:`Model.joint_enabled`."""
+
+        self.joint_collision_filter_parent: list[bool] = []
+        """Per-joint resolved ``collision_filter_parent`` flag. Builder-only."""
 
         self.joint_q_start: list[int] = []
         """Joint coordinate start indices accumulated for :attr:`Model.joint_q_start`."""
@@ -1252,6 +1255,13 @@ class ModelBuilder:
             shape_b: Second shape index
         """
         self.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
+
+    @staticmethod
+    def _default_filter_parent(joint_type: JointType, parent: int) -> bool:
+        """Default ``collision_filter_parent``: ``False`` for non-fixed joints to world; ``True`` otherwise."""
+        if parent == -1:
+            return joint_type == JointType.FIXED
+        return True
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
         """
@@ -3100,16 +3110,17 @@ class ModelBuilder:
             self.joint_child.extend(new_children)
 
             # Update parent/child lookups
-            for p, c in zip(new_parents, new_children, strict=True):
+            for i, (p, c) in enumerate(zip(new_parents, new_children, strict=True)):
+                new_joint_idx = start_joint_idx + i
                 if c not in self.joint_parents:
-                    self.joint_parents[c] = [p]
+                    self.joint_parents[c] = [(p, new_joint_idx)]
                 else:
-                    self.joint_parents[c].append(p)
+                    self.joint_parents[c].append((p, new_joint_idx))
 
                 if p not in self.joint_children:
-                    self.joint_children[p] = [c]
-                elif c not in self.joint_children[p]:
-                    self.joint_children[p].append(c)
+                    self.joint_children[p] = [(c, new_joint_idx)]
+                else:
+                    self.joint_children[p].append((c, new_joint_idx))
 
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
@@ -3234,6 +3245,7 @@ class ModelBuilder:
             "body_qd",
             "joint_type",
             "joint_enabled",
+            "joint_collision_filter_parent",
             "joint_X_c",
             "joint_armature",
             "joint_axis",
@@ -3718,7 +3730,7 @@ class ModelBuilder:
         label: str | None = None,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
-        collision_filter_parent: bool = True,
+        collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -3738,7 +3750,7 @@ class ModelBuilder:
                 If None, the identity transform is used.
             child_xform: The transform from the child body frame to the joint child anchor frame.
                 If None, the identity transform is used.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for non-fixed joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
             custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT_DOF` or :attr:`Model.AttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) a single scalar value that is broadcast to all DOFs/coordinates of the joint. For joints with zero DOFs (e.g., fixed joints), JOINT_DOF attributes are silently skipped. Custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT` require a single value to be defined.
 
@@ -3749,6 +3761,9 @@ class ModelBuilder:
             linear_axes = []
         if angular_axes is None:
             angular_axes = []
+
+        if collision_filter_parent is None:
+            collision_filter_parent = self._default_filter_parent(joint_type, parent)
 
         if parent_xform is None:
             parent_xform = wp.transform()
@@ -3778,21 +3793,23 @@ class ModelBuilder:
             )
 
         self.joint_type.append(joint_type)
+        joint_idx = self.joint_count - 1
         self.joint_parent.append(parent)
         if child not in self.joint_parents:
-            self.joint_parents[child] = [parent]
+            self.joint_parents[child] = [(parent, joint_idx)]
         else:
-            self.joint_parents[child].append(parent)
+            self.joint_parents[child].append((parent, joint_idx))
         if parent not in self.joint_children:
-            self.joint_children[parent] = [child]
-        elif child not in self.joint_children[parent]:
-            self.joint_children[parent].append(child)
+            self.joint_children[parent] = [(child, joint_idx)]
+        else:
+            self.joint_children[parent].append((child, joint_idx))
         self.joint_child.append(child)
         self.joint_X_p.append(parent_xform)
         self.joint_X_c.append(child_xform)
         self.joint_label.append(label or f"joint_{self.joint_count}")
         self.joint_dof_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_enabled.append(enabled)
+        self.joint_collision_filter_parent.append(collision_filter_parent)
         self.joint_world.append(self.current_world)
         self.joint_articulation.append(-1)
 
@@ -3858,7 +3875,7 @@ class ModelBuilder:
         self.joint_coord_count += coord_count
         self.joint_constraint_count += cts_count
 
-        if collision_filter_parent and parent > -1:
+        if collision_filter_parent:
             for child_shape in self.body_shapes[child]:
                 if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
                     continue
@@ -3899,7 +3916,7 @@ class ModelBuilder:
         friction: float | None = None,
         actuator_mode: JointTargetMode | None = None,
         label: str | None = None,
-        collision_filter_parent: bool = True,
+        collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
@@ -3927,7 +3944,7 @@ class ModelBuilder:
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
@@ -3992,7 +4009,7 @@ class ModelBuilder:
         friction: float | None = None,
         actuator_mode: JointTargetMode | None = None,
         label: str | None = None,
-        collision_filter_parent: bool = True,
+        collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -4019,7 +4036,7 @@ class ModelBuilder:
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from ``ModelBuilder.default_joint_cfg.velocity_limit`` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
@@ -4071,7 +4088,7 @@ class ModelBuilder:
         armature: float | None = None,
         friction: float | None = None,
         label: str | None = None,
-        collision_filter_parent: bool = True,
+        collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
         actuator_mode: JointTargetMode | None = None,
@@ -4086,7 +4103,7 @@ class ModelBuilder:
             armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
             friction: Friction coefficient for the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.friction`` is used.
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
             actuator_mode: The actuator mode for this joint's DOFs. If None, defaults to NONE.
@@ -4142,7 +4159,7 @@ class ModelBuilder:
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         label: str | None = None,
-        collision_filter_parent: bool = True,
+        collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -4155,7 +4172,7 @@ class ModelBuilder:
             parent_xform: The transform of the joint in the parent body's local frame.
             child_xform: The transform of the joint in the child body's local frame.
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``True``.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT frequency attributes.
 
@@ -4188,7 +4205,7 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         parent: int = -1,
         label: str | None = None,
-        collision_filter_parent: bool = True,
+        collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -4202,7 +4219,7 @@ class ModelBuilder:
             child_xform: The transform of the joint in the child body's local frame.
             parent: The index of the parent body (-1 by default to use the world frame, e.g. to make the child body and its children a floating-base mechanism).
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
@@ -4245,7 +4262,7 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         min_distance: float = -1.0,
         max_distance: float = 1.0,
-        collision_filter_parent: bool = True,
+        collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -4259,7 +4276,7 @@ class ModelBuilder:
             child_xform: The transform of the joint in the child body's local frame.
             min_distance: The minimum distance between the bodies (no limit if negative).
             max_distance: The maximum distance between the bodies (no limit if negative).
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
@@ -4305,7 +4322,7 @@ class ModelBuilder:
         label: str | None = None,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
-        collision_filter_parent: bool = True,
+        collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
@@ -4321,7 +4338,7 @@ class ModelBuilder:
             parent_xform: The transform from the parent body frame to the joint parent anchor frame.
             child_xform: The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from ``ModelBuilder.default_joint_cfg.armature`` is used.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
@@ -4360,7 +4377,7 @@ class ModelBuilder:
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
         label: str | None = None,
-        collision_filter_parent: bool = True,
+        collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
@@ -4393,7 +4410,7 @@ class ModelBuilder:
                 this is a dimensionless (Rayleigh-style) coefficient. If None,
                 defaults to 0.0.
             label: The label of the joint.
-            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD
                 frequency attributes.
@@ -4877,6 +4894,7 @@ class ModelBuilder:
                 "parent_xform": wp.transform_expand(self.joint_X_p[i]),
                 "child_xform": wp.transform_expand(self.joint_X_c[i]),
                 "enabled": self.joint_enabled[i],
+                "collision_filter_parent": self.joint_collision_filter_parent[i],
                 "axes": [],
                 "axis_dim": self.joint_dof_dim[i],
                 "parent": parent,
@@ -5131,23 +5149,83 @@ class ModelBuilder:
         # sort joints so they appear in the same order as before
         retained_joints.sort(key=lambda x: x["original_id"])
 
+        original_articulation_start = self.articulation_start[:]
+        original_articulation_label = self.articulation_label[:]
+        original_articulation_world = self.articulation_world[:]
+        original_joint_articulation = self.joint_articulation[:] if self.joint_articulation else []
+
         joint_remap = {}
+        articulation_first_joint: dict[int, int] = {}
         for i, joint in enumerate(retained_joints):
-            joint_remap[joint["original_id"]] = i
-        # update articulation_start
-        for i, old_i in enumerate(self.articulation_start):
-            start_i = old_i
-            while start_i not in joint_remap:
-                start_i += 1
-                if start_i >= self.joint_count:
-                    break
-            self.articulation_start[i] = joint_remap.get(start_i, start_i)
-        # remove empty articulation starts, i.e. where the start and end are the same
-        self.articulation_start = list(set(self.articulation_start))
+            old_joint_idx = joint["original_id"]
+            joint_remap[old_joint_idx] = i
+            if original_joint_articulation and old_joint_idx < len(original_joint_articulation):
+                old_articulation = original_joint_articulation[old_joint_idx]
+                if old_articulation >= 0 and old_articulation not in articulation_first_joint:
+                    articulation_first_joint[old_articulation] = i
+
+        # Update articulation starts from retained joints' original articulation
+        # ownership. This preserves articulation order while dropping empty
+        # articulations whose joints were fully collapsed away.
+        articulation_remap: dict[int, int] = {}
+        new_articulation_start: list[int] = []
+        new_articulation_label: list[str] = []
+        new_articulation_world: list[int] = []
+        for articulation_idx in range(len(original_articulation_start)):
+            if articulation_idx not in articulation_first_joint:
+                continue
+
+            articulation_remap[articulation_idx] = len(new_articulation_start)
+            new_articulation_start.append(articulation_first_joint[articulation_idx])
+            if articulation_idx < len(original_articulation_label):
+                new_articulation_label.append(original_articulation_label[articulation_idx])
+            else:
+                new_articulation_label.append(f"articulation_{articulation_idx}")
+            if articulation_idx < len(original_articulation_world):
+                new_articulation_world.append(original_articulation_world[articulation_idx])
+            else:
+                new_articulation_world.append(self.current_world)
+
+        self.articulation_start = new_articulation_start
+        self.articulation_label = new_articulation_label
+        self.articulation_world = new_articulation_world
+
+        def remap_articulation_reference(value: Any) -> Any:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, list):
+                return [remap_articulation_reference(v) for v in value]
+            if isinstance(value, tuple):
+                return tuple(remap_articulation_reference(v) for v in value)
+            # Covers Python int as well as Warp scalar integer types (wp.int32 etc.),
+            # whose default `dtype(0)` instances are not Python ints.
+            try:
+                idx = int(value)
+            except (TypeError, ValueError):
+                return value
+            return articulation_remap.get(idx, -1) if idx >= 0 else value
+
+        # ARTICULATION-frequency attributes use dict storage by construction
+        # (see CustomAttribute._create_empty_values_container).
+        for custom_attr in self.get_custom_attributes_by_frequency([Model.AttributeFrequency.ARTICULATION]):
+            custom_attr.values = {
+                new_idx: custom_attr.values[old_idx]
+                for old_idx, new_idx in articulation_remap.items()
+                if old_idx in custom_attr.values
+            }
+
+        for custom_attr in self.custom_attributes.values():
+            if custom_attr.references != "articulation" or custom_attr.values is None:
+                continue
+            if isinstance(custom_attr.values, dict):
+                custom_attr.values = {
+                    entity_idx: remap_articulation_reference(value) for entity_idx, value in custom_attr.values.items()
+                }
+            else:
+                custom_attr.values = [remap_articulation_reference(value) for value in custom_attr.values]
 
         # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
-        original_articulation = self.joint_articulation[:] if self.joint_articulation else []
 
         self.joint_label.clear()
         self.joint_type.clear()
@@ -5160,6 +5238,7 @@ class ModelBuilder:
         self.joint_qd_start.clear()
         self.joint_cts_start.clear()
         self.joint_enabled.clear()
+        self.joint_collision_filter_parent.clear()
         self.joint_armature.clear()
         self.joint_X_p.clear()
         self.joint_X_c.clear()
@@ -5190,6 +5269,7 @@ class ModelBuilder:
             self.joint_cts.extend(joint["cts"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
+            self.joint_collision_filter_parent.append(joint["collision_filter_parent"])
             self.joint_X_p.append(joint["parent_xform"])
             self.joint_X_c.append(joint["child_xform"])
             self.joint_dof_dim.append(joint["axis_dim"])
@@ -5200,8 +5280,9 @@ class ModelBuilder:
                 # If no world was assigned, use default -1
                 self.joint_world.append(-1)
             # Rebuild joint articulation assignment
-            if original_articulation and joint["original_id"] < len(original_articulation):
-                self.joint_articulation.append(original_articulation[joint["original_id"]])
+            if original_joint_articulation and joint["original_id"] < len(original_joint_articulation):
+                old_articulation = original_joint_articulation[joint["original_id"]]
+                self.joint_articulation.append(articulation_remap.get(old_articulation, -1))
             else:
                 self.joint_articulation.append(-1)
             for axis in joint["axes"]:
@@ -5307,20 +5388,21 @@ class ModelBuilder:
         # Rebuild parent/child lookups
         self.joint_parents.clear()
         self.joint_children.clear()
-        for p, c in zip(self.joint_parent, self.joint_child, strict=True):
+        for i, (p, c) in enumerate(zip(self.joint_parent, self.joint_child, strict=True)):
             if c not in self.joint_parents:
-                self.joint_parents[c] = [p]
+                self.joint_parents[c] = [(p, i)]
             else:
-                self.joint_parents[c].append(p)
+                self.joint_parents[c].append((p, i))
 
             if p not in self.joint_children:
-                self.joint_children[p] = [c]
-            elif c not in self.joint_children[p]:
-                self.joint_children[p].append(c)
+                self.joint_children[p] = [(c, i)]
+            else:
+                self.joint_children[p].append((c, i))
 
         return {
             "body_remap": body_remap,
             "joint_remap": joint_remap,
+            "articulation_remap": articulation_remap,
             "body_merged_parent": body_merged_parent,
             "body_merged_transform": body_merged_transform,
             # TODO clean up this data
@@ -5499,14 +5581,15 @@ class ModelBuilder:
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
 
-        if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
-            for parent_body in self.joint_parents[body]:
-                if parent_body > -1:
-                    for parent_shape in self.body_shapes[parent_body]:
-                        self.add_shape_collision_filter_pair(parent_shape, shape)
-
-        if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_children:
-            for child_body in self.joint_children[body]:
+        if cfg.has_shape_collision and cfg.collision_filter_parent:
+            for parent_body, joint_idx in self.joint_parents.get(body, ()):
+                if not self.joint_collision_filter_parent[joint_idx]:
+                    continue
+                for parent_shape in self.body_shapes[parent_body]:
+                    self.add_shape_collision_filter_pair(parent_shape, shape)
+            for child_body, joint_idx in self.joint_children.get(body, ()):
+                if not self.joint_collision_filter_parent[joint_idx]:
+                    continue
                 for child_shape in self.body_shapes[child_body]:
                     self.add_shape_collision_filter_pair(shape, child_shape)
 
@@ -7700,6 +7783,7 @@ class ModelBuilder:
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
+        label: str | None = None,
     ):
         """Helper to create a regular planar cloth grid
 
@@ -7720,6 +7804,9 @@ class ModelBuilder:
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
+            label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
+                via :meth:`add_cloth_mesh` so a mesh-quality warning can identify
+                this cloth.
         """
 
         def grid_index(x, y, dim_x):
@@ -7770,6 +7857,7 @@ class ModelBuilder:
             custom_attributes_particles=custom_attributes_particles,
             custom_attributes_triangles=custom_attributes_triangles,
             custom_attributes_edges=custom_attributes_edges,
+            label=label,
         )
 
         vertex_id = 0
@@ -7815,6 +7903,8 @@ class ModelBuilder:
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
         custom_attributes_springs: dict[str, Any] | None = None,
+        validate_mesh: bool = False,
+        label: str | None = None,
     ) -> None:
         """Helper to create a cloth model from a regular triangle mesh
 
@@ -7833,6 +7923,17 @@ class ModelBuilder:
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
             custom_attributes_springs: Dictionary of custom attribute names to values for the springs.
+            validate_mesh: If True, run quality checks on the input mesh and
+                emit warnings for degenerate or sliver triangles and
+                extreme interior angles. See
+                :func:`newton.utils.validate_triangle_mesh`. (Non-manifold
+                edges are reported separately by :class:`MeshAdjacency`,
+                which is built unconditionally for the bending-edge
+                pipeline.)
+            label: Optional name forwarded to
+                :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
+                warning emitted with ``validate_mesh=True`` can identify
+                this cloth.
 
         Note:
             The mesh should be two-manifold.
@@ -7847,6 +7948,15 @@ class ModelBuilder:
         spring_ke = spring_ke if spring_ke is not None else self.default_spring_ke
         spring_kd = spring_kd if spring_kd is not None else self.default_spring_kd
         particle_radius = particle_radius if particle_radius is not None else self.default_particle_radius
+
+        if validate_mesh:
+            from ..utils.mesh import validate_triangle_mesh  # noqa: PLC0415
+
+            verts_np = np.array(vertices, dtype=float) * scale
+            inds_np = np.asarray(indices, dtype=np.intp)
+            validate_triangle_mesh(verts_np, inds_np, label=label, stacklevel=3)
+            if inds_np.size > 0 and inds_np.size % 3 != 0:
+                return
 
         num_verts = int(len(vertices))
         num_tris = int(len(indices) / 3)
@@ -8054,6 +8164,7 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        label: str | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
 
@@ -8089,6 +8200,10 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
+            label: Optional name reserved for forwarding to mesh-quality
+                diagnostics. Currently unused by ``add_soft_grid`` (the
+                generated grid is degenerate-free by construction); kept
+                for signature consistency with the other ``add_*`` helpers.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -8096,6 +8211,7 @@ class ModelBuilder:
             elastic forces. Set the triangle stiffness parameters above to non-zero values if you
             want the surface to behave like a thin skin.
         """
+        del label  # currently unused; kept on the signature for API parity
         start_vertex = len(self.particle_q)
 
         mass = cell_x * cell_y * cell_z * density
@@ -8211,6 +8327,8 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        validate_mesh: bool = False,
+        label: str | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh.
 
@@ -8249,6 +8367,13 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
+            validate_mesh: If True, check for inverted or small-volume
+                tetrahedra, sliver tetrahedra, and non-manifold faces, and
+                emit warnings. See :func:`newton.utils.validate_tet_mesh`.
+            label: Optional name forwarded to
+                :func:`newton.utils.validate_tet_mesh` so a mesh-quality
+                warning emitted with ``validate_mesh=True`` can identify
+                this soft body.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -8282,6 +8407,16 @@ class ModelBuilder:
 
         if vertices is None or indices is None:
             raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
+
+        if validate_mesh:
+            from ..utils.mesh import validate_tet_mesh  # noqa: PLC0415
+
+            verts_np = np.array(vertices, dtype=float) * scale
+            inds_np = np.asarray(indices, dtype=np.intp)
+            validate_tet_mesh(verts_np, inds_np, label=label, stacklevel=3)
+            if inds_np.size > 0 and inds_np.size % 4 != 0:
+                return
+
         if density is None:
             density = self.default_tet_density
         if k_mu is None:
