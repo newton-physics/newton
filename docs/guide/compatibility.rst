@@ -5,8 +5,10 @@ Compatibility and Support
 =========================
 
 This page describes which platforms and configurations Newton supports,
-Newton's versioning scheme, and the policy that governs deprecations
+Newton's versioning scheme, and the policy that governs deprecations,
 removals, and other breaking changes.
+
+.. _tested-configurations:
 
 Tested Configurations
 ---------------------
@@ -210,6 +212,12 @@ status according to the `Python release cycle
 <https://devguide.python.org/versions/>`__.  Support for newly released
 Python versions is added in the next Newton minor release after the
 Python version reaches stable status.
+
+For release-tested Python coverage, see :ref:`tested-configurations`.
+
+Optional extras may have narrower Python support when upstream packages
+do not provide compatible wheels; those constraints are encoded as
+dependency markers in ``pyproject.toml``.
 
 When a Python version reaches end-of-life, support is dropped following
 the :ref:`deprecation-policy`.
