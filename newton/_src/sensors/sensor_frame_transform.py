@@ -134,7 +134,8 @@ class SensorFrameTransform:
             reference_sites: List of site indices, single pattern to match against
                 site labels, or list of patterns where any one matches. Must expand
                 to one site or the same number as ``shapes``.
-            verbose: If True, print details. If None, uses Warp debug logging.
+            verbose: If True, print details. If False, suppress details. If None, print details when
+                ``wp.config.log_level`` is configured for debug logging.
 
         Raises:
             ValueError: If arguments are invalid or no labels match.

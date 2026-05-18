@@ -5,11 +5,13 @@
 
 import contextlib
 import io
+import sys
 import unittest
+from unittest import mock
 
 import warp as wp
 
-from newton.examples import _apply_warp_config, create_parser
+from newton.examples import _apply_warp_config, create_parser, init
 
 
 class TestWarpConfigCLI(unittest.TestCase):
@@ -119,6 +121,16 @@ class TestWarpConfigCLI(unittest.TestCase):
         parser = create_parser()
         args = parser.parse_known_args([])[0]
         self.assertEqual(args.warp_config, [])
+
+    def test_quiet_preserves_stricter_log_level(self):
+        """--quiet should not lower an explicit stricter log_level override."""
+        parser = create_parser()
+        argv = ["example", "--viewer", "null", "--warp-config", "log_level=40", "--quiet"]
+        with mock.patch.object(sys, "argv", argv):
+            viewer, _args = init(parser)
+
+        self.assertIsNotNone(viewer)
+        self.assertEqual(wp.config.log_level, wp.LOG_ERROR)
 
 
 if __name__ == "__main__":

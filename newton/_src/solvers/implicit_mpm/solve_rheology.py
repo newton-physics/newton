@@ -1660,7 +1660,7 @@ def solve_rheology(
     jacobi_warmstart_smoother_iterations: int = 5,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph: bool = True,
-    verbose: bool = wp.config.log_level <= wp.LOG_DEBUG,
+    verbose: bool | None = None,
 ):
     """Solve coupled plasticity and collider contact to compute grid velocities.
 
@@ -1710,12 +1710,15 @@ def solve_rheology(
             for Jacobi solver).
         temporary_store: Temporary storage arena for intermediate arrays.
         use_graph: If True, uses conditional CUDA graphs for the iteration loop.
-        verbose: If True, prints residuals/iteration counts.
+        verbose: If True, print residuals/iteration counts. If False, suppress details. If None, print details when
+            ``wp.config.log_level`` is configured for debug logging.
 
     Returns:
         A captured execution graph handle when ``use_graph`` is True and the
         device supports it; otherwise ``None``.
     """
+
+    verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
 
     subgrid_collisions = collision.collider_mat.nnz > 0
     if subgrid_collisions:

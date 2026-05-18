@@ -721,7 +721,7 @@ def init(parser=None):
 
     # Suppress Warp compilation messages if requested
     if args.quiet:
-        wp.config.log_level = wp.LOG_WARNING
+        wp.config.log_level = max(wp.config.log_level, wp.LOG_WARNING)
 
     # Set device if specified
     if args.device:
