@@ -10,7 +10,6 @@
 #
 ###########################################################################
 
-import numpy as np
 import warp as wp
 
 import newton
@@ -110,7 +109,7 @@ class Example:
         # Reset the simulation state to a valid initial configuration above the ground
         self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
         q_b = wp.quat_identity(dtype=wp.float32)
-        q_base = wp.transformf((0.0, 0.0, 0.5), q_b)
+        q_base = wp.transformf((0.0, 0.0, 0.4), q_b)
         self.base_q.assign([q_base] * self.world_count)
         self.solver.reset(state_out=self.state_0, base_q=self.base_q)
 
@@ -121,7 +120,6 @@ class Example:
 
         # If only a single-world is created, set initial
         # camera position for better view of the system
-        self.viewer._paused = True
         if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
             camera_pos = wp.vec3(1.34, 0.0, 0.25)
             pitch = -7.0
@@ -157,7 +155,7 @@ class Example:
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_1)
+        self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_1)
         self.viewer.end_frame()
 
@@ -175,7 +173,6 @@ class Example:
 
 
 if __name__ == "__main__":
-    np.set_printoptions(precision=10, linewidth=20000, threshold=10000, suppress=True)
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)
