@@ -291,6 +291,7 @@ class Example:
             angular_axes=None,
             parent_xform=wp.transform(plug_pos, wp.quat_identity()),
             child_xform=wp.transform_identity(),
+            custom_attributes={"vbd:joint_is_hard": 0},
         )
 
         # Revolute joint: plug -> latch (hinge along -X axis)
@@ -306,6 +307,7 @@ class Example:
             limit_upper=LATCH_LIMIT_UPPER,
             limit_kd=LATCH_LIMIT_KD,
             collision_filter_parent=True,
+            custom_attributes={"vbd:joint_is_hard": 0},
         )
 
         builder.add_articulation([d6_joint, rev_joint])
@@ -382,10 +384,8 @@ class Example:
 
         self._initial_body_q = self.state_0.body_q.numpy().copy()
 
-        # VBD custom attributes are registered for joint_is_hard; keep this
-        # example on the legacy no-Dahl cable-friction path.
+        # Disable Dahl cable friction (register_custom_attributes enables it by default).
         self.model.vbd.dahl_eps_max.fill_(0.0)
-        self.model.vbd.joint_is_hard.fill_(0)
 
         self.solver = SolverVBD(
             self.model,

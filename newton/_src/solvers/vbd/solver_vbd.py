@@ -104,9 +104,9 @@ class SolverVBD(SolverBase):
     Non-cable structural joint slots default to **hard mode** (augmented Lagrangian
     with persistent lambda and C0 stabilization). Cable stretch and bend default to
     **soft mode**. Joint hard/soft mode is initialized from the optional
-    ``model.vbd.joint_is_hard`` custom attribute; use it for bulk configuration
-    before constructing the solver. The hard/soft mode can also be changed per slot
-    at runtime via :meth:`set_joint_constraint_mode`.
+    ``model.vbd.joint_is_hard`` custom attribute; use it to author joint modes
+    when joints are created, before constructing the solver. The hard/soft mode
+    can also be changed per slot at runtime via :meth:`set_joint_constraint_mode`.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
@@ -382,26 +382,27 @@ class SolverVBD(SolverBase):
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
 
-        # TODO(Newton 1.3.0): Remove this temporary migration warning.
+        # TODO: Remove this temporary warning after the Newton 1.2 migration window.
         if model.body_count > 0 and not integrate_with_external_rigid_solver and not _vbd_migration_warned["value"]:
             warnings.warn(
                 "SolverVBD rigid-body defaults changed in Newton 1.2.0:\n"
-                "- Non-cable structural joints are now hard augmented-Lagrangian constraints by default. "
-                "To restore soft penalty behavior before constructing SolverVBD, first call "
-                "SolverVBD.register_custom_attributes(builder) before adding joints, then either pass "
-                "custom_attributes={'vbd:joint_is_hard': 0} to relevant add_joint_* calls or call "
-                "model.vbd.joint_is_hard.fill_(0) after builder.finalize(). Existing finalized models without "
-                "VBD custom attributes must be rebuilt with the attribute registered. Registering VBD custom "
-                "attributes also enables Dahl cable friction by default; set model.vbd.dahl_eps_max.fill_(0.0) "
-                "before constructing SolverVBD to keep Dahl disabled.\n"
-                "- AVBD penalty ramping is now off by default. To restore the previous ramping default, "
-                "pass rigid_avbd_beta=1.0e5.\n"
-                "- Non-cable joint stiffness ceilings now default to 1.0e5 instead of 1.0e9 to make the "
-                "fixed-stiffness path (rigid_avbd_beta=0.0) safer. To restore the previous ceilings, pass "
-                "rigid_joint_linear_ke=1.0e9 and rigid_joint_angular_ke=1.0e9.\n"
-                "- Cable rod stretch/bend stiffness inputs are now interpreted as direct per-joint values; "
-                "the previous length normalization in rod helpers has been removed. To recover the previous "
-                "behavior, divide material stiffnesses by segment length before building the model.",
+                "  - Non-cable structural joints default to hard augmented-Lagrangian constraints.\n"
+                "  - Body-body contacts default to hard augmented-Lagrangian constraints.\n"
+                "  - AVBD penalty ramping is off by default (rigid_avbd_beta=0.0).\n"
+                "  - Non-cable joint stiffness ceilings default to 1.0e5 instead of 1.0e9.\n"
+                "  - Cable rod stretch/bend stiffness inputs are direct per-joint values.\n"
+                "To restore previous behavior:\n"
+                "  - Soft structural joints: call SolverVBD.register_custom_attributes(builder) before "
+                "adding joints, then pass custom_attributes={'vbd:joint_is_hard': 0} to the relevant "
+                "add_joint_* calls. Rebuild models finalized without VBD custom attributes. If registering "
+                "custom attributes only for joint modes, call model.vbd.dahl_eps_max.fill_(0.0) before "
+                "constructing SolverVBD to keep Dahl cable friction disabled.\n"
+                "  - Soft body-body contacts: pass rigid_contact_hard=False.\n"
+                "  - AVBD ramping: pass rigid_avbd_beta=1.0e5.\n"
+                "  - Joint stiffness ceilings: pass rigid_joint_linear_ke=1.0e9 and "
+                "rigid_joint_angular_ke=1.0e9.\n"
+                "  - Cable rod stiffness: divide material stiffness by segment length before building "
+                "the model.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1506,14 +1507,13 @@ class SolverVBD(SolverBase):
         By default, cable stretch and bend slots are soft, while non-cable
         structural slots are hard.
 
-        For bulk initialization of non-cable joints at build time (avoids
-        per-joint roundtrips), use the ``joint_is_hard`` model custom attribute::
+        Hard/soft mode can also be authored per joint at build time via the
+        ``vbd:joint_is_hard`` custom attribute, avoiding a runtime
+        :meth:`set_joint_constraint_mode` call::
 
             SolverVBD.register_custom_attributes(builder)  # before adding joints
-            ...
+            builder.add_joint_fixed(..., custom_attributes={"vbd:joint_is_hard": 0})
             model = builder.finalize()
-            model.vbd.joint_is_hard.fill_(0)  # set all joints to soft
-            model.vbd.dahl_eps_max.fill_(0.0)  # optional: keep Dahl cable friction disabled
             solver = SolverVBD(model, ...)
 
         Args:
@@ -1528,7 +1528,6 @@ class SolverVBD(SolverBase):
                 drive/limit slot (>= 2), or the slot exceeds the joint's
                 constraint dimension.
         """
-
         n_j = self.model.joint_count
         if joint_index < 0 or joint_index >= n_j:
             raise ValueError(f"joint_index={joint_index} out of range [0, {n_j}).")
