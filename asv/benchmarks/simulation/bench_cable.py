@@ -7,7 +7,7 @@ import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 wp.config.enable_backward = False
-wp.config.quiet = True
+wp.config.log_level = wp.LOG_WARNING
 
 import newton.examples
 from newton.examples.cable.example_cable_pile import Example as ExampleCablePile
