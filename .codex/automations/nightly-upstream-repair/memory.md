@@ -40,3 +40,7 @@ Append one short dated entry after each run with:
 2026-05-18: Ran `prepare`; no queued failures remained. Nothing was fixed or left broken, no validation ran, and no branch was pushed.
 2026-05-18: Ran `prepare`; no queued failures remained. Nothing was fixed or left broken, no validation ran, and no branch was pushed.
 2026-05-18: Ran `prepare`; no queued failures remained. Nothing was fixed or left broken, no validation ran, and no branch was pushed.
+2026-05-19: Repaired queued `research/pressure-field` merge conflict in `newton/_src/geometry/sdf_hydroelastic.py` by preserving pressure-field runtime/workflow imports and pre-prune aggregate behavior while carrying forward upstream marching-cubes edge clamping. Validation passed (`uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`), nothing remains broken for this queued item, and finalize pushed the branch (`git push` reported everything up-to-date).
+2026-05-19: Ran `prepare`; no queued failures remained. Nothing was fixed or left broken, no validation ran, and no branch was pushed.
+2026-05-19: Ran `prepare`; no queued failures remained. Nothing was fixed or left broken, no validation ran, and no branch was pushed.
+2026-05-19: Ran `prepare`; no queued failures remained. Nothing was fixed or left broken, no validation ran, and no branch was pushed.

@@ -269,7 +269,7 @@ def _foundation_lengths_stateful_batch_kernel(
             state = state + alpha_state * (comp - state)
 
             if cycle == warmup_cycles:
-                effective_comp = comp - beta * (comp - state)
+                effective_comp = comp + beta * (comp - state)
                 effective_comp = wp.max(effective_comp, 0.0)
                 strain = effective_comp / slack
                 lock = wp.max(params[2], 1.0e-4)
@@ -889,6 +889,8 @@ def fit_foundation_material_autodiff(
         raise ValueError("learning_rates must have five entries")
 
     history: list[dict[str, float]] = []
+    best_loss = float("inf")
+    best_params = params.copy()
     for iteration in range(iterations):
         material = _array_to_material(params, initial_material)
         loss_sum = 0.0
@@ -917,6 +919,9 @@ def fit_foundation_material_autodiff(
         mean_loss = loss_sum / scale
         mean_grad = grad_sum / scale
         mean_force = force_sum / scale
+        if mean_loss < best_loss:
+            best_loss = mean_loss
+            best_params = params.copy()
         history.append(
             {
                 "iteration": float(iteration),
@@ -941,7 +946,7 @@ def fit_foundation_material_autodiff(
         params[active] = params[active] * np.exp(-log_step[active])
         params = _material_to_array(_array_to_material(params, initial_material))
 
-    material = _array_to_material(params, initial_material)
+    material = _array_to_material(best_params, initial_material)
     result_material = FoundationMaterial(
         stiffness_pa=material.stiffness_pa,
         ogden_alpha=material.ogden_alpha,
@@ -986,6 +991,8 @@ def fit_foundation_material_batches_autodiff(
         raise ValueError("learning_rates must have seven entries")
 
     history: list[dict[str, float]] = []
+    best_loss = float("inf")
+    best_params = params.copy()
     for iteration in range(iterations):
         material = _array_to_material(params, initial_material)
         loss_sum = 0.0
@@ -1003,6 +1010,9 @@ def fit_foundation_material_batches_autodiff(
         mean_loss = loss_sum / scale
         mean_grad = grad_sum / scale
         mean_force = force_sum / max(frame_sum, 1)
+        if mean_loss < best_loss:
+            best_loss = mean_loss
+            best_params = params.copy()
         history.append(
             {
                 "iteration": float(iteration),
@@ -1032,7 +1042,7 @@ def fit_foundation_material_batches_autodiff(
         params[active] = params[active] * np.exp(-log_step[active])
         params = _material_to_array(_array_to_material(params, initial_material), include_state=True)
 
-    material = _array_to_material(params, initial_material)
+    material = _array_to_material(best_params, initial_material)
     result_material = FoundationMaterial(
         stiffness_pa=material.stiffness_pa,
         ogden_alpha=material.ogden_alpha,

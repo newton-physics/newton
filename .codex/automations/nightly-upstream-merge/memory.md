@@ -53,3 +53,11 @@ Append one short dated entry after each run with:
 - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
 - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
 - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+## 2026-05-19
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
+- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.

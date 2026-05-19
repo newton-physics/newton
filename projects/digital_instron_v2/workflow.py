@@ -394,6 +394,41 @@ _PHASE_WEIGHTS = {
 }
 
 
+def _fit_phase_weights(fit: dict[str, object]) -> dict[str, float]:
+    """Return phase weights from the manifest, falling back to conservative defaults."""
+
+    raw = fit.get("phase_weights")
+    if raw is None:
+        return dict(_PHASE_WEIGHTS)
+    if not isinstance(raw, dict):
+        raise ValueError("fit.phase_weights must be an object when provided")
+    weights = dict(_PHASE_WEIGHTS)
+    for phase, value in raw.items():
+        if phase not in weights:
+            raise ValueError(f"fit.phase_weights has unsupported phase {phase!r}")
+        phase_weight = float(value)
+        if phase_weight < 0.0:
+            raise ValueError(f"fit.phase_weights[{phase!r}] must be non-negative")
+        weights[phase] = phase_weight
+    if sum(weights.values()) <= 0.0:
+        raise ValueError("fit.phase_weights must contain at least one positive weight")
+    return weights
+
+
+def _fit_float(fit: dict[str, object], key: str, default: float, *, min_value: float | None = None) -> float:
+    value = float(fit.get(key, default))
+    if min_value is not None and value < min_value:
+        raise ValueError(f"fit.{key} must be >= {min_value}")
+    return value
+
+
+def _fit_int(fit: dict[str, object], key: str, default: int, *, min_value: int | None = None) -> int:
+    value = int(fit.get(key, default))
+    if min_value is not None and value < min_value:
+        raise ValueError(f"fit.{key} must be >= {min_value}")
+    return value
+
+
 _ACCEPTANCE_GATES = {
     "rearfoot_rmse_n": 150.0,
     "fullfoot_rmse_n": 400.0,
@@ -444,6 +479,9 @@ def _phase_labels_and_weights(
     *,
     low_force_limit_n: float = 20.0,
     peak_fraction: float = 0.95,
+    phase_weights: dict[str, float] | None = None,
+    displacement_shape_weight: float = 0.0,
+    displacement_shape_bins: int = 12,
 ) -> tuple[np.ndarray, np.ndarray]:
     displacement = np.asarray(displacement_m, dtype=np.float64)
     force = np.asarray(force_n, dtype=np.float64)
@@ -469,9 +507,16 @@ def _phase_labels_and_weights(
     phases[peak] = "peak"
     phases[active & (np.arange(len(force)) > peak_stop)] = "unloading"
 
+    configured_phase_weights = dict(_PHASE_WEIGHTS if phase_weights is None else phase_weights)
+    shape_blend = float(displacement_shape_weight)
+    if not 0.0 <= shape_blend <= 1.0:
+        raise ValueError("displacement_shape_weight must be in [0, 1]")
+    if displacement_shape_bins <= 0:
+        raise ValueError("displacement_shape_bins must be positive")
+
     weights = np.zeros(len(force), dtype=np.float64)
     present_weight_sum = 0.0
-    for phase, phase_weight in _PHASE_WEIGHTS.items():
+    for phase, phase_weight in configured_phase_weights.items():
         count = int(np.count_nonzero(phases == phase))
         if count == 0:
             continue
@@ -480,6 +525,27 @@ def _phase_labels_and_weights(
     if present_weight_sum <= 0.0:
         raise ValueError("Averaged cycle phase split produced no weighted frames")
     weights /= present_weight_sum
+
+    if shape_blend > 0.0:
+        shape_weights = np.zeros(len(force), dtype=np.float64)
+        active_indices = np.nonzero(active)[0]
+        active_displacement = displacement[active_indices]
+        if len(active_indices):
+            low = float(np.min(active_displacement))
+            high = float(np.max(active_displacement))
+            if high > low:
+                edges = np.linspace(low, high, displacement_shape_bins + 1)
+                bin_ids = np.searchsorted(edges, active_displacement, side="right") - 1
+                bin_ids = np.clip(bin_ids, 0, displacement_shape_bins - 1)
+                present_bins = np.unique(bin_ids)
+                for bin_id in present_bins:
+                    bin_indices = active_indices[bin_ids == bin_id]
+                    shape_weights[bin_indices] = 1.0 / (len(present_bins) * len(bin_indices))
+            else:
+                shape_weights[active_indices] = 1.0 / len(active_indices)
+        if np.sum(shape_weights) > 0.0:
+            weights = (1.0 - shape_blend) * weights + shape_blend * shape_weights
+            weights /= np.sum(weights)
     return phases, weights
 
 
@@ -498,11 +564,28 @@ def _autodiff_batches(
     rearfoot_mask = _rearfoot_mask(manifest, spring_grid, vertices)
     contact_surfaces = _trial_contact_surface_cache(manifest, spring_grid)
     cell_area = np.full(len(spring_grid.xy_m), spring_grid.cell_area_m2, dtype=np.float64)
+    phase_weights = _fit_phase_weights(manifest.fit)
+    low_force_limit_n = _fit_float(manifest.fit, "low_force_limit_n", 20.0, min_value=0.0)
+    peak_fraction = _fit_float(manifest.fit, "peak_fraction", 0.95, min_value=0.0)
+    if peak_fraction > 1.0:
+        raise ValueError("fit.peak_fraction must be <= 1")
+    displacement_shape_weight = _fit_float(manifest.fit, "displacement_shape_weight", 0.0, min_value=0.0)
+    if displacement_shape_weight > 1.0:
+        raise ValueError("fit.displacement_shape_weight must be <= 1")
+    displacement_shape_bins = _fit_int(manifest.fit, "displacement_shape_bins", 12, min_value=1)
     for trial in manifest.trials:
         if not trial.include_in_fit:
             continue
         trace = _load_averaged_cycle(_trial_averaged_cycle_path(trial))
-        phases, weights = _phase_labels_and_weights(trace["displacement_m"], trace["force_n"])
+        phases, weights = _phase_labels_and_weights(
+            trace["displacement_m"],
+            trace["force_n"],
+            low_force_limit_n=low_force_limit_n,
+            peak_fraction=peak_fraction,
+            phase_weights=phase_weights,
+            displacement_shape_weight=displacement_shape_weight,
+            displacement_shape_bins=displacement_shape_bins,
+        )
         current_rows = []
         velocity_rows = []
         for displacement, displacement_velocity in zip(trace["displacement_m"], trace["velocity_m_s"], strict=True):
@@ -901,6 +984,89 @@ def _write_autodiff_loss_plot(
     return str(png_path)
 
 
+def _material_from_history_row(row: dict[str, float]) -> FoundationMaterial:
+    return FoundationMaterial(
+        stiffness_pa=float(row["stiffness_pa"]),
+        ogden_alpha=float(row["ogden_alpha"]),
+        lock_strain=float(row["lock_strain"]),
+        damping_pa_s=float(row["damping_pa_s"]),
+        damping_power=float(row["damping_power"]),
+        per_cylinder_area=True,
+        state_beta=float(row["state_beta"]),
+        state_tau_s=float(row["state_tau_s"]),
+        state_warmup_cycles=int(row["state_warmup_cycles"]),
+    )
+
+
+def _history_selection_score(
+    xy_m: np.ndarray,
+    batches: list[FoundationTrialBatch],
+    material: FoundationMaterial,
+    *,
+    device: str,
+) -> dict[str, object]:
+    trial_scores = []
+    for batch in batches:
+        result = evaluate_foundation_lengths_batch(xy_m, batch, material=material, device=device)
+        measured = np.asarray(batch.measured_force_n, dtype=np.float64)
+        predicted = np.asarray(result.predicted_force_n, dtype=np.float64)
+        force_scale = max(float(np.max(np.abs(measured))), 1.0)
+        rmse = float(np.sqrt(np.mean((predicted - measured) ** 2)))
+        measured_peak = float(np.max(measured))
+        predicted_peak = float(np.max(predicted))
+        peak_error = abs(predicted_peak - measured_peak) / force_scale
+        measured_machine = measured + float(getattr(batch, "force_zero_n", 0.0))
+        predicted_machine = predicted + float(getattr(batch, "force_zero_n", 0.0))
+        measured_loop = float(np.trapezoid(measured_machine, batch.displacement_m))
+        predicted_loop = float(np.trapezoid(predicted_machine, batch.displacement_m))
+        loop_relative_error = abs(predicted_loop - measured_loop) / max(abs(measured_loop), 1.0e-9)
+        normalized_rmse = rmse / force_scale
+        # This is a validation selector over the optimizer history, not the
+        # differentiable training objective. Keep it simple and physical.
+        score = normalized_rmse + 0.5 * peak_error + 0.25 * min(loop_relative_error, 2.0)
+        trial_scores.append(
+            {
+                "trial": batch.name,
+                "score": float(score),
+                "rmse_n": rmse,
+                "normalized_rmse": normalized_rmse,
+                "peak_error_n": float(predicted_peak - measured_peak),
+                "peak_error_fraction": float(peak_error),
+                "measured_loop_area_j": measured_loop,
+                "predicted_loop_area_j": predicted_loop,
+                "loop_area_relative_error": float(loop_relative_error),
+            }
+        )
+    return {
+        "score": float(np.mean([trial["score"] for trial in trial_scores])),
+        "trials": trial_scores,
+    }
+
+
+def _select_history_material(
+    xy_m: np.ndarray,
+    batches: list[FoundationTrialBatch],
+    history: list[dict[str, float]],
+    *,
+    device: str,
+) -> tuple[FoundationMaterial, dict[str, object]]:
+    if not history:
+        raise ValueError("Cannot select fit history material without history rows")
+    best_material = _material_from_history_row(history[0])
+    best_selection: dict[str, object] | None = None
+    for row in history:
+        material = _material_from_history_row(row)
+        selection = _history_selection_score(xy_m, batches, material, device=device)
+        selection["iteration"] = int(row["iteration"])
+        selection["loss"] = float(row["loss"])
+        if best_selection is None or float(selection["score"]) < float(best_selection["score"]):
+            best_material = material
+            best_selection = selection
+    if best_selection is None:
+        raise ValueError("Fit history selection produced no candidates")
+    return best_material, best_selection
+
+
 def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
     manifest = load_manifest(args.manifest)
     output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
@@ -942,11 +1108,17 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
         per_cylinder_area=True,
         device=device,
     )
+    selected_material, selected_history = _select_history_material(
+        spring_grid.xy_m,
+        batches,
+        list(result.history),
+        device=device,
+    )
     loss_plot_path = _write_autodiff_loss_plot(output_dir, list(result.history))
     hysteresis = _write_autodiff_hysteresis_plot(
         output_dir,
         spring_grid.xy_m,
-        result.material,
+        selected_material,
         batches,
         device=device,
     )
@@ -954,7 +1126,7 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
         output_dir,
         manifest,
         spring_grid,
-        result.material,
+        selected_material,
         hysteresis,
         hysteresis["acceptance"],
     )
@@ -962,13 +1134,24 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
         "manifest": str(manifest.path),
         "sample_count": int(sum(len(batch.measured_force_n) for batch in batches)),
         "fit_source": "averaged_cycle",
+        "sample_weight_config": {
+            "phase_weights": _fit_phase_weights(manifest.fit),
+            "low_force_limit_n": _fit_float(manifest.fit, "low_force_limit_n", 20.0, min_value=0.0),
+            "peak_fraction": _fit_float(manifest.fit, "peak_fraction", 0.95, min_value=0.0),
+            "displacement_shape_weight": _fit_float(manifest.fit, "displacement_shape_weight", 0.0, min_value=0.0),
+            "displacement_shape_bins": _fit_int(manifest.fit, "displacement_shape_bins", 12, min_value=1),
+        },
         "autodiff_device": device,
         "spring_grid_cells": int(len(spring_grid.xy_m)),
-        "material": result.material.__dict__,
+        "material": selected_material.__dict__,
         "foundation_material_json": str(material_artifact_path),
         "acceptance": hysteresis["acceptance"],
         "contact_diagnostics": contact_diagnostics,
         "loss_plot": loss_plot_path,
+        "selected_iteration": int(selected_history["iteration"]),
+        "selected_loss": float(selected_history["loss"]),
+        "selected_score": float(selected_history["score"]),
+        "selected_score_trials": selected_history["trials"],
         "history": list(result.history),
         "hysteresis": hysteresis,
     }

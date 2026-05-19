@@ -6699,3 +6699,824 @@ Result:
 I appended the `2026-05-18` summary to [.codex/automations/nightly-upstream-merge/memory.md](/home/jkuzm/biomotions/newton/.codex/automations/nightly-upstream-merge/memory.md). `failures.json` now has `research/pressure-field` queued with `failure_type: merge_conflict`.
 
 
+OpenAI Codex v0.130.0
+--------
+workdir: /home/jkuzm/biomotions/newton
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e3fad-9c63-73b2-9d1d-a134e12be27e
+--------
+user
+Read AGENTS.md and then run the repo-owned nightly sync runner:
+
+uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync
+
+The runner will:
+- fetch `origin` and `upstream`
+- leave fork `origin/main` alone
+- merge `upstream/main` into each active origin branch in disposable worktrees
+- validate `research/pressure-field` with focused pressure-field tests and the hydro pressure slice example
+- refuse to push a branch when the merge or validation fails
+- update `.codex/automations/nightly-upstream-merge/failures.json` with any branches that still need repair
+
+After it finishes:
+1. Open the report path printed by the script.
+2. Append a short dated summary to `memory.md` in this automation directory.
+3. If any branch hit a merge conflict, test failure, or push failure, make that explicit in the final message and do not suggest that the run succeeded.
+4. If everything passed, summarize which branches were updated and which validation commands ran.
+
+codex
+I’ll use the repo’s `newton-upstream-sync` skill plus a small triage subagent for the local runbook context, then run the repo-owned script exactly as requested and inspect its report.
+exec
+/bin/bash -lc "sed -n '1,220p' /home/jkuzm/biomotions/newton/.codex/skills/newton-upstream-sync/SKILL.md" in /home/jkuzm/biomotions/newton
+exec
+/bin/bash -lc "sed -n '1,220p' AGENTS.md" in /home/jkuzm/biomotions/newton
+ succeeded in 0ms:
+# Newton Agent Notes
+
+## Project Shape
+
+- Newton is a Python 3.10+ GPU physics engine built on `warp-lang`; the local default Python is `.python-version` 3.12.
+- Public API is re-exported from `newton/__init__.py` and public modules such as `newton/geometry.py`, `newton/solvers.py`, `newton/viewer.py`; `newton/_src/` is internal and must not be imported from examples or docs.
+- Solver implementation packages live under `newton/_src/solvers/`; public solver access goes through `newton.solvers` and generated API docs include only exported/public symbols.
+- `CLAUDE.md` only includes this file, so keep all shared agent guidance here.
+
+## Commands
+
+- Install/update dev env with uv: `uv sync --extra dev`; examples need `uv sync --extra examples` or `uv run --extra examples ...`.
+- Full unit suite: `uv run --extra dev -m newton.tests`.
+- Focused test: `uv run --extra dev -m newton.tests -k test_viewer_log_shapes`.
+- Focused example test: `uv run --extra dev -m newton.tests -k test_basic.example_basic_shapes`.
+- Torch/CUDA tests use explicit extras, e.g. `uv run --extra dev --extra torch-cu12 -m newton.tests`.
+- CI test command adds cache/report flags: `uv run --extra dev -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml`.
+- Validate lockfile freshness with `uv lock --check`; pre-commit runs `uv-lock` locally but pre-commit.ci skips it because it needs network access.
+- Lint/format before commits with `uvx pre-commit run -a`; hooks run Ruff fix/format, `uv-lock`, typos, and `scripts/check_warp_array_syntax.py`.
+- Build docs like CI: `uv run --extra docs --extra sim sphinx-build -j auto -W -b html docs docs/_build/html` and doctests with `uv run --extra docs --extra sim sphinx-build -j auto -W -b doctest docs docs/_build/doctest`.
+- Run `uv run --extra docs --extra sim python docs/generate_api.py` after adding public API symbols, then ensure `git diff --exit-code docs/api/` is clean.
+- Run examples through the package entrypoint, e.g. `uv run --extra examples -m newton.examples basic_pendulum`; example test mode is `--test` and a non-rendering viewer is `--viewer null`.
+- Benchmarks use ASV with virtualenv: `uvx --with virtualenv asv run --launch-method spawn main^!`.
+
+## API And Style Rules
+
+- Breaking public API changes require a deprecation first; do not remove or rename public symbols without a prior deprecation release.
+- Prefix-first naming is preferred for autocomplete, e.g. `ActuatorPD` and `add_shape_sphere()`.
+- Prefer nested classes for self-contained helper types/enums.
+- Use PEP 604 unions (`x | None`), not `Optional[x]`.
+- Annotate Warp arrays with bracket syntax: `wp.array[wp.vec3]`, `wp.array2d[float]`, `wp.array[Any]`; use `wp.array[X]` for 1-D arrays, not `wp.array1d[X]` or `wp.array(dtype=...)`.
+- Ruff bans heavy optional dependencies as module-level imports in `newton/_src` and `newton/tests`; import packages such as `mujoco`, `torch`, `pxr`, `trimesh`, `scipy`, `pyglet`, etc. lazily where needed. Examples and docs are exempt from this specific rule.
+- Follow Google-style docstrings with types in annotations. In public API docstrings, use shortest Sphinx cross-refs, prefer public paths, never reference `newton._src`.
+- Include SI units for physical public fields/docstrings: positions `[m]`, joint-dependent values `[m or rad]`, spatial vectors `[N, N·m]`; skip non-physical fields.
+- SPDX copyright years use the file's creation year; do not create ranges or update the year just because you edited a file.
+- New GitHub Actions must be pinned by SHA with a version comment, matching existing workflow style: `action@<sha>  # vX.Y.Z`.
+
+## Tests And Examples
+
+- Tests are `unittest`-based via `newton.tests`; do not add pytest tests.
+- Do not call `wp.synchronize()` or `wp.synchronize_device()` immediately before `.numpy()`; `.numpy()` already performs the synchronous device-to-host copy.
+- Example files are discovered from `newton/examples/*/example_*.py`; the short CLI name strips `example_` and `.py`.
+- New examples should follow the `Example` class pattern and implement `test_final()`; use `test_post_step()` only when per-step validation is needed.
+- If adding a README-listed example, register it in `README.md` with a `python -m newton.examples <name>` command and a 320x320 JPG screenshot.
+
+## Changes, PRs, And Releases
+
+- Avoid new required dependencies; strongly prefer Warp, NumPy, or stdlib before adding optional dependencies.
+- If a user-facing behavior changes, add a random-position entry under the correct `[Unreleased]` `CHANGELOG.md` category using imperative present tense; `Deprecated`, `Changed`, and `Removed` entries need migration guidance.
+- Use `.github/PULL_REQUEST_TEMPLATE.md` when opening a PR.
+- Commit only on a feature branch, never directly on `main`; branch names should look like `<username>/feature-desc`.
+- Commit messages use imperative mood, roughly 50-character subjects, and bodies wrapped near 72 columns explaining what and why.
+- Before committing a bug fix, verify the regression test fails without the fix when feasible.
+
+ succeeded in 0ms:
+---
+name: newton-upstream-sync
+description: Safely sync a Newton research fork with `newton-physics/newton` when updating local or fork `main`, rebasing `research/pressure-field`, handling dirty worktrees, preserving old branch tips on backup branches, validating hydro-pressure behavior after a rebase, or cleaning up local branch and worktree state afterward.
+---
+
+# Newton Upstream Sync
+
+Keep `main` as a pure upstream integration branch. Keep pressure-field work on
+`research/pressure-field` or another dedicated research branch.
+
+## Clean Fast Path
+
+Use the bundled PowerShell workflow when the current checkout is clean:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/sync_upstream.ps1
+```
+
+Useful variants:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/sync_upstream.ps1 -CreateResearchBranch
+powershell -ExecutionPolicy Bypass -File scripts/sync_upstream.ps1 -Strategy merge
+powershell -ExecutionPolicy Bypass -File scripts/sync_upstream.ps1 -ResearchBranch research/my-experiment
+```
+
+The script refuses to run on a dirty worktree unless `-AllowDirty` is passed.
+Do not use `-AllowDirty` for branch surgery. Switch to the manual flow below.
+
+## Manual Flow For Dirty Worktrees
+
+If `git status --short --branch` is dirty, or the current checkout is on a
+research branch with uncommitted work, do not rewrite branches in place.
+
+1. Confirm remotes:
+
+```bash
+git remote -v
+```
+
+Expect `upstream` fetch to point at
+`https://github.com/newton-physics/newton.git`.
+
+2. Fetch upstream:
+
+```bash
+git fetch upstream
+```
+
+3. Preserve old fork tips on date-stamped backup branches before rewriting any
+remote branch:
+
+```bash
+git branch main-pre-upstream-sync-YYYYMMDD origin/main
+git push -u origin main-pre-upstream-sync-YYYYMMDD:main-pre-upstream-sync-YYYYMMDD
+
+git branch research/pressure-field-pre-upstream-rebase-YYYYMMDD research/pressure-field
+git push -u origin research/pressure-field-pre-upstream-rebase-YYYYMMDD:research/pressure-field-pre-upstream-rebase-YYYYMMDD
+```
+
+4. If the current checkout is dirty, update local `main` without checking it
+out there. First verify it is a pure fast-forward:
+
+```bash
+git rev-list --left-right --count main...upstream/main
+git merge-base --is-ancestor main upstream/main && echo fast-forward
+```
+
+If it is a clean fast-forward, move the ref directly:
+
+```bash
+git update-ref refs/heads/main refs/remotes/upstream/main <old-main-sha>
+```
+
+If it is not a fast-forward, stop and inspect the local `main` history before
+rewriting anything.
+
+5. Rewrite fork `main` only after preserving the old remote tip:
+
+```bash
+git push --force-with-lease=main:<old-origin-main-sha> origin main:main
+```
+
+## Rebase The Research Branch In A Clean Worktree
+
+Never run the rebase inside the dirty original checkout. Create a detached temp
+worktree from the research tip:
+
+```bash
+git worktree add --detach /tmp/newton-pressure-rebase research/pressure-field-pre-upstream-rebase-YYYYMMDD
+git -C /tmp/newton-pressure-rebase switch -c tmp/research-pressure-rebase-YYYYMMDD
+git -C /tmp/newton-pressure-rebase rebase main
+```
+
+If the rebase conflicts:
+
+- Inspect conflict markers directly in the temp worktree.
+- Compare the file on `main` with the final research branch state, not just the
+  first conflicting commit:
+
+```bash
+git show main:path/to/file
+git show research/pressure-field:path/to/file
+```
+
+- Prefer the final research-branch behavior when later pressure-field commits
+  already refactor the same code.
+- Continue with normal git commands:
+
+```bash
+git -C /tmp/newton-pressure-rebase add <resolved-files>
+GIT_EDITOR=true git -C /tmp/newton-pressure-rebase rebase --continue
+```
+
+## Verification
+
+For the pressure-field branch, run both a focused test slice and the example
+smoke test against the rebased tree.
+
+Prefer reusing the repo's existing `.venv` and point `PYTHONPATH` at the temp
+worktree instead of creating a fresh environment in `/tmp`:
+
+```bash
+MPLCONFIGDIR=/tmp TMPDIR=/tmp PYTHONPATH=/tmp/newton-pressure-rebase \
+  /mnt/d/Biomotions/newton/.venv/bin/python -m newton.tests \
+  -p test_hydroelastic.py -k pressure --serial-fallback -q
+
+MPLCONFIGDIR=/tmp TMPDIR=/tmp PYTHONPATH=/tmp/newton-pressure-rebase \
+  /mnt/d/Biomotions/newton/.venv/bin/python -m \
+  newton.examples.contacts.example_hydro_pressure_slice \
+  --test --viewer null --num-frames 1 --shape box
+```
+
+Notes:
+
+- The example is CUDA-only.
+- Inside restricted sandboxes, the unittest runner may need escalation so
+  `multiprocessing.Manager()` can bind locally.
+- Warp must see the real CUDA driver for meaningful pressure-field validation.
+
+## Publish The Rebases
+
+After verification succeeds:
+
+```bash
+git branch research/pressure-field-rebased-YYYYMMDD <rebased-sha>
+git push --force-with-lease=research/pressure-field:<old-origin-research-sha> \
+  origin tmp/research-pressure-rebase-YYYYMMDD:research/pressure-field
+```
+
+## Move The Original Checkout Onto The Clean Branch
+
+If the original checkout still contains branch-relative deletions or other
+local changes, stash them before switching:
+
+```bash
+git stash push -m 'pre-switch dirty deletions before moving to rebased pressure branch YYYY-MM-DD'
+```
+
+Then:
+
+```bash
+git branch -m research/pressure-field research/pressure-field-local-pre-rebase-YYYYMMDD
+git branch -m research/pressure-field-rebased-YYYYMMDD research/pressure-field
+git branch --set-upstream-to=origin/research/pressure-field research/pressure-field
+```
+
+Leave the stash in place unless you intentionally want to reapply those old
+changes.
+
+## Cleanup
+
+After the original checkout is on the clean rebased branch:
+
+```bash
+git branch -d tmp/research-pressure-rebase-YYYYMMDD
+git worktree remove /tmp/newton-pressure-rebase
+git worktree prune
+```
+
+If a temp worktree is broken and `git worktree remove` fails because its `.git`
+file points at stale metadata, remove both the temp directory and the matching
+`.git/worktrees/<name>` entry together.
+
+You can optionally retarget local backup branches so their upstream tracking
+matches the preserved backup remotes.
+
+exec
+/bin/bash -lc 'rg -n "nightly|upstream|pressure-field|failures.json|nightly_upstream_merge" /home/jkuzm/.codex/memories/MEMORY.md' in /home/jkuzm/biomotions/newton
+ succeeded in 0ms:
+314:- For the dense fullfoot pressure-field setup, repeated `nefc overflow` and `Increase nconmax` warnings were fixed by raising MuJoCo contact/constraint capacities, not by abandoning MuJoCo [Task 2]
+448:- `scripts/setup_pyroki_env.sh` is supposed to clone upstream PyRoki into `third_party/pyroki` and install it editable into `./.venvs/pyroki`; the presence of `.venvs/pyroki` alone is not evidence that the runtime is usable [Task 3]
+518:- when Newton drift was traced to the sibling fork, the user said "i have done custom work to the local fork that i want to keep using so make the local fork keep working" -> default to compatibility shims for the local fork instead of telling the user to check out an expected upstream commit [Task 1]
+526:- In this fork, `SolverMuJoCo.__init__()` did not accept `nccdmax` or `naccdmax`; ProtoMotions had to inspect the installed signature and drop unsupported kwargs instead of hard-coding upstream expectations [Task 1]
+543:# Task Group: /home/jkuzm/biomotions/newton nightly upstream merge and bounded repair automation
+545:scope: Repo-owned automation guidance for the `/home/jkuzm/biomotions/newton` checkout when the user wants nightly upstream merges, protection for `research/pressure-field`, and bounded repair retries that keep working real failures.
+548:## Task 1: Build the nightly upstream merge automation with branch-specific validation, success
+552:- rollout_summaries/2026-04-20T15-33-33-Bvcn-newton_nightly_upstream_merge_and_repair_automation.md (cwd=/home/jkuzm/biomotions/newton, rollout_path=/home/jkuzm/.codex/sessions/2026/04/20/rollout-2026-04-20T11-33-33-019dab86-84f4-72f0-90f7-9b30d0631113.jsonl, updated_at=2026-04-20T16:35:49+00:00, thread_id=019dab86-84f4-72f0-90f7-9b30d0631113, core automation layout)
+556:- .codex/automations/nightly-upstream-merge/automation.toml, scripts/nightly_upstream_merge.py, 0 6 * * *, worktree, failures.json, research/pressure-field, validation commands
+562:- rollout_summaries/2026-04-20T15-33-33-Bvcn-newton_nightly_upstream_merge_and_repair_automation.md (cwd=/home/jkuzm/biomotions/newton, rollout_path=/home/jkuzm/.codex/sessions/2026/04/20/rollout-2026-04-20T11-33-33-019dab86-84f4-72f0-90f7-9b30d0631113.jsonl, updated_at=2026-04-20T16:35:49+00:00, thread_id=019dab86-84f4-72f0-90f7-9b30d0631113, repair-loop design and schedule)
+566:- nightly_upstream_repair.py, prepare, finalize, status, current_repair.json, 15 6-11 * * *, bounded retries, attempt_count, per-branch logs
+572:- rollout_summaries/2026-04-20T15-33-33-Bvcn-newton_nightly_upstream_merge_and_repair_automation.md (cwd=/home/jkuzm/biomotions/newton, rollout_path=/home/jkuzm/.codex/sessions/2026/04/20/rollout-2026-04-20T11-33-33-019dab86-84f4-72f0-90f7-9b30d0631113.jsonl, updated_at=2026-04-20T16:35:49+00:00, thread_id=019dab86-84f4-72f0-90f7-9b30d0631113, live-repair evidence)
+578:## Task 4: Run the nightly sync live, repair queued merge conflicts, and fix the Windows/WSL scheduler registration, success
+582:- rollout_summaries/2026-04-24T15-36-46-ti5W-newton_nightly_sync_scheduler_fix.md (cwd=/home/jkuzm/biomotions/newton, rollout_path=/home/jkuzm/.codex/sessions/2026/04/24/rollout-2026-04-24T11-36-46-019dc022-e7df-7672-950f-4933606aa4a0.jsonl, updated_at=2026-04-24T16:20:09+00:00, thread_id=019dc022-e7df-7672-950f-4933606aa4a0, freshest scheduler and skip-main-sync guidance)
+586:- register_nightly_sync_task.ps1, run_codex_automation.py, wsl.exe, skip-main-sync, origin/main, nightly_sync_report.ps1, Task Scheduler, Newton Nightly Research Sync, Newton Nightly Research Repair, current_repair.json
+590:- when the user said "merge each of my branches with the upstream newton repo each night" and "my research pressure field contact work is preserved and the tests still run at the end of this automation" -> preservation of research branches and post-merge validation are hard requirements, not nice-to-haves [Task 1]
+595:- when the user asked to "run the rebase now and then figure out why the nightly rebase is not running every night and resolving itself" -> treat that as both an immediate execution request and a scheduler/root-cause investigation, not a status-only question [Task 4]
+596:- when the user says "rebase" in this repo, verify the actual implementation before echoing the term back; the repo-owned workflow is an upstream merge runner plus bounded repair loop [Task 4]
+600:- The merge automation lives at `.codex/automations/nightly-upstream-merge/automation.toml` and schedules `scripts/nightly_upstream_merge.py` with cron `0 6 * * *` [Task 1]
+601:- The runner uses disposable worktrees so it does not mutate the current checkout while merging `upstream/main` into active origin branches [Task 1]
+602:- The durable failure queue is `.codex/automations/nightly-upstream-merge/failures.json`; items record branch, failure type, logs, report path, attempt count, and validation commands [Task 2]
+603:- The repair workflow is owned by `scripts/nightly_upstream_repair.py` with `prepare`, `finalize`, and `status`, and active state is stored in `.codex/automations/nightly-upstream-repair/current_repair.json` [Task 2]
+604:- Repair runs are intentionally bounded to three attempts and scheduled hourly from `6:15 AM` through `11:15 AM` via `.codex/automations/nightly-upstream-repair/automation.toml` [Task 2]
+605:- The pressure-field validation slice that mattered in live repairs was `uv run --extra dev -m newton.tests -k pressure` plus `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box` [Task 3]
+606:- The real `research/pressure-field` regression was a missing `@wp.func` annotation on `hydroelastic_mode_from_flags()` in `newton/_src/geometry/sdf_hydroelastic.py`; aligning it with the decorated helper in `narrow_phase.py` fixed the Warp codegen failure [Task 3]
+607:- `protomotions` was repaired by merging it onto the already repaired pressure-field line and keeping the newer hydro implementation, not by repeatedly forcing a direct upstream merge into the stale branch [Task 3]
+608:- The stale Windows task was still calling `scripts/nightly_sync_report.ps1`; the durable scheduler fix was to register two `wsl.exe` tasks that run `python3 scripts/run_codex_automation.py <automation.toml>` from `/home/jkuzm/biomotions/newton` [Task 4]
+609:- `scripts/run_codex_automation.py` is now the non-interactive bridge from Task Scheduler to `codex exec`, and `scripts/register_nightly_sync_task.ps1` is the repo-owned registration entrypoint for both nightly tasks [Task 4]
+610:- For this fork, `.codex/automations/nightly-upstream-merge/automation.toml` should invoke `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; fork-only `origin/main` should not make the nightly job fail [Task 4]
+611:- The shared 2026-04-24 conflict in `newton/_src/geometry/__init__.py` was resolved by keeping upstream `contact_match` exports while preserving `HydroelasticContactWorkflow` and `HydroelasticType`; the final rerun ended with `Queued items: 0` [Task 4]
+615:- A generic "merge succeeded" report was not enough for this repo; branch-specific validators are required, especially for `research/pressure-field` and branches derived from it [Task 1][Task 3]
+619:- When a queued branch lags behind another repaired research branch, direct upstream merge may be the wrong repair shape; merge the stale branch onto the repaired line, rerun the exact queued validators, then finalize/push [Task 3]
+620:- If the nightly run suddenly stops self-healing, inspect the scheduled task action before debugging merge logic; this repo had a scheduler drift where Windows still invoked the legacy PowerShell report script instead of the Codex automation path [Task 4]
+682:# Task Group: /mnt/d/newton pressure-field repo inspection, protomotions branch publication, and texture-SDF upstream rebase
+684:scope: Durable memory for the older `/mnt/d/newton` pressure-field checkout: proving pressure-workflow support exists in code, using the foot visualization example, publishing a `protomotions` branch to the fork, and rebasing the fork onto upstream while updating downstream code to texture-backed SDFs.
+685:applies_to: cwd=/mnt/d/newton; reuse_rule=safe for the `/mnt/d/newton` checkout on `research/pressure-field` and close descendants; re-check remote layout, branch names, and downstream `texture_sdf_data` callers on newer histories
+687:## Task 1: Confirm pressure-field contact support exists in the repo and find the shortest foot visualization path, success
+705:- origin, upstream, no_push, protomotions branch, git push -u origin protomotions:protomotions, Could not resolve host, refs/heads/protomotions.lock
+707:## Task 3: Rebase the fork onto upstream while preserving hydroelastic and pressure-field work, success
+711:- rollout_summaries/2026-04-06T16-54-56-m0fK-newton_upstream_rebase_texture_sdf_pressure_field.md (cwd=/mnt/d/newton, rollout_path=/home/jkuzm/.codex/sessions/2026/04/06/rollout-2026-04-06T12-54-56-019d63b8-02bb-7ba1-a9a9-25341817aed0.jsonl, updated_at=2026-04-06T19:56:55+00:00, thread_id=019d63b8-02bb-7ba1-a9a9-25341817aed0, texture-SDF migration and validation)
+715:- upstream/main, research/pressure-field, texture_sdf_data, shape_sdf_index, Model.sdf_data, test_hydroelastic.py, reduced-vs-unreduced, iso voxel overflow
+721:- when the user asked "do i have a upstream repo set up here?" -> start repo orientation by inspecting remotes and branch tracking directly [Task 3]
+722:- when the user said "i want to keep the changes i made to the hydroelastic and pressurefield contact" -> preserve branch-local hydro/pressure work during upstream syncs [Task 3]
+724:- when they asked how texture SDF compares to the pressure-field method, they wanted the explanation tied to the actual research pipeline rather than an abstract SDF overview [Task 3]
+730:- `origin` is the fork remote and `upstream` is read-only (`no_push`); the successful publish command for the new branch was `git push -u origin protomotions:protomotions` [Task 2]
+731:- For this branch after the upstream rebase, the model/runtime path no longer uses `Model.sdf_data`; downstream code needs `shape_sdf_index + texture_sdf_data`, including tests and pressure-slice examples [Task 3]
+734:- Texture SDF helps repeated runtime SDF sampling far more than the core pressure solve itself; for this research branch it is complementary to the pressure-field method, not a replacement [Task 3]
+738:- Broad recursive searches were noisy for both pressure-field existence checks and foot-visualization lookup; narrow to the runtime adapter, hydroelastic workflow, tests, and the dedicated slice example first [Task 1]
+740:- The bundled sync script failed because local `main` had diverged; manual backup refs, repointing `main`, and rebasing `research/pressure-field` were the working path [Task 3]
+
+codex
+I’ve read the repo instructions and the upstream-sync skill. The relevant prior notes say this runner intentionally uses disposable worktrees, `--skip-main-sync`, and a branch-specific pressure-field validation path, so I’ll treat the script report as the source of truth for success or failure.
+collab: SpawnAgent
+2026-05-19T10:00:24.822908Z ERROR codex_core::tools::router: error=Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.
+collab: SpawnAgent
+codex
+I’m starting the requested runner now. This may take a while because it can fetch, create worktrees, run merges, run validation, and push updated branches.
+exec
+/bin/bash -lc 'uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync' in /home/jkuzm/biomotions/newton
+ exited 1 in 3875ms:
+Nightly upstream merge report: /home/jkuzm/biomotions/newton/.codex/automations/nightly-upstream-merge/reports/20260519-060033.md
+Nightly upstream merge queue: /home/jkuzm/biomotions/newton/.codex/automations/nightly-upstream-merge/failures.json
+
+codex
+The runner exited non-zero and printed a report path, so I’m opening that report and the failure queue before I summarize anything.
+exec
+/bin/bash -lc "sed -n '1,260p' .codex/automations/nightly-upstream-merge/reports/20260519-060033.md" in /home/jkuzm/biomotions/newton
+ succeeded in 0ms:
+# Nightly Upstream Merge Report
+
+- Timestamp: 2026-05-19 06:00:35 EDT
+- Repository: /home/jkuzm/biomotions/newton
+- Push enabled: True
+- Branches: protomotions, research/pressure-field
+- Validation branch: research/pressure-field
+
+## Main Sync
+
+- Status: skipped
+- Ahead of upstream: 0
+- Behind upstream: 0
+- Summary: Main sync skipped.
+
+## Validation Commands
+
+- `uv run --extra dev -m newton.tests -k pressure`
+- `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`
+
+## Branch Results
+
+| Branch | Status | Merged | Pushed | Tests | Start | End | Log |
+|---|---|---:|---:|---:|---|---|---|
+| `protomotions` | merged_and_pushed | yes | yes | no | `a7a39411b1f6` | `19644f02f4ea` | `.codex/automations/nightly-upstream-merge/reports/logs/20260519-060033-protomotions.log` |
+| Summary | Merged upstream/main and pushed the updated branch. |  |  |  |  |  |  |
+| `research/pressure-field` | merge_conflict | no | no | no | `615395fd36b5` | `615395fd36b5` | `.codex/automations/nightly-upstream-merge/reports/logs/20260519-060033-research__pressure-field.log` |
+| Summary | Auto-merging CHANGELOG.md Auto-merging docs/api/newton.rst Auto-merging newton/_src/geometry/narrow_phase.py Auto-merging newton/_src/geometry/sdf_hydroelastic.py CONFLICT (cont... |  |  |  |  |  |  |
+
+exec
+/bin/bash -lc "sed -n '1,260p' .codex/automations/nightly-upstream-merge/failures.json" in /home/jkuzm/biomotions/newton
+ succeeded in 0ms:
+{
+  "items": [
+    {
+      "attempt_count": 0,
+      "branch": "research/pressure-field",
+      "end_sha": "615395fd36b5f2b36a9be7ef65d05a63b5d1c04b",
+      "failure_type": "merge_conflict",
+      "first_seen_at": "2026-05-19T10:00:35Z",
+      "last_attempted_at": null,
+      "last_seen_at": "2026-05-19T10:00:35Z",
+      "last_summary": "Auto-merging CHANGELOG.md Auto-merging docs/api/newton.rst Auto-merging newton/_src/geometry/narrow_phase.py Auto-merging newton/_src/geometry/sdf_hydroelastic.py CONFLICT (content): Merge conflict in newton/_src/geometry/sdf_hydroelastic.py Auto-merging newton/_src/sim/builder.py Auto-merging newton/_src/solvers/mujoco/kernels.py Auto-merging newton/_src/viewer/gl/opengl.py Auto-merging newton...",
+      "log_path": ".codex/automations/nightly-upstream-merge/reports/logs/20260519-060033-research__pressure-field.log",
+      "repair_status": "queued",
+      "report_path": ".codex/automations/nightly-upstream-merge/reports/20260519-060033.md",
+      "start_sha": "615395fd36b5f2b36a9be7ef65d05a63b5d1c04b",
+      "validation_commands": [
+        "uv run --extra dev -m newton.tests -k pressure",
+        "uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box"
+      ]
+    }
+  ],
+  "updated_at": "2026-05-19T10:00:35Z",
+  "version": 1
+}
+
+exec
+/bin/bash -lc 'ls -la .codex/automations/nightly-upstream-merge && test -f .codex/automations/nightly-upstream-merge/memory.md && tail -n 80 .codex/automations/nightly-upstream-merge/memory.md || true' in /home/jkuzm/biomotions/newton
+ succeeded in 0ms:
+total 500
+drwxr-xr-x 4 jkuzm jkuzm   4096 May 16 06:00 .
+drwxr-xr-x 4 jkuzm jkuzm   4096 Apr 20 12:19 ..
+-rw-r--r-- 1 jkuzm jkuzm     34 May 15 10:40 .gitignore
+-rw-r--r-- 1 jkuzm jkuzm   1127 May 15 10:40 automation.toml
+-rw-r--r-- 1 jkuzm jkuzm   1357 May 19 06:00 failures.json
+-rw-r--r-- 1 jkuzm jkuzm   4624 May 18 06:01 memory.md
+drwxr-xr-x 3 jkuzm jkuzm   4096 May 19 06:00 reports
+-rw-r--r-- 1 jkuzm jkuzm 473787 May 19 06:00 task.log
+drwxr-xr-x 2 jkuzm jkuzm   4096 May 19 06:00 worktrees
+# Nightly Upstream Merge Memory
+
+Append one short dated entry after each run with:
+- whether `origin/main` was updated
+- which branches merged cleanly
+- whether `research/pressure-field` validation passed
+- any conflicts or skipped pushes that need follow-up
+
+## 2026-04-25
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` merged `upstream/main` cleanly and pushed `7a81c59ddf85` -> `3f417e4479ba`.
+- `research/pressure-field` merged `upstream/main` cleanly, passed pressure-field validation, and pushed `8752d78deaae` -> `474515cb092d`.
+- Validation commands: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- No merge conflicts, validation failures, push failures, or queued repair items.
+
+## 2026-04-26
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` already contained `upstream/main`; no merge or push was needed (`3f417e4479ba`).
+- `research/pressure-field` already contained `upstream/main`; no merge or push was needed (`474515cb092d`), and pressure-field validation passed.
+- Validation commands: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- No merge conflicts, validation failures, push failures, or queued repair items.
+
+## 2026-04-27
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` merged `upstream/main` cleanly and pushed `3f417e4479ba` -> `e5b18b4a3466`.
+- `research/pressure-field` merged `upstream/main` cleanly, passed pressure-field validation, and pushed `474515cb092d` -> `7707b7f9bf74`.
+- Validation commands: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- No merge conflicts, validation failures, push failures, or queued repair items.
+
+## 2026-05-16
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` merged `upstream/main` cleanly and pushed `7e0cd04d65bd` -> `ff025a2a9a11`.
+- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+## 2026-05-17
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` already contained `upstream/main`; no merge or push was needed (`ff025a2a9a11`).
+- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+## 2026-05-18
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` merged `upstream/main` cleanly and pushed `ff025a2a9a11` -> `a7a39411b1f6`.
+- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+codex
+The report shows a partial run: `protomotions` merged and pushed, but `research/pressure-field` hit a merge conflict in `sdf_hydroelastic.py`, so validation did not run and that branch was not pushed. I’m checking the branch log for the exact conflict text, then I’ll append the dated automation memory entry.
+exec
+/bin/bash -lc "sed -n '1,220p' .codex/automations/nightly-upstream-merge/reports/logs/20260519-060033-research__pressure-field.log" in /home/jkuzm/biomotions/newton
+ succeeded in 0ms:
+$ git switch -c nightly-sync/research__pressure-field/20260519-060033
+Switched to a new branch 'nightly-sync/research__pressure-field/20260519-060033'
+[exit 0]
+
+$ git merge --no-edit --no-ff refs/remotes/upstream/main
+Auto-merging CHANGELOG.md
+Auto-merging docs/api/newton.rst
+Auto-merging newton/_src/geometry/narrow_phase.py
+Auto-merging newton/_src/geometry/sdf_hydroelastic.py
+CONFLICT (content): Merge conflict in newton/_src/geometry/sdf_hydroelastic.py
+Auto-merging newton/_src/sim/builder.py
+Auto-merging newton/_src/solvers/mujoco/kernels.py
+Auto-merging newton/_src/viewer/gl/opengl.py
+Auto-merging newton/_src/viewer/viewer.py
+Auto-merging newton/tests/test_hydroelastic.py
+Automatic merge failed; fix conflicts and then commit the result.
+[exit 1]
+
+
+codex
+I’m appending today’s run to the automation memory with the exact branch outcomes and queued conflict, matching the existing format.
+apply patch
+patch: completed
+/home/jkuzm/biomotions/newton/.codex/automations/nightly-upstream-merge/memory.md
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+codex
+The automation memory update is in place. I’m doing a quick diff/status check and a lightweight sidecar review of that edit so the final report is grounded in the actual files.
+exec
+/bin/bash -lc 'git status --short --branch' in /home/jkuzm/biomotions/newton
+ succeeded in 0ms:
+## main...origin/main [ahead 19, behind 34]
+ M .codex/automations/nightly-upstream-merge/memory.md
+ M .codex/automations/nightly-upstream-merge/task.log
+ M DigitalInstron/manifest_v2.json
+ M projects/digital_instron_v2/foundation.py
+ M projects/digital_instron_v2/workflow.py
+
+exec
+/bin/bash -lc 'git diff -- .codex/automations/nightly-upstream-merge/memory.md' in /home/jkuzm/biomotions/newton
+ succeeded in 0ms:
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc6772..418b03f4 100644
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@ Append one short dated entry after each run with:
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+exec
+/bin/bash -lc 'tail -n 40 .codex/automations/nightly-upstream-merge/memory.md' in /home/jkuzm/biomotions/newton
+ succeeded in 0ms:
+
+## 2026-04-27
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` merged `upstream/main` cleanly and pushed `3f417e4479ba` -> `e5b18b4a3466`.
+- `research/pressure-field` merged `upstream/main` cleanly, passed pressure-field validation, and pushed `474515cb092d` -> `7707b7f9bf74`.
+- Validation commands: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- No merge conflicts, validation failures, push failures, or queued repair items.
+
+## 2026-05-16
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` merged `upstream/main` cleanly and pushed `7e0cd04d65bd` -> `ff025a2a9a11`.
+- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+## 2026-05-17
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` already contained `upstream/main`; no merge or push was needed (`ff025a2a9a11`).
+- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+## 2026-05-18
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` merged `upstream/main` cleanly and pushed `ff025a2a9a11` -> `a7a39411b1f6`.
+- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+## 2026-05-19
+
+- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
+- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
+- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+collab: SpawnAgent
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+collab: Wait
+2026-05-19T10:01:29.419427Z ERROR codex_core::tools::router: error=Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+collab: Wait
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+collab: CloseAgent
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+collab: CloseAgent
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+exec
+/bin/bash -lc "nl -ba /home/jkuzm/.codex/memories/MEMORY.md | sed -n '600,611p'" in /home/jkuzm/biomotions/newton
+ succeeded in 0ms:
+   600	- The merge automation lives at `.codex/automations/nightly-upstream-merge/automation.toml` and schedules `scripts/nightly_upstream_merge.py` with cron `0 6 * * *` [Task 1]
+   601	- The runner uses disposable worktrees so it does not mutate the current checkout while merging `upstream/main` into active origin branches [Task 1]
+   602	- The durable failure queue is `.codex/automations/nightly-upstream-merge/failures.json`; items record branch, failure type, logs, report path, attempt count, and validation commands [Task 2]
+   603	- The repair workflow is owned by `scripts/nightly_upstream_repair.py` with `prepare`, `finalize`, and `status`, and active state is stored in `.codex/automations/nightly-upstream-repair/current_repair.json` [Task 2]
+   604	- Repair runs are intentionally bounded to three attempts and scheduled hourly from `6:15 AM` through `11:15 AM` via `.codex/automations/nightly-upstream-repair/automation.toml` [Task 2]
+   605	- The pressure-field validation slice that mattered in live repairs was `uv run --extra dev -m newton.tests -k pressure` plus `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box` [Task 3]
+   606	- The real `research/pressure-field` regression was a missing `@wp.func` annotation on `hydroelastic_mode_from_flags()` in `newton/_src/geometry/sdf_hydroelastic.py`; aligning it with the decorated helper in `narrow_phase.py` fixed the Warp codegen failure [Task 3]
+   607	- `protomotions` was repaired by merging it onto the already repaired pressure-field line and keeping the newer hydro implementation, not by repeatedly forcing a direct upstream merge into the stale branch [Task 3]
+   608	- The stale Windows task was still calling `scripts/nightly_sync_report.ps1`; the durable scheduler fix was to register two `wsl.exe` tasks that run `python3 scripts/run_codex_automation.py <automation.toml>` from `/home/jkuzm/biomotions/newton` [Task 4]
+   609	- `scripts/run_codex_automation.py` is now the non-interactive bridge from Task Scheduler to `codex exec`, and `scripts/register_nightly_sync_task.ps1` is the repo-owned registration entrypoint for both nightly tasks [Task 4]
+   610	- For this fork, `.codex/automations/nightly-upstream-merge/automation.toml` should invoke `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; fork-only `origin/main` should not make the nightly job fail [Task 4]
+   611	- The shared 2026-04-24 conflict in `newton/_src/geometry/__init__.py` was resolved by keeping upstream `contact_match` exports while preserving `HydroelasticContactWorkflow` and `HydroelasticType`; the final rerun ended with `Queued items: 0` [Task 4]
+
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+codex
+Ran the nightly sync runner. It did **not** fully succeed.
+
+Report: [.codex/automations/nightly-upstream-merge/reports/20260519-060033.md](/home/jkuzm/biomotions/newton/.codex/automations/nightly-upstream-merge/reports/20260519-060033.md)
+
+Outcome:
+- `origin/main` was skipped as requested.
+- `protomotions` merged `upstream/main` and pushed successfully: `a7a39411b1f6` -> `19644f02f4ea`.
+- `research/pressure-field` hit a merge conflict in [newton/_src/geometry/sdf_hydroelastic.py](/home/jkuzm/biomotions/newton/newton/_src/geometry/sdf_hydroelastic.py); it was not pushed.
+- Pressure-field validation did not run because the merge failed.
+- `failures.json` now has `research/pressure-field` queued with `failure_type: merge_conflict`.
+
+I appended the dated summary to [.codex/automations/nightly-upstream-merge/memory.md](/home/jkuzm/biomotions/newton/.codex/automations/nightly-upstream-merge/memory.md). The runner also modified `.codex/automations/nightly-upstream-merge/task.log`; there were pre-existing unrelated modified Digital Instron files in the worktree.
+
+
+diff --git a/.codex/automations/nightly-upstream-merge/memory.md b/.codex/automations/nightly-upstream-merge/memory.md
+index 1fbc67728d64ce6aad30f690a99665a16913e051..418b03f4abbdcc7817ef696a6182721d9f50567a
+--- a/.codex/automations/nightly-upstream-merge/memory.md
++++ b/.codex/automations/nightly-upstream-merge/memory.md
+@@ -53,3 +53,11 @@
+ - `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
+ - Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
+ - `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
++
++## 2026-05-19
++
++- Ran `uv run --script scripts/nightly_upstream_merge.py --push --skip-main-sync`; `origin/main` was intentionally left unchanged.
++- `protomotions` merged `upstream/main` cleanly and pushed `a7a39411b1f6` -> `19644f02f4ea`.
++- `research/pressure-field` hit a merge conflict in `newton/_src/geometry/sdf_hydroelastic.py`; it was not pushed and pressure-field validation did not run.
++- Validation commands queued by the runner: `uv run --extra dev -m newton.tests -k pressure`; `uv run --extra examples -m newton.examples.contacts.example_hydro_pressure_slice --test --viewer null --num-frames 1 --shape box`.
++- `failures.json` contains queued repair item `research/pressure-field` with failure type `merge_conflict`; no validation failure or push failure was reported.
+
+tokens used
+64,761
+Ran the nightly sync runner. It did **not** fully succeed.
+
+Report: [.codex/automations/nightly-upstream-merge/reports/20260519-060033.md](/home/jkuzm/biomotions/newton/.codex/automations/nightly-upstream-merge/reports/20260519-060033.md)
+
+Outcome:
+- `origin/main` was skipped as requested.
+- `protomotions` merged `upstream/main` and pushed successfully: `a7a39411b1f6` -> `19644f02f4ea`.
+- `research/pressure-field` hit a merge conflict in [newton/_src/geometry/sdf_hydroelastic.py](/home/jkuzm/biomotions/newton/newton/_src/geometry/sdf_hydroelastic.py); it was not pushed.
+- Pressure-field validation did not run because the merge failed.
+- `failures.json` now has `research/pressure-field` queued with `failure_type: merge_conflict`.
+
+I appended the dated summary to [.codex/automations/nightly-upstream-merge/memory.md](/home/jkuzm/biomotions/newton/.codex/automations/nightly-upstream-merge/memory.md). The runner also modified `.codex/automations/nightly-upstream-merge/task.log`; there were pre-existing unrelated modified Digital Instron files in the worktree.
+
+

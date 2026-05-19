@@ -20,15 +20,25 @@
   },
   "fit": {
     "model": "locked_ogden_vertical_foundation_v2",
-    "initial_stiffness_pa": 200000.0,
-    "initial_ogden_alpha": 1.0,
-    "initial_lock_strain": 0.75,
+    "initial_stiffness_pa": 150000.0,
+    "initial_ogden_alpha": 0.1,
+    "initial_lock_strain": 0.8,
     "initial_damping_pa_s": 10000.0,
     "initial_damping_power": 1.0,
-    "state_beta": 0.25,
-    "state_tau_s": 0.025,
+    "state_beta": 0.12,
+    "state_tau_s": 0.04,
     "state_warmup_cycles": 5,
-    "nominal_midsole_thickness_m": 0.069
+    "nominal_midsole_thickness_m": 0.069,
+    "low_force_limit_n": 20.0,
+    "phase_weights": {
+      "baseline_pre": 0.15,
+      "loading": 2.25,
+      "peak": 1.0,
+      "unloading": 1.5,
+      "baseline_post": 0.15
+    },
+    "displacement_shape_weight": 0.45,
+    "displacement_shape_bins": 14
   },
   "trials": [
     {
@@ -54,7 +64,9 @@
       "indenter": {
         "type": "stl",
         "path": "Instron Shoe Last Size 9 6drop merged attachment 1.STL",
-        "rotation_deg": [0.0, 0.0, 0.0]
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "contact_percentile": 45.0,
+        "height_offset_m": 0.006
       }
     }
   ]
