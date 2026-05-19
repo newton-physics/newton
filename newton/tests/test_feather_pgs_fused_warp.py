@@ -65,6 +65,34 @@ def _build_mixed_contact_model(device: wp.context.Device) -> newton.Model:
     return builder.finalize(device=device)
 
 
+def _build_revolute_chain_world(dof_count: int, velocity_limit: float) -> newton.ModelBuilder:
+    """Build a single-world revolute chain with a finite velocity limit."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    inertia = wp.mat33(0.2, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.2)
+    parent = -1
+    joints = []
+    for _ in range(dof_count):
+        link = builder.add_link(mass=1.0, inertia=inertia)
+        joint = builder.add_joint_revolute(
+            parent=parent,
+            child=link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            velocity_limit=velocity_limit,
+        )
+        joints.append(joint)
+        parent = link
+    builder.add_articulation(joints)
+    return builder
+
+
+def _build_heterogeneous_velocity_limit_model(device: wp.context.Device) -> newton.Model:
+    """Build two worlds with different DOF counts."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_world(_build_revolute_chain_world(dof_count=1, velocity_limit=1.0))
+    builder.add_world(_build_revolute_chain_world(dof_count=2, velocity_limit=1.0))
+    return builder.finalize(device=device)
+
+
 class TestFeatherPGSFusedWarpSelector(unittest.TestCase):
     """Constructor-level coverage for the private fused-Warp API."""
 
@@ -80,23 +108,29 @@ def run_constructor_accepts_fused_warp(test: TestFeatherPGSFusedWarpSelector, de
     test.assertFalse(hasattr(solver, "pgs_kernel"))
     test.assertIsNotNone(solver.mf_meta)
     test.assertIsNotNone(solver.impulses_vec3)
-    test.assertEqual(solver._max_contact_triplets, solver.max_constraints // 3)
+    test.assertEqual(solver._max_contact_triplets, solver._max_constraints_padded // 3)
 
 
 def run_constructor_rejects_unsupported_combinations(test: TestFeatherPGSFusedWarpSelector, device):
     model = _build_mixed_contact_model(device)
-
-    with test.assertRaisesRegex(ValueError, "multiple of 3"):
-        SolverFeatherPGS(
-            model,
-            max_constraints=32,
-        )
 
     with test.assertRaisesRegex(ValueError, "requires enable_contact_friction=True"):
         SolverFeatherPGS(
             model,
             enable_contact_friction=False,
         )
+
+
+def run_constructor_pads_contact_triplets_internally(test: TestFeatherPGSFusedWarpSelector, device):
+    model = _build_mixed_contact_model(device)
+    solver = SolverFeatherPGS(model, max_constraints=32)
+
+    test.assertEqual(solver.max_constraints, 32)
+    test.assertEqual(solver._max_constraints_padded, 33)
+    test.assertEqual(solver._max_contact_triplets, 11)
+    test.assertEqual(solver.impulses.shape[1], 33)
+    test.assertEqual(solver.diag.shape[1], 33)
+    test.assertEqual(solver.rhs.shape[1], 33)
 
 
 class TestFeatherPGSFusedWarpStep(unittest.TestCase):
@@ -126,6 +160,26 @@ def run_mixed_contact_one_step(test: TestFeatherPGSFusedWarpStep, device):
     test.assertGreaterEqual(int(solver.dense_contact_row_count.numpy()[0]), 3)
     test.assertGreater(int(solver.constraint_count.numpy()[0]), int(solver.dense_contact_row_count.numpy()[0]))
     test.assertGreaterEqual(int(solver.mf_constraint_count.numpy()[0]), 3)
+
+
+def run_heterogeneous_world_velocity_limit_step(test: TestFeatherPGSFusedWarpStep, device):
+    model = _build_heterogeneous_velocity_limit_model(device)
+    solver = SolverFeatherPGS(model, pgs_iterations=32)
+    test.assertEqual(solver.max_world_dofs, 2)
+    np.testing.assert_array_equal(solver.world_dof_start.numpy(), np.array([0, 1], dtype=np.int32))
+    np.testing.assert_array_equal(solver.world_dof_count.numpy(), np.array([1, 2], dtype=np.int32))
+
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    qd = np.array([3.0, -4.0, 5.0], dtype=np.float32)
+    state_0.joint_qd.assign(qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    solver.step(state_0, state_1, control, None, 1.0 / 120.0)
+
+    test.assertTrue(np.isfinite(state_1.joint_qd.numpy()).all())
+    test.assertLess(np.max(np.abs(state_1.joint_qd.numpy())), np.max(np.abs(qd)))
 
 
 class TestFeatherPGSBodyParentForce(unittest.TestCase):
@@ -177,9 +231,21 @@ for device in devices:
         devices=[device],
     )
     add_function_test(
+        TestFeatherPGSFusedWarpSelector,
+        "test_constructor_pads_contact_triplets_internally",
+        run_constructor_pads_contact_triplets_internally,
+        devices=[device],
+    )
+    add_function_test(
         TestFeatherPGSFusedWarpStep,
         "test_mixed_contact_one_step",
         run_mixed_contact_one_step,
+        devices=[device],
+    )
+    add_function_test(
+        TestFeatherPGSFusedWarpStep,
+        "test_heterogeneous_world_velocity_limit_step",
+        run_heterogeneous_world_velocity_limit_step,
         devices=[device],
     )
     add_function_test(

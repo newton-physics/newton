@@ -54,7 +54,7 @@ from .kernels import (
     compute_mf_effective_mass_and_rhs,
     compute_mf_world_dof_offsets,
     compute_spatial_inertia,
-    compute_velocity_predictor,
+    compute_velocity_predictor_and_seed_world_velocity,
     compute_world_contact_bias,
     convert_root_free_qd_local_to_world,
     convert_root_free_qd_world_to_local,
@@ -80,10 +80,12 @@ from .kernels import (
     populate_world_J_for_size,
     prepare_world_impulses,
     scatter_qdd_from_groups,
+    scatter_world_velocity,
     update_articulation_origins,
     update_articulation_root_com_offsets,
     update_body_qd_from_featherstone,
     update_qdd_from_velocity,
+    update_qdd_from_world_velocity,
 )
 
 
@@ -140,7 +142,7 @@ class SolverFeatherPGS(SolverBase):
             pgs_omega (float, optional): Successive over-relaxation factor for the PGS sweep. Defaults to 1.0.
             max_constraints (int, optional): Maximum number of articulated contact constraint
                 rows stored per world. Free rigid body contacts are stored separately, bounded by
-                mf_max_constraints. Must be a multiple of 3 for contact triplet packing.
+                mf_max_constraints. Contact triplet storage is padded internally when needed.
                 Defaults to 36.
             mf_max_constraints (int, optional): Maximum number of matrix-free constraints per world. Defaults to 512.
 
@@ -149,8 +151,8 @@ class SolverFeatherPGS(SolverBase):
 
         if update_mass_matrix_interval < 1:
             raise ValueError("update_mass_matrix_interval must be >= 1.")
-        if max_constraints < 1 or max_constraints % 3 != 0:
-            raise ValueError("max_constraints must be a positive multiple of 3.")
+        if max_constraints < 1:
+            raise ValueError("max_constraints must be positive.")
         if mf_max_constraints < 1:
             raise ValueError("mf_max_constraints must be >= 1.")
 
@@ -165,6 +167,7 @@ class SolverFeatherPGS(SolverBase):
         self.contact_compliance = contact_compliance
         self.pgs_omega = pgs_omega
         self.max_constraints = max_constraints
+        self._max_constraints_padded = ((max_constraints + 2) // 3) * 3
         self.mf_max_constraints = mf_max_constraints
         self._double_buffer = True
         self._nvtx = False
@@ -468,7 +471,7 @@ class SolverFeatherPGS(SolverBase):
         self.is_free_rigid = wp.array(is_free_rigid_np, dtype=wp.int32, device=model.device)
 
     def _compute_world_dof_mapping(self, model):
-        """Compute per-world DOF start and max DOF count for consolidated J/Y arrays."""
+        """Compute per-world DOF metadata for consolidated J/Y and velocity arrays."""
         art_to_world_np = self.art_to_world.numpy()
         art_dof_start_np = self.articulation_dof_start.numpy()
         art_H_rows_np = self.articulation_H_rows.numpy()
@@ -489,6 +492,7 @@ class SolverFeatherPGS(SolverBase):
         world_dof_counts = world_dof_end_np - world_dof_start_np
         self.max_world_dofs = int(np.max(world_dof_counts)) if len(world_dof_counts) > 0 else 0
         self.world_dof_start = wp.array(world_dof_start_np, dtype=wp.int32, device=model.device)
+        self.world_dof_count = wp.array(world_dof_counts, dtype=wp.int32, device=model.device)
 
     def _allocate_common_buffers(self, model):
         if model.joint_count:
@@ -702,6 +706,7 @@ class SolverFeatherPGS(SolverBase):
         device = model.device
         requires_grad = model.requires_grad
         max_constraints = self.max_constraints
+        max_constraints_padded = self._max_constraints_padded
 
         # Matrix-free uses world-indexed J/Y for both articulated and free-rigid rows.
         self._compute_world_dof_mapping(model)
@@ -717,23 +722,29 @@ class SolverFeatherPGS(SolverBase):
             device=device,
             requires_grad=requires_grad,
         )
-
-        self.rhs = wp.zeros(
-            (self.world_count, max_constraints), dtype=wp.float32, device=device, requires_grad=requires_grad
-        )
-        # The fused-Warp path stores contact triplets as vec3.
-        self.impulses = wp.zeros(
-            (self.world_count, max_constraints),
+        self.world_velocity = wp.zeros(
+            (self.world_count, self.max_world_dofs),
             dtype=wp.float32,
             device=device,
             requires_grad=requires_grad,
         )
-        self._max_contact_triplets = max_constraints // 3
+
+        self.rhs = wp.zeros(
+            (self.world_count, max_constraints_padded), dtype=wp.float32, device=device, requires_grad=requires_grad
+        )
+        # The fused-Warp path stores contact triplets as vec3.
+        self.impulses = wp.zeros(
+            (self.world_count, max_constraints_padded),
+            dtype=wp.float32,
+            device=device,
+            requires_grad=requires_grad,
+        )
+        self._max_contact_triplets = max_constraints_padded // 3
         self.impulses_vec3 = self.impulses.reshape((self.world_count, self._max_contact_triplets, 3)).view(wp.vec3)
         self.diag_contact_vec3 = wp.zeros((self.world_count, self._max_contact_triplets), dtype=wp.vec3, device=device)
         self.rhs_contact_vec3 = wp.zeros((self.world_count, self._max_contact_triplets), dtype=wp.vec3, device=device)
         self.diag = wp.zeros(
-            (self.world_count, max_constraints), dtype=wp.float32, device=device, requires_grad=requires_grad
+            (self.world_count, max_constraints_padded), dtype=wp.float32, device=device, requires_grad=requires_grad
         )
 
         # Constraint metadata (per world x constraint)
@@ -1044,7 +1055,6 @@ class SolverFeatherPGS(SolverBase):
                     outputs=[self.J_world, self.Y_world],
                     device=self.model.device,
                 )
-            self._stage6_prepare_world_velocity()
 
         with wp.ScopedTimer("S6_PGS_Solve", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
             fused_kernel = TiledKernelFactory.get_pgs_fused_warp_kernel(
@@ -1060,7 +1070,6 @@ class SolverFeatherPGS(SolverBase):
                 inputs=[
                     self.constraint_count,
                     self.dense_contact_row_count,
-                    self.world_dof_start,
                     self.rhs,
                     self.rhs_contact_vec3,
                     self.diag,
@@ -1081,7 +1090,7 @@ class SolverFeatherPGS(SolverBase):
                     self.pgs_iterations,
                     self.pgs_omega,
                 ],
-                outputs=[self.v_out],
+                outputs=[self.world_velocity],
                 block_dim=32,
                 device=self.model.device,
             )
@@ -1732,14 +1741,16 @@ class SolverFeatherPGS(SolverBase):
         if not model.joint_count:
             return
         wp.launch(
-            compute_velocity_predictor,
-            dim=model.joint_dof_count,
+            compute_velocity_predictor_and_seed_world_velocity,
+            dim=(self.world_count, self.max_world_dofs),
             inputs=[
                 self.qd_work,
                 state_aug.joint_qdd,
+                self.world_dof_start,
+                self.world_dof_count,
                 dt,
             ],
-            outputs=[self.v_hat],
+            outputs=[self.v_hat, self.world_velocity],
             device=model.device,
         )
 
@@ -2281,13 +2292,10 @@ class SolverFeatherPGS(SolverBase):
         wp.launch(
             prepare_world_impulses,
             dim=self.world_count,
-            inputs=[self.max_constraints],
+            inputs=[self._max_constraints_padded],
             outputs=[self.impulses],
             device=self.model.device,
         )
-
-    def _stage6_prepare_world_velocity(self):
-        wp.copy(self.v_out, self.v_hat)
 
     def _mf_pgs_setup(self, state_aug: State, dt: float):
         """MF PGS setup: compute Hinv, compute effective mass and RHS."""
@@ -2339,6 +2347,17 @@ class SolverFeatherPGS(SolverBase):
         model = self.model
         if self._has_root_free:
             wp.launch(
+                scatter_world_velocity,
+                dim=(self.world_count, self.max_world_dofs),
+                inputs=[
+                    self.world_velocity,
+                    self.world_dof_start,
+                    self.world_dof_count,
+                ],
+                outputs=[self.v_out],
+                device=model.device,
+            )
+            wp.launch(
                 convert_root_free_qd_local_to_world,
                 dim=model.articulation_count,
                 inputs=[
@@ -2349,13 +2368,27 @@ class SolverFeatherPGS(SolverBase):
                 outputs=[self.v_out],
                 device=model.device,
             )
-        wp.launch(
-            update_qdd_from_velocity,
-            dim=model.joint_dof_count,
-            inputs=[state_in.joint_qd, self.v_out, 1.0 / dt],
-            outputs=[state_aug.joint_qdd],
-            device=model.device,
-        )
+            wp.launch(
+                update_qdd_from_velocity,
+                dim=model.joint_dof_count,
+                inputs=[state_in.joint_qd, self.v_out, 1.0 / dt],
+                outputs=[state_aug.joint_qdd],
+                device=model.device,
+            )
+        else:
+            wp.launch(
+                update_qdd_from_world_velocity,
+                dim=(self.world_count, self.max_world_dofs),
+                inputs=[
+                    state_in.joint_qd,
+                    self.world_velocity,
+                    self.world_dof_start,
+                    self.world_dof_count,
+                    1.0 / dt,
+                ],
+                outputs=[self.v_out, state_aug.joint_qdd],
+                device=model.device,
+            )
 
     def _stage6_integrate(self, state_in: State, state_aug: State, state_out: State, dt: float):
         model = self.model

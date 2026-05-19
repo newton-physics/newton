@@ -1154,6 +1154,28 @@ def compute_velocity_predictor(
 
 
 @wp.kernel
+def compute_velocity_predictor_and_seed_world_velocity(
+    joint_qd: wp.array[float],
+    joint_qdd: wp.array[float],
+    world_dof_start: wp.array[int],
+    world_dof_count: wp.array[int],
+    dt: float,
+    # outputs
+    v_hat: wp.array[float],
+    world_velocity: wp.array2d[float],
+):
+    world, local_d = wp.tid()
+    if local_d >= world_dof_count[world]:
+        world_velocity[world, local_d] = 0.0
+        return
+
+    tid = world_dof_start[world] + local_d
+    v = joint_qd[tid] + joint_qdd[tid] * dt
+    v_hat[tid] = v
+    world_velocity[world, local_d] = v
+
+
+@wp.kernel
 def update_qdd_from_velocity(
     joint_qd: wp.array[float],
     v_new: wp.array[float],
@@ -1163,6 +1185,41 @@ def update_qdd_from_velocity(
 ):
     tid = wp.tid()
     joint_qdd[tid] = (v_new[tid] - joint_qd[tid]) * inv_dt
+
+
+@wp.kernel
+def update_qdd_from_world_velocity(
+    joint_qd: wp.array[float],
+    world_velocity: wp.array2d[float],
+    world_dof_start: wp.array[int],
+    world_dof_count: wp.array[int],
+    inv_dt: float,
+    # outputs
+    v_new: wp.array[float],
+    joint_qdd: wp.array[float],
+):
+    world, local_d = wp.tid()
+    if local_d >= world_dof_count[world]:
+        return
+
+    tid = world_dof_start[world] + local_d
+    v = world_velocity[world, local_d]
+    v_new[tid] = v
+    joint_qdd[tid] = (v - joint_qd[tid]) * inv_dt
+
+
+@wp.kernel
+def scatter_world_velocity(
+    world_velocity: wp.array2d[float],
+    world_dof_start: wp.array[int],
+    world_dof_count: wp.array[int],
+    # outputs
+    v_new: wp.array[float],
+):
+    world, local_d = wp.tid()
+    if local_d >= world_dof_count[world]:
+        return
+    v_new[world_dof_start[world] + local_d] = world_velocity[world, local_d]
 
 
 @wp.func
@@ -3974,7 +4031,6 @@ class TiledKernelFactory:
             # Dense
             world_constraint_count: wp.array[int],
             dense_contact_row_count: wp.array[int],
-            world_dof_start: wp.array[int],
             rhs_bias: wp.array2d[float],
             rhs_bias_vec3: wp.array2d[wp.vec3],
             world_diag: wp.array2d[float],
@@ -3997,7 +4053,7 @@ class TiledKernelFactory:
             iterations: int,
             omega: float,
             # Output
-            v_out: wp.array[float],
+            world_velocity: wp.array2d[float],
         ):
             world, thread = wp.tid()
 
@@ -4009,10 +4065,8 @@ class TiledKernelFactory:
                 m_contact_rows = M_D
             n_contacts = m_contact_rows // 3
 
-            w_dof_start = world_dof_start[world]
-
             # ── LOAD PHASE ──
-            s_v = wp.tile_load(v_out, shape=(D,), offset=(w_dof_start,), storage="shared", bounds_check=False)
+            s_v = wp.tile_load(world_velocity[world], shape=(D,), storage="shared", bounds_check=False)
             s_lam_contact = wp.tile_load(impulses_vec3[world], shape=(M_CT,), storage="shared", bounds_check=False)
             s_lam_mf = wp.tile_load(mf_impulses[world], shape=(M_MF_CONST,), storage="shared", bounds_check=False)
             # ── SOLVE PHASE ──
@@ -4121,7 +4175,7 @@ class TiledKernelFactory:
                 )
 
             # ── STORE PHASE ──
-            wp.tile_store(v_out, s_v, offset=(w_dof_start,), bounds_check=False)
+            wp.tile_store(world_velocity[world], s_v, bounds_check=False)
             wp.tile_store(impulses_vec3[world], s_lam_contact, bounds_check=False)
             wp.tile_store(mf_impulses[world], s_lam_mf, bounds_check=False)
 
