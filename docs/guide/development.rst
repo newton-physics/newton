@@ -534,8 +534,7 @@ that Sphinx processes via ``autosummary`` to create individual pages for every p
 
 Whenever you add, remove, or rename a public symbol in one of the public modules
 (``newton``, ``newton.geometry``, ``newton.solvers``, ``newton.sensors``, etc.),
-or export a new top-level public module through ``newton.__all__``, regenerate
-the API pages:
+regenerate the API pages:
 
 .. tab-set::
     :sync-group: env
