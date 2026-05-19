@@ -196,6 +196,13 @@ def run_heterogeneous_world_velocity_limit_step(test: TestFeatherPGSFusedWarpSte
 
     test.assertTrue(np.isfinite(state_1.joint_qd.numpy()).all())
     test.assertLess(np.max(np.abs(state_1.joint_qd.numpy())), np.max(np.abs(qd)))
+    impulses = solver.impulses.numpy()
+    constraint_count = solver.constraint_count.numpy()
+    dense_contact_count = solver.dense_contact_row_count.numpy()
+    for world in range(model.world_count):
+        if constraint_count[world] > dense_contact_count[world]:
+            non_contact_impulses = impulses[world, dense_contact_count[world] : constraint_count[world]]
+            test.assertGreater(float(np.max(non_contact_impulses)), 0.0)
 
 
 def run_contact_metadata_capacity_mismatch_raises(test: TestFeatherPGSFusedWarpStep, device):

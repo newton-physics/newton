@@ -4176,7 +4176,13 @@ class TiledKernelFactory:
 
             # ── STORE PHASE ──
             wp.tile_store(world_velocity[world], s_v, bounds_check=False)
-            wp.tile_store(impulses_vec3[world], s_lam_contact, bounds_check=False)
+            for c in range(n_contacts):
+                lam3 = wp.tile_extract(s_lam_contact, c)
+                row0 = c * 3
+                if thread == 0:
+                    impulses_flat[world, row0] = lam3[0]
+                    impulses_flat[world, row0 + 1] = lam3[1]
+                    impulses_flat[world, row0 + 2] = lam3[2]
             wp.tile_store(mf_impulses[world], s_lam_mf, bounds_check=False)
 
         name = f"pgs_fused_warp_{max_constraints}_{max_contact_triplets}_{mf_max_constraints}_{max_world_dofs}"
