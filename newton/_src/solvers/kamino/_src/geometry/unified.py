@@ -66,6 +66,7 @@ class ContactWriterDataKamino:
     geom_bid: wp.array[int32]  # Body ID for each geometry
     geom_mid: wp.array[int32]  # Material ID for each geometry
     geom_gap: wp.array[float32]  # Detection gap for each geometry [m]
+    geom_margin: wp.array[float32]  # Shape margin for each geometry [m]
 
     # Material properties (indexed by material pair)
     material_restitution: wp.array[float32]
@@ -91,6 +92,7 @@ class ContactWriterDataKamino:
     contact_gapfunc: wp.array[vec4f]
     contact_frame: wp.array[quatf]
     contact_material: wp.array[vec2f]
+    contact_margins: wp.array[vec2f]
     contact_key: wp.array[uint64]
 
 
@@ -172,6 +174,8 @@ def write_contact_unified_kamino(
     bid_b = writer_data.geom_bid[contact_data.shape_b]
     mid_a = writer_data.geom_mid[contact_data.shape_a]
     mid_b = writer_data.geom_mid[contact_data.shape_b]
+    margin_a = writer_data.geom_margin[contact_data.shape_a]
+    margin_b = writer_data.geom_margin[contact_data.shape_b]
 
     # Ensure the static body is always body A so that the normal
     # always points from A to B and bid_B is non-negative
@@ -181,12 +185,14 @@ def write_contact_unified_kamino(
         normal = -contact_normal_a_to_b
         pos_A = b_contact_world
         pos_B = a_contact_world
+        margins = vec2f(margin_b, margin_a)
     else:
         gid_AB = vec2i(gid_a, gid_b)
         bid_AB = vec2i(bid_a, bid_b)
         normal = contact_normal_a_to_b
         pos_A = a_contact_world
         pos_B = b_contact_world
+        margins = vec2f(margin_a, margin_b)
 
     # Retrieve the material properties for the geom pair
     restitution_ab, _, mu_ab = wp.static(make_get_material_pair_properties())(
@@ -217,6 +223,7 @@ def write_contact_unified_kamino(
     writer_data.contact_gapfunc[mcid] = gapfunc
     writer_data.contact_frame[mcid] = q_frame
     writer_data.contact_material[mcid] = material
+    writer_data.contact_margins[mcid] = margins
     writer_data.contact_key[mcid] = key
 
 
@@ -752,6 +759,7 @@ class CollisionPipelineUnifiedKamino:
         writer_data.geom_wid = self._model.geoms.wid
         writer_data.geom_mid = self._model.geoms.material
         writer_data.geom_gap = self._model.geoms.gap
+        writer_data.geom_margin = self._model.geoms.margin
         writer_data.material_restitution = self._model.materials.restitution
         writer_data.material_static_friction = self._model.materials.static_friction
         writer_data.material_dynamic_friction = self._model.materials.dynamic_friction
@@ -771,6 +779,7 @@ class CollisionPipelineUnifiedKamino:
         writer_data.contact_gapfunc = contacts.gapfunc
         writer_data.contact_frame = contacts.frame
         writer_data.contact_material = contacts.material
+        writer_data.contact_margins = contacts.margins
         writer_data.contact_key = contacts.key
 
         # Run narrow phase with the custom Kamino contact writer
