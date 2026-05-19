@@ -64,6 +64,8 @@ class Example:
         self.lanes = []
         q_cyl_y = wp.quat(math.sin(math.pi / 4.0), 0.0, 0.0, math.cos(math.pi / 4.0))
         for name, prev_rolling, next_rolling, y in self.lane_specs:
+            target_x = self._candidate_target_x(prev_rolling, next_rolling)
+            start_x = self._candidate_start_x(target_x)
             prev_body = self._add_site_body(builder, (0.0, y, self.site_z_low), (0.90, 0.15, 0.15))
             next_body = self._add_site_body(builder, (0.0, y, self.site_z_high), (0.90, 0.15, 0.15))
             prev_anchor_body = None
@@ -81,7 +83,7 @@ class Example:
                     (0.90, 0.15, 0.15),
                 )
             candidate_body = builder.add_body(
-                xform=wp.transform(p=wp.vec3(self.candidate_rest_x, y, self.candidate_z)),
+                xform=wp.transform(p=wp.vec3(start_x, y, self.candidate_z)),
                 mass=0.0,
                 is_kinematic=True,
             )
@@ -197,6 +199,8 @@ class Example:
                     "seg_right": candidate_link - tendon_id,
                     "prev_rolling": prev_rolling,
                     "next_rolling": next_rolling,
+                    "start_x": start_x,
+                    "target_x": target_x,
                     "y": y,
                 }
             )
@@ -232,19 +236,31 @@ class Example:
         builder.add_shape_sphere(body, radius=0.015, as_site=True, color=color)
         return body
 
-    def _candidate_x(self, t):
+    def _candidate_target_x(self, prev_rolling, next_rolling):
+        if prev_rolling and not next_rolling:
+            return 0.55 * self.radius
+        if next_rolling and not prev_rolling:
+            return -0.55 * self.radius
+        return 0.0
+
+    def _candidate_start_x(self, target_x):
+        if abs(target_x) > 1.0e-8:
+            return math.copysign(self.candidate_rest_x, target_x)
+        return self.candidate_rest_x
+
+    def _candidate_x(self, t, lane):
         start = 0.18
         duration = 3.00
         if t <= start or t >= start + duration:
-            return self.candidate_rest_x
+            return lane["start_x"]
         phase = (t - start) / duration
         u = 0.5 - 0.5 * math.cos(2.0 * math.pi * phase)
-        return self.candidate_rest_x * (1.0 - 2.0 * u)
+        return lane["start_x"] + (lane["target_x"] - lane["start_x"]) * u
 
     def _update_kinematic_bodies(self, t):
-        x = self._candidate_x(t)
         body_q = self.state_0.body_q.numpy()
         for lane in self.lanes:
+            x = self._candidate_x(t, lane)
             if lane["prev_anchor_body"] is not None:
                 body_q[lane["prev_anchor_body"], :3] = (
                     -self.anchor_x,
@@ -374,9 +390,11 @@ class Example:
             assert initial_active[lane["candidate_link"]] == 0
             assert history[0] == 0 and history[-1] == 0, f"{lane['name']} should start/end inactive: {history}"
             assert np.max(history) == 1, f"{lane['name']} should activate: {history}"
-            assert self._transition_counts[i] >= 2, (
-                f"{lane['name']} should activate/deactivate: {self._transition_counts[i]}"
+            active_frames = np.flatnonzero(history)
+            assert np.all(history[active_frames[0] : active_frames[-1] + 1] == 1), (
+                f"{lane['name']} should have one contiguous active interval: {history}"
             )
+            assert self._transition_counts[i] == 2, f"{lane['name']} should enter and leave once: {history}"
             assert self._activation_mismatch_count[i] == 0, (
                 f"{lane['name']} active flag diverged from tangent-aware bypass predicate: "
                 f"{self._activation_mismatch_count[i]}"

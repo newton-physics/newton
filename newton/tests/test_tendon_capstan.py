@@ -835,7 +835,15 @@ def test_mujoco_switch_matrix_covers_neighbor_combinations(test, device):
             names,
             ["attachment-attachment", "rolling-attachment", "attachment-rolling", "rolling-rolling"],
         )
-        test.assertTrue(np.all(example._transition_counts >= 2), example._transition_counts)
+        test.assertTrue(np.all(example._transition_counts == 2), example._transition_counts)
+        for lane_index, lane in enumerate(example.lanes):
+            history = np.array(example._active_history[lane_index], dtype=np.int32)
+            active_frames = np.flatnonzero(history)
+            test.assertGreater(len(active_frames), 0, f"{lane['name']} never activated")
+            test.assertTrue(
+                np.all(history[active_frames[0] : active_frames[-1] + 1] == 1),
+                f"{lane['name']} should not deactivate after passing through the active window: {history}",
+            )
         test.assertTrue(np.all(example._activation_mismatch_count == 0), example._activation_mismatch_count)
         test.assertTrue(np.all(example._saw_disabled_segment), example._saw_disabled_segment)
         test.assertTrue(np.all(example._saw_enabled_segment), example._saw_enabled_segment)
