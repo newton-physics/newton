@@ -168,7 +168,7 @@ def update_containers(
 
     # Run joint-limit detection to generate active limits
     if limits is not None:
-        limits.detect(model=model, data=data)
+        limits.detect(q_j=data.joints.q_j)
         wp.synchronize()
 
     # Run collision detection to generate active contacts
@@ -256,7 +256,7 @@ def make_test_problem(
 
     # Run limit detection to generate active limits
     if with_limits:
-        limits.detect(model, data)
+        limits.detect(q_j=data.joints.q_j)
         wp.synchronize()
         if verbose:
             print(f"limits.world_active_limits: {limits.world_active_limits}")

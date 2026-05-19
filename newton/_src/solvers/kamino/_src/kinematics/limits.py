@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 import warp as wp
 
-from ..core.data import DataKamino
 from ..core.joints import JOINT_QMAX, JOINT_QMIN, JointDoFType
 from ..core.math import (
     quat_from_vec4,
@@ -580,8 +579,8 @@ class LimitsKamino:
         self,
         model: ModelKamino | None = None,
     ):
-        # The device on which to allocate the limits data
-        self._device: wp.DeviceLike = None
+        # Declare a cached reference to the target model
+        self._model: ModelKamino | None = None
 
         # Declare the joint-limits data container and initialize it to empty
         self._data: LimitsKaminoData = LimitsKaminoData()
@@ -599,7 +598,8 @@ class LimitsKamino:
         """
         Returns the device on which the limits data is allocated.
         """
-        return self._device
+        self._assert_has_model()
+        return self._model.device
 
     @property
     def data(self) -> LimitsKaminoData:
@@ -763,6 +763,9 @@ class LimitsKamino:
         elif not isinstance(model, ModelKamino):
             raise TypeError("LimitsKamino: model must be an instance of ModelKamino")
 
+        # Store a cached reference to the target model
+        self._model = model
+
         # Extract the joint limits allocation sizes from the model
         # The memory allocation requires the total number of limits (over multiple worlds)
         # as well as the limit capacities for each world. Corresponding sizes are defaulted to 0 (empty).
@@ -786,11 +789,8 @@ class LimitsKamino:
             msg.debug("LimitsKamino: Skipping joint-limit data allocations since total requested capacity was `0`.")
             return
 
-        # Use the model's device
-        self._device = model.device
-
         # Allocate the limits data on the specified device
-        with wp.ScopedDevice(self._device):
+        with wp.ScopedDevice(self._model.device):
             self._data = LimitsKaminoData(
                 model_max_limits_host=model_max_limits,
                 world_max_limits_host=world_max_limits,
@@ -824,35 +824,25 @@ class LimitsKamino:
         if self._data is not None and self._data.model_max_limits_host > 0:
             self._data.reset()
 
-    def detect(
-        self,
-        model: ModelKamino,
-        data: DataKamino,
-    ):
+    def detect(self, q_j: wp.array[float32]):
         """
         Detects the active joint limits in the model and updates the limits data.
 
         Args:
-            model (ModelKamino): The model to detect limits for.
-            state (DataKamino): The current state of the model.
+            model: The model container holding the time-invariant parameters of the system being simulated.
+            q_j: An array containing the generalized joint coordinates of the system at the current state.
         """
         # Skip this operation if no contacts data has been allocated
         if self._data is None or self._data.model_max_limits_host <= 0:
             return
 
-        # Ensure the model and state are valid
-        if model is None:
-            raise ValueError("LimitsKamino: model must be specified for detection (got None)")
-        elif not isinstance(model, ModelKamino):
-            raise TypeError("LimitsKamino: model must be an instance of ModelKamino")
-        if data is None:
+        # Ensure the detection inputs are valid
+        if q_j is None:
             raise ValueError("LimitsKamino: data must be specified for detection (got None)")
-        elif not isinstance(data, DataKamino):
-            raise TypeError("LimitsKamino: data must be an instance of DataKamino")
-
-        # Ensure the limits data is allocated on the same device as the model
-        if self._device is not None and self._device != model.device:
-            raise ValueError(f"LimitsKamino: data device {self._device} does not match model device {model.device}")
+        elif not isinstance(q_j, wp.array):
+            raise TypeError("LimitsKamino: q_j must be an instance of wp.array[float32]")
+        elif q_j.device != self._model.device:
+            raise ValueError(f"LimitsKamino: q_j device {q_j.device} does not match limits device {self._model.device}")
 
         # Clear the current limits count
         self.clear()
@@ -860,18 +850,18 @@ class LimitsKamino:
         # Launch the detection kernel
         wp.launch(
             kernel=_detect_active_joint_configuration_limits,
-            dim=model.size.sum_of_num_joints,
+            dim=self._model.size.sum_of_num_joints,
             inputs=[
                 # Inputs:
-                model.joints.wid,
-                model.joints.dof_type,
-                model.joints.dofs_offset,
-                model.joints.coords_offset,
-                model.joints.bid_B,
-                model.joints.bid_F,
-                model.joints.q_j_min,
-                model.joints.q_j_max,
-                data.joints.q_j,
+                self._model.joints.wid,
+                self._model.joints.dof_type,
+                self._model.joints.dofs_offset,
+                self._model.joints.coords_offset,
+                self._model.joints.bid_B,
+                self._model.joints.bid_F,
+                self._model.joints.q_j_min,
+                self._model.joints.q_j_max,
+                q_j,
                 self._data.model_max_limits,
                 self._data.world_max_limits,
                 # Outputs:
@@ -886,12 +876,21 @@ class LimitsKamino:
                 self._data.r_q,
                 self._data.key,
             ],
-            device=self._device,
+            device=self._model.device,
         )
 
     ###
     # Internals
     ###
+
+    def _assert_has_model(self):
+        """
+        Asserts that the target model has been specified.
+        """
+        if self._model is None:
+            raise ValueError("LimitsKamino: model must be specified for allocation (got None)")
+        elif not isinstance(self._model, ModelKamino):
+            raise TypeError("LimitsKamino: model must be an instance of ModelKamino")
 
     def _assert_has_data(self):
         """

@@ -274,7 +274,7 @@ class TestKinematicsLimits(unittest.TestCase):
         msg.info("[before]: limits.velocity: %s", limits.velocity)
 
         # Check for active joint limits
-        limits.detect(model, data)
+        limits.detect(q_j=data.joints.q_j)
 
         # Optional verbose output
         msg.info("[after]: limits.model_max_limits_host: %s", limits.model_max_limits_host)
