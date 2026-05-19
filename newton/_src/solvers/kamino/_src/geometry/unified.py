@@ -9,6 +9,7 @@ the broad-phase and narrow-phase of Newton's CollisionPipelineUnified, writing g
 contacts data directly into Kamino's respective format.
 """
 
+from functools import cache
 from typing import Literal
 
 import numpy as np
@@ -101,145 +102,143 @@ class ContactWriterDataKamino:
 ###
 
 
-@wp.func
-def write_contact_unified_kamino(
-    contact_data: ContactData,
-    writer_data: ContactWriterDataKamino,
-    output_index: int,
-):
+@cache
+def make_write_contact_unified_kamino(allow_positive_distance: bool = True):
     """
-    Write a contact to Kamino-compatible output arrays.
-
-    This function is used as a custom contact writer for NarrowPhase.launch_custom_write().
-    It converts ContactData from the narrow phase directly to Kamino's contact format,
-    using the same distance computation as Newton core's ``write_contact``.
+    Makes a Warp function to write a contact to Kamino-compatible output arrays.
 
     Args:
-        contact_data: ContactData struct from narrow phase containing contact information.
-        writer_data: ContactWriterDataKamino struct containing output arrays.
-        output_index: If < 0, apply gap-based filtering before writing.
-            If >= 0, skip filtering (narrowphase already validated the contact).
-            In both cases the model-level index is allocated from
-            :attr:`ContactWriterDataKamino.contacts_model_num_active`.
+        allow_with_positive_distance:
+            If ``True``, allow contacts with positive distance to be converted, otherwise skips them.
+            Contacts with positive distance are those within the detection gap but exceeding the margin.
     """
-    contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
 
-    # After narrow-phase post-processing (collision_core.py), contact_distance
-    # is always the surface-to-surface signed distance regardless of kernel
-    # (primitive or GJK), and contact_point_center is the midpoint between
-    # the surface contact points on each shape.
-    half_d = 0.5 * contact_data.contact_distance
-    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * half_d
-    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * half_d
+    @wp.func
+    def _write_contact_unified_kamino(
+        contact_data: ContactData,
+        writer_data: ContactWriterDataKamino,
+        output_index: int,
+    ):
+        """
+        Write a contact to Kamino-compatible output arrays.
 
-    # Margin-shifted signed distance (negative = penetrating beyond margin)
-    d = contact_data.contact_distance - (contact_data.margin_a + contact_data.margin_b)
-    # wp.printf("[%d]: contact_data.radius_eff_a: %f\n", output_index, contact_data.radius_eff_a)
-    # wp.printf("[%d]: contact_data.radius_eff_b: %f\n", output_index, contact_data.radius_eff_b)
-    # wp.printf("[%d]: contact_data.gap_sum: %f\n", output_index, contact_data.gap_sum)
-    # wp.printf("[%d]: contact_data.margin_a: %f\n", output_index, contact_data.margin_a)
-    # wp.printf("[%d]: contact_data.margin_b: %f\n", output_index, contact_data.margin_b)
-    # wp.printf("[%d]: contact_data.contact_distance: %f\n", output_index, contact_data.contact_distance)
-    # wp.printf("[%d]: d: %f\n", output_index, d)
+        This function is used as a custom contact writer for NarrowPhase.launch_custom_write().
+        It converts ContactData from the narrow phase directly to Kamino's contact format,
+        using the same distance computation as Newton core's ``write_contact``.
 
-    # Determine world ID — global shapes (wid=-1) can collide with any world,
-    # so fall back to the other shape's world when one is global.
-    wid_a = writer_data.geom_wid[contact_data.shape_a]
-    wid_b = writer_data.geom_wid[contact_data.shape_b]
-    wid = wid_a
-    if wid_a < 0:
-        wid = wid_b
-    world_max_contacts = writer_data.world_max_contacts[wid]
+        Args:
+            contact_data: ContactData struct from narrow phase containing contact information.
+            writer_data: ContactWriterDataKamino struct containing output arrays.
+            output_index: If < 0, apply gap-based filtering before writing.
+                If >= 0, skip filtering (narrowphase already validated the contact).
+                In both cases the model-level index is allocated from
+                :attr:`ContactWriterDataKamino.contacts_model_num_active`.
+        """
+        contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
 
-    if output_index < 0:
-        # Use per-shape detection gap (additive, matching Newton core)
-        gap_a = writer_data.geom_gap[contact_data.shape_a]
-        gap_b = writer_data.geom_gap[contact_data.shape_b]
-        contact_gap = gap_a + gap_b
-        if d > contact_gap:
+        # After narrow-phase post-processing (collision_core.py), contact_distance
+        # is always the surface-to-surface signed distance regardless of kernel
+        # (primitive or GJK), and contact_point_center is the midpoint between
+        # the surface contact points on each shape.
+        half_d = 0.5 * contact_data.contact_distance
+        a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * half_d
+        b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * half_d
+
+        # Margin-shifted signed distance (negative = penetrating beyond margin)
+        distance = contact_data.contact_distance - (contact_data.margin_a + contact_data.margin_b)
+
+        # Ensure unassigned/unchecked contacts are filtered out by the gap check
+        if output_index < 0:
+            if distance > contact_data.gap_sum:
+                return
+
+        # Optionally enforce the margin check for the contact distance,
+        # skipping the conversion if the contact distance is positive
+        if wp.static(not allow_positive_distance):
+            if distance > 0.0:
+                return
+
+        # Determine world ID — global shapes (wid=-1) can collide with any world,
+        # so fall back to the other shape's world when one is global.
+        wid_a = writer_data.geom_wid[contact_data.shape_a]
+        wid_b = writer_data.geom_wid[contact_data.shape_b]
+        wid = wid_a
+        if wid_a < 0:
+            wid = wid_b
+        world_max_contacts = writer_data.world_max_contacts[wid]
+
+        # Always allocate from the model-level counter so the active count
+        # stays accurate regardless of whether the narrowphase pre-allocated
+        # an output_index (primitive kernel) or left it to the writer (-1).
+        mcid = wp.atomic_add(writer_data.contacts_model_num_active, 0, 1)
+        wcid = wp.atomic_add(writer_data.contacts_world_num_active, wid, 1)
+        if mcid >= writer_data.model_max_contacts or wcid >= world_max_contacts:
+            # TODO: Are these roll-backs correct? Can't they cause overwriting of other contacts?
+            # wp.atomic_sub(writer_data.contacts_model_num_active, 0, 1)
+            # wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
             return
 
-    wp.printf("[%d]: contact_data.radius_eff_a: %f\n", output_index, contact_data.radius_eff_a)
-    wp.printf("[%d]: contact_data.radius_eff_b: %f\n", output_index, contact_data.radius_eff_b)
-    wp.printf("[%d]: contact_data.gap_sum: %f\n", output_index, contact_data.gap_sum)
-    wp.printf("[%d]: contact_data.margin_a: %f\n", output_index, contact_data.margin_a)
-    wp.printf("[%d]: contact_data.margin_b: %f\n", output_index, contact_data.margin_b)
-    wp.printf("[%d]: contact_data.contact_distance: %f\n", output_index, contact_data.contact_distance)
-    wp.printf("[%d]: d: %f\n", output_index, d)
+        # Retrieve the geom/body/material indices
+        gid_a = contact_data.shape_a
+        gid_b = contact_data.shape_b
+        margin_a = contact_data.margin_a
+        margin_b = contact_data.margin_b
+        bid_a = writer_data.geom_bid[contact_data.shape_a]
+        bid_b = writer_data.geom_bid[contact_data.shape_b]
+        mid_a = writer_data.geom_mid[contact_data.shape_a]
+        mid_b = writer_data.geom_mid[contact_data.shape_b]
 
-    # Always allocate from the model-level counter so the active count
-    # stays accurate regardless of whether the narrowphase pre-allocated
-    # an output_index (primitive kernel) or left it to the writer (-1).
-    mcid = wp.atomic_add(writer_data.contacts_model_num_active, 0, 1)
-    if mcid >= writer_data.model_max_contacts:
-        wp.atomic_sub(writer_data.contacts_model_num_active, 0, 1)
-        return
+        # Ensure the static body is always body A so that the normal
+        # always points from A to B and bid_B is non-negative
+        if bid_b < 0:
+            gid_AB = vec2i(gid_b, gid_a)
+            bid_AB = vec2i(bid_b, bid_a)
+            normal = -contact_normal_a_to_b
+            pos_A = b_contact_world
+            pos_B = a_contact_world
+            margins = vec2f(margin_b, margin_a)
+        else:
+            gid_AB = vec2i(gid_a, gid_b)
+            bid_AB = vec2i(bid_a, bid_b)
+            normal = contact_normal_a_to_b
+            pos_A = a_contact_world
+            pos_B = b_contact_world
+            margins = vec2f(margin_a, margin_b)
 
-    # Atomically increment the world-specific contact counter and
-    # roll-back the atomic add if the respective limit is exceeded
-    wcid = wp.atomic_add(writer_data.contacts_world_num_active, wid, 1)
-    if wcid >= world_max_contacts:
-        wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
-        return
+        # Retrieve the material properties for the geom pair
+        restitution_ab, _, mu_ab = wp.static(make_get_material_pair_properties())(
+            mid_a,
+            mid_b,
+            writer_data.material_restitution,
+            writer_data.material_static_friction,
+            writer_data.material_dynamic_friction,
+            writer_data.material_pair_restitution,
+            writer_data.material_pair_static_friction,
+            writer_data.material_pair_dynamic_friction,
+        )
+        material = vec2f(mu_ab, restitution_ab)
 
-    # Retrieve the geom/body/material indices
-    gid_a = contact_data.shape_a
-    gid_b = contact_data.shape_b
-    bid_a = writer_data.geom_bid[contact_data.shape_a]
-    bid_b = writer_data.geom_bid[contact_data.shape_b]
-    mid_a = writer_data.geom_mid[contact_data.shape_a]
-    mid_b = writer_data.geom_mid[contact_data.shape_b]
-    margin_a = writer_data.geom_margin[contact_data.shape_a]
-    margin_b = writer_data.geom_margin[contact_data.shape_b]
+        # Generate the gap-function (normal.x, normal.y, normal.z, distance),
+        # contact frame (z-norm aligned with contact normal)
+        gapfunc = vec4f(normal[0], normal[1], normal[2], distance)
+        q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
+        key = build_pair_key2(uint32(gid_AB[0]), uint32(gid_AB[1]))
 
-    # Ensure the static body is always body A so that the normal
-    # always points from A to B and bid_B is non-negative
-    if bid_b < 0:
-        gid_AB = vec2i(gid_b, gid_a)
-        bid_AB = vec2i(bid_b, bid_a)
-        normal = -contact_normal_a_to_b
-        pos_A = b_contact_world
-        pos_B = a_contact_world
-        margins = vec2f(margin_b, margin_a)
-    else:
-        gid_AB = vec2i(gid_a, gid_b)
-        bid_AB = vec2i(bid_a, bid_b)
-        normal = contact_normal_a_to_b
-        pos_A = a_contact_world
-        pos_B = b_contact_world
-        margins = vec2f(margin_a, margin_b)
+        # Store contact data in Kamino format
+        writer_data.contact_wid[mcid] = wid
+        writer_data.contact_cid[mcid] = wcid
+        writer_data.contact_gid_AB[mcid] = gid_AB
+        writer_data.contact_bid_AB[mcid] = bid_AB
+        writer_data.contact_position_A[mcid] = pos_A
+        writer_data.contact_position_B[mcid] = pos_B
+        writer_data.contact_gapfunc[mcid] = gapfunc
+        writer_data.contact_frame[mcid] = q_frame
+        writer_data.contact_material[mcid] = material
+        writer_data.contact_margins[mcid] = margins
+        writer_data.contact_key[mcid] = key
 
-    # Retrieve the material properties for the geom pair
-    restitution_ab, _, mu_ab = wp.static(make_get_material_pair_properties())(
-        mid_a,
-        mid_b,
-        writer_data.material_restitution,
-        writer_data.material_static_friction,
-        writer_data.material_dynamic_friction,
-        writer_data.material_pair_restitution,
-        writer_data.material_pair_static_friction,
-        writer_data.material_pair_dynamic_friction,
-    )
-    material = vec2f(mu_ab, restitution_ab)
-
-    # Generate the gap-function (normal.x, normal.y, normal.z, distance),
-    # contact frame (z-norm aligned with contact normal)
-    gapfunc = vec4f(normal[0], normal[1], normal[2], d)
-    q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
-    key = build_pair_key2(uint32(gid_AB[0]), uint32(gid_AB[1]))
-
-    # Store contact data in Kamino format
-    writer_data.contact_wid[mcid] = wid
-    writer_data.contact_cid[mcid] = wcid
-    writer_data.contact_gid_AB[mcid] = gid_AB
-    writer_data.contact_bid_AB[mcid] = bid_AB
-    writer_data.contact_position_A[mcid] = pos_A
-    writer_data.contact_position_B[mcid] = pos_B
-    writer_data.contact_gapfunc[mcid] = gapfunc
-    writer_data.contact_frame[mcid] = q_frame
-    writer_data.contact_material[mcid] = material
-    writer_data.contact_margins[mcid] = margins
-    writer_data.contact_key[mcid] = key
+    # Return the generated Warp function
+    return _write_contact_unified_kamino
 
 
 ###
@@ -421,6 +420,7 @@ class CollisionPipelineUnifiedKamino:
         default_gap: float = DEFAULT_GEOM_PAIR_CONTACT_GAP,
         default_friction: float = DEFAULT_FRICTION,
         default_restitution: float = DEFAULT_RESTITUTION,
+        allow_positive_distance: bool = True,
     ):
         """
         Initialize an instance of Kamino's wrapper of the unified collision detection pipeline.
@@ -558,6 +558,9 @@ class CollisionPipelineUnifiedKamino:
             case _:
                 raise ValueError(f"Unsupported broad phase mode: {self._broadphase}")
 
+        # Generate the contact writer function
+        write_contact_fn = make_write_contact_unified_kamino(allow_positive_distance)
+
         # Initialize narrow-phase backend with the contact writer customized for Kamino
         self.narrow_phase = NarrowPhase(
             max_candidate_pairs=self._max_shape_pairs,
@@ -565,7 +568,7 @@ class CollisionPipelineUnifiedKamino:
             device=self._device,
             shape_aabb_lower=self.shape_aabb_lower,
             shape_aabb_upper=self.shape_aabb_upper,
-            contact_writer_warp_func=write_contact_unified_kamino,
+            contact_writer_warp_func=write_contact_fn,
             has_meshes=_has_meshes,
             has_heightfields=_has_heightfields,
         )
