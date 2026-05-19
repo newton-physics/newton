@@ -61,7 +61,7 @@ import warp as wp
 from .....core.types import override
 from ...config import ConfigBase, ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from ..core.data import DataKamino
-from ..core.math import FLOAT32_EPS, UNIT_Z, screw, screw_angular, screw_linear
+from ..core.math import FLOAT32_EPS, screw, screw_angular, screw_linear
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
 from ..core.types import float32, int32, mat33f, vec2f, vec3f, vec4f, vec6f
@@ -584,7 +584,6 @@ def _build_free_velocity_bias_contacts(
     contacts_cid: wp.array[int32],
     contacts_gapfunc: wp.array[vec4f],
     contacts_material: wp.array[vec2f],
-    contacts_margins: wp.array[vec2f],
     problem_config: wp.array[DualProblemConfigStruct],
     problem_vio: wp.array[int32],
     # Outputs:
@@ -607,10 +606,6 @@ def _build_free_velocity_bias_contacts(
     cid_k = contacts_cid[tid]
     material_k = contacts_material[tid]
     distance_k = contacts_gapfunc[tid][3]
-    margins_AB_k = contacts_margins[tid]
-    margin_k = margins_AB_k[0] + margins_AB_k[1]
-    wp.printf("[%d]: margin_k: %f\n", tid, margin_k)
-    wp.printf("[%d]: distance_k: %f\n", tid, distance_k)
 
     # Retrieve the world-specific data
     inv_dt = model_time_inv_dt[wid_k]
@@ -618,7 +613,6 @@ def _build_free_velocity_bias_contacts(
     ccio = data_info_contact_cts_group_offset[wid_k]
     vio = problem_vio[wid_k]
     config = problem_config[wid_k]
-    wp.printf("[%d]: config.delta: %f\n", tid, config.delta)
 
     # Compute the total constraint index offset of the current contact
     ccio_k = vio + ccio + 3 * cid_k
@@ -635,21 +629,13 @@ def _build_free_velocity_bias_contacts(
     # separation, zero means at rest, positive means within the
     # detection gap. A dead-zone of config.delta filters out
     # floating-point noise on nearly-touching contacts.
-    penetration_k = wp.min(0.0, margin_k + distance_k + config.delta)
-    wp.printf("[%d]: penetration_k: %f\n", tid, penetration_k)
+    penetration_k = wp.where(distance_k < 0.0 and distance_k > -config.delta, 0.0, distance_k)
+
     # Compute the per-contact penetration error reduction term
     # NOTE#1: Penetrations are represented as penetration_k < 0
     # NOTE#2: xi corresponds to one-sided Baumgarte-like stabilization
-    xi = config.gamma * inv_dt * penetration_k
-    wp.printf("[%d]: xi: %f\n", tid, xi)
-
-    # # TODO
-    # penetration_k = wp.where(wp.abs(distance_k) < config.delta, 0.0, distance_k)
-    # wp.printf("[%d]: penetration_k: %f\n", tid, penetration_k)
-    # xi = inv_dt * distance_k
-    # wp.printf("[%d]: xi: %f\n", tid, xi)
-    # xi_relaxed = config.gamma * wp.min(0.0, xi) + wp.max(0.0, xi)
-    # wp.printf("[%d]: xi_relaxed: %f\n", tid, xi_relaxed)
+    xi = inv_dt * penetration_k
+    xi_relaxed = config.gamma * wp.min(0.0, xi) + wp.max(0.0, xi)
 
     # Gate contact stabilization for restitutive impacts with
     # critical restitution coefficients (i.e. epsilon_k >= 1.0)
@@ -659,14 +645,14 @@ def _build_free_velocity_bias_contacts(
     else:
         alpha = 1.0
 
-    # Compute the contact constraint stabilization bias
-    v_b_k = alpha * xi * UNIT_Z
-
     # Store the contact constraint stabilization bias in the output vector
-    for i in range(3):
-        problem_v_b[ccio_k + i] = v_b_k[i]
+    # NOTE: We still write zeros to overwrite previous values
+    problem_v_b[ccio_k] = 0.0
+    problem_v_b[ccio_k + 1] = 0.0
+    problem_v_b[ccio_k + 2] = alpha * xi_relaxed
 
     # Initialize the restitutive Newton-type impact model term
+    # NOTE: We still write zeros to overwrite previous values
     problem_v_i[ccio_k] = 0.0
     problem_v_i[ccio_k + 1] = 0.0
     problem_v_i[ccio_k + 2] = epsilon_k
@@ -1627,7 +1613,6 @@ class DualProblem:
                     contacts.cid,
                     contacts.gapfunc,
                     contacts.material,
-                    contacts.margins,
                     self._data.config,
                     self._data.vio,
                     # Outputs:
