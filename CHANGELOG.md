@@ -15,6 +15,7 @@
 ### Fixed
 
 - Fix `SolverMuJoCo` returning `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_qd`.
+- Fix `SolverVBD` joint-mode custom attribute setup by adding `SolverVBD.register_joint_mode_custom_attributes()` for `vbd:joint_is_hard` without enabling Dahl cable friction; use `SolverVBD.register_dahl_custom_attributes()` for Dahl parameters.
 
 ## [1.2.0] - 2026-05-12
 

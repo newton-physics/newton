@@ -4,6 +4,7 @@
 """Tests for the VBD solver."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -434,6 +435,66 @@ def _d6_fully_free_structural_slots_are_inactive(test, device):
     np.testing.assert_array_equal(solver.joint_is_hard.numpy()[start : start + 2], [0, 0])
 
 
+def _vbd_custom_attribute_registration_is_feature_scoped(test, device):
+    del device
+
+    builder = newton.ModelBuilder()
+    newton.solvers.SolverVBD.register_joint_mode_custom_attributes(builder)
+    test.assertIn("vbd:joint_is_hard", builder.custom_attributes)
+    test.assertNotIn("vbd:dahl_eps_max", builder.custom_attributes)
+    test.assertNotIn("vbd:dahl_tau", builder.custom_attributes)
+
+    builder = newton.ModelBuilder()
+    newton.solvers.SolverVBD.register_dahl_custom_attributes(builder)
+    test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
+    test.assertIn("vbd:dahl_tau", builder.custom_attributes)
+    test.assertNotIn("vbd:joint_is_hard", builder.custom_attributes)
+    test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.5)
+
+    builder = newton.ModelBuilder()
+    newton.solvers.SolverVBD.register_custom_attributes(builder)
+    test.assertIn("vbd:joint_is_hard", builder.custom_attributes)
+    test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
+    test.assertIn("vbd:dahl_tau", builder.custom_attributes)
+    test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.5)
+
+
+def _make_vbd_dahl_detection_model(device, register_custom_attributes):
+    builder = newton.ModelBuilder(gravity=0.0)
+    register_custom_attributes(builder)
+
+    parent = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    child = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_box(parent, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(child, hx=0.1, hy=0.1, hz=0.1)
+    joint = builder.add_joint_cable(
+        parent,
+        child,
+        parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(-0.5, 0.0, 0.0), wp.quat_identity()),
+        bend_stiffness=1.0,
+    )
+    builder.add_articulation([joint])
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def _vbd_joint_mode_registration_does_not_enable_dahl(test, device):
+    model = _make_vbd_dahl_detection_model(device, newton.solvers.SolverVBD.register_joint_mode_custom_attributes)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        solver = newton.solvers.SolverVBD(model)
+    test.assertFalse(solver.enable_dahl_friction)
+
+    model = _make_vbd_dahl_detection_model(device, newton.solvers.SolverVBD.register_dahl_custom_attributes)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        solver = newton.solvers.SolverVBD(model)
+    test.assertTrue(solver.enable_dahl_friction)
+
+
 def _rigid_contact_history_snapshot_copies_active_rows(test, device):
     """Snapshot writes solved state by active contact row and leaves inactive rows untouched."""
     with wp.ScopedDevice(device):
@@ -617,6 +678,18 @@ add_function_test(
     TestSolverVBD,
     "test_d6_fully_free_structural_slots_are_inactive",
     _d6_fully_free_structural_slots_are_inactive,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_vbd_custom_attribute_registration_is_feature_scoped",
+    _vbd_custom_attribute_registration_is_feature_scoped,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_vbd_joint_mode_registration_does_not_enable_dahl",
+    _vbd_joint_mode_registration_does_not_enable_dahl,
     devices=devices,
 )
 add_function_test(

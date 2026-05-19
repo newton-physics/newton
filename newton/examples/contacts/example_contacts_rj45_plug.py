@@ -239,7 +239,7 @@ class Example:
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
         builder = newton.ModelBuilder(gravity=-9.81)
-        SolverVBD.register_custom_attributes(builder)
+        SolverVBD.register_joint_mode_custom_attributes(builder)
         builder.rigid_gap = 0.005
 
         builder.add_ground_plane()
@@ -383,9 +383,6 @@ class Example:
         self.contacts = self.model.contacts()
 
         self._initial_body_q = self.state_0.body_q.numpy().copy()
-
-        # Disable Dahl cable friction (register_custom_attributes enables it by default).
-        self.model.vbd.dahl_eps_max.fill_(0.0)
 
         self.solver = SolverVBD(
             self.model,
