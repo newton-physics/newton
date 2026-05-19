@@ -14,7 +14,7 @@ import warp as wp
 from .....sim import Model
 
 # Kamino imports
-from .bodies import RigidBodiesData, RigidBodiesModel, convert_geom_offset_origin_to_com
+from .bodies import RigidBodiesData, RigidBodiesModel
 from .control import ControlKamino
 from .conversions import (
     convert_entity_local_transforms,
@@ -671,9 +671,16 @@ class ModelKamino:
         return control
 
     @staticmethod
-    def from_newton(model: Model) -> ModelKamino:
+    def from_newton(model: Model, overwrite_source_model: bool = True) -> ModelKamino:
         """
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
+
+        Args:
+            model:
+                The source :class:`newton.Model` instance to be converted.
+            overwrite_source_model:
+                Whether to overwrite the source model with
+                the converted model. Defaults to `True`.
         """
 
         # Ensure the base model is valid
@@ -771,7 +778,13 @@ class ModelKamino:
             model_joints = convert_joints(model, model_size, model_info, body_com, joint_X_p, joint_X_c)
 
             # Geometries
-            model_geoms = convert_geometries(model, model_size, materials_manager, shape_transform)
+            model_geoms = convert_geometries(
+                model=model,
+                model_size=model_size,
+                model_bodies=model_bodies,
+                materials_manager=materials_manager,
+                shape_transform=shape_transform,
+            )
 
             # Materials
             model_materials = materials_manager.make_materials_model()
@@ -784,19 +797,12 @@ class ModelKamino:
         # Modify the model's body COM and shape transform properties in-place to convert from body-frame-relative
         # NOTE: These are modified only so that the visualizer correctly
         # shows the shape poses, joints frames and body inertial properties
-        wp.copy(model.body_com, body_com)
-        wp.copy(model.body_inertia, body_inertia)
-        wp.copy(model.shape_transform, shape_transform)
-        wp.copy(model.joint_X_p, joint_X_p)
-        wp.copy(model.joint_X_c, joint_X_c)
-
-        # Convert shape offsets from body-frame-relative to COM-relative
-        convert_geom_offset_origin_to_com(
-            model_bodies.i_r_com_i,
-            model.shape_body,
-            shape_transform,
-            model_geoms.offset,
-        )
+        if overwrite_source_model:
+            wp.copy(model.body_com, body_com)
+            wp.copy(model.body_inertia, body_inertia)
+            wp.copy(model.shape_transform, shape_transform)
+            wp.copy(model.joint_X_p, joint_X_p)
+            wp.copy(model.joint_X_c, joint_X_c)
 
         # Construct and return the new ModelKamino instance
         return ModelKamino(

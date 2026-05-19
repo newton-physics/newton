@@ -12,8 +12,11 @@ import warp as wp
 
 from .....geometry import ShapeFlags
 from .....sim.model import Model
-from ..core.bodies import RigidBodiesModel, convert_body_origin_to_com
-from ..core.size import SizeKamino
+from .bodies import (
+    RigidBodiesModel,
+    convert_body_origin_to_com,
+    convert_geom_offset_origin_to_com,
+)
 from .builder import JointActuationType
 from .geometry import GeometriesModel
 from .joints import (
@@ -26,6 +29,7 @@ from .joints import (
 )
 from .materials import MaterialDescriptor, MaterialManager
 from .shapes import max_contacts_for_shape_pair
+from .size import SizeKamino
 from .types import float32, int32, mat33f, mat63f, quatf, transformf, vec2i, vec3f, vec6f
 
 if TYPE_CHECKING:
@@ -1539,7 +1543,11 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
 
 
 def convert_geometries(
-    model: Model, model_size: SizeKamino, materials_manager: MaterialManager, shape_transform: wp.array
+    model: Model,
+    model_size: SizeKamino,
+    model_bodies: RigidBodiesModel,
+    materials_manager: MaterialManager,
+    shape_transform: wp.array,
 ) -> GeometriesModel:
     # Set up materials
     geom_material_np = register_materials(model, materials_manager)
@@ -1581,8 +1589,20 @@ def convert_geometries(
     else:
         model_min_contacts, world_min_contacts = compute_required_contact_capacity(model)
 
-    # Geometries
-    model_geoms = GeometriesModel(
+    # Convert shape offsets from body-frame-relative to COM-relative
+    offset = wp.zeros_like(model.shape_transform)
+    convert_geom_offset_origin_to_com(
+        model_bodies.i_r_com_i,
+        model.shape_body,
+        shape_transform,
+        offset,
+    )
+
+    # Create additional collision detection meta-data
+    excluded_pairs = wp.array(sorted(model.shape_collision_filter_pairs), dtype=vec2i, device=model.device)
+
+    # Construct and return the converted geometries model
+    return GeometriesModel(
         num_geoms=model.shape_count,
         num_collidable=model_num_collidable_geoms.numpy()[0],
         num_collidable_pairs=model.shape_contact_pair_count,
@@ -1597,14 +1617,13 @@ def convert_geometries(
         flags=model.shape_flags,
         ptr=model.shape_source_ptr,
         params=model.shape_scale,
-        offset=wp.zeros_like(model.shape_transform),
+        offset=offset,
         material=geom_material,
         group=model.shape_collision_group,
         gap=model.shape_gap,
         margin=model.shape_margin,
         collidable_pairs=model.shape_contact_pairs,
-        excluded_pairs=wp.array(sorted(model.shape_collision_filter_pairs), dtype=vec2i, device=model.device),
-        # Mesh / heightfield data pass-through from Newton model
+        excluded_pairs=excluded_pairs,
         heightfield_index=model.shape_heightfield_index,
         heightfield_data=model.heightfield_data,
         heightfield_elevations=model.heightfield_elevations,
@@ -1613,8 +1632,6 @@ def convert_geometries(
         voxel_resolution=model._shape_voxel_resolution,
         collision_radius=model.shape_collision_radius,
     )
-
-    return model_geoms
 
 
 def convert_target_dofs_to_target_coords(
