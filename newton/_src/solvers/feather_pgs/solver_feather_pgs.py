@@ -212,6 +212,7 @@ class SolverFeatherPGS(SolverBase):
 
     def _compute_articulation_metadata(self, model):
         self._compute_articulation_indices(model)
+        self._validate_supported_free_joint_topology(model)
         self._compute_root_free_metadata(model)
         self._setup_size_grouping(model)
         self._setup_world_mapping(model)
@@ -287,6 +288,25 @@ class SolverFeatherPGS(SolverBase):
         else:
             self.M_size = 0
             self.articulation_max_dofs = 0
+
+    def _validate_supported_free_joint_topology(self, model):
+        if not model.articulation_count or not model.joint_count:
+            return
+
+        articulation_start = model.articulation_start.numpy()
+        joint_type = model.joint_type.numpy()
+        joint_parent = model.joint_parent.numpy()
+        root_joints = {int(j) for j in articulation_start[:-1]}
+
+        for joint in range(model.joint_count):
+            jt = int(joint_type[joint])
+            if jt != int(JointType.FREE) and jt != int(JointType.DISTANCE):
+                continue
+            if joint not in root_joints or int(joint_parent[joint]) != -1:
+                raise NotImplementedError(
+                    "SolverFeatherPGS only supports FREE and DISTANCE joints when they are root joints "
+                    f"attached to the world; joint {joint} is not a supported floating root."
+                )
 
     def _compute_root_free_metadata(self, model):
         if not model.articulation_count or not model.joint_count:

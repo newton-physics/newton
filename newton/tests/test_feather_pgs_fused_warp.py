@@ -93,6 +93,18 @@ def _build_heterogeneous_velocity_limit_model(device: wp.context.Device) -> newt
     return builder.finalize(device=device)
 
 
+def _build_descendant_free_joint_model(device: wp.context.Device) -> newton.Model:
+    """Build an articulation with a non-root free joint."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    inertia = wp.mat33(0.2, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.2)
+    base = builder.add_link(mass=1.0, inertia=inertia)
+    child = builder.add_link(mass=1.0, inertia=inertia)
+    root_joint = builder.add_joint_revolute(parent=-1, child=base, axis=wp.vec3(0.0, 0.0, 1.0))
+    descendant_free_joint = builder.add_joint_free(parent=base, child=child)
+    builder.add_articulation([root_joint, descendant_free_joint])
+    return builder.finalize(device=device)
+
+
 class TestFeatherPGSFusedWarpSelector(unittest.TestCase):
     """Constructor-level coverage for the private fused-Warp API."""
 
@@ -119,6 +131,10 @@ def run_constructor_rejects_unsupported_combinations(test: TestFeatherPGSFusedWa
             model,
             enable_contact_friction=False,
         )
+
+    model = _build_descendant_free_joint_model(device)
+    with test.assertRaisesRegex(NotImplementedError, "root joints attached to the world"):
+        SolverFeatherPGS(model)
 
 
 def run_constructor_pads_contact_triplets_internally(test: TestFeatherPGSFusedWarpSelector, device):
