@@ -38,7 +38,9 @@ def solve_tendon_stretch(
     seg_damping: wp.array[float],
     seg_lambda: wp.array[float],
     seg_delta_lambda: wp.array[float],
-    seg_link_l: wp.array[int],
+    seg_active: wp.array[int],
+    seg_active_link_l: wp.array[int],
+    seg_active_link_r: wp.array[int],
     compliance_lambda_scale: float,
     relaxation: float,
     dt: float,
@@ -51,8 +53,13 @@ def solve_tendon_stretch(
     constraint between attachment points on two rigid bodies.
     """
     seg = wp.tid()
-    link_l = seg_link_l[seg]
-    link_r = link_l + 1
+    if seg_active[seg] == 0:
+        seg_lambda[seg] = 0.0
+        seg_delta_lambda[seg] = 0.0
+        return
+
+    link_l = seg_active_link_l[seg]
+    link_r = seg_active_link_r[seg]
 
     body_l = tendon_link_body[link_l]
     body_r = tendon_link_body[link_r]
@@ -158,6 +165,7 @@ def solve_tendon_slip(
     tendon_link_type: wp.array[int],
     tendon_link_radius: wp.array[float],
     tendon_link_mu: wp.array[float],
+    tendon_link_active: wp.array[int],
     tendon_link_offset: wp.array[wp.vec3],
     tendon_link_axis: wp.array[wp.vec3],
     seg_rest_length: wp.array[float],
@@ -190,6 +198,8 @@ def solve_tendon_slip(
     for i in range(1, num_links - 1):
         link_idx = link_start + i
         if tendon_link_type[link_idx] != int(TendonLinkType.ROLLING):
+            continue
+        if tendon_link_active[link_idx] == 0:
             continue
 
         radius = tendon_link_radius[link_idx]

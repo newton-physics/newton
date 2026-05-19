@@ -357,6 +357,8 @@ class Model:
         """Winding direction (+1 or -1) for each tendon link, shape [tendon_link_count], int."""
         self.tendon_link_mu: wp.array[wp.float32] | None = None
         """Friction coefficient [dimensionless] at each tendon link, shape [tendon_link_count], float."""
+        self.tendon_link_active: wp.array[wp.int32] | None = None
+        """Initial active-route flag for each tendon link, shape [tendon_link_count], int."""
         self.tendon_link_offset: wp.array[wp.vec3] | None = None
         """Local-frame offset of the cable plane center on each body [m], shape [tendon_link_count], vec3."""
         self.tendon_link_axis: wp.array[wp.vec3] | None = None

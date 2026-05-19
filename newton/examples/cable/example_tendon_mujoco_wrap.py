@@ -4,11 +4,11 @@
 ###########################################################################
 # Example Tendon MuJoCo Wrap
 #
-# Minimal MuJoCo-style fixed-topology wrap prototype.  A vertical cable starts
-# as a straight inactive route.  Three candidate capstans move horizontally into
-# the cable at the same time from alternating sides.  Each candidate activates
-# as a rolling wrap while the capstan intersects its local vertical span and
-# switches back to a kinematic bypass once the straight span has line-of-sight.
+# Minimal MuJoCo-style dynamic tendon routing prototype.  A vertical cable
+# starts as a straight inactive route.  Three authored rolling links move
+# horizontally into the cable at the same time from alternating sides.  The
+# example updates only the solver active set; the tendon solver builds the
+# straight bypass or wrapped route from that active set.
 #
 # Command: python -m newton.examples tendon_mujoco_wrap
 #
@@ -61,9 +61,7 @@ class Example:
         self.site_idx = [self._add_site_body(builder, (0.0, 0.0, z), (0.90, 0.15, 0.15)) for z in site_zs]
 
         self.capstan_idx = []
-        self.bypass_idx = []
         for spec in self.capstan_specs:
-            self.bypass_idx.append(self._add_site_body(builder, (0.0, 0.0, spec["z"]), (0.3, 0.3, 0.3), hidden=True))
             self.capstan_idx.append(self._add_capstan_body(builder, spec))
 
         builder.add_tendon()
@@ -75,8 +73,12 @@ class Example:
         )
         for i in range(self.candidate_count):
             builder.add_tendon_link(
-                body=self.bypass_idx[i],
-                link_type=int(newton.TendonLinkType.ATTACHMENT),
+                body=self.capstan_idx[i],
+                link_type=int(newton.TendonLinkType.ROLLING),
+                radius=self.radius,
+                orientation=int(self.capstan_specs[i]["orientation"]),
+                mu=0.0,
+                active=False,
                 offset=(0.0, 0.0, 0.0),
                 axis=(0.0, 1.0, 0.0),
                 compliance=1.0e-5,
@@ -110,6 +112,7 @@ class Example:
         self.candidate_prev_links = np.arange(0, 2 * self.candidate_count, 2, dtype=np.int32)
         self.candidate_next_links = np.arange(2, 2 * self.candidate_count + 2, 2, dtype=np.int32)
         self.active = np.zeros(self.candidate_count, dtype=bool)
+        self._last_active_sample = self.active.copy()
         self._active_history = []
         self._transition_counts = np.zeros(self.candidate_count, dtype=np.int32)
         self._activation_mismatch_count = 0
@@ -123,7 +126,6 @@ class Example:
         self._max_rest_sum_error = 0.0
 
         self._update_kinematic_bodies(0.0)
-        self._apply_route_state(allow_switch=False)
 
         if self.viewer is not None:
             self.viewer.set_model(self.model)
@@ -168,8 +170,6 @@ class Example:
             capstan_x = self._capstan_x(spec, t)
             body_q[self.capstan_idx[i], :3] = (capstan_x, 0.0, float(spec["z"]))
             body_q[self.capstan_idx[i], 3:] = self._identity_q
-            body_q[self.bypass_idx[i], :3] = (0.0, 0.0, float(spec["z"]))
-            body_q[self.bypass_idx[i], 3:] = self._identity_q
         self.state_0.body_q.assign(body_q)
         self.state_1.body_q.assign(body_q)
 
@@ -193,81 +193,17 @@ class Example:
         distance, alpha = self._candidate_span_projection(i)
         return 0.0 < alpha < 1.0 and distance <= self.radius
 
-    def _apply_route_state(self, allow_switch=True):
-        for i in range(self.candidate_count):
-            new_active = self._candidate_should_wrap(i)
-            if allow_switch and new_active != bool(self.active[i]):
-                self.active[i] = new_active
-                self._transition_counts[i] += 1
-                self._set_candidate_link_active(i, new_active)
-
-            self._redistribute_rest_lengths(i)
-
-    def _set_candidate_link_active(self, i, active):
-        link_idx = int(self.candidate_link_indices[i])
-        link_body = self.model.tendon_link_body.numpy()
-        link_type = self.model.tendon_link_type.numpy()
-        link_radius = self.model.tendon_link_radius.numpy()
-        link_mu = self.model.tendon_link_mu.numpy()
-        link_orientation = self.model.tendon_link_orientation.numpy()
-
-        if active:
-            link_body[link_idx] = self.capstan_idx[i]
-            link_type[link_idx] = int(newton.TendonLinkType.ROLLING)
-            link_radius[link_idx] = self.radius
-            link_mu[link_idx] = 0.0
-            link_orientation[link_idx] = int(self.capstan_specs[i]["orientation"])
-        else:
-            link_body[link_idx] = self.bypass_idx[i]
-            link_type[link_idx] = int(newton.TendonLinkType.ATTACHMENT)
-            link_radius[link_idx] = 0.0
-            link_mu[link_idx] = 0.0
-            link_orientation[link_idx] = int(self.capstan_specs[i]["orientation"])
-
-        self.model.tendon_link_body.assign(link_body)
-        self.model.tendon_link_type.assign(link_type)
-        self.model.tendon_link_radius.assign(link_radius)
-        self.model.tendon_link_mu.assign(link_mu)
-        self.model.tendon_link_orientation.assign(link_orientation)
-
-        if self.solver.tendon_seg_lambda is not None:
-            seg_lambda = self.solver.tendon_seg_lambda.numpy()
-            seg_delta = self.solver.tendon_seg_delta_lambda.numpy()
-            seg_lambda[list(self.candidate_seg_pairs[i])] = 0.0
-            seg_delta[list(self.candidate_seg_pairs[i])] = 0.0
-            self.solver.tendon_seg_lambda.assign(seg_lambda)
-            self.solver.tendon_seg_delta_lambda.assign(seg_delta)
-
-    def _redistribute_rest_lengths(self, i):
-        body_q = self.state_0.body_q.numpy()
-        p0 = self._world_point_for_link(int(self.candidate_prev_links[i]), body_q).astype(np.float64)
-        p1 = self._world_point_for_link(int(self.candidate_next_links[i]), body_q).astype(np.float64)
-        middle = body_q[self.capstan_idx[i] if self.active[i] else self.bypass_idx[i], :3].astype(np.float64)
-        len_top = float(np.linalg.norm(middle - p0))
-        len_bottom = float(np.linalg.norm(p1 - middle))
-        if self.active[i]:
-            t0, t1, _arc = _wrap_geometry_np(
-                p0,
-                p1,
-                middle,
-                self.radius,
-                np.array([0.0, 1.0, 0.0]),
-                int(self.capstan_specs[i]["orientation"]),
-            )
-            len_top = float(np.linalg.norm(t0 - p0))
-            len_bottom = float(np.linalg.norm(p1 - t1))
-
-        rest = self.solver.tendon_seg_rest_length.numpy()
-        seg_l, seg_r = self.candidate_seg_pairs[i]
-        rest[seg_l] = max(len_top, 1.0e-6)
-        rest[seg_r] = max(len_bottom, 1.0e-6)
-        self.solver.tendon_seg_rest_length.assign(rest)
+    def _update_active_set(self):
+        link_active = self.solver.tendon_link_active.numpy()
+        for i, link_idx in enumerate(self.candidate_link_indices):
+            link_active[link_idx] = 1 if self._candidate_should_wrap(i) else 0
+        self.solver.tendon_link_active.assign(link_active)
 
     def simulate(self):
         for substep in range(self.sim_substeps):
             t = self.sim_time + substep * self.sim_dt
             self._update_kinematic_bodies(t)
-            self._apply_route_state(allow_switch=True)
+            self._update_active_set()
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -278,6 +214,10 @@ class Example:
         self._record_metrics()
 
     def _record_metrics(self):
+        link_active = self.solver.tendon_link_active.numpy()[self.candidate_link_indices].astype(bool)
+        self.active = link_active.copy()
+        self._transition_counts += (self.active != self._last_active_sample).astype(np.int32)
+        self._last_active_sample = self.active.copy()
         self._active_history.append(self.active.copy())
         rest = self.solver.tendon_seg_rest_length.numpy()
         self._min_rest_length = min(self._min_rest_length, float(np.min(rest)))
@@ -293,7 +233,6 @@ class Example:
                 self._activation_mismatch_count += 1
 
             seg_l, seg_r = self.candidate_seg_pairs[i]
-            candidate_points = np.vstack((att_l[seg_l], att_r[seg_l], att_l[seg_r], att_r[seg_r]))
             if self.active[i]:
                 tangent_x = np.array([att_r[seg_l, 0], att_l[seg_r, 0]], dtype=np.float64)
                 capstan_x = float(body_q[self.capstan_idx[i], 0])
@@ -309,6 +248,7 @@ class Example:
                     float(np.max(-expected_sign * tangent_x)),
                 )
             else:
+                candidate_points = np.vstack((att_l[seg_l], att_r[seg_l]))
                 self._max_inactive_x_error = max(
                     self._max_inactive_x_error,
                     float(np.max(np.abs(candidate_points[:, 0]))),
@@ -321,6 +261,14 @@ class Example:
     def test_final(self):
         body_q = self.state_0.body_q.numpy()
         assert np.isfinite(body_q).all(), "Non-finite values in dynamic-wrap body state"
+        link_type = self.model.tendon_link_type.numpy()[self.candidate_link_indices]
+        initial_active = self.model.tendon_link_active.numpy()[self.candidate_link_indices]
+        assert np.all(link_type == int(newton.TendonLinkType.ROLLING)), (
+            f"Active-set candidates should remain authored as rolling links: {link_type}"
+        )
+        assert np.all(initial_active == 0), (
+            f"Dynamic wrap candidates should be authored as initially inactive active-set links: {initial_active}"
+        )
         active_history = np.array(self._active_history, dtype=np.int32)
         assert len(active_history) > 0, "No route-state samples were recorded"
         assert self.candidate_count == 3, f"Expected three dynamic wrap candidates: {self.candidate_count}"

@@ -16,7 +16,10 @@ import warp as wp
 import newton
 from newton._src.sim.builder import Axis
 from newton._src.sim.tendon import TendonLinkType
+from newton.examples.cable.cable import get_tendon_cable_lines
 from newton.examples.cable.example_tendon_capstan_friction import Example as DynamicCapstanExample
+from newton.examples.cable.example_tendon_mujoco_switch import Example as MujocoSwitchExample
+from newton.examples.cable.example_tendon_mujoco_switch_matrix import Example as MujocoSwitchMatrixExample
 from newton.examples.cable.example_tendon_mujoco_wrap import Example as MujocoWrapExample
 from newton.tests.unittest_utils import sanitize_identifier
 
@@ -707,6 +710,20 @@ def _run_mujoco_wrap_example(num_frames=220):
     return example
 
 
+def _run_mujoco_switch_example(num_frames=220):
+    example = MujocoSwitchExample(None, None)
+    for _ in range(num_frames):
+        example.step()
+    return example
+
+
+def _run_mujoco_switch_matrix_example(num_frames=220):
+    example = MujocoSwitchMatrixExample(None, None)
+    for _ in range(num_frames):
+        example.step()
+    return example
+
+
 def test_mujoco_wrap_straight_bypass_activates_and_deactivates(test, device):
     """Dynamic wrap candidates should start/end as the original straight vertical route."""
     with wp.ScopedDevice(device):
@@ -714,7 +731,17 @@ def test_mujoco_wrap_straight_bypass_activates_and_deactivates(test, device):
         example.test_final()
 
         active_history = np.array(example._active_history, dtype=np.int32)
+        link_type = example.model.tendon_link_type.numpy()[example.candidate_link_indices]
+        initial_active = example.model.tendon_link_active.numpy()[example.candidate_link_indices]
         test.assertEqual(example.candidate_count, 3, "MuJoCo-style wrap example should use three candidates")
+        test.assertTrue(
+            np.all(link_type == int(newton.TendonLinkType.ROLLING)),
+            f"Dynamic wrap candidates should remain authored as rolling links: {link_type}",
+        )
+        test.assertTrue(
+            np.all(initial_active == 0),
+            f"Dynamic wrap candidates should be initially inactive active-set links: {initial_active}",
+        )
         test.assertTrue(np.all(active_history[0] == 0), f"Route should start inactive: {active_history[:8]}")
         test.assertTrue(np.all(active_history[-1] == 0), f"Route should end inactive: {active_history[-8:]}")
         test.assertTrue(np.all(np.max(active_history, axis=0) == 1), f"Every capstan should activate: {active_history}")
@@ -763,6 +790,85 @@ def test_mujoco_wrap_return_path_deactivates_before_centerline_overshoot(test, d
             "Active return path should not cross beyond the straight centerline before deactivation: "
             f"x={example._max_active_centerline_overshoot}",
         )
+
+
+def test_mujoco_switch_optional_middle_capstan_activates(test, device):
+    """A rotating endpoint should switch one middle rolling guide in and out."""
+    with wp.ScopedDevice(device):
+        example = _run_mujoco_switch_example()
+        example.test_final()
+
+        active_history = np.array(example._active_history, dtype=np.int32)
+        link_type = example.model.tendon_link_type.numpy()
+        initial_active = example.model.tendon_link_active.numpy()
+        test.assertEqual(link_type[example.lower_link], int(newton.TendonLinkType.ROLLING))
+        test.assertEqual(link_type[example.middle_link], int(newton.TendonLinkType.ROLLING))
+        test.assertEqual(initial_active[example.lower_link], 1)
+        test.assertEqual(initial_active[example.middle_link], 0)
+        test.assertEqual(active_history[0], 0, f"Switch route should start on lower-guide-only path: {active_history}")
+        test.assertEqual(active_history[-1], 0, f"Switch route should end on lower-guide-only path: {active_history}")
+        test.assertEqual(int(np.max(active_history)), 1, f"Middle capstan should activate: {active_history}")
+        test.assertGreaterEqual(example._transition_count, 2)
+        test.assertEqual(example._activation_mismatch_count, 0)
+
+
+def test_mujoco_switch_preserves_active_route_segments(test, device):
+    """Active-set routing should disable and restore the middle candidate segment."""
+    with wp.ScopedDevice(device):
+        example = _run_mujoco_switch_example()
+
+        test.assertTrue(example._saw_middle_segment_disabled, "Inactive middle link should be skipped")
+        test.assertTrue(example._saw_middle_segment_enabled, "Active middle link should restore its second segment")
+        test.assertLess(example._max_inactive_middle_penetration, 1.0e-5)
+        test.assertGreater(example._min_active_tangent_radius, example.middle_radius * 0.80)
+        test.assertLess(example._max_active_tangent_radius, example.middle_radius * 1.20)
+
+
+def test_mujoco_switch_matrix_covers_neighbor_combinations(test, device):
+    """Optional route activation should work for attachment/rolling neighbor combinations."""
+    with wp.ScopedDevice(device):
+        example = _run_mujoco_switch_matrix_example()
+        example.test_final()
+
+        names = [lane["name"] for lane in example.lanes]
+        test.assertEqual(
+            names,
+            ["attachment-attachment", "rolling-attachment", "attachment-rolling", "rolling-rolling"],
+        )
+        test.assertTrue(np.all(example._transition_counts >= 2), example._transition_counts)
+        test.assertTrue(np.all(example._activation_mismatch_count == 0), example._activation_mismatch_count)
+        test.assertTrue(np.all(example._saw_disabled_segment), example._saw_disabled_segment)
+        test.assertTrue(np.all(example._saw_enabled_segment), example._saw_enabled_segment)
+
+
+def test_mujoco_switch_matrix_uses_tangent_bypass_geometry(test, device):
+    """Inactive routes should clear candidate cylinders using point/tangent endpoints."""
+    with wp.ScopedDevice(device):
+        example = _run_mujoco_switch_matrix_example()
+
+        test.assertTrue(
+            np.all(example._max_inactive_penetration < 1.0e-5),
+            f"Inactive route stayed active-set-skipped while candidate intersected bypass: "
+            f"{example._max_inactive_penetration}",
+        )
+        test.assertTrue(
+            np.all(example._min_active_tangent_radius > example.radius * 0.80),
+            f"Active route did not reach candidate tangent surface: {example._min_active_tangent_radius}",
+        )
+        test.assertTrue(
+            np.all(example._max_active_tangent_radius < example.radius * 1.20),
+            f"Active route drifted off candidate tangent surface: {example._max_active_tangent_radius}",
+        )
+        starts, ends = get_tendon_cable_lines(example.solver, example.model, example.state_0)
+        render_points = np.concatenate((starts.numpy(), ends.numpy()), axis=0)
+        test.assertTrue(np.isfinite(render_points).all(), "Switch-matrix render line points should stay finite")
+        test.assertLess(
+            float(np.max(np.abs(render_points[:, 0]))),
+            0.35,
+            "Switch-matrix render arcs should use active route adjacency, not disabled segment endpoints",
+        )
+        test.assertGreater(float(np.min(render_points[:, 2])), -0.10)
+        test.assertLess(float(np.max(render_points[:, 2])), 0.72)
 
 
 def test_pinhole_slip_atwood(test, device):
@@ -1344,6 +1450,30 @@ add_test(
     "mujoco_wrap_return_path_deactivates_before_centerline_overshoot",
     devices,
     test_mujoco_wrap_return_path_deactivates_before_centerline_overshoot,
+)
+add_test(
+    TestTendonCapstan,
+    "mujoco_switch_optional_middle_capstan_activates",
+    devices,
+    test_mujoco_switch_optional_middle_capstan_activates,
+)
+add_test(
+    TestTendonCapstan,
+    "mujoco_switch_preserves_active_route_segments",
+    devices,
+    test_mujoco_switch_preserves_active_route_segments,
+)
+add_test(
+    TestTendonCapstan,
+    "mujoco_switch_matrix_covers_neighbor_combinations",
+    devices,
+    test_mujoco_switch_matrix_covers_neighbor_combinations,
+)
+add_test(
+    TestTendonCapstan,
+    "mujoco_switch_matrix_uses_tangent_bypass_geometry",
+    devices,
+    test_mujoco_switch_matrix_uses_tangent_bypass_geometry,
 )
 add_test(TestTendonCapstan, "motorized_pulley_drives_slider", devices, test_motorized_pulley_drives_slider)
 add_test(

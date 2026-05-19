@@ -979,6 +979,8 @@ class ModelBuilder:
         """Winding direction (+1/-1) for each tendon link."""
         self.tendon_link_mu: list[float] = []
         """Friction coefficient at each tendon link."""
+        self.tendon_link_active: list[int] = []
+        """Initial active-route flag for each tendon link."""
         self.tendon_link_offset: list[tuple[float, float, float]] = []
         """Local-frame offset of the cable plane center on each body [m]."""
         self.tendon_link_axis: list[tuple[float, float, float]] = []
@@ -4288,6 +4290,7 @@ class ModelBuilder:
         radius: float = 0.0,
         orientation: int = 1,
         mu: float = 0.0,
+        active: bool = True,
         offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
         axis: tuple[float, float, float] = (0.0, 0.0, 1.0),
         compliance: float = 0.0,
@@ -4307,6 +4310,9 @@ class ModelBuilder:
             radius: Contact radius [m] for ROLLING links (pulley radius).
             orientation: Winding direction, +1 or -1.
             mu: Coulomb friction coefficient at this contact.
+            active: Initial active-set flag for this route link. Inactive
+                interior links are skipped by the solver active route, which
+                connects the nearest active route sites on either side.
             offset: Local-frame position of the cable plane center on the body [m].
             axis: Local-frame normal of the cable plane on the body.
             compliance: Compliance [m/N] for the segment ending at this link
@@ -4325,6 +4331,7 @@ class ModelBuilder:
         self.tendon_link_radius.append(radius)
         self.tendon_link_orientation.append(orientation)
         self.tendon_link_mu.append(mu)
+        self.tendon_link_active.append(1 if active else 0)
         self.tendon_link_offset.append(offset)
         self.tendon_link_axis.append(axis)
 
@@ -10154,6 +10161,7 @@ class ModelBuilder:
                 m.tendon_link_radius = wp.array(self.tendon_link_radius, dtype=wp.float32, requires_grad=requires_grad)
                 m.tendon_link_orientation = wp.array(self.tendon_link_orientation, dtype=wp.int32)
                 m.tendon_link_mu = wp.array(self.tendon_link_mu, dtype=wp.float32, requires_grad=requires_grad)
+                m.tendon_link_active = wp.array(self.tendon_link_active, dtype=wp.int32)
                 m.tendon_link_offset = wp.array(self.tendon_link_offset, dtype=wp.vec3)
                 m.tendon_link_axis = wp.array(self.tendon_link_axis, dtype=wp.vec3)
                 m.tendon_seg_compliance = wp.array(

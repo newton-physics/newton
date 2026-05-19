@@ -310,6 +310,20 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_tendon_mujoco_switch",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 220},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_tendon_mujoco_switch_matrix",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 220},
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_tendon_rolling_pulley",
     devices=test_devices,
     use_viewer=True,
