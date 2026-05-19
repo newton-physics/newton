@@ -191,6 +191,7 @@ class SolverFeatherPGS(SolverBase):
         self._step = 0
         self._force_mass_update = False
         self._last_step_dt = None
+        self._last_contacts = None
 
         self._compute_articulation_metadata(model)
 
@@ -941,6 +942,15 @@ class SolverFeatherPGS(SolverBase):
                 "or recreate the solver after increasing model.rigid_contact_max."
             )
 
+    def _validate_update_contacts_source(self, contacts: Contacts) -> None:
+        if contacts is self._last_contacts:
+            return
+
+        raise ValueError(
+            "SolverFeatherPGS.update_contacts() must be called with the same Contacts object passed to the most "
+            "recent successful SolverFeatherPGS.step()."
+        )
+
     @override
     def step(
         self,
@@ -975,6 +985,7 @@ class SolverFeatherPGS(SolverBase):
 
         if not model.joint_count:
             self.integrate_particles(model, state_in, state_out, dt)
+            self._last_contacts = contacts
             self._step += 1
             return state_out
 
@@ -1166,6 +1177,7 @@ class SolverFeatherPGS(SolverBase):
                 self._memset_done_event[self._buf_idx] = self._memset_stream.record_event()
                 self._buf_idx = 1 - self._buf_idx
 
+        self._last_contacts = contacts
         self._step += 1
         return state_out
 
@@ -1175,6 +1187,7 @@ class SolverFeatherPGS(SolverBase):
         if contacts is None or contacts.rigid_contact_count is None:
             return
         self._validate_contact_metadata_capacity(contacts, "update_contacts")
+        self._validate_update_contacts_source(contacts)
 
         dt = self._last_step_dt
         inv_dt = 0.0 if dt is None or dt <= 0.0 else 1.0 / dt

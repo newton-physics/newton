@@ -216,6 +216,24 @@ def run_contact_metadata_capacity_mismatch_raises(test: TestFeatherPGSFusedWarpS
         solver.update_contacts(contacts)
 
 
+def run_update_contacts_rejects_different_contacts(test: TestFeatherPGSFusedWarpStep, device):
+    model = _build_mixed_contact_model(device)
+    solver = SolverFeatherPGS(model, pgs_iterations=1)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    contact_capacity = solver._contact_metadata_capacity
+    contacts = newton.Contacts(contact_capacity, 0, device=device)
+    other_contacts = newton.Contacts(contact_capacity, 0, device=device)
+
+    solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+
+    with test.assertRaisesRegex(ValueError, "same Contacts object"):
+        solver.update_contacts(other_contacts)
+
+
 class TestFeatherPGSBodyParentForce(unittest.TestCase):
     """Coverage for the optional ``State.body_parent_f`` output."""
 
@@ -286,6 +304,12 @@ for device in devices:
         TestFeatherPGSFusedWarpStep,
         "test_contact_metadata_capacity_mismatch_raises",
         run_contact_metadata_capacity_mismatch_raises,
+        devices=[device],
+    )
+    add_function_test(
+        TestFeatherPGSFusedWarpStep,
+        "test_update_contacts_rejects_different_contacts",
+        run_update_contacts_rejects_different_contacts,
         devices=[device],
     )
     add_function_test(
