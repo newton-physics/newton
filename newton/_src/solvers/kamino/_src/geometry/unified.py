@@ -134,6 +134,13 @@ def write_contact_unified_kamino(
 
     # Margin-shifted signed distance (negative = penetrating beyond margin)
     d = contact_data.contact_distance - (contact_data.margin_a + contact_data.margin_b)
+    # wp.printf("[%d]: contact_data.radius_eff_a: %f\n", output_index, contact_data.radius_eff_a)
+    # wp.printf("[%d]: contact_data.radius_eff_b: %f\n", output_index, contact_data.radius_eff_b)
+    # wp.printf("[%d]: contact_data.gap_sum: %f\n", output_index, contact_data.gap_sum)
+    # wp.printf("[%d]: contact_data.margin_a: %f\n", output_index, contact_data.margin_a)
+    # wp.printf("[%d]: contact_data.margin_b: %f\n", output_index, contact_data.margin_b)
+    # wp.printf("[%d]: contact_data.contact_distance: %f\n", output_index, contact_data.contact_distance)
+    # wp.printf("[%d]: d: %f\n", output_index, d)
 
     # Determine world ID — global shapes (wid=-1) can collide with any world,
     # so fall back to the other shape's world when one is global.
@@ -151,6 +158,14 @@ def write_contact_unified_kamino(
         contact_gap = gap_a + gap_b
         if d > contact_gap:
             return
+
+    wp.printf("[%d]: contact_data.radius_eff_a: %f\n", output_index, contact_data.radius_eff_a)
+    wp.printf("[%d]: contact_data.radius_eff_b: %f\n", output_index, contact_data.radius_eff_b)
+    wp.printf("[%d]: contact_data.gap_sum: %f\n", output_index, contact_data.gap_sum)
+    wp.printf("[%d]: contact_data.margin_a: %f\n", output_index, contact_data.margin_a)
+    wp.printf("[%d]: contact_data.margin_b: %f\n", output_index, contact_data.margin_b)
+    wp.printf("[%d]: contact_data.contact_distance: %f\n", output_index, contact_data.contact_distance)
+    wp.printf("[%d]: d: %f\n", output_index, d)
 
     # Always allocate from the model-level counter so the active count
     # stays accurate regardless of whether the narrowphase pre-allocated

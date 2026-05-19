@@ -10,18 +10,19 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
-
+from newton._src.solvers.kamino._src.utils import logger as msg
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
         # Set simulation run-time configurations
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = max(1, round(self.frame_dt / 0.01))
+        self.sim_substeps = 1  # max(1, round(self.frame_dt / 0.01))
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
@@ -32,8 +33,8 @@ class Example:
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
-        robot_builder.default_shape_cfg.margin = 1e-6
-        robot_builder.default_shape_cfg.gap = 0.01
+        # robot_builder.default_shape_cfg.margin = 1e-3
+        # robot_builder.default_shape_cfg.gap = 0.0
 
         # Load the DR Legs USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
@@ -51,6 +52,9 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.request_contact_attributes("force")
+        # builder.default_shape_cfg.margin = 1e-4
+        # builder.default_shape_cfg.gap = 0.0
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
@@ -59,6 +63,7 @@ class Example:
 
         # Create the model from the builder
         self.model = builder.finalize(skip_validation_joints=True)
+        self.model.rigid_contact_max = 72
 
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
@@ -95,11 +100,11 @@ class Example:
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
 
-        # Warm-start the simulation
-        if not self.use_kamino_contacts:
-            self.collision_pipeline.collide(self.state_0, self.contacts)
-        self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-        self.solver.reset(self.state_0)
+        # # Warm-start the simulation
+        # if not self.use_kamino_contacts:
+        #     self.collision_pipeline.collide(self.state_0, self.contacts)
+        # self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+        # self.solver.reset(self.state_0)
 
         # Reset the simulation state to a valid initial configuration above the ground
         self.base_q = wp.zeros(shape=(self.world_count,), dtype=wp.transformf)
@@ -107,13 +112,16 @@ class Example:
         q_base = wp.transformf((0.0, 0.0, 0.4), q_b)
         self.base_q.assign([q_base] * self.world_count)
         self.solver.reset(state_out=self.state_0, base_q=self.base_q)
+        # self.state_1.assign(self.state_0)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
-        self.capture()
+        self.graph = None
+        # self.capture()
 
         # If only a single-world is created, set initial
         # camera position for better view of the system
+        self.viewer._paused = True
         if self.world_count == 1 and hasattr(self.viewer, "set_camera"):
             camera_pos = wp.vec3(1.34, 0.0, 0.25)
             pitch = -7.0
@@ -130,10 +138,20 @@ class Example:
     # simulate() performs one frame's worth of updates
     def simulate(self):
         for _ in range(self.sim_substeps):
+            print("\n\n--------------------------------------------------------------------")
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             if not self.use_kamino_contacts:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
+                nc = self.contacts.rigid_contact_count.numpy()[0]
+                msg.warning("contacts.rigid_contact_count: %s", nc)
+                msg.warning("contacts.rigid_contact_margin0: %s", self.contacts.rigid_contact_margin0.numpy()[:nc])
+                msg.warning("contacts.rigid_contact_margin1: %s", self.contacts.rigid_contact_margin1.numpy()[:nc])
+                msg.warning("contacts.rigid_contact_offset0:\n%s", self.contacts.rigid_contact_offset0.numpy()[:nc])
+                msg.warning("contacts.rigid_contact_offset1:\n%s", self.contacts.rigid_contact_offset1.numpy()[:nc])
+                msg.warning("contacts.rigid_contact_point0:\n%s", self.contacts.rigid_contact_point0.numpy()[:nc])
+                msg.warning("contacts.rigid_contact_point1:\n%s", self.contacts.rigid_contact_point1.numpy()[:nc])
+                msg.warning("contacts.rigid_contact_normal:\n%s\n", self.contacts.rigid_contact_normal.numpy()[:nc])
                 self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             else:
                 self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
@@ -150,8 +168,8 @@ class Example:
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_state(self.state_1)
+        self.viewer.log_contacts(self.contacts, self.state_1)
         self.viewer.end_frame()
 
     def test_final(self):
@@ -168,6 +186,7 @@ class Example:
 
 
 if __name__ == "__main__":
+    np.set_printoptions(precision=10, linewidth=20000, threshold=10000, suppress=True)
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

@@ -1116,6 +1116,13 @@ class SolverKaminoImpl(SolverBase):
         if detector is not None:
             detector.collide(data=self._data, state=state_in, contacts=contacts)
 
+        nc = contacts.model_active_contacts.numpy()[0]
+        msg.warning("contacts.num_active: %s", nc)
+        msg.warning("contacts.position_A:\n%s", contacts.position_A[:nc])
+        msg.warning("contacts.position_B:\n%s", contacts.position_B[:nc])
+        msg.warning("contacts.gapfunc:\n%s", contacts.gapfunc[:nc])
+        msg.warning("contacts.margins:\n%s\n", contacts.margins[:nc])
+
         # If a limits container/detector is provided, run joint-limit
         # detection to generate active joint limits at the current state
         if limits is not None:

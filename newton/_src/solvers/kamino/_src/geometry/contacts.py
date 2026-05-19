@@ -937,6 +937,10 @@ def _convert_contacts_newton_to_kamino(
     margin_1 = newton_margin1[cid]
     margin = margin_0 + margin_1
     distance = wp.dot(r_1 - r_0, normal) - margin
+    wp.printf("[%d]: margin_0: %f\n", cid, margin_0)
+    wp.printf("[%d]: margin_1: %f\n", cid, margin_1)
+    wp.printf("[%d]: margin: %f\n", cid, margin)
+    wp.printf("[%d]: distance: %f\n", cid, distance)
 
     # Ensure static body is always Kamino A, dynamic body is Kamino B
     if bid_1 < 0:

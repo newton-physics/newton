@@ -403,6 +403,12 @@ class SolverKamino(SolverBase):
         # Create a Kamino model from the Newton model
         self._model_kamino = self._kamino.ModelKamino.from_newton(model)
 
+        self._kamino.msg.warning("newton.shape_margin: %s", self.model.shape_margin)
+        self._kamino.msg.warning("newton.shape_gap: %s\n\n", self.model.shape_gap)
+
+        self._kamino.msg.warning("kamino.geoms.margin: %s", self._model_kamino.geoms.margin)
+        self._kamino.msg.warning("kamino.geoms.gap: %s\n\n", self._model_kamino.geoms.gap)
+
         # Create a collision detector if enabled in the config, otherwise
         # set to `None` to disable internal collision detection in Kamino
         self._collision_detector_kamino = None
@@ -690,6 +696,9 @@ class SolverKamino(SolverBase):
             clear_output=self._detector is not None,
             convert_forces=True,
         )
+        nc = contacts.rigid_contact_count.numpy()[0]
+        self._kamino.msg.warning("contacts.rigid_contact_count: %s", nc)
+        self._kamino.msg.warning("contacts.force:\n%s\n", contacts.force.numpy()[:nc])
 
     @override
     @staticmethod
