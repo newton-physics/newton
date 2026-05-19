@@ -2497,7 +2497,7 @@ class SolverMuJoCo(SolverBase):
                 joint_start = int(tendon_joint_adr[i])
                 joint_num = int(tendon_joint_num[i])
                 if joint_num <= 0:
-                    if wp.config.verbose:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
                         print(f"Warning: Skipping tendon {i} during MuJoCo export because it has no joint wraps.")
                     continue
 
@@ -2539,7 +2539,7 @@ class SolverMuJoCo(SolverBase):
                     fixed_wraps.append((joint_name, coef))
 
                 if len(fixed_wraps) == 0:
-                    if wp.config.verbose:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
                         print(
                             f"Warning: Skipping tendon {i} during MuJoCo export "
                             "because no valid joint wraps were resolved."
@@ -2864,12 +2864,12 @@ class SolverMuJoCo(SolverBase):
                 dof_idx = target_idx
                 dofs_per_world = len(dof_to_mjc_joint)
                 if dof_idx < 0 or dof_idx >= dofs_per_world:
-                    if wp.config.verbose:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid DOF target {dof_idx}")
                     continue
                 mjc_joint_idx = dof_to_mjc_joint[dof_idx]
                 if mjc_joint_idx < 0 or mjc_joint_idx >= len(mjc_joint_names):
-                    if wp.config.verbose:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} DOF {dof_idx} not mapped to MuJoCo joint")
                     continue
                 target_name = mjc_joint_names[mjc_joint_idx]
@@ -2878,17 +2878,17 @@ class SolverMuJoCo(SolverBase):
                     mjc_tendon_idx = selected_tendons.index(target_idx)
                     target_name = mjc_tendon_names[mjc_tendon_idx]
                 except (ValueError, IndexError):
-                    if wp.config.verbose:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} references tendon {target_idx} not in MuJoCo")
                     continue
             elif trntype == int(SolverMuJoCo.TrnType.BODY):
                 if target_idx < 0 or target_idx >= len(model.body_label):
-                    if wp.config.verbose:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
                     continue
                 target_name = body_name_mapping.get(target_idx)
                 if target_name is None:
-                    if wp.config.verbose:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
                         print(
                             f"Warning: MuJoCo actuator {mujoco_act_idx} references body {target_idx} "
                             "not present in the MuJoCo export."
@@ -2904,7 +2904,7 @@ class SolverMuJoCo(SolverBase):
                 if site_name is None:
                     site_name = site_mapping.get(target_idx)
                 if site_name is None:
-                    if wp.config.verbose:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
                         print(
                             f"Warning: MuJoCo actuator {mujoco_act_idx} site target "
                             f"'{target_label}' not found in site mapping"
@@ -2913,7 +2913,7 @@ class SolverMuJoCo(SolverBase):
                 target_name = site_name
             else:
                 # TODO: Support slidercrank and jointinparent transmission types
-                if wp.config.verbose:
+                if wp.config.log_level <= wp.LOG_DEBUG:
                     print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
                 continue
 
@@ -3326,7 +3326,7 @@ class SolverMuJoCo(SolverBase):
             return
         if any(getattr(state_out, field) is not None for field in rne_postconstraint_fields):
             # required for cfrc_ext, cfrc_int, cacc
-            if wp.config.verbose:
+            if wp.config.log_level <= wp.LOG_DEBUG:
                 print("Setting model.sensor_rne_postconstraint True")
             m.sensor_rne_postconstraint = True
 
@@ -3871,6 +3871,7 @@ class SolverMuJoCo(SolverBase):
                 model.joint_qd_start,
                 model.joint_dof_dim,
                 model.joint_child,
+                model.joint_X_p,
                 model.body_com,
                 dof_ref,
                 self.mj_q_start,
@@ -3932,6 +3933,7 @@ class SolverMuJoCo(SolverBase):
                 model.joint_qd_start,
                 model.joint_dof_dim,
                 model.joint_child,
+                model.joint_X_p,
                 model.body_com,
                 dof_ref,
                 model.body_flags,
@@ -4825,7 +4827,7 @@ class SolverMuJoCo(SolverBase):
                     # Retrieve heightfield source
                     hfield_src = model.shape_source[shape]
                     if hfield_src is None:
-                        if wp.config.verbose:
+                        if wp.config.log_level <= wp.LOG_DEBUG:
                             print(f"Warning: Heightfield shape {shape} has no source data, skipping")
                         continue
 
@@ -5157,6 +5159,7 @@ class SolverMuJoCo(SolverBase):
                             actuator_count += 1
             elif j_type in supported_joint_types:
                 lin_axis_count, ang_axis_count = joint_dof_dim[j]
+                multi_axis_joint = lin_axis_count + ang_axis_count > 1
                 num_dofs += lin_axis_count + ang_axis_count
                 num_qpos += lin_axis_count + ang_axis_count
 
@@ -5209,7 +5212,7 @@ class SolverMuJoCo(SolverBase):
                         joint_params["ref"] = joint_ref[ai]
 
                     axname = name
-                    if lin_axis_count > 1 or ang_axis_count > 1:
+                    if multi_axis_joint:
                         axname += "_lin"
                     if lin_axis_count > 1:
                         axname += str(i)
@@ -5307,7 +5310,7 @@ class SolverMuJoCo(SolverBase):
                         joint_params["ref"] = np.rad2deg(joint_ref[ai])
 
                     axname = name
-                    if lin_axis_count > 1 or ang_axis_count > 1:
+                    if multi_axis_joint:
                         axname += "_ang"
                     if ang_axis_count > 1:
                         axname += str(i - lin_axis_count)
@@ -5370,7 +5373,7 @@ class SolverMuJoCo(SolverBase):
             target_name = body_name_mapping.get(body_idx)
             if target_name is None:
                 target_name = model.body_label[body_idx].replace("/", "_")
-                if wp.config.verbose:
+                if wp.config.log_level <= wp.LOG_DEBUG:
                     print(
                         f"Warning: MuJoCo equality constraint references body {body_idx} "
                         "not present in the MuJoCo export."

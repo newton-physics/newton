@@ -53,7 +53,7 @@ def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None
     wp.init()
     wp.config.mode = "release"
     wp.config.enable_backward = False
-    wp.config.verbose = False
+    wp.config.log_level = wp.LOG_INFO
     wp.config.verify_fp = False
     wp.config.verify_cuda = False
 

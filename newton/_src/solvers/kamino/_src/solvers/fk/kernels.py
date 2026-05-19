@@ -30,6 +30,7 @@ from .types import FKJointDoFType
 ###
 
 __all__ = [
+    "_add_regularizer_to_diagonal",
     "_apply_line_search_step",
     "_correct_actuator_coords",
     "_eval_actuator_coords",
@@ -38,12 +39,14 @@ __all__ = [
     "_eval_incremental_target_actuator_coords",
     "_eval_linear_combination",
     "_eval_position_control_transformations",
+    "_eval_regularizer_gradient",
     "_eval_rhs",
     "_eval_stepped_state",
     "_eval_target_constraint_velocities",
     "_eval_unit_quaternion_constraints",
     "_eval_unit_quaternion_constraints_jacobian",
     "_eval_unit_quaternion_constraints_sparse_jacobian",
+    "_initialize_jacobian_update_masks",
     "_line_search_check",
     "_newton_check",
     "_reset_state",
@@ -509,9 +512,15 @@ def less_than_op(i: wp.int32, threshold: wp.int32) -> wp.int32:
 
 
 @wp.func
-def mul_mask(mask: wp.int32, value: wp.int32):
+def mul_mask_int(mask: wp.int32, value: wp.int32) -> wp.int32:
     """Return value if mask is positive, else 0"""
     return wp.where(mask > 0, value, 0)
+
+
+@wp.func
+def mul_mask_float(mask: wp.int32, value: wp.float32) -> wp.float32:
+    """Return value if mask is positive, else 0"""
+    return wp.where(mask > 0, value, 0.0)
 
 
 @cache
@@ -545,6 +554,8 @@ def create_eval_min_num_iterations_kernel(TILE_SIZE: int):
         world_offset = world_actuated_coord_offsets[wd_id]
         next_world_offset = world_actuated_coord_offsets[wd_id + 1]
         offset = world_offset + i * TILE_SIZE
+        if offset >= next_world_offset:
+            return  # Early return if tile is fully outside of the world's data
         q_prev = wp.tile_load(actuators_q_prev, shape=TILE_SIZE, offset=offset)
         q_next = wp.tile_load(actuators_q_next, shape=TILE_SIZE, offset=offset)
         delta = wp.tile_load(delta_q_max, shape=TILE_SIZE, offset=offset)
@@ -553,12 +564,42 @@ def create_eval_min_num_iterations_kernel(TILE_SIZE: int):
         min_it = wp.tile_map(min_iteration_op, q_prev, q_next, delta)
         if offset + TILE_SIZE > next_world_offset:  # Mask out values from next world if needed
             mask = wp.tile_map(less_than_op, wp.tile_arange(TILE_SIZE, dtype=wp.int32), next_world_offset - offset)
-            min_it = wp.tile_map(mul_mask, mask, min_it)
+            min_it = wp.tile_map(mul_mask_int, mask, min_it)
         min_it_max = wp.tile_max(min_it)[0]
         if tid == 0:
             wp.atomic_max(min_iterations, wd_id, min_it_max)
 
     return _eval_min_num_iterations
+
+
+@wp.kernel
+def _initialize_jacobian_update_masks(
+    # Inputs
+    newton_mask: wp.array[wp.int32],
+    min_iterations: wp.array[wp.int32],
+    # Outputs
+    jacobian_early_update_mask: wp.array[wp.int32],
+    jacobian_late_update_mask: wp.array[wp.int32],
+):
+    """
+    Kernel initializing the early/late Jacobian update masks for the first iteration, depending
+    on the minimum iterations per world (and therefore, of whether an incremental control update
+    will happen in the first iteration).
+
+    Inputs:
+        newton_mask: Flag indicating whether Gauss-Newton is still running per world.
+        min_iterations: Minimal number of Newton iterations per world.
+    Outputs:
+        jacobian_early_update_mask: Flag set to 1 in worlds needing an early Jacobian update.
+        jacobian_late_update_mask: Flag set to 1 in worlds needing a late Jacobian update.
+
+    """
+    wd_id = wp.tid()  # Get thread id (= world index)
+
+    newton_flag = newton_mask[wd_id]
+    min_it = min_iterations[wd_id]
+    jacobian_early_update_mask[wd_id] = int(newton_flag and min_it == 0)
+    jacobian_late_update_mask[wd_id] = int(newton_flag and min_it > 0)
 
 
 @wp.kernel
@@ -1408,12 +1449,12 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
 
 
 @cache
-def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32):
+def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int32, use_regularization: bool):
     """
     Generates and returns all kernels based on 1d tiles in this module, given the tile size to use along the constraints
     and variables (i.e. body poses) dimensions in the constraint vector, Jacobian, step vector etc.
 
-    These are _eval_max_constraint, _eval_merit_function, _eval_merit_function_gradient
+    These are _eval_max_residual, _eval_merit_function, _eval_regularizer, _eval_merit_function_gradient
     (returned in this order)
     """
 
@@ -1422,40 +1463,43 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         """Calls wp.isnan and converts the result to int32"""
         return wp.int32(wp.isnan(x))
 
+    TILE_SIZE = TILE_SIZE_VRS if use_regularization else TILE_SIZE_CTS
+
     @wp.kernel
-    def _eval_max_constraint(
+    def _eval_max_residual(
         # Inputs
-        constraints: wp.array2d[wp.float32],
+        residual: wp.array2d[wp.float32],
         # Outputs
-        max_constraint: wp.array[wp.float32],
+        max_residual: wp.array[wp.float32],
     ):
         """
-        A kernel computing the max absolute constraint from the constraints vector, in each world.
+        A kernel computing the max absolute residual from the residual vector, in each world.
+        This is the constraint vector in the general case, but the gradient vector for the regularized case.
 
         Inputs:
-            constraints: Constraint vector per world
+            residual: Residual vector per world
         Outputs:
-            max_constraint: Max absolute constraint per world; must be zero-initialized
+            max_residual: Max absolute residual per world; must be zero-initialized
         """
         wd_id, i, tid = wp.tid()  # Thread indices (= world index, input tile index, thread index in block)
 
-        if wd_id < constraints.shape[0] and i * TILE_SIZE_CTS < constraints.shape[1]:
-            segment = wp.tile_load(constraints, shape=(1, TILE_SIZE_CTS), offset=(wd_id, i * TILE_SIZE_CTS))
+        if wd_id < residual.shape[0] and i * TILE_SIZE < residual.shape[1]:
+            segment = wp.tile_load(residual, shape=(1, TILE_SIZE), offset=(wd_id, i * TILE_SIZE))
             segment_max = wp.tile_max(wp.tile_map(wp.abs, segment))[0]
             segment_has_nan = wp.tile_max(wp.tile_map(_isnan, segment))[0]
 
             if tid == 0:
                 if segment_has_nan:
                     # Write NaN in max (non-atomically, as this will overwrite any non-NaN value)
-                    max_constraint[wd_id] = wp.nan
+                    max_residual[wd_id] = wp.nan
                 else:
                     # Atomically update the max, only if it is not yet NaN (in CUDA, the max() operation only
                     # considers non-NaN values, so the NaN value would get overwritten by a non-NaN otherwise)
                     while True:
-                        curr_val = max_constraint[wd_id]
+                        curr_val = max_residual[wd_id]
                         if wp.isnan(curr_val):
                             break
-                        check_val = wp.atomic_cas(max_constraint, wd_id, curr_val, wp.max(curr_val, segment_max))
+                        check_val = wp.atomic_cas(max_residual, wd_id, curr_val, wp.max(curr_val, segment_max))
                         if check_val == curr_val:
                             break
 
@@ -1485,6 +1529,48 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
                 wp.atomic_add(merit_function_val, wd_id, segment_error)
 
     @wp.kernel
+    def _eval_regularizer(
+        # Inputs
+        first_body_id: wp.array[wp.int32],
+        reg_weight: wp.float32,
+        bodies_q_flat: wp.array[wp.float32],
+        bodies_q_ref_flat: wp.array[wp.float32],
+        # Outputs
+        merit_function_val: wp.array[wp.float32],
+    ):
+        """
+        A kernel computing the least-squares regularizer reg_weight * ||s - s_ref||^2 in each world,
+        and adding it to the merit function value.
+
+        Inputs:
+            first_body_id: First body index per world.
+            reg_weight: Regularizer weight.
+            bodies_q_flat: Flattened array of current body poses.
+            bodies_q_ref_flat: Flattened array of reference body poses.
+        Outputs:
+            merit_function_val: Merit function value per world; must be zero-initialized
+        """
+        wd_id, i, tid = wp.tid()  # Thread indices (= world index, input tile index, thread index in block)
+
+        # Load data
+        offset = 7 * first_body_id[wd_id] + i * TILE_SIZE_VRS
+        next_world_start = 7 * first_body_id[wd_id + 1]
+        if offset >= next_world_start:
+            return  # Early return if tile is fully outside of this world's data
+        tile = wp.tile_load(bodies_q_flat, shape=TILE_SIZE_VRS, offset=offset)
+        tile_ref = wp.tile_load(bodies_q_ref_flat, shape=TILE_SIZE_VRS, offset=offset)
+
+        # Compute regularizer
+        reg_tile = tile - tile_ref
+        reg_tile = wp.tile_map(wp.mul, reg_tile, reg_tile)
+        if offset + TILE_SIZE_VRS > next_world_start:  # Mask out values from next world if needed
+            mask = wp.tile_map(less_than_op, wp.tile_arange(TILE_SIZE_VRS, dtype=wp.int32), next_world_start - offset)
+            reg_tile = wp.tile_map(mul_mask_float, mask, reg_tile)
+        reg = wp.tile_sum(reg_tile)[0]
+        if tid == 0:
+            wp.atomic_add(merit_function_val, wd_id, 0.5 * reg_weight * reg)
+
+    @wp.kernel
     def _eval_merit_function_gradient(
         # Inputs
         step: wp.array2d[wp.float32],
@@ -1512,7 +1598,7 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
             if tid == 0:
                 wp.atomic_add(merit_function_grad, wd_id, tile_dot_prod)
 
-    return _eval_max_constraint, _eval_merit_function, _eval_merit_function_gradient
+    return _eval_max_residual, _eval_merit_function, _eval_regularizer, _eval_merit_function_gradient
 
 
 @wp.kernel
@@ -1533,6 +1619,66 @@ def _eval_rhs(
     wd_id, state_id_loc = wp.tid()  # Thread indices (= world index, state index)
     if wd_id < grad.shape[0] and state_id_loc < grad.shape[1]:
         rhs[wd_id, state_id_loc] = -grad[wd_id, state_id_loc]
+
+
+@wp.kernel
+def _add_regularizer_to_diagonal(
+    # Inputs
+    reg_weight: wp.float32,
+    active_size: wp.array[wp.int32],
+    world_mask: wp.array[wp.int32],
+    # Outputs
+    A: wp.array3d[wp.float32],
+):
+    """
+    A kernel adding a multiple of the identity to the matrix of a linear system (to regularize it).
+
+    Inputs:
+        reg_weight: Regularization weight to add to diagonal coefficients.
+        active_size: Active size of the matrix in each world, from the top-left corner.
+        world_mask: Per-world flag to perform the computation (0 = skip).
+    Outputs:
+        A: Stack of system matrices (one per world) to regularize.
+    """
+    wd_id, row_id = wp.tid()  # Thread indices (= world index, row index)
+    if world_mask[wd_id] != 0 and row_id < active_size[wd_id]:
+        A[wd_id, row_id, row_id] = A[wd_id, row_id, row_id] + reg_weight
+
+
+@wp.kernel
+def _eval_regularizer_gradient(
+    # Inputs
+    num_bodies: wp.array[wp.int32],
+    first_body_id: wp.array[wp.int32],
+    reg_weight: wp.float32,
+    bodies_q_flat: wp.array[wp.float32],
+    bodies_q_ref_flat: wp.array[wp.float32],
+    world_mask: wp.array[wp.int32],
+    # Outputs
+    gradient: wp.array2d[wp.float32],
+):
+    """
+    A kernel evaluating the gradient of the least-squares regularizer on body poses, and adding it to the
+    overall gradient vector.
+
+    Inputs:
+        num_bodies: Number of bodies per world.
+        first_body_id: First body index per world.
+        reg_weight: Regularizer weight.
+        bodies_q_flat: Flattened array of current body poses.
+        bodies_q_ref_flat: Flattened array of reference body poses.
+        world_mask: Per-world flag to perform the computation (0 = skip).
+    Outputs:
+        gradient: Gradient vector, to which to add the regularizer gradient.
+    """
+    wd_id, state_id_loc = wp.tid()  # Get thread id (= world index, state index within world)
+
+    rb_id_loc = state_id_loc // 7
+    if world_mask[wd_id] == 0 or rb_id_loc >= num_bodies[wd_id]:
+        return
+    state_id = 7 * first_body_id[wd_id] + state_id_loc
+
+    gradient[wd_id, state_id_loc] += reg_weight * (bodies_q_flat[state_id] - bodies_q_ref_flat[state_id])
 
 
 @wp.kernel
@@ -1672,7 +1818,7 @@ def _line_search_check(
 @wp.kernel
 def _newton_check(
     # Inputs
-    max_constraint: wp.array[wp.float32],
+    max_residual: wp.array[wp.float32],
     tolerance: wp.array[wp.float32],
     iteration: wp.array[wp.int32],
     min_iterations: wp.array[wp.int32],
@@ -1682,14 +1828,19 @@ def _newton_check(
     newton_success: wp.array[wp.int32],
     newton_mask: wp.array[wp.int32],
     newton_loop_condition: wp.array[wp.int32],
+    jacobian_early_update_mask: wp.array[wp.int32],
+    jacobian_late_update_mask: wp.array[wp.int32],
 ):
     """
-    A kernel checking the convergence (max constraint vs tolerance) in each world, and updating the looping
+    A kernel checking the convergence (max residual vs tolerance) in each world, and updating the looping
     condition (zero if max iterations reached, or all worlds successful)
 
+    If provided (non-zero size), also updates masks keeping tracks of worlds where the Jacobian needs to be
+    updated before/after the controls (based on whether min iterations was already reached or not)
+
     Inputs
-        max_constraint: Max absolute constraint per world
-        tolerance: Tolerance on max constraint (size 1 array)
+        max_residual: Max absolute residual per world
+        tolerance: Tolerance on max residual (size 1 array)
         iteration: Iteration count, per world
         min_iterations: Min iterations per world (may be > 0 if incremental solve is enabled)
         max_iterations: Max iterations (size 1 array)
@@ -1698,17 +1849,19 @@ def _newton_check(
         newton_success: Convergence per world
         newton_mask: Flag to keep iterating per world
         newton_loop_condition: Loop condition; must be zero-initialized (size 1 array)
+        jacobian_early_update_mask: Optional mask, set to 1 in worlds needing an early Jacobian update
+        jacobian_late_update_mask: Optional mask, set to 1 in worlds needing a late Jacobian update
     """
     wd_id = wp.tid()  # Thread index (= world index)
-    if wd_id < max_constraint.shape[0] and newton_mask[wd_id] != 0:
+    if wd_id < max_residual.shape[0] and newton_mask[wd_id] != 0:
         iteration_prev = iteration[wd_id]  # Index of the iteration that just ran
         iteration_next = iteration_prev + 1  # Index of the iteration that is about to run
         min_iterations_wd = min_iterations[wd_id]
         iteration[wd_id] = iteration_next
         reached_min_it = iteration_prev >= min_iterations_wd
-        max_constraint_wd = max_constraint[wd_id]
-        is_finite = wp.isfinite(max_constraint_wd)
-        newton_success[wd_id] = int(is_finite and reached_min_it and max_constraint_wd <= tolerance[0])
+        max_residual_wd = max_residual[wd_id]
+        is_finite = wp.isfinite(max_residual_wd)
+        newton_success[wd_id] = int(is_finite and reached_min_it and max_residual_wd <= tolerance[0])
         newton_continue_world = int(
             iteration_next < max_iterations[0]
             and not newton_success[wd_id]
@@ -1716,6 +1869,10 @@ def _newton_check(
             and line_search_success[wd_id]  # Abort in case of line search failure
         )
         newton_mask[wd_id] = newton_continue_world
+        if jacobian_early_update_mask.shape[0] > 0:
+            jacobian_early_update_mask[wd_id] = int(newton_continue_world and iteration_next >= min_iterations_wd)
+        if jacobian_late_update_mask.shape[0] > 0:
+            jacobian_late_update_mask[wd_id] = int(newton_continue_world and iteration_next <= min_iterations_wd)
         wp.atomic_max(newton_loop_condition, 0, newton_continue_world)
 
 
@@ -1844,20 +2001,20 @@ def _eval_body_velocities(
 @wp.kernel
 def _update_cg_tolerance_kernel(
     # Input
-    max_constraint: wp.array[wp.float32],
+    max_residual: wp.array[wp.float32],
     world_mask: wp.array[wp.int32],
     # Output
     atol: wp.array[wp.float32],
     rtol: wp.array[wp.float32],
 ):
     """
-    A kernel heuristically adapting the CG tolerance based on the current constraint residual
+    A kernel heuristically adapting the CG tolerance based on the current constraint/gradient residual
     (starting with a loose tolerance, and tightening it as we converge)
     Note: needs to be refined, until then we are still using a fixed tolerance
     """
     wd_id = wp.tid()
     if wd_id >= world_mask.shape[0] or world_mask[wd_id] == 0:
         return
-    tol = wp.max(1e-8, wp.min(1e-5, 1e-3 * max_constraint[wd_id]))
+    tol = wp.max(1e-8, wp.min(1e-5, 1e-3 * max_residual[wd_id]))
     atol[wd_id] = tol
     rtol[wd_id] = tol

@@ -178,7 +178,21 @@ def write_module_page(mod_name: str) -> None:
     if doc:
         lines.extend([doc, ""])
 
-    lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
+    if is_solver_submodule:
+        lines.extend(
+            [
+                ".. note::",
+                "",
+                f"   This page documents helper functions exposed through the ``{mod_name}`` attribute.",
+                "   Because ``newton.solvers`` is a module rather than a package, use",
+                f"   ``from newton.solvers import {sub_name}`` instead of ``import {mod_name}``.",
+                "",
+                f".. currentmodule:: newton._src.solvers.{sub_name}",
+                "",
+            ]
+        )
+    else:
+        lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
 
     # Render a simple bullet list of submodules (no autosummary/toctree) to
     # avoid generating stub pages that can cause duplicate descriptions.

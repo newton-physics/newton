@@ -186,7 +186,7 @@ def update_render_grains(
 
     fem.interpolate(
         advect_grains,
-        quadrature=grain_pic,
+        at=grain_pic,
         values={
             "dt": dt,
             "positions": grain_pos,

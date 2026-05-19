@@ -5,18 +5,25 @@
 
 import contextlib
 import io
+import sys
 import unittest
+from unittest import mock
 
 import warp as wp
 
-from newton.examples import _apply_warp_config, create_parser
+from newton.examples import _apply_warp_config, create_parser, init
 
 
 class TestWarpConfigCLI(unittest.TestCase):
     """Tests for :func:`_apply_warp_config`."""
 
     def setUp(self):
-        self._saved_config = {attr: getattr(wp.config, attr) for attr in dir(wp.config) if not attr.startswith("__")}
+        deprecated_log_attrs = {"quiet", "verbose"}
+        self._saved_config = {
+            attr: getattr(wp.config, attr)
+            for attr in dir(wp.config)
+            if not attr.startswith("__") and attr not in deprecated_log_attrs
+        }
 
     def tearDown(self):
         for attr, value in self._saved_config.items():
@@ -32,7 +39,7 @@ class TestWarpConfigCLI(unittest.TestCase):
         """No --warp-config flags should be a no-op."""
         parser, args = self._parse()
         _apply_warp_config(parser, args)
-        self.assertEqual(wp.config.verbose, self._saved_config["verbose"])
+        self.assertEqual(wp.config.log_level, self._saved_config["log_level"])
 
     def test_int_override(self):
         """Integer values should be parsed via literal_eval."""
@@ -48,9 +55,19 @@ class TestWarpConfigCLI(unittest.TestCase):
 
     def test_bool_override(self):
         """Boolean values should be parsed correctly."""
-        parser, args = self._parse("--warp-config", "verbose=True")
+        parser, args = self._parse("--warp-config", "verify_fp=True")
         _apply_warp_config(parser, args)
-        self.assertIs(wp.config.verbose, True)
+        self.assertIs(wp.config.verify_fp, True)
+
+    def test_deprecated_log_config_keys_error(self):
+        """Deprecated log config keys should point users to log_level."""
+        for key in ("quiet", "verbose"):
+            with self.subTest(key=key):
+                parser, args = self._parse("--warp-config", f"{key}=True")
+                stderr = io.StringIO()
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(stderr):
+                    _apply_warp_config(parser, args)
+                self.assertIn(f"invalid --warp-config key '{key}': use 'log_level' instead", stderr.getvalue())
 
     def test_none_override(self):
         """None values should be accepted."""
@@ -104,6 +121,16 @@ class TestWarpConfigCLI(unittest.TestCase):
         parser = create_parser()
         args = parser.parse_known_args([])[0]
         self.assertEqual(args.warp_config, [])
+
+    def test_quiet_preserves_stricter_log_level(self):
+        """--quiet should not lower an explicit stricter log_level override."""
+        parser = create_parser()
+        argv = ["example", "--viewer", "null", "--warp-config", "log_level=40", "--quiet"]
+        with mock.patch.object(sys, "argv", argv):
+            viewer, _args = init(parser)
+
+        self.assertIsNotNone(viewer)
+        self.assertEqual(wp.config.log_level, wp.LOG_ERROR)
 
 
 if __name__ == "__main__":

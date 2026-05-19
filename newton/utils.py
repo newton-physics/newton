@@ -108,3 +108,13 @@ __all__ += [
     "load_texture",
     "normalize_texture",
 ]
+
+# ==================================================================================
+# ONNX inference runtime
+# ==================================================================================
+
+from ._src.utils.onnx_runtime import OnnxRuntime  # noqa: E402
+
+__all__ += [
+    "OnnxRuntime",
+]
