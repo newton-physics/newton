@@ -182,6 +182,24 @@ def run_heterogeneous_world_velocity_limit_step(test: TestFeatherPGSFusedWarpSte
     test.assertLess(np.max(np.abs(state_1.joint_qd.numpy())), np.max(np.abs(qd)))
 
 
+def run_contact_metadata_capacity_mismatch_raises(test: TestFeatherPGSFusedWarpStep, device):
+    model = _build_mixed_contact_model(device)
+    model.rigid_contact_max = 1
+    solver = SolverFeatherPGS(model, pgs_iterations=1)
+    test.assertEqual(solver._contact_metadata_capacity, 1)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    contacts = newton.Contacts(2, 0, device=device)
+    with test.assertRaisesRegex(ValueError, "rigid_contact_max=2"):
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+    with test.assertRaisesRegex(ValueError, "rigid_contact_max=2"):
+        solver.update_contacts(contacts)
+
+
 class TestFeatherPGSBodyParentForce(unittest.TestCase):
     """Coverage for the optional ``State.body_parent_f`` output."""
 
@@ -246,6 +264,12 @@ for device in devices:
         TestFeatherPGSFusedWarpStep,
         "test_heterogeneous_world_velocity_limit_step",
         run_heterogeneous_world_velocity_limit_step,
+        devices=[device],
+    )
+    add_function_test(
+        TestFeatherPGSFusedWarpStep,
+        "test_contact_metadata_capacity_mismatch_raises",
+        run_contact_metadata_capacity_mismatch_raises,
         devices=[device],
     )
     add_function_test(

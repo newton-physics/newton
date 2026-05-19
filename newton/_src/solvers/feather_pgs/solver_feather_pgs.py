@@ -664,6 +664,7 @@ class SolverFeatherPGS(SolverBase):
 
             max_contacts = int(_estimate_rigid_contact_max(model))
         max_contacts = max(max_contacts, 1)
+        self._contact_metadata_capacity = max_contacts
         self.contact_world = wp.zeros((max_contacts,), dtype=wp.int32, device=device, requires_grad=requires_grad)
         self.contact_slot = wp.zeros((max_contacts,), dtype=wp.int32, device=device, requires_grad=requires_grad)
         self.contact_art_a = wp.zeros((max_contacts,), dtype=wp.int32, device=device, requires_grad=requires_grad)
@@ -890,6 +891,19 @@ class SolverFeatherPGS(SolverBase):
         if flags:
             raise NotImplementedError("SolverFeatherPGS does not support model mutations; recreate the solver.")
 
+    def _validate_contact_metadata_capacity(self, contacts: Contacts | None, caller: str) -> None:
+        if contacts is None:
+            return
+
+        contact_capacity = int(contacts.rigid_contact_max)
+        if contact_capacity > self._contact_metadata_capacity:
+            raise ValueError(
+                f"SolverFeatherPGS.{caller}() received Contacts with rigid_contact_max={contact_capacity}, "
+                f"but its contact metadata was allocated for {self._contact_metadata_capacity}. "
+                "Construct or configure the CollisionPipeline before creating SolverFeatherPGS, "
+                "or recreate the solver after increasing model.rigid_contact_max."
+            )
+
     @override
     def step(
         self,
@@ -901,6 +915,7 @@ class SolverFeatherPGS(SolverBase):
     ):
         if not np.isfinite(dt) or dt <= 0.0:
             raise ValueError("SolverFeatherPGS.step() requires a finite dt > 0.")
+        self._validate_contact_metadata_capacity(contacts, "step")
 
         if self._last_step_dt is None:
             self._last_step_dt = dt
@@ -1122,6 +1137,7 @@ class SolverFeatherPGS(SolverBase):
         """Populate Newton contact-force buffers from the last FeatherPGS solve."""
         if contacts is None or contacts.rigid_contact_count is None:
             return
+        self._validate_contact_metadata_capacity(contacts, "update_contacts")
 
         dt = self._last_step_dt
         inv_dt = 0.0 if dt is None or dt <= 0.0 else 1.0 / dt
