@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
-wp.config.quiet = True
+wp.config.log_level = wp.LOG_WARNING
 wp.config.enable_backward = False
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
