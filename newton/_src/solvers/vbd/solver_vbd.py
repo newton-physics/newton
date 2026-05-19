@@ -382,12 +382,18 @@ class SolverVBD(SolverBase):
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
 
+        # TODO(Newton 1.3.0): Remove this temporary migration warning.
         if model.body_count > 0 and not integrate_with_external_rigid_solver and not _vbd_migration_warned["value"]:
             warnings.warn(
                 "SolverVBD rigid-body defaults changed in Newton 1.2.0:\n"
                 "- Non-cable structural joints are now hard augmented-Lagrangian constraints by default. "
-                "To restore soft penalty behavior, set the relevant entries of model.vbd.joint_is_hard to 0 "
-                "before constructing SolverVBD.\n"
+                "To restore soft penalty behavior before constructing SolverVBD, first call "
+                "SolverVBD.register_custom_attributes(builder) before adding joints, then either pass "
+                "custom_attributes={'vbd:joint_is_hard': 0} to relevant add_joint_* calls or call "
+                "model.vbd.joint_is_hard.fill_(0) after builder.finalize(). Existing finalized models without "
+                "VBD custom attributes must be rebuilt with the attribute registered. Registering VBD custom "
+                "attributes also enables Dahl cable friction by default; set model.vbd.dahl_eps_max.fill_(0.0) "
+                "before constructing SolverVBD to keep Dahl disabled.\n"
                 "- AVBD penalty ramping is now off by default. To restore the previous ramping default, "
                 "pass rigid_avbd_beta=1.0e5.\n"
                 "- Non-cable joint stiffness ceilings now default to 1.0e5 instead of 1.0e9 to make the "
@@ -1506,7 +1512,8 @@ class SolverVBD(SolverBase):
             SolverVBD.register_custom_attributes(builder)  # before adding joints
             ...
             model = builder.finalize()
-            model.vbd.joint_is_hard.numpy()[j] = 0  # set joint j to soft
+            model.vbd.joint_is_hard.fill_(0)  # set all joints to soft
+            model.vbd.dahl_eps_max.fill_(0.0)  # optional: keep Dahl cable friction disabled
             solver = SolverVBD(model, ...)
 
         Args:
@@ -1550,12 +1557,6 @@ class SolverVBD(SolverBase):
                 structural_count = min(cdim, 2)
                 for s in range(structural_count):
                     is_hard_np[c0 + s] = val
-
-                vbd_attrs: Any = getattr(self.model, "vbd", None)
-                if vbd_attrs is not None and hasattr(vbd_attrs, "joint_is_hard"):
-                    model_is_hard_np = self._to_numpy(vbd_attrs.joint_is_hard, dtype=np.int32)
-                    model_is_hard_np[joint_index] = val
-                    vbd_attrs.joint_is_hard = wp.array(model_is_hard_np, dtype=wp.int32, device=self.device)
 
             self.joint_is_hard = wp.array(is_hard_np, dtype=wp.int32, device=self.device)
 

@@ -382,7 +382,10 @@ class Example:
 
         self._initial_body_q = self.state_0.body_q.numpy().copy()
 
-        self.model.vbd.joint_is_hard = wp.zeros_like(self.model.vbd.joint_is_hard)
+        # VBD custom attributes are registered for joint_is_hard; keep this
+        # example on the legacy no-Dahl cable-friction path.
+        self.model.vbd.dahl_eps_max.fill_(0.0)
+        self.model.vbd.joint_is_hard.fill_(0)
 
         self.solver = SolverVBD(
             self.model,
