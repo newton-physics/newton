@@ -82,12 +82,27 @@ def _build_single_revolute_model(device):
     return builder.finalize(device=device)
 
 
+def _build_fixed_only_articulation_model(device):
+    builder = newton.ModelBuilder(gravity=0.0)
+    link = builder.add_link()
+    joint = builder.add_joint_fixed(parent=-1, child=link)
+    builder.add_articulation([joint])
+    return builder.finalize(device=device)
+
+
 def run_kinematic_body_rejected(test: TestFeatherPGSUnsupportedModels, device):
     builder = newton.ModelBuilder()
     builder.add_body(is_kinematic=True, mass=1.0)
     model = builder.finalize(device=device)
 
     with test.assertRaisesRegex(NotImplementedError, "kinematic bodies"):
+        SolverFeatherPGS(model)
+
+
+def run_zero_dof_articulation_rejected(test: TestFeatherPGSUnsupportedModels, device):
+    model = _build_fixed_only_articulation_model(device)
+
+    with test.assertRaisesRegex(NotImplementedError, "zero-DOF articulations"):
         SolverFeatherPGS(model)
 
 
@@ -126,6 +141,12 @@ for device in devices:
         TestFeatherPGSUnsupportedModels,
         "test_kinematic_body_rejected",
         run_kinematic_body_rejected,
+        devices=[device],
+    )
+    add_function_test(
+        TestFeatherPGSUnsupportedModels,
+        "test_zero_dof_articulation_rejected",
+        run_zero_dof_articulation_rejected,
         devices=[device],
     )
     add_function_test(

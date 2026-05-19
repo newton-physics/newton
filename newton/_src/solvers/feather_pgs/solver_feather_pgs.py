@@ -151,8 +151,10 @@ class SolverFeatherPGS(SolverBase):
 
         if update_mass_matrix_interval < 1:
             raise ValueError("update_mass_matrix_interval must be >= 1.")
-        if max_constraints < 1:
-            raise ValueError("max_constraints must be positive.")
+        if max_constraints < 3:
+            raise ValueError(
+                "max_constraints must be >= 3 because SolverFeatherPGS stores frictional contacts as triplets."
+            )
         if mf_max_constraints < 1:
             raise ValueError("mf_max_constraints must be >= 1.")
 
@@ -213,6 +215,7 @@ class SolverFeatherPGS(SolverBase):
     def _compute_articulation_metadata(self, model):
         self._compute_articulation_indices(model)
         self._validate_supported_free_joint_topology(model)
+        self._validate_supported_articulation_dofs(model)
         self._compute_root_free_metadata(model)
         self._setup_size_grouping(model)
         self._setup_world_mapping(model)
@@ -307,6 +310,19 @@ class SolverFeatherPGS(SolverBase):
                     "SolverFeatherPGS only supports FREE and DISTANCE joints when they are root joints "
                     f"attached to the world; joint {joint} is not a supported floating root."
                 )
+
+    def _validate_supported_articulation_dofs(self, model):
+        if not model.articulation_count or not model.joint_count:
+            return
+
+        dof_counts = self.articulation_H_rows.numpy()
+        zero_dof_articulations = np.nonzero(dof_counts == 0)[0]
+        if len(zero_dof_articulations) > 0:
+            art = int(zero_dof_articulations[0])
+            raise NotImplementedError(
+                "SolverFeatherPGS does not support zero-DOF articulations yet; "
+                f"articulation {art} has no generalized velocity DOFs."
+            )
 
     def _compute_root_free_metadata(self, model):
         if not model.articulation_count or not model.joint_count:
