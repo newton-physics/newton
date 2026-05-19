@@ -11,8 +11,6 @@ See the :mod:`newton._src.solvers.kamino.solvers.padmm` module for a detailed de
 
 from __future__ import annotations
 
-import math
-
 import warp as wp
 
 from ....config import PADMMSolverConfig
@@ -22,6 +20,7 @@ from ...core.size import SizeKamino
 from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.limits import LimitsKamino
+from ...utils.tile import get_block_dim, get_tile_size
 from .kernels import (
     _apply_dual_preconditioner_to_solution,
     _apply_dual_preconditioner_to_state,
@@ -1198,8 +1197,8 @@ class PADMMSolver:
             problem (DualProblem): The dual forward dynamics problem to be solved.
         """
         # Compute infinity-norm of all residuals and check for convergence
-        tile_size = min(2048, 2 ** math.ceil(math.log(self._size.max_of_max_total_cts, 2)))
-        block_dim = min(256, tile_size // 8)
+        tile_size = get_tile_size(self._size.max_of_max_total_cts)
+        block_dim = get_block_dim(tile_size, min_size=1)
         wp.launch_tiled(
             kernel=_make_compute_infnorm_residuals_kernel(
                 tile_size,
@@ -1239,8 +1238,8 @@ class PADMMSolver:
             problem (DualProblem): The dual forward dynamics problem to be solved.
         """
         # Compute infinity-norm of all residuals and check for convergence
-        tile_size = min(2048, 2 ** math.ceil(math.log(self._size.max_of_max_total_cts, 2)))
-        block_dim = min(256, tile_size // 8)
+        tile_size = get_tile_size(self._size.max_of_max_total_cts)
+        block_dim = get_block_dim(tile_size, min_size=1)
         wp.launch_tiled(
             kernel=_make_compute_infnorm_residuals_accel_kernel(
                 tile_size,

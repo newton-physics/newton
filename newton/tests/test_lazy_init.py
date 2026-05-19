@@ -3,6 +3,7 @@
 
 """Assert that ``import newton`` does not trigger ``wp.init()``."""
 
+import os
 import subprocess
 import sys
 import unittest
@@ -10,6 +11,9 @@ import unittest
 
 class TestLazyInit(unittest.TestCase):
     def test_import_newton_does_not_init_warp(self):
+        env = os.environ.copy()
+        env["PYTHONWARNINGS"] = "error::DeprecationWarning"
+
         result = subprocess.run(
             [
                 sys.executable,
@@ -17,6 +21,7 @@ class TestLazyInit(unittest.TestCase):
                 "import newton; import warp._src.context as wpc; import sys; sys.exit(0 if wpc.runtime is None else 1)",
             ],
             capture_output=True,
+            env=env,
             text=True,
             check=False,
         )
