@@ -198,6 +198,7 @@ class SolverFeatherPGS(SolverBase):
         self._allocate_mf_buffers(model)
         self._scatter_armature_to_groups(model)
         self._init_size_group_streams(model)
+        self._dummy_is_free_rigid = wp.zeros((1,), dtype=wp.int32, device=model.device)
         self._dummy_contact_impulses = wp.zeros((1, 1), dtype=wp.float32, device=model.device)
 
         if model.shape_material_mu is not None:
@@ -1789,14 +1790,8 @@ class SolverFeatherPGS(SolverBase):
 
         has_free_rigid_flag = 1 if mf_active else 0
         # Dummy arrays when MF is not active (kernel still needs valid pointers)
-        is_free_rigid = (
-            self.is_free_rigid
-            if self.is_free_rigid is not None
-            else wp.zeros((1,), dtype=wp.int32, device=model.device)
-        )
-        mf_slot_counter = (
-            self.mf_slot_counter if mf_active else wp.zeros((self.world_count,), dtype=wp.int32, device=model.device)
-        )
+        is_free_rigid = self.is_free_rigid if self.is_free_rigid is not None else self._dummy_is_free_rigid
+        mf_slot_counter = self.mf_slot_counter
 
         if (
             contacts is not None
