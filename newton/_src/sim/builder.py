@@ -6653,6 +6653,7 @@ class ModelBuilder:
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] = "start",
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by cable joints.
 
@@ -6686,6 +6687,10 @@ class ModelBuilder:
                 articulation. Defaults to True to ensure valid simulation models.
             color: Optional display RGB color for all generated capsule shapes. If None, the rod uses
                 the default rod color.
+            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
+                the legacy convention where the body origin is at ``positions[i]`` and the COM/shape
+                are offset by half the segment length. ``"com"`` places the body origin at the
+                segment midpoint so the body origin and COM coincide.
 
         Returns:
             A pair ``(body_indices, joint_indices)``. For an open chain,
@@ -6701,18 +6706,20 @@ class ModelBuilder:
         Raises:
             ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
             ValueError: If the rod has fewer than 2 segments.
+            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
 
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
               pass a larger value when neighboring capsules should remain nearly inextensible.
             - Stretch, bend, and damping values are passed through as provided per joint.
-            - Each generated capsule body frame is placed at the segment midpoint so the body origin
-              and COM coincide.
             - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
-              the cylindrical centerline, excluding the hemispherical caps. Centerline endpoints are
-              at local ``(0, 0, -half_height)`` and ``(0, 0, half_height)``, and the actual capsule
-              surface tips lie at local ``(0, 0, -(half_height + radius))`` and
-              ``(0, 0, half_height + radius)``.
+              the cylindrical centerline, excluding the hemispherical caps.
+            - With ``body_frame_origin="start"``, the body origin is at the first centerline endpoint,
+              the COM and shape are at local ``(0, 0, half_height)``, and the second centerline endpoint
+              is at local ``(0, 0, 2 * half_height)``.
+            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
+              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
+              ``(0, 0, half_height)``.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -6772,6 +6779,7 @@ class ModelBuilder:
             wrap_in_articulation=False,
             quaternions=quaternions,
             color=color,
+            body_frame_origin=body_frame_origin,
         )
 
         # Wrap all joints into an articulation if requested.
@@ -6805,8 +6813,12 @@ class ModelBuilder:
                 if L_first <= min_segment_length:
                     L_first = min_segment_length
 
-                parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
-                child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
+                if body_frame_origin == "com":
+                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
+                    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
+                else:
+                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
+                    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
                 loop_joint_label = f"{label}_cable_{len(link_joints) + 1}" if label else None
                 j_loop = self.add_joint_cable(
@@ -6841,6 +6853,7 @@ class ModelBuilder:
         quaternions: list[Quat] | None = None,
         junction_collision_filter: bool = True,
         color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] = "start",
     ) -> tuple[list[int], list[int]]:
         """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
 
@@ -6849,8 +6862,7 @@ class ModelBuilder:
         Representation:
 
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
-          ``node_positions[v]`` (local +Z points toward ``v``). The body frame is placed at the
-          edge midpoint/COM.
+          ``node_positions[v]`` (local +Z points toward ``v``).
         - Cable joints are created between edge-bodies that share a node, using a spanning-tree
           traversal so that each body has a single parent when wrapped into an articulation.
 
@@ -6891,10 +6903,17 @@ class ModelBuilder:
                 tree (so not all incident body pairs are directly jointed).
             color: Optional display RGB color for all generated capsule shapes. If None, the graph uses
                 the default rod color.
+            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
+                the legacy convention where the body origin is at the edge's ``u`` node and the COM/shape
+                are offset by half the edge length. ``"com"`` places the body origin at the edge midpoint
+                so the body origin and COM coincide.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
             edges in the same order as ``edges``.
+
+        Raises:
+            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -6909,6 +6928,8 @@ class ModelBuilder:
 
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod_graph: stretch_stiffness and bend_stiffness must be >= 0")
+        if body_frame_origin not in ("start", "com"):
+            raise ValueError(f"add_rod_graph: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
         if len(node_positions) < 2:
             raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
@@ -6938,6 +6959,7 @@ class ModelBuilder:
         edge_len: list[float] = []
         edge_bodies: list[int] = []
         rod_color = color if color is not None else ModelBuilder._DEFAULT_ROD_COLOR
+        use_com_origin = body_frame_origin == "com"
 
         # Create all edge bodies first.
         for e_idx, (u, v) in enumerate(edges):
@@ -6977,11 +6999,17 @@ class ModelBuilder:
                     )
             half_height = 0.5 * seg_length
 
-            # Position body at the segment center so the body origin and COM coincide.
-            center = p0 + seg_vec * 0.5
-            body_q = wp.transform(center, q)
-            com_offset = wp.vec3(0.0)
-            capsule_xform = wp.transform()
+            if use_com_origin:
+                # Opt-in convention: place body origin at the segment center so origin and COM coincide.
+                center = p0 + seg_vec * 0.5
+                body_q = wp.transform(center, q)
+                com_offset = wp.vec3(0.0)
+                capsule_xform = wp.transform()
+            else:
+                # Legacy convention: body origin is at node u, with COM and shape offset to the segment center.
+                body_q = wp.transform(p0, q)
+                com_offset = wp.vec3(0.0, 0.0, half_height)
+                capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
 
             body_label = f"{label}_edge_body_{e_idx}" if label else None
             shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
@@ -7008,9 +7036,9 @@ class ModelBuilder:
 
         def _edge_anchor_xform(e_idx: int, node_idx: int) -> wp.transform:
             if node_idx == edge_u[e_idx]:
-                z = -0.5 * edge_len[e_idx]
+                z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
             elif node_idx == edge_v[e_idx]:
-                z = 0.5 * edge_len[e_idx]
+                z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
             return wp.transform(wp.vec3(0.0, 0.0, float(z)), wp.quat_identity())

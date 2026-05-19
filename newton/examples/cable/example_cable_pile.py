@@ -155,6 +155,7 @@ class Example:
                     bend_stiffness=bend_stiffness,
                     bend_damping=1.0e0,
                     label=f"cable_l{layer}_{lane}",
+                    body_frame_origin="com",
                 )
                 rod_bodies_all.extend(rod_bodies)
 

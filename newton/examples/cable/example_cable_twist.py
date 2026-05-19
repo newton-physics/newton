@@ -172,6 +172,7 @@ class Example:
                 bend_stiffness=bend_stiffness,
                 bend_damping=1.0e-2,
                 label=f"cable_{i}",
+                body_frame_origin="com",
             )
 
             # Fix the first body to make it kinematic

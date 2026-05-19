@@ -328,6 +328,7 @@ class Example:
             bend_stiffness=bend_stiffness,
             bend_damping=1.0e-1,
             label="cable",
+            body_frame_origin="com",
         )
 
         # Collision-filter cable segments that overlap the plug at rest.

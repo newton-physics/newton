@@ -218,6 +218,7 @@ class Example:
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
                 label=f"bundle_cable_{i}",
+                body_frame_origin="com",
             )
             cable_body_ids.extend(rod_bodies)
 

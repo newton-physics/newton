@@ -358,6 +358,7 @@ def _build_cable_chain(
         bend_stiffness=bend_stiffness,
         bend_damping=bend_damping,
         label="test_cable_chain",
+        body_frame_origin="com",
     )
 
     if pin_first and len(rod_bodies) > 0:
@@ -409,6 +410,7 @@ def _build_cable_loop(device, num_links: int = 6):
         bend_damping=1.0e-2,
         closed=True,
         label="test_cable_loop",
+        body_frame_origin="com",
     )
 
     builder.color()
@@ -752,6 +754,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
             bend_stiffness=k,
             bend_damping=1.0e1,
             label=f"bend_stiffness_{k:.0e}",
+            body_frame_origin="com",
         )
 
         # Pin the first body of each cable.
@@ -898,6 +901,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
         bend_stiffness=5.0e4,
         bend_damping=0.0,
         label="twist_chain_orthogonal",
+        body_frame_origin="com",
     )
 
     # Pin the first body (anchored capsule)
@@ -1107,6 +1111,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
                 bend_stiffness=bend_stiffness,
                 bend_damping=1.0e-1,
                 label=f"pile_l{layer}_{lane}",
+                body_frame_origin="com",
             )
             cable_bodies.extend(rod_bodies)
 
@@ -1246,6 +1251,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_ball_joint_attach",
+        body_frame_origin="com",
     )
 
     # `add_rod()` convention: rod body origin is at the segment midpoint.
@@ -1397,6 +1403,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_fixed_joint_attach_x",
+        body_frame_origin="com",
     )
 
     j_fixed_x = builder.add_joint_fixed(
@@ -1423,6 +1430,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_fixed_joint_attach_y",
+        body_frame_origin="com",
     )
 
     j_fixed_y = builder.add_joint_fixed(
@@ -1586,6 +1594,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_revolute_joint_attach_x",
+        body_frame_origin="com",
     )
 
     # Revolute axis: Y in joint frame -> world Y free (edge_q_x[0] maps local Z->world X,
@@ -1615,6 +1624,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_revolute_joint_attach_y",
+        body_frame_origin="com",
     )
 
     # Revolute axis: Z in joint frame -> world Y free.
@@ -1787,6 +1797,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_revolute_drive",
+        body_frame_origin="com",
     )
 
     target_angle = 0.4  # rad
@@ -1911,6 +1922,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_revolute_drive_limit",
+        body_frame_origin="com",
     )
 
     target_angle = 1.5  # rad -- beyond limits
@@ -2048,6 +2060,7 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_prismatic_joint_attach",
+        body_frame_origin="com",
     )
 
     # Prismatic axis: Y in joint frame. edge_q[0] maps local Z->world X and
@@ -2187,6 +2200,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_prismatic_drive",
+        body_frame_origin="com",
     )
 
     target_displacement = 0.1  # m
@@ -2311,6 +2325,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_prismatic_drive_limit",
+        body_frame_origin="com",
     )
 
     target_displacement = 0.5  # m -- beyond limits
@@ -2454,6 +2469,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_joint_attach",
+        body_frame_origin="com",
     )
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
@@ -2605,6 +2621,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_all_locked",
+        body_frame_origin="com",
     )
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
@@ -2735,6 +2752,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_locked_x",
+        body_frame_origin="com",
     )
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
@@ -2894,6 +2912,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_drive",
+        body_frame_origin="com",
     )
 
     target_displacement = 0.1  # m
@@ -3034,6 +3053,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_drive_limit",
+        body_frame_origin="com",
     )
 
     # Drive targets are intentionally beyond the limit bounds.
@@ -3356,6 +3376,7 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         label="ut_cable_graph_y",
         wrap_in_articulation=True,
+        body_frame_origin="com",
     )
 
     test.assertEqual(len(rod_bodies), len(edges))
@@ -3477,6 +3498,7 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
         closed=True,
         label="ut_cable_rod_ring_closed",
         wrap_in_articulation=True,
+        body_frame_origin="com",
     )
 
     test.assertEqual(len(rod_bodies), num_segments)
@@ -3553,6 +3575,7 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
         label="ut_cable_graph_quat",
         wrap_in_articulation=True,
         quaternions=None,
+        body_frame_origin="com",
     )
     test.assertEqual(len(rod_bodies), 1)
     test.assertEqual(len(rod_joints), 0)
@@ -3570,8 +3593,51 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
     test.assertGreater(dot, 0.999, msg=f"Default quaternion does not align +Z with edge direction (dot={dot:.6f})")
 
 
+def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device):
+    """Cable rods should preserve the legacy start-node body frame by default."""
+    builder = newton.ModelBuilder()
+
+    num_elements = 2
+    segment_length = 0.2
+    points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=points,
+        quaternions=edge_q,
+        radius=0.01,
+        bend_stiffness=1.0,
+        label="ut_cable_start_origin",
+    )
+
+    builder.color()
+    model = builder.finalize(device=device)
+
+    body_q = model.body_q.numpy()
+    body_com = model.body_com.numpy()
+    shape_body = model.shape_body.numpy()
+    shape_transform = model.shape_transform.numpy()
+    joint_X_p = model.joint_X_p.numpy()
+    joint_X_c = model.joint_X_c.numpy()
+
+    for i, body_id in enumerate(rod_bodies):
+        p0 = np.array([points[i][0], points[i][1], points[i][2]], dtype=float)
+
+        np.testing.assert_allclose(body_q[body_id, :3], p0, atol=1.0e-6)
+        np.testing.assert_allclose(body_com[body_id], np.array([0.0, 0.0, 0.5 * segment_length]), atol=1.0e-6)
+
+        shape_ids = np.where(shape_body == body_id)[0]
+        test.assertEqual(len(shape_ids), 1)
+        shape_tf = shape_transform[shape_ids[0]]
+        np.testing.assert_allclose(shape_tf[:3], np.array([0.0, 0.0, 0.5 * segment_length]), atol=1.0e-6)
+        np.testing.assert_allclose(shape_tf[3:], np.array([0.0, 0.0, 0.0, 1.0]), atol=1.0e-6)
+
+    test.assertEqual(len(rod_joints), 1)
+    np.testing.assert_allclose(joint_X_p[rod_joints[0], :3], np.array([0.0, 0.0, segment_length]), atol=1.0e-6)
+    np.testing.assert_allclose(joint_X_c[rod_joints[0], :3], np.zeros(3), atol=1.0e-6)
+
+
 def _cable_rod_origin_matches_com_impl(test: unittest.TestCase, device):
-    """Cable rods should place body origins at capsule COMs."""
+    """Cable rods should support opt-in COM-centered body frames."""
     builder = newton.ModelBuilder()
 
     num_elements = 2
@@ -3584,6 +3650,7 @@ def _cable_rod_origin_matches_com_impl(test: unittest.TestCase, device):
         radius=0.01,
         bend_stiffness=1.0,
         label="ut_cable_com_origin",
+        body_frame_origin="com",
     )
 
     builder.color()
@@ -3655,6 +3722,7 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
         bend_damping=0.0,
         label="ut_cable_graph_y_filter",
         wrap_in_articulation=True,
+        body_frame_origin="com",
     )
     test.assertEqual(len(rod_bodies), 3)
     test.assertEqual(len(rod_joints), 2)
@@ -3789,6 +3857,7 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
             bend_damping=1.0e-2,
             wrap_in_articulation=False,
             label=f"test_cable_world_{joint_kind}",
+            body_frame_origin="com",
         )
 
         child_anchor_local = wp.vec3(0.0, 0.0, -0.5 * segment_length)
@@ -3963,6 +4032,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_joint_enabled_cable",
+        body_frame_origin="com",
     )
 
     # BALL joint: anchor sphere -> first rod body.
@@ -4060,6 +4130,7 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
         bend_damping=1.0e-2,
         wrap_in_articulation=False,
         label="test_kinematic_track",
+        body_frame_origin="com",
     )
 
     j_fixed = builder.add_joint_fixed(
@@ -4287,6 +4358,12 @@ add_function_test(
     TestCable,
     "test_cable_graph_default_quat_aligns_z",
     _cable_graph_default_quat_aligns_z_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rod_default_origin_matches_start",
+    _cable_rod_default_origin_matches_start_impl,
     devices=devices,
 )
 add_function_test(

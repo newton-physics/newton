@@ -84,6 +84,7 @@ class Example:
             bend_damping=bend_damping,
             label="y_graph",
             wrap_in_articulation=True,
+            body_frame_origin="com",
         )
 
         # Pin one tip capsule (end of the first branch).
