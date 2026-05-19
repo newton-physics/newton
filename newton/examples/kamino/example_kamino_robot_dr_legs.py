@@ -37,7 +37,7 @@ class Example:
 
         # Load the DR Legs USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
-        asset_file = str(asset_path / "dr_legs/usd" / "dr_legs_with_boxes.usda")
+        asset_file = str(asset_path / "dr_legs/usd" / "dr_legs_with_meshes_and_boxes.usda")
         robot_builder.add_usd(
             asset_file,
             joint_ordering=None,
