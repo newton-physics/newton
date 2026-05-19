@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import os
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -51,6 +53,48 @@ class TestChangedTestDurationCheck(unittest.TestCase):
 
         self.assertEqual(failures, [("TestChanged", "test_slow", 31.0, "ubuntu-latest")])
         self.assertEqual(warnings, [])
+
+    def test_collects_changed_classes_from_pr_head_not_merge_commit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            _git(repo, "init", "-b", "main")
+            tests_dir = repo / "newton" / "tests"
+            tests_dir.mkdir(parents=True)
+            (tests_dir / "test_upstream.py").write_text("class TestUpstream:\n    pass\n", encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "Initial tests")
+
+            _git(repo, "switch", "-c", "pr")
+            (tests_dir / "test_pr_owned.py").write_text("class TestPrOwned:\n    pass\n", encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "Add PR test")
+
+            _git(repo, "switch", "main")
+            (tests_dir / "test_upstream.py").write_text("class TestUpstreamChanged:\n    pass\n", encoding="utf-8")
+            _git(repo, "commit", "-am", "Change upstream test")
+
+            _git(repo, "switch", "-c", "merge")
+            _git(repo, "merge", "--no-ff", "pr", "-m", "Synthetic PR merge")
+
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                classes = check_test_durations._collect_changed_test_classes("main", "pr")
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(classes, {"TestPrOwned"})
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-c", "user.name=Newton Test", "-c", "user.email=newton@example.com", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
 if __name__ == "__main__":

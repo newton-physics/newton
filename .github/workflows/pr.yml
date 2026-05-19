@@ -74,7 +74,8 @@ jobs:
           path: test-results
       - name: Check changed test durations
         env:
-          BASE_REF: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: origin/${{ github.base_ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
         run: python scripts/ci/check_test_durations.py
 
   pull-request-docs:

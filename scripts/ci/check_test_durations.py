@@ -52,7 +52,10 @@ def evaluate_records(
 
 
 def main() -> int:
-    changed_classes = _collect_changed_test_classes(os.environ["BASE_REF"])
+    changed_classes = _collect_changed_test_classes(
+        os.environ["BASE_REF"],
+        os.environ.get("HEAD_REF", "HEAD"),
+    )
     records = parse_junit_records(JUNIT_ROOT)
 
     if not records:
@@ -68,7 +71,7 @@ def main() -> int:
     return 1 if failures else 0
 
 
-def _collect_changed_test_classes(base_ref: str) -> set[str]:
+def _collect_changed_test_classes(base_ref: str, head_ref: str = "HEAD") -> set[str]:
     classes: set[str] = set()
     paths = subprocess.check_output(
         [
@@ -76,7 +79,7 @@ def _collect_changed_test_classes(base_ref: str) -> set[str]:
             "diff",
             "--name-only",
             "--diff-filter=AMR",
-            f"{base_ref}...HEAD",
+            f"{base_ref}...{head_ref}",
             "--",
             "newton/tests/test*.py",
             "newton/tests/**/test*.py",
