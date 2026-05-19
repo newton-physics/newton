@@ -5,6 +5,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
+from .._fixed_joint_merger import compute_fixed_joint_merge
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
@@ -106,7 +107,28 @@ class SolverXPBD(SolverBase):
         rigid_contact_con_weighting: bool = True,
         angular_damping: float = 0.0,
         enable_restitution: bool = False,
+        *,
+        collapse_fixed_joints: bool = True,
+        joints_to_keep: list[str] | None = None,
     ):
+        """
+        Args:
+            model: The model to be simulated.
+            iterations: Number of constraint solver iterations per step. Defaults to 2.
+            soft_body_relaxation: Relaxation factor for soft body constraints. Defaults to 0.9.
+            soft_contact_relaxation: Relaxation factor for soft contact constraints. Defaults to 0.9.
+            joint_linear_relaxation: Relaxation factor for linear joint constraints. Defaults to 0.7.
+            joint_angular_relaxation: Relaxation factor for angular joint constraints. Defaults to 0.4.
+            joint_linear_compliance: Compliance for linear joint constraints [m/N]. Defaults to 0.0.
+            joint_angular_compliance: Compliance for angular joint constraints [rad/N·m]. Defaults to 0.0.
+            rigid_contact_relaxation: Relaxation factor for rigid body contact constraints. Defaults to 0.8.
+            rigid_contact_con_weighting: Divide positional correction by active contact count per body
+                for improved stacking convergence. Defaults to True.
+            angular_damping: Angular damping factor for rigid body integration. Defaults to 0.0.
+            enable_restitution: Enable restitution (bouncing) at contacts. Defaults to False.
+            collapse_fixed_joints: Internally merge FIXED joints for stability and efficiency. Defaults to True.
+            joints_to_keep: Joint labels to exempt from ``collapse_fixed_joints``.
+        """
         super().__init__(model=model)
         self.iterations = iterations
 
@@ -127,7 +149,16 @@ class SolverXPBD(SolverBase):
 
         self.compute_body_velocity_from_position_delta = False
 
+        self._collapse_fixed_joints = collapse_fixed_joints
+        self._joints_to_keep = joints_to_keep
         self._init_kinematic_state()
+
+        merge_info = (
+            compute_fixed_joint_merge(model, joints_to_keep=joints_to_keep)
+            if collapse_fixed_joints and model.body_count and model.joint_count
+            else None
+        )
+        self._init_fixed_joint_merge(merge_info)
 
         # helper variables to track constraint resolution vars
         self._particle_delta_counter = 0
@@ -140,8 +171,14 @@ class SolverXPBD(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
-            self._refresh_kinematic_state()
+        # Any change to merger inputs may invalidate the cached merge map.
+        merge_relevant = (
+            SolverNotifyFlags.BODY_INERTIAL_PROPERTIES
+            | SolverNotifyFlags.BODY_PROPERTIES
+            | SolverNotifyFlags.JOINT_PROPERTIES
+        )
+        if flags & merge_relevant:
+            self._recompute_merge_info()
 
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):
         if model.body_count == 0:
@@ -229,14 +266,15 @@ class SolverXPBD(SolverBase):
                     new_body_qd = state_out.body_qd
                 self._body_delta_counter = 1 - self._body_delta_counter
 
+            _mi = getattr(self, "_merge_info", None)
             wp.launch(
                 kernel=apply_body_deltas,
                 dim=model.body_count,
                 inputs=[
                     body_q,
                     body_qd,
-                    model.body_com,
-                    model.body_inertia,
+                    _mi.merged_body_com_gpu if _mi is not None else model.body_com,
+                    _mi.merged_body_inertia_gpu if _mi is not None else model.body_inertia,
                     self.body_inv_mass_effective,
                     self.body_inv_inertia_effective,
                     body_deltas,
@@ -328,22 +366,26 @@ class SolverXPBD(SolverBase):
 
                 body_deltas = wp.empty_like(state_out.body_qd)
 
+                _mi = getattr(self, "_merge_info", None)
+                # Clone before mutating so we don't leak into state_in.body_f.
                 body_f_tmp = state_in.body_f
-                if model.joint_count:
-                    # Avoid accumulating joint_f into the persistent state body_f buffer.
+                if model.joint_count or _mi is not None:
                     body_f_tmp = wp.clone(state_in.body_f)
+                if _mi is not None:
+                    self._scatter_merged_body_forces(state_in, body_f_tmp)
+                if model.joint_count:
                     wp.launch(
                         kernel=apply_joint_forces,
                         dim=model.joint_count,
                         inputs=[
                             state_in.body_q,
-                            model.body_com,
+                            _mi.merged_body_com_gpu if _mi is not None else model.body_com,
                             model.joint_type,
-                            model.joint_enabled,
-                            model.joint_parent,
-                            model.joint_child,
-                            model.joint_X_p,
-                            model.joint_X_c,
+                            self.joint_enabled_effective,
+                            _mi.joint_parent_effective_gpu if _mi is not None else model.joint_parent,
+                            _mi.joint_child_effective_gpu if _mi is not None else model.joint_child,
+                            _mi.joint_X_p_effective_gpu if _mi is not None else model.joint_X_p,
+                            _mi.joint_X_c_effective_gpu if _mi is not None else model.joint_X_c,
                             model.joint_qd_start,
                             model.joint_dof_dim,
                             model.joint_axis,
@@ -353,12 +395,23 @@ class SolverXPBD(SolverBase):
                         device=model.device,
                     )
 
+                _int_kwargs = (
+                    {
+                        "body_com": _mi.merged_body_com_gpu,
+                        "body_mass": _mi.merged_body_mass_gpu,
+                        "body_inertia": _mi.merged_body_inertia_gpu,
+                        "body_inv_mass": _mi.merged_body_inv_mass_gpu,
+                        "body_inv_inertia": _mi.merged_body_inv_inertia_gpu,
+                    }
+                    if _mi is not None
+                    else {}
+                )
                 if body_f_tmp is state_in.body_f:
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, **_int_kwargs)
                 else:
                     body_f_prev = state_in.body_f
                     state_in.body_f = body_f_tmp
-                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, **_int_kwargs)
                     state_in.body_f = body_f_prev
 
             spring_constraint_lambdas = None
@@ -384,6 +437,7 @@ class SolverXPBD(SolverBase):
 
                         # particle-rigid body contacts (besides ground plane)
                         if model.shape_count:
+                            _mi = getattr(self, "_merge_info", None)
                             wp.launch(
                                 kernel=solve_particle_shape_contacts,
                                 dim=contacts.soft_contact_max,
@@ -395,10 +449,10 @@ class SolverXPBD(SolverBase):
                                     model.particle_flags,
                                     body_q,
                                     body_qd,
-                                    model.body_com,
+                                    _mi.merged_body_com_gpu if _mi is not None else model.body_com,
                                     self.body_inv_mass_effective,
                                     self.body_inv_inertia_effective,
-                                    model.shape_body,
+                                    _mi.shape_body_effective_gpu if _mi is not None else model.shape_body,
                                     model.shape_material_mu,
                                     model.soft_contact_mu,
                                     model.particle_adhesion,
@@ -516,6 +570,9 @@ class SolverXPBD(SolverBase):
                         if contact_impulse_iter is not None:
                             contact_impulse_iter.zero_()
 
+                        _mi = getattr(self, "_merge_info", None)
+                        _shape_body = _mi.shape_body_effective_gpu if _mi is not None else model.shape_body
+                        _body_com = _mi.merged_body_com_gpu if _mi is not None else model.body_com
                         wp.launch(
                             kernel=solve_body_contact_positions,
                             dim=contacts.rigid_contact_max,
@@ -523,10 +580,10 @@ class SolverXPBD(SolverBase):
                                 body_q,
                                 body_qd,
                                 model.body_flags,
-                                model.body_com,
+                                _body_com,
                                 self.body_inv_mass_effective,
                                 self.body_inv_inertia_effective,
-                                model.shape_body,
+                                _shape_body,
                                 contacts.rigid_contact_count,
                                 contacts.rigid_contact_point0,
                                 contacts.rigid_contact_point1,
@@ -560,7 +617,7 @@ class SolverXPBD(SolverBase):
                                     contact_impulse_iter,
                                     contacts.rigid_contact_shape0,
                                     contacts.rigid_contact_shape1,
-                                    model.shape_body,
+                                    _shape_body,
                                     rigid_contact_inv_weight,
                                 ],
                                 outputs=[contact_impulse],
@@ -593,21 +650,22 @@ class SolverXPBD(SolverBase):
                         else:
                             body_deltas.zero_()
 
+                        _mi = getattr(self, "_merge_info", None)
                         wp.launch(
                             kernel=solve_body_joints,
                             dim=model.joint_count,
                             inputs=[
                                 body_q,
                                 body_qd,
-                                model.body_com,
+                                _mi.merged_body_com_gpu if _mi is not None else model.body_com,
                                 self.body_inv_mass_effective,
                                 self.body_inv_inertia_effective,
                                 model.joint_type,
-                                model.joint_enabled,
-                                model.joint_parent,
-                                model.joint_child,
-                                model.joint_X_p,
-                                model.joint_X_c,
+                                self.joint_enabled_effective,
+                                _mi.joint_parent_effective_gpu if _mi is not None else model.joint_parent,
+                                _mi.joint_child_effective_gpu if _mi is not None else model.joint_child,
+                                _mi.joint_X_p_effective_gpu if _mi is not None else model.joint_X_p,
+                                _mi.joint_X_c_effective_gpu if _mi is not None else model.joint_X_c,
                                 model.joint_limit_lower,
                                 model.joint_limit_upper,
                                 model.joint_qd_start,
@@ -640,14 +698,15 @@ class SolverXPBD(SolverBase):
             if state_out.body_parent_f is not None:
                 state_out.body_parent_f.zero_()
                 if joint_impulse is not None:
+                    _mi = getattr(self, "_merge_info", None)
                     wp.launch(
                         kernel=convert_joint_impulse_to_parent_f,
                         dim=model.joint_count,
                         inputs=[
                             joint_impulse,
-                            model.joint_enabled,
+                            self.joint_enabled_effective,
                             model.joint_type,
-                            model.joint_child,
+                            _mi.joint_child_effective_gpu if _mi is not None else model.joint_child,
                             dt,
                         ],
                         outputs=[state_out.body_parent_f],
@@ -674,15 +733,24 @@ class SolverXPBD(SolverBase):
                     out_body_qd = state_out.body_qd
 
                 # update body velocities
+                _mi = getattr(self, "_merge_info", None)
                 wp.launch(
                     kernel=update_body_velocities,
                     dim=model.body_count,
-                    inputs=[state_out.body_q, body_q_init, model.body_com, dt],
+                    inputs=[
+                        state_out.body_q,
+                        body_q_init,
+                        _mi.merged_body_com_gpu if _mi is not None else model.body_com,
+                        dt,
+                    ],
                     outputs=[out_body_qd],
                     device=model.device,
                 )
 
             if self.enable_restitution and contacts is not None:
+                _mi = getattr(self, "_merge_info", None)
+                _shape_body = _mi.shape_body_effective_gpu if _mi is not None else model.shape_body
+                _body_com = _mi.merged_body_com_gpu if _mi is not None else model.body_com
                 if model.particle_count:
                     wp.launch(
                         kernel=apply_particle_shape_restitution,
@@ -697,8 +765,8 @@ class SolverXPBD(SolverBase):
                             body_q_init,
                             body_qd,
                             body_qd_init,
-                            model.body_com,
-                            model.shape_body,
+                            _body_com,
+                            _shape_body,
                             model.particle_adhesion,
                             model.soft_contact_restitution,
                             contacts.soft_contact_count,
@@ -724,11 +792,11 @@ class SolverXPBD(SolverBase):
                             state_out.body_qd,
                             body_q_init,
                             body_qd_init,
-                            model.body_com,
+                            _body_com,
                             self.body_inv_mass_effective,
                             self.body_inv_inertia_effective,
                             model.body_world,
-                            model.shape_body,
+                            _shape_body,
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_normal,
                             contacts.rigid_contact_shape0,
@@ -762,6 +830,7 @@ class SolverXPBD(SolverBase):
 
             if model.body_count:
                 self.copy_kinematic_body_state(model, state_in, state_out)
+                self._propagate_merged_body_poses_and_velocities(state_out)
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:

@@ -5,6 +5,8 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
+from .._fixed_joint_merger import compute_fixed_joint_merge
+from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels_body import (
     eval_body_joint_forces,
@@ -74,6 +76,9 @@ class SolverSemiImplicit(SolverBase):
         joint_attach_ke: float = 1.0e4,
         joint_attach_kd: float = 1.0e2,
         enable_tri_contact: bool = True,
+        *,
+        collapse_fixed_joints: bool = True,
+        joints_to_keep: list[str] | None = None,
     ):
         """
         Args:
@@ -83,6 +88,8 @@ class SolverSemiImplicit(SolverBase):
             joint_attach_ke: Joint attachment spring stiffness. Defaults to 1.0e4.
             joint_attach_kd: Joint attachment spring damping. Defaults to 1.0e2.
             enable_tri_contact: Enable triangle contact. Defaults to True.
+            collapse_fixed_joints: Internally merge FIXED joints for stability and efficiency. Defaults to True.
+            joints_to_keep: Joint labels to exempt from ``collapse_fixed_joints``.
         """
         super().__init__(model=model)
         self.angular_damping = angular_damping
@@ -90,6 +97,27 @@ class SolverSemiImplicit(SolverBase):
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
         self.enable_tri_contact = enable_tri_contact
+
+        self._collapse_fixed_joints = collapse_fixed_joints
+        self._joints_to_keep = joints_to_keep
+        # Always allocate so a later merges→no-merges notify can refresh safely.
+        self._init_kinematic_state()
+        merge_info = (
+            compute_fixed_joint_merge(model, joints_to_keep=joints_to_keep)
+            if collapse_fixed_joints and model.body_count and model.joint_count
+            else None
+        )
+        self._init_fixed_joint_merge(merge_info)
+
+    @override
+    def notify_model_changed(self, flags: int) -> None:
+        merge_relevant = (
+            SolverNotifyFlags.BODY_INERTIAL_PROPERTIES
+            | SolverNotifyFlags.BODY_PROPERTIES
+            | SolverNotifyFlags.JOINT_PROPERTIES
+        )
+        if flags & merge_relevant:
+            self._recompute_merge_info()
 
     @override
     def step(
@@ -133,10 +161,20 @@ class SolverSemiImplicit(SolverBase):
             if control is None:
                 control = model.control(clone_variables=False)
 
+            _mi = getattr(self, "_merge_info", None)
             body_f_work = body_f
-            if body_f is not None and model.joint_count and control.joint_f is not None:
-                # Avoid accumulating joint_f into the persistent state body_f buffer.
+            # Clone body_f when joint forces, contact forces, or the merged-child
+            # scatter would otherwise leak into the user's state buffer.
+            needs_clone = body_f is not None and (
+                (model.joint_count and control.joint_f is not None)
+                or (contacts is not None and contacts.rigid_contact_max)
+                or _mi is not None
+            )
+            if needs_clone:
                 body_f_work = wp.clone(body_f)
+
+            if _mi is not None:
+                self._scatter_merged_body_forces(state_in, body_f_work)
 
             # damped springs
             eval_spring_forces(model, state_in, particle_f)
@@ -151,7 +189,20 @@ class SolverSemiImplicit(SolverBase):
             eval_tetrahedra_forces(model, state_in, control, particle_f)
 
             # body joints
-            eval_body_joint_forces(model, state_in, control, body_f_work, self.joint_attach_ke, self.joint_attach_kd)
+            eval_body_joint_forces(
+                model,
+                state_in,
+                control,
+                body_f_work,
+                self.joint_attach_ke,
+                self.joint_attach_kd,
+                joint_enabled_override=self.joint_enabled_effective if _mi is not None else None,
+                body_com_override=_mi.merged_body_com_gpu if _mi is not None else None,
+                joint_parent_override=_mi.joint_parent_effective_gpu if _mi is not None else None,
+                joint_child_override=_mi.joint_child_effective_gpu if _mi is not None else None,
+                joint_X_p_override=_mi.joint_X_p_effective_gpu if _mi is not None else None,
+                joint_X_c_override=_mi.joint_X_c_effective_gpu if _mi is not None else None,
+            )
 
             # muscles
             if False:
@@ -166,20 +217,47 @@ class SolverSemiImplicit(SolverBase):
 
             # body contacts
             eval_body_contact_forces(
-                model, state_in, contacts, friction_smoothing=self.friction_smoothing, body_f_out=body_f_work
+                model,
+                state_in,
+                contacts,
+                friction_smoothing=self.friction_smoothing,
+                body_f_out=body_f_work,
+                body_com_override=_mi.merged_body_com_gpu if _mi is not None else None,
+                shape_body_override=_mi.shape_body_effective_gpu if _mi is not None else None,
             )
 
             # particle shape contact
             eval_particle_body_contact_forces(
-                model, state_in, contacts, particle_f, body_f_work, body_f_in_world_frame=False
+                model,
+                state_in,
+                contacts,
+                particle_f,
+                body_f_work,
+                body_f_in_world_frame=False,
+                body_com_override=_mi.merged_body_com_gpu if _mi is not None else None,
+                shape_body_override=_mi.shape_body_effective_gpu if _mi is not None else None,
             )
 
             self.integrate_particles(model, state_in, state_out, dt)
 
+            _int_kwargs = (
+                {
+                    "body_com": _mi.merged_body_com_gpu,
+                    "body_mass": _mi.merged_body_mass_gpu,
+                    "body_inertia": _mi.merged_body_inertia_gpu,
+                    "body_inv_mass": _mi.merged_body_inv_mass_gpu,
+                    "body_inv_inertia": _mi.merged_body_inv_inertia_gpu,
+                }
+                if _mi is not None
+                else {}
+            )
             if body_f_work is body_f:
-                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, **_int_kwargs)
             else:
                 body_f_prev = state_in.body_f
                 state_in.body_f = body_f_work
-                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping, **_int_kwargs)
                 state_in.body_f = body_f_prev
+
+            if model.body_count:
+                self._propagate_merged_body_poses_and_velocities(state_out)
