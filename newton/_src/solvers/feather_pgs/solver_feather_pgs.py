@@ -962,7 +962,10 @@ class SolverFeatherPGS(SolverBase):
     ):
         if not np.isfinite(dt) or dt <= 0.0:
             raise ValueError("SolverFeatherPGS.step() requires a finite dt > 0.")
-        self._validate_contact_metadata_capacity(contacts, "step")
+
+        model = self.model
+        if model.joint_count:
+            self._validate_contact_metadata_capacity(contacts, "step")
 
         if self._last_step_dt is None:
             self._last_step_dt = dt
@@ -971,8 +974,6 @@ class SolverFeatherPGS(SolverBase):
             self._last_step_dt = dt
         else:
             self._last_step_dt = dt
-
-        model = self.model
 
         if control is None:
             control = model.control(clone_variables=False)
@@ -985,7 +986,7 @@ class SolverFeatherPGS(SolverBase):
 
         if not model.joint_count:
             self.integrate_particles(model, state_in, state_out, dt)
-            self._last_contacts = contacts
+            self._last_contacts = None
             self._step += 1
             return state_out
 
@@ -1185,6 +1186,8 @@ class SolverFeatherPGS(SolverBase):
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
         """Populate Newton contact-force buffers from the last FeatherPGS solve."""
         if contacts is None or contacts.rigid_contact_count is None:
+            return
+        if not hasattr(self, "_contact_metadata_capacity"):
             return
         self._validate_contact_metadata_capacity(contacts, "update_contacts")
         self._validate_update_contacts_source(contacts)

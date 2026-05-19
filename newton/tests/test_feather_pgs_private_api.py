@@ -90,6 +90,12 @@ def _build_fixed_only_articulation_model(device):
     return builder.finalize(device=device)
 
 
+def _build_particle_only_model(device):
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+    return builder.finalize(device=device)
+
+
 def run_kinematic_body_rejected(test: TestFeatherPGSUnsupportedModels, device):
     builder = newton.ModelBuilder()
     builder.add_body(is_kinematic=True, mass=1.0)
@@ -134,6 +140,20 @@ def run_step_rejects_invalid_dt(test: TestFeatherPGSValidation, device):
                 solver.step(state_0, state_1, None, None, dt)
 
 
+def run_no_joint_step_accepts_contacts(test: TestFeatherPGSValidation, device):
+    model = _build_particle_only_model(device)
+    solver = SolverFeatherPGS(model)
+    state_0 = model.state()
+    state_1 = model.state()
+    contacts = newton.Contacts(1, 0, device=device)
+
+    solver.step(state_0, state_1, None, contacts, 1.0 / 60.0)
+    solver.update_contacts(contacts)
+
+    test.assertEqual(solver._step, 1)
+    test.assertFalse(hasattr(solver, "_contact_metadata_capacity"))
+
+
 devices = get_cuda_test_devices(mode="basic")
 
 for device in devices:
@@ -159,6 +179,12 @@ for device in devices:
         TestFeatherPGSValidation,
         "test_step_rejects_invalid_dt",
         run_step_rejects_invalid_dt,
+        devices=[device],
+    )
+    add_function_test(
+        TestFeatherPGSValidation,
+        "test_no_joint_step_accepts_contacts",
+        run_no_joint_step_accepts_contacts,
         devices=[device],
     )
 
