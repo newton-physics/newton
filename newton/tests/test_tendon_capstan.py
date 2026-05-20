@@ -867,6 +867,10 @@ def test_mujoco_switch_matrix_uses_tangent_bypass_geometry(test, device):
             np.all(example._max_active_tangent_radius < example.radius * 1.20),
             f"Active route drifted off candidate tangent surface: {example._max_active_tangent_radius}",
         )
+        test.assertTrue(
+            np.all(example._min_expected_side_clearance > example.radius * 0.20),
+            f"Active route jumped to the wrong candidate side: {example._min_expected_side_clearance}",
+        )
         starts, ends = get_tendon_cable_lines(example.solver, example.model, example.state_0)
         render_points = np.concatenate((starts.numpy(), ends.numpy()), axis=0)
         test.assertTrue(np.isfinite(render_points).all(), "Switch-matrix render line points should stay finite")

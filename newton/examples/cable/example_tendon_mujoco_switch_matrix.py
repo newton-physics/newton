@@ -143,7 +143,7 @@ class Example:
                 body=candidate_body,
                 link_type=int(newton.TendonLinkType.ROLLING),
                 radius=self.radius,
-                orientation=-1,
+                orientation=self._candidate_orientation(start_x),
                 mu=0.0,
                 active=False,
                 offset=(0.0, 0.0, 0.0),
@@ -199,6 +199,7 @@ class Example:
                     "seg_right": candidate_link - tendon_id,
                     "prev_rolling": prev_rolling,
                     "next_rolling": next_rolling,
+                    "expected_side": float(np.sign(start_x)),
                     "start_x": start_x,
                     "target_x": target_x,
                     "y": y,
@@ -219,6 +220,7 @@ class Example:
         self._max_inactive_penetration = np.zeros(len(self.lanes), dtype=np.float64)
         self._min_active_tangent_radius = np.full(len(self.lanes), float("inf"), dtype=np.float64)
         self._max_active_tangent_radius = np.zeros(len(self.lanes), dtype=np.float64)
+        self._min_expected_side_clearance = np.full(len(self.lanes), float("inf"), dtype=np.float64)
         self._saw_disabled_segment = np.zeros(len(self.lanes), dtype=bool)
         self._saw_enabled_segment = np.zeros(len(self.lanes), dtype=bool)
 
@@ -247,6 +249,9 @@ class Example:
         if abs(target_x) > 1.0e-8:
             return math.copysign(self.candidate_rest_x, target_x)
         return self.candidate_rest_x
+
+    def _candidate_orientation(self, start_x):
+        return -int(math.copysign(1.0, start_x))
 
     def _candidate_x(self, t, lane):
         start = 0.18
@@ -363,8 +368,13 @@ class Example:
                     float(np.linalg.norm((att_r[lane["seg_left"]] - candidate)[[0, 2]])),
                     float(np.linalg.norm((att_l[lane["seg_right"]] - candidate)[[0, 2]])),
                 ]
+                side_clearance = [
+                    lane["expected_side"] * float(att_r[lane["seg_left"], 0] - candidate[0]),
+                    lane["expected_side"] * float(att_l[lane["seg_right"], 0] - candidate[0]),
+                ]
                 self._min_active_tangent_radius[i] = min(self._min_active_tangent_radius[i], *radii)
                 self._max_active_tangent_radius[i] = max(self._max_active_tangent_radius[i], *radii)
+                self._min_expected_side_clearance[i] = min(self._min_expected_side_clearance[i], *side_clearance)
             else:
                 self._saw_disabled_segment[i] = self._saw_disabled_segment[i] or seg_active[lane["seg_right"]] == 0
                 distance, _alpha = self._candidate_span_projection(lane)
@@ -410,6 +420,9 @@ class Example:
             )
             assert self._max_active_tangent_radius[i] < self.radius * 1.20, (
                 f"{lane['name']} active route drifted off capstan surface: {self._max_active_tangent_radius[i]:.6f}"
+            )
+            assert self._min_expected_side_clearance[i] > self.radius * 0.20, (
+                f"{lane['name']} active route jumped to wrong capstan side: {self._min_expected_side_clearance[i]:.6f}"
             )
 
     def render(self):
