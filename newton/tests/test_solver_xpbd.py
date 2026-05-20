@@ -1405,7 +1405,7 @@ def test_xpbd_parent_f_newton_second_law_zero_g(test, device):
             )
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 
 
 class TestSolverXPBD(unittest.TestCase):

@@ -6,6 +6,10 @@
 # Root-level policy, config, and docs
 /*                                       @newton-physics/maintainers
 
+# Common PR companion files do not require maintainer approval
+/CHANGELOG.md
+/README.md
+
 # Repo tooling and config
 /.github/                                @newton-physics/maintainers
 /scripts/                                @newton-physics/maintainers
