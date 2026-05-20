@@ -3693,7 +3693,9 @@ def Xform "TestBody" (
         sites_in_result = sum(1 for i in range(builder_sites.shape_count) if builder_sites.shape_flags[i] & site_flag)
         self.assertEqual(sites_in_result, 2, "NewtonSiteAPI prims should be loaded as sites")
         self.assertEqual(
-            builder_sites.shape_count, 3, "Should load 1 collision + 2 NewtonSiteAPI sites with load_visual_shapes=False"
+            builder_sites.shape_count,
+            3,
+            "Should load 1 collision + 2 NewtonSiteAPI sites with load_visual_shapes=False",
         )
 
         # load_sites=False -> NewtonSiteAPI prims must be skipped
