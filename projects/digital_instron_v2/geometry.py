@@ -24,6 +24,7 @@ class CylinderGrid:
     cell_area_m2: float
     spacing_m: float
     radius_m: float
+    neighbors: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class SpringSurfaceGrid:
     cell_area_m2: float
     spacing_m: float
     frame: MeshFrame
+    neighbors: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,30 @@ class PlacedCylinderGrid:
     spacing_m: float
     radius_m: float
     frame: MeshFrame
+    neighbors: np.ndarray
+
+
+def compute_grid_neighbors(xy_m: np.ndarray, spacing_m: float) -> np.ndarray:
+    """For each point in xy_m, find indices of left, right, bottom, top neighbors.
+
+    Returns an (N, 4) int32 array. Index is -1 if no neighbor exists.
+    """
+    n = len(xy_m)
+    neighbors = np.full((n, 4), -1, dtype=np.int32)
+    h = spacing_m
+    if h <= 0.0:
+        return neighbors
+
+    coord_map = {(round(x / h), round(y / h)): idx for idx, (x, y) in enumerate(xy_m)}
+
+    for idx, (x, y) in enumerate(xy_m):
+        ux, uy = round(x / h), round(y / h)
+        neighbors[idx, 0] = coord_map.get((ux - 1, uy), -1)
+        neighbors[idx, 1] = coord_map.get((ux + 1, uy), -1)
+        neighbors[idx, 2] = coord_map.get((ux, uy - 1), -1)
+        neighbors[idx, 3] = coord_map.get((ux, uy + 1), -1)
+
+    return neighbors
 
 
 def make_cylinder_grid(radius_m: float, spacing_m: float = 0.005) -> CylinderGrid:
@@ -79,7 +105,14 @@ def make_cylinder_grid(radius_m: float, spacing_m: float = 0.005) -> CylinderGri
     xy = np.ascontiguousarray(points[inside], dtype=np.float64)
     if len(xy) == 0:
         raise ValueError("Cylinder grid has no cells; reduce spacing or increase radius")
-    return CylinderGrid(xy_m=xy, cell_area_m2=spacing_m * spacing_m, spacing_m=spacing_m, radius_m=radius_m)
+    neighbors = compute_grid_neighbors(xy, spacing_m)
+    return CylinderGrid(
+        xy_m=xy,
+        cell_area_m2=spacing_m * spacing_m,
+        spacing_m=spacing_m,
+        radius_m=radius_m,
+        neighbors=neighbors,
+    )
 
 
 def detect_mesh_frame(
@@ -216,6 +249,7 @@ def place_rearfoot_punch_grid(
         spacing_m=punch.spacing_m,
         radius_m=punch.radius_m,
         frame=mesh_frame,
+        neighbors=punch.neighbors,
     )
 
 
@@ -330,8 +364,10 @@ def build_raycast_spring_grid(
     if not np.any(valid):
         raise MeshQCError("Raycast spring grid has no valid cells")
     center_uv = frame.center_m[list(frame.plane_axes)]
+    xy = np.ascontiguousarray(ray["grid_uv_m"][valid] - center_uv, dtype=np.float64)
+    neighbors = compute_grid_neighbors(xy, spacing_m)
     return SpringSurfaceGrid(
-        xy_m=np.ascontiguousarray(ray["grid_uv_m"][valid] - center_uv, dtype=np.float64),
+        xy_m=xy,
         grid_uv_m=np.ascontiguousarray(ray["grid_uv_m"][valid], dtype=np.float64),
         slack_length_m=np.ascontiguousarray(slack[valid], dtype=np.float64),
         bottom_m=np.ascontiguousarray(ray["bottom_m"][valid], dtype=np.float64),
@@ -340,6 +376,7 @@ def build_raycast_spring_grid(
         cell_area_m2=spacing_m * spacing_m,
         spacing_m=spacing_m,
         frame=frame,
+        neighbors=neighbors,
     )
 
 

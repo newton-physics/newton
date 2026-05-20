@@ -87,12 +87,28 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
         lateral_band_fraction=float(manifest.grid.get("rearfoot_lateral_band_fraction", 0.12)),
     )
     nominal_thickness_m = float(manifest.fit.get("nominal_midsole_thickness_m", mesh_report["thickness_m"]))
+    stiffness = float(manifest.fit.get("initial_stiffness_pa", 2.0e6))
+    if "initial_prony_stiffness_pa" in manifest.fit:
+        prony_stiffness = float(manifest.fit.get("initial_prony_stiffness_pa", 0.0))
+        prony_damping = float(manifest.fit.get("initial_prony_damping_pa_s", 0.0))
+    elif "state_beta" in manifest.fit:
+        beta = float(manifest.fit.get("state_beta", 0.0))
+        tau = float(manifest.fit.get("state_tau_s", 0.05))
+        prony_stiffness = beta * stiffness
+        prony_damping = tau * prony_stiffness
+    else:
+        prony_stiffness = 0.0
+        prony_damping = 0.0
+
     material = FoundationMaterial(
-        stiffness_pa=float(manifest.fit.get("initial_stiffness_pa", 2.0e6)),
+        stiffness_pa=stiffness,
         ogden_alpha=float(manifest.fit.get("initial_ogden_alpha", 2.0)),
         lock_strain=float(manifest.fit.get("initial_lock_strain", 0.85)),
         damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
         damping_power=float(manifest.fit.get("initial_damping_power", 1.0)),
+        prony_stiffness_pa=prony_stiffness,
+        prony_damping_pa_s=prony_damping,
+        shear_modulus_pa=float(manifest.fit.get("initial_shear_modulus_pa", 0.0)),
     )
 
     plane = vertices[:, frame.plane_axes]

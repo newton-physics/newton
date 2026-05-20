@@ -259,10 +259,18 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
                 material.lock_strain,
                 material.damping_pa_s,
                 material.damping_power,
+                material.prony_stiffness_pa,
+                material.prony_damping_pa_s,
+                material.shear_modulus_pa,
             ],
             dtype=wp.float32,
             device=device,
         )
+        from projects.digital_instron_v2.geometry import compute_grid_neighbors
+        from projects.digital_instron_v2.foundation import infer_spacing
+        spacing_val = infer_spacing(xy)
+        neighbors_val = compute_grid_neighbors(xy, spacing_val)
+        wp_neighbors = wp.array(neighbors_val, dtype=wp.int32, device=device)
         wp.launch(
             _foundation_sdf_kernel,
             dim=len(xy),
@@ -288,6 +296,8 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
                 wp.vec3(*indenter_pos),
                 wp.quat_identity(),
                 params,
+                wp_neighbors,
+                float(spacing_val),
                 force_out,
                 wrench_out,
             ],
@@ -598,8 +608,8 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
             lock_strain=0.82,
             damping_pa_s=8.0e4,
             damping_power=1.6,
-            state_beta=0.5,
-            state_tau_s=0.05,
+            prony_stiffness_pa=9.0e5,
+            prony_damping_pa_s=4.5e4,
             state_warmup_cycles=2,
         )
         initial = FoundationMaterial(
@@ -608,8 +618,8 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
             lock_strain=0.55,
             damping_pa_s=1.0e4,
             damping_power=0.5,
-            state_beta=0.2,
-            state_tau_s=0.02,
+            prony_stiffness_pa=1.2e5,
+            prony_damping_pa_s=2.4e3,
             state_warmup_cycles=true_material.state_warmup_cycles,
         )
         template = FoundationTrialBatch(
@@ -654,17 +664,17 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
         self.assertNotEqual(result.material.ogden_alpha, initial.ogden_alpha)
         self.assertNotEqual(result.material.lock_strain, initial.lock_strain)
         self.assertNotEqual(result.material.damping_power, initial.damping_power)
-        self.assertNotEqual(result.material.state_beta, initial.state_beta)
-        self.assertNotEqual(result.material.state_tau_s, initial.state_tau_s)
+        self.assertNotEqual(result.material.prony_stiffness_pa, initial.prony_stiffness_pa)
+        self.assertNotEqual(result.material.prony_damping_pa_s, initial.prony_damping_pa_s)
         self.assertEqual(result.material.state_warmup_cycles, initial.state_warmup_cycles)
         self.assertIn("grad_ogden_alpha", result.history[0])
         self.assertIn("grad_lock_strain", result.history[0])
         self.assertIn("grad_damping_power", result.history[0])
-        self.assertIn("grad_state_beta", result.history[0])
-        self.assertIn("grad_state_tau_s", result.history[0])
-        self.assertTrue(np.isfinite(result.history[0]["grad_state_beta"]))
-        self.assertTrue(np.isfinite(result.history[0]["grad_state_tau_s"]))
-        self.assertNotEqual(result.history[0]["grad_state_beta"], 0.0)
+        self.assertIn("grad_prony_stiffness_pa", result.history[0])
+        self.assertIn("grad_prony_damping_pa_s", result.history[0])
+        self.assertTrue(np.isfinite(result.history[0]["grad_prony_stiffness_pa"]))
+        self.assertTrue(np.isfinite(result.history[0]["grad_prony_damping_pa_s"]))
+        self.assertNotEqual(result.history[0]["grad_prony_stiffness_pa"], 0.0)
 
     def test_fit_with_per_cylinder_area(self):
         xy = np.asarray([[0.0, 0.0], [0.01, 0.0]], dtype=np.float64)
@@ -892,6 +902,105 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
             delta=0.5,
         )
 
+    def test_pasternak_shear_coupling(self):
+        """Verify that Pasternak shear coupling increases force under uneven compression."""
+        x = np.linspace(-0.01, 0.01, 3)
+        y = np.linspace(-0.01, 0.01, 3)
+        xx, yy = np.meshgrid(x, y)
+        xy = np.column_stack([xx.ravel(), yy.ravel()])
+
+        mat_zero_shear = FoundationMaterial(
+            stiffness_pa=1.0e6,
+            ogden_alpha=2.0,
+            lock_strain=0.65,
+            damping_pa_s=0.0,
+            shear_modulus_pa=0.0,
+        )
+        mat_with_shear = FoundationMaterial(
+            stiffness_pa=1.0e6,
+            ogden_alpha=2.0,
+            lock_strain=0.65,
+            damping_pa_s=0.0,
+            shear_modulus_pa=5.0e5,
+        )
+
+        compression = np.zeros(9)
+        compression[4] = 0.005
+        velocity = np.zeros(9)
+        cell_area = 1.0e-4
+
+        res_zero = evaluate_foundation(
+            xy,
+            compression,
+            velocity,
+            cell_area_m2=cell_area,
+            thickness_m=0.03,
+            material=mat_zero_shear,
+        )
+
+        res_shear = evaluate_foundation(
+            xy,
+            compression,
+            velocity,
+            cell_area_m2=cell_area,
+            thickness_m=0.03,
+            material=mat_with_shear,
+        )
+
+        self.assertGreater(res_shear.force_n, res_zero.force_n)
+
+    def test_qlv_prony_relaxation(self):
+        """Verify that stateful QLV Prony series relaxation causes force decay under constant strain."""
+        xy = np.asarray([[0.0, 0.0]], dtype=np.float64)
+
+        current_len = np.full((10, 1), 0.025)
+        slack_len = np.full(1, 0.03)
+        velocity = np.zeros((10, 1))
+        dt_s = 0.01
+
+        measured_force = np.zeros(10)
+        sample_weight = np.ones(10) / 10.0
+        cell_area = np.full(1, 1.0e-4)
+
+        mat_relaxing = FoundationMaterial(
+            stiffness_pa=1.0e6,
+            ogden_alpha=2.0,
+            lock_strain=0.65,
+            damping_pa_s=0.0,
+            damping_power=1.0,
+            prony_stiffness_pa=5.0e5,
+            prony_damping_pa_s=2.5e4,
+            state_warmup_cycles=0,
+        )
+
+        from projects.digital_instron_v2.foundation import FoundationTrialBatch, evaluate_foundation_lengths_batch
+
+        batch = FoundationTrialBatch(
+            name="step_hold",
+            current_length_m=current_len,
+            slack_length_m=slack_len,
+            velocity_mps=velocity,
+            measured_force_n=measured_force,
+            sample_weight=sample_weight,
+            cell_area_m2=cell_area,
+            time_s=np.arange(10) * dt_s,
+            dt_s=np.full(10, dt_s),
+            displacement_m=np.full(10, 0.005),
+            phase=tuple(["hold"] * 10),
+        )
+
+        result = evaluate_foundation_lengths_batch(
+            xy,
+            batch,
+            material=mat_relaxing,
+            device="cpu",
+        )
+
+        forces = result.predicted_force_n
+        for i in range(1, len(forces)):
+            self.assertLessEqual(forces[i], forces[i-1])
+        self.assertLess(forces[-1], forces[0])
+
     def test_workflow_fit_autodiff_with_per_cylinder(self):
         """Integration: run_fit_autodiff produces per_cylinder_area in output."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -953,8 +1062,8 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
                     "initial_lock_strain": 0.65,
                     "initial_damping_pa_s": 1.0e4,
                     "initial_damping_power": 1.0,
-                    "state_beta": 0.5,
-                    "state_tau_s": 0.05,
+                    "initial_prony_stiffness_pa": 1.0e6,
+                    "initial_prony_damping_pa_s": 5.0e4,
                     "state_warmup_cycles": 1,
                 },
                 "trials": [
@@ -986,9 +1095,7 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
             self.assertIn("material", report)
             self.assertIn("per_cylinder_area", report["material"])
             self.assertTrue(report["material"]["per_cylinder_area"])
-            self.assertAlmostEqual(report["material"]["state_beta"], 0.5, delta=0.2)
-            self.assertGreater(report["material"]["state_beta"], 0.0)
-            self.assertLess(report["material"]["state_beta"], 1.0)
+            self.assertTrue(0.0 < report["material"]["prony_stiffness_pa"] < 2.0e6)
             self.assertEqual(report["material"]["state_warmup_cycles"], 1)
 
             # 8. Verify saved JSON includes per_cylinder_area

@@ -99,6 +99,7 @@ def run_fit_smoke(args: argparse.Namespace) -> dict[str, object]:
         lock_strain=float(manifest.fit.get("initial_lock_strain", 0.65)),
         damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
         damping_power=float(manifest.fit.get("initial_damping_power", 1.0)),
+        shear_modulus_pa=float(manifest.fit.get("initial_shear_modulus_pa", 0.0)),
     )
 
     summaries = []
@@ -113,11 +114,19 @@ def run_fit_smoke(args: argparse.Namespace) -> dict[str, object]:
         index = int(np.argmax(trace["force_n"]))
         compression = np.full(len(grid.xy_m), max(float(trace["displacement_m"][index]), 0.0), dtype=np.float64)
         velocity = np.zeros_like(compression)
+        if trial.fixture == "rearfoot_punch":
+            radius_m = float(trial.indenter.get("radius_m", 0.0225))
+            analytical_area = np.pi * (radius_m ** 2)
+            active_count = len(grid.xy_m)
+            cell_area_val = analytical_area / active_count if active_count > 0 else grid.cell_area_m2
+        else:
+            cell_area_val = grid.cell_area_m2
+
         result = evaluate_foundation(
             grid.xy_m,
             compression,
             velocity,
-            cell_area_m2=grid.cell_area_m2,
+            cell_area_m2=cell_area_val,
             thickness_m=float(manifest.fit.get("nominal_midsole_thickness_m", 0.03)),
             material=material,
             measured_force_n=float(trace["force_n"][index]),
@@ -138,16 +147,30 @@ def run_fit_smoke(args: argparse.Namespace) -> dict[str, object]:
 
 
 def _initial_material(manifest, *, per_cylinder_area: bool = False) -> FoundationMaterial:
+    stiffness = float(manifest.fit.get("initial_stiffness_pa", 2.0e6))
+    if "initial_prony_stiffness_pa" in manifest.fit:
+        prony_stiffness = float(manifest.fit.get("initial_prony_stiffness_pa", 0.0))
+        prony_damping = float(manifest.fit.get("initial_prony_damping_pa_s", 0.0))
+    elif "state_beta" in manifest.fit:
+        beta = float(manifest.fit.get("state_beta", 0.0))
+        tau = float(manifest.fit.get("state_tau_s", 0.05))
+        prony_stiffness = beta * stiffness
+        prony_damping = tau * prony_stiffness
+    else:
+        prony_stiffness = 0.0
+        prony_damping = 0.0
+
     return FoundationMaterial(
-        stiffness_pa=float(manifest.fit.get("initial_stiffness_pa", 2.0e6)),
+        stiffness_pa=stiffness,
         ogden_alpha=float(manifest.fit.get("initial_ogden_alpha", 2.0)),
         lock_strain=float(manifest.fit.get("initial_lock_strain", 0.65)),
         damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
         damping_power=float(manifest.fit.get("initial_damping_power", 1.0)),
         per_cylinder_area=per_cylinder_area,
-        state_beta=float(manifest.fit.get("state_beta", 0.0)),
-        state_tau_s=float(manifest.fit.get("state_tau_s", 0.05)),
+        prony_stiffness_pa=prony_stiffness,
+        prony_damping_pa_s=prony_damping,
         state_warmup_cycles=int(manifest.fit.get("state_warmup_cycles", 0)),
+        shear_modulus_pa=float(manifest.fit.get("initial_shear_modulus_pa", 0.0)),
     )
 
 
@@ -599,6 +622,16 @@ def _autodiff_batches(
             )
             current_rows.append(current_length)
             velocity_rows.append(velocity)
+        if trial.fixture == "rearfoot_punch":
+            active_mask = rearfoot_mask
+            active_count = np.count_nonzero(active_mask)
+            radius_m = float(trial.indenter.get("radius_m", 0.0225))
+            analytical_area = np.pi * (radius_m ** 2)
+            cell_area_val = analytical_area / active_count if active_count > 0 else spring_grid.cell_area_m2
+            trial_cell_area = np.full(len(spring_grid.xy_m), cell_area_val, dtype=np.float64)
+        else:
+            trial_cell_area = cell_area
+
         batches.append(
             FoundationTrialBatch(
                 name=trial.name,
@@ -607,7 +640,7 @@ def _autodiff_batches(
                 velocity_mps=np.asarray(velocity_rows, dtype=np.float64),
                 measured_force_n=trace["force_n"],
                 sample_weight=weights,
-                cell_area_m2=cell_area,
+                cell_area_m2=trial_cell_area,
                 time_s=trace["time_s"],
                 dt_s=np.concatenate(([0.0], np.diff(trace["time_s"]))),
                 displacement_m=trace["displacement_m"],
@@ -954,8 +987,8 @@ def _write_autodiff_loss_plot(
     iterations = [h["iteration"] for h in history]
     losses = [h["loss"] for h in history]
 
-    # Check if state_beta/state_tau_s exist in history (for dual-plot)
-    has_state = "state_beta" in history[0] if history else False
+    # Check if state_beta/state_tau_s or prony_stiffness_pa/prony_damping_pa_s exist in history (for dual-plot)
+    has_state = ("state_beta" in history[0] or "prony_stiffness_pa" in history[0]) if history else False
 
     if has_state:
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.0, 6.0), constrained_layout=True, sharex=True)
@@ -969,10 +1002,16 @@ def _write_autodiff_loss_plot(
     ax1.grid(True, alpha=0.3)
 
     if has_state:
-        betas = [h["state_beta"] for h in history]
-        taus = [h["state_tau_s"] for h in history]
-        ax2.plot(iterations, betas, "r-", label="state_beta", linewidth=0.8)
-        ax2.plot(iterations, taus, "g-", label="state_tau_s", linewidth=0.8)
+        if "prony_stiffness_pa" in history[0]:
+            stiffnesses = [h["prony_stiffness_pa"] for h in history]
+            dampings = [h["prony_damping_pa_s"] for h in history]
+            ax2.plot(iterations, stiffnesses, "r-", label="prony_stiffness_pa", linewidth=0.8)
+            ax2.plot(iterations, dampings, "g-", label="prony_damping_pa_s", linewidth=0.8)
+        else:
+            betas = [h["state_beta"] for h in history]
+            taus = [h["state_tau_s"] for h in history]
+            ax2.plot(iterations, betas, "r-", label="state_beta", linewidth=0.8)
+            ax2.plot(iterations, taus, "g-", label="state_tau_s", linewidth=0.8)
         ax2.set_xlabel("Iteration")
         ax2.set_ylabel("Parameter value")
         ax2.legend()
@@ -985,6 +1024,17 @@ def _write_autodiff_loss_plot(
 
 
 def _material_from_history_row(row: dict[str, float]) -> FoundationMaterial:
+    if "prony_stiffness_pa" in row:
+        prony_stiffness = float(row["prony_stiffness_pa"])
+        prony_damping = float(row["prony_damping_pa_s"])
+    else:
+        # Convert state parameters
+        stiffness = float(row["stiffness_pa"])
+        beta = float(row.get("state_beta", 0.0))
+        tau = float(row.get("state_tau_s", 0.05))
+        prony_stiffness = beta * stiffness
+        prony_damping = tau * prony_stiffness
+
     return FoundationMaterial(
         stiffness_pa=float(row["stiffness_pa"]),
         ogden_alpha=float(row["ogden_alpha"]),
@@ -992,9 +1042,10 @@ def _material_from_history_row(row: dict[str, float]) -> FoundationMaterial:
         damping_pa_s=float(row["damping_pa_s"]),
         damping_power=float(row["damping_power"]),
         per_cylinder_area=True,
-        state_beta=float(row["state_beta"]),
-        state_tau_s=float(row["state_tau_s"]),
+        prony_stiffness_pa=prony_stiffness,
+        prony_damping_pa_s=prony_damping,
         state_warmup_cycles=int(row["state_warmup_cycles"]),
+        shear_modulus_pa=float(row.get("shear_modulus_pa", 0.0)),
     )
 
 
@@ -1059,7 +1110,9 @@ def _select_history_material(
         selection = _history_selection_score(xy_m, batches, material, device=device)
         selection["iteration"] = int(row["iteration"])
         selection["loss"] = float(row["loss"])
-        if best_selection is None or float(selection["score"]) < float(best_selection["score"]):
+        mean_rmse = float(np.mean([t["rmse_n"] for t in selection["trials"]]))
+        selection["score"] = mean_rmse
+        if best_selection is None or mean_rmse < float(best_selection["score"]):
             best_material = material
             best_selection = selection
     if best_selection is None:
@@ -1100,12 +1153,14 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
             f"max={stats['contact_max_mm']:.1f}"
         )
     _write_json(output_dir / "digital_instron_v2_contact_diagnostics.json", contact_diagnostics)
+    loop_weight = _fit_float(manifest.fit, "loop_weight", 0.0, min_value=0.0)
     result = fit_foundation_material_batches_autodiff(
         spring_grid.xy_m,
         batches,
         initial_material=_initial_material(manifest),
         iterations=int(args.autodiff_iterations),
         per_cylinder_area=True,
+        loop_weight=loop_weight,
         device=device,
     )
     selected_material, selected_history = _select_history_material(
@@ -1140,6 +1195,7 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
             "peak_fraction": _fit_float(manifest.fit, "peak_fraction", 0.95, min_value=0.0),
             "displacement_shape_weight": _fit_float(manifest.fit, "displacement_shape_weight", 0.0, min_value=0.0),
             "displacement_shape_bins": _fit_int(manifest.fit, "displacement_shape_bins", 12, min_value=1),
+            "loop_weight": loop_weight,
         },
         "autodiff_device": device,
         "spring_grid_cells": int(len(spring_grid.xy_m)),

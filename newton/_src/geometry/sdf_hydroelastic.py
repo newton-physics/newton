@@ -421,34 +421,6 @@ class HydroelasticSDF:
     class Config:
         """Controls properties of SDF hydroelastic collision handling."""
 
-        def __post_init__(self):
-            if float(self.margin_contact_area) <= 0.0:
-                raise ValueError(
-                    "margin_contact_area must be positive, "
-                    f"got {self.margin_contact_area}"
-                )
-            if float(self.pressure_blend_shell_fraction) <= 0.0:
-                raise ValueError(
-                    "pressure_blend_shell_fraction must be positive, "
-                    f"got {self.pressure_blend_shell_fraction}"
-                )
-            visc_hyst = float(self.viscoelastic_hysteresis_fraction)
-            if visc_hyst < 0.0 or visc_hyst > 1.0:
-                raise ValueError(
-                    "viscoelastic_hysteresis_fraction must be in [0, 1], "
-                    f"got {visc_hyst}"
-                )
-            if float(self.viscoelastic_recovery_tau_s) <= 0.0:
-                raise ValueError(
-                    "viscoelastic_recovery_tau_s must be positive, "
-                    f"got {self.viscoelastic_recovery_tau_s}"
-                )
-            if float(self.viscoelastic_densification_exponent) < 1.0:
-                raise ValueError(
-                    "viscoelastic_densification_exponent must be >= 1.0, "
-                    f"got {self.viscoelastic_densification_exponent}"
-                )
-
         reduce_contacts: bool = True
         """Whether to reduce contacts to a smaller representative set per shape pair.
         When False, all generated contacts are passed through without reduction."""
@@ -506,13 +478,6 @@ class HydroelasticSDF:
         threading-style scenarios like ``nut_bolt_hydro`` where the surface
         bias measurably damps the contact response."""
 
-        def __post_init__(self):
-            # NaN fails both bounds (NaN comparisons return False) and lands here too.
-            if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
-                raise ValueError(
-                    f"HydroelasticSDF.Config.mc_edge_clamp_min must be in [0.0, 0.5], got {self.mc_edge_clamp_min}"
-                )
-
         pressure_blend_shell_fraction: float = 0.15
         """Fraction of the SDF bounding-box diagonal used for pressure/SDF boundary blending."""
         viscoelastic_enabled: bool = False
@@ -543,6 +508,40 @@ class HydroelasticSDF:
         """Time constant for memory recovery while a cell remains active [s]."""
         pressure_memory_dt_s: float = 1.0 / 240.0
         """Collision-step interval used by the pressure-memory recovery update [s]."""
+
+        def __post_init__(self):
+            # NaN fails both bounds (NaN comparisons return False) and lands here too.
+            if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
+                raise ValueError(
+                    f"HydroelasticSDF.Config.mc_edge_clamp_min must be in [0.0, 0.5], got {self.mc_edge_clamp_min}"
+                )
+            if float(self.margin_contact_area) <= 0.0:
+                raise ValueError(
+                    "margin_contact_area must be positive, "
+                    f"got {self.margin_contact_area}"
+                )
+            if float(self.pressure_blend_shell_fraction) <= 0.0:
+                raise ValueError(
+                    "pressure_blend_shell_fraction must be positive, "
+                    f"got {self.pressure_blend_shell_fraction}"
+                )
+            visc_hyst = float(self.viscoelastic_hysteresis_fraction)
+            if visc_hyst < 0.0 or visc_hyst > 1.0:
+                raise ValueError(
+                    "viscoelastic_hysteresis_fraction must be in [0, 1], "
+                    f"got {visc_hyst}"
+                )
+            if float(self.viscoelastic_recovery_tau_s) <= 0.0:
+                raise ValueError(
+                    "viscoelastic_recovery_tau_s must be positive, "
+                    f"got {self.viscoelastic_recovery_tau_s}"
+                )
+            if float(self.viscoelastic_densification_exponent) < 1.0:
+                raise ValueError(
+                    "viscoelastic_densification_exponent must be >= 1.0, "
+                    f"got {self.viscoelastic_densification_exponent}"
+                )
+
 
     @dataclass
     class ContactSurfaceData:

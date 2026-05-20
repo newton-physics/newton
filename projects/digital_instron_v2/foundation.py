@@ -23,9 +23,10 @@ class FoundationMaterial:
     damping_pa_s: float
     damping_power: float = 1.0
     per_cylinder_area: bool = False
-    state_beta: float = 0.0
-    state_tau_s: float = 0.05
+    prony_stiffness_pa: float = 0.0
+    prony_damping_pa_s: float = 0.0
     state_warmup_cycles: int = 0
+    shear_modulus_pa: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,8 @@ def _foundation_kernel(
     thickness_m: float,
     params: wp.array[float],
     measured_force_n: float,
+    neighbors: wp.array2d[int],
+    spacing_m: float,
     force_out: wp.array[float],
     wrench_out: wp.array[float],
     loss_out: wp.array[float],
@@ -114,7 +117,30 @@ def _foundation_kernel(
     lock = wp.max(params[2], 1.0e-4)
     normalized = wp.min(strain / lock, 0.999)
     alpha = wp.max(params[1], 1.0e-4)
-    elastic_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
+    ogden_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
+
+    h2 = spacing_m * spacing_m
+    laplacian = float(0.0)
+    if h2 > 1.0e-12:
+        n_left = neighbors[i, 0]
+        val_left = float(0.0)
+        if n_left != -1:
+            val_left = wp.max(compression_m[n_left], 0.0)
+        n_right = neighbors[i, 1]
+        val_right = float(0.0)
+        if n_right != -1:
+            val_right = wp.max(compression_m[n_right], 0.0)
+        n_bottom = neighbors[i, 2]
+        val_bottom = float(0.0)
+        if n_bottom != -1:
+            val_bottom = wp.max(compression_m[n_bottom], 0.0)
+        n_top = neighbors[i, 3]
+        val_top = float(0.0)
+        if n_top != -1:
+            val_top = wp.max(compression_m[n_top], 0.0)
+        laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
+
+    elastic_stress = ogden_stress - params[7] * laplacian
     damping_strain = wp.max(strain, 1.0e-8)
     damping_weight = wp.pow(damping_strain, wp.max(params[4], 0.0))
     viscous_stress = params[3] * damping_weight * velocity_mps[i]
@@ -139,6 +165,8 @@ def _foundation_lengths_kernel(
     xy_m: wp.array[wp.vec2],
     cell_area_m2: wp.array[float],
     params: wp.array[float],
+    neighbors: wp.array2d[int],
+    spacing_m: float,
     force_out: wp.array[float],
     wrench_out: wp.array[float],
 ):
@@ -149,7 +177,30 @@ def _foundation_lengths_kernel(
     lock = wp.max(params[2], 1.0e-4)
     normalized = wp.min(strain / lock, 0.999)
     alpha = wp.max(params[1], 1.0e-4)
-    elastic_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
+    ogden_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
+
+    h2 = spacing_m * spacing_m
+    laplacian = float(0.0)
+    if h2 > 1.0e-12:
+        n_left = neighbors[i, 0]
+        val_left = float(0.0)
+        if n_left != -1:
+            val_left = wp.max(slack_length_m[n_left] - current_length_m[n_left], 0.0)
+        n_right = neighbors[i, 1]
+        val_right = float(0.0)
+        if n_right != -1:
+            val_right = wp.max(slack_length_m[n_right] - current_length_m[n_right], 0.0)
+        n_bottom = neighbors[i, 2]
+        val_bottom = float(0.0)
+        if n_bottom != -1:
+            val_bottom = wp.max(slack_length_m[n_bottom] - current_length_m[n_bottom], 0.0)
+        n_top = neighbors[i, 3]
+        val_top = float(0.0)
+        if n_top != -1:
+            val_top = wp.max(slack_length_m[n_top] - current_length_m[n_top], 0.0)
+        laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
+
+    elastic_stress = ogden_stress - params[7] * laplacian
     damping_strain = wp.max(strain, 1.0e-8)
     damping_weight = wp.pow(damping_strain, wp.max(params[4], 0.0))
     compression_velocity = -velocity_mps[i]
@@ -160,6 +211,23 @@ def _foundation_lengths_kernel(
     wp.atomic_add(wrench_out, 2, fz)
     wp.atomic_add(wrench_out, 3, xy[1] * fz)
     wp.atomic_add(wrench_out, 4, -xy[0] * fz)
+
+
+@wp.func
+def get_sdf_deflection(
+    j: int,
+    xy_m: wp.array[wp.vec2],
+    top_z_m: wp.array[float],
+    indenter_sdf: TextureSDFData,
+    indenter_inv_transform: wp.transform,
+) -> float:
+    if j == -1:
+        return 0.0
+    xy = xy_m[j]
+    world_pt = wp.vec3(xy[0], xy[1], top_z_m[j])
+    local_pt = wp.transform_point(indenter_inv_transform, world_pt)
+    sdf_val = texture_sample_sdf(indenter_sdf, local_pt)
+    return wp.max(-sdf_val, 0.0)
 
 
 @wp.kernel
@@ -173,6 +241,8 @@ def _foundation_sdf_kernel(
     indenter_pos: wp.vec3,
     indenter_quat: wp.quat,
     params: wp.array[float],
+    neighbors: wp.array2d[int],
+    spacing_m: float,
     force_out: wp.array[float],
     wrench_out: wp.array[float],
 ):
@@ -192,7 +262,18 @@ def _foundation_sdf_kernel(
     lock = wp.max(params[2], 1.0e-4)
     normalized = wp.min(strain / lock, 0.999)
     alpha = wp.max(params[1], 1.0e-4)
-    elastic_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
+    ogden_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
+
+    h2 = spacing_m * spacing_m
+    laplacian = float(0.0)
+    if h2 > 1.0e-12:
+        val_left = get_sdf_deflection(neighbors[i, 0], xy_m, top_z_m, indenter_sdf, indenter_inv_transform)
+        val_right = get_sdf_deflection(neighbors[i, 1], xy_m, top_z_m, indenter_sdf, indenter_inv_transform)
+        val_bottom = get_sdf_deflection(neighbors[i, 2], xy_m, top_z_m, indenter_sdf, indenter_inv_transform)
+        val_top = get_sdf_deflection(neighbors[i, 3], xy_m, top_z_m, indenter_sdf, indenter_inv_transform)
+        laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
+
+    elastic_stress = ogden_stress - params[7] * laplacian
     damping_strain = wp.max(strain, 1.0e-8)
     damping_weight = wp.pow(damping_strain, wp.max(params[4], 0.0))
     compression_velocity = -velocity_mps[i]
@@ -219,6 +300,8 @@ def _foundation_lengths_batch_kernel(
     xy_m: wp.array[wp.vec2],
     cell_area_m2: wp.array[float],
     params: wp.array[float],
+    neighbors: wp.array2d[int],
+    spacing_m: float,
     spring_count: int,
     force_out: wp.array[float],
 ):
@@ -230,7 +313,30 @@ def _foundation_lengths_batch_kernel(
     lock = wp.max(params[2], 1.0e-4)
     normalized = wp.min(strain / lock, 0.999)
     alpha = wp.max(params[1], 1.0e-4)
-    elastic_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
+    ogden_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
+
+    h2 = spacing_m * spacing_m
+    laplacian = float(0.0)
+    if h2 > 1.0e-12:
+        n_left = neighbors[spring, 0]
+        val_left = float(0.0)
+        if n_left != -1:
+            val_left = wp.max(slack_length_m[n_left] - current_length_m[(tid / spring_count) * spring_count + n_left], 0.0)
+        n_right = neighbors[spring, 1]
+        val_right = float(0.0)
+        if n_right != -1:
+            val_right = wp.max(slack_length_m[n_right] - current_length_m[(tid / spring_count) * spring_count + n_right], 0.0)
+        n_bottom = neighbors[spring, 2]
+        val_bottom = float(0.0)
+        if n_bottom != -1:
+            val_bottom = wp.max(slack_length_m[n_bottom] - current_length_m[(tid / spring_count) * spring_count + n_bottom], 0.0)
+        n_top = neighbors[spring, 3]
+        val_top = float(0.0)
+        if n_top != -1:
+            val_top = wp.max(slack_length_m[n_top] - current_length_m[(tid / spring_count) * spring_count + n_top], 0.0)
+        laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
+
+    elastic_stress = ogden_stress - params[7] * laplacian
     damping_strain = wp.max(strain, 1.0e-8)
     damping_weight = wp.pow(damping_strain, wp.max(params[4], 0.0))
     compression_velocity = -velocity_mps[tid]
@@ -249,40 +355,77 @@ def _foundation_lengths_stateful_batch_kernel(
     xy_m: wp.array[wp.vec2],
     cell_area_m2: wp.array[float],
     params: wp.array[float],
+    neighbors: wp.array2d[int],
+    spacing_m: float,
     frame_count: int,
     spring_count: int,
     warmup_cycles: int,
+    state_history: wp.array2d[float],
     force_out: wp.array[float],
 ):
     spring = wp.tid()
     slack = wp.max(slack_length_m[spring], 1.0e-6)
-    state = float(0.0)
     total_cycles = warmup_cycles + 1
-    tau = wp.max(params[6], 1.0e-6)
-    beta = wp.max(wp.min(params[5], 1.0), 0.0)
+    ep = wp.max(params[5], 0.0)
+    e0 = wp.max(params[0], 1.0e-4)
+    beta = wp.min(ep / e0, 0.99)
+    etap = wp.max(params[6], 0.0)
+    tau = wp.max(etap / wp.max(ep, 1.0e-6), 1.0e-6)
 
     for cycle in range(total_cycles):
         for frame in range(frame_count):
+            step = cycle * frame_count + frame
             offset = frame * spring_count + spring
             comp = wp.max(slack - current_length_m[offset], 0.0)
-            alpha_state = 1.0 - wp.exp(-wp.max(dt_s[frame], 0.0) / tau)
-            state = state + alpha_state * (comp - state)
 
+            # 1. Compute Ogden elastic stress
+            strain = comp / slack
+            lock = wp.max(params[2], 1.0e-4)
+            normalized = wp.min(strain / lock, 0.999)
+            ogden_alpha = wp.max(params[1], 1.0e-4)
+            ogden_stress = params[0] * (wp.pow(1.0 - normalized, -ogden_alpha) - 1.0) / ogden_alpha
+
+            # 2. Compute Pasternak Laplacian and shear stress
+            h2 = spacing_m * spacing_m
+            laplacian = float(0.0)
+            if h2 > 1.0e-12:
+                n_left = neighbors[spring, 0]
+                val_left = float(0.0)
+                if n_left != -1:
+                    val_left = wp.max(slack_length_m[n_left] - current_length_m[frame * spring_count + n_left], 0.0)
+                n_right = neighbors[spring, 1]
+                val_right = float(0.0)
+                if n_right != -1:
+                    val_right = wp.max(slack_length_m[n_right] - current_length_m[frame * spring_count + n_right], 0.0)
+                n_bottom = neighbors[spring, 2]
+                val_bottom = float(0.0)
+                if n_bottom != -1:
+                    val_bottom = wp.max(slack_length_m[n_bottom] - current_length_m[frame * spring_count + n_bottom], 0.0)
+                n_top = neighbors[spring, 3]
+                val_top = float(0.0)
+                if n_top != -1:
+                    val_top = wp.max(slack_length_m[n_top] - current_length_m[frame * spring_count + n_top], 0.0)
+                laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
+
+            elastic_stress_total = ogden_stress - params[7] * laplacian
+
+            # 3. Update QLV Prony Series State
+            decay = wp.exp(-wp.max(dt_s[frame], 0.0) / tau)
+            prev_state = float(0.0)
+            if step > 0:
+                prev_state = state_history[spring, step - 1]
+            curr_state = prev_state * decay + (1.0 - decay) * beta * elastic_stress_total
+            state_history[spring, step] = curr_state
+
+            # 4. viscoelastic stress (only aggregate force during the last cycle)
             if cycle == warmup_cycles:
-                effective_comp = comp + beta * (comp - state)
-                effective_comp = wp.max(effective_comp, 0.0)
-                strain = effective_comp / slack
-                lock = wp.max(params[2], 1.0e-4)
-                normalized = wp.min(strain / lock, 0.999)
-                ogden_alpha = wp.max(params[1], 1.0e-4)
-                elastic_stress = params[0] * (wp.pow(1.0 - normalized, -ogden_alpha) - 1.0) / ogden_alpha
+                viscoelastic_stress = elastic_stress_total - curr_state
 
-                instant_strain = comp / slack
-                damping_strain = wp.max(instant_strain, 1.0e-8)
+                damping_strain = wp.max(strain, 1.0e-8)
                 damping_weight = wp.pow(damping_strain, wp.max(params[4], 0.0))
                 compression_velocity = -velocity_mps[offset]
                 viscous_stress = params[3] * damping_weight * compression_velocity
-                fz = cell_area_m2[spring] * wp.max(elastic_stress + viscous_stress, 0.0)
+                fz = cell_area_m2[spring] * wp.max(viscoelastic_stress + viscous_stress, 0.0)
                 wp.atomic_add(force_out, frame, fz)
 
 
@@ -298,6 +441,50 @@ def _weighted_normalized_loss_kernel(
     scale = wp.max(force_scale_n, 1.0)
     residual = (force_out[frame] - measured_force_n[frame]) / scale
     wp.atomic_add(loss_out, 0, 0.5 * sample_weight[frame] * residual * residual)
+
+
+@wp.kernel
+def _add_loop_loss_kernel(
+    force_out: wp.array[float],
+    displacement_m: wp.array[float],
+    measured_loop: float,
+    force_zero: float,
+    loop_weight: float,
+    loss_out: wp.array[float],
+    frame_count: int,
+):
+    if wp.tid() == 0:
+        pred_loop = float(0.0)
+        for i in range(frame_count - 1):
+            f_i = force_out[i] + force_zero
+            f_next = force_out[i + 1] + force_zero
+            dx = displacement_m[i + 1] - displacement_m[i]
+            pred_loop += 0.5 * (f_i + f_next) * dx
+        
+        meas_loop = wp.max(measured_loop, 1.0e-3)
+        loop_residual = (pred_loop - meas_loop) / meas_loop
+        loss_val = 0.5 * loop_weight * loop_residual * loop_residual
+        wp.atomic_add(loss_out, 0, loss_val)
+
+
+def infer_spacing(xy_m: np.ndarray) -> float:
+    if len(xy_m) <= 1:
+        return 0.0
+    # Just take the first point and find the minimum distance to other points
+    diff = xy_m[1:] - xy_m[0]
+    dists = np.linalg.norm(diff, axis=1)
+    dists = dists[dists > 1e-6]
+    if len(dists) == 0:
+        return 0.0
+    return float(np.min(dists))
+
+
+def _prepare_neighbors_and_spacing(xy_m: np.ndarray, device: str | wp.context.Device | None) -> tuple[wp.array, float]:
+    from .geometry import compute_grid_neighbors
+    h = infer_spacing(xy_m)
+    neighbors = compute_grid_neighbors(xy_m, h)
+    neighbors_wp = wp.array(neighbors, dtype=wp.int32, device=device)
+    return neighbors_wp, h
 
 
 def _as_vec2_array(xy_m: np.ndarray, device: str | wp.context.Device | None, requires_grad: bool) -> wp.array:
@@ -345,16 +532,11 @@ def evaluate_foundation(
     wp_velocity = wp.array(velocity, dtype=float, device=device)
     wp_xy = _as_vec2_array(xy_m, device, requires_grad=False)
     wp_params = wp.array(
-        [
-            material.stiffness_pa,
-            material.ogden_alpha,
-            material.lock_strain,
-            material.damping_pa_s,
-            material.damping_power,
-        ],
+        _material_to_array(material, include_state=True),
         dtype=float,
         device=device,
     )
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
     force_out = wp.zeros(1, dtype=float, device=device)
     wrench_out = wp.zeros(6, dtype=float, device=device)
     loss_out = wp.zeros(1, dtype=float, device=device)
@@ -369,6 +551,8 @@ def evaluate_foundation(
             float(thickness_m),
             wp_params,
             float(measured_force_n),
+            neighbors_wp,
+            h,
             force_out,
             wrench_out,
             loss_out,
@@ -414,16 +598,11 @@ def evaluate_foundation_lengths(
     wp_velocity = wp.array(velocity, dtype=float, device=device)
     wp_xy = _as_vec2_array(xy_m, device, requires_grad=False)
     wp_params = wp.array(
-        [
-            material.stiffness_pa,
-            material.ogden_alpha,
-            material.lock_strain,
-            material.damping_pa_s,
-            material.damping_power,
-        ],
+        _material_to_array(material, include_state=True),
         dtype=float,
         device=device,
     )
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
     force_out = wp.zeros(1, dtype=float, device=device)
     wrench_out = wp.zeros(6, dtype=float, device=device)
     wp.launch(
@@ -436,6 +615,8 @@ def evaluate_foundation_lengths(
             wp_xy,
             wp_cell_area,
             wp_params,
+            neighbors_wp,
+            h,
             force_out,
             wrench_out,
         ],
@@ -497,7 +678,6 @@ def evaluate_foundation_sdf(
         raise ValueError("slack_length_m and velocity_mps must match top_z_m shape")
     if np.any(slack <= 0.0):
         raise ValueError("slack_length_m values must be positive")
-
     wp.init()
     wp_top_z = wp.array(top_z, dtype=float, device=device)
     wp_slack = wp.array(slack, dtype=float, device=device)
@@ -508,17 +688,11 @@ def evaluate_foundation_sdf(
     wp_cell_area = wp.array(cell_array, dtype=float, device=device)
 
     wp_params = wp.array(
-        [
-            material.stiffness_pa,
-            material.ogden_alpha,
-            material.lock_strain,
-            material.damping_pa_s,
-            material.damping_power,
-        ],
+        _material_to_array(material, include_state=True),
         dtype=float,
         device=device,
     )
-
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
     force_out = wp.zeros(1, dtype=float, device=device)
     wrench_out = wp.zeros(6, dtype=float, device=device)
 
@@ -540,6 +714,8 @@ def evaluate_foundation_sdf(
             indenter_pos,
             indenter_quat,
             wp_params,
+            neighbors_wp,
+            h,
             force_out,
             wrench_out,
         ],
@@ -586,17 +762,12 @@ def foundation_lengths_loss_gradient(
     wp_velocity = wp.array(velocity, dtype=float, device=device)
     wp_xy = _as_vec2_array(xy_m, device, requires_grad=False)
     wp_params = wp.array(
-        [
-            material.stiffness_pa,
-            material.ogden_alpha,
-            material.lock_strain,
-            material.damping_pa_s,
-            material.damping_power,
-        ],
+        _material_to_array(material, include_state=True),
         dtype=float,
         device=device,
         requires_grad=True,
     )
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
     force_out = wp.zeros(1, dtype=float, device=device, requires_grad=True)
     wrench_out = wp.zeros(6, dtype=float, device=device, requires_grad=True)
     loss_out = wp.zeros(1, dtype=float, device=device, requires_grad=True)
@@ -612,6 +783,8 @@ def foundation_lengths_loss_gradient(
                 wp_xy,
                 wp_cell_area,
                 wp_params,
+                neighbors_wp,
+                h,
                 force_out,
                 wrench_out,
             ],
@@ -658,6 +831,7 @@ def foundation_lengths_batch_loss_gradient(
     batch: FoundationTrialBatch,
     *,
     material: FoundationMaterial,
+    loop_weight: float = 0.0,
     device: str | wp.context.Device | None = "cuda:0",
 ) -> FoundationTrialBatchResult:
     """Return weighted normalized loss and material gradient for one trial batch."""
@@ -687,9 +861,13 @@ def foundation_lengths_batch_loss_gradient(
         device=device,
         requires_grad=True,
     )
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
     force_out = wp.zeros(frame_count, dtype=float, device=device, requires_grad=True)
     loss_out = wp.zeros(1, dtype=float, device=device, requires_grad=True)
     force_scale = float(max(np.max(np.abs(measured)), 1.0))
+
+    total_steps = (int(material.state_warmup_cycles) + 1) * frame_count
+    state_history = wp.zeros((spring_count, total_steps), dtype=float, device=device, requires_grad=True)
 
     with wp.Tape() as tape:
         if material.state_warmup_cycles >= 0:
@@ -704,9 +882,12 @@ def foundation_lengths_batch_loss_gradient(
                     wp_xy,
                     wp_cell_area,
                     wp_params,
+                    neighbors_wp,
+                    h,
                     frame_count,
                     spring_count,
                     int(material.state_warmup_cycles),
+                    state_history,
                     force_out,
                 ],
                 device=device,
@@ -722,6 +903,8 @@ def foundation_lengths_batch_loss_gradient(
                     wp_xy,
                     wp_cell_area,
                     wp_params,
+                    neighbors_wp,
+                    h,
                     spring_count,
                     force_out,
                 ],
@@ -733,6 +916,33 @@ def foundation_lengths_batch_loss_gradient(
             inputs=[force_out, wp_measured, wp_weights, force_scale, loss_out],
             device=device,
         )
+
+        if loop_weight > 0.0:
+            try:
+                from numpy import trapezoid as np_trapezoid
+            except ImportError:
+                from numpy import trapz as np_trapezoid
+
+            measured_machine = measured + float(getattr(batch, "force_zero_n", 0.0))
+            displacement = np.asarray(batch.displacement_m, dtype=np.float64)
+            measured_loop = float(np_trapezoid(measured_machine, displacement))
+
+            wp_disp = wp.array(np.asarray(displacement, dtype=np.float32), dtype=float, device=device)
+            wp.launch(
+                _add_loop_loss_kernel,
+                dim=1,
+                inputs=[
+                    force_out,
+                    wp_disp,
+                    measured_loop,
+                    float(getattr(batch, "force_zero_n", 0.0)),
+                    float(loop_weight),
+                    loss_out,
+                    int(frame_count),
+                ],
+                device=device,
+            )
+
     tape.backward(loss=loss_out)
     return FoundationTrialBatchResult(
         trial=batch.name,
@@ -773,9 +983,12 @@ def evaluate_foundation_lengths_batch(
         dtype=float,
         device=device,
     )
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
     force_out = wp.zeros(frame_count, dtype=float, device=device)
     loss_out = wp.zeros(1, dtype=float, device=device)
     if material.state_warmup_cycles >= 0:
+        total_steps = (int(material.state_warmup_cycles) + 1) * frame_count
+        state_history = wp.zeros((spring_count, total_steps), dtype=float, device=device)
         wp.launch(
             _foundation_lengths_stateful_batch_kernel,
             dim=spring_count,
@@ -787,9 +1000,12 @@ def evaluate_foundation_lengths_batch(
                 wp_xy,
                 wp_cell_area,
                 wp_params,
+                neighbors_wp,
+                h,
                 frame_count,
                 spring_count,
                 int(material.state_warmup_cycles),
+                state_history,
                 force_out,
             ],
             device=device,
@@ -805,6 +1021,8 @@ def evaluate_foundation_lengths_batch(
                 wp_xy,
                 wp_cell_area,
                 wp_params,
+                neighbors_wp,
+                h,
                 spring_count,
                 force_out,
             ],
@@ -820,44 +1038,46 @@ def evaluate_foundation_lengths_batch(
         trial=batch.name,
         predicted_force_n=force_out.numpy().astype(np.float64),
         loss=float(loss_out.numpy()[0]),
-        gradient=np.zeros(7, dtype=np.float64),
+        gradient=np.zeros(8, dtype=np.float64),
     )
 
 
 def _material_to_array(material: FoundationMaterial, include_state: bool = False) -> np.ndarray:
-    values = [
-        material.stiffness_pa,
-        material.ogden_alpha,
-        material.lock_strain,
-        material.damping_pa_s,
-        material.damping_power,
-    ]
-    if include_state:
-        values += [material.state_beta, material.state_tau_s]
-    return np.asarray(values, dtype=np.float64)
+    return np.asarray(
+        [
+            material.stiffness_pa,
+            material.ogden_alpha,
+            material.lock_strain,
+            material.damping_pa_s,
+            material.damping_power,
+            material.prony_stiffness_pa,
+            material.prony_damping_pa_s,
+            material.shear_modulus_pa,
+        ],
+        dtype=np.float64,
+    )
 
 
 def _array_to_material(params: np.ndarray, base: FoundationMaterial | None = None) -> FoundationMaterial:
     per_cylinder_area = False if base is None else base.per_cylinder_area
     state_warmup_cycles = 0 if base is None else base.state_warmup_cycles
 
-    if len(params) >= 7:
-        state_beta = float(np.clip(params[5], 0.0, 1.0))
-        state_tau_s = float(max(params[6], 1e-6))
-    else:
-        state_beta = 0.0 if base is None else base.state_beta
-        state_tau_s = 0.05 if base is None else base.state_tau_s
+    stiffness_pa = float(max(params[0], 1.0))
+    prony_stiffness_pa = float(np.clip(params[5], 0.0, stiffness_pa))
+    prony_damping_pa_s = float(max(params[6], 0.0))
+    shear_modulus_pa = float(max(params[7], 0.0))
 
     return FoundationMaterial(
-        stiffness_pa=float(max(params[0], 1.0)),
+        stiffness_pa=stiffness_pa,
         ogden_alpha=float(max(params[1], 1.0e-3)),
         lock_strain=float(np.clip(params[2], 1.0e-3, 0.999)),
         damping_pa_s=float(max(params[3], 0.0)),
         damping_power=float(max(params[4], 0.0)),
         per_cylinder_area=per_cylinder_area,
-        state_beta=state_beta,
-        state_tau_s=state_tau_s,
+        prony_stiffness_pa=prony_stiffness_pa,
+        prony_damping_pa_s=prony_damping_pa_s,
         state_warmup_cycles=state_warmup_cycles,
+        shear_modulus_pa=shear_modulus_pa,
     )
 
 
@@ -884,9 +1104,9 @@ def fit_foundation_material_autodiff(
     if not samples:
         raise ValueError("At least one fit sample is required")
     params = _material_to_array(initial_material)
-    rates = np.asarray(learning_rates, dtype=np.float64)
-    if rates.shape != (5,):
-        raise ValueError("learning_rates must have five entries")
+    rates = np.zeros(8, dtype=np.float64)
+    rates[:5] = learning_rates
+    rates[7] = 5.0e-2
 
     history: list[dict[str, float]] = []
     best_loss = float("inf")
@@ -894,7 +1114,7 @@ def fit_foundation_material_autodiff(
     for iteration in range(iterations):
         material = _array_to_material(params, initial_material)
         loss_sum = 0.0
-        grad_sum = np.zeros(5, dtype=np.float64)
+        grad_sum = np.zeros(8, dtype=np.float64)
         force_sum = 0.0
         weight_sum = 0.0
         for sample in samples:
@@ -932,11 +1152,15 @@ def fit_foundation_material_autodiff(
                 "lock_strain": float(material.lock_strain),
                 "damping_pa_s": float(material.damping_pa_s),
                 "damping_power": float(material.damping_power),
-                "state_beta": float(material.state_beta),
-                "state_tau_s": float(material.state_tau_s),
+                "prony_stiffness_pa": float(material.prony_stiffness_pa),
+                "prony_damping_pa_s": float(material.prony_damping_pa_s),
                 "state_warmup_cycles": float(material.state_warmup_cycles),
+                "shear_modulus_pa": float(material.shear_modulus_pa),
                 "grad_stiffness_pa": float(mean_grad[0]),
                 "grad_damping_pa_s": float(mean_grad[3]),
+                "grad_prony_stiffness_pa": float(mean_grad[5]),
+                "grad_prony_damping_pa_s": float(mean_grad[6]),
+                "grad_shear_modulus_pa": float(mean_grad[7]),
             }
         )
         safe_grad = np.where(rates != 0.0, np.nan_to_num(mean_grad, nan=0.0, posinf=0.0, neginf=0.0), 0.0)
@@ -954,9 +1178,10 @@ def fit_foundation_material_autodiff(
         damping_pa_s=material.damping_pa_s,
         damping_power=material.damping_power,
         per_cylinder_area=per_cylinder_area,
-        state_beta=material.state_beta,
-        state_tau_s=material.state_tau_s,
+        prony_stiffness_pa=material.prony_stiffness_pa,
+        prony_damping_pa_s=material.prony_damping_pa_s,
         state_warmup_cycles=material.state_warmup_cycles,
+        shear_modulus_pa=material.shear_modulus_pa,
     )
     return FoundationFitResult(material=result_material, history=tuple(history))
 
@@ -977,6 +1202,7 @@ def fit_foundation_material_batches_autodiff(
         1.0e-2,
     ),
     per_cylinder_area: bool = True,
+    loop_weight: float = 0.0,
     device: str | wp.context.Device | None = "cuda:0",
 ) -> FoundationFitResult:
     """Fit shared material parameters from one GPU batch per trial."""
@@ -985,37 +1211,87 @@ def fit_foundation_material_batches_autodiff(
         raise ValueError("iterations must be positive")
     if not batches:
         raise ValueError("At least one trial batch is required")
+
+    from scipy.optimize import minimize
+
+    # Get initial parameters
     params = _material_to_array(initial_material, include_state=True)
-    rates = np.asarray(learning_rates, dtype=np.float64)
-    if rates.shape != (7,):
-        raise ValueError("learning_rates must have seven entries")
+
+    # If shear_modulus_pa is initialized to 0.0, but we have learning rates,
+    # initialize it to 500.0 so the log-space optimization can run and find positive values.
+    # We do this only if rates[7] (shear modulus rate) will be non-zero.
+    rates = np.zeros(8, dtype=np.float64)
+    rates[:7] = learning_rates
+    rates[7] = 1.0e-2
+
+    if rates[7] != 0.0 and params[7] == 0.0:
+        params[7] = 500.0
+
+    # Define physical bounds
+    bounds_phys = [
+        (1000.0, 1.0e7),    # stiffness_pa
+        (0.0001, 5.0),      # ogden_alpha
+        (0.1, 0.99),        # lock_strain
+        (1.0, 1.0e6),       # damping_pa_s
+        (0.01, 5.0),        # damping_power
+        (1.0, 1.0e7),       # prony_stiffness_pa
+        (1.0, 1.0e6),       # prony_damping_pa_s
+        (0.1, 1.0e5),       # shear_modulus_pa
+    ]
+
+    # For any parameter with rates[i] == 0, lock it at its initial value
+    for i in range(8):
+        if rates[i] == 0.0:
+            val = float(params[i])
+            bounds_phys[i] = (val, val)
+
+    # Convert to safe log-space coordinates
+    x0_safe = np.maximum(params, 1.0e-5)
+    y0 = np.log(x0_safe)
+
+    bounds_log = []
+    for i, (low, high) in enumerate(bounds_phys):
+        if low == 0.0 and high == 0.0:
+            bounds_log.append((0.0, 0.0))
+        else:
+            low_log = np.log(max(low, 1.0e-5))
+            high_log = np.log(max(high, 1.0e-5))
+            bounds_log.append((low_log, high_log))
 
     history: list[dict[str, float]] = []
-    best_loss = float("inf")
-    best_params = params.copy()
-    for iteration in range(iterations):
-        material = _array_to_material(params, initial_material)
+
+    def loss_and_grad(y):
+        x = np.exp(y)
+        for i, (low, high) in enumerate(bounds_phys):
+            if low == 0.0 and high == 0.0:
+                x[i] = 0.0
+
+        material = _array_to_material(x, initial_material)
         loss_sum = 0.0
-        grad_sum = np.zeros(7, dtype=np.float64)
+        grad_sum_x = np.zeros(8, dtype=np.float64)
         force_sum = 0.0
         frame_sum = 0
+
         for batch in batches:
-            result = foundation_lengths_batch_loss_gradient(xy_m, batch, material=material, device=device)
+            result = foundation_lengths_batch_loss_gradient(xy_m, batch, material=material, loop_weight=loop_weight, device=device)
             loss_sum += result.loss
-            grad_sum += result.gradient
+            grad_sum_x += result.gradient
             force_sum += float(np.sum(result.predicted_force_n))
             frame_sum += len(result.predicted_force_n)
 
         scale = float(len(batches))
         mean_loss = loss_sum / scale
-        mean_grad = grad_sum / scale
+        mean_grad_x = grad_sum_x / scale
+        mean_grad_y = mean_grad_x * x
+
+        for i, (low, high) in enumerate(bounds_phys):
+            if low == 0.0 and high == 0.0:
+                mean_grad_y[i] = 0.0
+
         mean_force = force_sum / max(frame_sum, 1)
-        if mean_loss < best_loss:
-            best_loss = mean_loss
-            best_params = params.copy()
         history.append(
             {
-                "iteration": float(iteration),
+                "iteration": float(len(history)),
                 "loss": float(mean_loss),
                 "mean_force_n": float(mean_force),
                 "stiffness_pa": float(material.stiffness_pa),
@@ -1023,36 +1299,48 @@ def fit_foundation_material_batches_autodiff(
                 "lock_strain": float(material.lock_strain),
                 "damping_pa_s": float(material.damping_pa_s),
                 "damping_power": float(material.damping_power),
-                "state_beta": float(material.state_beta),
-                "state_tau_s": float(material.state_tau_s),
+                "prony_stiffness_pa": float(material.prony_stiffness_pa),
+                "prony_damping_pa_s": float(material.prony_damping_pa_s),
                 "state_warmup_cycles": float(material.state_warmup_cycles),
-                "grad_stiffness_pa": float(mean_grad[0]),
-                "grad_ogden_alpha": float(mean_grad[1]),
-                "grad_lock_strain": float(mean_grad[2]),
-                "grad_damping_pa_s": float(mean_grad[3]),
-                "grad_damping_power": float(mean_grad[4]),
-                "grad_state_beta": float(mean_grad[5]),
-                "grad_state_tau_s": float(mean_grad[6]),
+                "shear_modulus_pa": float(material.shear_modulus_pa),
+                "grad_stiffness_pa": float(mean_grad_x[0]),
+                "grad_ogden_alpha": float(mean_grad_x[1]),
+                "grad_lock_strain": float(mean_grad_x[2]),
+                "grad_damping_pa_s": float(mean_grad_x[3]),
+                "grad_damping_power": float(mean_grad_x[4]),
+                "grad_prony_stiffness_pa": float(mean_grad_x[5]),
+                "grad_prony_damping_pa_s": float(mean_grad_x[6]),
+                "grad_shear_modulus_pa": float(mean_grad_x[7]),
             }
         )
-        safe_grad = np.where(rates != 0.0, np.nan_to_num(mean_grad, nan=0.0, posinf=0.0, neginf=0.0), 0.0)
-        log_step = rates * safe_grad * np.maximum(np.abs(params), 1.0) / max(mean_loss, 1.0e-12)
-        log_step = np.clip(log_step, -0.25, 0.25)
-        active = rates != 0.0
-        params[active] = params[active] * np.exp(-log_step[active])
-        params = _material_to_array(_array_to_material(params, initial_material), include_state=True)
+        return mean_loss, mean_grad_y
 
-    material = _array_to_material(best_params, initial_material)
+    opt_res = minimize(
+        loss_and_grad,
+        y0,
+        method="L-BFGS-B",
+        jac=True,
+        bounds=bounds_log,
+        options={"maxiter": iterations},
+    )
+
+    best_x = np.exp(opt_res.x)
+    for i, (low, high) in enumerate(bounds_phys):
+        if low == 0.0 and high == 0.0:
+            best_x[i] = 0.0
+
+    best_material = _array_to_material(best_x, initial_material)
     result_material = FoundationMaterial(
-        stiffness_pa=material.stiffness_pa,
-        ogden_alpha=material.ogden_alpha,
-        lock_strain=material.lock_strain,
-        damping_pa_s=material.damping_pa_s,
-        damping_power=material.damping_power,
+        stiffness_pa=best_material.stiffness_pa,
+        ogden_alpha=best_material.ogden_alpha,
+        lock_strain=best_material.lock_strain,
+        damping_pa_s=best_material.damping_pa_s,
+        damping_power=best_material.damping_power,
         per_cylinder_area=per_cylinder_area,
-        state_beta=material.state_beta,
-        state_tau_s=material.state_tau_s,
-        state_warmup_cycles=material.state_warmup_cycles,
+        prony_stiffness_pa=best_material.prony_stiffness_pa,
+        prony_damping_pa_s=best_material.prony_damping_pa_s,
+        state_warmup_cycles=best_material.state_warmup_cycles,
+        shear_modulus_pa=best_material.shear_modulus_pa,
     )
     return FoundationFitResult(material=result_material, history=tuple(history))
 
@@ -1125,17 +1413,12 @@ def warp_loss_gradient(
     wp_velocity = wp.array(velocity, dtype=float, device=device)
     wp_xy = _as_vec2_array(xy_m, device, requires_grad=False)
     wp_params = wp.array(
-        [
-            material.stiffness_pa,
-            material.ogden_alpha,
-            material.lock_strain,
-            material.damping_pa_s,
-            material.damping_power,
-        ],
+        _material_to_array(material, include_state=True),
         dtype=float,
         device=device,
         requires_grad=True,
     )
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
     force_out = wp.zeros(1, dtype=float, device=device, requires_grad=True)
     wrench_out = wp.zeros(6, dtype=float, device=device, requires_grad=True)
     loss_out = wp.zeros(1, dtype=float, device=device, requires_grad=True)
@@ -1152,6 +1435,8 @@ def warp_loss_gradient(
                 float(thickness_m),
                 wp_params,
                 float(measured_force_n),
+                neighbors_wp,
+                h,
                 force_out,
                 wrench_out,
                 loss_out,

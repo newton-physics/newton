@@ -25,19 +25,20 @@
     "initial_lock_strain": 0.8,
     "initial_damping_pa_s": 10000.0,
     "initial_damping_power": 1.0,
-    "state_beta": 0.12,
-    "state_tau_s": 0.04,
+    "initial_prony_stiffness_pa": 18000.0,
+    "initial_prony_damping_pa_s": 720.0,
+    "initial_shear_modulus_pa": 500.0,
     "state_warmup_cycles": 5,
     "nominal_midsole_thickness_m": 0.069,
     "low_force_limit_n": 20.0,
     "phase_weights": {
-      "baseline_pre": 0.15,
-      "loading": 2.25,
+      "baseline_pre": 1.0,
+      "loading": 1.0,
       "peak": 1.0,
-      "unloading": 1.5,
-      "baseline_post": 0.15
+      "unloading": 1.0,
+      "baseline_post": 1.0
     },
-    "displacement_shape_weight": 0.45,
+    "displacement_shape_weight": 0.0,
     "displacement_shape_bins": 14
   },
   "trials": [
@@ -66,7 +67,7 @@
         "path": "Instron Shoe Last Size 9 6drop merged attachment 1.STL",
         "rotation_deg": [0.0, 0.0, 0.0],
         "contact_percentile": 45.0,
-        "height_offset_m": 0.006
+        "height_offset_m": 0.004
       }
     }
   ]

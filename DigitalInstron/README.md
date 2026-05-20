@@ -8,22 +8,40 @@ wrapper are intentionally not the contract for this workflow.
 
 - Trial setup lives in `manifest_v2.json`.
 - Reusable code lives under `projects/digital_instron_v2`.
-- The first runnable surface is a script/notebook workflow:
+- The first runnable surface is a script/notebook workflow.
 
+**macOS/Linux:**
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step qc
 ```
 
+**Windows (PowerShell):**
+```powershell
+$env:UV_CACHE_DIR="$env:TEMP/uv-cache"; $env:WARP_CACHE_PATH="$env:TEMP/warp-cache"; uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step qc
+```
+
 After QC writes frame configs, run the first force-model smoke:
 
+**macOS/Linux:**
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-smoke
 ```
 
+**Windows (PowerShell):**
+```powershell
+$env:UV_CACHE_DIR="$env:TEMP/uv-cache"; $env:WARP_CACHE_PATH="$env:TEMP/warp-cache"; uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-smoke
+```
+
 Run the first autodiff material fit:
 
+**macOS/Linux:**
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-autodiff --autodiff-iterations 25 --autodiff-sample-count 8
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:UV_CACHE_DIR="$env:TEMP/uv-cache"; $env:WARP_CACHE_PATH="$env:TEMP/warp-cache"; uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-autodiff --autodiff-iterations 25 --autodiff-sample-count 8
 ```
 
 This writes:
@@ -38,8 +56,14 @@ paths to the measured-vs-predicted hysteresis replay outputs.
 
 To inspect orientation, ray casting, and the current 1D spring response:
 
+**macOS/Linux:**
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step visualize
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:UV_CACHE_DIR="$env:TEMP/uv-cache"; $env:WARP_CACHE_PATH="$env:TEMP/warp-cache"; uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step visualize
 ```
 
 That writes:
