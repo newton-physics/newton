@@ -220,6 +220,9 @@ def eval_single_articulation_fk(
 
         # compute transform across the joint
         type = joint_type[i]
+        if type == JointType.CABLE:
+            # CABLE joints are skipped by generic forward kinematics.
+            continue
 
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
@@ -461,6 +464,12 @@ def eval_fk(
 
     The written :attr:`State.body_qd` values use Newton's public body-twist
     convention ``(v_com_world, omega_world)``.
+
+    .. note::
+
+        :attr:`~newton.JointType.CABLE` body transforms are not changed by
+        :func:`newton.eval_fk`; they are advanced directly by
+        :class:`newton.solvers.SolverVBD`.
 
     Args:
         model: The model to evaluate.
