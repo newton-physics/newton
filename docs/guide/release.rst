@@ -33,11 +33,14 @@ Dependency versioning strategy
 versions for reproducible installs.
 
 Exception: on the **release branch**, ``mujoco`` and ``mujoco-warp`` use
-**compatible-release** pins (e.g. ``mujoco~=3.5.0``) to allow micro
-updates while locking the minor version.  MuJoCo follows
-`semantic versioning from 3.5.0 onward <https://github.com/google-deepmind/mujoco/blob/main/VERSIONING.md#from-350--semantic-versioning>`__,
-so micro releases are safe to pick up automatically.  ``main`` uses a
-version floor like other dependencies.
+**compatible-release** pins (e.g. ``mujoco~=3.5.0``) to allow ``3.5.x``
+updates while excluding ``3.6.0`` and later.  MuJoCo follows `custom
+versioning from 3.5.0 onward`_; its third component is ``MINOR_OR_PATCH``
+and guarantees API backward compatibility.  ``main`` uses a version floor
+like other dependencies.
+
+.. _custom versioning from 3.5.0 onward:
+   https://github.com/google-deepmind/mujoco/blob/main/VERSIONING.md#from-350--semantic-versioning
 
 
 Deprecation and removal timeline
@@ -265,10 +268,10 @@ Post-release
      - Verify published docs render correctly.
 
 
-Patch releases
+Micro releases
 --------------
 
-Patch releases continue cherry-picking fixes to the existing
+Micro releases continue cherry-picking fixes to the existing
 ``release-X.Y`` branch.  For example, ``1.0.1`` follows ``1.0.0``.
 Follow the same :ref:`final-release` flow — bump version, update changelog,
 tag, and push.  There is no need to create a new branch or bump ``main``.
