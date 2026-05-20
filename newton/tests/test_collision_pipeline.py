@@ -10,6 +10,8 @@ import warp.examples
 
 import newton
 from newton import GeoType
+from newton._src.geometry import create_mesh_terrain
+from newton._src.geometry.flags import ShapeFlags
 from newton._src.sim.collide import _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
 from newton.examples import test_body_state
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
@@ -870,8 +872,6 @@ class TestShapePairsMaxScaling(unittest.TestCase):
     @staticmethod
     def _make_model(num_worlds, shapes_per_world, num_global=0, shape_flags_value=None):
         """Build a minimal Model with the given world/shape layout."""
-        from newton._src.geometry.flags import ShapeFlags  # noqa: PLC0415
-
         total = num_worlds * shapes_per_world + num_global
         world_ids = np.repeat(np.arange(num_worlds, dtype=np.int32), shapes_per_world)
         if num_global > 0:
@@ -1107,10 +1107,51 @@ class TestDeterministicPipeline(unittest.TestCase):
     pass
 
 
+class TestMeshConvexMidphase(unittest.TestCase):
+    """Test mesh-vs-convex triangle candidate generation."""
+
+    pass
+
+
+def test_mesh_convex_midphase_queries_margin_shell(test, device):
+    margin = 0.02
+    gap = 0.005
+    radius = 0.1
+    surface_separation = 0.03
+
+    cfg = newton.ModelBuilder.ShapeConfig(margin=margin, gap=gap)
+    builder = newton.ModelBuilder()
+
+    vertices = np.array(
+        [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh(vertices, indices), cfg=cfg)
+
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius + surface_separation), wp.quat_identity()))
+    builder.add_joint_free(child=body)
+    builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(contact_count, 0)
+
+
 def _build_deterministic_scene(device):
     """Build the mixed-shape scene from example_basic_shapes6_determinism."""
-    from newton._src.geometry import create_mesh_terrain  # noqa: PLC0415
-
     builder = newton.ModelBuilder()
 
     # Procedural mesh terrain ground
@@ -1503,6 +1544,14 @@ add_function_test(
     TestDeterministicPipeline,
     "test_deterministic_pipeline_sticky_500_steps",
     test_deterministic_pipeline_sticky_500_steps,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_mesh_convex_midphase_queries_margin_shell",
+    test_mesh_convex_midphase_queries_margin_shell,
     devices=get_cuda_test_devices(),
     check_output=False,
 )

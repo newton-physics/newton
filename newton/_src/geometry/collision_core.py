@@ -932,7 +932,7 @@ def mesh_vs_convex_midphase(
     shape_type: wp.array[int],
     shape_data: wp.array[wp.vec4],
     shape_source_ptr: wp.array[wp.uint64],
-    rigid_gap: float,
+    contact_threshold: float,
     triangle_pairs: wp.array[wp.vec3i],
     triangle_pairs_count: wp.array[int],
 ):
@@ -952,7 +952,7 @@ def mesh_vs_convex_midphase(
         shape_type: Array of shape types
         shape_data: Array of shape data (vec4: scale.xyz, margin.w)
         shape_source_ptr: Array of mesh/SDF source pointers
-        rigid_gap: Contact gap for rigid bodies
+        contact_threshold: Contact candidate distance [m], including margin and gap
         triangle_pairs: Output array for triangle pairs (mesh_shape, non_mesh_shape, tri_index)
         triangle_pairs_count: Counter for triangle pairs
     """
@@ -990,20 +990,21 @@ def mesh_vs_convex_midphase(
 
     # The mesh's own BVH was built over the *unscaled* ``mesh.points``: the world
     # position of vertex v is ``X_mesh_ws * (mesh_scale ⊙ v)``. Therefore we must
-    # convert both the AABB and the contact gap from scaled mesh-local space to
-    # unscaled (BVH) space before querying. With non-uniform scale this is a
-    # per-axis division; the gap, isotropic in world space, becomes anisotropic.
+    # convert both the AABB and the contact threshold from scaled mesh-local
+    # space to unscaled (BVH) space before querying. With non-uniform scale
+    # this is a per-axis division; the threshold, isotropic in world space,
+    # becomes anisotropic.
     mesh_scale_vec4 = shape_data[mesh_shape]
     mesh_scale = wp.vec3(mesh_scale_vec4[0], mesh_scale_vec4[1], mesh_scale_vec4[2])
     aabb_lower_bvh, aabb_upper_bvh = aabb_to_unscaled(aabb_lower, aabb_upper, mesh_scale)
 
-    # Per-axis margin in BVH (unscaled) units. ``rigid_gap`` is a world-space
-    # distance; in unscaled mesh-local space that is ``rigid_gap / |mesh_scale_i|``
+    # Per-axis margin in BVH (unscaled) units. ``contact_threshold`` is a world-space
+    # distance; in unscaled mesh-local space that is ``contact_threshold / |mesh_scale_i|``
     # along each axis.
     margin_vec = wp.vec3(
-        rigid_gap / wp.max(wp.abs(mesh_scale[0]), 1.0e-12),
-        rigid_gap / wp.max(wp.abs(mesh_scale[1]), 1.0e-12),
-        rigid_gap / wp.max(wp.abs(mesh_scale[2]), 1.0e-12),
+        contact_threshold / wp.max(wp.abs(mesh_scale[0]), 1.0e-12),
+        contact_threshold / wp.max(wp.abs(mesh_scale[1]), 1.0e-12),
+        contact_threshold / wp.max(wp.abs(mesh_scale[2]), 1.0e-12),
     )
     aabb_lower = aabb_lower_bvh - margin_vec
     aabb_upper = aabb_upper_bvh + margin_vec

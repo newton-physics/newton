@@ -867,12 +867,16 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
         # Get non-mesh shape world transform
         X_ws = shape_transform[non_mesh_shape]
 
-        # Use per-shape contact gaps for consistent pairwise thresholding.
+        # Use the same margin+gap shell for triangle candidates that the
+        # narrow phase uses when accepting contacts.
         gap_non_mesh = shape_gap[non_mesh_shape]
         gap_mesh = shape_gap[mesh_shape]
         gap_sum = gap_non_mesh + gap_mesh
+        margin_non_mesh = shape_data[non_mesh_shape][3]
+        margin_mesh = shape_data[mesh_shape][3]
+        contact_threshold = gap_sum + margin_non_mesh + margin_mesh
 
-        # Call mesh_vs_convex_midphase with the shape_data and pair gap sum.
+        # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
         mesh_vs_convex_midphase(
             j,
             mesh_shape,
@@ -883,7 +887,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
             shape_types,
             shape_data,
             shape_source,
-            gap_sum,
+            contact_threshold,
             triangle_pairs,
             triangle_pairs_count,
         )
