@@ -759,6 +759,12 @@ add_example_test(
     test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5},
     use_viewer=True,
 )
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_foot_shoe_contact",
+    devices=test_devices,
+    use_viewer=True,
+)
 
 
 class TestMultiphysicsExamples(unittest.TestCase):
