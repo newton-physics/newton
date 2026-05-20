@@ -14,15 +14,20 @@ to serve as foundational examples for testing and demonstration purposes,
 and each features a certain subset of ill-conditioned dynamics.
 """
 
+import logging
 import math
 
 import warp as wp
+
+from newton._src.utils.diagnostics import log_verbose
 
 from ...core import ModelBuilderKamino, inertia
 from ...core.joints import JointActuationType, JointDoFType
 from ...core.math import FLOAT32_MAX, FLOAT32_MIN, I_3
 from ...core.shapes import BoxShape, SphereShape
 from ...core.types import Axis, transformf, vec3f, vec6f
+
+_logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -978,10 +983,10 @@ def build_boxes_fourbar(
     i_I_i_3 = inertia.solid_cuboid_body_moment_of_inertia(m_i, d_3, w_3, h_3)
     i_I_i_4 = inertia.solid_cuboid_body_moment_of_inertia(m_i, d_4, w_4, h_4)
     if verbose:
-        print(f"i_I_i_1:\n{i_I_i_1}")
-        print(f"i_I_i_2:\n{i_I_i_2}")
-        print(f"i_I_i_3:\n{i_I_i_3}")
-        print(f"i_I_i_4:\n{i_I_i_4}")
+        log_verbose(_logger, f"i_I_i_1:\n{i_I_i_1}")
+        log_verbose(_logger, f"i_I_i_2:\n{i_I_i_2}")
+        log_verbose(_logger, f"i_I_i_3:\n{i_I_i_3}")
+        log_verbose(_logger, f"i_I_i_4:\n{i_I_i_4}")
 
     # Initial body positions
     r_0 = vec3f(0.0, 0.0, z_0)
@@ -996,10 +1001,10 @@ def build_boxes_fourbar(
     r_b3 = r_b1 + dr_b3
     r_b4 = r_b1 + dr_b4
     if verbose:
-        print(f"r_b1: {r_b1}")
-        print(f"r_b2: {r_b2}")
-        print(f"r_b3: {r_b3}")
-        print(f"r_b4: {r_b4}")
+        log_verbose(_logger, f"r_b1: {r_b1}")
+        log_verbose(_logger, f"r_b2: {r_b2}")
+        log_verbose(_logger, f"r_b3: {r_b3}")
+        log_verbose(_logger, f"r_b4: {r_b4}")
 
     # Initial body poses
     q_i_1 = transformf(r_b1, wp.quat_identity())
@@ -1013,10 +1018,10 @@ def build_boxes_fourbar(
     r_j3 = vec3f(r_b4.x, 0.0, r_b3.z)
     r_j4 = vec3f(r_b4.x, 0.0, r_b1.z)
     if verbose:
-        print(f"r_j1: {r_j1}")
-        print(f"r_j2: {r_j2}")
-        print(f"r_j3: {r_j3}")
-        print(f"r_j4: {r_j4}")
+        log_verbose(_logger, f"r_j1: {r_j1}")
+        log_verbose(_logger, f"r_j2: {r_j2}")
+        log_verbose(_logger, f"r_j3: {r_j3}")
+        log_verbose(_logger, f"r_j4: {r_j4}")
 
     # Joint axes matrix
     X_j = Axis.Y.to_mat33()

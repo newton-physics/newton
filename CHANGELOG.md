@@ -5,16 +5,23 @@
 ### Added
 
 - Add opt-in `validate_mesh` parameter to `ModelBuilder.add_cloth_mesh()`, `ModelBuilder.add_soft_mesh()`, and `style3d.add_cloth_mesh()` that warns on degenerate geometry; add public `newton.utils.validate_triangle_mesh()` and `newton.utils.validate_tet_mesh()` utilities
+- Add public `NewtonWarning`, `NewtonDeprecationWarning`, and `NewtonGeometryWarning` categories for filtering Newton warnings.
 - Add `ViewerGL.show_loading_splash()` / `ViewerGL.hide_loading_splash()` displaying a stylized Newton's-cradle overlay while the GL viewer waits on Warp kernel compilation; raised automatically by `newton.examples.init()` for visible GL viewers
 
 ### Changed
 
+- Route `newton` and Warp `INFO` diagnostics from Newton example entry points through stdlib logging to stdout by default, with `WARNING` and higher records on stderr. Configure `logging.getLogger("newton")` or `logging.getLogger("warp")` to route or suppress these records; `--quiet` still suppresses Warp informational output.
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
 - Require Warp 1.14 and configure Warp logging through `warp.config.log_level`; use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy `verbose` or `quiet` config keys
+
+### Deprecated
+
+- Deprecate warning-style diagnostics written directly to stdout in favor of future stdlib logging; legacy verbose stdout fallback emits a one-time `NewtonDeprecationWarning`. Configure `logging.getLogger("newton")` at `INFO` level with a handler to route or suppress diagnostics as these messages move fully to logging in a future release.
 
 ### Fixed
 
 - Fix MJCF `xyaxes` parsing to treat the second vector as Y and derive Z from X cross Y.
+- Fix Newton example and test entry points to install default stdlib logging handlers and route Python warnings through logging.
 - Fix `SolverMuJoCo` returning `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_qd`.
 - Fix `basic_conveyor` example emitting a spurious inertia validation warning at finalize.
 
