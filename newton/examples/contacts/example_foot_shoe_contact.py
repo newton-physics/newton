@@ -126,6 +126,8 @@ class Example:
 
         self.neighbors = compute_grid_neighbors(self.spring_grid.grid_uv_m, self.spring_grid.spacing_m)
         self.max_display_pressure_kpa = 800.0
+        self.min_bottom_m = np.min(self.spring_grid.bottom_m)
+        self.start_z = -self.min_bottom_m + 0.005
 
         # 2. Load and mirror/align the foot model
         foot_v, foot_f = _load_obj_mesh(Path(args.foot_mesh))
@@ -167,14 +169,26 @@ class Example:
             z_offsets = self.spring_grid.top_m[valid] - z_foot_sole[valid]
             Z_offset = np.max(z_offsets)
             foot_v_transformed[:, 2] += Z_offset
+            z_foot_sole[valid] += Z_offset
+
+        self.foot_sole_z_m = z_foot_sole
+        self.foot_contact_valid = np.isfinite(self.foot_sole_z_m)
+
+        # Physical parameters for dynamic simulation
+        self.mass = 80.0  # kg
+        self.gravity = -9.81  # m/s^2
 
         # 3. Create Model
         builder = newton.ModelBuilder()
+        builder.gravity = 0.0
         builder.add_ground_plane()
 
         # Add foot body (we will set dynamic properties but disable standard rigid collision)
         self.foot_body_id = builder.add_body(
-            xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
+            xform=wp.transform(p=wp.vec3(0.0, 0.0, self.start_z), q=wp.quat_identity()),
+            mass=self.mass,
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            lock_inertia=True,
         )
 
         foot_mesh = newton.Mesh(foot_v_transformed, foot_f_transformed.reshape(-1))
@@ -195,18 +209,13 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.contacts()
+        self.solver = newton.solvers.SolverXPBD(self.model, iterations=1)
 
         self.device = self.model.device
 
         # Start height where the bottom of the midsole is 5 mm above the ground
-        self.min_bottom_m = np.min(self.spring_grid.bottom_m)
-        self.start_z = -self.min_bottom_m + 0.005
         self.current_z = self.start_z
         self.current_vz = 0.0
-
-        # Physical parameters for dynamic simulation
-        self.mass = 80.0  # kg
-        self.gravity = -9.81  # m/s^2
 
         # Initialize body position in state
         body_q = self.state_0.body_q.numpy()
@@ -220,6 +229,10 @@ class Example:
         self.history_force = []
         self.peak_compression_m = np.zeros_like(self.spring_grid.slack_length_m)
         self.peak_pressure_kpa = np.zeros_like(self.spring_grid.slack_length_m)
+        self.peak_foot_top_displacement_m = np.zeros_like(self.spring_grid.slack_length_m)
+        self.peak_foot_top_pressure_kpa = np.zeros_like(self.spring_grid.slack_length_m)
+        self.peak_ground_bottom_displacement_m = np.zeros_like(self.spring_grid.slack_length_m)
+        self.peak_ground_bottom_pressure_kpa = np.zeros_like(self.spring_grid.slack_length_m)
 
         # Setup viewer
         self.viewer.set_model(self.model)
@@ -232,6 +245,48 @@ class Example:
         self.point_radius = max(float(self.spring_grid.spacing_m) * 0.22, 0.0008)
         self.contact_color = wp.vec3(0.05, 0.95, 0.52)
         self.max_display_compression = 0.02  # 20 mm
+
+    def _ground_bottom_displacement_m(self, body_z_m: float) -> np.ndarray:
+        compression = np.maximum(-(body_z_m + self.spring_grid.bottom_m), 0.0)
+        return np.minimum(compression, self.spring_grid.slack_length_m)
+
+    def _foot_top_displacement_m(self, body_z_m: float) -> np.ndarray:
+        displacement = np.zeros_like(self.spring_grid.slack_length_m)
+        if np.any(self.foot_contact_valid):
+            top_rest_world = self.start_z + self.spring_grid.top_m[self.foot_contact_valid]
+            foot_sole_world = body_z_m + self.foot_sole_z_m[self.foot_contact_valid]
+            displacement[self.foot_contact_valid] = np.maximum(top_rest_world - foot_sole_world, 0.0)
+        return np.minimum(displacement, self.spring_grid.slack_length_m)
+
+    def _lengths_and_velocities_from_displacement(
+        self,
+        displacement_m: np.ndarray,
+        vertical_velocity_mps: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        displacement = np.minimum(np.maximum(displacement_m, 0.0), self.spring_grid.slack_length_m)
+        current_lengths = np.maximum(self.spring_grid.slack_length_m - displacement, 0.0)
+        velocities = np.zeros_like(self.spring_grid.slack_length_m)
+        velocities[displacement > 1.0e-6] = vertical_velocity_mps
+        return current_lengths, velocities
+
+    def _pressure_kpa_from_displacement(
+        self,
+        displacement_m: np.ndarray,
+        vertical_velocity_mps: float,
+    ) -> np.ndarray:
+        current_lengths, velocities = self._lengths_and_velocities_from_displacement(
+            displacement_m,
+            vertical_velocity_mps,
+        )
+        pressures_pa = _compute_pressures(
+            current_lengths,
+            self.spring_grid.slack_length_m,
+            velocities,
+            self.material,
+            self.spring_grid.spacing_m,
+            self.neighbors,
+        )
+        return pressures_pa / 1000.0
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -266,15 +321,12 @@ class Example:
                 omega = 2.0 * np.pi * 1.0
                 ext_force = 1000.0 * max(np.sin(omega * self.sim_time * 0.5), 0.0)
 
-                # Compute spring reaction
-                z_bottom_world = foot_pos[2] + self.spring_grid.bottom_m
-                in_contact = z_bottom_world < 0.0
-
-                current_lengths = self.spring_grid.slack_length_m.copy()
-                current_lengths[in_contact] = foot_pos[2] + self.spring_grid.top_m[in_contact]
-
-                velocity_mps = np.zeros_like(self.spring_grid.slack_length_m)
-                velocity_mps[in_contact] = foot_vel[2]
+                # Compute ground-side spring reaction
+                ground_displacement = self._ground_bottom_displacement_m(foot_pos[2])
+                current_lengths, velocity_mps = self._lengths_and_velocities_from_displacement(
+                    ground_displacement,
+                    foot_vel[2],
+                )
 
                 res = evaluate_foundation_lengths(
                     self.spring_grid.grid_uv_m,
@@ -298,20 +350,21 @@ class Example:
 
                 self.state_0.body_f.assign(body_f)
 
-                # Step solver
                 self.viewer.apply_forces(self.state_0)
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=None)
-                pass
+                self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+                self.state_0, self.state_1 = self.state_1, self.state_0
+
+                body_q = self.state_0.body_q.numpy()
+                body_qd = self.state_0.body_qd.numpy()
+                foot_pos = body_q[self.foot_body_id, :3]
+                foot_vel = body_qd[self.foot_body_id, :3]
 
             # 3. Evaluate spring states for visualization and logging
-            z_bottom_world = foot_pos[2] + self.spring_grid.bottom_m
-            in_contact = z_bottom_world < 0.0
-
-            current_lengths = self.spring_grid.slack_length_m.copy()
-            current_lengths[in_contact] = foot_pos[2] + self.spring_grid.top_m[in_contact]
-
-            velocity_mps = np.zeros_like(self.spring_grid.slack_length_m)
-            velocity_mps[in_contact] = foot_vel[2]
+            ground_displacement = self._ground_bottom_displacement_m(foot_pos[2])
+            current_lengths, velocity_mps = self._lengths_and_velocities_from_displacement(
+                ground_displacement,
+                foot_vel[2],
+            )
 
             res = evaluate_foundation_lengths(
                 self.spring_grid.grid_uv_m,
@@ -329,20 +382,24 @@ class Example:
             if res.force_n > self.peak_force_n:
                 self.peak_force_n = res.force_n
 
-            # Track peak compression and pressure per cell
-            comp = np.maximum(self.spring_grid.slack_length_m - current_lengths, 0.0)
-            self.peak_compression_m = np.maximum(self.peak_compression_m, comp)
-
-            pressures_pa = _compute_pressures(
-                current_lengths,
-                self.spring_grid.slack_length_m,
-                velocity_mps,
-                self.material,
-                self.spring_grid.spacing_m,
-                self.neighbors,
+            # Track independent peak displacement and pressure on both sides of the midsole.
+            foot_top_displacement = self._foot_top_displacement_m(foot_pos[2])
+            ground_pressure_kpa = self._pressure_kpa_from_displacement(ground_displacement, foot_vel[2])
+            foot_pressure_kpa = self._pressure_kpa_from_displacement(foot_top_displacement, foot_vel[2])
+            self.peak_ground_bottom_displacement_m = np.maximum(
+                self.peak_ground_bottom_displacement_m,
+                ground_displacement,
             )
-            pressures_kpa = pressures_pa / 1000.0
-            self.peak_pressure_kpa = np.maximum(self.peak_pressure_kpa, pressures_kpa)
+            self.peak_ground_bottom_pressure_kpa = np.maximum(
+                self.peak_ground_bottom_pressure_kpa,
+                ground_pressure_kpa,
+            )
+            self.peak_foot_top_displacement_m = np.maximum(self.peak_foot_top_displacement_m, foot_top_displacement)
+            self.peak_foot_top_pressure_kpa = np.maximum(self.peak_foot_top_pressure_kpa, foot_pressure_kpa)
+
+            # Backward-compatible names for the original ground-side heatmap outputs.
+            self.peak_compression_m = self.peak_ground_bottom_displacement_m
+            self.peak_pressure_kpa = self.peak_ground_bottom_pressure_kpa
 
             self.history_z.append(foot_pos[2])
             self.history_force.append(res.force_n)
@@ -360,29 +417,10 @@ class Example:
         foot_vel = body_qd[self.foot_body_id, :3]
 
         z_bottom_world = foot_pos[2] + self.spring_grid.bottom_m
-        in_contact = z_bottom_world < 0.0
-
-        compression = np.maximum(
-            self.spring_grid.slack_length_m - (foot_pos[2] + self.spring_grid.top_m - np.maximum(z_bottom_world, 0.0)),
-            0.0,
-        )
-
-        current_lengths = self.spring_grid.slack_length_m.copy()
-        current_lengths[in_contact] = foot_pos[2] + self.spring_grid.top_m[in_contact]
-
-        velocity_mps = np.zeros_like(self.spring_grid.slack_length_m)
-        velocity_mps[in_contact] = foot_vel[2]
-
-        # Compute dynamic pressure map (kPa)
-        pressures_pa = _compute_pressures(
-            current_lengths,
-            self.spring_grid.slack_length_m,
-            velocity_mps,
-            self.material,
-            self.spring_grid.spacing_m,
-            self.neighbors,
-        )
-        pressures_kpa = pressures_pa / 1000.0
+        ground_displacement = self._ground_bottom_displacement_m(foot_pos[2])
+        foot_top_displacement = self._foot_top_displacement_m(foot_pos[2])
+        ground_pressures_kpa = self._pressure_kpa_from_displacement(ground_displacement, foot_vel[2])
+        foot_pressures_kpa = self._pressure_kpa_from_displacement(foot_top_displacement, foot_vel[2])
 
         # Deformed spring lines
         deformed_top_z = foot_pos[2] + self.spring_grid.top_m
@@ -395,24 +433,32 @@ class Example:
             (self.spring_grid.grid_uv_m[:, 0], self.spring_grid.grid_uv_m[:, 1], deformed_top_z)
         ).astype(np.float32)
 
-        colors = _colors_from_compression(compression, self.max_display_compression)
-        spring_colors = colors[compression > 1.0e-6]
+        colors = _colors_from_compression(ground_displacement, self.max_display_compression)
+        spring_colors = colors[ground_displacement > 1.0e-6]
         if len(spring_colors) == 0:
             spring_colors = colors[:1]
 
-        active_starts = spring_starts[compression > 1.0e-6]
-        active_ends = spring_ends[compression > 1.0e-6]
+        active_starts = spring_starts[ground_displacement > 1.0e-6]
+        active_ends = spring_ends[ground_displacement > 1.0e-6]
         if len(active_starts) == 0:
             active_starts = spring_starts[:1]
             active_ends = spring_ends[:1]
 
-        contact_points = spring_starts[compression > 1.0e-6]
-        active_pressures = pressures_kpa[compression > 1.0e-6]
-        if len(contact_points) == 0:
-            contact_points = spring_starts[:1]
-            contact_colors = np.full((1, 3), [0.0, 0.0, 0.5], dtype=np.float32)
+        ground_contact_points = spring_starts[ground_displacement > 1.0e-6]
+        active_ground_pressures = ground_pressures_kpa[ground_displacement > 1.0e-6]
+        if len(ground_contact_points) == 0:
+            ground_contact_points = spring_starts[:1]
+            ground_contact_colors = np.full((1, 3), [0.0, 0.0, 0.5], dtype=np.float32)
         else:
-            contact_colors = _colors_from_pressure(active_pressures, self.max_display_pressure_kpa)
+            ground_contact_colors = _colors_from_pressure(active_ground_pressures, self.max_display_pressure_kpa)
+
+        foot_top_points = spring_ends[foot_top_displacement > 1.0e-6]
+        active_foot_pressures = foot_pressures_kpa[foot_top_displacement > 1.0e-6]
+        if len(foot_top_points) == 0:
+            foot_top_points = spring_ends[:1]
+            foot_top_colors = np.full((1, 3), [0.0, 0.0, 0.5], dtype=np.float32)
+        else:
+            foot_top_colors = _colors_from_pressure(active_foot_pressures, self.max_display_pressure_kpa)
 
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
@@ -429,15 +475,29 @@ class Example:
             wp.array(spring_colors, dtype=wp.vec3),
         )
         self.viewer.log_points(
-            "/foot_shoe/contact_surface",
-            wp.array(contact_points, dtype=wp.vec3),
+            "/foot_shoe/ground_pressure_surface",
+            wp.array(ground_contact_points, dtype=wp.vec3),
             self.point_radius * 1.8,
-            wp.array(contact_colors, dtype=wp.vec3),
+            wp.array(ground_contact_colors, dtype=wp.vec3),
+        )
+        self.viewer.log_points(
+            "/foot_shoe/foot_pressure_surface",
+            wp.array(foot_top_points, dtype=wp.vec3),
+            self.point_radius * 1.8,
+            wp.array(foot_top_colors, dtype=wp.vec3),
         )
         self.viewer.log_array(
             "/foot_shoe/stats",
             np.asarray(
-                [self.sim_time, foot_pos[2], float(self.last_force_n), float(self.peak_force_n)], dtype=np.float32
+                [
+                    self.sim_time,
+                    foot_pos[2],
+                    float(self.last_force_n),
+                    float(self.peak_force_n),
+                    float(np.max(foot_top_displacement)),
+                    float(np.max(ground_displacement)),
+                ],
+                dtype=np.float32,
             ),
         )
         self.viewer.end_frame()
@@ -512,36 +572,60 @@ class Example:
         print(f"Hysteresis plot saved to {plot_path}")
         plt.close()
 
-        # Generate Peak Heatmaps
-        fig2, axs2 = plt.subplots(1, 2, figsize=(12, 5))
+        # Generate independent peak heatmaps for the foot-side top surface and ground-side bottom surface.
+        fig2, axs2 = plt.subplots(2, 2, figsize=(12, 10))
 
-        # Peak compression map (Inferno)
-        sc1 = axs2[0].scatter(
+        sc1 = axs2[0, 0].scatter(
             self.spring_grid.grid_uv_m[:, 0] * 1000.0,
             self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-            c=self.peak_compression_m * 1000.0,
+            c=self.peak_foot_top_displacement_m * 1000.0,
             s=18,
             cmap="inferno",
         )
-        axs2[0].set_title("Peak Spring Compression")
-        axs2[0].set_aspect("equal", adjustable="box")
-        axs2[0].set_xlabel("Width [mm]")
-        axs2[0].set_ylabel("Length [mm]")
-        fig2.colorbar(sc1, ax=axs2[0], label="Compression [mm]")
+        axs2[0, 0].set_title("Peak Top Displacement from Foot Mesh")
+        axs2[0, 0].set_aspect("equal", adjustable="box")
+        axs2[0, 0].set_xlabel("Width [mm]")
+        axs2[0, 0].set_ylabel("Length [mm]")
+        fig2.colorbar(sc1, ax=axs2[0, 0], label="Displacement [mm]")
 
-        # Peak pressure map (Jet)
-        sc2 = axs2[1].scatter(
+        sc2 = axs2[0, 1].scatter(
             self.spring_grid.grid_uv_m[:, 0] * 1000.0,
             self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-            c=self.peak_pressure_kpa,
+            c=self.peak_foot_top_pressure_kpa,
             s=18,
             cmap="jet",
         )
-        axs2[1].set_title("Peak Contact Pressure")
-        axs2[1].set_aspect("equal", adjustable="box")
-        axs2[1].set_xlabel("Width [mm]")
-        axs2[1].set_ylabel("Length [mm]")
-        fig2.colorbar(sc2, ax=axs2[1], label="Pressure [kPa]")
+        axs2[0, 1].set_title("Peak Top Pressure from Foot Mesh")
+        axs2[0, 1].set_aspect("equal", adjustable="box")
+        axs2[0, 1].set_xlabel("Width [mm]")
+        axs2[0, 1].set_ylabel("Length [mm]")
+        fig2.colorbar(sc2, ax=axs2[0, 1], label="Pressure [kPa]")
+
+        sc3 = axs2[1, 0].scatter(
+            self.spring_grid.grid_uv_m[:, 0] * 1000.0,
+            self.spring_grid.grid_uv_m[:, 1] * 1000.0,
+            c=self.peak_ground_bottom_displacement_m * 1000.0,
+            s=18,
+            cmap="inferno",
+        )
+        axs2[1, 0].set_title("Peak Bottom Displacement from Ground")
+        axs2[1, 0].set_aspect("equal", adjustable="box")
+        axs2[1, 0].set_xlabel("Width [mm]")
+        axs2[1, 0].set_ylabel("Length [mm]")
+        fig2.colorbar(sc3, ax=axs2[1, 0], label="Displacement [mm]")
+
+        sc4 = axs2[1, 1].scatter(
+            self.spring_grid.grid_uv_m[:, 0] * 1000.0,
+            self.spring_grid.grid_uv_m[:, 1] * 1000.0,
+            c=self.peak_ground_bottom_pressure_kpa,
+            s=18,
+            cmap="jet",
+        )
+        axs2[1, 1].set_title("Peak Bottom Pressure from Ground")
+        axs2[1, 1].set_aspect("equal", adjustable="box")
+        axs2[1, 1].set_xlabel("Width [mm]")
+        axs2[1, 1].set_ylabel("Length [mm]")
+        fig2.colorbar(sc4, ax=axs2[1, 1], label="Pressure [kPa]")
 
         plt.tight_layout()
         heatmap_path = "foot_shoe_peak_heatmap.png"
@@ -560,63 +644,91 @@ class Example:
             else:
                 indices = np.arange(n, dtype=np.int64)
 
-            fig_anim, axs_anim = plt.subplots(1, 2, figsize=(12, 5))
+            fig_anim, axs_anim = plt.subplots(2, 2, figsize=(12, 10))
+            vels_z = np.gradient(pos_z, time) if n > 1 else np.zeros_like(pos_z)
+
+            def frame_maps(z, v):
+                foot_disp = self._foot_top_displacement_m(z)
+                ground_disp = self._ground_bottom_displacement_m(z)
+                foot_pressure = self._pressure_kpa_from_displacement(foot_disp, v)
+                ground_pressure = self._pressure_kpa_from_displacement(ground_disp, v)
+                return foot_disp, foot_pressure, ground_disp, ground_pressure
 
             # Initial frame values
             z_init = pos_z[indices[0]]
-            def_bottom_init = np.maximum(z_init + self.spring_grid.bottom_m, 0.0)
-            comp_init = np.maximum(
-                self.spring_grid.slack_length_m - (z_init + self.spring_grid.top_m - def_bottom_init), 0.0
-            )
-
-            vels_z = np.gradient(pos_z, time) if n > 1 else np.zeros_like(pos_z)
             vel_init = vels_z[indices[0]]
-            vel_mps_init = np.zeros_like(self.spring_grid.slack_length_m)
-            in_contact_init = def_bottom_init > 0.0
-            vel_mps_init[in_contact_init] = vel_init
+            foot_disp_init, foot_pressure_init, ground_disp_init, ground_pressure_init = frame_maps(z_init, vel_init)
 
-            curr_len_init = self.spring_grid.slack_length_m.copy()
-            curr_len_init[in_contact_init] = z_init + self.spring_grid.top_m[in_contact_init]
-
-            pressures_pa_init = _compute_pressures(
-                curr_len_init,
-                self.spring_grid.slack_length_m,
-                vel_mps_init,
-                self.material,
-                self.spring_grid.spacing_m,
-                self.neighbors,
+            foot_disp_vmax = (
+                np.max(self.peak_foot_top_displacement_m * 1000.0)
+                if np.max(self.peak_foot_top_displacement_m) > 0.0
+                else 1.0
             )
-            pressures_kpa_init = pressures_pa_init / 1000.0
+            ground_disp_vmax = (
+                np.max(self.peak_ground_bottom_displacement_m * 1000.0)
+                if np.max(self.peak_ground_bottom_displacement_m) > 0.0
+                else 1.0
+            )
 
-            sc_comp = axs_anim[0].scatter(
+            sc_foot_disp = axs_anim[0, 0].scatter(
                 self.spring_grid.grid_uv_m[:, 0] * 1000.0,
                 self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-                c=comp_init * 1000.0,
+                c=foot_disp_init * 1000.0,
                 s=18,
                 cmap="inferno",
                 vmin=0.0,
-                vmax=np.max(self.peak_compression_m * 1000.0) if np.max(self.peak_compression_m) > 0.0 else 1.0,
+                vmax=foot_disp_vmax,
             )
-            axs_anim[0].set_title("Spring Compression [mm]")
-            axs_anim[0].set_aspect("equal", adjustable="box")
-            axs_anim[0].set_xlabel("Width [mm]")
-            axs_anim[0].set_ylabel("Length [mm]")
-            fig_anim.colorbar(sc_comp, ax=axs_anim[0], label="Compression [mm]")
+            axs_anim[0, 0].set_title("Top Displacement from Foot [mm]")
+            axs_anim[0, 0].set_aspect("equal", adjustable="box")
+            axs_anim[0, 0].set_xlabel("Width [mm]")
+            axs_anim[0, 0].set_ylabel("Length [mm]")
+            fig_anim.colorbar(sc_foot_disp, ax=axs_anim[0, 0], label="Displacement [mm]")
 
-            sc_pres = axs_anim[1].scatter(
+            sc_foot_pres = axs_anim[0, 1].scatter(
                 self.spring_grid.grid_uv_m[:, 0] * 1000.0,
                 self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-                c=pressures_kpa_init,
+                c=foot_pressure_init,
                 s=18,
                 cmap="jet",
                 vmin=0.0,
                 vmax=self.max_display_pressure_kpa,
             )
-            axs_anim[1].set_title("Contact Pressure [kPa]")
-            axs_anim[1].set_aspect("equal", adjustable="box")
-            axs_anim[1].set_xlabel("Width [mm]")
-            axs_anim[1].set_ylabel("Length [mm]")
-            fig_anim.colorbar(sc_pres, ax=axs_anim[1], label="Pressure [kPa]")
+            axs_anim[0, 1].set_title("Top Pressure from Foot [kPa]")
+            axs_anim[0, 1].set_aspect("equal", adjustable="box")
+            axs_anim[0, 1].set_xlabel("Width [mm]")
+            axs_anim[0, 1].set_ylabel("Length [mm]")
+            fig_anim.colorbar(sc_foot_pres, ax=axs_anim[0, 1], label="Pressure [kPa]")
+
+            sc_ground_disp = axs_anim[1, 0].scatter(
+                self.spring_grid.grid_uv_m[:, 0] * 1000.0,
+                self.spring_grid.grid_uv_m[:, 1] * 1000.0,
+                c=ground_disp_init * 1000.0,
+                s=18,
+                cmap="inferno",
+                vmin=0.0,
+                vmax=ground_disp_vmax,
+            )
+            axs_anim[1, 0].set_title("Bottom Displacement from Ground [mm]")
+            axs_anim[1, 0].set_aspect("equal", adjustable="box")
+            axs_anim[1, 0].set_xlabel("Width [mm]")
+            axs_anim[1, 0].set_ylabel("Length [mm]")
+            fig_anim.colorbar(sc_ground_disp, ax=axs_anim[1, 0], label="Displacement [mm]")
+
+            sc_ground_pres = axs_anim[1, 1].scatter(
+                self.spring_grid.grid_uv_m[:, 0] * 1000.0,
+                self.spring_grid.grid_uv_m[:, 1] * 1000.0,
+                c=ground_pressure_init,
+                s=18,
+                cmap="jet",
+                vmin=0.0,
+                vmax=self.max_display_pressure_kpa,
+            )
+            axs_anim[1, 1].set_title("Bottom Pressure from Ground [kPa]")
+            axs_anim[1, 1].set_aspect("equal", adjustable="box")
+            axs_anim[1, 1].set_xlabel("Width [mm]")
+            axs_anim[1, 1].set_ylabel("Length [mm]")
+            fig_anim.colorbar(sc_ground_pres, ax=axs_anim[1, 1], label="Pressure [kPa]")
 
             title = fig_anim.suptitle("")
 
@@ -627,30 +739,14 @@ class Example:
                 t_val = time[idx]
                 f_val = force_n[idx]
 
-                def_bottom = np.maximum(z + self.spring_grid.bottom_m, 0.0)
-                comp = np.maximum(self.spring_grid.slack_length_m - (z + self.spring_grid.top_m - def_bottom), 0.0)
+                foot_disp, foot_pressure, ground_disp, ground_pressure = frame_maps(z, v)
 
-                vel_mps = np.zeros_like(self.spring_grid.slack_length_m)
-                in_contact = def_bottom > 0.0
-                vel_mps[in_contact] = v
-
-                curr_len = self.spring_grid.slack_length_m.copy()
-                curr_len[in_contact] = z + self.spring_grid.top_m[in_contact]
-
-                pressures_pa = _compute_pressures(
-                    curr_len,
-                    self.spring_grid.slack_length_m,
-                    vel_mps,
-                    self.material,
-                    self.spring_grid.spacing_m,
-                    self.neighbors,
-                )
-                pressures_kpa = pressures_pa / 1000.0
-
-                sc_comp.set_array(comp * 1000.0)
-                sc_pres.set_array(pressures_kpa)
+                sc_foot_disp.set_array(foot_disp * 1000.0)
+                sc_foot_pres.set_array(foot_pressure)
+                sc_ground_disp.set_array(ground_disp * 1000.0)
+                sc_ground_pres.set_array(ground_pressure)
                 title.set_text(f"Foot-Shoe Impact | t={t_val:.3f} s | Force={f_val:.1f} N")
-                return sc_comp, sc_pres, title
+                return sc_foot_disp, sc_foot_pres, sc_ground_disp, sc_ground_pres, title
 
             anim_path = "foot_shoe_contact_heatmap.gif"
             anim = FuncAnimation(fig_anim, update_anim, frames=len(indices), interval=100, blit=False)
