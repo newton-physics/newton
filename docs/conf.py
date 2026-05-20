@@ -114,6 +114,8 @@ exclude_patterns = [
     "sphinx-env",
     "**/site-packages/**",
     "**/lib/**",
+    # Included from index.rst via ``.. include::`` — not a standalone document.
+    "api/_toctree.rst",
 ]
 
 
