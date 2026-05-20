@@ -2,7 +2,7 @@
 .. SPDX-License-Identifier: CC-BY-4.0
 
 Sensors
-=======
+========
 
 Sensors in Newton provide a way to extract measurements and observations from the simulation. They compute derived
 quantities that are commonly needed for control, reinforcement learning, robotics applications, and analysis.
