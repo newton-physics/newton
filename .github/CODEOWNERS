@@ -1,0 +1,24 @@
+# Newton CODEOWNERS
+#
+# A PR that touches a path below requires review approval from the listed
+# owner before it can be merged.
+
+# Root-level policy, config, and docs
+/*                                       @newton-physics/maintainers
+
+# Repo tooling and config
+/.github/                                @newton-physics/maintainers
+/scripts/                                @newton-physics/maintainers
+
+# Coding agent files
+/.claude/                                @newton-physics/maintainers
+
+# Public API surface
+/newton/*                                @newton-physics/maintainers
+
+# Bundled license texts
+/newton/licenses/                        @newton-physics/maintainers
+
+# Solver-specific owners
+/newton/_src/solvers/kamino/             @newton-physics/disney-research
+/newton/_src/solvers/style3d/            @newton-physics/style3d-research

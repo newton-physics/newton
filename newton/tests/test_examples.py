@@ -251,6 +251,14 @@ add_example_test(
     test_options={"num-frames": 150},
 )
 
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_conveyor",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100},
+)
+
 
 class TestCableExamples(unittest.TestCase):
     pass
