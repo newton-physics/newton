@@ -1113,6 +1113,12 @@ class TestMeshConvexMidphase(unittest.TestCase):
     pass
 
 
+class TestHeightfieldConvexMidphase(unittest.TestCase):
+    """Test heightfield-vs-convex triangle candidate generation."""
+
+    pass
+
+
 def test_mesh_convex_midphase_queries_margin_shell(test, device):
     margin = 0.02
     gap = 0.005
@@ -1135,6 +1141,44 @@ def test_mesh_convex_midphase_queries_margin_shell(test, device):
     builder.add_shape_mesh(body=-1, mesh=newton.Mesh(vertices, indices), cfg=cfg)
 
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius + surface_separation), wp.quat_identity()))
+    builder.add_joint_free(child=body)
+    builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(contact_count, 0)
+
+
+def test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge(test, device):
+    margin = 0.02
+    gap = 0.005
+    radius = 0.1
+    surface_separation = 0.03
+
+    cfg = newton.ModelBuilder.ShapeConfig(margin=margin, gap=gap)
+    builder = newton.ModelBuilder()
+
+    heightfield = newton.Heightfield(
+        data=np.zeros((3, 3), dtype=np.float32),
+        nrow=3,
+        ncol=3,
+        hx=1.0,
+        hy=1.0,
+        min_z=0.0,
+        max_z=0.0,
+    )
+    builder.add_shape_heightfield(heightfield=heightfield, cfg=cfg)
+
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(1.0 + radius + surface_separation, 0.0, 0.0), wp.quat_identity())
+    )
     builder.add_joint_free(child=body)
     builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
 
@@ -1552,6 +1596,14 @@ add_function_test(
     TestMeshConvexMidphase,
     "test_mesh_convex_midphase_queries_margin_shell",
     test_mesh_convex_midphase_queries_margin_shell,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestHeightfieldConvexMidphase,
+    "test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge",
+    test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge,
     devices=get_cuda_test_devices(),
     check_output=False,
 )
