@@ -640,10 +640,7 @@ def _build_free_velocity_bias_contacts(
     # Gate contact stabilization for restitutive impacts with
     # critical restitution coefficients (i.e. epsilon_k >= 1.0)
     # NOTE: Otherwise the bias would be too large and destabilize the solver
-    if epsilon_k >= 1.0:
-        alpha = 0.0
-    else:
-        alpha = 1.0
+    alpha = wp.where(epsilon_k >= 1.0, 0.0, 1.0)
 
     # Store the contact constraint stabilization bias in the output vector
     # NOTE: We still write zeros to overwrite previous values

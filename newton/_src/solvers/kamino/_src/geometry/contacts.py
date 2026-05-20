@@ -835,7 +835,7 @@ class ContactsKamino:
 
 
 @cache
-def make_convert_contacts_newton_to_kamino_kernel(allow_positive_distance: bool = True):
+def make_convert_contacts_newton_to_kamino_kernel(allow_positive_distance: bool = False):
     """
     Make a kernel to convert Newton :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
 
@@ -1248,7 +1248,7 @@ def convert_contacts_newton_to_kamino(
     contacts_in: Contacts,
     contacts_out: ContactsKamino,
     convert_forces: bool = False,
-    allow_positive_distance: bool = True,
+    allow_positive_distance: bool = False,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.

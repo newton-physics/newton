@@ -103,7 +103,7 @@ class ContactWriterDataKamino:
 
 
 @cache
-def make_write_contact_unified_kamino(allow_positive_distance: bool = True):
+def make_write_contact_unified_kamino(allow_positive_distance: bool = False):
     """
     Makes a Warp function to write a contact to Kamino-compatible output arrays.
 
@@ -420,7 +420,7 @@ class CollisionPipelineUnifiedKamino:
         default_gap: float = DEFAULT_GEOM_PAIR_CONTACT_GAP,
         default_friction: float = DEFAULT_FRICTION,
         default_restitution: float = DEFAULT_RESTITUTION,
-        allow_positive_distance: bool = True,
+        allow_positive_distance: bool = False,
     ):
         """
         Initialize an instance of Kamino's wrapper of the unified collision detection pipeline.
