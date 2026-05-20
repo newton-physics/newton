@@ -210,7 +210,7 @@ class ModelBuilder:
         output_indices: list[list[int]]  # Per-actuator output indices
         args: list[dict[str, Any]]  # Per-actuator array params (scalar params in dict key)
 
-    @dataclass(slots=True)
+    @dataclass
     class ShapeConfig:
         """
         Represents the properties of a collision shape used in simulation.
@@ -418,6 +418,26 @@ class ModelBuilder:
                 self.collision_group = defaults.collision_group
                 self.has_shape_collision = bool(value & ShapeFlags.COLLIDE_SHAPES)
                 self.has_particle_collision = bool(value & ShapeFlags.COLLIDE_PARTICLES)
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            # Guard against silent dead writes after a field rename (see PR #2553):
+            # warn on any name that is not a declared dataclass field, a property,
+            # or a private/dunder attribute. Scheduled to become a hard AttributeError
+            # in a future release.
+            if (
+                not name.startswith("_")
+                and name not in type(self).__dataclass_fields__
+                and not isinstance(getattr(type(self), name, None), property)
+            ):
+                valid = sorted(type(self).__dataclass_fields__)
+                warnings.warn(
+                    f"Setting undeclared attribute {name!r} on ShapeConfig is deprecated "
+                    f"and will raise AttributeError in a future release. "
+                    f"Declared fields: {valid}.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            object.__setattr__(self, name, value)
 
         def copy(self) -> ModelBuilder.ShapeConfig:
             return copy.copy(self)

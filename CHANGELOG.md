@@ -29,6 +29,10 @@
 - Increase conveyor rail roughness in `example_basic_conveyor` to reduce mirror-like reflections
 - Migrate all raycast logic to `geometry.raycast`, all raycast functions now return distance and normal information
 
+### Deprecated
+
+- Writing undeclared attributes on `ModelBuilder.ShapeConfig` now emits a `DeprecationWarning` and is scheduled to raise `AttributeError` in a future release. Migrate stale writes (e.g. `cfg.contact_margin = ...` left over from the rename to `gap`) to current field names; see the `ShapeConfig` declared fields for the canonical list.
+
 ### Fixed
 
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration
