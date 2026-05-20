@@ -477,7 +477,7 @@ class SolverVBD(SolverBase):
         self.particle_q_rest = model.particle_q
 
         # Tile solve settings
-        if model.device.is_cpu and particle_enable_tile_solve and wp.config.verbose:
+        if model.device.is_cpu and particle_enable_tile_solve and wp.config.log_level <= wp.LOG_DEBUG:
             print("Info: Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
 
         self.use_particle_tile_solve = particle_enable_tile_solve and model.device.is_cuda
@@ -1945,9 +1945,11 @@ class SolverVBD(SolverBase):
                         model.joint_dof_dim,
                         model.joint_axis,
                         control.joint_f,
+                        dt,
                     ],
                     outputs=[
                         body_f_for_integration,
+                        None,  # joint_impulse: VBD does not populate body_parent_f
                     ],
                     device=self.device,
                 )

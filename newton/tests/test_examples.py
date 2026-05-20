@@ -251,6 +251,14 @@ add_example_test(
     test_options={"num-frames": 150},
 )
 
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_conveyor",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100},
+)
+
 
 class TestCableExamples(unittest.TestCase):
     pass
@@ -276,6 +284,13 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_cross_slide_table",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 540},
 )
 add_example_test(
     TestCableExamples,

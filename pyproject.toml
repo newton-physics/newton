@@ -28,7 +28,7 @@ description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "warp-lang>=1.13.0",
+    "warp-lang>=1.14.0.dev20260514",
 ]
 
 [project.optional-dependencies]
@@ -87,7 +87,7 @@ examples = [
     "GitPython>=3.1.47",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
-    "cbor2>=5.7.0, <6",     # for binary recording format (.bin files) - more efficient than JSON
+    "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
     "Pillow>=11.3.0",
 ]
 

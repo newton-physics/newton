@@ -1033,6 +1033,378 @@ def test_xpbd_parent_force_zero_for_free_body(test, device):
     )
 
 
+def test_xpbd_parent_f_centripetal_zero_g(test, device):
+    """Two free bodies on a hinge, zero gravity, in steady-state rotation.
+
+    Initial state: both bodies are in rigid-body rotation about the hinge
+    axis (which coincides with the system COM since masses are equal),
+    so the only wrench the hinge needs to transmit per body is the
+    centripetal force:
+
+        |F_body| == m * omega^2 * r_perp     (toward the rotation axis)
+
+    Unlike single-body solvers that report inverse-dynamics reactions in
+    one step, XPBD is position-based: in one substep the constraint sees
+    only the O(dt^2) curvature deviation, so the reported per-step
+    reaction is dt-suppressed.  We therefore run for many sub-steps and
+    take a time-average of ``body_parent_f`` over a full rotation -- the
+    average converges to the analytical centripetal magnitude because
+    angular momentum (and ω) are conserved.
+    """
+    omega = 5.0  # rad/s about Y
+
+    # add_link (NOT add_body) so we control the joint topology and avoid
+    # the implicit free joints that ``add_body`` would create.
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    builder.request_state_attributes("body_parent_f")
+
+    body_1 = builder.add_link()
+    builder.add_shape_box(body_1, hx=0.25, hy=0.05, hz=0.05)
+    body_2 = builder.add_link()
+    builder.add_shape_box(body_2, hx=0.25, hy=0.05, hz=0.05)
+
+    joint_free = builder.add_joint_free(child=body_1)
+    joint_rev = builder.add_joint_revolute(
+        body_1,
+        body_2,
+        parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(-0.5, 0.0, 0.0), wp.quat_identity()),
+        axis=wp.vec3(0.0, 1.0, 0.0),
+    )
+    builder.add_articulation([joint_free, joint_rev])
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(
+        model,
+        iterations=16,
+        joint_linear_relaxation=1.0,
+        joint_angular_relaxation=1.0,
+        joint_linear_compliance=0.0,
+        joint_angular_compliance=0.0,
+        angular_damping=0.0,
+        enable_restitution=False,
+    )
+
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+    # For rigid-body rotation about Y axis through (0.5, 0, 0):
+    #   body_1 COM @ (0,0,0):  v = omega x r = (0, 0,  0.5*omega)
+    #   body_2 COM @ (1,0,0):  v = omega x r = (0, 0, -0.5*omega)
+    qd = state_in.body_qd.numpy()
+    qd[body_1, :3] = (0.0, 0.0, 0.5 * omega)
+    qd[body_1, 3:6] = (0.0, omega, 0.0)
+    qd[body_2, :3] = (0.0, 0.0, -0.5 * omega)
+    qd[body_2, 3:6] = (0.0, omega, 0.0)
+    state_in.body_qd.assign(qd)
+
+    # Run for a fraction of a revolution and average the *magnitude* of
+    # the reported wrench (the vector rotates with the body in world
+    # frame, so a direct vector-average would cancel to zero).
+    dt = 1.0 / 240.0
+    num_steps = 240  # ~one revolution at omega=5 rad/s
+    num_substeps = 4
+    sub_dt = dt / num_substeps
+
+    f_lin_mags = []
+    f_tau_mags = []
+    for _ in range(num_steps):
+        for _ in range(num_substeps):
+            solver.step(state_in, state_out, None, None, sub_dt)
+            state_in, state_out = state_out, state_in
+        pf2 = state_in.body_parent_f.numpy()[body_2]
+        f_lin_mags.append(float(np.linalg.norm(pf2[:3])))
+        f_tau_mags.append(float(np.linalg.norm(pf2[3:6])))
+
+    f_lin_mag_avg = float(np.mean(f_lin_mags))
+    f_tau_mag_avg = float(np.mean(f_tau_mags))
+
+    m_body2 = float(model.body_mass.numpy()[body_2])
+    r_perp = 0.5  # body_2 COM offset from hinge axis
+    expected_force = m_body2 * omega * omega * r_perp  # m * omega^2 * r
+
+    # Centripetal magnitude: time-averaged |F| should match m*omega^2*r.
+    np.testing.assert_allclose(
+        f_lin_mag_avg,
+        expected_force,
+        rtol=0.10,
+        err_msg=(
+            f"body_2 time-avg |F| should match m*omega^2*r = {expected_force:.3f} N; got |F|={f_lin_mag_avg:.3f} N"
+        ),
+    )
+
+    # A pure centripetal force passes through the body's COM trajectory,
+    # so the constraint exerts negligible torque about the COM.
+    test.assertLess(
+        f_tau_mag_avg,
+        0.10 * expected_force * r_perp,
+        msg=f"body_2 time-avg |tau| about COM should be ~0; got |tau|={f_tau_mag_avg:.3f}",
+    )
+
+
+def test_xpbd_parent_f_consistent_across_solvers(test, device):
+    """XPBD's ``body_parent_f`` must match MuJoCo / Featherstone for a static pendulum.
+
+    Identical scene, identical initial state, one step.  The three solvers
+    use different integration schemes but report wrenches in the same
+    documented frame (world frame, at child COM).  Disagreement larger
+    than a few percent on the dominant component indicates a convention
+    or accumulation bug rather than legitimate per-solver discretization
+    difference (which is bounded for a static configuration).
+    """
+
+    def _build():
+        builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+        builder.request_state_attributes("body_parent_f")
+        link = builder.add_link()
+        builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_revolute(
+            -1,
+            link,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
+            axis=wp.vec3(0.0, 1.0, 0.0),
+        )
+        builder.add_articulation([joint])
+        return builder.finalize(device=device)
+
+    dt = 5e-3
+    results = {}
+    for name, make_solver in [
+        ("xpbd", lambda m: newton.solvers.SolverXPBD(m, iterations=8)),
+        ("mujoco", lambda m: newton.solvers.SolverMuJoCo(m, use_mujoco_cpu=False)),
+        ("featherstone", newton.solvers.SolverFeatherstone),
+    ]:
+        model = _build()
+        solver = make_solver(model)
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        solver.step(state_0, state_1, None, None, dt)
+        results[name] = state_1.body_parent_f.numpy()[0]
+
+    mg = float(model.body_mass.numpy()[0]) * 9.81
+    for name, parent_f in results.items():
+        np.testing.assert_allclose(parent_f[2], mg, rtol=0.05, err_msg=f"{name}: |F_z| should be ~m*g")
+
+    # Cross-solver agreement: XPBD must be within 10% of MuJoCo on every
+    # spatial component (5% would be tight for the off-axis components
+    # given the different integration orders).
+    np.testing.assert_allclose(
+        results["xpbd"],
+        results["mujoco"],
+        atol=0.5,
+        rtol=0.10,
+        err_msg=(
+            "XPBD and MuJoCo disagree on body_parent_f for a static pendulum:\n"
+            f"  xpbd   = {results['xpbd']}\n"
+            f"  mujoco = {results['mujoco']}"
+        ),
+    )
+
+
+def _build_two_body_one_joint(joint_kind: str, device):
+    """Two free-floating bodies connected by a single joint, gravity=0.
+
+    The parent is attached to the world by a FREE joint; the child by the
+    inner joint under test.  With gravity off and no contacts, the only
+    impulse exchanged is at the inner joint, so Newton's 2nd law on the
+    child becomes an exact algebraic identity against ``body_parent_f``.
+    """
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    builder.request_state_attributes("body_parent_f")
+    parent = builder.add_link()
+    builder.add_shape_box(parent, hx=0.2, hy=0.1, hz=0.1)
+    child = builder.add_link()
+    builder.add_shape_box(child, hx=0.2, hy=0.1, hz=0.1)
+    j_free = builder.add_joint_free(child=parent)
+    parent_xform = wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity())
+    child_xform = wp.transform(wp.vec3(-0.5, 0.0, 0.0), wp.quat_identity())
+    if joint_kind == "revolute":
+        j_inner = builder.add_joint_revolute(
+            parent, child, parent_xform=parent_xform, child_xform=child_xform, axis=wp.vec3(0.0, 0.0, 1.0)
+        )
+    elif joint_kind == "ball":
+        j_inner = builder.add_joint_ball(parent, child, parent_xform=parent_xform, child_xform=child_xform)
+    elif joint_kind == "fixed":
+        j_inner = builder.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform)
+    elif joint_kind == "prismatic":
+        j_inner = builder.add_joint_prismatic(
+            parent, child, parent_xform=parent_xform, child_xform=child_xform, axis=wp.vec3(0.0, 0.0, 1.0)
+        )
+    else:
+        raise ValueError(joint_kind)
+    builder.add_articulation([j_free, j_inner])
+    return builder.finalize(device=device), parent, child
+
+
+def _quat_to_R(q):
+    x, y, z, w = q
+    xx, yy, zz, xy, xz, yz, wx, wy, wz = x * x, y * y, z * z, x * y, x * z, y * z, w * x, w * y, w * z
+    return np.array(
+        [
+            [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
+            [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
+            [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)],
+        ]
+    )
+
+
+def _newton_second_law_on_child(joint_kind, ic, *, dt, iters, device):
+    """Run one step with gravity=0, return (F_reported, F_expected, tau_reported, tau_expected, dP_total).
+
+    F_expected = m_c * (v_after - v_before) / dt  --  the actual linear force XPBD applied to the child.
+    tau_expected = (R*I*R^T * w_after - R*I*R^T * w_before) / dt  --  rate of change of angular momentum
+    about the child's COM, world frame.
+    """
+    model, parent, child = _build_two_body_one_joint(joint_kind, device)
+    solver = newton.solvers.SolverXPBD(
+        model,
+        iterations=iters,
+        joint_linear_relaxation=1.0,
+        joint_angular_relaxation=1.0,
+        joint_linear_compliance=0.0,
+        joint_angular_compliance=0.0,
+        angular_damping=0.0,
+        enable_restitution=False,
+    )
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+    qd = state_in.body_qd.numpy()
+    if "v_parent" in ic:
+        qd[parent, :3] = ic["v_parent"]
+    if "w_parent" in ic:
+        qd[parent, 3:6] = ic["w_parent"]
+    if "v_child" in ic:
+        qd[child, :3] = ic["v_child"]
+    if "w_child" in ic:
+        qd[child, 3:6] = ic["w_child"]
+    state_in.body_qd.assign(qd)
+
+    # XPBD writes back to state_in (body_q/body_qd are updated in place inside
+    # ``_apply_body_deltas``), so snapshot before the step.
+    body_q_before = state_in.body_q.numpy().copy()
+    body_qd_before = state_in.body_qd.numpy().copy()
+
+    solver.step(state_in, state_out, None, None, dt)
+
+    qd_out = state_out.body_qd.numpy()
+    q_out = state_out.body_q.numpy()
+
+    mass = model.body_mass.numpy()
+    I_body = model.body_inertia.numpy()
+
+    v_in, w_in = body_qd_before[child, :3], body_qd_before[child, 3:6]
+    v_out, w_out = qd_out[child, :3], qd_out[child, 3:6]
+    R_in = _quat_to_R(body_q_before[child, 3:7])
+    R_out = _quat_to_R(q_out[child, 3:7])
+
+    F_expected = mass[child] * (v_out - v_in) / dt
+    L_in = (R_in @ I_body[child] @ R_in.T) @ w_in
+    L_out = (R_out @ I_body[child] @ R_out.T) @ w_out
+    tau_expected = (L_out - L_in) / dt
+
+    parent_f = state_out.body_parent_f.numpy()[child]
+    F_reported, tau_reported = parent_f[:3], parent_f[3:6]
+
+    # System linear momentum drift (independent check on the solver, not the diagnostic).
+    dP = np.zeros(3)
+    for i in range(model.body_count):
+        if mass[i] == 0.0:
+            continue
+        dP += mass[i] * (qd_out[i, :3] - body_qd_before[i, :3])
+
+    return F_reported, F_expected, tau_reported, tau_expected, dP
+
+
+def test_xpbd_parent_f_newton_second_law_zero_g(test, device):
+    """Gold-standard self-consistency for ``body_parent_f`` under XPBD.
+
+    Setup: two free-floating bodies, one joint between them, gravity=0,
+    no contacts, no ``joint_f``.  The only impulse on the child comes from
+    the joint, so Newton's second law gives an exact algebraic identity:
+
+        body_parent_f[child].linear  * dt  ==  m_c * (v_after - v_before)
+        body_parent_f[child].angular * dt  ==  R*I*R^T * w_after - R*I*R^T * w_before
+
+    This test bypasses every approximation that complicates other verifications:
+    no reference solver is invoked, no closed-form physics is assumed, no
+    convergence is needed for the identity to hold.  ``body_parent_f`` is the
+    *applied* constraint reaction; if it does not match the actual change in
+    child momentum, the reporting is broken by construction.
+
+    System linear momentum is also checked — gravity=0 + no contacts means
+    the joint applies equal-and-opposite impulses, so total ``Δp = 0``.
+    """
+    cases = [
+        # (joint_kind, initial conditions) -- chosen to exercise different
+        # constraint axes (linear vs angular, single-DOF vs multi-DOF locked).
+        ("revolute", {"v_child": (0.0, 1.0, 0.0)}),  # linear mismatch at joint
+        ("revolute", {"w_child": (0.0, 0.0, 2.0)}),  # spin about joint axis -- free, no force
+        ("revolute", {"w_parent": (0.0, 0.0, 2.0), "w_child": (0.0, 0.0, 2.0)}),  # rigid-body spin
+        ("ball", {"v_child": (0.0, 1.0, 0.0)}),
+        ("ball", {"w_child": (0.5, 0.5, 0.5)}),
+        ("fixed", {"v_child": (0.0, 1.0, 0.0)}),
+        ("fixed", {"w_parent": (0.0, 0.0, 1.0), "w_child": (0.0, 0.0, 1.0)}),
+        ("prismatic", {"v_child": (0.0, 1.0, 0.0)}),  # perpendicular to joint axis -> force
+    ]
+
+    dt = 1e-3
+    iters = 32
+
+    for joint_kind, ic in cases:
+        with test.subTest(joint_kind=joint_kind, ic=tuple(ic.keys())):
+            F_rep, F_exp, tau_rep, tau_exp, dP = _newton_second_law_on_child(
+                joint_kind, ic, dt=dt, iters=iters, device=device
+            )
+
+            # Linear law: holds to floating-point precision because both
+            # sides are direct readouts of the same XPBD impulse (no
+            # integration, no quaternion coupling).
+            np.testing.assert_allclose(
+                F_rep,
+                F_exp,
+                rtol=1e-4,
+                atol=1.0,
+                err_msg=(
+                    f"{joint_kind} ic={list(ic.keys())}: "
+                    f"body_parent_f[child].linear must equal m_c * dv_c / dt.\n"
+                    f"  reported = {F_rep}\n"
+                    f"  expected = {F_exp}"
+                ),
+            )
+
+            # Angular law: same identity in principle, but the orientation
+            # rotates over dt so I_world is taken at slightly different
+            # frames at the two endpoints.  Allow 1% slack on the dominant
+            # component plus a small absolute floor.
+            np.testing.assert_allclose(
+                tau_rep,
+                tau_exp,
+                rtol=0.01,
+                atol=1.0,
+                err_msg=(
+                    f"{joint_kind} ic={list(ic.keys())}: "
+                    f"body_parent_f[child].angular must equal dL_c / dt at child COM.\n"
+                    f"  reported = {tau_rep}\n"
+                    f"  expected = {tau_exp}"
+                ),
+            )
+
+            # System linear momentum conservation -- the joint exerts
+            # equal-and-opposite linear forces on the two bodies.  Holds
+            # at machine precision for the underlying solver, independent
+            # of the body_parent_f reporting.
+            np.testing.assert_allclose(
+                dP,
+                0.0,
+                atol=1e-5,
+                err_msg=f"{joint_kind} ic={list(ic.keys())}: system linear momentum must be conserved",
+            )
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -1145,6 +1517,30 @@ add_function_test(
     TestSolverXPBD,
     "test_xpbd_parent_force_zero_for_free_body",
     test_xpbd_parent_force_zero_for_free_body,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_parent_f_centripetal_zero_g",
+    test_xpbd_parent_f_centripetal_zero_g,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_parent_f_consistent_across_solvers",
+    test_xpbd_parent_f_consistent_across_solvers,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_parent_f_newton_second_law_zero_g",
+    test_xpbd_parent_f_newton_second_law_zero_g,
     devices=devices,
     check_output=False,
 )
