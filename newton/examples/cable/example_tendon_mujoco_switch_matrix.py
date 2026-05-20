@@ -199,7 +199,7 @@ class Example:
                     "seg_right": candidate_link - tendon_id,
                     "prev_rolling": prev_rolling,
                     "next_rolling": next_rolling,
-                    "expected_side": float(np.sign(start_x)),
+                    "expected_side": -float(np.sign(start_x)),
                     "start_x": start_x,
                     "target_x": target_x,
                     "y": y,
@@ -251,7 +251,7 @@ class Example:
         return self.candidate_rest_x
 
     def _candidate_orientation(self, start_x):
-        return -int(math.copysign(1.0, start_x))
+        return int(math.copysign(1.0, start_x))
 
     def _candidate_x(self, t, lane):
         start = 0.18
