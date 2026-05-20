@@ -14,7 +14,7 @@
 
 ### Fixed
 
-- Prevent `eval_fk()` from resetting `JointType.CABLE` body poses after VBD simulation (#2887).
+- Fix `eval_fk()` overwriting VBD-simulated `JointType.CABLE` body poses.
 - Fix `SolverMuJoCo` returning `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_qd`.
 - Fix `basic_conveyor` example emitting a spurious inertia validation warning at finalize.
 
