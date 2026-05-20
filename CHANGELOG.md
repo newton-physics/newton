@@ -31,7 +31,7 @@
 
 ### Deprecated
 
-- Writing undeclared attributes on `ModelBuilder.ShapeConfig` now emits a `DeprecationWarning` and is scheduled to raise `AttributeError` in a future release. Migrate stale writes (e.g. `cfg.contact_margin = ...` left over from the rename to `gap`) to current field names; see the `ShapeConfig` declared fields for the canonical list.
+- Deprecate writing undeclared attributes on `ModelBuilder.ShapeConfig`; attempting to set attributes not in the declared fields emits a `DeprecationWarning` and will raise `AttributeError` in a future release. Migrate stale writes (e.g. `cfg.contact_margin = ...` left over from the rename to `gap`) to current field names; see the `ShapeConfig` declared fields for the canonical list.
 
 ### Fixed
 
