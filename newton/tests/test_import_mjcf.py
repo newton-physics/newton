@@ -247,6 +247,31 @@ class TestImportMjcfBasic(unittest.TestCase):
         # So [0.7071068, 0, 0, 0.7071068] becomes [0, 0, 0.7071068, 0.7071068]
         np.testing.assert_allclose(body_quat, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
+    def test_xyaxes_uses_x_and_y_axes(self):
+        """MJCF xyaxes specifies X then Y, not X then Z."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="test_body" xyaxes="1 0 0 0 0 1">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        body_idx = model.body_label.index("test/worldbody/test_body")
+        body_quat = model.body_q.numpy()[body_idx, 3:]
+        quat = wp.quat(*body_quat)
+
+        actual_y = np.array(wp.quat_rotate(quat, wp.vec3(0.0, 1.0, 0.0)), dtype=np.float64)
+        actual_z = np.array(wp.quat_rotate(quat, wp.vec3(0.0, 0.0, 1.0)), dtype=np.float64)
+
+        np.testing.assert_allclose(actual_y, [0.0, 0.0, 1.0], atol=1e-6)
+        np.testing.assert_allclose(actual_z, [0.0, -1.0, 0.0], atol=1e-6)
+
     def test_site_euler_sequence_matches_mujoco(self):
         """Non-default compiler eulerseq should match MuJoCo site orientation."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
