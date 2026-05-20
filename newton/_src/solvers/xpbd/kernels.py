@@ -901,7 +901,9 @@ def apply_joint_forces(
     joint_dof_dim: wp.array2d[int],
     joint_axis: wp.array[wp.vec3],
     joint_f: wp.array[float],
+    dt: float,
     body_f: wp.array[wp.spatial_vector],
+    joint_impulse: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     type = joint_type[tid]
@@ -954,6 +956,12 @@ def apply_joint_forces(
         wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total))
         if id_p >= 0:
             wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total))
+        # Record the contribution to the inbound joint wrench (used to populate
+        # ``State.body_parent_f``).  For FREE joints this is a diagnostic only;
+        # for DISTANCE joints the constraint solver adds its own contribution.
+        # Convention: positive = wrench transmitted parent->child at child COM.
+        if joint_impulse:
+            wp.atomic_add(joint_impulse, tid, wp.spatial_vector(f_total, t_total) * dt)
         return
     elif type == JointType.BALL:
         t_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
@@ -998,9 +1006,18 @@ def apply_joint_forces(
         print("joint type not handled in apply_joint_forces")
 
     # write forces
+    child_wrench_at_com = wp.spatial_vector(f_total, t_total + wp.cross(r_c, f_total))
     if id_p >= 0:
         wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total + wp.cross(r_p, f_total)))
-    wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total + wp.cross(r_c, f_total)))
+    wp.atomic_add(body_f, id_c, child_wrench_at_com)
+
+    # Record the joint-f contribution to the inbound joint wrench (used to
+    # populate ``State.body_parent_f``).  We accumulate the child-side spatial
+    # wrench (linear ``[N]``, torque ``[N·m]`` at the child COM, world frame)
+    # multiplied by ``dt`` so that the same `impulse / dt` conversion applied
+    # in :func:`convert_joint_impulse_to_parent_f` recovers the wrench.
+    if joint_impulse:
+        wp.atomic_add(joint_impulse, tid, child_wrench_at_com * dt)
 
 
 @wp.func
@@ -2405,15 +2422,25 @@ def convert_joint_impulse_to_parent_f(
 ):
     """Convert accumulated child-side joint impulse to ``state.body_parent_f``.
 
-    The XPBD lambda convention used by ``solve_body_joints`` already absorbs
-    one power of ``dt`` (see ``compute_positional_correction`` /
-    ``compute_angular_correction``), so dividing the accumulated spatial
-    impulse by the substep ``dt`` yields the incoming joint wrench in
-    ``[N, N·m]`` in world frame, referenced to the child body's COM --
-    matching the :attr:`State.body_parent_f` convention.
+    The accumulated ``joint_impulse[joint_id]`` contains two contributions:
 
-    Free joints and disabled joints contribute zero (their bodies inherit
-    the zero-init from the caller).
+    * The XPBD constraint correction accumulated by ``solve_body_joints`` over
+      every iteration.  The lambda convention used there already absorbs one
+      power of ``dt`` (see ``compute_positional_correction`` /
+      ``compute_angular_correction``), so dividing by the substep ``dt``
+      yields the constraint reaction wrench.
+    * The body-frame contribution from ``Control.joint_f`` recorded by
+      ``apply_joint_forces``, pre-multiplied by ``dt`` for the same
+      conversion to compose correctly.
+
+    The result is the **total** wrench transmitted from the parent through the
+    inbound joint to the child, expressed in world frame at the child body's
+    COM (linear ``[N]``, torque ``[N·m]``).  This matches the convention used
+    by :class:`SolverFeatherstone` and :class:`SolverMuJoCo`.
+
+    Free joints and disabled joints contribute zero (their bodies inherit the
+    zero-init from the caller).  Multiple joints sharing the same child body
+    accumulate atomically, so loop-closure topologies remain race-free.
     """
     tid = wp.tid()
 
@@ -2430,7 +2457,7 @@ def convert_joint_impulse_to_parent_f(
     impulse = joint_impulse[tid]
     f = wp.spatial_top(impulse) * inv_dt
     tau = wp.spatial_bottom(impulse) * inv_dt
-    body_parent_f[id_c] = wp.spatial_vector(f, tau)
+    wp.atomic_add(body_parent_f, id_c, wp.spatial_vector(f, tau))
 
 
 @wp.kernel

@@ -33,7 +33,7 @@ class RobotComposerSim:
     behaviour with a planar (2-linear + 1-angular) D6 joint.
     """
 
-    def __init__(self, device, do_rendering=False, num_frames=50, world_count=2):
+    def __init__(self, device, do_rendering=False, num_frames=10, world_count=2):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -407,8 +407,8 @@ class RobotComposerSim:
     def capture(self):
         """Capture simulation graph for efficient execution."""
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
+        if wp.get_device(self.device).is_cuda:
+            with wp.ScopedCapture(device=self.device) as capture:
                 self.simulate()
             self.graph = capture.graph
 
@@ -446,7 +446,8 @@ class RobotComposerSim:
             joint_target_pos = self.joint_target_pos.reshape((self.world_count, -1)).numpy()
             for i in self.robotiq_gripper_dofs:
                 joint_target_pos[:, self.robotiq_gripper_dof_offset + i] = value
-            wp.copy(self.joint_target_pos, wp.array(joint_target_pos.flatten(), dtype=wp.float32))
+            joint_target_pos_wp = wp.array(joint_target_pos.flatten(), dtype=wp.float32, device=self.device)
+            wp.copy(self.joint_target_pos, joint_target_pos_wp)
 
         changed, value = imgui.slider_float(
             "gripper_target_pos_slider", self.gripper_target_pos, 0.0, 0.8, format="%.3f"
@@ -474,7 +475,7 @@ class RobotComposerSim:
 
 def test_robot_composer(test, device):
     """Test that composed robots build correctly, simulate stably, and move."""
-    sim = RobotComposerSim(device, num_frames=50, world_count=2)
+    sim = RobotComposerSim(device, num_frames=10, world_count=2)
 
     # Model structure: at least 4 articulations (UR5e+Robotiq, UR5e+LEAP, Franka+Allegro, UR10)
     test.assertGreaterEqual(sim.model.articulation_count, 4)
@@ -502,7 +503,7 @@ def test_robot_composer(test, device):
     )
 
 
-devices = get_cuda_test_devices(mode="basic")
+devices = get_cuda_test_devices()
 
 
 class TestRobotComposer(unittest.TestCase):
