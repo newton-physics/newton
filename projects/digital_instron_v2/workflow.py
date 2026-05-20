@@ -99,7 +99,12 @@ def run_fit_smoke(args: argparse.Namespace) -> dict[str, object]:
         lock_strain=float(manifest.fit.get("initial_lock_strain", 0.65)),
         damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
         damping_power=float(manifest.fit.get("initial_damping_power", 1.0)),
-        shear_modulus_pa=float(manifest.fit.get("initial_shear_modulus_pa", 0.0)),
+        pasternak_stiffness_n_per_m=float(
+            manifest.fit.get(
+                "initial_pasternak_stiffness_n_per_m",
+                manifest.fit.get("initial_shear_modulus_pa", 0.0),
+            )
+        ),
     )
 
     summaries = []
@@ -170,7 +175,12 @@ def _initial_material(manifest, *, per_cylinder_area: bool = False) -> Foundatio
         prony_stiffness_pa=prony_stiffness,
         prony_damping_pa_s=prony_damping,
         state_warmup_cycles=int(manifest.fit.get("state_warmup_cycles", 0)),
-        shear_modulus_pa=float(manifest.fit.get("initial_shear_modulus_pa", 0.0)),
+        pasternak_stiffness_n_per_m=float(
+            manifest.fit.get(
+                "initial_pasternak_stiffness_n_per_m",
+                manifest.fit.get("initial_shear_modulus_pa", 0.0),
+            )
+        ),
     )
 
 
@@ -646,6 +656,8 @@ def _autodiff_batches(
                 displacement_m=trace["displacement_m"],
                 phase=tuple(str(phase) for phase in phases),
                 force_zero_n=float(trace["force_zero_n"][0]),
+                neighbors=spring_grid.neighbors,
+                spacing_m=spring_grid.spacing_m,
             )
         )
     return batches
@@ -1045,7 +1057,9 @@ def _material_from_history_row(row: dict[str, float]) -> FoundationMaterial:
         prony_stiffness_pa=prony_stiffness,
         prony_damping_pa_s=prony_damping,
         state_warmup_cycles=int(row["state_warmup_cycles"]),
-        shear_modulus_pa=float(row.get("shear_modulus_pa", 0.0)),
+        pasternak_stiffness_n_per_m=float(
+            row.get("pasternak_stiffness_n_per_m", row.get("shear_modulus_pa", 0.0))
+        ),
     )
 
 

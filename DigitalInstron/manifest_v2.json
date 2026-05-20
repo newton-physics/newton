@@ -27,7 +27,7 @@
     "initial_damping_power": 1.0,
     "initial_prony_stiffness_pa": 18000.0,
     "initial_prony_damping_pa_s": 720.0,
-    "initial_shear_modulus_pa": 500.0,
+    "initial_pasternak_stiffness_n_per_m": 500.0,
     "state_warmup_cycles": 5,
     "nominal_midsole_thickness_m": 0.069,
     "low_force_limit_n": 20.0,

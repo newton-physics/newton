@@ -13,7 +13,7 @@ import warp as wp
 from newton._src.geometry.sdf_texture import TextureSDFData, texture_sample_sdf
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class FoundationMaterial:
     """Shared vertical foundation material parameters."""
 
@@ -26,7 +26,40 @@ class FoundationMaterial:
     prony_stiffness_pa: float = 0.0
     prony_damping_pa_s: float = 0.0
     state_warmup_cycles: int = 0
-    shear_modulus_pa: float = 0.0
+    pasternak_stiffness_n_per_m: float = 0.0
+
+    def __init__(
+        self,
+        stiffness_pa: float,
+        ogden_alpha: float,
+        lock_strain: float,
+        damping_pa_s: float,
+        damping_power: float = 1.0,
+        per_cylinder_area: bool = False,
+        prony_stiffness_pa: float = 0.0,
+        prony_damping_pa_s: float = 0.0,
+        state_warmup_cycles: int = 0,
+        pasternak_stiffness_n_per_m: float = 0.0,
+        shear_modulus_pa: float | None = None,
+    ):
+        if shear_modulus_pa is not None:
+            pasternak_stiffness_n_per_m = float(shear_modulus_pa)
+        object.__setattr__(self, "stiffness_pa", float(stiffness_pa))
+        object.__setattr__(self, "ogden_alpha", float(ogden_alpha))
+        object.__setattr__(self, "lock_strain", float(lock_strain))
+        object.__setattr__(self, "damping_pa_s", float(damping_pa_s))
+        object.__setattr__(self, "damping_power", float(damping_power))
+        object.__setattr__(self, "per_cylinder_area", bool(per_cylinder_area))
+        object.__setattr__(self, "prony_stiffness_pa", float(prony_stiffness_pa))
+        object.__setattr__(self, "prony_damping_pa_s", float(prony_damping_pa_s))
+        object.__setattr__(self, "state_warmup_cycles", int(state_warmup_cycles))
+        object.__setattr__(self, "pasternak_stiffness_n_per_m", float(pasternak_stiffness_n_per_m))
+
+    @property
+    def shear_modulus_pa(self) -> float:
+        """Deprecated alias for ``pasternak_stiffness_n_per_m``."""
+
+        return self.pasternak_stiffness_n_per_m
 
 
 @dataclass(frozen=True)
@@ -58,6 +91,8 @@ class FoundationFitSample:
     measured_force_n: float
     weight: float = 1.0
     cell_area_m2: np.ndarray | None = None
+    neighbors: np.ndarray | None = None
+    spacing_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +111,8 @@ class FoundationTrialBatch:
     displacement_m: np.ndarray
     phase: tuple[str, ...]
     force_zero_n: float = 0.0
+    neighbors: np.ndarray | None = None
+    spacing_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -123,19 +160,19 @@ def _foundation_kernel(
     laplacian = float(0.0)
     if h2 > 1.0e-12:
         n_left = neighbors[i, 0]
-        val_left = float(0.0)
+        val_left = comp
         if n_left != -1:
             val_left = wp.max(compression_m[n_left], 0.0)
         n_right = neighbors[i, 1]
-        val_right = float(0.0)
+        val_right = comp
         if n_right != -1:
             val_right = wp.max(compression_m[n_right], 0.0)
         n_bottom = neighbors[i, 2]
-        val_bottom = float(0.0)
+        val_bottom = comp
         if n_bottom != -1:
             val_bottom = wp.max(compression_m[n_bottom], 0.0)
         n_top = neighbors[i, 3]
-        val_top = float(0.0)
+        val_top = comp
         if n_top != -1:
             val_top = wp.max(compression_m[n_top], 0.0)
         laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
@@ -183,19 +220,19 @@ def _foundation_lengths_kernel(
     laplacian = float(0.0)
     if h2 > 1.0e-12:
         n_left = neighbors[i, 0]
-        val_left = float(0.0)
+        val_left = comp
         if n_left != -1:
             val_left = wp.max(slack_length_m[n_left] - current_length_m[n_left], 0.0)
         n_right = neighbors[i, 1]
-        val_right = float(0.0)
+        val_right = comp
         if n_right != -1:
             val_right = wp.max(slack_length_m[n_right] - current_length_m[n_right], 0.0)
         n_bottom = neighbors[i, 2]
-        val_bottom = float(0.0)
+        val_bottom = comp
         if n_bottom != -1:
             val_bottom = wp.max(slack_length_m[n_bottom] - current_length_m[n_bottom], 0.0)
         n_top = neighbors[i, 3]
-        val_top = float(0.0)
+        val_top = comp
         if n_top != -1:
             val_top = wp.max(slack_length_m[n_top] - current_length_m[n_top], 0.0)
         laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
@@ -220,9 +257,10 @@ def get_sdf_deflection(
     top_z_m: wp.array[float],
     indenter_sdf: TextureSDFData,
     indenter_inv_transform: wp.transform,
+    missing_value: float,
 ) -> float:
     if j == -1:
-        return 0.0
+        return missing_value
     xy = xy_m[j]
     world_pt = wp.vec3(xy[0], xy[1], top_z_m[j])
     local_pt = wp.transform_point(indenter_inv_transform, world_pt)
@@ -267,10 +305,10 @@ def _foundation_sdf_kernel(
     h2 = spacing_m * spacing_m
     laplacian = float(0.0)
     if h2 > 1.0e-12:
-        val_left = get_sdf_deflection(neighbors[i, 0], xy_m, top_z_m, indenter_sdf, indenter_inv_transform)
-        val_right = get_sdf_deflection(neighbors[i, 1], xy_m, top_z_m, indenter_sdf, indenter_inv_transform)
-        val_bottom = get_sdf_deflection(neighbors[i, 2], xy_m, top_z_m, indenter_sdf, indenter_inv_transform)
-        val_top = get_sdf_deflection(neighbors[i, 3], xy_m, top_z_m, indenter_sdf, indenter_inv_transform)
+        val_left = get_sdf_deflection(neighbors[i, 0], xy_m, top_z_m, indenter_sdf, indenter_inv_transform, comp)
+        val_right = get_sdf_deflection(neighbors[i, 1], xy_m, top_z_m, indenter_sdf, indenter_inv_transform, comp)
+        val_bottom = get_sdf_deflection(neighbors[i, 2], xy_m, top_z_m, indenter_sdf, indenter_inv_transform, comp)
+        val_top = get_sdf_deflection(neighbors[i, 3], xy_m, top_z_m, indenter_sdf, indenter_inv_transform, comp)
         laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
 
     elastic_stress = ogden_stress - params[7] * laplacian
@@ -319,19 +357,19 @@ def _foundation_lengths_batch_kernel(
     laplacian = float(0.0)
     if h2 > 1.0e-12:
         n_left = neighbors[spring, 0]
-        val_left = float(0.0)
+        val_left = comp
         if n_left != -1:
             val_left = wp.max(slack_length_m[n_left] - current_length_m[(tid / spring_count) * spring_count + n_left], 0.0)
         n_right = neighbors[spring, 1]
-        val_right = float(0.0)
+        val_right = comp
         if n_right != -1:
             val_right = wp.max(slack_length_m[n_right] - current_length_m[(tid / spring_count) * spring_count + n_right], 0.0)
         n_bottom = neighbors[spring, 2]
-        val_bottom = float(0.0)
+        val_bottom = comp
         if n_bottom != -1:
             val_bottom = wp.max(slack_length_m[n_bottom] - current_length_m[(tid / spring_count) * spring_count + n_bottom], 0.0)
         n_top = neighbors[spring, 3]
-        val_top = float(0.0)
+        val_top = comp
         if n_top != -1:
             val_top = wp.max(slack_length_m[n_top] - current_length_m[(tid / spring_count) * spring_count + n_top], 0.0)
         laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
@@ -390,19 +428,19 @@ def _foundation_lengths_stateful_batch_kernel(
             laplacian = float(0.0)
             if h2 > 1.0e-12:
                 n_left = neighbors[spring, 0]
-                val_left = float(0.0)
+                val_left = comp
                 if n_left != -1:
                     val_left = wp.max(slack_length_m[n_left] - current_length_m[frame * spring_count + n_left], 0.0)
                 n_right = neighbors[spring, 1]
-                val_right = float(0.0)
+                val_right = comp
                 if n_right != -1:
                     val_right = wp.max(slack_length_m[n_right] - current_length_m[frame * spring_count + n_right], 0.0)
                 n_bottom = neighbors[spring, 2]
-                val_bottom = float(0.0)
+                val_bottom = comp
                 if n_bottom != -1:
                     val_bottom = wp.max(slack_length_m[n_bottom] - current_length_m[frame * spring_count + n_bottom], 0.0)
                 n_top = neighbors[spring, 3]
-                val_top = float(0.0)
+                val_top = comp
                 if n_top != -1:
                     val_top = wp.max(slack_length_m[n_top] - current_length_m[frame * spring_count + n_top], 0.0)
                 laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
@@ -479,11 +517,25 @@ def infer_spacing(xy_m: np.ndarray) -> float:
     return float(np.min(dists))
 
 
-def _prepare_neighbors_and_spacing(xy_m: np.ndarray, device: str | wp.context.Device | None) -> tuple[wp.array, float]:
+def _prepare_neighbors_and_spacing(
+    xy_m: np.ndarray,
+    device: str | wp.context.Device | None,
+    neighbors: np.ndarray | None = None,
+    spacing_m: float | None = None,
+) -> tuple[wp.array, float]:
     from .geometry import compute_grid_neighbors
-    h = infer_spacing(xy_m)
-    neighbors = compute_grid_neighbors(xy_m, h)
-    neighbors_wp = wp.array(neighbors, dtype=wp.int32, device=device)
+
+    xy = np.asarray(xy_m)
+    h = infer_spacing(xy) if spacing_m is None else float(spacing_m)
+    if h < 0.0:
+        raise ValueError("spacing_m must be non-negative")
+    if neighbors is None:
+        neighbor_array = compute_grid_neighbors(xy, h)
+    else:
+        neighbor_array = np.asarray(neighbors, dtype=np.int32)
+        if neighbor_array.shape != (xy.shape[0], 4):
+            raise ValueError("neighbors must have shape (len(xy_m), 4)")
+    neighbors_wp = wp.array(neighbor_array, dtype=wp.int32, device=device)
     return neighbors_wp, h
 
 
@@ -514,6 +566,8 @@ def evaluate_foundation(
     thickness_m: float,
     material: FoundationMaterial,
     measured_force_n: float = 0.0,
+    neighbors: np.ndarray | None = None,
+    spacing_m: float | None = None,
     device: str | wp.context.Device | None = "cpu",
 ) -> FoundationResult:
     """Evaluate the differentiable foundation replay for one frame."""
@@ -536,7 +590,7 @@ def evaluate_foundation(
         dtype=float,
         device=device,
     )
-    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device, neighbors, spacing_m)
     force_out = wp.zeros(1, dtype=float, device=device)
     wrench_out = wp.zeros(6, dtype=float, device=device)
     loss_out = wp.zeros(1, dtype=float, device=device)
@@ -576,6 +630,8 @@ def evaluate_foundation_lengths(
     cell_area_m2: np.ndarray | float,
     material: FoundationMaterial,
     measured_force_n: float = 0.0,
+    neighbors: np.ndarray | None = None,
+    spacing_m: float | None = None,
     device: str | wp.context.Device | None = "cpu",
 ) -> FoundationResult:
     """Evaluate springs from current length relative to raycast slack length."""
@@ -602,7 +658,7 @@ def evaluate_foundation_lengths(
         dtype=float,
         device=device,
     )
-    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device, neighbors, spacing_m)
     force_out = wp.zeros(1, dtype=float, device=device)
     wrench_out = wp.zeros(6, dtype=float, device=device)
     wp.launch(
@@ -643,6 +699,8 @@ def evaluate_foundation_sdf(
     indenter_pos: wp.vec3 | tuple[float, float, float],
     indenter_quat: wp.quat | tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
     measured_force_n: float = 0.0,
+    neighbors: np.ndarray | None = None,
+    spacing_m: float | None = None,
     device: str | wp.context.Device | None = "cpu",
 ) -> FoundationResult:
     """Evaluate the differentiable foundation replay for one frame using an
@@ -692,7 +750,7 @@ def evaluate_foundation_sdf(
         dtype=float,
         device=device,
     )
-    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device, neighbors, spacing_m)
     force_out = wp.zeros(1, dtype=float, device=device)
     wrench_out = wp.zeros(6, dtype=float, device=device)
 
@@ -740,6 +798,8 @@ def foundation_lengths_loss_gradient(
     cell_area_m2: np.ndarray | float,
     material: FoundationMaterial,
     measured_force_n: float,
+    neighbors: np.ndarray | None = None,
+    spacing_m: float | None = None,
     device: str | wp.context.Device | None = "cpu",
 ) -> FoundationGradientResult:
     """Return force, loss, and material gradients for raycast-slack springs."""
@@ -767,7 +827,7 @@ def foundation_lengths_loss_gradient(
         device=device,
         requires_grad=True,
     )
-    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device, neighbors, spacing_m)
     force_out = wp.zeros(1, dtype=float, device=device, requires_grad=True)
     wrench_out = wp.zeros(6, dtype=float, device=device, requires_grad=True)
     loss_out = wp.zeros(1, dtype=float, device=device, requires_grad=True)
@@ -861,7 +921,7 @@ def foundation_lengths_batch_loss_gradient(
         device=device,
         requires_grad=True,
     )
-    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device, batch.neighbors, batch.spacing_m)
     force_out = wp.zeros(frame_count, dtype=float, device=device, requires_grad=True)
     loss_out = wp.zeros(1, dtype=float, device=device, requires_grad=True)
     force_scale = float(max(np.max(np.abs(measured)), 1.0))
@@ -983,7 +1043,7 @@ def evaluate_foundation_lengths_batch(
         dtype=float,
         device=device,
     )
-    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device, batch.neighbors, batch.spacing_m)
     force_out = wp.zeros(frame_count, dtype=float, device=device)
     loss_out = wp.zeros(1, dtype=float, device=device)
     if material.state_warmup_cycles >= 0:
@@ -1052,7 +1112,7 @@ def _material_to_array(material: FoundationMaterial, include_state: bool = False
             material.damping_power,
             material.prony_stiffness_pa,
             material.prony_damping_pa_s,
-            material.shear_modulus_pa,
+            material.pasternak_stiffness_n_per_m,
         ],
         dtype=np.float64,
     )
@@ -1065,7 +1125,7 @@ def _array_to_material(params: np.ndarray, base: FoundationMaterial | None = Non
     stiffness_pa = float(max(params[0], 1.0))
     prony_stiffness_pa = float(np.clip(params[5], 0.0, stiffness_pa))
     prony_damping_pa_s = float(max(params[6], 0.0))
-    shear_modulus_pa = float(max(params[7], 0.0))
+    pasternak_stiffness_n_per_m = float(max(params[7], 0.0))
 
     return FoundationMaterial(
         stiffness_pa=stiffness_pa,
@@ -1077,7 +1137,7 @@ def _array_to_material(params: np.ndarray, base: FoundationMaterial | None = Non
         prony_stiffness_pa=prony_stiffness_pa,
         prony_damping_pa_s=prony_damping_pa_s,
         state_warmup_cycles=state_warmup_cycles,
-        shear_modulus_pa=shear_modulus_pa,
+        pasternak_stiffness_n_per_m=pasternak_stiffness_n_per_m,
     )
 
 
@@ -1127,6 +1187,8 @@ def fit_foundation_material_autodiff(
                 cell_area_m2=sample_area,
                 material=material,
                 measured_force_n=sample.measured_force_n,
+                neighbors=sample.neighbors,
+                spacing_m=sample.spacing_m,
                 device=device,
             )
             weight = float(sample.weight)
@@ -1155,12 +1217,12 @@ def fit_foundation_material_autodiff(
                 "prony_stiffness_pa": float(material.prony_stiffness_pa),
                 "prony_damping_pa_s": float(material.prony_damping_pa_s),
                 "state_warmup_cycles": float(material.state_warmup_cycles),
-                "shear_modulus_pa": float(material.shear_modulus_pa),
+                "pasternak_stiffness_n_per_m": float(material.pasternak_stiffness_n_per_m),
                 "grad_stiffness_pa": float(mean_grad[0]),
                 "grad_damping_pa_s": float(mean_grad[3]),
                 "grad_prony_stiffness_pa": float(mean_grad[5]),
                 "grad_prony_damping_pa_s": float(mean_grad[6]),
-                "grad_shear_modulus_pa": float(mean_grad[7]),
+                "grad_pasternak_stiffness_n_per_m": float(mean_grad[7]),
             }
         )
         safe_grad = np.where(rates != 0.0, np.nan_to_num(mean_grad, nan=0.0, posinf=0.0, neginf=0.0), 0.0)
@@ -1181,7 +1243,7 @@ def fit_foundation_material_autodiff(
         prony_stiffness_pa=material.prony_stiffness_pa,
         prony_damping_pa_s=material.prony_damping_pa_s,
         state_warmup_cycles=material.state_warmup_cycles,
-        shear_modulus_pa=material.shear_modulus_pa,
+        pasternak_stiffness_n_per_m=material.pasternak_stiffness_n_per_m,
     )
     return FoundationFitResult(material=result_material, history=tuple(history))
 
@@ -1217,9 +1279,9 @@ def fit_foundation_material_batches_autodiff(
     # Get initial parameters
     params = _material_to_array(initial_material, include_state=True)
 
-    # If shear_modulus_pa is initialized to 0.0, but we have learning rates,
+    # If pasternak_stiffness_n_per_m is initialized to 0.0, but we have learning rates,
     # initialize it to 500.0 so the log-space optimization can run and find positive values.
-    # We do this only if rates[7] (shear modulus rate) will be non-zero.
+    # We do this only if rates[7] (Pasternak stiffness rate) will be non-zero.
     rates = np.zeros(8, dtype=np.float64)
     rates[:7] = learning_rates
     rates[7] = 1.0e-2
@@ -1236,7 +1298,7 @@ def fit_foundation_material_batches_autodiff(
         (0.01, 5.0),        # damping_power
         (1.0, 1.0e7),       # prony_stiffness_pa
         (1.0, 1.0e6),       # prony_damping_pa_s
-        (0.1, 1.0e5),       # shear_modulus_pa
+        (0.1, 1.0e5),       # pasternak_stiffness_n_per_m
     ]
 
     # For any parameter with rates[i] == 0, lock it at its initial value
@@ -1273,7 +1335,13 @@ def fit_foundation_material_batches_autodiff(
         frame_sum = 0
 
         for batch in batches:
-            result = foundation_lengths_batch_loss_gradient(xy_m, batch, material=material, loop_weight=loop_weight, device=device)
+            result = foundation_lengths_batch_loss_gradient(
+                xy_m,
+                batch,
+                material=material,
+                loop_weight=loop_weight,
+                device=device,
+            )
             loss_sum += result.loss
             grad_sum_x += result.gradient
             force_sum += float(np.sum(result.predicted_force_n))
@@ -1302,7 +1370,7 @@ def fit_foundation_material_batches_autodiff(
                 "prony_stiffness_pa": float(material.prony_stiffness_pa),
                 "prony_damping_pa_s": float(material.prony_damping_pa_s),
                 "state_warmup_cycles": float(material.state_warmup_cycles),
-                "shear_modulus_pa": float(material.shear_modulus_pa),
+                "pasternak_stiffness_n_per_m": float(material.pasternak_stiffness_n_per_m),
                 "grad_stiffness_pa": float(mean_grad_x[0]),
                 "grad_ogden_alpha": float(mean_grad_x[1]),
                 "grad_lock_strain": float(mean_grad_x[2]),
@@ -1310,7 +1378,7 @@ def fit_foundation_material_batches_autodiff(
                 "grad_damping_power": float(mean_grad_x[4]),
                 "grad_prony_stiffness_pa": float(mean_grad_x[5]),
                 "grad_prony_damping_pa_s": float(mean_grad_x[6]),
-                "grad_shear_modulus_pa": float(mean_grad_x[7]),
+                "grad_pasternak_stiffness_n_per_m": float(mean_grad_x[7]),
             }
         )
         return mean_loss, mean_grad_y
@@ -1340,7 +1408,7 @@ def fit_foundation_material_batches_autodiff(
         prony_stiffness_pa=best_material.prony_stiffness_pa,
         prony_damping_pa_s=best_material.prony_damping_pa_s,
         state_warmup_cycles=best_material.state_warmup_cycles,
-        shear_modulus_pa=best_material.shear_modulus_pa,
+        pasternak_stiffness_n_per_m=best_material.pasternak_stiffness_n_per_m,
     )
     return FoundationFitResult(material=result_material, history=tuple(history))
 
@@ -1402,6 +1470,8 @@ def warp_loss_gradient(
     thickness_m: float,
     material: FoundationMaterial,
     measured_force_n: float,
+    neighbors: np.ndarray | None = None,
+    spacing_m: float | None = None,
     device: str | wp.context.Device | None = "cpu",
 ) -> np.ndarray:
     """Return ``d loss / d material`` from Warp autodiff."""
@@ -1418,7 +1488,7 @@ def warp_loss_gradient(
         device=device,
         requires_grad=True,
     )
-    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device)
+    neighbors_wp, h = _prepare_neighbors_and_spacing(xy_m, device, neighbors, spacing_m)
     force_out = wp.zeros(1, dtype=float, device=device, requires_grad=True)
     wrench_out = wp.zeros(6, dtype=float, device=device, requires_grad=True)
     loss_out = wp.zeros(1, dtype=float, device=device, requires_grad=True)

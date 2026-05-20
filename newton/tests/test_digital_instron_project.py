@@ -261,7 +261,7 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
                 material.damping_power,
                 material.prony_stiffness_pa,
                 material.prony_damping_pa_s,
-                material.shear_modulus_pa,
+                material.pasternak_stiffness_n_per_m,
             ],
             dtype=wp.float32,
             device=device,
@@ -914,14 +914,14 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
             ogden_alpha=2.0,
             lock_strain=0.65,
             damping_pa_s=0.0,
-            shear_modulus_pa=0.0,
+            pasternak_stiffness_n_per_m=0.0,
         )
         mat_with_shear = FoundationMaterial(
             stiffness_pa=1.0e6,
             ogden_alpha=2.0,
             lock_strain=0.65,
             damping_pa_s=0.0,
-            shear_modulus_pa=5.0e5,
+            pasternak_stiffness_n_per_m=5.0e5,
         )
 
         compression = np.zeros(9)
@@ -948,6 +948,37 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
         )
 
         self.assertGreater(res_shear.force_n, res_zero.force_n)
+
+    def test_pasternak_free_boundary_preserves_uniform_compression(self):
+        """Uniform compression should not gain artificial edge force from missing neighbors."""
+        x = np.linspace(-0.01, 0.01, 3)
+        y = np.linspace(-0.01, 0.01, 3)
+        xx, yy = np.meshgrid(x, y)
+        xy = np.column_stack([xx.ravel(), yy.ravel()])
+        compression = np.full(9, 0.005)
+        velocity = np.zeros(9)
+
+        mat_zero_pasternak = FoundationMaterial(1.0e6, 2.0, 0.65, 0.0, pasternak_stiffness_n_per_m=0.0)
+        mat_with_pasternak = FoundationMaterial(1.0e6, 2.0, 0.65, 0.0, pasternak_stiffness_n_per_m=5.0e5)
+
+        res_zero = evaluate_foundation(
+            xy,
+            compression,
+            velocity,
+            cell_area_m2=1.0e-4,
+            thickness_m=0.03,
+            material=mat_zero_pasternak,
+        )
+        res_pasternak = evaluate_foundation(
+            xy,
+            compression,
+            velocity,
+            cell_area_m2=1.0e-4,
+            thickness_m=0.03,
+            material=mat_with_pasternak,
+        )
+
+        self.assertAlmostEqual(res_pasternak.force_n, res_zero.force_n, delta=abs(res_zero.force_n) * 1.0e-5)
 
     def test_qlv_prony_relaxation(self):
         """Verify that stateful QLV Prony series relaxation causes force decay under constant strain."""

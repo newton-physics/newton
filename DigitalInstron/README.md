@@ -72,9 +72,22 @@ That writes:
 - `processed/v2_cache/digital_instron_v2_raycast_grid.png`
 - `processed/v2_cache/digital_instron_v2_spring_response.png`
 - `processed/v2_cache/digital_instron_v2_spring_snapshot.png`
+- `processed/v2_cache/digital_instron_v2_contact_squish.png`
+- `processed/v2_cache/digital_instron_v2_max_compression_map.png`
+- `processed/v2_cache/digital_instron_v2_impact_<trial>.gif`
 - `processed/v2_cache/digital_instron_v2_spring_grid.csv`
 - `processed/v2_cache/digital_instron_v2_spring_grid.npz`
 - `processed/v2_cache/digital_instron_v2_visualization.summary.json`
+
+To inspect the same calibrated impact replay in the Newton viewer:
+
+```powershell
+uv run --extra dev -m newton.examples digital_instron_impact --manifest DigitalInstron/manifest_v2.json --trial rearfoot_140ms
+```
+
+Use `--trial fullfoot_185ms` to view the full-foot last, or add
+`--viewer usd --output-path DigitalInstron/processed/v2_cache/digital_instron_impact.usd`
+to record the scene as USD.
 
 ## Current v2 Choices
 
