@@ -221,18 +221,6 @@ class Model:
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Contact stiffness is computed as ``area * kh``, yielding an effective spring constant [N/m]."""
         self.shape_gap: wp.array[wp.float32] | None = None
-        self.shape_hydroelastic_contact_workflow: wp.array[wp.int32] | None = None
-        """Hydroelastic contact workflow enum value per shape, shape [shape_count], int32."""
-        self.shape_hydro_pressure_profile: wp.array[wp.int32] | None = None
-        """Hydro pressure profile enum per shape, shape [shape_count], int32."""
-        self.shape_hydro_pressure_layer_params: wp.array[wp.vec4] | None = None
-        """Layer pressure parameters (eta_lock, q, cubic, quintic) per shape [unitless], shape [shape_count, 4], float."""
-        self.shape_hydro_pressure_sine_amplitude: wp.array[wp.vec3] | None = None
-        """Hydro pressure sine amplitude (x, y, z) per shape [unitless], shape [shape_count, 3], float."""
-        self.shape_hydro_pressure_sine_cycles: wp.array[wp.vec3] | None = None
-        """Hydro pressure sine cycles (x, y, z) per shape [unitless], shape [shape_count, 3], float."""
-        self.shape_hydro_pressure_sine_phase: wp.array[wp.vec3] | None = None
-        """Hydro pressure sine phase (x, y, z) per shape [rad], shape [shape_count, 3], float."""
         """Shape additional contact detection gap [m], shape [shape_count], float."""
 
         # Shape geometry properties
@@ -825,12 +813,7 @@ class Model:
         self.attribute_frequency["shape_material_mu_torsional"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_mu_rolling"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_kh"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_hydroelastic_contact_workflow"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_hydro_pressure_profile"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_hydro_pressure_layer_params"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_hydro_pressure_sine_amplitude"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_hydro_pressure_sine_cycles"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_hydro_pressure_sine_phase"] = Model.AttributeFrequency.SHAPE
+
         self.attribute_frequency["shape_gap"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = Model.AttributeFrequency.SHAPE
