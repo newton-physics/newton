@@ -62,11 +62,13 @@ class UI:
 
         # pyglet 2.1 dispatches ``on_scale`` when the window moves between
         # displays with different DPI scaling. Such transitions don't always
-        # fire ``on_resize``, so we'd otherwise miss the DPI change.
+        # fire ``on_resize``, so we'd otherwise miss the DPI change. Older
+        # pyglet builds don't register the event type at all; AttributeError
+        # / KeyError from ``push_handlers`` is the expected outcome there.
         try:
             self.window.push_handlers(on_scale=self._on_window_scale)
-        except Exception:
-            pass
+        except (AttributeError, KeyError) as exc:
+            print(f"Warning: pyglet on_scale event unavailable ({exc!r}); DPI changes will only refresh on resize.")
 
         # Set up proper DPI scaling for high-DPI displays.
         #
@@ -77,18 +79,26 @@ class UI:
         # documented pyglet API for HiDPI is ``window.scale`` which returns
         # ``backingScaleFactor()`` on macOS and ``dpi/96`` elsewhere. Combine
         # both so we always pick the larger non-trivial factor.
-        window_width, window_height = self.window.get_size()
-        fb_width, fb_height = self.window.get_framebuffer_size()
-        if window_width > 0 and window_height > 0:
-            scale_x = fb_width / window_width
-            scale_y = fb_height / window_height
-            self.io.display_framebuffer_scale = (scale_x, scale_y)
-            self.io.display_size = (fb_width, fb_height)
+        self._refresh_io_metrics()
         self.dpi_scale = self._detect_dpi_scale()
 
         # ``_apply_dpi_scaling`` resets to the base dark style and then scales
         # it; no need to call ``_setup_dark_style`` separately here.
         self._apply_dpi_scaling()
+
+    def _refresh_io_metrics(self) -> None:
+        """Sync ``io.display_size`` and ``io.display_framebuffer_scale`` with
+        the current pyglet window.
+
+        Called on initial setup, on ``on_resize``, and on ``on_scale`` so the
+        ImGui IO never lags behind pyglet's view of the window — including
+        scale-only display transitions where ``on_resize`` isn't fired.
+        """
+        window_width, window_height = self.window.get_size()
+        fb_width, fb_height = self.window.get_framebuffer_size()
+        if window_width > 0 and window_height > 0:
+            self.io.display_framebuffer_scale = (fb_width / window_width, fb_height / window_height)
+        self.io.display_size = (fb_width, fb_height)
 
     def _on_window_scale(self, scale: float, dpi: int) -> None:
         """Refresh DPI scaling when pyglet reports a display change.
@@ -99,6 +109,10 @@ class UI:
         """
         if not self.is_available:
             return
+        # Keep ImGui IO metrics in sync even when ``on_resize`` is skipped —
+        # ``display_framebuffer_scale`` in particular can change without a
+        # framebuffer-size change when the backing scale factor flips.
+        self._refresh_io_metrics()
         new_scale = self._detect_dpi_scale()
         if abs(new_scale - self.dpi_scale) > 1e-3:
             self.dpi_scale = new_scale
@@ -390,17 +404,7 @@ class UI:
         if not self.is_available:
             return
 
-        # Get framebuffer size for proper DPI scaling
-        fb_width, fb_height = self.window.get_framebuffer_size()
-
-        # Update display framebuffer scale
-        if width > 0 and height > 0:
-            scale_x = fb_width / width
-            scale_y = fb_height / height
-            self.io.display_framebuffer_scale = (scale_x, scale_y)
-
-        # Use framebuffer size for display size
-        self.io.display_size = fb_width, fb_height
+        self._refresh_io_metrics()
 
         # Reapply style/font scaling only when the DPI actually changes —
         # e.g. the window moved to a display with different scaling.
