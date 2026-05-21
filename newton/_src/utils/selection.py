@@ -568,8 +568,11 @@ class ArticulationView:
         arti_joint_types = []
         arti_link_ids = []
         arti_link_names = []
+        arti_link_template_labels = []
+        arti_joint_template_labels = []
         arti_shape_ids = []
         arti_shape_names = []
+        arti_shape_template_labels = []
 
         # gather joint info
         arti_joint_begin = int(model_articulation_start[arti_0])
@@ -584,6 +587,7 @@ class ArticulationView:
         for joint_id in range(arti_joint_begin, arti_joint_end):
             # joint_id = arti_joint_begin + idx
             arti_joint_ids.append(joint_id)
+            arti_joint_template_labels.append(model.joint_label[joint_id])
             arti_joint_names.append(get_name_from_label(model.joint_label[joint_id]))
             arti_joint_types.append(model_joint_type[joint_id])
             link_id = int(model_joint_child[joint_id])
@@ -593,6 +597,7 @@ class ArticulationView:
         arti_link_ids = sorted(arti_link_ids)
         arti_link_count = len(arti_link_ids)
         for link_id in arti_link_ids:
+            arti_link_template_labels.append(model.body_label[link_id])
             arti_link_names.append(get_name_from_label(model.body_label[link_id]))
             arti_shape_ids.extend(model.body_shapes[link_id])
 
@@ -600,6 +605,7 @@ class ArticulationView:
         arti_shape_ids = sorted(arti_shape_ids)
         arti_shape_count = len(arti_shape_ids)
         for shape_id in arti_shape_ids:
+            arti_shape_template_labels.append(model.shape_label[shape_id])
             arti_shape_names.append(get_name_from_label(model.shape_label[shape_id]))
 
         # compute counts and offsets of joints, links, etc.
@@ -797,13 +803,16 @@ class ArticulationView:
         selected_link_indices = sorted(link_include_indices - link_exclude_indices)
 
         self.joint_names = []
+        self.joint_template_labels = []
         self.joint_dof_names = []
         self.joint_dof_counts = []
         self.joint_coord_names = []
         self.joint_coord_counts = []
         self.link_names = []
+        self.link_template_labels = []
         self.link_shapes = []
         self.shape_names = []
+        self.shape_template_labels = []
 
         # populate info for selected joints and dofs
         selected_joint_dof_indices = []
@@ -812,6 +821,7 @@ class ArticulationView:
             joint_id = arti_joint_ids[joint_idx]
             joint_name = arti_joint_names[joint_idx]
             self.joint_names.append(joint_name)
+            self.joint_template_labels.append(arti_joint_template_labels[joint_idx])
             # joint dofs
             dof_begin = int(model_joint_qd_start[joint_id])
             dof_end = int(model_joint_qd_start[joint_id + 1])
@@ -843,6 +853,7 @@ class ArticulationView:
         for link_idx, arti_link_idx in enumerate(selected_link_indices):
             body_id = arti_link_ids[arti_link_idx]
             self.link_names.append(arti_link_names[arti_link_idx])
+            self.link_template_labels.append(arti_link_template_labels[arti_link_idx])
             shape_ids = model.body_shapes[body_id]
             for shape_id in shape_ids:
                 arti_shape_idx = arti_shape_ids.index(shape_id)
@@ -853,6 +864,7 @@ class ArticulationView:
         selected_shape_indices = sorted(selected_shape_indices)
         for shape_idx, arti_shape_idx in enumerate(selected_shape_indices):
             self.shape_names.append(arti_shape_names[arti_shape_idx])
+            self.shape_template_labels.append(arti_shape_template_labels[arti_shape_idx])
             link_idx = shape_link_idx[arti_shape_idx]
             self.link_shapes[link_idx].append(shape_idx)
 
