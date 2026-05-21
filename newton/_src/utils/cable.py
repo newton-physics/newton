@@ -11,6 +11,59 @@ import warp as wp
 from ..math import quat_between_vectors_robust
 
 
+@wp.kernel
+def _set_indexed_body_transforms(
+    body_indices: wp.array[wp.int32],
+    transforms: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+):
+    tid = wp.tid()
+    body_q[body_indices[tid]] = transforms[tid]
+
+
+@wp.kernel
+def _set_indexed_body_transforms_and_zero_velocities(
+    body_indices: wp.array[wp.int32],
+    transforms: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    tid = wp.tid()
+    body_id = body_indices[tid]
+    body_q[body_id] = transforms[tid]
+    body_qd[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+def _as_vec3(value, name: str) -> wp.vec3:
+    try:
+        v = wp.vec3(float(value[0]), float(value[1]), float(value[2]))
+    except (IndexError, TypeError, ValueError) as exc:
+        raise TypeError(f"{name} must be a 3D vector") from exc
+
+    if not all(math.isfinite(float(v[i])) for i in range(3)):
+        raise ValueError(f"{name} must contain finite values")
+    return v
+
+
+def _as_points(points: Sequence[wp.vec3], name: str = "points") -> list[wp.vec3]:
+    return [_as_vec3(p, f"{name}[{i}]") for i, p in enumerate(points)]
+
+
+def _as_body_indices(body_indices: Sequence[int]) -> list[int]:
+    indices = [int(i) for i in body_indices]
+    if not indices:
+        raise ValueError("body_indices must contain at least one body index")
+    if any(i < 0 for i in indices):
+        raise ValueError("body_indices must be non-negative")
+    return indices
+
+
+def _as_state_sequence(states) -> list[object]:
+    if hasattr(states, "body_q"):
+        return [states]
+    return list(states)
+
+
 def create_cable_stiffness_from_elastic_moduli(
     youngs_modulus: float,
     radius: float,
@@ -99,6 +152,121 @@ def create_straight_cable_points(
     return [start + d * (ds * i) for i in range(num_segments + 1)]
 
 
+def compute_cable_segment_lengths(points: Sequence[wp.vec3]) -> list[float]:
+    """Compute consecutive segment lengths for a cable polyline.
+
+    Args:
+        points: Polyline points of length >= 2.
+
+    Returns:
+        List of per-segment lengths of length ``len(points) - 1``.
+    """
+    points_wp = _as_points(points)
+    if len(points_wp) < 2:
+        raise ValueError("points must have length >= 2")
+
+    lengths: list[float] = []
+    for i in range(len(points_wp) - 1):
+        length = float(wp.length(points_wp[i + 1] - points_wp[i]))
+        if not math.isfinite(length):
+            raise ValueError("points must contain finite values")
+        if length <= 0.0:
+            raise ValueError("points must not contain duplicate consecutive points")
+        lengths.append(length)
+    return lengths
+
+
+def validate_cable_segment_lengths_match(
+    rest_points: Sequence[wp.vec3],
+    initial_points: Sequence[wp.vec3],
+    *,
+    rtol: float = 1.0e-5,
+    atol: float = 1.0e-7,
+) -> None:
+    """Validate that rest and initial cable polylines have matching segment lengths.
+
+    Use this when both rest and initial cable shapes are non-straight and should start without
+    stretch strain.
+
+    Args:
+        rest_points: Rest cable polyline points.
+        initial_points: Initial cable polyline points.
+        rtol: Relative tolerance for each segment length.
+        atol: Absolute tolerance for each segment length.
+
+    Raises:
+        ValueError: If the polylines have different segment counts or any segment length differs
+            beyond ``atol + rtol * abs(rest_length)``.
+    """
+    rest_lengths = compute_cable_segment_lengths(rest_points)
+    initial_lengths = compute_cable_segment_lengths(initial_points)
+
+    if len(rest_lengths) != len(initial_lengths):
+        raise ValueError(
+            "rest_points and initial_points must have the same number of segments "
+            f"(got {len(rest_lengths)} and {len(initial_lengths)})"
+        )
+
+    rtol_f = float(rtol)
+    atol_f = float(atol)
+    if rtol_f < 0.0 or not math.isfinite(rtol_f):
+        raise ValueError("rtol must be finite and >= 0")
+    if atol_f < 0.0 or not math.isfinite(atol_f):
+        raise ValueError("atol must be finite and >= 0")
+
+    for i, (rest_length, initial_length) in enumerate(zip(rest_lengths, initial_lengths, strict=True)):
+        error = abs(initial_length - rest_length)
+        tolerance = atol_f + rtol_f * abs(rest_length)
+        if error > tolerance:
+            raise ValueError(
+                "rest and initial cable segment lengths differ at segment "
+                f"{i}: rest={rest_length:.9g}, initial={initial_length:.9g}, tolerance={tolerance:.3g}"
+            )
+
+
+def create_straight_cable_points_from_lengths(
+    start: wp.vec3,
+    direction: wp.vec3,
+    segment_lengths: Sequence[float],
+) -> list[wp.vec3]:
+    """Create straight cable points with explicit per-segment rest lengths.
+
+    This is useful when a cable's initial shape is curved but its rest shape should be straight
+    with matching segment lengths.
+
+    Args:
+        start: First point in world space.
+        direction: World-space direction of the straight rest cable (need not be normalized).
+        segment_lengths: Positive per-segment lengths.
+
+    Returns:
+        List of ``wp.vec3`` points of length ``len(segment_lengths) + 1``.
+    """
+    start_wp = _as_vec3(start, "start")
+    direction_wp = _as_vec3(direction, "direction")
+
+    dir_len = float(wp.length(direction_wp))
+    if dir_len <= 0.0:
+        raise ValueError("direction must be non-zero")
+    d = direction_wp / dir_len
+
+    lengths = [float(length) for length in segment_lengths]
+    if not lengths:
+        raise ValueError("segment_lengths must contain at least one length")
+    for i, length in enumerate(lengths):
+        if not math.isfinite(length):
+            raise ValueError(f"segment_lengths[{i}] must be finite")
+        if length <= 0.0:
+            raise ValueError(f"segment_lengths[{i}] must be > 0")
+
+    points = [start_wp]
+    distance = 0.0
+    for length in lengths:
+        distance += length
+        points.append(start_wp + d * distance)
+    return points
+
+
 def create_parallel_transport_cable_quaternions(
     points: Sequence[wp.vec3],
     *,
@@ -153,6 +321,81 @@ def create_parallel_transport_cable_quaternions(
     return quats
 
 
+def create_cable_body_transforms(
+    points: Sequence[wp.vec3],
+    quaternions: Sequence[wp.quat] | None = None,
+    *,
+    twist_total: float = 0.0,
+) -> list[wp.transform]:
+    """Create rod body transforms from cable points and per-segment quaternions.
+
+    The returned transforms match the ``ModelBuilder.add_rod()`` convention: body ``i`` is
+    placed at ``points[i]`` with an orientation for segment ``i``.
+
+    Args:
+        points: Cable polyline points of length >= 2.
+        quaternions: Optional per-segment orientations. If omitted, parallel-transport
+            orientations are generated from ``points``.
+        twist_total: Optional total twist used only when ``quaternions`` is omitted.
+
+    Returns:
+        List of ``wp.transform`` values of length ``len(points) - 1``.
+    """
+    points_wp = _as_points(points)
+    if len(points_wp) < 2:
+        raise ValueError("points must have length >= 2")
+
+    if quaternions is None:
+        quats = create_parallel_transport_cable_quaternions(points_wp, twist_total=twist_total)
+    else:
+        quats = list(quaternions)
+        expected = len(points_wp) - 1
+        if len(quats) != expected:
+            raise ValueError(f"quaternions must have {expected} elements, got {len(quats)}")
+
+    return [wp.transform(points_wp[i], quats[i]) for i in range(len(quats))]
+
+
+def create_straight_cable_rest_from_initial(
+    initial_points: Sequence[wp.vec3],
+    *,
+    start: wp.vec3 | None = None,
+    direction: wp.vec3 | None = None,
+    twist_total: float = 0.0,
+) -> tuple[list[wp.vec3], list[wp.quat]]:
+    """Create a straight rest cable that preserves initial per-segment lengths.
+
+    This supports the common VBD setup where the model/rest cable is straight, but the
+    simulation starts from a curved cable pose. Matching segment lengths avoids unintended
+    initial stretch while still allowing initial bend.
+
+    Args:
+        initial_points: Initial cable polyline points.
+        start: Optional start point for the straight rest cable. Defaults to
+            ``initial_points[0]``.
+        direction: Optional straight rest direction. Defaults to the chord from first to
+            last point, falling back to the first segment direction when the chord is zero.
+        twist_total: Total twist used to generate rest quaternions.
+
+    Returns:
+        Pair ``(rest_points, rest_quaternions)`` suitable for ``ModelBuilder.add_rod()``.
+    """
+    points_wp = _as_points(initial_points, "initial_points")
+    lengths = compute_cable_segment_lengths(points_wp)
+
+    start_wp = points_wp[0] if start is None else _as_vec3(start, "start")
+    if direction is None:
+        direction_wp = points_wp[-1] - points_wp[0]
+        if float(wp.length(direction_wp)) <= 0.0:
+            direction_wp = points_wp[1] - points_wp[0]
+    else:
+        direction_wp = _as_vec3(direction, "direction")
+
+    rest_points = create_straight_cable_points_from_lengths(start_wp, direction_wp, lengths)
+    rest_quats = create_parallel_transport_cable_quaternions(rest_points, twist_total=twist_total)
+    return rest_points, rest_quats
+
+
 def create_straight_cable_points_and_quaternions(
     start: wp.vec3,
     direction: wp.vec3,
@@ -175,3 +418,84 @@ def create_straight_cable_points_and_quaternions(
     )
     quats = create_parallel_transport_cable_quaternions(points, twist_total=twist_total)
     return points, quats
+
+
+def apply_cable_body_transforms(
+    states,
+    body_indices: Sequence[int],
+    transforms: Sequence[wp.transform],
+    *,
+    solver=None,
+    zero_velocities: bool = True,
+    sync_body_q_prev: bool = True,
+) -> None:
+    """Apply cable body transforms to states and optional solver previous-pose storage.
+
+    Use this when a cable's simulation initial pose differs from its model/rest pose. It updates
+    only the requested bodies and, when a VBD solver is provided, keeps ``solver.body_q_prev`` in
+    sync so the first step does not see an artificial teleportation.
+
+    Args:
+        states: A single ``State`` or a sequence of states whose ``body_q`` arrays should be updated.
+        body_indices: Body indices corresponding to ``transforms``.
+        transforms: Initial body transforms, one per body index.
+        solver: Optional solver with a ``body_q_prev`` array, e.g. ``SolverVBD``.
+        zero_velocities: If True, zero matching ``state.body_qd`` entries when present.
+        sync_body_q_prev: If True, also update any available ``body_q_prev`` arrays on states and
+            the optional solver.
+    """
+    states_list = _as_state_sequence(states)
+    indices = _as_body_indices(body_indices)
+    xforms = list(transforms)
+    if len(xforms) != len(indices):
+        raise ValueError(f"transforms must have {len(indices)} elements, got {len(xforms)}")
+
+    for state_index, state in enumerate(states_list):
+        body_q = getattr(state, "body_q", None)
+        if body_q is None:
+            raise ValueError(f"states[{state_index}] does not have a body_q array")
+
+        body_indices_wp = wp.array(indices, dtype=wp.int32, device=body_q.device)
+        transforms_wp = wp.array(xforms, dtype=wp.transform, device=body_q.device)
+
+        body_qd = getattr(state, "body_qd", None)
+        if zero_velocities and body_qd is not None:
+            wp.launch(
+                _set_indexed_body_transforms_and_zero_velocities,
+                dim=len(indices),
+                inputs=[body_indices_wp, transforms_wp, body_q, body_qd],
+                device=body_q.device,
+            )
+        else:
+            wp.launch(
+                _set_indexed_body_transforms,
+                dim=len(indices),
+                inputs=[body_indices_wp, transforms_wp, body_q],
+                device=body_q.device,
+            )
+
+        if sync_body_q_prev:
+            state_body_q_prev = getattr(state, "body_q_prev", None)
+            if state_body_q_prev is not None:
+                prev_body_indices_wp = wp.array(indices, dtype=wp.int32, device=state_body_q_prev.device)
+                prev_transforms_wp = wp.array(xforms, dtype=wp.transform, device=state_body_q_prev.device)
+                wp.launch(
+                    _set_indexed_body_transforms,
+                    dim=len(indices),
+                    inputs=[prev_body_indices_wp, prev_transforms_wp, state_body_q_prev],
+                    device=state_body_q_prev.device,
+                )
+
+    if solver is not None and sync_body_q_prev:
+        solver_body_q_prev = getattr(solver, "body_q_prev", None)
+        if solver_body_q_prev is None:
+            raise ValueError("solver does not have a body_q_prev array")
+
+        body_indices_wp = wp.array(indices, dtype=wp.int32, device=solver_body_q_prev.device)
+        transforms_wp = wp.array(xforms, dtype=wp.transform, device=solver_body_q_prev.device)
+        wp.launch(
+            _set_indexed_body_transforms,
+            dim=len(indices),
+            inputs=[body_indices_wp, transforms_wp, solver_body_q_prev],
+            device=solver_body_q_prev.device,
+        )

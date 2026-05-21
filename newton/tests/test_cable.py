@@ -314,6 +314,84 @@ def _make_straight_cable_along_y(num_elements: int, segment_length: float, z_hei
     )
 
 
+def _cable_rest_initial_pose_utils_impl(test: unittest.TestCase, device):
+    """Cable helpers preserve segment lengths when straight rest differs from curved initial pose."""
+    initial_points = [
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(0.18, 0.06, 1.04),
+        wp.vec3(0.38, 0.12, 0.98),
+        wp.vec3(0.60, 0.04, 1.02),
+    ]
+    initial_lengths = newton.utils.compute_cable_segment_lengths(initial_points)
+
+    rest_points, rest_quats = newton.utils.create_straight_cable_rest_from_initial(
+        initial_points,
+        start=wp.vec3(-0.3, 0.0, 1.0),
+        direction=wp.vec3(1.0, 0.0, 0.0),
+    )
+    rest_lengths = newton.utils.compute_cable_segment_lengths(rest_points)
+    test.assertEqual(len(rest_quats), len(initial_points) - 1)
+    np.testing.assert_allclose(rest_lengths, initial_lengths, rtol=1.0e-6, atol=1.0e-8)
+    newton.utils.validate_cable_segment_lengths_match(rest_points, initial_points)
+
+    stretched_initial_points = list(initial_points)
+    stretched_initial_points[1] = wp.vec3(0.24, 0.06, 1.04)
+    with test.assertRaisesRegex(ValueError, "segment lengths differ"):
+        newton.utils.validate_cable_segment_lengths_match(rest_points, stretched_initial_points)
+
+    xforms = newton.utils.create_cable_body_transforms(initial_points)
+    test.assertEqual(len(xforms), len(initial_points) - 1)
+
+    xform_np = wp.array(xforms, dtype=wp.transform, device=device).numpy()
+    np.testing.assert_allclose(xform_np[:, :3], np.array(initial_points[:-1], dtype=float), rtol=0.0, atol=1.0e-7)
+
+
+def _apply_cable_body_transforms_syncs_vbd_history_impl(test: unittest.TestCase, device):
+    """Applying a cable initial pose updates states and VBD previous-pose storage consistently."""
+    builder = newton.ModelBuilder()
+    rest_points, rest_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=wp.vec3(0.0, 0.0, 1.0),
+        direction=wp.vec3(1.0, 0.0, 0.0),
+        length=0.6,
+        num_segments=3,
+    )
+    rod_bodies, _rod_joints = builder.add_rod(
+        positions=rest_points,
+        quaternions=rest_quats,
+        radius=0.02,
+        stretch_stiffness=1.0e5,
+        bend_stiffness=10.0,
+        label="ut_rest_init_pose",
+    )
+
+    builder.color()
+    model = builder.finalize(device=device)
+    state0 = model.state()
+    state1 = model.state()
+    solver = newton.solvers.SolverVBD(model, iterations=1)
+
+    initial_points = [
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(0.18, 0.08, 1.03),
+        wp.vec3(0.39, 0.12, 0.98),
+        wp.vec3(0.60, 0.04, 1.02),
+    ]
+    initial_xforms = newton.utils.create_cable_body_transforms(initial_points)
+
+    newton.utils.apply_cable_body_transforms(
+        [state0, state1],
+        rod_bodies,
+        initial_xforms,
+        solver=solver,
+    )
+
+    expected = wp.array(initial_xforms, dtype=wp.transform, device=device).numpy()
+    np.testing.assert_allclose(state0.body_q.numpy()[rod_bodies], expected, rtol=0.0, atol=1.0e-7)
+    np.testing.assert_allclose(state1.body_q.numpy()[rod_bodies], expected, rtol=0.0, atol=1.0e-7)
+    np.testing.assert_allclose(solver.body_q_prev.numpy()[rod_bodies], expected, rtol=0.0, atol=1.0e-7)
+    np.testing.assert_allclose(state0.body_qd.numpy()[rod_bodies], 0.0, rtol=0.0, atol=0.0)
+
+
 # -----------------------------------------------------------------------------
 # Model builders
 # -----------------------------------------------------------------------------
@@ -4101,6 +4179,18 @@ add_function_test(
     TestCable,
     "test_cable_chain_connectivity",
     _cable_chain_connectivity_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rest_initial_pose_utils",
+    _cable_rest_initial_pose_utils_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_apply_cable_body_transforms_syncs_vbd_history",
+    _apply_cable_body_transforms_syncs_vbd_history_impl,
     devices=devices,
 )
 add_function_test(
