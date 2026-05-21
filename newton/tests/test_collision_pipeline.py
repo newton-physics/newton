@@ -10,6 +10,8 @@ import warp.examples
 
 import newton
 from newton import GeoType
+from newton._src.geometry import create_mesh_terrain
+from newton._src.geometry.flags import ShapeFlags
 from newton._src.sim.collide import _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
 from newton.examples import test_body_state
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
@@ -100,7 +102,7 @@ class CollisionSetup:
 
         self.graph = None
         if wp.get_device(device).is_cuda:
-            with wp.ScopedCapture() as capture:
+            with wp.ScopedCapture(device=device) as capture:
                 self.simulate()
             self.graph = capture.graph
 
@@ -140,8 +142,8 @@ class CollisionSetup:
             raise NotImplementedError(f"Shape type {shape_type} not implemented")
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
+        if wp.get_device(self._device).is_cuda:
+            with wp.ScopedCapture(device=self._device) as capture:
                 self.simulate()
             self.graph = capture.graph
         else:
@@ -206,6 +208,8 @@ class CollisionSetup:
             )
 
 
+# The exhaustive shape/broad-phase matrix is one of the heaviest GPU suites.
+# Keep it on one CUDA device; targeted deterministic tests below use all selected CUDA devices.
 devices = get_cuda_test_devices(mode="basic")
 
 
@@ -870,8 +874,6 @@ class TestShapePairsMaxScaling(unittest.TestCase):
     @staticmethod
     def _make_model(num_worlds, shapes_per_world, num_global=0, shape_flags_value=None):
         """Build a minimal Model with the given world/shape layout."""
-        from newton._src.geometry.flags import ShapeFlags  # noqa: PLC0415
-
         total = num_worlds * shapes_per_world + num_global
         world_ids = np.repeat(np.arange(num_worlds, dtype=np.int32), shapes_per_world)
         if num_global > 0:
@@ -1107,10 +1109,95 @@ class TestDeterministicPipeline(unittest.TestCase):
     pass
 
 
+class TestMeshConvexMidphase(unittest.TestCase):
+    """Test mesh-vs-convex triangle candidate generation."""
+
+    pass
+
+
+class TestHeightfieldConvexMidphase(unittest.TestCase):
+    """Test heightfield-vs-convex triangle candidate generation."""
+
+    pass
+
+
+def test_mesh_convex_midphase_queries_margin_shell(test, device):
+    margin = 0.02
+    gap = 0.005
+    radius = 0.1
+    surface_separation = 0.03
+
+    cfg = newton.ModelBuilder.ShapeConfig(margin=margin, gap=gap)
+    builder = newton.ModelBuilder()
+
+    vertices = np.array(
+        [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh(vertices, indices), cfg=cfg)
+
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius + surface_separation), wp.quat_identity()))
+    builder.add_joint_free(child=body)
+    builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(contact_count, 0)
+
+
+def test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge(test, device):
+    margin = 0.02
+    gap = 0.005
+    radius = 0.1
+    surface_separation = 0.03
+
+    cfg = newton.ModelBuilder.ShapeConfig(margin=margin, gap=gap)
+    builder = newton.ModelBuilder()
+
+    heightfield = newton.Heightfield(
+        data=np.zeros((3, 3), dtype=np.float32),
+        nrow=3,
+        ncol=3,
+        hx=1.0,
+        hy=1.0,
+        min_z=0.0,
+        max_z=0.0,
+    )
+    builder.add_shape_heightfield(heightfield=heightfield, cfg=cfg)
+
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(1.0 + radius + surface_separation, 0.0, 0.0), wp.quat_identity())
+    )
+    builder.add_joint_free(child=body)
+    builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(contact_count, 0)
+
+
 def _build_deterministic_scene(device):
     """Build the mixed-shape scene from example_basic_shapes6_determinism."""
-    from newton._src.geometry import create_mesh_terrain  # noqa: PLC0415
-
     builder = newton.ModelBuilder()
 
     # Procedural mesh terrain ground
@@ -1330,7 +1417,7 @@ def test_deterministic_pipeline_500_steps(test, device):
         # ``example_basic_pendulum``).
         _frame()
 
-        with wp.ScopedCapture() as capture:
+        with wp.ScopedCapture(device=device) as capture:
             _frame()
         graph = capture.graph
 
@@ -1459,7 +1546,7 @@ def test_deterministic_pipeline_sticky_500_steps(test, device):
         # the same warm-up state).
         _frame()
 
-        with wp.ScopedCapture() as capture:
+        with wp.ScopedCapture(device=device) as capture:
             _frame()
         graph = capture.graph
 
@@ -1503,6 +1590,22 @@ add_function_test(
     TestDeterministicPipeline,
     "test_deterministic_pipeline_sticky_500_steps",
     test_deterministic_pipeline_sticky_500_steps,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_mesh_convex_midphase_queries_margin_shell",
+    test_mesh_convex_midphase_queries_margin_shell,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestHeightfieldConvexMidphase,
+    "test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge",
+    test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge,
     devices=get_cuda_test_devices(),
     check_output=False,
 )

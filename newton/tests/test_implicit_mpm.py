@@ -210,7 +210,7 @@ def test_finite_difference_collider_velocity(test, device):
     )
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 
 
 class TestImplicitMPM(unittest.TestCase):
