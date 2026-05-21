@@ -459,7 +459,7 @@ class SolverKamino(SolverBase):
         Args:
             state_out: The output state container to which the reset state data is written.
             world_mask: Optional array of per-world masks indicating which worlds should be reset.\n
-                Shape of `(num_worlds,)` and type :class:`wp.int8 | wp.bool`
+                Shape of `(num_worlds,)` and type :class:`wp.bool`
             actuator_q: Optional array of target actuated joint coordinates.\n
                 Shape of `(num_actuated_joint_coords,)` and type :class:`wp.float32`
             actuator_u: Optional array of target actuated joint DoF velocities.\n

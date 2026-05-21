@@ -616,7 +616,7 @@ def _add_matrix_diag_product(
     x: wp.array[float32],
     y: wp.array[float32],
     alpha: float,
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
 ):
     """
     Adds the product of a vector with a diagonal matrix to another vector: y += alpha * diag(d) @ x

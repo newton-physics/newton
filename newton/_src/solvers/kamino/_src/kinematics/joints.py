@@ -896,7 +896,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
 @wp.kernel
 def _extract_actuators_state_from_joints(
     # Inputs:
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     model_joint_wid: wp.array[int32],
     model_joint_act_type: wp.array[int32],
     model_joint_coords_offset: wp.array[int32],
@@ -943,7 +943,7 @@ def _extract_actuators_state_from_joints(
 @wp.kernel
 def _extract_joints_state_from_actuators(
     # Inputs:
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     model_joint_wid: wp.array[int32],
     model_joint_act_type: wp.array[int32],
     model_joint_coords_offset: wp.array[int32],

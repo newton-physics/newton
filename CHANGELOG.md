@@ -16,6 +16,7 @@
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
 - Require Warp 1.14 and configure Warp logging through `warp.config.log_level`; use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy `verbose` or `quiet` config keys
 - Auto-scale `ViewerGL` contact arrows, joint axes, and COM markers by `Viewer.scene_scale`; to approximate the previous fixed sizes after `set_model()`, set `viewer.renderer.arrow_length_scale = 0.1 / viewer.scene_scale`, `viewer.renderer.joint_scale = 0.1 / viewer.scene_scale`, and `viewer.renderer.com_scale = 0.1 / viewer.scene_scale`.
+- Change `SolverKamino.reset(world_mask=...)` to accept `wp.bool` arrays instead of `wp.int32`; callers passing `wp.int32` masks must switch to `wp.bool` (e.g. `wp.array([False, True, False], dtype=wp.bool)` or `wp.ones((num_worlds,), dtype=wp.bool)`).
 
 ### Deprecated
 

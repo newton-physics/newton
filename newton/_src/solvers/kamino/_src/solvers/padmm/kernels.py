@@ -80,7 +80,7 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _reset_solver_data(
     # Outputs:
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     problem_vio: wp.array[int32],
     problem_maxdim: wp.array[int32],
     lambdas: wp.array[float32],

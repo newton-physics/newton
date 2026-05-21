@@ -32,6 +32,7 @@ from .types import FKJointDoFType
 __all__ = [
     "_add_regularizer_to_diagonal",
     "_apply_line_search_step",
+    "_cast_world_mask_to_int32",
     "_correct_actuator_coords",
     "_eval_actuator_coords",
     "_eval_body_velocities",
@@ -97,6 +98,17 @@ def read_quat_from_array(array: wp.array[wp.float32], offset: int, normalize: bo
 ###
 # Kernels
 ###
+
+
+@wp.kernel
+def _cast_world_mask_to_int32(
+    # Input
+    world_mask: wp.array[bool],
+    # Output
+    out: wp.array[wp.int32],
+):
+    wid = wp.tid()
+    out[wid] = wp.int32(world_mask[wid])
 
 
 @wp.kernel

@@ -32,6 +32,7 @@ from ...utils.world_equivalence import DiscreteSignature, compute_equivalence_cl
 from .kernels import (
     _add_regularizer_to_diagonal,
     _apply_line_search_step,
+    _cast_world_mask_to_int32,
     _correct_actuator_coords,
     _eval_actuator_coords,
     _eval_body_velocities,
@@ -1896,7 +1897,7 @@ class ForwardKinematicsSolver:
         actuators_u: wp.array[wp.float32] | None = None,
         base_u: wp.array[vec6f] | None = None,
         bodies_u: wp.array[vec6f] | None = None,
-        world_mask: wp.array[wp.int32] | None = None,
+        world_mask: wp.array[bool] | None = None,
     ):
         """
         Graph-capturable function solving forward kinematics with Gauss-Newton.
@@ -1951,7 +1952,13 @@ class ForwardKinematicsSolver:
         self.newton_iteration.fill_(-1)  # The initial Newton convergence check will increment this to zero
         self.newton_success.zero_()
         if world_mask is not None:
-            self.newton_mask.assign(world_mask)
+            wp.launch(
+                _cast_world_mask_to_int32,
+                dim=self.num_worlds,
+                inputs=[world_mask],
+                outputs=[self.newton_mask],
+                device=self.device,
+            )
         else:
             self.newton_mask.fill_(1)
         self.min_newton_iterations.fill_(-1)  # To disregard min iterations in initial Newton check
@@ -2025,7 +2032,7 @@ class ForwardKinematicsSolver:
         actuators_u: wp.array[wp.float32] | None = None,
         base_u: wp.array[vec6f] | None = None,
         bodies_u: wp.array[vec6f] | None = None,
-        world_mask: wp.array[wp.int32] | None = None,
+        world_mask: wp.array[bool] | None = None,
         verbose: bool = False,
         return_status: bool = False,
         use_graph: bool = True,
