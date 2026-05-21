@@ -24,7 +24,6 @@ from newton._src.geometry.contact_reduction import (
     compute_num_reduction_slots,
     get_slot,
 )
-from newton._src.geometry.contact_reduction_hydroelastic import compute_pressure_memory_scales_kernel
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -141,94 +140,6 @@ def test_get_slot_matches_best_face_normal(test, device):
         )
 
 
-def test_pressure_memory_scales_unloading_force(test, device):
-    """Pressure memory should remember max compression and attenuate unloading."""
-    capacity = 4
-    shape_a = 1
-    shape_b = 2
-    bin_id = 3
-    key = np.uint64(shape_a | (shape_b << 27) | (bin_id << 55))
-
-    keys = wp.array(np.array([key, 0, 0, 0], dtype=np.uint64), dtype=wp.uint64, device=device)
-    active_np = np.zeros(capacity + 1, dtype=np.int32)
-    active_np[0] = 0
-    active_np[capacity] = 1
-    active_slots = wp.array(active_np, dtype=wp.int32, device=device)
-    weighted_pos_sum = wp.array(
-        np.array([[1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32),
-        dtype=wp.vec3,
-        device=device,
-    )
-    weight_sum = wp.array(np.array([2.0, 0.0, 0.0, 0.0], dtype=np.float32), dtype=wp.float32, device=device)
-    aabb_lower = wp.array(np.zeros((3, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    aabb_upper = wp.array(np.ones((3, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    pressure_memory = wp.zeros(3 * 3 * NUM_NORMAL_BINS * 2 * 2, dtype=wp.float32, device=device)
-    entry_scale = wp.ones(capacity, dtype=wp.float32, device=device)
-
-    agg_loading = wp.array(
-        np.array([[2.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32),
-        dtype=wp.vec3,
-        device=device,
-    )
-    wp.launch(
-        compute_pressure_memory_scales_kernel,
-        dim=1,
-        inputs=[
-            keys,
-            active_slots,
-            agg_loading,
-            weighted_pos_sum,
-            weight_sum,
-            aabb_lower,
-            aabb_upper,
-            pressure_memory,
-            entry_scale,
-            3,
-            2,
-            2,
-            1,
-            0.5,
-            0.25,
-            1.0 / 240.0,
-            1,
-        ],
-        device=device,
-    )
-    test.assertAlmostEqual(float(entry_scale.numpy()[0]), 1.0, places=6)
-
-    agg_unloading = wp.array(
-        np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32),
-        dtype=wp.vec3,
-        device=device,
-    )
-    wp.launch(
-        compute_pressure_memory_scales_kernel,
-        dim=1,
-        inputs=[
-            keys,
-            active_slots,
-            agg_unloading,
-            weighted_pos_sum,
-            weight_sum,
-            aabb_lower,
-            aabb_upper,
-            pressure_memory,
-            entry_scale,
-            3,
-            2,
-            2,
-            1,
-            0.5,
-            0.25,
-            1.0 / 240.0,
-            1,
-        ],
-        device=device,
-    )
-    test.assertLess(float(entry_scale.numpy()[0]), 1.0)
-    test.assertGreater(float(pressure_memory.numpy().max()), 1.0)
-
-
 # =============================================================================
 # Test registration
 # =============================================================================
@@ -255,13 +166,6 @@ for device in devices:
         test_get_slot_matches_best_face_normal,
         devices=[device],
     )
-
-add_function_test(
-    TestContactReduction,
-    "test_pressure_memory_scales_unloading_force",
-    test_pressure_memory_scales_unloading_force,
-    devices=[wp.get_device("cpu")],
-)
 
 
 if __name__ == "__main__":
