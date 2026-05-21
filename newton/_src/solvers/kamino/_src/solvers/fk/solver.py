@@ -1843,7 +1843,7 @@ class ForwardKinematicsSolver:
         bodies_q: wp.array[wp.transformf],
         bodies_u: wp.array[vec6f],
         base_u: wp.array[vec6f] | None = None,
-        world_mask: wp.array[wp.int32] | None = None,
+        world_mask: wp.array[bool] | None = None,
     ):
         """
         Graph-capturable function solving for body velocities as a post-processing to the FK solve.
@@ -1871,9 +1871,10 @@ class ForwardKinematicsSolver:
             If this function is captured in a graph, must be either always or never provided.
             Expects shape of ``(num_worlds,)`` and type :class:`vec6`.
         world_mask : wp.array, optional
-            Array of per-world flags that indicate which worlds should be processed (0 = leave that world unchanged).
-            If not provided, all worlds will be processed.
+            Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
+            If not provided, all worlds are processed.
             If this function is captured in a graph, must be either always or never provided.
+            Expects shape of ``(num_worlds,)`` and type :class:`bool`.
         """
         assert pos_control_transforms.device == self.device
         assert actuators_u.device == self.device
@@ -1886,8 +1887,21 @@ class ForwardKinematicsSolver:
         if base_u is None:
             base_u = self.base_u_default
 
+        # Bridge the public bool mask to the FK-internal int32 newton_mask used by the velocity-solve kernels.
+        if world_mask is not None:
+            wp.launch(
+                _cast_world_mask_to_int32,
+                dim=self.num_worlds,
+                inputs=[world_mask],
+                outputs=[self.newton_mask],
+                device=self.device,
+            )
+            internal_mask = self.newton_mask
+        else:
+            internal_mask = None
+
         # Compute velocities
-        self._solve_for_body_velocities(pos_control_transforms, base_u, actuators_u, bodies_q, bodies_u, world_mask)
+        self._solve_for_body_velocities(pos_control_transforms, base_u, actuators_u, bodies_q, bodies_u, internal_mask)
 
     def run_fk_solve(
         self,
@@ -1938,9 +1952,10 @@ class ForwardKinematicsSolver:
             If this function is captured in a graph, must be either always or never provided.
             Expects shape of ``(num_bodies,)`` and type :class:`vec6`.
         world_mask : wp.array, optional
-            Array of per-world flags that indicate which worlds should be processed (0 = leave that world unchanged).
-            If not provided, all worlds will be processed.
+            Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
+            If not provided, all worlds are processed.
             If this function is captured in a graph, must be either always or never provided.
+            Expects shape of ``(num_worlds,)`` and type :class:`bool`.
         """
         # Check that actuators_u are provided if we need to solve for bodies_u
         if bodies_u is not None and actuators_u is None:
@@ -2071,8 +2086,9 @@ class ForwardKinematicsSolver:
             Array of rigid body velocities (twists), written out by the solver if provided.
             Expects shape of ``(num_bodies,)`` and type :class:`vec6`.
         world_mask : wp.array, optional
-            Array of per-world flags that indicate which worlds should be processed (0 = leave that world unchanged).
-            If not provided, all worlds will be processed.
+            Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
+            If not provided, all worlds are processed.
+            Expects shape of ``(num_worlds,)`` and type :class:`bool`.
         verbose : bool, optional
             whether to write a status message at the end (default: False)
         return_status : bool, optional

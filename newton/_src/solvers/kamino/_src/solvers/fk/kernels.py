@@ -107,6 +107,16 @@ def _cast_world_mask_to_int32(
     # Output
     out: wp.array[wp.int32],
 ):
+    """
+    Bridge the FK solver's public ``wp.bool`` world-mask contract to the int32 mask
+    consumed by the FK-internal kernels (``self.newton_mask`` and the linalg ``world_active``
+    parameter). True maps to 1, False to 0.
+
+    Inputs:
+        world_mask: Per-world bool flag (True = process this world).
+    Outputs:
+        out: Per-world int32 flag (1 = process, 0 = skip).
+    """
     wid = wp.tid()
     out[wid] = wp.int32(world_mask[wid])
 
