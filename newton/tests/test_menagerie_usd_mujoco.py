@@ -1225,6 +1225,56 @@ class TestMenagerieUSD(TestMenagerieBase):
         )
         cls._actuator_map = build_actuator_index_map(newton_solver.mj_model, mj_model)
 
+        self._validate_mjc_actuator_routing(newton_solver)
+
+    @staticmethod
+    def _validate_mjc_actuator_routing(newton_solver: SolverMuJoCo) -> None:
+        """Cross-check ``mjc_actuator_to_newton_idx`` against the public model.
+
+        ``test_dynamics`` reads ``mjc_actuator_to_newton_idx`` to decide *where*
+        to write each per-step target.  Without an independent check, a future
+        regression that scrambles those indices would still pass — the test
+        would simply drive the wrong slot on both sides.  Validate here against
+        ``actuator_trnid`` + ``jnt_dofadr`` (JOINT_TARGET) and the ctrl-array
+        width (CTRL_DIRECT).
+        """
+        nw_mj = newton_solver.mj_model
+        ctrl_source = newton_solver.mjc_actuator_ctrl_source.numpy()
+        a2n = newton_solver.mjc_actuator_to_newton_idx.numpy()
+        JOINT_TARGET, CTRL_DIRECT = 0, 1
+        num_ctrl = int(nw_mj.nu)
+        for actuator_idx in range(num_ctrl):
+            src = int(ctrl_source[actuator_idx])
+            idx = int(a2n[actuator_idx])
+            if src == JOINT_TARGET:
+                joint_id = int(nw_mj.actuator_trnid[actuator_idx, 0])
+                target_dof = int(nw_mj.jnt_dofadr[joint_id])
+                if idx >= 0:
+                    decoded_dof = idx
+                    role = "position"
+                elif idx <= -2:
+                    decoded_dof = -(idx + 2)
+                    role = "velocity"
+                else:
+                    raise AssertionError(
+                        f"Newton actuator {actuator_idx} (JOINT_TARGET): invalid idx={idx} "
+                        "(expected idx>=0 for position or idx<=-2 for velocity)"
+                    )
+                if decoded_dof != target_dof:
+                    raise AssertionError(
+                        f"Newton actuator {actuator_idx} (JOINT_TARGET, {role}): "
+                        f"mjc_actuator_to_newton_idx={idx} -> DOF {decoded_dof}, "
+                        f"but actuator_trnid points at joint {joint_id} with jnt_dofadr={target_dof}"
+                    )
+            elif src == CTRL_DIRECT:
+                if not 0 <= idx < num_ctrl:
+                    raise AssertionError(
+                        f"Newton actuator {actuator_idx} (CTRL_DIRECT): "
+                        f"mjc_actuator_to_newton_idx={idx} out of bounds [0, {num_ctrl})"
+                    )
+            else:
+                raise AssertionError(f"Newton actuator {actuator_idx}: unknown ctrl_source={src}")
+
     def _compare_body_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare physics-relevant body fields using name-based index mapping."""
         compare_body_physics_mapped(newton_mjw, native_mjw, self._body_map)
