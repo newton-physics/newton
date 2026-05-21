@@ -301,10 +301,13 @@ class ViewerGL(ViewerBase):
             # with a different DPI without necessarily firing ``on_resize``;
             # subscribe so DPI-dependent layout (image logger, sidebar hint)
             # follows scale-only transitions.
+            # Older pyglet builds don't register the ``on_scale`` event;
+            # AttributeError / KeyError from ``push_handlers`` is the expected
+            # outcome there. Anything else should be visible during integration.
             try:
                 self.renderer.window.push_handlers(on_scale=self._on_window_scale)
-            except Exception:
-                pass
+            except (AttributeError, KeyError) as exc:
+                print(f"Warning: pyglet on_scale event unavailable ({exc!r}); DPI changes will only refresh on resize.")
         else:
             self.ui = None
         self._gizmo_log = None
@@ -2220,7 +2223,18 @@ class ViewerGL(ViewerBase):
         self._refresh_dpi_state()
 
     def _refresh_dpi_state(self) -> None:
-        """Propagate the current DPI to all DPI-dependent layout state."""
+        """Propagate the current DPI to all DPI-dependent layout state.
+
+        Force the UI to re-detect its DPI **first**. pyglet pushes event
+        handlers onto a stack and dispatches them LIFO, so this viewer-side
+        ``on_scale`` handler runs before ``UI._on_window_scale`` (UI was
+        registered earlier). Without an explicit refresh, ``_dpi_scale()``
+        (which reads ``ui.dpi_scale`` when the UI is available) would still
+        return the previous scale on a scale-only display move, leaving the
+        image logger and sidebar hint one frame stale.
+        """
+        if self.ui is not None and self.ui.is_available:
+            self.ui.refresh_dpi()
         if self._image_logger is not None:
             self._image_logger._sidebar_width_px = self._sidebar_width_fb_px()
             self._image_logger.dpi_scale = self._dpi_scale()

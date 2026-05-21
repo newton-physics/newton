@@ -100,12 +100,13 @@ class UI:
             self.io.display_framebuffer_scale = (fb_width / window_width, fb_height / window_height)
         self.io.display_size = (fb_width, fb_height)
 
-    def _on_window_scale(self, scale: float, dpi: int) -> None:
-        """Refresh DPI scaling when pyglet reports a display change.
+    def refresh_dpi(self) -> None:
+        """Re-detect DPI from the window and re-apply scaling if it changed.
 
-        Dispatched by pyglet 2.1 whenever the window moves to a display with
-        a different ``backingScaleFactor`` / DPI. Window dimensions need not
-        change, so this is the only signal we get for scale-only transitions.
+        Idempotent — safe to call multiple times in the same frame. Exposed
+        as a public method so callers (e.g. ``ViewerGL._refresh_dpi_state``)
+        can force the UI's cached ``dpi_scale`` to update before reading it,
+        irrespective of pyglet's LIFO event-handler ordering.
         """
         if not self.is_available:
             return
@@ -117,6 +118,15 @@ class UI:
         if abs(new_scale - self.dpi_scale) > 1e-3:
             self.dpi_scale = new_scale
             self._apply_dpi_scaling()
+
+    def _on_window_scale(self, scale: float, dpi: int) -> None:
+        """pyglet 2.1 ``on_scale`` event handler — delegates to ``refresh_dpi``.
+
+        Dispatched whenever the window moves to a display with a different
+        ``backingScaleFactor`` / DPI. Window dimensions need not change, so
+        this is the only signal we get for scale-only transitions.
+        """
+        self.refresh_dpi()
 
     def _detect_dpi_scale(self) -> float:
         """Return the current DPI factor for the window.
