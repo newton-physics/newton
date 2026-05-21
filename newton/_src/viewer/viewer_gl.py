@@ -243,7 +243,11 @@ class ViewerGL(ViewerBase):
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
-        self._image_logger = ImageLogger(device=self.device, sidebar_width_px=self._sidebar_width_fb_px())
+        self._image_logger = ImageLogger(
+            device=self.device,
+            sidebar_width_px=self._sidebar_width_fb_px(),
+            dpi_scale=self._dpi_scale(),
+        )
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
@@ -293,6 +297,14 @@ class ViewerGL(ViewerBase):
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
             self.ui = UI(self.renderer.window)
+            # pyglet 2.1 fires ``on_scale`` when the window crosses to a display
+            # with a different DPI without necessarily firing ``on_resize``;
+            # subscribe so DPI-dependent layout (image logger, sidebar hint)
+            # follows scale-only transitions.
+            try:
+                self.renderer.window.push_handlers(on_scale=self._on_window_scale)
+            except Exception:
+                pass
         else:
             self.ui = None
         self._gizmo_log = None
@@ -539,7 +551,11 @@ class ViewerGL(ViewerBase):
         # — and registers PBO interop with — the correct CUDA context.
         if self._image_logger is not None and self._image_logger.device != self.device:
             self._image_logger.clear()
-            self._image_logger = ImageLogger(device=self.device, sidebar_width_px=self._sidebar_width_fb_px())
+            self._image_logger = ImageLogger(
+                device=self.device,
+                sidebar_width_px=self._sidebar_width_fb_px(),
+                dpi_scale=self._dpi_scale(),
+            )
 
         if self.model is not None:
             # For capsule batches, replace per-instance scales with (radius, radius, half_height)
@@ -2192,10 +2208,22 @@ class ViewerGL(ViewerBase):
         if self.ui:
             self.ui.resize(width, height)
 
-        # Keep the image logger's "sidebar avoidance" hint in sync with the
-        # current DPI in case the window moved between displays.
+        self._refresh_dpi_state()
+
+    def _on_window_scale(self, scale: float, dpi: int) -> None:
+        """Refresh DPI-dependent layout when pyglet reports a display change.
+
+        pyglet 2.1 dispatches ``on_scale`` whenever the window crosses to a
+        display with a different ``backingScaleFactor`` / DPI. The window
+        size need not change, so ``on_resize`` isn't always fired.
+        """
+        self._refresh_dpi_state()
+
+    def _refresh_dpi_state(self) -> None:
+        """Propagate the current DPI to all DPI-dependent layout state."""
         if self._image_logger is not None:
             self._image_logger._sidebar_width_px = self._sidebar_width_fb_px()
+            self._image_logger.dpi_scale = self._dpi_scale()
 
     def _dpi_scale(self) -> float:
         """Return the current DPI scale.

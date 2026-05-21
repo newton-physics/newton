@@ -60,6 +60,14 @@ class UI:
         self.impl.on_mouse_scroll = on_mouse_scroll
         self.impl._attach_callbacks(self.window)
 
+        # pyglet 2.1 dispatches ``on_scale`` when the window moves between
+        # displays with different DPI scaling. Such transitions don't always
+        # fire ``on_resize``, so we'd otherwise miss the DPI change.
+        try:
+            self.window.push_handlers(on_scale=self._on_window_scale)
+        except Exception:
+            pass
+
         # Set up proper DPI scaling for high-DPI displays.
         #
         # We can't rely solely on the framebuffer/window-size ratio: on macOS
@@ -81,6 +89,20 @@ class UI:
         # ``_apply_dpi_scaling`` resets to the base dark style and then scales
         # it; no need to call ``_setup_dark_style`` separately here.
         self._apply_dpi_scaling()
+
+    def _on_window_scale(self, scale: float, dpi: int) -> None:
+        """Refresh DPI scaling when pyglet reports a display change.
+
+        Dispatched by pyglet 2.1 whenever the window moves to a display with
+        a different ``backingScaleFactor`` / DPI. Window dimensions need not
+        change, so this is the only signal we get for scale-only transitions.
+        """
+        if not self.is_available:
+            return
+        new_scale = self._detect_dpi_scale()
+        if abs(new_scale - self.dpi_scale) > 1e-3:
+            self.dpi_scale = new_scale
+            self._apply_dpi_scaling()
 
     def _detect_dpi_scale(self) -> float:
         """Return the current DPI factor for the window.
