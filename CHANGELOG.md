@@ -3,17 +3,8 @@
 ## [Unreleased]
 
 ### Added
-- Add :class:`newton.geometry.HydroelasticContactWorkflow` and per-shape
-  workflow controls on :class:`newton.ModelBuilder.ShapeConfig` via
-  ``hydroelastic_contact_workflow``.
-- Add per-shape immutable pressure-field sine modulation parameters
-  ``hydro_pressure_sine_amplitude``, ``hydro_pressure_sine_cycles``, and
-  ``hydro_pressure_sine_phase`` for pressure-workflow hydroelastic
-  contacts.
-
 - Add opt-in `validate_mesh` parameter to `ModelBuilder.add_cloth_mesh()`, `ModelBuilder.add_soft_mesh()`, and `style3d.add_cloth_mesh()` that warns on degenerate geometry; add public `newton.utils.validate_triangle_mesh()` and `newton.utils.validate_tet_mesh()` utilities
 - Add `ViewerGL.show_loading_splash()` / `ViewerGL.hide_loading_splash()` displaying a stylized Newton's-cradle overlay while the GL viewer waits on Warp kernel compilation; raised automatically by `newton.examples.init()` for visible GL viewers
-- Add foot-shoe contact simulation example demonstrating handedness mirroring, spatial alignment, and dynamic interaction using calibrated vertical foundation materials
 
 ### Changed
 

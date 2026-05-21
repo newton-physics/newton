@@ -135,8 +135,10 @@ class Example:
         # Mirroring / alignment:
         # Foot: X=length (heel-to-toe), Y=width, Z=height
         # Midsole: X=width, Y=length, Z=height
-        # If mirror_foot is True, flip the width axis (Y) to make a left foot
-        sign = -1.0 if args.mirror_foot else 1.0
+        # Swapping foot length/width into midsole width/length already reflects the footprint.
+        # Keep that reflected orientation for the right-foot-to-left-shoe default; add the
+        # lateral sign flip only when explicitly preserving the source foot handedness.
+        sign = 1.0 if args.mirror_foot else -1.0
 
         foot_v_transformed = np.zeros_like(foot_v)
         foot_v_transformed[:, 0] = sign * foot_v[:, 1]  # X_midsole = width
@@ -145,7 +147,7 @@ class Example:
 
         foot_f_transformed = foot_f.copy()
         if args.mirror_foot:
-            # Swap face winding order to keep normals pointing outwards after reflection
+            # The reflected transform changes triangle winding.
             foot_f_transformed[:, [1, 2]] = foot_f_transformed[:, [2, 1]]
 
         # Center horizontally on the spring grid (X-Y plane)
@@ -153,6 +155,21 @@ class Example:
         midsole_center = 0.5 * (np.min(self.spring_grid.grid_uv_m, axis=0) + np.max(self.spring_grid.grid_uv_m, axis=0))
         foot_v_transformed[:, 0] += midsole_center[0] - foot_center[0]
         foot_v_transformed[:, 1] += midsole_center[1] - foot_center[1]
+
+        # Align foot yaw by rotating mesh coordinates
+        foot_yaw = np.radians(args.foot_yaw_deg)
+        cos_yaw = np.cos(foot_yaw)
+        sin_yaw = np.sin(foot_yaw)
+
+        # Rotate X and Y vertices about local center
+        foot_center = 0.5 * (np.min(foot_v_transformed, axis=0) + np.max(foot_v_transformed, axis=0))
+        foot_v_rel = foot_v_transformed - foot_center
+
+        x_rot = foot_v_rel[:, 0] * cos_yaw - foot_v_rel[:, 1] * sin_yaw
+        y_rot = foot_v_rel[:, 0] * sin_yaw + foot_v_rel[:, 1] * cos_yaw
+
+        foot_v_transformed[:, 0] = x_rot + foot_center[0]
+        foot_v_transformed[:, 1] = y_rot + foot_center[1]
 
         # Align vertically (Z-axis) so foot sole just touches the top surface of midsole
         spacing = self.spring_grid.spacing_m
@@ -771,13 +788,19 @@ class Example:
             "--mirror-foot",
             action=argparse.BooleanOptionalAction,
             default=True,
-            help="Mirror foot mesh to match left shoe",
+            help="Mirror the right-foot mesh laterally to match the left shoe bed",
         )
         parser.add_argument(
             "--kinematic",
             action=argparse.BooleanOptionalAction,
             default=True,
             help="Run kinematic trajectory or dynamic simulation",
+        )
+        parser.add_argument(
+            "--foot-yaw-deg",
+            type=float,
+            default=0.0,
+            help="Rotation angle of foot about Z-axis in degrees",
         )
         return parser
 

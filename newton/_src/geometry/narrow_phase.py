@@ -75,24 +75,6 @@ class ContactWriterData:
     contact_sort_key: wp.array[wp.int64]
 
 
-HYDROELASTIC_MODE_NONE = wp.int32(0)
-HYDROELASTIC_MODE_RIGID = wp.int32(1)
-HYDROELASTIC_MODE_COMPLIANT = wp.int32(2)
-
-
-@wp.func
-def hydroelastic_mode_from_flags(flags: wp.int32) -> wp.int32:
-    """Decode hydroelastic mode from a shape flag bitmask."""
-    if (flags & wp.int32(ShapeFlags.HYDROELASTIC_RIGID)) != 0:
-        return HYDROELASTIC_MODE_RIGID
-    if (flags & wp.int32(ShapeFlags.HYDROELASTIC_COMPLIANT)) != 0:
-        return HYDROELASTIC_MODE_COMPLIANT
-    if (flags & wp.int32(ShapeFlags.HYDROELASTIC)) != 0:
-        # Backward compatibility with legacy models.
-        return HYDROELASTIC_MODE_COMPLIANT
-    return HYDROELASTIC_MODE_NONE
-
-
 @wp.func
 def write_contact_simple(
     contact_data: ContactData,
@@ -232,17 +214,10 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 shape_a, shape_b = shape_b, shape_a
                 type_a, type_b = type_b, type_a
 
-            # Route hydroelastic pairs to the SDF pipeline.
-            # Valid hydroelastic pairs require both shapes to opt in, and at least
-            # one compliant shape (rigid-rigid hydro pairs are ignored here).
-            hydro_mode_a = hydroelastic_mode_from_flags(shape_flags[shape_a])
-            hydro_mode_b = hydroelastic_mode_from_flags(shape_flags[shape_b])
-            is_hydro_a = hydro_mode_a != HYDROELASTIC_MODE_NONE
-            is_hydro_b = hydro_mode_b != HYDROELASTIC_MODE_NONE
-            has_compliant = (hydro_mode_a == HYDROELASTIC_MODE_COMPLIANT) or (
-                hydro_mode_b == HYDROELASTIC_MODE_COMPLIANT
-            )
-            if is_hydro_a and is_hydro_b and has_compliant and shape_pairs_sdf_sdf:
+            # Check if both shapes are hydroelastic - route to SDF-SDF pipeline
+            is_hydro_a = (shape_flags[shape_a] & ShapeFlags.HYDROELASTIC) != 0
+            is_hydro_b = (shape_flags[shape_b] & ShapeFlags.HYDROELASTIC) != 0
+            if is_hydro_a and is_hydro_b and shape_pairs_sdf_sdf:
                 idx = wp.atomic_add(shape_pairs_sdf_sdf_count, 0, 1)
                 if idx < shape_pairs_sdf_sdf.shape[0]:
                     shape_pairs_sdf_sdf[idx] = wp.vec2i(shape_a, shape_b)
@@ -859,6 +834,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
                 shape_transform,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
+                shape_data,
                 shape_gap,
                 triangle_pairs,
                 triangle_pairs_count,
@@ -892,12 +868,16 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
         # Get non-mesh shape world transform
         X_ws = shape_transform[non_mesh_shape]
 
-        # Use per-shape contact gaps for consistent pairwise thresholding.
+        # Use the same margin+gap shell for triangle candidates that the
+        # narrow phase uses when accepting contacts.
         gap_non_mesh = shape_gap[non_mesh_shape]
         gap_mesh = shape_gap[mesh_shape]
         gap_sum = gap_non_mesh + gap_mesh
+        margin_non_mesh = shape_data[non_mesh_shape][3]
+        margin_mesh = shape_data[mesh_shape][3]
+        contact_threshold = gap_sum + margin_non_mesh + margin_mesh
 
-        # Call mesh_vs_convex_midphase with the shape_data and pair gap sum.
+        # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
         mesh_vs_convex_midphase(
             j,
             mesh_shape,
@@ -908,7 +888,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
             shape_types,
             shape_data,
             shape_source,
-            gap_sum,
+            contact_threshold,
             triangle_pairs,
             triangle_pairs_count,
         )
@@ -1476,9 +1456,7 @@ class NarrowPhase:
             shape_voxel_resolution: Optional per-shape voxel resolution array used for mesh/SDF and
                 hydroelastic contact processing.
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
-            hydroelastic_sdf: Optional SDF hydroelastic instance. Configure shapes with
-                hydroelastic mode ``rigid`` or ``compliant`` to enable hydroelastic
-                collisions.
+            hydroelastic_sdf: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
             has_meshes: Whether the scene contains any mesh shapes (GeoType.MESH). When False, mesh-related
                 kernel launches are skipped, improving performance for scenes with only primitive shapes.
                 Defaults to True for safety. Set to False when constructing from a model with no meshes.
@@ -1653,9 +1631,6 @@ class NarrowPhase:
 
             self.gjk_candidate_pairs_count = c[gjk_idx : gjk_idx + 1]
             self.shape_pairs_sdf_sdf_count = c[sdf_sdf_idx : sdf_sdf_idx + 1]
-            # Backward-compatible alias retained for tests and older call sites
-            # that still inspect the dedicated heightfield pair counter.
-            self.shape_pairs_heightfield_count = wp.zeros(1, dtype=wp.int32, device=device)
             self.shape_pairs_mesh_count = c[mesh_like_idx : mesh_like_idx + 1] if has_mesh_like else None
             self.triangle_pairs_count = c[mesh_like_idx + 1 : mesh_like_idx + 2] if has_mesh_like else None
             self.shape_pairs_mesh_plane_count = c[mesh_only_idx : mesh_only_idx + 1] if has_meshes else None
@@ -2148,18 +2123,11 @@ class NarrowPhase:
                     record_tape=False,
                 )
         if self.hydroelastic_sdf is not None:
-            hf_data = heightfield_data if heightfield_data is not None else self._empty_heightfield_data
-            hf_elev = heightfield_elevations if heightfield_elevations is not None else self._empty_elevation_data
             self.hydroelastic_sdf.launch(
                 texture_sdf_data,
                 shape_sdf_index,
-                shape_types,
-                shape_data,
                 shape_transform,
-                shape_flags,
                 shape_gap,
-                hf_data,
-                hf_elev,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
                 shape_voxel_resolution,

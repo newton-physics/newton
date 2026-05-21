@@ -242,24 +242,6 @@ def make_contact_key(shape_a: int, shape_b: int, bin_id: int) -> wp.uint64:
     return key
 
 
-@wp.func
-def unpack_contact_key_shape_a(key: wp.uint64) -> int:
-    """Extract shape_a from a contact reduction key."""
-    return int(key & SHAPE_A_MASK)
-
-
-@wp.func
-def unpack_contact_key_shape_b(key: wp.uint64) -> int:
-    """Extract shape_b from a contact reduction key."""
-    return int((key >> SHAPE_A_BITS) & SHAPE_B_MASK)
-
-
-@wp.func
-def unpack_contact_key_bin(key: wp.uint64) -> int:
-    """Extract bin_id from a contact reduction key."""
-    return int((key >> wp.uint64(55)) & BIN_MASK)
-
-
 # ---------------------------------------------------------------------------
 # Contact value packing
 # ---------------------------------------------------------------------------
@@ -571,9 +553,6 @@ class GlobalContactReducerData:
     # Accumulates sum(area * depth) for penetrating contacts
     weight_sum: wp.array[wp.float32]
 
-    # Stateful pressure-memory force scale per hashtable entry.
-    entry_memory_scale: wp.array[wp.float32]
-
     # Total depth of reduced (winning) contacts per normal bin entry.
     total_depth_reduced: wp.array[wp.float32]
 
@@ -605,7 +584,6 @@ def _clear_active_kernel(
     agg_force: wp.array[wp.vec3],
     weighted_pos_sum: wp.array[wp.vec3],
     weight_sum: wp.array[wp.float32],
-    entry_memory_scale: wp.array[wp.float32],
     entry_k_eff: wp.array[wp.float32],
     total_depth_reduced: wp.array[wp.float32],
     total_normal_reduced: wp.array[wp.vec3],
@@ -661,7 +639,6 @@ def _clear_active_kernel(
                 agg_force[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
                 weighted_pos_sum[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
                 weight_sum[entry_idx] = 0.0
-                entry_memory_scale[entry_idx] = 1.0
                 entry_k_eff[entry_idx] = 0.0
                 total_depth_reduced[entry_idx] = 0.0
                 total_normal_reduced[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
@@ -815,7 +792,6 @@ class GlobalContactReducer:
             self.agg_force = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
             self.weight_sum = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
-            self.entry_memory_scale = wp.ones(self.hashtable.capacity, dtype=wp.float32, device=device)
             # k_eff per entry (constant per shape pair, set once on first insert)
             self.entry_k_eff = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
             # Total depth of reduced contacts per normal bin (accumulated from all winning contacts)
@@ -835,7 +811,6 @@ class GlobalContactReducer:
             self.agg_force = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weight_sum = wp.zeros(0, dtype=wp.float32, device=device)
-            self.entry_memory_scale = wp.zeros(0, dtype=wp.float32, device=device)
             self.entry_k_eff = wp.zeros(0, dtype=wp.float32, device=device)
             self.total_depth_reduced = wp.zeros(0, dtype=wp.float32, device=device)
             self.total_normal_reduced = wp.zeros(0, dtype=wp.vec3, device=device)
@@ -880,7 +855,6 @@ class GlobalContactReducer:
                 self.agg_force,
                 self.weighted_pos_sum,
                 self.weight_sum,
-                self.entry_memory_scale,
                 self.entry_k_eff,
                 self.total_depth_reduced,
                 self.total_normal_reduced,
@@ -924,7 +898,6 @@ class GlobalContactReducer:
         data.agg_force = self.agg_force
         data.weighted_pos_sum = self.weighted_pos_sum
         data.weight_sum = self.weight_sum
-        data.entry_memory_scale = self.entry_memory_scale
         data.total_depth_reduced = self.total_depth_reduced
         data.total_normal_reduced = self.total_normal_reduced
         data.ht_keys = self.hashtable.keys
