@@ -21,7 +21,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 
 
 @wp.kernel

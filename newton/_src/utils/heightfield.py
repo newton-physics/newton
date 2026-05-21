@@ -293,6 +293,7 @@ def heightfield_vs_convex_midphase(
     shape_transform: wp.array[wp.transform],
     shape_collision_aabb_lower: wp.array[wp.vec3],
     shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_data: wp.array[wp.vec4],
     shape_gap: wp.array[float],
     triangle_pairs: wp.array[wp.vec3i],
     triangle_pairs_count: wp.array[int],
@@ -320,6 +321,7 @@ def heightfield_vs_convex_midphase(
             shape (scale already baked in).
         shape_collision_aabb_upper: Local-space AABB upper bounds for each
             shape (scale already baked in).
+        shape_data: Shape data array containing per-shape margins.
         shape_gap: Per-shape contact gaps.
         triangle_pairs: Output buffer for ``(hfield_shape, other_shape, tri_idx)`` triples.
         triangle_pairs_count: Atomic counter for emitted triangle pairs.
@@ -351,10 +353,12 @@ def heightfield_vs_convex_midphase(
     )
 
     gap_sum = shape_gap[hfield_shape] + shape_gap[other_shape]
-    gap_vec = wp.vec3(gap_sum, gap_sum, gap_sum)
+    margin_sum = shape_data[hfield_shape][3] + shape_data[other_shape][3]
+    contact_threshold = gap_sum + margin_sum
+    threshold_vec = wp.vec3(contact_threshold, contact_threshold, contact_threshold)
 
-    aabb_lower = center_in_hfield - half_in_hfield - gap_vec
-    aabb_upper = center_in_hfield + half_in_hfield + gap_vec
+    aabb_lower = center_in_hfield - half_in_hfield - threshold_vec
+    aabb_upper = center_in_hfield + half_in_hfield + threshold_vec
 
     # Map AABB to grid cell indices
     dx = 2.0 * hfd.hx / wp.float32(hfd.ncol - 1)

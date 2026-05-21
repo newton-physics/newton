@@ -16,6 +16,7 @@ Newton Physics
    
    Overview <guide/overview>
    guide/installation
+   guide/compatibility
    guide/visualization
    guide/tutorials
    Development <guide/development>
