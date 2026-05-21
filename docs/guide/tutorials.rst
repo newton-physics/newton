@@ -12,3 +12,4 @@ You can also explore the examples in the ``newton/examples/`` directory for more
    :caption: Tutorial Notebooks
 
    /tutorials/00_introduction
+   /tutorials/01_robotics
