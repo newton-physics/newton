@@ -2234,6 +2234,8 @@ def step_body_body_contact_C0_lambda(
     rigid_contact_shape1: wp.array[int],
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
     rigid_contact_margin0: wp.array[float],
     rigid_contact_margin1: wp.array[float],
@@ -2272,12 +2274,24 @@ def step_body_body_contact_C0_lambda(
         b1 = shape_body[s1] if s1 >= 0 else -1
         p0 = rigid_contact_point0[i]
         p1 = rigid_contact_point1[i]
+        anchor0_local = p0 + rigid_contact_offset0[i]
+        anchor1_local = p1 + rigid_contact_offset1[i]
         n = rigid_contact_normal[i]
+        # Normal: thickness already accounts for the radial extent, so use
+        # the unprojected skeleton points (matches update_duals_body_body_contacts).
         cp0 = wp.transform_point(body_q[b0], p0) if b0 >= 0 else p0
         cp1 = wp.transform_point(body_q[b1], p1) if b1 >= 0 else p1
         thickness = rigid_contact_margin0[i] + rigid_contact_margin1[i]
         d = cp1 - cp0
-        contact_C0[i] = n * thickness - d
+        C0_n = thickness - wp.dot(n, d)
+        # Tangential: use surface anchors so spin about a body's symmetry axis
+        # registers in the frozen tangential offset, matching tangential_disp
+        # in update_duals_body_body_contacts.
+        a0 = wp.transform_point(body_q[b0], anchor0_local) if b0 >= 0 else anchor0_local
+        a1 = wp.transform_point(body_q[b1], anchor1_local) if b1 >= 0 else anchor1_local
+        d_surf = a1 - a0
+        C0_t = -(d_surf - n * wp.dot(n, d_surf))
+        contact_C0[i] = n * C0_n + C0_t
 
 
 @wp.kernel
