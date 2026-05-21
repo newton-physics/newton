@@ -239,7 +239,6 @@ class Example:
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
         builder = newton.ModelBuilder(gravity=-9.81)
-        SolverVBD.register_custom_attributes(builder)
         builder.rigid_gap = 0.005
 
         builder.add_ground_plane()
@@ -291,7 +290,6 @@ class Example:
             angular_axes=None,
             parent_xform=wp.transform(plug_pos, wp.quat_identity()),
             child_xform=wp.transform_identity(),
-            custom_attributes={"vbd:joint_is_hard": 0},
         )
 
         # Revolute joint: plug -> latch (hinge along -X axis)
@@ -307,7 +305,6 @@ class Example:
             limit_upper=LATCH_LIMIT_UPPER,
             limit_kd=LATCH_LIMIT_KD,
             collision_filter_parent=True,
-            custom_attributes={"vbd:joint_is_hard": 0},
         )
 
         builder.add_articulation([d6_joint, rev_joint])
@@ -384,15 +381,14 @@ class Example:
 
         self._initial_body_q = self.state_0.body_q.numpy().copy()
 
-        # Disable Dahl cable friction (register_custom_attributes enables it by default).
-        self.model.vbd.dahl_eps_max.fill_(0.0)
-
         self.solver = SolverVBD(
             self.model,
             iterations=12,
             rigid_contact_hard=False,
             rigid_body_contact_buffer_size=256,
         )
+        for j in range(self.model.joint_count):
+            self.solver.set_joint_constraint_mode(j, False)
 
         self._rest_pos = plug_pos
         self.gizmo_tf = wp.transform(plug_pos, wp.quat_identity())
