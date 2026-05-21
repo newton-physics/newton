@@ -999,7 +999,7 @@ class RigidBodySim:
 
     @property
     def world_mask(self) -> torch.Tensor:
-        """World mask ``(num_worlds,)`` int32 for selective resets."""
+        """World mask ``(num_worlds,)`` bool for selective resets."""
         return self._world_mask
 
     # ------------------------------------------------------------------

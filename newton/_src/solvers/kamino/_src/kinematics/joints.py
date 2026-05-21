@@ -1092,8 +1092,8 @@ def extract_actuators_state_from_joints(
             The output array to store the actuated joint velocities.\n
             Shape of ``(sum_of_actuated_joint_dofs,)`` and type :class:`float`.
         world_mask (`wp.array`):
-            An array indicating which worlds are active (1) or skipped (0).\n
-            Shape of ``(num_worlds,)`` and type :class:`int32`.
+            An array indicating which worlds are active (True) or skipped (False).\n
+            Shape of ``(num_worlds,)`` and type :class:`bool`.
     """
     wp.launch(
         _extract_actuators_state_from_joints,
@@ -1147,8 +1147,8 @@ def extract_joints_state_from_actuators(
             The output array to store the actuated joint velocities.\n
             Shape of ``(sum_of_actuated_joint_dofs,)`` and type :class:`float`.
         world_mask (`wp.array`):
-            An array indicating which worlds are active (1) or skipped (0).\n
-            Shape of ``(num_worlds,)`` and type :class:`int32`.
+            An array indicating which worlds are active (True) or skipped (False).\n
+            Shape of ``(num_worlds,)`` and type :class:`bool`.
     """
     wp.launch(
         _extract_joints_state_from_actuators,
