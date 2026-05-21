@@ -2548,9 +2548,11 @@ class ViewerGL(ViewerBase):
             imgui.ImVec2(_SIDEBAR_WIDTH_PX * s, io.display_size[1] - 20 * s),
             imgui.Cond_.first_use_ever,
         )
-        # Keep the panel from being shrunk below a usable width / height.
+        # Keep the panel from being shrunk below something usable but allow
+        # generous downsizing. ``(160, 80)`` logical px is roughly enough
+        # for a single button row plus the title bar.
         imgui.set_next_window_size_constraints(
-            imgui.ImVec2(220 * s, 160 * s),
+            imgui.ImVec2(160 * s, 80 * s),
             imgui.ImVec2(io.display_size[0], io.display_size[1]),
         )
 
@@ -2958,13 +2960,17 @@ class ViewerGL(ViewerBase):
             io.display_size[1] - 20 * s,
             item_height + 60 * s,
         )
+        # ``first_use_ever`` (not ``appearing``) so the user-dragged position
+        # is preserved across collapse/expand cycles and persisted to
+        # ``imgui.ini``. Otherwise the window snaps back to the bottom-right
+        # every time the user re-opens it from a collapsed state.
         imgui.set_next_window_pos(
             imgui.ImVec2(io.display_size[0] - window_width - 10 * s, io.display_size[1] - window_height - 10 * s),
-            imgui.Cond_.appearing,
+            imgui.Cond_.first_use_ever,
         )
         imgui.set_next_window_size(
             imgui.ImVec2(window_width, window_height),
-            imgui.Cond_.appearing,
+            imgui.Cond_.first_use_ever,
         )
 
         expanded = imgui.begin("Plots")
