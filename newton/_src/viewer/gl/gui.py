@@ -10,6 +10,10 @@ class UI:
     def __init__(self, window):
         self._file_dialog_result: str | None = None
         self._pending_file_dialog = None
+        # DPI scale applied to ImGui style and fonts. Updated by ``_apply_dpi_scaling``
+        # whenever the framebuffer-to-window ratio changes (e.g. moving the window
+        # between displays with different DPI).
+        self.dpi_scale: float = 1.0
 
         try:
             from imgui_bundle import (
@@ -56,7 +60,15 @@ class UI:
         self.impl.on_mouse_scroll = on_mouse_scroll
         self.impl._attach_callbacks(self.window)
 
-        # Set up proper DPI scaling for high-DPI displays
+        # Set up proper DPI scaling for high-DPI displays.
+        #
+        # We can't rely solely on the framebuffer/window-size ratio: on macOS
+        # with the default ``pyglet.options.dpi_scaling = "platform"`` both
+        # ``get_size()`` and ``get_framebuffer_size()`` return *physical*
+        # pixels, so the ratio is always 1.0 even on Retina (2x). The
+        # documented pyglet API for HiDPI is ``window.scale`` which returns
+        # ``backingScaleFactor()`` on macOS and ``dpi/96`` elsewhere. Combine
+        # both so we always pick the larger non-trivial factor.
         window_width, window_height = self.window.get_size()
         fb_width, fb_height = self.window.get_framebuffer_size()
         if window_width > 0 and window_height > 0:
@@ -64,8 +76,57 @@ class UI:
             scale_y = fb_height / window_height
             self.io.display_framebuffer_scale = (scale_x, scale_y)
             self.io.display_size = (fb_width, fb_height)
+        self.dpi_scale = self._detect_dpi_scale()
+
+        # ``_apply_dpi_scaling`` resets to the base dark style and then scales
+        # it; no need to call ``_setup_dark_style`` separately here.
+        self._apply_dpi_scaling()
+
+    def _detect_dpi_scale(self) -> float:
+        """Return the current DPI factor for the window.
+
+        Prefers pyglet's documented ``window.scale`` (which works on macOS
+        Retina where ``framebuffer_size == window_size``), falling back to
+        the framebuffer/window-size ratio for older pyglet versions.
+        """
+        scale = 1.0
+        try:
+            window_scale = float(getattr(self.window, "scale", 1.0))
+            if window_scale > 1.0:
+                scale = window_scale
+        except Exception:
+            pass
+        try:
+            ww, wh = self.window.get_size()
+            fw, fh = self.window.get_framebuffer_size()
+            if ww > 0 and wh > 0:
+                scale = max(scale, fw / ww, fh / wh)
+        except Exception:
+            pass
+        return max(1.0, scale)
+
+    def _apply_dpi_scaling(self) -> None:
+        """Scale the active ImGui style and fonts to ``self.dpi_scale``.
+
+        ``display_size`` is set to the framebuffer size, so ImGui works in
+        framebuffer pixels. Without this rescale every widget would render at
+        ~half size on Retina/4K displays. Re-applying first restores the base
+        style (``_setup_dark_style``) so repeated calls do not compound.
+        """
+        if not self.is_available:
+            return
 
         self._setup_dark_style()
+        style = self.imgui.get_style()
+        if self.dpi_scale != 1.0:
+            style.scale_all_sizes(self.dpi_scale)
+        # ImGui >= 1.92 exposes ``font_scale_dpi`` for the dynamic font system;
+        # older builds use the deprecated ``io.font_global_scale``. Set whichever
+        # is available so fonts scale to DPI on both versions.
+        if hasattr(style, "font_scale_dpi"):
+            style.font_scale_dpi = self.dpi_scale
+        elif hasattr(self.io, "font_global_scale"):
+            self.io.font_global_scale = self.dpi_scale
 
     def _setup_grey_style(self):
         if not self.is_available:
@@ -318,6 +379,13 @@ class UI:
 
         # Use framebuffer size for display size
         self.io.display_size = fb_width, fb_height
+
+        # Reapply style/font scaling only when the DPI actually changes —
+        # e.g. the window moved to a display with different scaling.
+        new_dpi_scale = self._detect_dpi_scale()
+        if abs(new_dpi_scale - self.dpi_scale) > 1e-3:
+            self.dpi_scale = new_dpi_scale
+            self._apply_dpi_scaling()
 
     def get_theme_color(self, color_id, fallback_color=(1.0, 1.0, 1.0, 1.0)):
         """Get a color from the current theme with fallback.

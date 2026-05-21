@@ -44,7 +44,10 @@ def _imgui_uses_imvec4_color_edit3() -> bool:
 
 
 _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
-# Width of the main Newton Viewer sidebar [px].
+# Width of the main Newton Viewer sidebar in logical (96-DPI) pixels. The
+# actual framebuffer width used at render time is ``_SIDEBAR_WIDTH_PX *
+# ui.dpi_scale`` so the sidebar keeps a constant visual size on HiDPI
+# displays — see :meth:`ViewerGL._dpi_scale`.
 _SIDEBAR_WIDTH_PX: float = 300.0
 
 
@@ -240,7 +243,7 @@ class ViewerGL(ViewerBase):
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
-        self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
+        self._image_logger = ImageLogger(device=self.device, sidebar_width_px=self._sidebar_width_fb_px())
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
@@ -536,7 +539,7 @@ class ViewerGL(ViewerBase):
         # — and registers PBO interop with — the correct CUDA context.
         if self._image_logger is not None and self._image_logger.device != self.device:
             self._image_logger.clear()
-            self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
+            self._image_logger = ImageLogger(device=self.device, sidebar_width_px=self._sidebar_width_fb_px())
 
         if self.model is not None:
             # For capsule batches, replace per-instance scales with (radius, radius, half_height)
@@ -2189,6 +2192,42 @@ class ViewerGL(ViewerBase):
         if self.ui:
             self.ui.resize(width, height)
 
+        # Keep the image logger's "sidebar avoidance" hint in sync with the
+        # current DPI in case the window moved between displays.
+        if self._image_logger is not None:
+            self._image_logger._sidebar_width_px = self._sidebar_width_fb_px()
+
+    def _dpi_scale(self) -> float:
+        """Return the current DPI scale.
+
+        Falls back to ``window.scale`` (pyglet's documented HiDPI API) and
+        then the framebuffer/window-size ratio when the ImGui UI is not yet
+        available (e.g. during ``__init__`` before the UI is created, or in
+        headless mode). On macOS Retina ``window.scale`` is the only signal
+        that yields a value > 1.0 because pyglet reports both sizes in
+        physical pixels there.
+        """
+        ui = getattr(self, "ui", None)
+        if ui is not None and ui.is_available:
+            return ui.dpi_scale
+        scale = 1.0
+        try:
+            scale = max(scale, float(getattr(self.renderer.window, "scale", 1.0)))
+        except Exception:
+            pass
+        try:
+            ww, wh = self.renderer.window.get_size()
+            fw, fh = self.renderer.window.get_framebuffer_size()
+            if ww > 0 and wh > 0:
+                scale = max(scale, fw / ww, fh / wh)
+        except Exception:
+            pass
+        return max(1.0, scale)
+
+    def _sidebar_width_fb_px(self) -> float:
+        """Sidebar width in framebuffer pixels, scaled by the current DPI."""
+        return _SIDEBAR_WIDTH_PX * self._dpi_scale()
+
     def _update_fps(self):
         """
         Update FPS calculation and statistics.
@@ -2454,13 +2493,31 @@ class ViewerGL(ViewerBase):
         # Use theme colors directly
         nav_highlight_color = self.ui.get_theme_color(imgui.Col_.nav_cursor, (1.0, 1.0, 1.0, 1.0))
 
-        # Position the window on the left side
+        # Initial position/size: docked on the left at first appearance, but
+        # only as a hint (``first_use_ever``). After that the user can drag
+        # the title bar to move the panel anywhere, or grab the bottom-right
+        # corner to resize it. Hardcoded pixel offsets are multiplied by
+        # ``dpi_scale`` so they keep a constant visual size on HiDPI displays
+        # where ``display_size`` is in framebuffer pixels.
         io = self.ui.io
-        imgui.set_next_window_pos(imgui.ImVec2(10, 10))
-        imgui.set_next_window_size(imgui.ImVec2(_SIDEBAR_WIDTH_PX, io.display_size[1] - 20))
+        s = self.ui.dpi_scale
+        imgui.set_next_window_pos(imgui.ImVec2(10 * s, 10 * s), imgui.Cond_.first_use_ever)
+        imgui.set_next_window_size(
+            imgui.ImVec2(_SIDEBAR_WIDTH_PX * s, io.display_size[1] - 20 * s),
+            imgui.Cond_.first_use_ever,
+        )
+        # Keep the panel from being shrunk below a usable width / height.
+        imgui.set_next_window_size_constraints(
+            imgui.ImVec2(220 * s, 160 * s),
+            imgui.ImVec2(io.display_size[0], io.display_size[1]),
+        )
 
-        # Main control panel window - use safe flag values
-        flags = imgui.WindowFlags_.no_resize.value
+        # Main control panel window — movable, resizable, with an automatic
+        # vertical scrollbar when contents overflow. The pyglet ImGui backend
+        # forwards mouse-wheel and trackpad two-finger scroll events as
+        # standard ``add_mouse_wheel_event`` calls, so trackpad scrolling
+        # works out of the box.
+        flags = 0
 
         if imgui.begin(f"Newton Viewer v{nt.__version__}", flags=flags):
             imgui.separator()
@@ -2851,15 +2908,16 @@ class ViewerGL(ViewerBase):
 
         imgui = self.ui.imgui
         io = self.ui.io
+        s = self.ui.dpi_scale
 
-        window_width = 400
-        item_height = len(self._scalar_buffers) * 140 + len(self._array_buffers) * 260
+        window_width = 400 * s
+        item_height = len(self._scalar_buffers) * 140 * s + len(self._array_buffers) * 260 * s
         window_height = min(
-            io.display_size[1] - 20,
-            item_height + 60,
+            io.display_size[1] - 20 * s,
+            item_height + 60 * s,
         )
         imgui.set_next_window_pos(
-            imgui.ImVec2(io.display_size[0] - window_width - 10, io.display_size[1] - window_height - 10),
+            imgui.ImVec2(io.display_size[0] - window_width - 10 * s, io.display_size[1] - window_height - 10 * s),
             imgui.Cond_.appearing,
         )
         imgui.set_next_window_size(
@@ -2869,7 +2927,7 @@ class ViewerGL(ViewerBase):
 
         expanded = imgui.begin("Plots")
         if expanded:
-            graph_size = imgui.ImVec2(-1, 100)
+            graph_size = imgui.ImVec2(-1, 100 * s)
             n = self._plot_history_size
             for name, buf in self._scalar_buffers.items():
                 arr = self._scalar_arrays.get(name)
@@ -2905,7 +2963,8 @@ class ViewerGL(ViewerBase):
         fps_color = (1.0, 1.0, 1.0, 1.0)  # Bright white
 
         # Position in top-right corner
-        window_pos = (io.display_size[0] - 10, 10)
+        s = self.ui.dpi_scale
+        window_pos = (io.display_size[0] - 10 * s, 10 * s)
         imgui.set_next_window_pos(imgui.ImVec2(window_pos[0], window_pos[1]), pivot=imgui.ImVec2(1.0, 0.0))
 
         # Transparent background, auto-sized, non-resizable/movable - use safe flags
@@ -3186,7 +3245,7 @@ class ViewerGL(ViewerBase):
 
             # Create a child window for scrollable content
             child_flags = int(imgui.ChildFlags_.borders)
-            if imgui.begin_child("values_scroll", imgui.ImVec2(0, 300), child_flags):
+            if imgui.begin_child("values_scroll", imgui.ImVec2(0, 300 * self.ui.dpi_scale), child_flags):
                 names = self._get_attribute_names(view, attribute_name)
                 self._render_value_sliders(flat_values, names, attribute_name, state)
 
