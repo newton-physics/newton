@@ -3698,13 +3698,18 @@ def Xform "TestBody" (
             "Should load 1 collision + 2 NewtonSiteAPI sites with load_visual_shapes=False",
         )
 
-        # load_sites=False -> NewtonSiteAPI prims must be skipped
+        # load_sites=False -> NewtonSiteAPI prims must be skipped entirely (not loaded as plain visual shapes)
         builder_no_sites = newton.ModelBuilder()
         builder_no_sites.add_usd(stage, load_sites=False)
         sites_in_no_sites = sum(
             1 for i in range(builder_no_sites.shape_count) if builder_no_sites.shape_flags[i] & site_flag
         )
         self.assertEqual(sites_in_no_sites, 0, "load_sites=False should skip NewtonSiteAPI prims")
+        self.assertEqual(
+            builder_no_sites.shape_count,
+            2,
+            "load_sites=False should leave 1 collision + 1 visual shape, with NewtonSiteAPI prims excluded entirely",
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_usd_gravcomp(self):
