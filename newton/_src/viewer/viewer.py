@@ -2300,7 +2300,7 @@ class ViewerBase(ABC):
                 # Slice to transfer only the last element instead of the full array.
                 active_count = int(offsets[-1:].numpy()[0]) + int(mask[-1:].numpy()[0])
                 if active_count == 0:
-                    self.log_points(name="/model/particles", points=None, hidden=True)
+                    self.log_points(name="/model/particles", points=None, hidden=True, as_spheres=True)
                     return
                 if active_count < n:
                     points_out = wp.empty(active_count, dtype=wp.vec3, device=self.device)

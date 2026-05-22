@@ -279,6 +279,15 @@ class Example:
         scale_np *= self.viz_scale
         self.viz_shape_scale = wp.array(scale_np, dtype=wp.vec3, device=self.model.device)
 
+        # Scale particle radii from cm to meters for visualization
+        self.sim_particle_radius = self.model.particle_radius
+        if self.model.particle_radius is not None:
+            radius_np = self.model.particle_radius.numpy().copy()
+            radius_np *= self.viz_scale
+            self.viz_particle_radius = wp.array(radius_np, dtype=wp.float32, device=self.model.device)
+        else:
+            self.viz_particle_radius = None
+
         # Scale the viewer's cached shape instance data (base viewer / GL fallback path)
         if hasattr(self.viewer, "_shape_instances"):
             for shapes in self.viewer._shape_instances.values():
@@ -600,9 +609,10 @@ class Example:
                 outputs=[self.viz_state.body_q],
             )
 
-        # Swap model shape data to meter-scale for rendering
+        # Swap model shape and particle data to meter-scale for rendering
         self.model.shape_transform = self.viz_shape_transform
         self.model.shape_scale = self.viz_shape_scale
+        self.model.particle_radius = self.viz_particle_radius
 
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.viz_state)
@@ -616,9 +626,10 @@ class Example:
         )
         self.viewer.end_frame()
 
-        # Restore simulation shape data
+        # Restore simulation shape and particle data
         self.model.shape_transform = self.sim_shape_transform
         self.model.shape_scale = self.sim_shape_scale
+        self.model.particle_radius = self.sim_particle_radius
 
     def test_final(self):
         p_lower = wp.vec3(-36.0, -95.0, -5.0)

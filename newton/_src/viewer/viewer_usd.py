@@ -550,6 +550,12 @@ class ViewerUSD(ViewerBase):
             Sdf.Path of the created/updated primitive.
         """
         if points is None:
+            if as_spheres and name in self._instancers:
+                self._instancers[name].GetVisibilityAttr().Set("invisible", self._frame_index)
+            else:
+                prim = self.stage.GetPrimAtPath(self._get_path(name))
+                if prim.IsValid():
+                    UsdGeom.Imageable(prim).GetVisibilityAttr().Set("invisible", self._frame_index)
             return
 
         num_points = len(points)
