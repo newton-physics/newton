@@ -32,8 +32,8 @@ newton.utils
    create_cable_stiffness_from_elastic_moduli
    create_parallel_transport_cable_quaternions
    create_straight_cable_points
-   create_straight_cable_points_from_lengths
    create_straight_cable_points_and_quaternions
+   create_straight_cable_points_from_lengths
    create_straight_cable_rest_from_initial
    download_asset
    event_scope

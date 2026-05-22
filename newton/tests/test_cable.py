@@ -382,7 +382,7 @@ def _apply_cable_body_transforms_syncs_vbd_history_impl(test: unittest.TestCase,
         [state0, state1],
         rod_bodies,
         initial_xforms,
-        solver=solver,
+        body_q_prev=solver.body_q_prev,
     )
 
     expected = wp.array(initial_xforms, dtype=wp.transform, device=device).numpy()
@@ -390,6 +390,74 @@ def _apply_cable_body_transforms_syncs_vbd_history_impl(test: unittest.TestCase,
     np.testing.assert_allclose(state1.body_q.numpy()[rod_bodies], expected, rtol=0.0, atol=1.0e-7)
     np.testing.assert_allclose(solver.body_q_prev.numpy()[rod_bodies], expected, rtol=0.0, atol=1.0e-7)
     np.testing.assert_allclose(state0.body_qd.numpy()[rod_bodies], 0.0, rtol=0.0, atol=0.0)
+
+
+def _cable_curved_init_straight_rest_no_stretch_impl(test: unittest.TestCase, device):
+    """Curved initial pose with length-matched straight rest must not develop stretch artifacts.
+
+    Locks in the guarantee that ``create_straight_cable_rest_from_initial`` paired with
+    ``apply_cable_body_transforms`` avoids first-frame teleportation and accumulates no
+    spurious stretch under zero gravity. Bend stiffness is intentionally weak so the cable
+    relaxes slowly and any per-segment length drift (stretch creep) would dominate.
+    """
+    initial_points = [
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(0.20, 0.05, 1.02),
+        wp.vec3(0.42, 0.08, 0.98),
+        wp.vec3(0.60, 0.02, 1.01),
+    ]
+    rest_points, rest_quats = newton.utils.create_straight_cable_rest_from_initial(initial_points)
+    expected_lengths = newton.utils.compute_cable_segment_lengths(initial_points)
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    rod_bodies, _ = builder.add_rod(
+        positions=rest_points,
+        quaternions=rest_quats,
+        radius=0.02,
+        stretch_stiffness=1.0e5,
+        bend_stiffness=1.0,
+        label="ut_no_stretch",
+    )
+
+    builder.color()
+    model = builder.finalize(device=device)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=4)
+
+    initial_xforms = newton.utils.create_cable_body_transforms(initial_points)
+    newton.utils.apply_cable_body_transforms(
+        [state_0, state_1],
+        rod_bodies,
+        initial_xforms,
+        body_q_prev=solver.body_q_prev,
+    )
+
+    dt = 1.0 / 240.0
+    for _ in range(60):  # 0.25 s under zero gravity
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, contacts, dt)
+        state_0, state_1 = state_1, state_0
+
+    positions = state_0.body_q.numpy()[rod_bodies, :3]
+    test.assertTrue(np.isfinite(positions).all(), "non-finite cable positions after simulation")
+
+    # add_rod creates one body per segment (N-1 bodies for N points), each placed at the
+    # segment's start point. Inter-body distances measure the first N-2 segment lengths;
+    # the final segment ends past the last body, so it isn't measurable from body_q alone.
+    for i in range(len(rod_bodies) - 1):
+        measured = float(np.linalg.norm(positions[i + 1] - positions[i]))
+        expected = expected_lengths[i]
+        rel_err = abs(measured - expected) / expected
+        test.assertLess(
+            rel_err,
+            0.01,
+            msg=(
+                f"Segment {i} stretch drift {rel_err:.4%} after 60 steps: measured={measured:.6f}, rest={expected:.6f}"
+            ),
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -4244,6 +4312,12 @@ add_function_test(
     TestCable,
     "test_apply_cable_body_transforms_syncs_vbd_history",
     _apply_cable_body_transforms_syncs_vbd_history_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_curved_init_straight_rest_no_stretch",
+    _cable_curved_init_straight_rest_no_stretch_impl,
     devices=devices,
 )
 add_function_test(

@@ -425,24 +425,42 @@ def apply_cable_body_transforms(
     body_indices: Sequence[int],
     transforms: Sequence[wp.transform],
     *,
-    solver=None,
+    body_q_prev: wp.array | None = None,
     zero_velocities: bool = True,
-    sync_body_q_prev: bool = True,
 ) -> None:
-    """Apply cable body transforms to states and optional solver previous-pose storage.
+    """Apply cable body transforms to states and optional previous-pose storage.
 
     Use this when a cable's simulation initial pose differs from its model/rest pose. It updates
-    only the requested bodies and, when a VBD solver is provided, keeps ``solver.body_q_prev`` in
-    sync so the first step does not see an artificial teleportation.
+    only the requested bodies and, when ``body_q_prev`` is provided, keeps previous-pose history
+    in sync so the first step does not see an artificial teleportation.
 
     Args:
-        states: A single ``State`` or a sequence of states whose ``body_q`` arrays should be updated.
+        states: A single :class:`~newton.State` or a sequence of states whose ``body_q`` arrays
+            should be updated.
         body_indices: Body indices corresponding to ``transforms``.
         transforms: Initial body transforms, one per body index.
-        solver: Optional solver with a ``body_q_prev`` array, e.g. ``SolverVBD``.
-        zero_velocities: If True, zero matching ``state.body_qd`` entries when present.
-        sync_body_q_prev: If True, also update any available ``body_q_prev`` arrays on states and
-            the optional solver.
+        body_q_prev: Optional previous-pose buffer, e.g. ``solver.body_q_prev`` for
+            :class:`~newton.solvers.SolverVBD`.
+        zero_velocities: If True, zero matching ``state.body_qd`` entries so the applied pose starts
+            at rest.
+
+    Example:
+        Build a straight rest cable whose segment lengths match a curved initial pose, then
+        push that initial pose into states and the VBD previous-pose history::
+
+            rest_points, rest_quats = newton.utils.create_straight_cable_rest_from_initial(initial_points)
+            body_ids, _ = builder.add_rod(positions=rest_points, quaternions=rest_quats, radius=0.02)
+            model = builder.finalize()
+            state_0, state_1 = model.state(), model.state()
+            solver = newton.solvers.SolverVBD(model)
+
+            initial_xforms = newton.utils.create_cable_body_transforms(initial_points)
+            newton.utils.apply_cable_body_transforms(
+                [state_0, state_1],
+                body_ids,
+                initial_xforms,
+                body_q_prev=solver.body_q_prev,
+            )
     """
     states_list = _as_state_sequence(states)
     indices = _as_body_indices(body_indices)
@@ -474,28 +492,23 @@ def apply_cable_body_transforms(
                 device=body_q.device,
             )
 
-        if sync_body_q_prev:
-            state_body_q_prev = getattr(state, "body_q_prev", None)
-            if state_body_q_prev is not None:
-                prev_body_indices_wp = wp.array(indices, dtype=wp.int32, device=state_body_q_prev.device)
-                prev_transforms_wp = wp.array(xforms, dtype=wp.transform, device=state_body_q_prev.device)
-                wp.launch(
-                    _set_indexed_body_transforms,
-                    dim=len(indices),
-                    inputs=[prev_body_indices_wp, prev_transforms_wp, state_body_q_prev],
-                    device=state_body_q_prev.device,
-                )
+        state_body_q_prev = getattr(state, "body_q_prev", None)
+        if state_body_q_prev is not None:
+            prev_body_indices_wp = wp.array(indices, dtype=wp.int32, device=state_body_q_prev.device)
+            prev_transforms_wp = wp.array(xforms, dtype=wp.transform, device=state_body_q_prev.device)
+            wp.launch(
+                _set_indexed_body_transforms,
+                dim=len(indices),
+                inputs=[prev_body_indices_wp, prev_transforms_wp, state_body_q_prev],
+                device=state_body_q_prev.device,
+            )
 
-    if solver is not None and sync_body_q_prev:
-        solver_body_q_prev = getattr(solver, "body_q_prev", None)
-        if solver_body_q_prev is None:
-            raise ValueError("solver does not have a body_q_prev array")
-
-        body_indices_wp = wp.array(indices, dtype=wp.int32, device=solver_body_q_prev.device)
-        transforms_wp = wp.array(xforms, dtype=wp.transform, device=solver_body_q_prev.device)
+    if body_q_prev is not None:
+        body_indices_wp = wp.array(indices, dtype=wp.int32, device=body_q_prev.device)
+        transforms_wp = wp.array(xforms, dtype=wp.transform, device=body_q_prev.device)
         wp.launch(
             _set_indexed_body_transforms,
             dim=len(indices),
-            inputs=[body_indices_wp, transforms_wp, solver_body_q_prev],
-            device=solver_body_q_prev.device,
+            inputs=[body_indices_wp, transforms_wp, body_q_prev],
+            device=body_q_prev.device,
         )
