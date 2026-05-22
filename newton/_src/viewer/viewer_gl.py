@@ -1130,6 +1130,7 @@ class ViewerGL(ViewerBase):
         radii: wp.array[wp.float32] | float | None = None,
         colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
+        as_spheres: bool = False,
     ):
         """
         Log a batch of points for rendering as spheres.
@@ -1140,6 +1141,7 @@ class ViewerGL(ViewerBase):
             radii: Array of point radius values.
             colors: Array of point colors.
             hidden: Whether the points are hidden.
+            as_spheres: Ignored — GL always renders points as sphere instances.
         """
         if points is None:
             if name in self.objects:

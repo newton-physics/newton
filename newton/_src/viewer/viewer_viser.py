@@ -1157,6 +1157,7 @@ class ViewerViser(ViewerBase):
         radii: wp.array[wp.float32] | float | None = None,
         colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
+        as_spheres: bool = False,
     ):
         """
         Log points for visualization.
@@ -1167,6 +1168,7 @@ class ViewerViser(ViewerBase):
             radii: Point radii (can be a wp.array or a numpy array).
             colors: Point colors (can be a wp.array or a numpy array).
             hidden: Whether the points are hidden.
+            as_spheres: Ignored — Viser renders points as spheres natively.
         """
         # Remove existing points if present
         if name in self._scene_handles:

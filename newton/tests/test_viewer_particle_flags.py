@@ -19,7 +19,7 @@ class _LogPointsProbe(ViewerNull):
         self.logged_hidden = None
         self.log_points_called = False
 
-    def log_points(self, name, points, radii=None, colors=None, hidden=False):
+    def log_points(self, name, points, radii=None, colors=None, hidden=False, as_spheres=False):
         self.log_points_called = True
         self.logged_points = points
         self.logged_radii = radii
