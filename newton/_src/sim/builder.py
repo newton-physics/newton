@@ -4388,10 +4388,11 @@ class ModelBuilder:
 
         .. note::
 
-            Cable joints are supported by :class:`newton.solvers.SolverVBD`, which uses an
-            AVBD backend for rigid bodies. For cable joints, the stretch and bend behavior
-            is defined by the parent/child attachment transforms; the joint axis stored in
-            :class:`JointDofConfig` is not currently used directly.
+            Cable joints are represented in the joint data model, but their two entries
+            are VBD stretch and bend/twist constraint slots rather than
+            ``joint_q`` coordinates. Cable body transforms are integrated directly by
+            :class:`newton.solvers.SolverVBD`; they are not reconstructed by
+            :func:`newton.eval_fk`.
 
         Args:
             parent: The index of the parent body.
