@@ -529,7 +529,7 @@ API documentation
 -----------------
 
 Newton's API reference is auto-generated from the ``__all__`` lists of its public modules.
-The script ``docs/generate_api.py`` produces reStructuredText files under ``docs/api/`` (git-ignored)
+The script ``docs/generate_api.py`` produces reStructuredText files under ``docs/api/``
 that Sphinx processes via ``autosummary`` to create individual pages for every public symbol.
 
 Whenever you add, remove, or rename a public symbol in one of the public modules
