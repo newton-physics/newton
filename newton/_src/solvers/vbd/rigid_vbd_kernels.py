@@ -68,6 +68,8 @@ class RigidContactHistory:
     penalty_k: wp.array[float]
     point0: wp.array[wp.vec3]
     point1: wp.array[wp.vec3]
+    offset0: wp.array[wp.vec3]
+    offset1: wp.array[wp.vec3]
     normal: wp.array[wp.vec3]
 
 
@@ -2128,6 +2130,8 @@ def init_body_body_contacts_avbd(
     # In/out: replayed only for matched hard contacts that were sticking.
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     # Outputs
     contact_penalty_k: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
@@ -2141,8 +2145,8 @@ def init_body_body_contacts_avbd(
     penalty_k, and stick-anchor points when the previous matched contact stuck.
     For soft contacts: restores penalty_k only; lambda stays zero because the
     soft path is penalty-only.
-    Sticky hard contacts may overwrite rigid_contact_point0/1 in place with the
-    previously saved contact anchors.
+    Sticky hard contacts may overwrite rigid_contact_point0/1 and
+    rigid_contact_offset0/1 in place with the previously saved contact anchors.
     C0 and decay are handled by step_body_body_contact_C0_lambda.
 
     match_index[i] addresses saved contact rows from the last snapshot.
@@ -2182,10 +2186,14 @@ def init_body_body_contacts_avbd(
             contact_lambda[i] = n_new * lam_n + lam_t_new
 
             stick_flag = history.stick_flag[slot]
-            # Replay saved points only for contacts whose saved state was sticking.
+            # Replay saved points and offsets only for contacts whose saved
+            # state was sticking. Point and offset must move together; the
+            # surface anchor is ``point + offset``.
             if stick_flag == _STICK_FLAG_ANCHOR or stick_flag == _STICK_FLAG_DEADZONE:
                 rigid_contact_point0[i] = history.point0[slot]
                 rigid_contact_point1[i] = history.point1[slot]
+                rigid_contact_offset0[i] = history.offset0[slot]
+                rigid_contact_offset1[i] = history.offset1[slot]
         else:
             contact_lambda[i] = wp.vec3(0.0)
     else:
@@ -2198,6 +2206,8 @@ def snapshot_body_body_contact_history(
     rigid_contact_count: wp.array[int],
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
     contact_stick_flag: wp.array[wp.int32],
@@ -2208,6 +2218,8 @@ def snapshot_body_body_contact_history(
     prev_penalty_k: wp.array[float],
     prev_point0: wp.array[wp.vec3],
     prev_point1: wp.array[wp.vec3],
+    prev_offset0: wp.array[wp.vec3],
+    prev_offset1: wp.array[wp.vec3],
     prev_normal: wp.array[wp.vec3],
 ):
     """Snapshot converged contact state by contact row.
@@ -2224,6 +2236,8 @@ def snapshot_body_body_contact_history(
     prev_penalty_k[i] = contact_penalty_k[i]
     prev_point0[i] = rigid_contact_point0[i]
     prev_point1[i] = rigid_contact_point1[i]
+    prev_offset0[i] = rigid_contact_offset0[i]
+    prev_offset1[i] = rigid_contact_offset1[i]
     prev_normal[i] = rigid_contact_normal[i]
 
 

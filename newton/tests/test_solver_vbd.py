@@ -208,8 +208,20 @@ def _rigid_contact_history_restore_from_match_index(test, device):
             dtype=np.float32,
         )
         point1_in = point0_in + np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        offset0_in = np.array(
+            [
+                [0.0, 0.0, 0.1],
+                [0.0, 0.0, 0.2],
+                [0.0, 0.0, 0.3],
+                [0.0, 0.0, 0.4],
+            ],
+            dtype=np.float32,
+        )
+        offset1_in = -offset0_in
         point0 = wp.array(point0_in, dtype=wp.vec3, device=device)
         point1 = wp.array(point1_in, dtype=wp.vec3, device=device)
+        offset0 = wp.array(offset0_in, dtype=wp.vec3, device=device)
+        offset1 = wp.array(offset1_in, dtype=wp.vec3, device=device)
         normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
 
         shape_ke = wp.array([100.0, 200.0], dtype=float, device=device)
@@ -223,6 +235,8 @@ def _rigid_contact_history_restore_from_match_index(test, device):
         history.penalty_k = wp.array([20.0, 30.0, 40.0], dtype=float, device=device)
         history.point0 = wp.array([[20.0, 0.0, 0.0], [21.0, 0.0, 0.0], [22.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
         history.point1 = wp.array([[20.0, 0.0, 1.0], [21.0, 0.0, 1.0], [22.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
+        history.offset0 = wp.array([[0.0, 0.0, 0.5], [0.0, 0.0, 0.6], [0.0, 0.0, 0.7]], dtype=wp.vec3, device=device)
+        history.offset1 = wp.array([[0.0, 0.0, -0.5], [0.0, 0.0, -0.6], [0.0, 0.0, -0.7]], dtype=wp.vec3, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3, device=device)
 
         penalty_k = wp.zeros(4, dtype=float, device=device)
@@ -250,6 +264,8 @@ def _rigid_contact_history_restore_from_match_index(test, device):
             outputs=[
                 point0,
                 point1,
+                offset0,
+                offset1,
                 penalty_k,
                 lam,
                 material_kd,
@@ -267,24 +283,38 @@ def _rigid_contact_history_restore_from_match_index(test, device):
 
         point0_out = point0.numpy()
         point1_out = point1.numpy()
+        offset0_out = offset0.numpy()
+        offset1_out = offset1.numpy()
         np.testing.assert_allclose(point0_out[0], [22.0, 0.0, 0.0])
         np.testing.assert_allclose(point1_out[0], [22.0, 0.0, 1.0])
+        np.testing.assert_allclose(offset0_out[0], [0.0, 0.0, 0.7])
+        np.testing.assert_allclose(offset1_out[0], [0.0, 0.0, -0.7])
         np.testing.assert_allclose(point0_out[2], point0_in[2])
         np.testing.assert_allclose(point1_out[2], point1_in[2])
         np.testing.assert_allclose(point0_out[1], point0_in[1])
         np.testing.assert_allclose(point0_out[3], point0_in[3])
+        np.testing.assert_allclose(offset0_out[1], offset0_in[1])
+        np.testing.assert_allclose(offset0_out[2], offset0_in[2])
+        np.testing.assert_allclose(offset0_out[3], offset0_in[3])
+        np.testing.assert_allclose(offset1_out[1], offset1_in[1])
+        np.testing.assert_allclose(offset1_out[2], offset1_in[2])
+        np.testing.assert_allclose(offset1_out[3], offset1_in[3])
 
 
 def _rigid_contact_history_soft_restores_penalty_only(test, device):
-    """Soft contacts restore penalty state only; saved lambda and anchors stay unused."""
+    """Soft contacts restore penalty state only; saved lambda, points, and offsets stay unused."""
     with wp.ScopedDevice(device):
         contact_count = wp.array([1], dtype=int, device=device)
         shape0 = wp.array([0], dtype=int, device=device)
         shape1 = wp.array([1], dtype=int, device=device)
         point0_in = np.array([[10.0, 0.0, 0.0]], dtype=np.float32)
         point1_in = np.array([[10.0, 0.0, 1.0]], dtype=np.float32)
+        offset0_in = np.array([[0.0, 0.0, 0.1]], dtype=np.float32)
+        offset1_in = np.array([[0.0, 0.0, -0.1]], dtype=np.float32)
         point0 = wp.array(point0_in, dtype=wp.vec3, device=device)
         point1 = wp.array(point1_in, dtype=wp.vec3, device=device)
+        offset0 = wp.array(offset0_in, dtype=wp.vec3, device=device)
+        offset1 = wp.array(offset1_in, dtype=wp.vec3, device=device)
         normal = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
 
         history = RigidContactHistory()
@@ -293,6 +323,8 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
         history.penalty_k = wp.array([40.0], dtype=float, device=device)
         history.point0 = wp.array([[20.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
         history.point1 = wp.array([[20.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
+        history.offset0 = wp.array([[0.0, 0.0, 0.5]], dtype=wp.vec3, device=device)
+        history.offset1 = wp.array([[0.0, 0.0, -0.5]], dtype=wp.vec3, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
 
         penalty_k = wp.zeros(1, dtype=float, device=device)
@@ -320,6 +352,8 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
             outputs=[
                 point0,
                 point1,
+                offset0,
+                offset1,
                 penalty_k,
                 lam,
                 material_kd,
@@ -333,6 +367,8 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
         np.testing.assert_allclose(lam.numpy(), [[0.0, 0.0, 0.0]])
         np.testing.assert_allclose(point0.numpy(), point0_in)
         np.testing.assert_allclose(point1.numpy(), point1_in)
+        np.testing.assert_allclose(offset0.numpy(), offset0_in)
+        np.testing.assert_allclose(offset1.numpy(), offset1_in)
 
 
 def _joint_angular_dual_projects_free_axis_lambda(test, device):
@@ -458,6 +494,8 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
         contact_count = wp.array([2], dtype=int, device=device)
         point0 = wp.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
         point1 = wp.array([[1.0, 0.0, 1.0], [2.0, 0.0, 1.0], [3.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
+        offset0 = wp.array([[0.0, 0.0, 0.1], [0.0, 0.0, 0.2], [0.0, 0.0, 0.3]], dtype=wp.vec3, device=device)
+        offset1 = wp.array([[0.0, 0.0, -0.1], [0.0, 0.0, -0.2], [0.0, 0.0, -0.3]], dtype=wp.vec3, device=device)
         normal = wp.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
         lam = wp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=wp.vec3, device=device)
         stick = wp.array([1, 2, 3], dtype=wp.int32, device=device)
@@ -468,13 +506,24 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
         prev_penalty = wp.zeros(3, dtype=float, device=device)
         prev_point0 = wp.zeros(3, dtype=wp.vec3, device=device)
         prev_point1 = wp.zeros(3, dtype=wp.vec3, device=device)
+        prev_offset0 = wp.zeros(3, dtype=wp.vec3, device=device)
+        prev_offset1 = wp.zeros(3, dtype=wp.vec3, device=device)
         prev_normal = wp.zeros(3, dtype=wp.vec3, device=device)
 
         wp.launch(
             snapshot_body_body_contact_history,
             dim=3,
-            inputs=[contact_count, point0, point1, normal, lam, stick, penalty],
-            outputs=[prev_lambda, prev_stick, prev_penalty, prev_point0, prev_point1, prev_normal],
+            inputs=[contact_count, point0, point1, offset0, offset1, normal, lam, stick, penalty],
+            outputs=[
+                prev_lambda,
+                prev_stick,
+                prev_penalty,
+                prev_point0,
+                prev_point1,
+                prev_offset0,
+                prev_offset1,
+                prev_normal,
+            ],
             device=device,
         )
 
@@ -483,8 +532,12 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
         np.testing.assert_allclose(prev_penalty.numpy()[:2], [10.0, 20.0])
         np.testing.assert_allclose(prev_point0.numpy()[:2], point0.numpy()[:2])
         np.testing.assert_allclose(prev_point1.numpy()[:2], point1.numpy()[:2])
+        np.testing.assert_allclose(prev_offset0.numpy()[:2], offset0.numpy()[:2])
+        np.testing.assert_allclose(prev_offset1.numpy()[:2], offset1.numpy()[:2])
         np.testing.assert_allclose(prev_normal.numpy()[:2], normal.numpy()[:2])
         np.testing.assert_allclose(prev_lambda.numpy()[2], [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(prev_offset0.numpy()[2], [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(prev_offset1.numpy()[2], [0.0, 0.0, 0.0])
         test.assertEqual(prev_stick.numpy()[2], 0)
         test.assertEqual(prev_penalty.numpy()[2], 0.0)
 
