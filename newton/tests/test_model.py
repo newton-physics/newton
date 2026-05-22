@@ -1535,61 +1535,15 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.joint_parent[joint_id], parent_body)
 
     def test_add_joint_free_world_parent_no_warning(self):
-        """Free joint with the world (parent=-1) is the supported configuration
-        and must not emit the MuJoCo-incompatibility warning."""
+        """Free joint with the world (parent=-1) must not emit any warnings."""
         builder = ModelBuilder()
         body = builder.add_body(wp.transform_identity(), mass=1.0)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             builder.add_joint_free(child=body)
         self.assertFalse(
-            any("SolverMuJoCo" in str(w.message) for w in caught),
-            f"Unexpected MuJoCo-incompat warning for parent=-1: {[str(w.message) for w in caught]}",
-        )
-
-    def test_add_joint_free_non_world_parent_warns(self):
-        """Free joint with a non-world parent must warn that SolverMuJoCo will
-        reject the model, since MuJoCo only permits free joints to attach
-        directly to the world."""
-        builder = ModelBuilder()
-        parent = builder.add_body(wp.transform_identity(), mass=1.0)
-        child = builder.add_body(wp.transform_identity(), mass=1.0)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.add_joint_free(parent=parent, child=child, label="floater")
-        mjc_warnings = [w for w in caught if "SolverMuJoCo" in str(w.message)]
-        self.assertEqual(len(mjc_warnings), 1)
-        self.assertEqual(mjc_warnings[0].category, UserWarning)
-        self.assertIn("floater", str(mjc_warnings[0].message))
-        self.assertIn(f"parent body {parent}", str(mjc_warnings[0].message))
-
-    def test_add_joint_generic_free_non_world_parent_warns(self):
-        """The warning fires for free joints created through the generic
-        ``add_joint`` entry point too, not only the typed ``add_joint_free``
-        wrapper (URDF ``floating`` joints take this path indirectly)."""
-        builder = ModelBuilder()
-        parent = builder.add_body(wp.transform_identity(), mass=1.0)
-        child = builder.add_body(wp.transform_identity(), mass=1.0)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.add_joint(
-                newton.JointType.FREE,
-                parent=parent,
-                child=child,
-                linear_axes=[
-                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.X),
-                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.Y),
-                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.Z),
-                ],
-                angular_axes=[
-                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.X),
-                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.Y),
-                    ModelBuilder.JointDofConfig.create_unlimited(newton.Axis.Z),
-                ],
-            )
-        self.assertEqual(
-            sum("SolverMuJoCo" in str(w.message) for w in caught),
-            1,
+            any(issubclass(w.category, UserWarning) for w in caught),
+            f"Unexpected warning for world-parent free joint: {[str(w.message) for w in caught]}",
         )
 
     def test_add_joint_non_free_non_world_parent_no_warning(self):
