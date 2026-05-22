@@ -3771,6 +3771,343 @@ def Xform "TestBody" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_mass_api_parsing(self):
+        """Exhaustive test of NewtonMassAPI mass/inertia combinations.
+
+        Axes tested:
+          Mass source:    explicit physics:mass  vs  density-derived
+          Inertia source: newton:inertia  vs  physics:diagonalInertia  vs  density-derived
+          Shape mode:     solid  vs  shell+thickness  vs  shell+margin-fallback
+        """
+        from pxr import Usd
+
+        R = 0.5
+        density = 1000.0
+        shell_t = 0.05
+        margin_t = 0.03
+        authored_mass = 10.0
+
+        solid_mass = 4.0 / 3.0 * np.pi * R**3 * density
+        solid_I = 2.0 / 5.0 * solid_mass * R**2
+
+        def _shell_mass(t):
+            return 4.0 / 3.0 * np.pi * (R**3 - (R - t) ** 3) * density
+
+        def _shell_I(t):
+            m_outer = solid_mass
+            m_inner = 4.0 / 3.0 * np.pi * (R - t) ** 3 * density
+            return 2.0 / 5.0 * m_outer * R**2 - 2.0 / 5.0 * m_inner * (R - t) ** 2
+
+        def _scaled_I(shape_I, shape_mass, target_mass):
+            return shape_I * target_mass / shape_mass
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+# 1) Shell + thickness + authored mass, no inertia → shell-derived inertia scaled to mass
+def Xform "ShellThicknessMass" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 10.0
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token newton:massModel = "shell"
+        float newton:shellThickness = 0.05
+    }
+}
+
+# 2) Shell + margin fallback + authored mass, no inertia → margin used as thickness
+def Xform "ShellMarginMass" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (2, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 10.0
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token newton:massModel = "shell"
+        float newton:contactMargin = 0.03
+    }
+}
+
+# 3) Solid + authored mass, no inertia → solid inertia scaled to mass
+def Xform "SolidMass" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (4, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 10.0
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+# 4) Explicit mass + newton:inertia tensor + shell collider
+def Xform "ExplicitTensor" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (6, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 5.0
+    double[] newton:inertia = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token newton:massModel = "shell"
+        float newton:shellThickness = 0.01
+    }
+}
+
+# 5) Explicit mass + diagonalInertia (no newton:inertia)
+def Xform "ExplicitDiag" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (8, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 3.0
+    float3 physics:diagonalInertia = (0.5, 1.0, 1.5)
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+# 6) Solid, no authored mass or inertia (all density-derived via mass computer)
+def Xform "SolidDensity" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (10, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+# 7) Shell, no authored mass or inertia (all density-derived via mass computer)
+def Xform "ShellDensity" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (12, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token newton:massModel = "shell"
+        float newton:shellThickness = 0.05
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 7)
+        self.assertEqual(builder.shape_count, 7)
+
+        # --- 1) Shell + thickness + authored mass: inertia from shell geometry, scaled ---
+        body_id = builder.body_label.index("/ShellThicknessMass")
+        shape_idx = builder.shape_label.index("/ShellThicknessMass/Collider")
+        self.assertFalse(builder.shape_is_solid[shape_idx])
+        self.assertAlmostEqual(builder.body_mass[body_id], authored_mass, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected_shell_I = _scaled_I(_shell_I(shell_t), _shell_mass(shell_t), authored_mass)
+        np.testing.assert_allclose(np.diag(inertia), [expected_shell_I] * 3, rtol=1e-4)
+
+        # --- 2) Shell + margin fallback: different thickness → different inertia ---
+        body_id = builder.body_label.index("/ShellMarginMass")
+        shape_idx = builder.shape_label.index("/ShellMarginMass/Collider")
+        self.assertFalse(builder.shape_is_solid[shape_idx])
+        self.assertAlmostEqual(builder.body_mass[body_id], authored_mass, places=5)
+        inertia2 = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected_margin_I = _scaled_I(_shell_I(margin_t), _shell_mass(margin_t), authored_mass)
+        np.testing.assert_allclose(np.diag(inertia2), [expected_margin_I] * 3, rtol=1e-4)
+        # Thinner shell → higher I/m ratio → different inertia than body 1
+        self.assertFalse(
+            np.allclose(np.diag(inertia), np.diag(inertia2), atol=1e-3),
+            "Shell thickness vs margin fallback should produce different inertia",
+        )
+
+        # --- 3) Solid + authored mass: solid inertia, scaled ---
+        body_id = builder.body_label.index("/SolidMass")
+        shape_idx = builder.shape_label.index("/SolidMass/Collider")
+        self.assertTrue(builder.shape_is_solid[shape_idx])
+        self.assertAlmostEqual(builder.body_mass[body_id], authored_mass, places=5)
+        inertia3 = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected_solid_I = _scaled_I(solid_I, solid_mass, authored_mass)
+        np.testing.assert_allclose(np.diag(inertia3), [expected_solid_I] * 3, rtol=1e-4)
+        # Shell inertia/mass ratio > solid inertia/mass ratio at same authored mass
+        self.assertGreater(np.diag(inertia)[0], np.diag(inertia3)[0])
+
+        # --- 4) Explicit mass + newton:inertia tensor + shell collider ---
+        body_id = builder.body_label.index("/ExplicitTensor")
+        shape_idx = builder.shape_label.index("/ExplicitTensor/Collider")
+        self.assertFalse(builder.shape_is_solid[shape_idx])
+        self.assertAlmostEqual(builder.body_mass[body_id], 5.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
+        np.testing.assert_allclose(inertia, expected, atol=1e-5)
+
+        # --- 5) Explicit mass + diagonalInertia ---
+        body_id = builder.body_label.index("/ExplicitDiag")
+        self.assertAlmostEqual(builder.body_mass[body_id], 3.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        np.testing.assert_allclose(np.diag(inertia), [0.5, 1.0, 1.5], atol=1e-5)
+        np.testing.assert_allclose(inertia - np.diag(np.diag(inertia)), np.zeros((3, 3)), atol=1e-7)
+
+        # --- 6) Solid, density-derived mass & inertia (no authored values) ---
+        body_id = builder.body_label.index("/SolidDensity")
+        shape_idx = builder.shape_label.index("/SolidDensity/Collider")
+        self.assertTrue(builder.shape_is_solid[shape_idx])
+        self.assertGreater(builder.body_mass[body_id], 0.0)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        self.assertGreater(np.trace(inertia), 0.0)
+
+        # --- 7) Shell, density-derived mass & inertia (no authored values) ---
+        body_id = builder.body_label.index("/ShellDensity")
+        shape_idx = builder.shape_label.index("/ShellDensity/Collider")
+        self.assertFalse(builder.shape_is_solid[shape_idx])
+        solid_density_id = builder.body_label.index("/SolidDensity")
+        self.assertLess(builder.body_mass[body_id], builder.body_mass[solid_density_id])
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        self.assertGreater(np.trace(inertia), 0.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_inertia_tensor_validation(self):
+        """Malformed newton:inertia tensors emit warnings and fall back to shape-derived values."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "NonFinite" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    double[] newton:inertia = [1.0, 2.0, inf, 0.0, 0.0, 0.0]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+def Xform "NegativeDiag" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (2, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    double[] newton:inertia = [-1.0, 2.0, 3.0, 0.0, 0.0, 0.0]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+def Xform "WrongLength" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (4, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    double[] newton:inertia = [1.0, 2.0, 3.0]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 3)
+
+        body_id = builder.body_label.index("/NonFinite")
+        self.assertGreater(builder.body_mass[body_id], 0.0)
+
+        body_id = builder.body_label.index("/NegativeDiag")
+        self.assertGreater(builder.body_mass[body_id], 0.0)
+
+        body_id = builder.body_label.index("/WrongLength")
+        self.assertGreater(builder.body_mass[body_id], 0.0)
+
+        warning_messages = [str(w.message) for w in caught]
+        self.assertTrue(any("non-finite" in m for m in warning_messages))
+        self.assertTrue(any("negative diagonal" in m for m in warning_messages))
+        self.assertTrue(any("expected 6" in m for m in warning_messages))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_usd_gravcomp(self):
         """Test parsing of gravcomp from USD"""
         from pxr import Sdf, Usd, UsdPhysics
