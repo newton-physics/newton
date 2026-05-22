@@ -1124,6 +1124,11 @@ class ArticulationView:
         """Alias for `link_shapes`."""
         return self.link_shapes
 
+    @property
+    def body_template_labels(self):
+        """Alias for `link_template_labels`."""
+        return self.link_template_labels
+
     # ========================================================================================
     # Generic attribute API
 

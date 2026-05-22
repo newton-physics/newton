@@ -111,6 +111,7 @@ class TestSelection(unittest.TestCase):
         self.assertIn("palm/left/fingertip_joint", view.joint_template_labels)
         self.assertIn("palm/right/fingertip_joint", view.joint_template_labels)
         self.assertEqual(len(view.joint_template_labels), view.joint_count)
+        self.assertEqual(view.body_template_labels, view.link_template_labels)
 
     def _test_selection_shapes(self, floating: bool):
         # load articulation
