@@ -1888,6 +1888,8 @@ class ForwardKinematicsSolver:
             base_u = self.base_u_default
 
         # Bridge the public bool mask to the FK-internal int32 newton_mask used by the velocity-solve kernels.
+        # When no mask is provided, mark all worlds active so the velocity-solve kernels (which require a
+        # non-None int32 mask) process every world, matching the documented contract.
         if world_mask is not None:
             wp.launch(
                 _cast_world_mask_to_int32,
@@ -1896,12 +1898,13 @@ class ForwardKinematicsSolver:
                 outputs=[self.newton_mask],
                 device=self.device,
             )
-            internal_mask = self.newton_mask
         else:
-            internal_mask = None
+            self.newton_mask.fill_(1)
 
         # Compute velocities
-        self._solve_for_body_velocities(pos_control_transforms, base_u, actuators_u, bodies_q, bodies_u, internal_mask)
+        self._solve_for_body_velocities(
+            pos_control_transforms, base_u, actuators_u, bodies_q, bodies_u, self.newton_mask
+        )
 
     def run_fk_solve(
         self,

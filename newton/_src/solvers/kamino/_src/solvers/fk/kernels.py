@@ -108,9 +108,11 @@ def _cast_world_mask_to_int32(
     out: wp.array[wp.int32],
 ):
     """
-    Bridge the FK solver's public ``wp.bool`` world-mask contract to the int32 mask
-    consumed by the FK-internal kernels (``self.newton_mask`` and the linalg ``world_active``
-    parameter). True maps to 1, False to 0.
+    A kernel casting a per-world bool flag to int32. True maps to 1, False to 0.
+
+    Used by the FK solver's public entry points to bridge their bool ``world_mask``
+    to the int32 mask buffer consumed by the internal velocity-solve kernels and the
+    linalg ``world_active`` parameter.
 
     Inputs:
         world_mask: Per-world bool flag (True = process this world).
