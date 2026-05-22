@@ -410,8 +410,7 @@ IntArrayLike = np.ndarray | list[int] | list[list[int]]
 # Array constructors
 ###
 
-_INT32_MIN = -(2**31)
-_INT32_MAX = 2**31 - 1
+_INT32_INFO = np.iinfo(np.int32)
 
 
 def _check_int32_range(data: IntArrayLike, func_name: str) -> np.ndarray:
@@ -421,8 +420,10 @@ def _check_int32_range(data: IntArrayLike, func_name: str) -> np.ndarray:
     if arr.size > 0:
         v_min = int(arr.min())
         v_max = int(arr.max())
-        if v_min < _INT32_MIN or v_max > _INT32_MAX:
-            raise OverflowError(f"int32 overflow: values in [{v_min}, {v_max}] outside [{_INT32_MIN}, {_INT32_MAX}]")
+        if v_min < _INT32_INFO.min or v_max > _INT32_INFO.max:
+            raise OverflowError(
+                f"int32 overflow: values in [{v_min}, {v_max}] outside [{_INT32_INFO.min}, {_INT32_INFO.max}]"
+            )
     return arr
 
 
