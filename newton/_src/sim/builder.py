@@ -1172,29 +1172,29 @@ class ModelBuilder:
 
         # equality constraints
         self.equality_constraint_type: list[EqType] = []
-        """Equality constraint types accumulated for :attr:`Model.equality_constraint_type`."""
+        """Equality constraint types accumulated for ``model.mujoco.equality_constraint_type``."""
         self.equality_constraint_body1: list[int] = []
-        """First body indices accumulated for :attr:`Model.equality_constraint_body1`."""
+        """First body indices accumulated for ``model.mujoco.equality_constraint_body1``."""
         self.equality_constraint_body2: list[int] = []
-        """Second body indices accumulated for :attr:`Model.equality_constraint_body2`."""
+        """Second body indices accumulated for ``model.mujoco.equality_constraint_body2``."""
         self.equality_constraint_anchor: list[Vec3] = []
-        """Equality constraint anchors accumulated for :attr:`Model.equality_constraint_anchor`."""
+        """Equality constraint anchors accumulated for ``model.mujoco.equality_constraint_anchor``."""
         self.equality_constraint_relpose: list[Transform] = []
-        """Relative poses accumulated for :attr:`Model.equality_constraint_relpose`."""
+        """Relative poses accumulated for ``model.mujoco.equality_constraint_relpose``."""
         self.equality_constraint_torquescale: list[float] = []
-        """Torque scales accumulated for :attr:`Model.equality_constraint_torquescale`."""
+        """Torque scales accumulated for ``model.mujoco.equality_constraint_torquescale``."""
         self.equality_constraint_joint1: list[int] = []
-        """First joint indices accumulated for :attr:`Model.equality_constraint_joint1`."""
+        """First joint indices accumulated for ``model.mujoco.equality_constraint_joint1``."""
         self.equality_constraint_joint2: list[int] = []
-        """Second joint indices accumulated for :attr:`Model.equality_constraint_joint2`."""
+        """Second joint indices accumulated for ``model.mujoco.equality_constraint_joint2``."""
         self.equality_constraint_polycoef: list[list[float]] = []
-        """Polynomial coefficient rows accumulated for :attr:`Model.equality_constraint_polycoef`."""
+        """Polynomial coefficient rows accumulated for ``model.mujoco.equality_constraint_polycoef``."""
         self.equality_constraint_label: list[str] = []
-        """Equality constraint labels accumulated for :attr:`Model.equality_constraint_label`."""
+        """Equality constraint labels accumulated for ``model.mujoco.equality_constraint_label``."""
         self.equality_constraint_enabled: list[bool] = []
-        """Equality constraint enabled flags accumulated for :attr:`Model.equality_constraint_enabled`."""
+        """Equality constraint enabled flags accumulated for ``model.mujoco.equality_constraint_enabled``."""
         self.equality_constraint_world: list[int] = []
-        """World indices accumulated for :attr:`Model.equality_constraint_world`."""
+        """World indices accumulated for ``model.mujoco.equality_constraint_world``."""
 
         # mimic constraints
         self.constraint_mimic_joint0: list[int] = []
@@ -1224,7 +1224,7 @@ class ModelBuilder:
         self.articulation_world_start: list[int] = []
         """Per-world articulation starts accumulated for :attr:`Model.articulation_world_start`."""
         self.equality_constraint_world_start: list[int] = []
-        """Per-world equality-constraint starts accumulated for :attr:`Model.equality_constraint_world_start`."""
+        """Per-world equality-constraint starts accumulated for ``model.mujoco.equality_constraint_world_start``."""
         self.joint_dof_world_start: list[int] = []
         """Per-world joint DoF starts accumulated for :attr:`Model.joint_dof_world_start`."""
         self.joint_coord_world_start: list[int] = []
@@ -4462,6 +4462,11 @@ class ModelBuilder:
     ) -> int:
         """Generic method to add any type of equality constraint to this ModelBuilder.
 
+        The finalized model exposes equality-constraint fields through
+        ``model.mujoco.equality_constraint_*``. The top-level
+        ``Model.equality_constraint_*`` arrays and ``Model.equality_constraint_count``
+        are deprecated compatibility properties.
+
         Args:
             constraint_type: Equality constraint type. Use ``EqType.CONNECT`` to
                 pin a point to another body or the world, ``EqType.WELD`` to
@@ -4532,6 +4537,11 @@ class ModelBuilder:
         """Adds a connect equality constraint to the model.
         This constraint connects two bodies at a point. It effectively defines a ball joint outside the kinematic tree.
 
+        The finalized model exposes this row through
+        ``model.mujoco.equality_constraint_*``. The top-level
+        ``Model.equality_constraint_*`` arrays and ``Model.equality_constraint_count``
+        are deprecated compatibility properties.
+
         Args:
             body1: Index of the first body participating in the constraint (-1 for world)
             body2: Index of the second body participating in the constraint (-1 for world)
@@ -4565,6 +4575,11 @@ class ModelBuilder:
     ) -> int:
         """Adds a joint equality constraint to the model.
         Constrains the position or angle of one joint to be a quartic polynomial of another joint. Only scalar joint types (prismatic and revolute) can be used.
+
+        The finalized model exposes this row through
+        ``model.mujoco.equality_constraint_*``. The top-level
+        ``Model.equality_constraint_*`` arrays and ``Model.equality_constraint_count``
+        are deprecated compatibility properties.
 
         Args:
             joint1: Index of the first joint
@@ -4601,6 +4616,11 @@ class ModelBuilder:
     ) -> int:
         """Adds a weld equality constraint to the model.
         Attaches two bodies to each other, removing all relative degrees of freedom between them (softly).
+
+        The finalized model exposes this row through
+        ``model.mujoco.equality_constraint_*``. The top-level
+        ``Model.equality_constraint_*`` arrays and ``Model.equality_constraint_count``
+        are deprecated compatibility properties.
 
         Args:
             body1: Index of the first body participating in the constraint (-1 for world)
@@ -10634,20 +10654,51 @@ class ModelBuilder:
 
             # ---------------------
             # equality constraints
-            m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
-            m.equality_constraint_body1 = wp.array(self.equality_constraint_body1, dtype=wp.int32)
-            m.equality_constraint_body2 = wp.array(self.equality_constraint_body2, dtype=wp.int32)
-            m.equality_constraint_anchor = wp.array(self.equality_constraint_anchor, dtype=wp.vec3)
-            m.equality_constraint_torquescale = wp.array(self.equality_constraint_torquescale, dtype=wp.float32)
-            m.equality_constraint_relpose = wp.array(
-                self.equality_constraint_relpose, dtype=wp.transform, requires_grad=requires_grad
+            def add_mujoco_equality_attr(name: str, value: Any) -> None:
+                m.add_attribute(
+                    name,
+                    value,
+                    Model.AttributeFrequency.EQUALITY_CONSTRAINT,
+                    Model.AttributeAssignment.MODEL,
+                    namespace="mujoco",
+                )
+
+            add_mujoco_equality_attr(
+                "equality_constraint_type", wp.array(self.equality_constraint_type, dtype=wp.int32)
             )
-            m.equality_constraint_joint1 = wp.array(self.equality_constraint_joint1, dtype=wp.int32)
-            m.equality_constraint_joint2 = wp.array(self.equality_constraint_joint2, dtype=wp.int32)
-            m.equality_constraint_polycoef = wp.array(self.equality_constraint_polycoef, dtype=wp.float32)
-            m.equality_constraint_label = self.equality_constraint_label
-            m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
-            m.equality_constraint_world = wp.array(self.equality_constraint_world, dtype=wp.int32)
+            add_mujoco_equality_attr(
+                "equality_constraint_body1", wp.array(self.equality_constraint_body1, dtype=wp.int32)
+            )
+            add_mujoco_equality_attr(
+                "equality_constraint_body2", wp.array(self.equality_constraint_body2, dtype=wp.int32)
+            )
+            add_mujoco_equality_attr(
+                "equality_constraint_anchor", wp.array(self.equality_constraint_anchor, dtype=wp.vec3)
+            )
+            add_mujoco_equality_attr(
+                "equality_constraint_torquescale",
+                wp.array(self.equality_constraint_torquescale, dtype=wp.float32),
+            )
+            add_mujoco_equality_attr(
+                "equality_constraint_relpose",
+                wp.array(self.equality_constraint_relpose, dtype=wp.transform, requires_grad=requires_grad),
+            )
+            add_mujoco_equality_attr(
+                "equality_constraint_joint1", wp.array(self.equality_constraint_joint1, dtype=wp.int32)
+            )
+            add_mujoco_equality_attr(
+                "equality_constraint_joint2", wp.array(self.equality_constraint_joint2, dtype=wp.int32)
+            )
+            add_mujoco_equality_attr(
+                "equality_constraint_polycoef", wp.array(self.equality_constraint_polycoef, dtype=wp.float32)
+            )
+            add_mujoco_equality_attr("equality_constraint_label", self.equality_constraint_label)
+            add_mujoco_equality_attr(
+                "equality_constraint_enabled", wp.array(self.equality_constraint_enabled, dtype=wp.bool)
+            )
+            add_mujoco_equality_attr(
+                "equality_constraint_world", wp.array(self.equality_constraint_world, dtype=wp.int32)
+            )
 
             # mimic constraints
             m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
@@ -10665,7 +10716,7 @@ class ModelBuilder:
             m.shape_world_start = wp.array(self.shape_world_start, dtype=wp.int32)
             m.joint_world_start = wp.array(self.joint_world_start, dtype=wp.int32)
             m.articulation_world_start = wp.array(self.articulation_world_start, dtype=wp.int32)
-            m.equality_constraint_world_start = wp.array(self.equality_constraint_world_start, dtype=wp.int32)
+            m.mujoco.equality_constraint_world_start = wp.array(self.equality_constraint_world_start, dtype=wp.int32)
             m.joint_dof_world_start = wp.array(self.joint_dof_world_start, dtype=wp.int32)
             m.joint_coord_world_start = wp.array(self.joint_coord_world_start, dtype=wp.int32)
             m.joint_constraint_world_start = wp.array(self.joint_constraint_world_start, dtype=wp.int32)
@@ -10685,7 +10736,7 @@ class ModelBuilder:
             m.spring_count = len(self.spring_rest_length)
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
-            m.equality_constraint_count = len(self.equality_constraint_type)
+            m.mujoco.equality_constraint_count = len(self.equality_constraint_type)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
             self.find_shape_contact_pairs(m)
@@ -10825,7 +10876,7 @@ class ModelBuilder:
                 elif freq_key == Model.AttributeFrequency.WORLD:
                     count = m.world_count
                 elif freq_key == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
-                    count = m.equality_constraint_count
+                    count = m.mujoco.equality_constraint_count
                 elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:
                     count = m.constraint_mimic_count
                 elif freq_key == Model.AttributeFrequency.PARTICLE:

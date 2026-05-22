@@ -27,11 +27,11 @@ class TestEqualityConstraints(unittest.TestCase):
 
         self.model = builder.finalize()
 
-        eq_keys = self.model.equality_constraint_label
-        eq_body1 = self.model.equality_constraint_body1.numpy()
-        eq_body2 = self.model.equality_constraint_body2.numpy()
-        eq_anchors = self.model.equality_constraint_anchor.numpy()
-        eq_torquescale = self.model.equality_constraint_torquescale.numpy()
+        eq_keys = self.model.mujoco.equality_constraint_label
+        eq_body1 = self.model.mujoco.equality_constraint_body1.numpy()
+        eq_body2 = self.model.mujoco.equality_constraint_body2.numpy()
+        eq_anchors = self.model.mujoco.equality_constraint_anchor.numpy()
+        eq_torquescale = self.model.mujoco.equality_constraint_torquescale.numpy()
 
         c_site_idx = eq_keys.index("c_site")
         self.assertEqual(eq_body1[c_site_idx], -1)
@@ -152,7 +152,7 @@ class TestEqualityConstraints(unittest.TestCase):
 
         # Check that equality constraints count is correct in the Newton model
         # Should be 2 constraints per world * 3 worlds = 6 total
-        self.assertEqual(model.equality_constraint_count, 2 * world_count)
+        self.assertEqual(model.mujoco.equality_constraint_count, 2 * world_count)
 
         # Create MuJoCo solver with separate_worlds=True
         solver = newton.solvers.SolverMuJoCo(
@@ -172,10 +172,10 @@ class TestEqualityConstraints(unittest.TestCase):
         # Verify that indices are correctly remapped for each world
         # Each world adds 3 bodies, so body indices should be offset by 3 * world_index
         # The first world's base body should be at index 0, second at 3, third at 6
-        eq_body1 = model.equality_constraint_body1.numpy()
-        eq_body2 = model.equality_constraint_body2.numpy()
-        eq_joint1 = model.equality_constraint_joint1.numpy()
-        eq_joint2 = model.equality_constraint_joint2.numpy()
+        eq_body1 = model.mujoco.equality_constraint_body1.numpy()
+        eq_body2 = model.mujoco.equality_constraint_body2.numpy()
+        eq_joint1 = model.mujoco.equality_constraint_joint1.numpy()
+        eq_joint2 = model.mujoco.equality_constraint_joint2.numpy()
 
         for world_idx in range(world_count):
             # Each world has 2 constraints
@@ -227,7 +227,7 @@ class TestEqualityConstraints(unittest.TestCase):
 
         model = builder.finalize()
         np.testing.assert_allclose(
-            model.equality_constraint_torquescale.numpy(),
+            model.mujoco.equality_constraint_torquescale.numpy(),
             np.array([0.0, 0.0, 1.0], dtype=np.float32),
             rtol=1e-6,
         )
@@ -375,7 +375,7 @@ class TestEqualityConstraints(unittest.TestCase):
         model = builder.finalize()
         self.assertEqual(model.body_count, 3)
         self.assertEqual(model.joint_count, 3)
-        self.assertEqual(model.equality_constraint_count, 3)
+        self.assertEqual(model.mujoco.equality_constraint_count, 3)
 
 
 if __name__ == "__main__":

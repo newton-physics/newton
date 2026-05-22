@@ -517,7 +517,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     # to the new anchor.
                     ##############
 
-                    sim.model.equality_constraint_anchor.assign(
+                    sim.model.mujoco.equality_constraint_anchor.assign(
                         np.array(flat_changed_connect_anchor_leafbody1, dtype=np.float32)
                     )
                     sim.solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)

@@ -199,6 +199,16 @@ array; slot layout depends on the constraint type.
        :attr:`~newton.JointType.REVOLUTE` and
        :attr:`~newton.JointType.PRISMATIC` joints are supported.
 
+Explicit equality constraints added through
+:meth:`~newton.ModelBuilder.add_equality_constraint_connect`,
+:meth:`~newton.ModelBuilder.add_equality_constraint_weld`, and
+:meth:`~newton.ModelBuilder.add_equality_constraint_joint` remain supported.
+Read or update their finalized fields through
+``model.mujoco.equality_constraint_*``. The old top-level
+``Model.equality_constraint_*`` arrays and ``Model.equality_constraint_count``
+are deprecated compatibility properties that forward to the namespaced fields
+during the deprecation window.
+
 **Loop closures.** Newton joints with no associated articulation
 (``joint_articulation == -1``) are treated as loop closures rather than
 tree joints. They are not emitted as MuJoCo joints; instead, the solver

@@ -132,6 +132,11 @@
 
 ### Deprecated
 
+- Deprecate top-level `Model.equality_constraint_*` arrays and `Model.equality_constraint_count` in favor of `model.mujoco.equality_constraint_*`;
+  `ModelBuilder.add_equality_constraint_*()` and importer-created equality constraints keep the same behavior,
+  and `ModelBuilder.finalize()` registers and populates these MuJoCo model-extension arrays during the
+  deprecation window. Downstream code should migrate reads and writes to `model.mujoco.equality_constraint_*`;
+  the deprecated top-level properties forward to the namespaced fields while compatibility is maintained
 - Deprecate `SensorRaycast` in favor of `SensorTiledCamera`; migrate to `SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth rendering — see the `SensorRaycast` class docstring for a complete migration example
 - Deprecate and ignore `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
 - Deprecate `newton-actuators` package dependency; all actuator functionality is now built into `newton.actuators`. The dependency is kept for backward compatibility and will be removed in a future release; migrate imports from `newton_actuators` to `newton.actuators`

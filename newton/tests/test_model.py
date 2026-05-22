@@ -18,6 +18,90 @@ from newton.tests.unittest_utils import assert_np_equal
 
 
 class TestModelBuilderDeprecations(unittest.TestCase):
+    def test_equality_constraint_model_fields_warn_and_forward_to_mujoco_namespace(self):
+        builder = ModelBuilder()
+        body1 = builder.add_body()
+        body2 = builder.add_body()
+        builder.add_equality_constraint_connect(body1=body1, body2=body2, anchor=wp.vec3(1.0, 2.0, 3.0))
+
+        model = builder.finalize(skip_all_validations=True)
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+        self.assertNotIn("_equality_constraint_body1", model.__dict__)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            np.testing.assert_array_equal(model.equality_constraint_body1.numpy(), np.array([body1], dtype=np.int32))
+
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertIn("Model.equality_constraint_body1 is deprecated in Newton 1.3", str(caught[0].message))
+        self.assertIn("model.mujoco.equality_constraint_body1", str(caught[0].message))
+        self.assertTrue(caught[0].filename.endswith("test_model.py"))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertEqual(model.equality_constraint_count, 1)
+
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertIn("Model.equality_constraint_count is deprecated in Newton 1.3", str(caught[0].message))
+        self.assertIn("model.mujoco.equality_constraint_count", str(caught[0].message))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model.equality_constraint_count = 2
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 2)
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        model.mujoco.equality_constraint_count = 1
+
+        new_body1 = wp.array([body2], dtype=wp.int32, device=model.device)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model.equality_constraint_body1 = new_body1
+
+        self.assertIs(model.mujoco.equality_constraint_body1, new_body1)
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+
+        namespaced_body1 = wp.array([body1], dtype=wp.int32, device=model.device)
+        model.mujoco.equality_constraint_body1 = namespaced_body1
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertIs(model.equality_constraint_body1, namespaced_body1)
+
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+
+    def test_equality_constraint_model_fields_are_created_lazily_for_bare_models(self):
+        model = newton.Model()
+        self.assertFalse(hasattr(model, "mujoco"))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertIsNone(model.equality_constraint_body1)
+
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertIsNone(model.mujoco.equality_constraint_body1)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model.equality_constraint_label.append("legacy")
+
+        self.assertEqual(len(caught), 1)
+        self.assertEqual(model.mujoco.equality_constraint_label, ["legacy"])
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model.equality_constraint_count = 3
+
+        self.assertEqual(len(caught), 1)
+        self.assertEqual(model.mujoco.equality_constraint_count, 3)
+
     def test_default_body_armature_get_and_set_warn(self):
         builder = ModelBuilder()
 
@@ -892,7 +976,9 @@ class TestModelJoints(unittest.TestCase):
             model.articulation_world_start.numpy() if model.articulation_world_start is not None else []
         )
         equality_constraint_world_start = (
-            model.equality_constraint_world_start.numpy() if model.equality_constraint_world_start is not None else []
+            model.mujoco.equality_constraint_world_start.numpy()
+            if model.mujoco.equality_constraint_world_start is not None
+            else []
         )
         joint_dof_world_start = model.joint_dof_world_start.numpy() if model.joint_dof_world_start is not None else []
         joint_coord_world_start = (
@@ -951,7 +1037,7 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(shape_world_start[-1], model.shape_count)
         self.assertEqual(joint_world_start[-1], model.joint_count)
         self.assertEqual(articulation_world_start[-1], model.articulation_count)
-        self.assertEqual(equality_constraint_world_start[-1], model.equality_constraint_count)
+        self.assertEqual(equality_constraint_world_start[-1], model.mujoco.equality_constraint_count)
         self.assertEqual(joint_dof_world_start[-1], model.joint_dof_count)
         self.assertEqual(joint_coord_world_start[-1], model.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
@@ -1731,7 +1817,9 @@ class TestModelWorld(unittest.TestCase):
             model.articulation_world_start.numpy() if model.articulation_world_start is not None else []
         )
         equality_constraint_world_start = (
-            model.equality_constraint_world_start.numpy() if model.equality_constraint_world_start is not None else []
+            model.mujoco.equality_constraint_world_start.numpy()
+            if model.mujoco.equality_constraint_world_start is not None
+            else []
         )
         joint_dof_world_start = model.joint_dof_world_start.numpy() if model.joint_dof_world_start is not None else []
         joint_coord_world_start = (
@@ -1770,7 +1858,7 @@ class TestModelWorld(unittest.TestCase):
         self.assertEqual(shape_world_start[-1], model.shape_count)
         self.assertEqual(joint_world_start[-1], model.joint_count)
         self.assertEqual(articulation_world_start[-1], model.articulation_count)
-        self.assertEqual(equality_constraint_world_start[-1], model.equality_constraint_count)
+        self.assertEqual(equality_constraint_world_start[-1], model.mujoco.equality_constraint_count)
         self.assertEqual(joint_dof_world_start[-1], model.joint_dof_count)
         self.assertEqual(joint_coord_world_start[-1], model.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
