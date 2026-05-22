@@ -27,8 +27,10 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
+import re
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -52,6 +54,8 @@ TOCTREE_RST = OUTPUT_DIR / "_toctree.rst"
 # Where autosummary should place generated stub pages (relative to each .rst
 # file).  Keeping them alongside the .rst files avoids clutter elsewhere.
 TOCTREE_DIR = "_generated"  # sub-folder inside OUTPUT_DIR
+COPYRIGHT_RE = re.compile(r"Copyright \(c\) (\d{4}) The Newton Developers")
+_COPYRIGHT_LINES: dict[Path, str] = {}
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -70,6 +74,26 @@ def public_symbols(mod: ModuleType) -> list[str]:
         return not inspect.ismodule(getattr(mod, name))
 
     return sorted(filter(is_public, dir(mod)))
+
+
+def copyright_line(path: Path) -> str:
+    """Return a generated file's SPDX copyright line.
+
+    Existing generated files keep their original copyright year. New generated
+    files use the current year, which should match the year the file is first
+    created.
+    """
+    existing_line = _COPYRIGHT_LINES.get(path.resolve())
+    if existing_line:
+        return existing_line
+
+    if path.exists():
+        first_line = path.read_text(encoding="utf-8").splitlines()[0]
+        match = COPYRIGHT_RE.search(first_line)
+        if match:
+            return first_line
+
+    return f".. SPDX-FileCopyrightText: Copyright (c) {datetime.now().year} The Newton Developers"
 
 
 def api_modules() -> list[str]:
@@ -92,7 +116,7 @@ def api_modules() -> list[str]:
 def _is_solver_only_module(mod: ModuleType) -> bool:
     """Return True when the module only exposes its solver class."""
     names = getattr(mod, "__all__", None)
-    public = list(names) if isinstance(names, (list, tuple)) else public_symbols(mod)
+    public = list(names) if isinstance(names, list | tuple) else public_symbols(mod)
     return len(public) == 1 and public[0].startswith("Solver")
 
 
@@ -173,9 +197,10 @@ def write_module_page(mod_name: str) -> None:
 
     title = mod_name
     underline = "=" * len(title)
+    outfile = OUTPUT_DIR / f"{mod_name.replace('.', '_')}.rst"
 
     lines: list[str] = [
-        ".. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers",
+        copyright_line(outfile),
         ".. SPDX-License-Identifier: CC-BY-4.0",
         "",
         title,
@@ -296,7 +321,6 @@ def write_module_page(mod_name: str) -> None:
 
         lines.append("")
 
-    outfile = OUTPUT_DIR / f"{mod_name.replace('.', '_')}.rst"
     outfile.parent.mkdir(parents=True, exist_ok=True)
     outfile.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote {outfile.relative_to(REPO_ROOT)} ({len(symbols)} symbols)")
@@ -316,7 +340,7 @@ def write_api_toctree(modules: list[str]) -> None:
     top-level toctree entries.
     """
     lines = [
-        ".. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers",
+        copyright_line(TOCTREE_RST),
         ".. SPDX-License-Identifier: CC-BY-4.0",
         "",
         ".. toctree::",
@@ -334,6 +358,12 @@ def write_api_toctree(modules: list[str]) -> None:
 
 def generate_all() -> None:
     """Regenerate all API ``.rst`` files under :data:`OUTPUT_DIR`."""
+    _COPYRIGHT_LINES.clear()
+    if OUTPUT_DIR.exists():
+        for path in OUTPUT_DIR.glob("*.rst"):
+            first_line = path.read_text(encoding="utf-8").splitlines()[0]
+            if COPYRIGHT_RE.search(first_line):
+                _COPYRIGHT_LINES[path.resolve()] = first_line
 
     # delete previously generated files
     shutil.rmtree(OUTPUT_DIR, ignore_errors=True)

@@ -5,6 +5,7 @@
 ### Added
 
 - Add opt-in `validate_mesh` parameter to `ModelBuilder.add_cloth_mesh()`, `ModelBuilder.add_soft_mesh()`, and `style3d.add_cloth_mesh()` that warns on degenerate geometry; add public `newton.utils.validate_triangle_mesh()` and `newton.utils.validate_tet_mesh()` utilities
+- Add public `NewtonWarning`, `NewtonDeprecationWarning`, and `NewtonGeometryWarning` categories for filtering Newton warnings.
 - Add `ViewerGL.show_loading_splash()` / `ViewerGL.hide_loading_splash()` displaying a stylized Newton's-cradle overlay while the GL viewer waits on Warp kernel compilation; raised automatically by `newton.examples.init()` for visible GL viewers
 - Add `cable_cross_slide_table` example demonstrating a cable-driven XY table
 - Add an optional `kernel_block_dim` argument to `SensorTiledCamera.update()` for tuning the Warp ray-tracer's `render_megakernel` launch shape.
@@ -14,6 +15,7 @@
 
 ### Changed
 
+- Route `newton` and Warp `INFO` diagnostics from Newton example entry points through stdlib logging to stdout by default, with `WARNING` and higher records on stderr. Configure `logging.getLogger("newton")` or `logging.getLogger("warp")` to route or suppress these records; `--quiet` still suppresses Warp informational output.
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
 - Require Warp 1.14 and configure Warp logging through `warp.config.log_level`; use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy `verbose` or `quiet` config keys
 - Auto-scale `ViewerGL` contact arrows, joint axes, and COM markers by `Viewer.scene_scale`; to approximate the previous fixed sizes after `set_model()`, set `viewer.renderer.arrow_length_scale = 0.1 / viewer.scene_scale`, `viewer.renderer.joint_scale = 0.1 / viewer.scene_scale`, and `viewer.renderer.com_scale = 0.1 / viewer.scene_scale`.
@@ -22,11 +24,16 @@
 
 - Deprecate loading `.pt` / `.pth` (TorchScript) checkpoints via `ControllerNeuralMLP`; the legacy TorchScript / dict-checkpoint path still works (with a `DeprecationWarning`) when PyTorch is installed but will be removed in a future release. `ControllerNeuralLSTM` requires re-exporting to ONNX with the metadata properties documented in its class docstring; pointing it at a `.pt` checkpoint now raises `NotImplementedError` with migration guidance. Convert the MLP checkpoint to ONNX once with `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` and load the resulting `.onnx` file.
 
+### Deprecated
+
+- Deprecate warning-style diagnostics written directly to stdout in favor of future stdlib logging; legacy verbose stdout fallback emits a one-time `NewtonDeprecationWarning`. Configure `logging.getLogger("newton")` at `INFO` level with a handler to route or suppress diagnostics as these messages move fully to logging in a future release.
+
 ### Fixed
 
 - Fix `eval_fk()` overwriting VBD-simulated `JointType.CABLE` body poses.
 - Fix `SolverXPBD` `body_parent_f` reporting to include `Control.joint_f` contributions and accumulate multiple inbound joint contributions, matching the `SolverMuJoCo` and `SolverFeatherstone` convention.
 - Fix MJCF `xyaxes` parsing to treat the second vector as Y and derive Z from X cross Y.
+- Fix Newton example and test entry points to install default stdlib logging handlers and route Python warnings through logging.
 - Fix mesh-convex and heightfield-convex contacts missing when shapes are separated by margin but still within the contact envelope.
 - Fix `SolverMuJoCo` returning `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_qd`.
 - Fix `example_softbody_gift` emitting spurious non-manifold edge warnings caused by mismatched 5-tet diagonals across adjacent cubes in the soft body mesh.

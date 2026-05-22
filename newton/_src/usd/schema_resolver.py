@@ -11,12 +11,17 @@ types from :mod:`newton.usd`.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from newton._src.utils.diagnostics import log_verbose
+
 from . import utils as usd
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -262,7 +267,7 @@ class SchemaResolverManager:
                 f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
                 + "no authored value, no explicit default, and no solver mapping default."
             )
-            print(error_message)
+            log_verbose(_logger, error_message)
         return None
 
     def collect_prim_attrs(self, prim: Usd.Prim) -> None:

@@ -10,11 +10,19 @@ from ._src.core import (
     AxisType,
 )
 from ._version import __version__
+from .exceptions import (
+    NewtonDeprecationWarning,
+    NewtonGeometryWarning,
+    NewtonWarning,
+)
 
 __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
+    "NewtonDeprecationWarning",
+    "NewtonGeometryWarning",
+    "NewtonWarning",
     "__version__",
 ]
 
@@ -83,10 +91,11 @@ __all__ += [
 # ==================================================================================
 # submodule APIs
 # ==================================================================================
-from . import actuators, geometry, ik, math, selection, sensors, solvers, usd, utils, viewer  # noqa: E402
+from . import actuators, exceptions, geometry, ik, math, selection, sensors, solvers, usd, utils, viewer  # noqa: E402
 
 __all__ += [
     "actuators",
+    "exceptions",
     "geometry",
     "ik",
     "math",

@@ -5,7 +5,9 @@ import ast
 import copy
 import gc
 import importlib
+import logging
 import os
+import sys
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
@@ -17,6 +19,105 @@ import newton
 from newton.tests.unittest_utils import find_nan_members
 
 _DEPRECATED_WARP_CONFIG_KEYS = {"quiet", "verbose"}
+_ENTRY_POINT_STDOUT_HANDLER = "_newton_entry_point_stdout_handler"
+
+
+class _MaxLevelFilter(logging.Filter):
+    def __init__(self, exclusive_maximum: int):
+        super().__init__()
+        self._exclusive_maximum = exclusive_maximum
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno < self._exclusive_maximum
+
+
+def _entry_point_stderr_handler() -> logging.Handler:
+    formatter = logging.Formatter("%(message)s")
+    stderr_handler = logging.StreamHandler()
+    stderr_handler.setLevel(logging.WARNING)
+    stderr_handler.setFormatter(formatter)
+    return stderr_handler
+
+
+def _has_enabled_handler(logger: logging.Logger, level: int) -> bool:
+    current: logging.Logger | None = logger
+    while current is not None:
+        if any(level >= handler.level for handler in current.handlers):
+            return True
+        if not current.propagate:
+            return False
+        current = current.parent
+    return logging.lastResort is not None and level >= logging.lastResort.level
+
+
+def _remove_marked_handlers(logger: logging.Logger, marker: str = _ENTRY_POINT_STDOUT_HANDLER) -> None:
+    logger.handlers[:] = [handler for handler in logger.handlers if not getattr(handler, marker, False)]
+
+
+def _install_below_warning_stdout_handler(
+    logger: logging.Logger,
+    *,
+    enabled_level: int = logging.INFO,
+    handler_level: int = logging.INFO,
+    logger_level: int | None = None,
+    marker: str = _ENTRY_POINT_STDOUT_HANDLER,
+) -> logging.Handler | None:
+    _remove_marked_handlers(logger, marker)
+
+    target_logger_level = logger_level if logger_level is not None else enabled_level
+    if logger.level == logging.NOTSET and not logger.isEnabledFor(enabled_level):
+        logger.setLevel(target_logger_level)
+
+    if not logger.isEnabledFor(enabled_level) or _has_enabled_handler(logger, enabled_level):
+        return None
+
+    formatter = logging.Formatter("%(message)s")
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(handler_level)
+    stdout_handler.addFilter(_MaxLevelFilter(logging.WARNING))
+    stdout_handler.setFormatter(formatter)
+    setattr(stdout_handler, marker, True)
+    logger.addHandler(stdout_handler)
+    return stdout_handler
+
+
+class _StdlibWarpLogger:
+    """Route Warp log records through stdlib logging."""
+
+    def __init__(self):
+        self._logger = logging.getLogger("warp")
+
+    def debug(self, message: str) -> None:
+        self._logger.debug(message)
+
+    def info(self, message: str) -> None:
+        self._logger.info(message)
+
+    def warning(self, message: str, category=None, stacklevel: int = 1) -> None:
+        warnings.warn(message, category or UserWarning, stacklevel=stacklevel)
+
+    def error(self, message: str) -> None:
+        self._logger.error("Warp Error: %s", message)
+
+
+def _configure_logging(args) -> None:
+    """Configure default logging for Newton example entry points."""
+    logging.captureWarnings(True)
+    logging.basicConfig(level=logging.WARNING, handlers=[_entry_point_stderr_handler()])
+    _install_below_warning_stdout_handler(logging.getLogger("newton"))
+    warp_logger = logging.getLogger("warp")
+    if getattr(args, "quiet", False):
+        _remove_marked_handlers(warp_logger)
+        warp_logger.setLevel(logging.WARNING)
+    else:
+        _install_below_warning_stdout_handler(
+            warp_logger,
+            enabled_level=logging.INFO,
+            handler_level=logging.DEBUG,
+            logger_level=logging.DEBUG,
+        )
+
+    wp.set_logger(_StdlibWarpLogger())
 
 
 def get_source_directory() -> str:
@@ -722,6 +823,8 @@ def init(parser=None):
     # Suppress Warp compilation messages if requested
     if args.quiet:
         wp.config.log_level = max(wp.config.log_level, wp.LOG_WARNING)
+
+    _configure_logging(args)
 
     # Set device if specified
     if args.device:

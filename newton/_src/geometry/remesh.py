@@ -65,14 +65,19 @@ Example:
         new_indices = clean_mesh.indices  # (M,) int32, flattened
 """
 
+import logging
 import math
 import warnings
 
 import numpy as np
 import warp as wp
 
+from newton._src.utils.diagnostics import log_verbose
+
 from ..geometry.hashtable import HashTable, hashtable_find_or_insert
 from ..geometry.types import Mesh
+
+_logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Morton encoding for sparse voxel grid (21 bits per axis = 63 bits total)
@@ -1458,7 +1463,7 @@ class SurfaceReconstructor:
 
         # Run Poisson reconstruction
         if verbose:
-            print(f"Running Poisson reconstruction (depth={self.depth})...")
+            log_verbose(_logger, f"Running Poisson reconstruction (depth={self.depth})...")
 
         mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
             pcd,
@@ -1478,7 +1483,7 @@ class SurfaceReconstructor:
         num_triangles_before = len(mesh.triangles)
 
         if verbose:
-            print(f"Reconstructed mesh: {len(mesh.vertices)} vertices, {num_triangles_before} triangles")
+            log_verbose(_logger, f"Reconstructed mesh: {len(mesh.vertices)} vertices, {num_triangles_before} triangles")
 
         # Simplify mesh if requested
         needs_simplification = (
@@ -1503,11 +1508,12 @@ class SurfaceReconstructor:
             num_triangles_after = len(faces)
             if num_triangles_before > 0:
                 reduction = 100 * (1 - num_triangles_after / num_triangles_before)
-                print(
-                    f"Simplified mesh: {len(vertices)} vertices, {num_triangles_after} triangles ({reduction:.1f}% reduction)"
+                log_verbose(
+                    _logger,
+                    f"Simplified mesh: {len(vertices)} vertices, {num_triangles_after} triangles ({reduction:.1f}% reduction)",
                 )
             else:
-                print(f"Simplified mesh: {len(vertices)} vertices, {num_triangles_after} triangles")
+                log_verbose(_logger, f"Simplified mesh: {len(vertices)} vertices, {num_triangles_after} triangles")
 
         return Mesh(vertices=vertices, indices=indices, compute_inertia=False)
 
@@ -1529,19 +1535,22 @@ class SurfaceReconstructor:
             diagonal = np.linalg.norm(max_coords - min_coords)
             absolute_tolerance = self.simplify_tolerance * diagonal
             if verbose:
-                print(
-                    f"Simplifying mesh with pyfqmr (tolerance={self.simplify_tolerance} = {absolute_tolerance:.6f} absolute, diagonal={diagonal:.4f})..."
+                log_verbose(
+                    _logger,
+                    f"Simplifying mesh with pyfqmr (tolerance={self.simplify_tolerance} = {absolute_tolerance:.6f} absolute, diagonal={diagonal:.4f})...",
                 )
             mesh_simplifier.simplify_mesh_lossless(epsilon=absolute_tolerance, verbose=False)
         elif self.target_triangles is not None:
             target = self.target_triangles
             if verbose:
-                print(f"Simplifying mesh with pyfqmr to {target} triangles...")
+                log_verbose(_logger, f"Simplifying mesh with pyfqmr to {target} triangles...")
             mesh_simplifier.simplify_mesh(target_count=target, verbose=False)
         elif self.simplify_ratio is not None:
             target = int(num_triangles_before * self.simplify_ratio)
             if verbose:
-                print(f"Simplifying mesh with pyfqmr to {self.simplify_ratio:.1%} ({target} triangles)...")
+                log_verbose(
+                    _logger, f"Simplifying mesh with pyfqmr to {self.simplify_ratio:.1%} ({target} triangles)..."
+                )
             mesh_simplifier.simplify_mesh(target_count=target, verbose=False)
 
         vertices, faces, _ = mesh_simplifier.getMesh()
@@ -1556,8 +1565,9 @@ class SurfaceReconstructor:
             # Open3D QEM uses squared distances, so square the tolerance
             absolute_tolerance = (self.simplify_tolerance * diagonal) ** 2
             if verbose:
-                print(
-                    f"Simplifying mesh with Open3D (tolerance={self.simplify_tolerance} = {self.simplify_tolerance * diagonal:.6f} absolute, diagonal={diagonal:.4f})..."
+                log_verbose(
+                    _logger,
+                    f"Simplifying mesh with Open3D (tolerance={self.simplify_tolerance} = {self.simplify_tolerance * diagonal:.6f} absolute, diagonal={diagonal:.4f})...",
                 )
             mesh = mesh.simplify_quadric_decimation(
                 target_number_of_triangles=1,
@@ -1566,12 +1576,14 @@ class SurfaceReconstructor:
         elif self.target_triangles is not None:
             target = self.target_triangles
             if verbose:
-                print(f"Simplifying mesh with Open3D to {target} triangles...")
+                log_verbose(_logger, f"Simplifying mesh with Open3D to {target} triangles...")
             mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=target)
         elif self.simplify_ratio is not None:
             target = int(num_triangles_before * self.simplify_ratio)
             if verbose:
-                print(f"Simplifying mesh with Open3D to {self.simplify_ratio:.1%} ({target} triangles)...")
+                log_verbose(
+                    _logger, f"Simplifying mesh with Open3D to {self.simplify_ratio:.1%} ({target} triangles)..."
+                )
             mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=target)
 
         vertices = np.asarray(mesh.vertices, dtype=np.float32)
@@ -1666,7 +1678,7 @@ def extract_largest_island(
     # If only one component, return as-is
     if num_components == 1:
         if verbose:
-            print("Island filtering: 1 component (mesh is fully connected)")
+            log_verbose(_logger, "Island filtering: 1 component (mesh is fully connected)")
         return vertices, indices
 
     # Count triangles per component
@@ -1690,9 +1702,11 @@ def extract_largest_island(
     new_vertices = vertices[used_vertices]
 
     if verbose:
-        print(f"Island filtering: {num_components} components found")
-        print(f"  Kept largest: {largest_size} triangles ({largest_size * 100.0 / num_triangles:.1f}%)")
-        print(f"  Removed: {num_triangles - largest_size} triangles from {num_components - 1} smaller islands")
+        log_verbose(_logger, f"Island filtering: {num_components} components found")
+        log_verbose(_logger, f"  Kept largest: {largest_size} triangles ({largest_size * 100.0 / num_triangles:.1f}%)")
+        log_verbose(
+            _logger, f"  Removed: {num_triangles - largest_size} triangles from {num_components - 1} smaller islands"
+        )
 
     return new_vertices, new_indices
 
@@ -1792,7 +1806,7 @@ def remesh_poisson(
     points, normals = extractor.extract(vertices, faces.flatten())
 
     if verbose:
-        print(f"Extracted {len(points)} points")
+        log_verbose(_logger, f"Extracted {len(points)} points")
 
     # Reconstruct mesh
     reconstructor = SurfaceReconstructor(
