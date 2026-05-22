@@ -12,7 +12,7 @@ import warp as wp
 
 from ...core.model import ModelKamino
 from ...core.time import TimeData
-from ...core.types import float32, int32
+from ...core.types import float32, int32, to_warp_int32_array
 
 ###
 # Module interface
@@ -561,10 +561,10 @@ class AnimationJointReference:
                 actuated_joint_dofs_offset=model.info.joint_actuated_dofs_offset,
                 q_j_ref=wp.array(q_j_ref_np, dtype=float32),
                 dq_j_ref=wp.array(dq_j_ref_np, dtype=float32),
-                length=wp.array(length_np, dtype=int32),
-                decimation=wp.array(decimation_np, dtype=int32),
-                rate=wp.array(rate_np, dtype=int32),
-                loop=wp.array(loop_np, dtype=int32),
+                length=to_warp_int32_array(length_np),
+                decimation=to_warp_int32_array(decimation_np),
+                rate=to_warp_int32_array(rate_np),
+                loop=to_warp_int32_array(loop_np),
                 frame=wp.zeros(self._num_worlds, dtype=int32),
             )
 
@@ -620,7 +620,7 @@ class AnimationJointReference:
             enabled_array = np.array([1 if e else 0 for e in enabled], dtype=np.int32)
             self._data.loop.assign(enabled_array)
         else:
-            self._data.loop = wp.array([1 if enabled else 0] * self._num_worlds, dtype=int32)
+            self._data.loop = to_warp_int32_array([1 if enabled else 0] * self._num_worlds)
 
     def advance(self, time: TimeData) -> None:
         """
