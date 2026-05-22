@@ -1945,9 +1945,11 @@ class SolverVBD(SolverBase):
                         model.joint_dof_dim,
                         model.joint_axis,
                         control.joint_f,
+                        dt,
                     ],
                     outputs=[
                         body_f_for_integration,
+                        None,  # joint_impulse: VBD does not populate body_parent_f
                     ],
                     device=self.device,
                 )

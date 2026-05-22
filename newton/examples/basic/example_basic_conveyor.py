@@ -182,6 +182,7 @@ class Example:
         )
 
         belt_cfg = newton.ModelBuilder.ShapeConfig(
+            density=0.0,  # mass and inertia are authored explicitly on the belt body below
             mu=1.2,
             ke=1.0e5,  # vbd only
             kd=0.0,  # vbd only
@@ -234,8 +235,24 @@ class Example:
             metallic=0.9,
         )
 
+        # Annular-ring inertia about the belt's COM (ring axis along Z).
+        belt_mass = 15.0
+        belt_radii_sum_sq = belt_inner_radius**2 + belt_outer_radius**2
+        belt_i_transverse = belt_mass / 12.0 * (3.0 * belt_radii_sum_sq + (2.0 * BELT_HALF_THICKNESS) ** 2)
+        belt_i_axial = 0.5 * belt_mass * belt_radii_sum_sq
         self.belt_body = builder.add_link(
-            mass=15.0,
+            mass=belt_mass,
+            inertia=wp.mat33(
+                belt_i_transverse,
+                0.0,
+                0.0,
+                0.0,
+                belt_i_transverse,
+                0.0,
+                0.0,
+                0.0,
+                belt_i_axial,
+            ),
             is_kinematic=True,
             label="conveyor_belt",
         )
