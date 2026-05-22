@@ -60,15 +60,10 @@ class UI:
         self.impl.on_mouse_scroll = on_mouse_scroll
         self.impl._attach_callbacks(self.window)
 
-        # pyglet 2.1 dispatches ``on_scale`` when the window moves between
-        # displays with different DPI scaling. Such transitions don't always
-        # fire ``on_resize``, so we'd otherwise miss the DPI change. Older
-        # pyglet builds don't register the event type at all; AttributeError
-        # / KeyError from ``push_handlers`` is the expected outcome there.
-        try:
-            self.window.push_handlers(on_scale=self._on_window_scale)
-        except (AttributeError, KeyError) as exc:
-            print(f"Warning: pyglet on_scale event unavailable ({exc!r}); DPI changes will only refresh on resize.")
+        # pyglet dispatches ``on_scale`` when the window moves between displays
+        # with different DPI scaling. Such transitions don't always fire
+        # ``on_resize``, so we'd otherwise miss the DPI change.
+        self.window.push_handlers(on_scale=self._on_window_scale)
 
         # Set up proper DPI scaling for high-DPI displays.
         #
@@ -120,7 +115,7 @@ class UI:
             self._apply_dpi_scaling()
 
     def _on_window_scale(self, scale: float, dpi: int) -> None:
-        """pyglet 2.1 ``on_scale`` event handler — delegates to ``refresh_dpi``.
+        """pyglet ``on_scale`` event handler — delegates to ``refresh_dpi``.
 
         Dispatched whenever the window moves to a display with a different
         ``backingScaleFactor`` / DPI. Window dimensions need not change, so
@@ -132,24 +127,35 @@ class UI:
         """Return the current DPI factor for the window.
 
         Prefers pyglet's documented ``window.scale`` (which works on macOS
-        Retina where ``framebuffer_size == window_size``), falling back to
-        the framebuffer/window-size ratio for older pyglet versions.
+        Retina where ``framebuffer_size == window_size``), also considering
+        the framebuffer/window-size ratio when that is the larger signal.
         """
-        scale = 1.0
+        scale = self._window_scale()
         try:
-            window_scale = float(getattr(self.window, "scale", 1.0))
-            if window_scale > 1.0:
-                scale = window_scale
-        except Exception:
-            pass
+            get_size = self.window.get_size
+            get_framebuffer_size = self.window.get_framebuffer_size
+        except AttributeError:
+            return max(1.0, scale)
+
         try:
-            ww, wh = self.window.get_size()
-            fw, fh = self.window.get_framebuffer_size()
+            ww, wh = get_size()
+            fw, fh = get_framebuffer_size()
             if ww > 0 and wh > 0:
                 scale = max(scale, fw / ww, fh / wh)
-        except Exception:
-            pass
+        except AttributeError:
+            return max(1.0, scale)
         return max(1.0, scale)
+
+    def _window_scale(self) -> float:
+        try:
+            window_scale = self.window.scale
+        except AttributeError:
+            return 1.0
+
+        try:
+            return max(1.0, float(window_scale))
+        except (TypeError, ValueError):
+            return 1.0
 
     def _apply_dpi_scaling(self) -> None:
         """Scale the active ImGui style and fonts to ``self.dpi_scale``.
@@ -166,13 +172,7 @@ class UI:
         style = self.imgui.get_style()
         if self.dpi_scale != 1.0:
             style.scale_all_sizes(self.dpi_scale)
-        # ImGui >= 1.92 exposes ``font_scale_dpi`` for the dynamic font system;
-        # older builds use the deprecated ``io.font_global_scale``. Set whichever
-        # is available so fonts scale to DPI on both versions.
-        if hasattr(style, "font_scale_dpi"):
-            style.font_scale_dpi = self.dpi_scale
-        elif hasattr(self.io, "font_global_scale"):
-            self.io.font_global_scale = self.dpi_scale
+        style.font_scale_dpi = self.dpi_scale
 
     def _setup_grey_style(self):
         if not self.is_available:
@@ -339,9 +339,12 @@ class UI:
         style.set_color_(self.imgui.Col_.separator, self.imgui.ImVec4(0.1568627506494522, 0.1843137294054031, 0.250980406999588, 1.0))
         style.set_color_(self.imgui.Col_.separator_hovered, self.imgui.ImVec4(0.1568627506494522, 0.1843137294054031, 0.250980406999588, 1.0))
         style.set_color_(self.imgui.Col_.separator_active, self.imgui.ImVec4(0.1568627506494522, 0.1843137294054031, 0.250980406999588, 1.0))
-        style.set_color_(self.imgui.Col_.resize_grip, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.resize_grip_hovered, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 1.0))
-        style.set_color_(self.imgui.Col_.resize_grip_active, self.imgui.ImVec4(0.2352941185235977, 0.2156862765550613, 0.5960784554481506, 1.0))
+        # Resize grip uses a translucent white instead of a near-window-bg
+        # color so the corner handle is actually discoverable at rest. Hover
+        # / active states keep the accent-blue look.
+        style.set_color_(self.imgui.Col_.resize_grip, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.20))
+        style.set_color_(self.imgui.Col_.resize_grip_hovered, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 0.85))
+        style.set_color_(self.imgui.Col_.resize_grip_active, self.imgui.ImVec4(0.5372549295425415, 0.5529412031173706, 1.0, 1.0))
         style.set_color_(self.imgui.Col_.tab, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
         style.set_color_(self.imgui.Col_.tab_hovered, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
         style.set_color_(self.imgui.Col_.tab_selected, self.imgui.ImVec4(0.09803921729326248, 0.105882354080677, 0.1215686276555061, 1.0))

@@ -297,17 +297,9 @@ class ViewerGL(ViewerBase):
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
             self.ui = UI(self.renderer.window)
-            # pyglet 2.1 fires ``on_scale`` when the window crosses to a display
-            # with a different DPI without necessarily firing ``on_resize``;
-            # subscribe so DPI-dependent layout (image logger, sidebar hint)
-            # follows scale-only transitions.
-            # Older pyglet builds don't register the ``on_scale`` event;
-            # AttributeError / KeyError from ``push_handlers`` is the expected
-            # outcome there. Anything else should be visible during integration.
-            try:
-                self.renderer.window.push_handlers(on_scale=self._on_window_scale)
-            except (AttributeError, KeyError) as exc:
-                print(f"Warning: pyglet on_scale event unavailable ({exc!r}); DPI changes will only refresh on resize.")
+            # pyglet fires ``on_scale`` when the window crosses to a display
+            # with a different DPI without necessarily firing ``on_resize``.
+            self.renderer.window.push_handlers(on_scale=self._on_window_scale)
         else:
             self.ui = None
         self._gizmo_log = None
@@ -2218,28 +2210,28 @@ class ViewerGL(ViewerBase):
     def _on_window_scale(self, scale: float, dpi: int) -> None:
         """Refresh DPI-dependent layout when pyglet reports a display change.
 
-        pyglet 2.1 dispatches ``on_scale`` whenever the window crosses to a
-        display with a different ``backingScaleFactor`` / DPI. The window
-        size need not change, so ``on_resize`` isn't always fired.
+        pyglet dispatches ``on_scale`` whenever the window crosses to a display
+        with a different ``backingScaleFactor`` / DPI. The window size need not
+        change, so ``on_resize`` isn't always fired.
         """
-        self._refresh_dpi_state()
+        self._refresh_dpi_state(dpi_scale=scale)
 
-    def _refresh_dpi_state(self) -> None:
+    def _refresh_dpi_state(self, dpi_scale: float | None = None) -> None:
         """Propagate the current DPI to all DPI-dependent layout state.
 
-        Force the UI to re-detect its DPI **first**. pyglet pushes event
-        handlers onto a stack and dispatches them LIFO, so this viewer-side
-        ``on_scale`` handler runs before ``UI._on_window_scale`` (UI was
-        registered earlier). Without an explicit refresh, ``_dpi_scale()``
-        (which reads ``ui.dpi_scale`` when the UI is available) would still
-        return the previous scale on a scale-only display move, leaving the
-        image logger and sidebar hint one frame stale.
+        ``dpi_scale`` comes directly from pyglet's ``on_scale`` event when
+        available, making viewer-side propagation independent of pyglet's
+        event-handler ordering.
         """
         if self.ui is not None and self.ui.is_available:
             self.ui.refresh_dpi()
+        if dpi_scale is None:
+            dpi_scale = self._dpi_scale()
+        else:
+            dpi_scale = self._coerce_dpi_scale(dpi_scale)
         if self._image_logger is not None:
-            self._image_logger._sidebar_width_px = self._sidebar_width_fb_px()
-            self._image_logger.dpi_scale = self._dpi_scale()
+            self._image_logger._sidebar_width_px = _SIDEBAR_WIDTH_PX * dpi_scale
+            self._image_logger.dpi_scale = dpi_scale
 
     def _dpi_scale(self) -> float:
         """Return the current DPI scale.
@@ -2254,19 +2246,34 @@ class ViewerGL(ViewerBase):
         ui = getattr(self, "ui", None)
         if ui is not None and ui.is_available:
             return ui.dpi_scale
+        return self._detect_window_dpi_scale()
+
+    def _detect_window_dpi_scale(self) -> float:
+        """Return the current DPI scale from pyglet window APIs."""
         scale = 1.0
         try:
-            scale = max(scale, float(getattr(self.renderer.window, "scale", 1.0)))
-        except Exception:
-            pass
+            scale = self._coerce_dpi_scale(self.renderer.window.scale)
+        except AttributeError:
+            scale = 1.0
+
         try:
-            ww, wh = self.renderer.window.get_size()
-            fw, fh = self.renderer.window.get_framebuffer_size()
-            if ww > 0 and wh > 0:
-                scale = max(scale, fw / ww, fh / wh)
-        except Exception:
-            pass
+            get_size = self.renderer.window.get_size
+            get_framebuffer_size = self.renderer.window.get_framebuffer_size
+        except AttributeError:
+            return max(1.0, scale)
+
+        ww, wh = get_size()
+        fw, fh = get_framebuffer_size()
+        if ww > 0 and wh > 0:
+            scale = max(scale, fw / ww, fh / wh)
         return max(1.0, scale)
+
+    @staticmethod
+    def _coerce_dpi_scale(value: float) -> float:
+        try:
+            return max(1.0, float(value))
+        except (TypeError, ValueError):
+            return 1.0
 
     def _sidebar_width_fb_px(self) -> float:
         """Sidebar width in framebuffer pixels, scaled by the current DPI."""
