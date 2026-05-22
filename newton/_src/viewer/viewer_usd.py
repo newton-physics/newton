@@ -530,7 +530,7 @@ class ViewerUSD(ViewerBase):
         colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
         as_spheres: bool = False,
-    ):
+    ) -> Sdf.Path | None:
         """Log points as a USD primitive.
 
         When ``as_spheres`` is ``True``, each point is rendered as an instanced
@@ -547,7 +547,7 @@ class ViewerUSD(ViewerBase):
             as_spheres: Render as instanced 3D spheres instead of flat splats.
 
         Returns:
-            Sdf.Path of the created/updated primitive.
+            Sdf.Path of the created/updated primitive, or None if points is None.
         """
         if points is None:
             if as_spheres and name in self._instancers:
@@ -556,7 +556,7 @@ class ViewerUSD(ViewerBase):
                 prim = self.stage.GetPrimAtPath(self._get_path(name))
                 if prim.IsValid():
                     UsdGeom.Imageable(prim).GetVisibilityAttr().Set("invisible", self._frame_index)
-            return
+            return None
 
         num_points = len(points)
 
@@ -713,25 +713,25 @@ class ViewerUSD(ViewerBase):
     def _normalize_point_colors(self, colors, num_points):
         """Normalize point colors and return (values, interpolation token)."""
         if colors is None:
-            return None, "constant"
+            return None, UsdGeom.Tokens.constant
 
         if isinstance(colors, wp.array):
             colors = colors.numpy()
 
         if self._is_single_rgb_triplet(colors):
             colors_arr = np.asarray(colors, dtype=np.float32)
-            return colors_arr.reshape(1, 3), "constant"
+            return colors_arr.reshape(1, 3), UsdGeom.Tokens.constant
 
         if isinstance(colors, np.ndarray):
-            return colors, "vertex"
+            return colors, UsdGeom.Tokens.vertex
 
         if isinstance(colors, list | tuple):
             # Keep list/tuple inputs as-is for existing valid per-point color inputs.
             if len(colors) == num_points:
-                return colors, "vertex"
-            return np.asarray(colors), "vertex"
+                return colors, UsdGeom.Tokens.vertex
+            return np.asarray(colors), UsdGeom.Tokens.vertex
 
-        return np.asarray(colors), "vertex"
+        return np.asarray(colors), UsdGeom.Tokens.vertex
 
     @staticmethod
     def _ensure_scopes_for_path(stage: Usd.Stage, prim_path_str: str):

@@ -614,22 +614,23 @@ class Example:
         self.model.shape_scale = self.viz_shape_scale
         self.model.particle_radius = self.viz_particle_radius
 
-        self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.viz_state)
-        # Render the table box manually at meter scale
-        self.viewer.log_shapes(
-            "/table",
-            newton.GeoType.BOX,
-            self.table_viz_scale,
-            self.table_viz_xform,
-            self.table_viz_color,
-        )
-        self.viewer.end_frame()
-
-        # Restore simulation shape and particle data
-        self.model.shape_transform = self.sim_shape_transform
-        self.model.shape_scale = self.sim_shape_scale
-        self.model.particle_radius = self.sim_particle_radius
+        try:
+            self.viewer.begin_frame(self.sim_time)
+            self.viewer.log_state(self.viz_state)
+            # Render the table box manually at meter scale
+            self.viewer.log_shapes(
+                "/table",
+                newton.GeoType.BOX,
+                self.table_viz_scale,
+                self.table_viz_xform,
+                self.table_viz_color,
+            )
+            self.viewer.end_frame()
+        finally:
+            # Restore simulation shape and particle data
+            self.model.shape_transform = self.sim_shape_transform
+            self.model.shape_scale = self.sim_shape_scale
+            self.model.particle_radius = self.sim_particle_radius
 
     def test_final(self):
         p_lower = wp.vec3(-36.0, -95.0, -5.0)
