@@ -502,6 +502,13 @@ def _vbd_dahl_detection_requires_positive_values(test, device):
         solver = newton.solvers.SolverVBD(model)
     test.assertFalse(solver.enable_dahl_friction)
 
+    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_tau=1.0)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        solver = newton.solvers.SolverVBD(model)
+    test.assertFalse(solver.enable_dahl_friction)
+
     model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=True)
 
     with warnings.catch_warnings():

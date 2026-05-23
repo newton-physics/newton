@@ -238,7 +238,7 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
         rigid_joint_linear_kd: float = 0.0,  # Rayleigh damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Rayleigh damping for non-cable angular joint constraints
-        rigid_enable_dahl_friction: bool | None = None,  # Deprecated: auto-detected from model attributes
+        rigid_enable_dahl_friction: bool | None = None,  # Deprecated: controlled by model attributes
     ):
         """
         Args:
@@ -346,8 +346,8 @@ class SolverVBD(SolverBase):
                 Negative values are clamped to 0.
             rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints.
                 Negative values are clamped to 0.
-            rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is auto-detected
-                from ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
+            rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is controlled
+                by ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
