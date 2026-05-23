@@ -2686,12 +2686,15 @@ def parse_usd(
                 shell_thickness_val = R.get_value(prim, PrimType.SHAPE, "shell_thickness")
                 # When shell thickness is authored, pass it as margin so compute_inertia_shape
                 # uses the correct thickness. The real collision margin is restored after add_shape.
-                if (
-                    shell_thickness_val is not None
-                    and math.isfinite(float(shell_thickness_val))
-                    and float(shell_thickness_val) >= 0.0
-                ):
-                    inertia_margin = float(shell_thickness_val)
+                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
+                    if float(shell_thickness_val) >= 0.0:
+                        inertia_margin = float(shell_thickness_val)
+                    else:
+                        warnings.warn(
+                            f"Shape {path}: negative shell thickness {shell_thickness_val}; falling back to margin.",
+                            stacklevel=2,
+                        )
+                        inertia_margin = margin_val
                 else:
                     inertia_margin = margin_val
 
