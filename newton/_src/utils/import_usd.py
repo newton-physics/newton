@@ -2680,13 +2680,10 @@ def parse_usd(
 
                 shape_color = material_props.get("color")
 
-                # NewtonMassAPI: mass model and shell thickness
-                has_newton_mass = usd.has_applied_api_schema(prim, "NewtonMassAPI")
-                mass_model = usd.get_attribute(prim, "newton:massModel", "solid") if has_newton_mass else "solid"
+                # Mass model and shell thickness (resolved across Newton / MuJoCo schemas)
+                mass_model = R.get_value(prim, PrimType.SHAPE, "mass_model", default="solid")
                 shape_is_solid = mass_model != "shell"
-                shell_thickness_val = usd.get_attribute(prim, "newton:shellThickness") if has_newton_mass else None
-                if shell_thickness_val is not None and shell_thickness_val == float("-inf"):
-                    shell_thickness_val = None
+                shell_thickness_val = R.get_value(prim, PrimType.SHAPE, "shell_thickness")
                 # When shell thickness is authored, pass it as margin so compute_inertia_shape
                 # uses the correct thickness. The real collision margin is restored after add_shape.
                 inertia_margin = float(shell_thickness_val) if shell_thickness_val is not None else margin_val
