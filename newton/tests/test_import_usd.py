@@ -3954,12 +3954,13 @@ def Xform "NegativeThickness" (
     float physics:mass = 10.0
 
     def Sphere "Collider" (
-        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI", "NewtonCollisionAPI"]
     )
     {
         double radius = 0.5
         uniform token newton:massModel = "shell"
         float newton:shellThickness = -0.5
+        float newton:contactMargin = 0.03
     }
 }
 """
@@ -4041,11 +4042,14 @@ def Xform "NegativeThickness" (
         inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
         self.assertGreater(np.trace(inertia), 0.0)
 
-        # --- 8) Negative shell thickness: warning emitted, falls back to margin ---
+        # --- 8) Negative shell thickness: warning, falls back to margin, inertia matches margin path ---
         body_id = builder.body_label.index("/NegativeThickness")
         shape_idx = builder.shape_label.index("/NegativeThickness/Collider")
         self.assertFalse(builder.shape_is_solid[shape_idx])
         self.assertAlmostEqual(builder.body_mass[body_id], 10.0, places=5)
+        inertia_neg = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected_neg_I = _scaled_I(_shell_I(margin_t), _shell_mass(margin_t), 10.0)
+        np.testing.assert_allclose(np.diag(inertia_neg), [expected_neg_I] * 3, rtol=1e-4)
         warning_messages = [str(w.message) for w in caught]
         self.assertTrue(any("negative shell thickness" in m and "NegativeThickness" in m for m in warning_messages))
 
