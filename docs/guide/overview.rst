@@ -20,7 +20,9 @@ Key Features
 ------------
 
 * **GPU-accelerated**: Leverages NVIDIA Warp for fast, scalable simulation.
-* **Multiple solver implementations**: XPBD, VBD, MuJoCo, Featherstone, SemiImplicit.
+* **Multiple solver implementations**: Featherstone, ImplicitMPM, Kamino, MuJoCo,
+  SemiImplicit, Style3D, VBD, XPBD (see the :doc:`solver feature matrix
+  <../api/newton_solvers>`).
 * **Modular design**: Easily extendable with new solvers and components.
 * **Differentiable**: Supports differentiable simulation for machine learning and optimization.
 * **Rich Import/Export**: Load models from URDF, MJCF, USD, and more.
@@ -101,8 +103,9 @@ Core Concepts
   and forces applied during the simulation loop.
 - :doc:`Solver <../api/newton_solvers>`: Advances the simulation by
   integrating physics, handling contacts, and enforcing constraints.
-  Newton provides multiple solver backends, including XPBD, VBD,
-  MuJoCo, Featherstone, and SemiImplicit.
+  Newton provides multiple solver backends — see the
+  :doc:`solver feature matrix <../api/newton_solvers>` for the full
+  list and a feature comparison.
 - :doc:`Sensors <../concepts/sensors>`: Compute observations from
   :class:`~newton.State`, :class:`~newton.Contacts`, sites, and shapes.
   Many sensors rely on optional :doc:`extended attributes
