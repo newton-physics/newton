@@ -275,7 +275,7 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
-        # Author positive per-joint Dahl parameters to enable cable friction.
+        # Author positive per-joint Dahl parameters to enable Dahl friction.
         if with_dahl and hasattr(self.model, "vbd"):
             self.model.vbd.dahl_eps_max.fill_(float(eps_max))
             self.model.vbd.dahl_tau.fill_(float(tau))

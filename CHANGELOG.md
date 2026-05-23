@@ -22,7 +22,7 @@
 ### Deprecated
 
 - Deprecate loading `.pt` / `.pth` (TorchScript) checkpoints via `ControllerNeuralMLP`; the legacy TorchScript / dict-checkpoint path still works (with a `DeprecationWarning`) when PyTorch is installed but will be removed in a future release. `ControllerNeuralLSTM` requires re-exporting to ONNX with the metadata properties documented in its class docstring; pointing it at a `.pt` checkpoint now raises `NotImplementedError` with migration guidance. Convert the MLP checkpoint to ONNX once with `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` and load the resulting `.onnx` file.
-- Deprecate implicit positive Dahl defaults in `SolverVBD.register_custom_attributes()`. Pass `dahl_defaults_enabled=False` and explicitly author positive `model.vbd.dahl_eps_max` and `model.vbd.dahl_tau` values when Dahl cable friction is desired.
+- Deprecate implicit positive Dahl defaults in `SolverVBD.register_custom_attributes()`. Pass `dahl_defaults_enabled=False` and explicitly author positive `model.vbd.dahl_eps_max` and `model.vbd.dahl_tau` values when Dahl cable friction is desired, instead of relying on registered default values.
 
 ### Removed
 

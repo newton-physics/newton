@@ -85,9 +85,6 @@ from .tri_mesh_collision import (
 __all__ = ["SolverVBD"]
 
 
-_vbd_migration_warned = {"value": False}
-
-
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
@@ -382,31 +379,6 @@ class SolverVBD(SolverBase):
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
-
-        # TODO: Remove this temporary warning after the Newton 1.2 migration window.
-        if model.body_count > 0 and not integrate_with_external_rigid_solver and not _vbd_migration_warned["value"]:
-            warnings.warn(
-                "SolverVBD rigid-body defaults changed in Newton 1.2.0:\n"
-                "  - Non-cable structural joints default to hard augmented-Lagrangian constraints.\n"
-                "  - Body-body contacts default to hard augmented-Lagrangian constraints.\n"
-                "  - AVBD penalty ramping is off by default (rigid_avbd_beta=0.0).\n"
-                "  - Non-cable joint stiffness ceilings default to 1.0e5 instead of 1.0e9.\n"
-                "  - Cable rod stretch/bend stiffness inputs are direct per-joint values.\n"
-                "To restore previous behavior:\n"
-                "  - Soft structural joints: call "
-                "SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False) before adding joints, "
-                "then pass custom_attributes={'vbd:joint_is_hard': 0} to the relevant add_joint_* calls. "
-                "Rebuild models finalized without the vbd:joint_is_hard attribute.\n"
-                "  - Soft body-body contacts: pass rigid_contact_hard=False.\n"
-                "  - AVBD ramping: pass rigid_avbd_beta=1.0e5.\n"
-                "  - Joint stiffness ceilings: pass rigid_joint_linear_ke=1.0e9 and "
-                "rigid_joint_angular_ke=1.0e9.\n"
-                "  - Cable rod stiffness: divide material stiffness by segment length before building "
-                "the model.",
-                UserWarning,
-                stacklevel=2,
-            )
-            _vbd_migration_warned["value"] = True
 
         super().__init__(model)
 
