@@ -3878,6 +3878,7 @@ def Xform "ExplicitTensor" (
 
     float physics:mass = 5.0
     double[] newton:inertia = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3]
+    float3 physics:diagonalInertia = (9.0, 9.0, 9.0)
 
     def Sphere "Collider" (
         prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
@@ -4082,6 +4083,23 @@ def Xform "WrongLength" (
         double radius = 0.5
     }
 }
+
+def Xform "NotPSD" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (6, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    double[] newton:inertia = [1.0, 1.0, 1.0, 5.0, 5.0, 5.0]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
 """
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
@@ -4091,7 +4109,7 @@ def Xform "WrongLength" (
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
 
-        self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.body_count, 4)
 
         body_id = builder.body_label.index("/NonFinite")
         self.assertGreater(builder.body_mass[body_id], 0.0)
@@ -4102,10 +4120,14 @@ def Xform "WrongLength" (
         body_id = builder.body_label.index("/WrongLength")
         self.assertGreater(builder.body_mass[body_id], 0.0)
 
+        body_id = builder.body_label.index("/NotPSD")
+        self.assertGreater(builder.body_mass[body_id], 0.0)
+
         warning_messages = [str(w.message) for w in caught]
-        self.assertTrue(any("non-finite" in m for m in warning_messages))
-        self.assertTrue(any("negative diagonal" in m for m in warning_messages))
-        self.assertTrue(any("expected 6" in m for m in warning_messages))
+        self.assertTrue(any("non-finite" in m and "NonFinite" in m for m in warning_messages))
+        self.assertTrue(any("negative diagonal" in m and "NegativeDiag" in m for m in warning_messages))
+        self.assertTrue(any("expected 6" in m and "WrongLength" in m for m in warning_messages))
+        self.assertTrue(any("not positive semidefinite" in m and "NotPSD" in m for m in warning_messages))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_usd_gravcomp(self):

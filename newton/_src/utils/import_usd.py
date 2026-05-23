@@ -2686,7 +2686,14 @@ def parse_usd(
                 shell_thickness_val = R.get_value(prim, PrimType.SHAPE, "shell_thickness")
                 # When shell thickness is authored, pass it as margin so compute_inertia_shape
                 # uses the correct thickness. The real collision margin is restored after add_shape.
-                inertia_margin = float(shell_thickness_val) if shell_thickness_val is not None else margin_val
+                if (
+                    shell_thickness_val is not None
+                    and math.isfinite(float(shell_thickness_val))
+                    and float(shell_thickness_val) >= 0.0
+                ):
+                    inertia_margin = float(shell_thickness_val)
+                else:
+                    inertia_margin = margin_val
 
                 shape_params = {
                     "body": body_id,
@@ -3078,9 +3085,17 @@ def parse_usd(
                     )
                     has_inertia_tensor = False
                 else:
-                    has_authored_inertia = True
                     ixx, iyy, izz, ixy, ixz, iyz = inertia_tensor_val
-                    inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
+                    inertia_np = np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]], dtype=np.float64)
+                    if np.any(np.linalg.eigvalsh(inertia_np) < 0.0):
+                        warnings.warn(
+                            f"Body {body_path}: newton:inertia is not positive semidefinite. Ignoring.",
+                            stacklevel=2,
+                        )
+                        has_inertia_tensor = False
+                    else:
+                        has_authored_inertia = True
+                        inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
 
             # Compute baseline mass properties via mass computer when at least one property needs resolving.
             if not (has_authored_mass and has_authored_inertia and has_authored_com):
@@ -3141,7 +3156,8 @@ def parse_usd(
                 i_diag_np = None
             if has_inertia_tensor:
                 builder.body_inertia[body_id] = inertia_tensor
-                if inertia_tensor != wp.mat33(0.0):
+                det = np.linalg.det(np.array(inertia_tensor).reshape(3, 3))
+                if det > 0.0:
                     builder.body_inv_inertia[body_id] = wp.inverse(inertia_tensor)
                 else:
                     builder.body_inv_inertia[body_id] = wp.mat33(0.0)
