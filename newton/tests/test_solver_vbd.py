@@ -435,33 +435,36 @@ def _d6_fully_free_structural_slots_are_inactive(test, device):
     np.testing.assert_array_equal(solver.joint_is_hard.numpy()[start : start + 2], [0, 0])
 
 
-def _vbd_custom_attribute_registration_is_feature_scoped(test, device):
+def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     del device
 
     builder = newton.ModelBuilder()
-    newton.solvers.SolverVBD.register_joint_mode_custom_attributes(builder)
-    test.assertIn("vbd:joint_is_hard", builder.custom_attributes)
-    test.assertNotIn("vbd:dahl_eps_max", builder.custom_attributes)
-    test.assertNotIn("vbd:dahl_tau", builder.custom_attributes)
-
-    builder = newton.ModelBuilder()
-    newton.solvers.SolverVBD.register_dahl_custom_attributes(builder)
-    test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
-    test.assertIn("vbd:dahl_tau", builder.custom_attributes)
-    test.assertNotIn("vbd:joint_is_hard", builder.custom_attributes)
-    test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.5)
-
-    builder = newton.ModelBuilder()
-    newton.solvers.SolverVBD.register_custom_attributes(builder)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", DeprecationWarning)
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
     test.assertIn("vbd:joint_is_hard", builder.custom_attributes)
     test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
     test.assertIn("vbd:dahl_tau", builder.custom_attributes)
+    test.assertEqual(builder.custom_attributes["vbd:joint_is_hard"].default, 1)
     test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.5)
+    test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 1.0)
+    test.assertTrue(any(issubclass(w.category, DeprecationWarning) for w in caught))
+
+    builder = newton.ModelBuilder()
+    newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+    test.assertIn("vbd:joint_is_hard", builder.custom_attributes)
+    test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
+    test.assertIn("vbd:dahl_tau", builder.custom_attributes)
+    test.assertEqual(builder.custom_attributes["vbd:joint_is_hard"].default, 1)
+    test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.0)
+    test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 0.0)
 
 
-def _make_vbd_dahl_detection_model(device, register_custom_attributes):
+def _make_vbd_dahl_detection_model(device, *, dahl_defaults_enabled, dahl_eps_max=None, dahl_tau=None):
     builder = newton.ModelBuilder(gravity=0.0)
-    register_custom_attributes(builder)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=dahl_defaults_enabled)
 
     parent = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
     child = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
@@ -476,18 +479,37 @@ def _make_vbd_dahl_detection_model(device, register_custom_attributes):
     )
     builder.add_articulation([joint])
     builder.color()
-    return builder.finalize(device=device)
+    model = builder.finalize(device=device)
+    if dahl_eps_max is not None:
+        model.vbd.dahl_eps_max.fill_(float(dahl_eps_max))
+    if dahl_tau is not None:
+        model.vbd.dahl_tau.fill_(float(dahl_tau))
+    return model
 
 
-def _vbd_joint_mode_registration_does_not_enable_dahl(test, device):
-    model = _make_vbd_dahl_detection_model(device, newton.solvers.SolverVBD.register_joint_mode_custom_attributes)
+def _vbd_dahl_detection_requires_positive_values(test, device):
+    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         solver = newton.solvers.SolverVBD(model)
     test.assertFalse(solver.enable_dahl_friction)
 
-    model = _make_vbd_dahl_detection_model(device, newton.solvers.SolverVBD.register_dahl_custom_attributes)
+    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_eps_max=0.5)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        solver = newton.solvers.SolverVBD(model)
+    test.assertFalse(solver.enable_dahl_friction)
+
+    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=True)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        solver = newton.solvers.SolverVBD(model)
+    test.assertTrue(solver.enable_dahl_friction)
+
+    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_eps_max=0.5, dahl_tau=1.0)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -682,14 +704,14 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_vbd_custom_attribute_registration_is_feature_scoped",
-    _vbd_custom_attribute_registration_is_feature_scoped,
+    "test_vbd_custom_attribute_registration_controls_dahl_defaults",
+    _vbd_custom_attribute_registration_controls_dahl_defaults,
     devices=devices,
 )
 add_function_test(
     TestSolverVBD,
-    "test_vbd_joint_mode_registration_does_not_enable_dahl",
-    _vbd_joint_mode_registration_does_not_enable_dahl,
+    "test_vbd_dahl_detection_requires_positive_values",
+    _vbd_dahl_detection_requires_positive_values,
     devices=devices,
 )
 add_function_test(

@@ -177,7 +177,7 @@ class Example:
 
         # Dahl plasticity parameters live on the Model as VBD custom attributes.
         if with_dahl:
-            newton.solvers.SolverVBD.register_dahl_custom_attributes(builder)
+            newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
         builder.gravity = -9.81
 
         # Set default material properties for cables (cable-to-cable contact)

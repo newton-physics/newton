@@ -362,18 +362,18 @@ class SolverVBD(SolverBase):
               Setting them too small may result in undetected collisions (particles) or contact overflow (rigid body
               contacts).
               Setting them excessively large may increase memory usage and degrade performance.
-            - Dahl hysteresis friction for cable bending is auto-detected from custom model attributes
+            - Dahl hysteresis friction for cable bending is controlled by custom model attributes
               ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``. Register them with
-              ``SolverVBD.register_dahl_custom_attributes`` or the broader
-              ``SolverVBD.register_custom_attributes``.
+              ``SolverVBD.register_custom_attributes`` before building the model. Dahl friction is
+              enabled only when positive Dahl parameters are authored.
 
         """
         if rigid_enable_dahl_friction is not None:
             warnings.warn(
                 "rigid_enable_dahl_friction is deprecated and ignored. "
-                "Dahl friction is now auto-detected from model attributes "
+                "Dahl friction is now controlled by model attributes "
                 "(model.vbd.dahl_eps_max / model.vbd.dahl_tau). "
-                "To disable for a joint, set dahl_eps_max=0.",
+                "It is enabled only where both values are positive.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -393,9 +393,10 @@ class SolverVBD(SolverBase):
                 "  - Non-cable joint stiffness ceilings default to 1.0e5 instead of 1.0e9.\n"
                 "  - Cable rod stretch/bend stiffness inputs are direct per-joint values.\n"
                 "To restore previous behavior:\n"
-                "  - Soft structural joints: call SolverVBD.register_joint_mode_custom_attributes(builder) before "
-                "adding joints, then pass custom_attributes={'vbd:joint_is_hard': 0} to the relevant "
-                "add_joint_* calls. Rebuild models finalized without the vbd:joint_is_hard attribute.\n"
+                "  - Soft structural joints: call "
+                "SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False) before adding joints, "
+                "then pass custom_attributes={'vbd:joint_is_hard': 0} to the relevant add_joint_* calls. "
+                "Rebuild models finalized without the vbd:joint_is_hard attribute.\n"
                 "  - Soft body-body contacts: pass rigid_contact_hard=False.\n"
                 "  - AVBD ramping: pass rigid_avbd_beta=1.0e5.\n"
                 "  - Joint stiffness ceilings: pass rigid_joint_linear_ke=1.0e9 and "
@@ -740,7 +741,7 @@ class SolverVBD(SolverBase):
             self.joint_sigma_start = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_C_fric = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
 
-            # Dahl friction: enabled when Dahl custom attributes are registered.
+            # Dahl friction: registered custom attributes are inert until enabled by positive values.
             vbd_attrs: Any = getattr(model, "vbd", None)
             has_dahl = (
                 model.joint_count > 0
@@ -748,13 +749,16 @@ class SolverVBD(SolverBase):
                 and hasattr(vbd_attrs, "dahl_eps_max")
                 and hasattr(vbd_attrs, "dahl_tau")
             )
-            self.enable_dahl_friction = has_dahl
             if has_dahl:
                 self.joint_dahl_eps_max = vbd_attrs.dahl_eps_max
                 self.joint_dahl_tau = vbd_attrs.dahl_tau
+                dahl_eps_max = self._to_numpy(self.joint_dahl_eps_max, dtype=float)
+                dahl_tau = self._to_numpy(self.joint_dahl_tau, dtype=float)
+                self.enable_dahl_friction = bool(np.any((dahl_eps_max > 0.0) & (dahl_tau > 0.0)))
             else:
                 self.joint_dahl_eps_max = wp.zeros(model.joint_count, dtype=float, device=self.device)
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
+                self.enable_dahl_friction = False
 
         # -------------------------------------------------------------
         # Body-particle interaction shared state.
@@ -1131,42 +1135,41 @@ class SolverVBD(SolverBase):
 
     @override
     @classmethod
-    def register_custom_attributes(cls, builder: ModelBuilder) -> None:
-        """Register all SolverVBD custom Model attributes.
+    def register_custom_attributes(cls, builder: ModelBuilder, *, dahl_defaults_enabled: bool = True) -> None:
+        """Register SolverVBD custom Model attributes.
 
-        Composes :meth:`register_dahl_custom_attributes` and
-        :meth:`register_joint_mode_custom_attributes`. Attributes are declared in
-        the ``vbd`` namespace so they can be authored in scenes and in USD as
-        ``newton:vbd:<attr>``.
+        Currently registers:
+          - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode
+          - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional Dahl cable friction
 
-        .. note::
+        Attributes are declared in the ``vbd`` namespace so they can be authored
+        in scenes and in USD as ``newton:vbd:<attr>``.
 
-            Registering Dahl attributes auto-enables Dahl cable friction at
-            solver construction (default ``dahl_eps_max=0.5``). To author only
-            joint hard/soft mode without enabling Dahl, prefer
-            :meth:`register_joint_mode_custom_attributes`. To opt into Dahl
-            alone, use :meth:`register_dahl_custom_attributes`.
+        Args:
+            builder: Model builder to register attributes on.
+            dahl_defaults_enabled: Deprecated compatibility mode. When True, Dahl parameters
+                default to positive values. Prefer passing ``False`` and explicitly authoring
+                positive Dahl values only when Dahl cable friction is desired.
         """
-        cls.register_dahl_custom_attributes(builder)
-        cls.register_joint_mode_custom_attributes(builder)
+        dahl_eps_default = 0.5 if dahl_defaults_enabled else 0.0
+        dahl_tau_default = 1.0 if dahl_defaults_enabled else 0.0
+        if dahl_defaults_enabled:
+            warnings.warn(
+                "Implicit positive Dahl defaults in SolverVBD.register_custom_attributes() are deprecated "
+                "and will be disabled by default in a future release. Pass dahl_defaults_enabled=False and "
+                "explicitly author positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
+                "Dahl cable friction.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
-    @classmethod
-    def register_dahl_custom_attributes(cls, builder: ModelBuilder) -> None:
-        """Register custom attributes for VBD Dahl cable friction.
-
-        Registers ``vbd:dahl_eps_max`` (default ``0.5``) and ``vbd:dahl_tau``
-        (default ``1.0``). :class:`SolverVBD` auto-detects these attributes at
-        construction and enables Dahl cable friction when both are present.
-        Set ``model.vbd.dahl_eps_max`` to ``0.0`` per joint to keep Dahl
-        disabled for that joint.
-        """
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
-                default=0.5,
+                default=dahl_eps_default,
                 namespace="vbd",
             )
         )
@@ -1176,20 +1179,10 @@ class SolverVBD(SolverBase):
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
-                default=1.0,
+                default=dahl_tau_default,
                 namespace="vbd",
             )
         )
-
-    @classmethod
-    def register_joint_mode_custom_attributes(cls, builder: ModelBuilder) -> None:
-        """Register the VBD hard/soft joint-mode custom attribute.
-
-        Registers ``vbd:joint_is_hard`` (default ``1``, hard). Use this method
-        when only joint hard/soft mode authoring is needed; it does not enable
-        Dahl cable friction. Author values via
-        ``custom_attributes={"vbd:joint_is_hard": 0}`` on ``add_joint_*`` calls.
-        """
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="joint_is_hard",
@@ -1538,7 +1531,7 @@ class SolverVBD(SolverBase):
         ``vbd:joint_is_hard`` custom attribute, avoiding a runtime
         :meth:`set_joint_constraint_mode` call::
 
-            SolverVBD.register_joint_mode_custom_attributes(builder)  # before adding joints
+            SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)  # before adding joints
             builder.add_joint_fixed(..., custom_attributes={"vbd:joint_is_hard": 0})
             model = builder.finalize()
             solver = SolverVBD(model, ...)
