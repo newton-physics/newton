@@ -3089,8 +3089,13 @@ def parse_usd(
                     has_inertia_tensor = False
                 else:
                     ixx, iyy, izz, ixy, ixz, iyz = inertia_tensor_val
-                    inertia_np = np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]], dtype=np.float64)
-                    if np.any(np.linalg.eigvalsh(inertia_np) < 0.0):
+                    # Principal minors check for positive semidefiniteness (no numpy needed).
+                    if (
+                        ixx * iyy - ixy * ixy < 0.0
+                        or ixx * izz - ixz * ixz < 0.0
+                        or iyy * izz - iyz * iyz < 0.0
+                        or wp.determinant(wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)) < 0.0
+                    ):
                         warnings.warn(
                             f"Body {body_path}: newton:inertia is not positive semidefinite. Ignoring.",
                             stacklevel=2,
@@ -3159,8 +3164,7 @@ def parse_usd(
                 i_diag_np = None
             if has_inertia_tensor:
                 builder.body_inertia[body_id] = inertia_tensor
-                det = np.linalg.det(np.array(inertia_tensor).reshape(3, 3))
-                if det > 0.0:
+                if wp.determinant(inertia_tensor) > 0.0:
                     builder.body_inv_inertia[body_id] = wp.inverse(inertia_tensor)
                 else:
                     builder.body_inv_inertia[body_id] = wp.mat33(0.0)

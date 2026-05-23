@@ -3942,15 +3942,37 @@ def Xform "ShellDensity" (
         float newton:shellThickness = 0.05
     }
 }
+
+# 8) Shell with negative thickness → warning, falls back to margin
+def Xform "NegativeThickness" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (14, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 10.0
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token newton:massModel = "shell"
+        float newton:shellThickness = -0.5
+    }
+}
 """
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
 
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
 
-        self.assertEqual(builder.body_count, 7)
-        self.assertEqual(builder.shape_count, 7)
+        self.assertEqual(builder.body_count, 8)
+        self.assertEqual(builder.shape_count, 8)
 
         # --- 1) Shell + thickness + authored mass: inertia from shell geometry, scaled ---
         body_id = builder.body_label.index("/ShellThicknessMass")
@@ -4018,6 +4040,14 @@ def Xform "ShellDensity" (
         self.assertLess(builder.body_mass[body_id], builder.body_mass[solid_density_id])
         inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
         self.assertGreater(np.trace(inertia), 0.0)
+
+        # --- 8) Negative shell thickness: warning emitted, falls back to margin ---
+        body_id = builder.body_label.index("/NegativeThickness")
+        shape_idx = builder.shape_label.index("/NegativeThickness/Collider")
+        self.assertFalse(builder.shape_is_solid[shape_idx])
+        self.assertAlmostEqual(builder.body_mass[body_id], 10.0, places=5)
+        warning_messages = [str(w.message) for w in caught]
+        self.assertTrue(any("negative shell thickness" in m and "NegativeThickness" in m for m in warning_messages))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_inertia_tensor_validation(self):
