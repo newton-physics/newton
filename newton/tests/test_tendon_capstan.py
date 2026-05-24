@@ -1256,6 +1256,71 @@ def test_simple_cable_gravity_balances_mass_load(test, device):
         )
 
 
+def test_simple_cable_gravity_tension_independent_of_relaxation(test, device):
+    """Under-relaxed accumulated XPBD rows should converge to the same physical tension."""
+    with wp.ScopedDevice(device):
+        dt = 1.0 / 60.0
+        results = []
+        for relaxation in (1.0, 0.8, 0.5, 0.25):
+            model, body_idx, mass, _compliance, _initial_z = build_simple_cable_gravity()
+            solver = newton.solvers.SolverXPBD(model, iterations=24, joint_linear_relaxation=relaxation)
+            state_0 = model.state()
+            state_1 = model.state()
+            control = model.control()
+            contacts = model.contacts()
+
+            for _ in range(420):
+                state_0.clear_forces()
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+
+            body_q = state_0.body_q.numpy()
+            body_qd = state_0.body_qd.numpy()
+            test.assertTrue(np.isfinite(body_q).all(), "Non-finite simple cable gravity state")
+
+            tensions, _att_l, _att_r = _capstan_span_tensions(solver)
+            tension = float(tensions[0])
+            lambda_tension = float(-solver.tendon_seg_lambda.numpy()[0] / dt)
+            load = mass * 9.81
+            velocity_z = float(body_qd[body_idx][2])
+            results.append((relaxation, tension, lambda_tension, load, velocity_z))
+
+            test.assertAlmostEqual(
+                tension,
+                load,
+                delta=0.04 * load,
+                msg=(
+                    f"Stretch tension should not be scaled by relaxation={relaxation}: T={tension:.3f}, mg={load:.3f}"
+                ),
+            )
+            test.assertAlmostEqual(
+                lambda_tension,
+                tension,
+                delta=0.02 * load,
+                msg=(
+                    f"XPBD lambda tension should match stretch readback for relaxation={relaxation}: "
+                    f"lambda={lambda_tension:.3f}, stretch={tension:.3f}"
+                ),
+            )
+            test.assertLess(
+                abs(velocity_z),
+                0.02,
+                msg=f"Simple cable mass should be near rest before reading tension: vz={velocity_z:.6f}",
+            )
+
+        reference = results[0][1]
+        for relaxation, tension, _lambda_tension, load, _velocity_z in results[1:]:
+            test.assertAlmostEqual(
+                tension,
+                reference,
+                delta=0.03 * load,
+                msg=(
+                    f"Relaxation should affect convergence speed, not converged tension: "
+                    f"relaxation={relaxation}, T={tension:.3f}, reference={reference:.3f}"
+                ),
+            )
+
+
 def test_motorized_pulley_drives_slider(test, device):
     """A rolling drive pulley must convert rotation into cable sliding."""
     with wp.ScopedDevice(device):
@@ -1444,6 +1509,12 @@ add_test(
     "simple_cable_gravity_balances_mass_load",
     devices,
     test_simple_cable_gravity_balances_mass_load,
+)
+add_test(
+    TestTendonCapstan,
+    "simple_cable_gravity_tension_independent_of_relaxation",
+    devices,
+    test_simple_cable_gravity_tension_independent_of_relaxation,
 )
 add_test(
     TestTendonCapstan,

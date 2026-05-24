@@ -143,14 +143,16 @@ def solve_tendon_stretch(
     if denom > 0.0:
         d_lambda = d_lambda / denom
 
+    d_lambda = d_lambda * relaxation
+
     seg_lambda[seg] = lambda_prev + d_lambda
     seg_delta_lambda[seg] = d_lambda
 
     # apply positional corrections
-    lin_delta_l = linear_l * (d_lambda * relaxation)
-    ang_delta_l = angular_l * (d_lambda * relaxation)
-    lin_delta_r = linear_r * (d_lambda * relaxation)
-    ang_delta_r = angular_r * (d_lambda * relaxation)
+    lin_delta_l = linear_l * d_lambda
+    ang_delta_l = angular_l * d_lambda
+    lin_delta_r = linear_r * d_lambda
+    ang_delta_r = angular_r * d_lambda
 
     wp.atomic_add(body_deltas, body_l, wp.spatial_vector(lin_delta_l, ang_delta_l))
     wp.atomic_add(body_deltas, body_r, wp.spatial_vector(lin_delta_r, ang_delta_r))
@@ -260,7 +262,7 @@ def solve_tendon_slip(
             n = diff / dist
             r = x_r - world_com
             angular = wp.cross(r, n)
-            candidate = angular * (seg_delta_lambda[seg_left] * relaxation)
+            candidate = angular * seg_delta_lambda[seg_left]
             spin_delta = spin_delta + normal * wp.dot(candidate, normal)
 
         x_l = seg_attachment_l[seg_right]
@@ -271,7 +273,7 @@ def solve_tendon_slip(
             n = diff / dist
             r = x_l - world_com
             angular = -wp.cross(r, n)
-            candidate = angular * (seg_delta_lambda[seg_right] * relaxation)
+            candidate = angular * seg_delta_lambda[seg_right]
             spin_delta = spin_delta + normal * wp.dot(candidate, normal)
 
         spin_delta = spin_delta * scale * beta
