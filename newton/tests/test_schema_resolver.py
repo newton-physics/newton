@@ -34,6 +34,7 @@ and MuJoCo physics solvers when importing USD files. Tests cover:
 
 import math
 import unittest
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -1755,15 +1756,18 @@ class TestSchemaResolver(unittest.TestCase):
         with self.assertWarns(DeprecationWarning):
             self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ka"), 0.05)
 
-        # New name takes priority over legacy when both are authored
+        # New name takes priority over legacy when both are authored (no warning)
         collider.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(9999.0)
         collider.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(999.0)
         collider.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(888.0)
         collider.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(0.99)
-        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ke"), 9999.0)
-        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kd"), 999.0)
-        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kf"), 888.0)
-        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ka"), 0.99)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ke"), 9999.0)
+            self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kd"), 999.0)
+            self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kf"), 888.0)
+            self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ka"), 0.99)
+        self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
 
 
 if __name__ == "__main__":

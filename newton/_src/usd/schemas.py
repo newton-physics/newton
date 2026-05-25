@@ -109,11 +109,13 @@ class SchemaResolverNewton(SchemaResolver):
                 "newton:contactStiffness",
                 None,
                 usd_value_getter=_newton_contact_attr_with_fallback("newton:contactStiffness", "newton:contact_ke"),
+                attribute_names=("newton:contactStiffness", "newton:contact_ke"),
             ),
             "kd": SchemaAttribute(
                 "newton:contactDamping",
                 None,
                 usd_value_getter=_newton_contact_attr_with_fallback("newton:contactDamping", "newton:contact_kd"),
+                attribute_names=("newton:contactDamping", "newton:contact_kd"),
             ),
             "kf": SchemaAttribute(
                 "newton:contactFrictionStiffness",
@@ -121,11 +123,13 @@ class SchemaResolverNewton(SchemaResolver):
                 usd_value_getter=_newton_contact_attr_with_fallback(
                     "newton:contactFrictionStiffness", "newton:contact_kf"
                 ),
+                attribute_names=("newton:contactFrictionStiffness", "newton:contact_kf"),
             ),
             "ka": SchemaAttribute(
                 "newton:contactAdhesion",
                 None,
                 usd_value_getter=_newton_contact_attr_with_fallback("newton:contactAdhesion", "newton:contact_ka"),
+                attribute_names=("newton:contactAdhesion", "newton:contact_ka"),
             ),
         },
         PrimType.BODY: {},
