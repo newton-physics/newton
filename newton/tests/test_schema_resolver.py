@@ -1730,6 +1730,35 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_kf[s_idx], 2000.0)
         self.assertAlmostEqual(builder.shape_material_ka[s_idx], 0.01)
 
+    @unittest.skipUnless(USD_AVAILABLE and Usd is not None, "USD not available")
+    def test_contact_penalty_legacy_fallback(self):
+        """Legacy newton:contact_ke/kd/kf/ka resolve with deprecation warning."""
+        stage = Usd.Stage.CreateInMemory()
+        xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(xform)
+        collider = UsdGeom.Sphere.Define(stage, "/xform/collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider)
+
+        collider.CreateAttribute("newton:contact_ke", Sdf.ValueTypeNames.Float).Set(8000.0)
+        collider.CreateAttribute("newton:contact_kd", Sdf.ValueTypeNames.Float).Set(300.0)
+        collider.CreateAttribute("newton:contact_kf", Sdf.ValueTypeNames.Float).Set(1500.0)
+        collider.CreateAttribute("newton:contact_ka", Sdf.ValueTypeNames.Float).Set(0.05)
+
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+
+        with self.assertWarns(DeprecationWarning):
+            self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ke"), 8000.0)
+        with self.assertWarns(DeprecationWarning):
+            self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kd"), 300.0)
+        with self.assertWarns(DeprecationWarning):
+            self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kf"), 1500.0)
+        with self.assertWarns(DeprecationWarning):
+            self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ka"), 0.05)
+
+        # New name takes priority over legacy when both are authored
+        collider.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(9999.0)
+        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ke"), 9999.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

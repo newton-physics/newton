@@ -5223,6 +5223,7 @@ def Xform "Articulation" (
         UsdPhysics.MassAPI.Apply(body_all.GetPrim()).CreateMassAttr().Set(1.0)
         col_all = UsdGeom.Cube.Define(stage, "/Articulation/AllAuthored/Collider")
         col_all_prim = col_all.GetPrim()
+        col_all_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(col_all_prim)
         col_all_prim.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(5000.0)
         col_all_prim.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(200.0)
@@ -5235,6 +5236,7 @@ def Xform "Articulation" (
         UsdPhysics.MassAPI.Apply(body_partial.GetPrim()).CreateMassAttr().Set(1.0)
         col_partial = UsdGeom.Sphere.Define(stage, "/Articulation/PartialAuthored/Collider")
         col_partial_prim = col_partial.GetPrim()
+        col_partial_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(col_partial_prim)
         col_partial_prim.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(9999.0)
 
@@ -5244,6 +5246,7 @@ def Xform "Articulation" (
         UsdPhysics.MassAPI.Apply(body_none.GetPrim()).CreateMassAttr().Set(1.0)
         col_none = UsdGeom.Capsule.Define(stage, "/Articulation/NoAuthored/Collider")
         col_none_prim = col_none.GetPrim()
+        col_none_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(col_none_prim)
 
         builder = newton.ModelBuilder()

@@ -23,6 +23,26 @@ if TYPE_CHECKING:
 SchemaAttribute = SchemaResolver.SchemaAttribute
 
 
+def _newton_contact_attr_with_fallback(new_name: str, legacy_name: str):
+    """Return a getter that reads *new_name*, falling back to *legacy_name* with a deprecation warning."""
+
+    def _getter(prim: Usd.Prim) -> float | None:
+        value = usd.get_attribute(prim, new_name)
+        if value is not None:
+            return float(value)
+        legacy = usd.get_attribute(prim, legacy_name)
+        if legacy is not None:
+            warnings.warn(
+                f"'{legacy_name}' is deprecated; use '{new_name}' instead.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+            return float(legacy)
+        return None
+
+    return _getter
+
+
 def _physx_gap_from_prim(prim: Usd.Prim) -> float | None:
     """Compute Newton gap from PhysX: contactOffset - restOffset [m].
 
@@ -85,10 +105,28 @@ class SchemaResolverNewton(SchemaResolver):
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
             "gap": SchemaAttribute("newton:contactGap", float("-inf")),
             # Contact penalty model
-            "ke": SchemaAttribute("newton:contactStiffness", None),
-            "kd": SchemaAttribute("newton:contactDamping", None),
-            "kf": SchemaAttribute("newton:contactFrictionStiffness", None),
-            "ka": SchemaAttribute("newton:contactAdhesion", None),
+            "ke": SchemaAttribute(
+                "newton:contactStiffness",
+                None,
+                usd_value_getter=_newton_contact_attr_with_fallback("newton:contactStiffness", "newton:contact_ke"),
+            ),
+            "kd": SchemaAttribute(
+                "newton:contactDamping",
+                None,
+                usd_value_getter=_newton_contact_attr_with_fallback("newton:contactDamping", "newton:contact_kd"),
+            ),
+            "kf": SchemaAttribute(
+                "newton:contactFrictionStiffness",
+                None,
+                usd_value_getter=_newton_contact_attr_with_fallback(
+                    "newton:contactFrictionStiffness", "newton:contact_kf"
+                ),
+            ),
+            "ka": SchemaAttribute(
+                "newton:contactAdhesion",
+                None,
+                usd_value_getter=_newton_contact_attr_with_fallback("newton:contactAdhesion", "newton:contact_ka"),
+            ),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
