@@ -3963,6 +3963,25 @@ def Xform "NegativeThickness" (
         float newton:contactMargin = 0.03
     }
 }
+
+# 9) Singular PSD inertia tensor (valid but non-invertible)
+def Xform "SingularTensor" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (16, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 2.0
+    double[] newton:inertia = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
 """
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
@@ -3972,8 +3991,8 @@ def Xform "NegativeThickness" (
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
 
-        self.assertEqual(builder.body_count, 8)
-        self.assertEqual(builder.shape_count, 8)
+        self.assertEqual(builder.body_count, 9)
+        self.assertEqual(builder.shape_count, 9)
 
         # --- 1) Shell + thickness + authored mass: inertia from shell geometry, scaled ---
         body_id = builder.body_label.index("/ShellThicknessMass")
@@ -4052,6 +4071,15 @@ def Xform "NegativeThickness" (
         np.testing.assert_allclose(np.diag(inertia_neg), [expected_neg_I] * 3, rtol=1e-4)
         warning_messages = [str(w.message) for w in caught]
         self.assertTrue(any("negative shell thickness" in m and "NegativeThickness" in m for m in warning_messages))
+
+        # --- 9) Singular PSD tensor: valid but non-invertible, inv_inertia set to zero ---
+        body_id = builder.body_label.index("/SingularTensor")
+        self.assertAlmostEqual(builder.body_mass[body_id], 2.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        np.testing.assert_allclose(inertia, expected, atol=1e-5)
+        inv_inertia = np.array(builder.body_inv_inertia[body_id]).reshape(3, 3)
+        np.testing.assert_allclose(inv_inertia, np.zeros((3, 3)), atol=1e-7)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_inertia_tensor_validation(self):
