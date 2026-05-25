@@ -1757,7 +1757,13 @@ class TestSchemaResolver(unittest.TestCase):
 
         # New name takes priority over legacy when both are authored
         collider.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(9999.0)
+        collider.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(999.0)
+        collider.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(888.0)
+        collider.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(0.99)
         self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ke"), 9999.0)
+        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kd"), 999.0)
+        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kf"), 888.0)
+        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ka"), 0.99)
 
 
 if __name__ == "__main__":
