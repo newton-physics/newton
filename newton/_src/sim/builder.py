@@ -185,10 +185,18 @@ class ModelBuilder:
         (238, 153, 51),  # orange
         (0, 153, 136),  # teal
     )
+    # Use one quiet default for dense cable/rod examples; callers can pass color=
+    # when per-rod or per-scene coloring matters.
     _DEFAULT_ROD_COLOR = (
         _SHAPE_COLOR_PALETTE[0][0] / 255.0,
         _SHAPE_COLOR_PALETTE[0][1] / 255.0,
         _SHAPE_COLOR_PALETTE[0][2] / 255.0,
+    )
+    _ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE = (
+        "Omitting body_frame_origin when creating cable rods is deprecated because the implicit default "
+        "will change from 'start' to 'com' in a future release. Pass body_frame_origin='start' to "
+        "preserve the existing start-node body frame, or body_frame_origin='com' to opt into "
+        "COM-centered capsule body frames."
     )
     _BODY_ARMATURE_ARG_DEPRECATION_MESSAGE = (
         "ModelBuilder.add_link(..., armature=...) and ModelBuilder.add_body(..., armature=...) "
@@ -210,6 +218,23 @@ class ModelBuilder:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
+
+    @classmethod
+    def _resolve_rod_body_frame_origin(
+        cls,
+        method_name: str,
+        body_frame_origin: Literal["start", "com"] | None,
+    ) -> Literal["start", "com"]:
+        if body_frame_origin is None:
+            warnings.warn(
+                cls._ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE,
+                DeprecationWarning,
+                stacklevel=cls._external_warning_stacklevel(),
+            )
+            return "start"
+        if body_frame_origin not in ("start", "com"):
+            raise ValueError(f"{method_name}: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
+        return body_frame_origin
 
     @dataclass
     class ActuatorEntry:
@@ -675,7 +700,7 @@ class ModelBuilder:
 
         def build_array(
             self, count: int, device: Devicelike | None = None, requires_grad: bool = False
-        ) -> wp.array | list:
+        ) -> wp.array[Any] | list:
             """Build wp.array (or list for string dtype) from count, dtype, default and overrides.
 
             For string dtype, returns a Python list[str] instead of a Warp array.
@@ -1972,7 +1997,7 @@ class ModelBuilder:
         return result
 
     @staticmethod
-    def _build_index_array(indices: list[int], device: Devicelike) -> wp.array:
+    def _build_index_array(indices: list[int], device: Devicelike) -> wp.array[wp.uint32]:
         """Build a 1-D warp index array from a flat list of DOF indices.
 
         Args:
@@ -6693,7 +6718,7 @@ class ModelBuilder:
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] = "start",
+        body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by cable joints.
 
@@ -6730,7 +6755,9 @@ class ModelBuilder:
             body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
                 the legacy convention where the body origin is at ``positions[i]`` and the COM/shape
                 are offset by half the segment length. ``"com"`` places the body origin at the
-                segment midpoint so the body origin and COM coincide.
+                segment midpoint so the body origin and COM coincide. If None, preserves ``"start"``
+                for now with a :class:`DeprecationWarning` because the implicit default will change to
+                ``"com"``; pass ``"start"`` or ``"com"`` explicitly.
 
         Returns:
             A pair ``(body_indices, joint_indices)``. For an open chain,
@@ -6775,6 +6802,7 @@ class ModelBuilder:
         # Input validation
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
 
         num_segments = len(positions) - 1
         if num_segments < 1:
@@ -6893,7 +6921,7 @@ class ModelBuilder:
         quaternions: list[Quat] | None = None,
         junction_collision_filter: bool = True,
         color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] = "start",
+        body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
 
@@ -6946,7 +6974,9 @@ class ModelBuilder:
             body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
                 the legacy convention where the body origin is at the edge's ``u`` node and the COM/shape
                 are offset by half the edge length. ``"com"`` places the body origin at the edge midpoint
-                so the body origin and COM coincide.
+                so the body origin and COM coincide. If None, preserves ``"start"`` for now with a
+                :class:`DeprecationWarning` because the implicit default will change to ``"com"``; pass
+                ``"start"`` or ``"com"`` explicitly.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
@@ -6968,8 +6998,7 @@ class ModelBuilder:
 
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod_graph: stretch_stiffness and bend_stiffness must be >= 0")
-        if body_frame_origin not in ("start", "com"):
-            raise ValueError(f"add_rod_graph: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod_graph", body_frame_origin)
         if len(node_positions) < 2:
             raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
         if len(edges) < 1:

@@ -3480,6 +3480,7 @@ def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
         radius=0.01,
         wrap_in_articulation=True,
         label="ut_cable_eval_fk",
+        body_frame_origin="start",
     )
     test.assertEqual(len(rod_bodies), 2)
     test.assertEqual(len(rod_joints), 1)
@@ -3647,20 +3648,21 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
 
 
 def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device):
-    """Cable rods should preserve the legacy start-node body frame by default."""
+    """Omitting body_frame_origin should warn while preserving the legacy start-node frame."""
     builder = newton.ModelBuilder()
 
     num_elements = 2
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points,
-        quaternions=edge_q,
-        radius=0.01,
-        bend_stiffness=1.0,
-        label="ut_cable_start_origin",
-    )
+    with test.assertWarnsRegex(DeprecationWarning, "body_frame_origin"):
+        rod_bodies, rod_joints = builder.add_rod(
+            positions=points,
+            quaternions=edge_q,
+            radius=0.01,
+            bend_stiffness=1.0,
+            label="ut_cable_start_origin",
+        )
 
     builder.color()
     model = builder.finalize(device=device)

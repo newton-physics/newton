@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 from collections.abc import Iterable
 
 import numpy as np
@@ -27,7 +29,7 @@ class Picking:
         pick_stiffness: float = 50.0,
         pick_damping: float = 5.0,
         pick_max_acceleration: float = 5.0,
-        world_offsets: wp.array | None = None,
+        world_offsets: wp.array[wp.vec3] | None = None,
     ) -> None:
         """
         Initializes the picking system.
@@ -45,7 +47,7 @@ class Picking:
         self.pick_stiffness = pick_stiffness
         self.pick_damping = pick_damping
         self.world_offsets = world_offsets
-        self.visible_worlds_mask: wp.array | None = None
+        self.visible_worlds_mask: wp.array[int] | None = None
 
         self.min_dist = None
         self.min_index = None
@@ -156,7 +158,7 @@ class Picking:
         self._linear_only_body_mask.fill_(0)
 
     @staticmethod
-    def _compute_effective_mass(model: newton.Model) -> wp.array:
+    def _compute_effective_mass(model: newton.Model) -> wp.array[float]:
         """Compute per-body effective mass for picking force clamping.
 
         For bodies in an articulation, returns the total mass of that
