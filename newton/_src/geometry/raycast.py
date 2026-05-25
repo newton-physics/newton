@@ -5,6 +5,7 @@
 
 import warp as wp
 
+from ..utils.heightfield import HeightfieldData, ray_intersect_heightfield_local
 from .types import (
     GeoType,
 )
@@ -691,147 +692,36 @@ def ray_intersect_mesh_no_transform(
 
 
 @wp.func
-def ray_intersect_geom(
+def ray_intersect_heightfield(
     geom_to_world: wp.transform,
-    size: wp.vec3,
-    geomtype: int,
+    hfd: HeightfieldData,
+    elevation_data: wp.array[wp.float32],
     ray_origin: wp.vec3,
     ray_direction: wp.vec3,
-    mesh_id: wp.uint64,
 ) -> tuple[float, wp.vec3]:
-    """Dispatches to the appropriate ray-shape intersection routine.
+    """Ray-heightfield intersection in world space.
+
+    Thin wrapper that maps the ray into the heightfield's local frame, delegates
+    to ``ray_intersect_heightfield_local`` (in ``utils.heightfield``), and rotates
+    the local surface normal back to world space.
 
     Args:
-        geom_to_world: The world transform of the shape.
-        size: The size of the geometry.
-        geomtype: The type of the geometry.
-        ray_origin: The origin of the ray.
-        ray_direction: The direction of the ray.
-        mesh_id: The Warp mesh ID for mesh geometries.
+        geom_to_world: World transform of the heightfield.
+        hfd: Per-shape heightfield metadata (extents, grid size, z-range, data offset).
+        elevation_data: Concatenated normalized [0, 1] elevation array.
+        ray_origin: Ray origin in world space.
+        ray_direction: Ray direction in world space.
 
     Returns:
-        The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
+        The distance along the ray and the world-space surface normal at the
+        intersection, or ``-1.0`` and a zero vector on miss.
     """
-    t_hit = -1.0
-    normal = wp.vec3(0.0)
-
-    if geomtype == GeoType.PLANE:
-        t_hit, normal = ray_intersect_plane(geom_to_world, ray_origin, ray_direction, size)
-
-    elif geomtype == GeoType.SPHERE:
-        t_hit, normal = ray_intersect_sphere(geom_to_world, ray_origin, ray_direction, size[0])
-
-    elif geomtype == GeoType.BOX:
-        t_hit, normal = ray_intersect_box(geom_to_world, ray_origin, ray_direction, size)
-
-    elif geomtype == GeoType.CAPSULE:
-        t_hit, normal = ray_intersect_capsule(geom_to_world, ray_origin, ray_direction, size[0], size[1])
-
-    elif geomtype == GeoType.CYLINDER:
-        t_hit, normal = ray_intersect_cylinder(geom_to_world, ray_origin, ray_direction, size[0], size[1])
-
-    elif geomtype == GeoType.CONE:
-        t_hit, normal = ray_intersect_cone(geom_to_world, ray_origin, ray_direction, size[0], size[1])
-
-    elif geomtype == GeoType.ELLIPSOID:
-        t_hit, normal = ray_intersect_ellipsoid(geom_to_world, ray_origin, ray_direction, size)
-
-    elif geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
-        t_hit, normal, _u, _v, _face = ray_intersect_mesh(
-            geom_to_world, ray_origin, ray_direction, size, mesh_id, False, _DEFAULT_MESH_MAX_T
-        )
-
-    return t_hit, normal
-
-
-@wp.kernel
-def raycast_kernel(
-    # Model
-    body_q: wp.array[wp.transform],
-    shape_body: wp.array[int],
-    shape_transform: wp.array[wp.transform],
-    geom_type: wp.array[int],
-    geom_size: wp.array[wp.vec3],
-    shape_source_ptr: wp.array[wp.uint64],
-    # Ray
-    ray_origin: wp.vec3,
-    ray_direction: wp.vec3,
-    # Lock helper
-    lock: wp.array[wp.int32],
-    # Output
-    min_dist: wp.array[float],
-    min_index: wp.array[int],
-    min_body_index: wp.array[int],
-    # Optional: world offsets for multi-world picking
-    shape_world: wp.array[int],
-    world_offsets: wp.array[wp.vec3],
-    visible_worlds_mask: wp.array[int],
-):
-    """
-    Computes the intersection of a ray with all geometries in the scene.
-
-    Args:
-        body_q: Array of body transforms.
-        shape_body: Maps shape index to body index.
-        shape_transform: Array of local shape transforms.
-        geom_type: Array of geometry types for each geometry.
-        geom_size: Array of sizes for each geometry.
-        shape_source_ptr: Array of mesh IDs for mesh geometries (wp.uint64).
-        ray_origin: The origin of the ray.
-        ray_direction: The direction of the ray.
-        lock: Lock array used for synchronization. Expected to be initialized to 0.
-        min_dist: A single-element array to store the minimum intersection distance. Expected to be initialized to a large value like 1e10.
-        min_index: A single-element array to store the index of the closest geometry. Expected to be initialized to -1.
-        min_body_index: A single-element array to store the body index of the closest geometry. Expected to be initialized to -1.
-        shape_world: Optional array mapping shape index to world index. Can be empty to disable world offsets.
-        world_offsets: Optional array of world offsets. Can be empty to disable world offsets.
-        visible_worlds_mask: Optional mask array (1=visible, 0=hidden per world). Can be empty to disable filtering.
-    """
-    shape_idx = wp.tid()
-
-    # Skip shapes from non-visible worlds
-    if visible_worlds_mask and shape_world.shape[0] > 0:
-        world_idx = shape_world[shape_idx]
-        if world_idx >= 0:
-            if visible_worlds_mask[world_idx] == 0:
-                return
-
-    # compute shape transform
-    b = shape_body[shape_idx]
-
-    X_wb = wp.transform_identity()
-    if b >= 0:
-        X_wb = body_q[b]
-
-    X_bs = shape_transform[shape_idx]
-
-    geom_to_world = wp.mul(X_wb, X_bs)
-
-    # Apply world offset if available (for multi-world picking)
-    if shape_world.shape[0] > 0 and world_offsets.shape[0] > 0:
-        world_idx = shape_world[shape_idx]
-        if world_idx >= 0 and world_idx < world_offsets.shape[0]:
-            offset = world_offsets[world_idx]
-            geom_to_world = wp.transform(geom_to_world.p + offset, geom_to_world.q)
-
-    geomtype = geom_type[shape_idx]
-
-    # Get mesh ID for mesh-like geometries
-    if geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
-        mesh_id = shape_source_ptr[shape_idx]
-    else:
-        mesh_id = wp.uint64(0)
-
-    t, _normal = ray_intersect_geom(geom_to_world, geom_size[shape_idx], geomtype, ray_origin, ray_direction, mesh_id)
-
-    if t >= 0.0 and t < min_dist[0]:
-        _spinlock_acquire(lock)
-        # Still use an atomic inside the spinlock to get a volatile read
-        old_min = wp.atomic_min(min_dist, 0, t)
-        if t <= old_min:
-            min_index[0] = shape_idx
-            min_body_index[0] = b
-        _spinlock_release(lock)
+    ro, rd = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    t_hit, normal_local = ray_intersect_heightfield_local(hfd, elevation_data, ro, rd)
+    if t_hit < 0.0:
+        return -1.0, wp.vec3(0.0)
+    normal_world = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+    return t_hit, normal_world
 
 
 @wp.func
@@ -846,23 +736,21 @@ def ray_for_pixel(
     pixel_x: int,
     pixel_y: int,
 ):
-    """
-    Generate a ray for a given pixel in a perspective camera.
+    """Generate a ray for a given pixel in a perspective camera.
 
     Args:
         camera_position: Camera position in world space
         camera_direction: Camera forward direction (normalized)
         camera_up: Camera up direction (normalized)
         camera_right: Camera right direction (normalized)
-        camera_fov: Vertical field of view in radians
+        fov_scale: Scale factor for field of view, ``tan(fov_radians/2)``
         camera_aspect_ratio: Width/height aspect ratio
-        camera_near_clip: Near clipping plane distance
         resolution: Image resolution as (width, height)
         pixel_x: Pixel x coordinate (0 to width-1)
         pixel_y: Pixel y coordinate (0 to height-1)
 
     Returns:
-        Tuple of (ray_origin, ray_direction) in world space. With the direction normalized.
+        Tuple of (ray_origin, ray_direction) in world space, direction normalized.
     """
     width = resolution[0]
     height = resolution[1]
@@ -887,89 +775,316 @@ def ray_for_pixel(
     return camera_position, ray_direction_world
 
 
-@wp.kernel
-def sensor_raycast_kernel(
-    # Model
-    body_q: wp.array[wp.transform],
-    shape_body: wp.array[int],
-    shape_transform: wp.array[wp.transform],
-    geom_type: wp.array[int],
-    geom_size: wp.array[wp.vec3],
-    shape_source_ptr: wp.array[wp.uint64],
-    # Camera parameters
-    camera_position: wp.vec3,
-    camera_direction: wp.vec3,
-    camera_up: wp.vec3,
-    camera_right: wp.vec3,
-    fov_scale: float,
-    camera_aspect_ratio: float,
-    resolution: wp.vec2,
-    # Output (per-pixel results)
-    hit_distances: wp.array2d[float],
-):
+def _make_raycast_funcs(enable_heightfields: bool):
+    """Generate ``ray_intersect_geom`` + raycast kernels with HFIELD support gated.
+
+    When ``enable_heightfields`` is ``False``, ``wp.static`` strips the HFIELD
+    branch, the ``shape_heightfield_index`` / ``heightfield_data`` reads, and the
+    ``ray_intersect_heightfield`` call from the compiled outputs, so scenes
+    without heightfields pay no per-thread HFIELD overhead. Same factory pattern
+    as :func:`~newton._src.geometry.sdf_contact._create_sdf_contact_funcs`.
+
+    The HFIELD lookup lives inside ``ray_intersect_geom`` so kernels just thread
+    the per-Model arrays through without any per-shape setup; only HFIELD shapes
+    actually read from those arrays.
     """
-    Raycast sensor kernel that casts rays for each pixel in an image.
 
-    Each thread processes one pixel, generating a ray and finding the closest intersection.
+    @wp.func
+    def ray_intersect_geom(
+        geom_to_world: wp.transform,
+        size: wp.vec3,
+        geomtype: int,
+        ray_origin: wp.vec3,
+        ray_direction: wp.vec3,
+        mesh_id: wp.uint64,
+        shape_idx: int,
+        shape_heightfield_index: wp.array[wp.int32],
+        heightfield_data: wp.array[HeightfieldData],
+        heightfield_elevations: wp.array[wp.float32],
+    ) -> tuple[float, wp.vec3]:
+        """Dispatches to the appropriate ray-shape intersection routine.
 
-    Args:
-        body_q: Array of body transforms
-        shape_body: Maps shape index to body index
-        shape_transform: Array of local shape transforms
-        geom_type: Array of geometry types for each geometry
-        geom_size: Array of sizes for each geometry
-        shape_source_ptr: Array of mesh IDs for mesh geometries
-        camera_position: Camera position in world space
-        camera_direction: Camera forward direction (normalized)
-        camera_up: Camera up direction (normalized)
-        camera_right: Camera right direction (normalized)
-        fov_scale: Scale factor for field of view, computed as tan(fov_radians/2) where fov_radians is the vertical field of view angle in radians
-        camera_aspect_ratio: Width/height aspect ratio
-        resolution: Image resolution as (width, height)
-        hit_distances: Output array of hit distances per pixel
-    """
-    pixel_x, pixel_y, shape_idx = wp.tid()
+        For non-HFIELD shapes the trailing four arguments are not read; callers
+        may pass ``None`` for the three arrays. The HFIELD branch (and every
+        access to ``shape_heightfield_index`` / ``heightfield_data`` /
+        ``heightfield_elevations``) is stripped from the compile unit when
+        ``enable_heightfields`` is ``False``.
 
-    # Skip if out of bounds
-    if pixel_x >= resolution[0] or pixel_y >= resolution[1]:
-        return
+        Args:
+            geom_to_world: The world transform of the shape.
+            size: The size of the geometry.
+            geomtype: The type of the geometry.
+            ray_origin: The origin of the ray.
+            ray_direction: The direction of the ray.
+            mesh_id: The Warp mesh ID for mesh geometries.
+            shape_idx: Index of the shape being tested; used only when ``geomtype`` is HFIELD to look up its ``HeightfieldData``.
+            shape_heightfield_index: Per-shape index into ``heightfield_data``.
+            heightfield_data: Compact array of ``HeightfieldData`` structs, one per HFIELD shape.
+            heightfield_elevations: Concatenated normalized [0, 1] elevation array indexed via ``HeightfieldData.data_offset``.
 
-    # Generate ray for this pixel
-    ray_origin, ray_direction = ray_for_pixel(
-        camera_position,
-        camera_direction,
-        camera_up,
-        camera_right,
-        fov_scale,
-        camera_aspect_ratio,
-        resolution,
-        pixel_x,
-        pixel_y,
-    )
+        Returns:
+            The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
+        """
+        t_hit = -1.0
+        normal = wp.vec3(0.0)
 
-    # compute shape transform
-    b = shape_body[shape_idx]
+        if geomtype == GeoType.PLANE:
+            t_hit, normal = ray_intersect_plane(geom_to_world, ray_origin, ray_direction, size)
 
-    X_wb = wp.transform_identity()
-    if b >= 0:
-        X_wb = body_q[b]
+        elif geomtype == GeoType.SPHERE:
+            t_hit, normal = ray_intersect_sphere(geom_to_world, ray_origin, ray_direction, size[0])
 
-    X_bs = shape_transform[shape_idx]
+        elif geomtype == GeoType.BOX:
+            t_hit, normal = ray_intersect_box(geom_to_world, ray_origin, ray_direction, size)
 
-    geom_to_world = wp.mul(X_wb, X_bs)
+        elif geomtype == GeoType.CAPSULE:
+            t_hit, normal = ray_intersect_capsule(geom_to_world, ray_origin, ray_direction, size[0], size[1])
 
-    geomtype = geom_type[shape_idx]
+        elif geomtype == GeoType.CYLINDER:
+            t_hit, normal = ray_intersect_cylinder(geom_to_world, ray_origin, ray_direction, size[0], size[1])
 
-    # Get mesh ID for mesh-like geometries
-    if geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
-        mesh_id = shape_source_ptr[shape_idx]
-    else:
-        mesh_id = wp.uint64(0)
+        elif geomtype == GeoType.CONE:
+            t_hit, normal = ray_intersect_cone(geom_to_world, ray_origin, ray_direction, size[0], size[1])
 
-    t, _normal = ray_intersect_geom(geom_to_world, geom_size[shape_idx], geomtype, ray_origin, ray_direction, mesh_id)
+        elif geomtype == GeoType.ELLIPSOID:
+            t_hit, normal = ray_intersect_ellipsoid(geom_to_world, ray_origin, ray_direction, size)
 
-    if t >= 0.0:
-        wp.atomic_min(hit_distances, pixel_y, pixel_x, t)
+        elif geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
+            t_hit, normal, _u, _v, _face = ray_intersect_mesh(
+                geom_to_world, ray_origin, ray_direction, size, mesh_id, False, _DEFAULT_MESH_MAX_T
+            )
+
+        # HFIELD path: read the per-shape index + ``HeightfieldData`` only after we
+        # know the shape is a heightfield. ``wp.static`` strips this entire block
+        # (including the array reads and the ``ray_intersect_heightfield`` call)
+        # from the no-HFIELD variant.
+        if wp.static(enable_heightfields):
+            if geomtype == GeoType.HFIELD:
+                if shape_heightfield_index:
+                    hf_idx = shape_heightfield_index[shape_idx]
+                    if hf_idx >= 0:
+                        hfd = heightfield_data[hf_idx]
+                        t_hit, normal = ray_intersect_heightfield(
+                            geom_to_world, hfd, heightfield_elevations, ray_origin, ray_direction
+                        )
+
+        return t_hit, normal
+
+    @wp.kernel
+    def raycast_kernel(
+        # Model
+        body_q: wp.array[wp.transform],
+        shape_body: wp.array[int],
+        shape_transform: wp.array[wp.transform],
+        geom_type: wp.array[int],
+        geom_size: wp.array[wp.vec3],
+        shape_source_ptr: wp.array[wp.uint64],
+        # Heightfield data (unused when the no-HFIELD variant is selected; ``wp.static``
+        # strips every read of these arrays from that variant's compile unit).
+        shape_heightfield_index: wp.array[wp.int32],
+        heightfield_data: wp.array[HeightfieldData],
+        heightfield_elevations: wp.array[wp.float32],
+        # Ray
+        ray_origin: wp.vec3,
+        ray_direction: wp.vec3,
+        # Lock helper
+        lock: wp.array[wp.int32],
+        # Output
+        min_dist: wp.array[float],
+        min_index: wp.array[int],
+        min_body_index: wp.array[int],
+        # Optional: world offsets for multi-world picking
+        shape_world: wp.array[int],
+        world_offsets: wp.array[wp.vec3],
+        visible_worlds_mask: wp.array[int],
+    ):
+        """Computes the intersection of a ray with all geometries in the scene.
+
+        Args:
+            body_q: Array of body transforms.
+            shape_body: Maps shape index to body index.
+            shape_transform: Array of local shape transforms.
+            geom_type: Array of geometry types for each geometry.
+            geom_size: Array of sizes for each geometry.
+            shape_source_ptr: Array of mesh IDs for mesh geometries (wp.uint64).
+            shape_heightfield_index: Per-shape index into ``heightfield_data``. Unused (and not read) in the no-HFIELD variant.
+            heightfield_data: Compact array of ``HeightfieldData`` structs, one per HFIELD shape. Unused in the no-HFIELD variant.
+            heightfield_elevations: Concatenated normalized [0, 1] elevation array indexed via ``HeightfieldData.data_offset``. Unused in the no-HFIELD variant.
+            ray_origin: The origin of the ray.
+            ray_direction: The direction of the ray.
+            lock: Lock array used for synchronization. Expected to be initialized to 0.
+            min_dist: A single-element array to store the minimum intersection distance. Expected to be initialized to a large value like 1e10.
+            min_index: A single-element array to store the index of the closest geometry. Expected to be initialized to -1.
+            min_body_index: A single-element array to store the body index of the closest geometry. Expected to be initialized to -1.
+            shape_world: Optional array mapping shape index to world index. Can be empty to disable world offsets.
+            world_offsets: Optional array of world offsets. Can be empty to disable world offsets.
+            visible_worlds_mask: Optional mask array (1=visible, 0=hidden per world). Can be empty to disable filtering.
+        """
+        shape_idx = wp.tid()
+
+        # Skip shapes from non-visible worlds
+        if visible_worlds_mask and shape_world.shape[0] > 0:
+            world_idx = shape_world[shape_idx]
+            if world_idx >= 0:
+                if visible_worlds_mask[world_idx] == 0:
+                    return
+
+        # compute shape transform
+        b = shape_body[shape_idx]
+
+        X_wb = wp.transform_identity()
+        if b >= 0:
+            X_wb = body_q[b]
+
+        X_bs = shape_transform[shape_idx]
+
+        geom_to_world = wp.mul(X_wb, X_bs)
+
+        # Apply world offset if available (for multi-world picking)
+        if shape_world.shape[0] > 0 and world_offsets.shape[0] > 0:
+            world_idx = shape_world[shape_idx]
+            if world_idx >= 0 and world_idx < world_offsets.shape[0]:
+                offset = world_offsets[world_idx]
+                geom_to_world = wp.transform(geom_to_world.p + offset, geom_to_world.q)
+
+        geomtype = geom_type[shape_idx]
+
+        # Get mesh ID for mesh-like geometries
+        if geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
+            mesh_id = shape_source_ptr[shape_idx]
+        else:
+            mesh_id = wp.uint64(0)
+
+        t, _normal = ray_intersect_geom(
+            geom_to_world,
+            geom_size[shape_idx],
+            geomtype,
+            ray_origin,
+            ray_direction,
+            mesh_id,
+            shape_idx,
+            shape_heightfield_index,
+            heightfield_data,
+            heightfield_elevations,
+        )
+
+        if t >= 0.0 and t < min_dist[0]:
+            _spinlock_acquire(lock)
+            # Still use an atomic inside the spinlock to get a volatile read
+            old_min = wp.atomic_min(min_dist, 0, t)
+            if t <= old_min:
+                min_index[0] = shape_idx
+                min_body_index[0] = b
+            _spinlock_release(lock)
+
+    @wp.kernel
+    def sensor_raycast_kernel(
+        # Model
+        body_q: wp.array[wp.transform],
+        shape_body: wp.array[int],
+        shape_transform: wp.array[wp.transform],
+        geom_type: wp.array[int],
+        geom_size: wp.array[wp.vec3],
+        shape_source_ptr: wp.array[wp.uint64],
+        shape_heightfield_index: wp.array[wp.int32],
+        heightfield_data: wp.array[HeightfieldData],
+        heightfield_elevations: wp.array[wp.float32],
+        # Camera parameters
+        camera_position: wp.vec3,
+        camera_direction: wp.vec3,
+        camera_up: wp.vec3,
+        camera_right: wp.vec3,
+        fov_scale: float,
+        camera_aspect_ratio: float,
+        resolution: wp.vec2,
+        # Output (per-pixel results)
+        hit_distances: wp.array2d[float],
+    ):
+        """Raycast sensor kernel that casts rays for each pixel in an image.
+
+        Each thread processes one pixel, generating a ray and finding the closest intersection.
+        Heightfield setup is stripped from the no-HFIELD variant via ``wp.static``.
+
+        Args:
+            body_q: Array of body transforms
+            shape_body: Maps shape index to body index
+            shape_transform: Array of local shape transforms
+            geom_type: Array of geometry types for each geometry
+            geom_size: Array of sizes for each geometry
+            shape_source_ptr: Array of mesh IDs for mesh geometries
+            shape_heightfield_index: Per-shape index into ``heightfield_data``. Unused (and not read) in the no-HFIELD variant.
+            heightfield_data: Compact array of ``HeightfieldData`` structs, one per HFIELD shape. Unused in the no-HFIELD variant.
+            heightfield_elevations: Concatenated normalized [0, 1] elevation array indexed via ``HeightfieldData.data_offset``. Unused in the no-HFIELD variant.
+            camera_position: Camera position in world space
+            camera_direction: Camera forward direction (normalized)
+            camera_up: Camera up direction (normalized)
+            camera_right: Camera right direction (normalized)
+            fov_scale: Scale factor for field of view, computed as tan(fov_radians/2) where fov_radians is the vertical field of view angle in radians
+            camera_aspect_ratio: Width/height aspect ratio
+            resolution: Image resolution as (width, height)
+            hit_distances: Output array of hit distances per pixel
+        """
+        pixel_x, pixel_y, shape_idx = wp.tid()
+
+        # Skip if out of bounds
+        if pixel_x >= resolution[0] or pixel_y >= resolution[1]:
+            return
+
+        # Generate ray for this pixel
+        ray_origin, ray_direction = ray_for_pixel(
+            camera_position,
+            camera_direction,
+            camera_up,
+            camera_right,
+            fov_scale,
+            camera_aspect_ratio,
+            resolution,
+            pixel_x,
+            pixel_y,
+        )
+
+        # compute shape transform
+        b = shape_body[shape_idx]
+
+        X_wb = wp.transform_identity()
+        if b >= 0:
+            X_wb = body_q[b]
+
+        X_bs = shape_transform[shape_idx]
+
+        geom_to_world = wp.mul(X_wb, X_bs)
+
+        geomtype = geom_type[shape_idx]
+
+        # Get mesh ID for mesh-like geometries
+        if geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
+            mesh_id = shape_source_ptr[shape_idx]
+        else:
+            mesh_id = wp.uint64(0)
+
+        t, _normal = ray_intersect_geom(
+            geom_to_world,
+            geom_size[shape_idx],
+            geomtype,
+            ray_origin,
+            ray_direction,
+            mesh_id,
+            shape_idx,
+            shape_heightfield_index,
+            heightfield_data,
+            heightfield_elevations,
+        )
+
+        if t >= 0.0:
+            wp.atomic_min(hit_distances, pixel_y, pixel_x, t)
+
+    return ray_intersect_geom, raycast_kernel, sensor_raycast_kernel
+
+
+# Two pre-compiled variants. Tests use the public ``ray_intersect_geom`` (HFIELD-aware).
+# Launch sites pick the kernel pair based on ``Model.has_heightfields``.
+ray_intersect_geom, raycast_kernel, sensor_raycast_kernel = _make_raycast_funcs(enable_heightfields=True)
+_, raycast_kernel_no_hfield, sensor_raycast_kernel_no_hfield = _make_raycast_funcs(enable_heightfields=False)
 
 
 @wp.kernel

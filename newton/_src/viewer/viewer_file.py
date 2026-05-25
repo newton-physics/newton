@@ -235,7 +235,7 @@ def _get_serialization_format(file_path: str) -> str:
         return "json"
     elif ext == ".bin":
         if not HAS_CBOR2:
-            raise ImportError("cbor2 library is required for .bin files. Install with: pip install 'cbor2>=5.7.0,<6'")
+            raise ImportError("cbor2 library is required for .bin files. Install with: pip install 'cbor2>=5.7.0'")
         return "cbor2"
     else:
         raise ValueError(f"Unsupported file extension '{ext}'. Supported extensions: .json, .bin")
@@ -341,12 +341,14 @@ def serialize_ndarray(arr: np.ndarray, format_type: str = "json", cache: ArrayCa
         raise ValueError(f"Unsupported format_type: {format_type}")
 
 
-def deserialize_ndarray(data: dict, format_type: str = "json", cache: ArrayCache | None = None) -> np.ndarray:
+def deserialize_ndarray(
+    data: Mapping[str, Any], format_type: str = "json", cache: ArrayCache | None = None
+) -> np.ndarray:
     """
-    Deserialize a dictionary representation back to a numpy ndarray.
+    Deserialize a mapping representation back to a numpy ndarray.
 
     Args:
-        data: Dictionary containing the serialized array data.
+        data: Mapping-like decoded serialized array data.
         format_type: The serialization format ('json' or 'cbor2').
 
     Returns:
@@ -600,13 +602,13 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
     return serialize(obj, callback, format_type=format_type, cache=cache)
 
 
-def transfer_to_model(source_dict, target_obj, post_load_init_callback=None, _path=""):
+def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init_callback=None, _path=""):
     """
     Recursively transfer values from source_dict to target_obj, respecting the tree structure.
     Only transfers values where both source and target have matching attributes.
 
     Args:
-        source_dict: Dictionary containing the values to transfer (from deserialization).
+        source_dict: Mapping-like decoded values to transfer from deserialization.
         target_obj: Target object to receive the values.
         post_load_init_callback: Optional function taking (target_obj, path) called after all children are processed.
         _path: Internal parameter tracking the current path.
@@ -614,8 +616,8 @@ def transfer_to_model(source_dict, target_obj, post_load_init_callback=None, _pa
     if not hasattr(target_obj, "__dict__"):
         return
 
-    # Handle case where source_dict is not a dict (primitive value)
-    if not isinstance(source_dict, dict):
+    # Handle case where source_dict is not mapping-like (primitive value)
+    if not isinstance(source_dict, Mapping):
         return
 
     # Iterate through all attributes of the target object
@@ -641,7 +643,7 @@ def transfer_to_model(source_dict, target_obj, post_load_init_callback=None, _pa
             continue
 
         # Handle different types of values
-        if hasattr(target_value, "__dict__") and isinstance(source_value, dict):
+        if hasattr(target_value, "__dict__") and isinstance(source_value, Mapping):
             # Recursively transfer for custom objects
             # Build path only when needed (optimization: lazy string formatting)
             current_path = f"{_path}.{attr_name}" if _path else attr_name
@@ -678,13 +680,14 @@ def transfer_to_model(source_dict, target_obj, post_load_init_callback=None, _pa
 
 def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache | None = None):
     """
-    Recursively deserialize a dict back into objects, handling primitives,
+    Recursively deserialize mapping-like data back into objects, handling primitives,
     containers, and custom class instances. Calls callback(obj, path) for every object
     and replaces obj with the callback's return value before continuing.
 
     Args:
         data: The serialized data to deserialize.
-        callback: A function taking two arguments (the data dict and current path) and returning the (possibly transformed) object.
+        callback: A function taking two arguments (the decoded data and current path) and returning the
+            (possibly transformed) object.
         _path: Internal parameter tracking the current path/member name.
         format_type: The serialization format ('json' or 'cbor2').
     """
@@ -693,8 +696,8 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
     if result is not data:
         return result
 
-    # If not a dict with __type__, return as-is
-    if not isinstance(data, dict) or "__type__" not in data:
+    # If not mapping-like with __type__, return as-is
+    if not isinstance(data, Mapping) or "__type__" not in data:
         return data
 
     type_name = data["__type__"]
@@ -742,7 +745,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
         }
 
     # Unknown type - return the data as-is
-    return data["value"] if isinstance(data, dict) and "value" in data else data
+    return data["value"] if isinstance(data, Mapping) and "value" in data else data
 
 
 def extract_type_path(class_str: str) -> str:
@@ -806,7 +809,11 @@ _NUMPY_TO_WARP_SCALAR = {
 }
 
 
-def _resolve_warp_dtype(dtype_str: str, serialized_data: dict | None = None, np_arr: np.ndarray | None = None):
+def _resolve_warp_dtype(
+    dtype_str: str,
+    serialized_data: Mapping[str, Any] | None = None,
+    np_arr: np.ndarray | None = None,
+):
     """
     Resolve a dtype string to a warp dtype, with backwards compatibility.
 
@@ -815,7 +822,7 @@ def _resolve_warp_dtype(dtype_str: str, serialized_data: dict | None = None, np_
 
     Args:
         dtype_str: The dtype name extracted from serialized data.
-        serialized_data: Optional dict containing dtype metadata (__scalar_type__, __type_length__, __type_shape__).
+        serialized_data: Optional mapping containing dtype metadata (__scalar_type__, __type_length__, __type_shape__).
         np_arr: Optional numpy array to infer shape for generic types (fallback for old recordings).
 
     Returns:
@@ -896,12 +903,12 @@ def _resolve_warp_dtype(dtype_str: str, serialized_data: dict | None = None, np_
 
 
 # returns a model and a state history
-def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | None = None):
+def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: ArrayCache | None = None):
     """
     Deserialize Newton simulation data using callback approach.
 
     Args:
-        data: The serialized data containing model and states.
+        data: Mapping-like serialized data containing model and states.
         format_type: The serialization format ('json' or 'cbor2').
 
     Returns:
@@ -910,7 +917,7 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
 
     def callback(x, path):
         # Optimization: extract type once to avoid repeated isinstance and dict lookups
-        x_type = x.get("__type__") if isinstance(x, dict) else None
+        x_type = x.get("__type__") if isinstance(x, Mapping) else None
 
         if x_type == "warp.array_ref":
             if cache is None:
@@ -997,7 +1004,7 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
     result = deserialize(data, callback, format_type=format_type, cache=cache)
 
     def _resolve_cache_refs(obj):
-        if isinstance(obj, dict):
+        if isinstance(obj, Mapping):
             # Optimization: single dict lookup instead of checking membership then accessing
             cache_ref = obj.get("__cache_ref__")
             if cache_ref is not None:
@@ -1242,6 +1249,9 @@ class ViewerFile(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        color: tuple[float, float, float] | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
     ):
         """File viewer does not render meshes.
 
@@ -1254,6 +1264,12 @@ class ViewerFile(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether back-face culling is enabled.
+            color: Optional base color as an RGB tuple with values in
+                [0, 1]. Used when no texture is provided.
+            roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
+                smooth, ``1`` is fully rough.
+            metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
+                is metal.
         """
         pass
 

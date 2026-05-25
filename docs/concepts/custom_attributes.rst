@@ -648,7 +648,8 @@ When :meth:`~newton.ModelBuilder.add_usd` runs:
 
 1. Parses standard entities (bodies, shapes, joints, etc.).
 2. Collects custom frequencies that define :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter`.
-3. Traverses prims once (including instance proxies via ``Usd.TraverseInstanceProxies()``).
+3. Traverses prims under the requested ``root_path`` once (including instance proxies via
+   ``Usd.TraverseInstanceProxies()``).
 4. For each prim, evaluate matching frequencies in registration order:
    
    - If :attr:`~newton.ModelBuilder.CustomFrequency.usd_entry_expander` is set, one row is appended per emitted dictionary,

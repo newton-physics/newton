@@ -8,11 +8,12 @@ KAMINO: Constrained Rigid Multi-Body Model Builder
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterable
 
 import numpy as np
 import warp as wp
 
-from .....geometry.flags import ShapeFlags
+from .....geometry import ShapeFlags
 from .bodies import RigidBodiesModel, RigidBodyDescriptor
 from .geometry import GeometriesModel, GeometryDescriptor
 from .gravity import GravityDescriptor, GravityModel
@@ -93,9 +94,10 @@ class ModelBuilderKamino:
         self._up_axes: list[Axis] = []
         self._worlds: list[WorldDescriptor] = []
         self._gravity: list[GravityDescriptor] = []
-        self._bodies: list[RigidBodyDescriptor] = []
-        self._joints: list[JointDescriptor] = []
-        self._geoms: list[GeometryDescriptor] = []
+        self._bodies: list[list[RigidBodyDescriptor]] = []
+        self._joints: list[list[JointDescriptor]] = []
+        self._geoms: list[list[GeometryDescriptor]] = []
+        self._shapes: dict[str, ShapeDescriptorType] = {}
 
         # Declare a global material manager
         self._materials: MaterialManager = MaterialManager()
@@ -206,19 +208,42 @@ class ModelBuilderKamino:
         return self._gravity
 
     @property
-    def bodies(self) -> list[RigidBodyDescriptor]:
-        """Returns the list of body descriptors contained in the model."""
+    def bodies(self) -> list[list[RigidBodyDescriptor]]:
+        """Returns the list of lists of body descriptors contained in the model,
+        indexed first by world and then by body."""
         return self._bodies
 
     @property
-    def joints(self) -> list[JointDescriptor]:
-        """Returns the list of joint descriptors contained in the model."""
+    def all_bodies(self) -> Iterable[RigidBodyDescriptor]:
+        """Returns the collection of all body descriptors contained in the model."""
+        return (body for bodies in self._bodies for body in bodies)
+
+    @property
+    def joints(self) -> list[list[JointDescriptor]]:
+        """Returns the list of joint descriptors contained in the model,
+        indexed first by world and then by joint."""
         return self._joints
 
     @property
-    def geoms(self) -> list[GeometryDescriptor]:
-        """Returns the list of geometry descriptors contained in the model."""
+    def all_joints(self) -> Iterable[JointDescriptor]:
+        """Returns the collection of all joint descriptors contained in the model."""
+        return (joint for joints in self._joints for joint in joints)
+
+    @property
+    def geoms(self) -> list[list[GeometryDescriptor]]:
+        """Returns the list of lists of geometry descriptors contained in the model,
+        indexed first by world and then by geometry."""
         return self._geoms
+
+    @property
+    def all_geoms(self) -> Iterable[GeometryDescriptor]:
+        """Returns the collection of all geometry descriptors contained in the model."""
+        return (geom for geoms in self._geoms for geom in geoms)
+
+    @property
+    def shapes(self) -> dict[str, ShapeDescriptorType]:
+        """Returns the dictionary of shape descriptors contained in the model, indexed by geom uid."""
+        return self._shapes
 
     @property
     def materials(self) -> list[MaterialDescriptor]:
@@ -253,6 +278,11 @@ class ModelBuilderKamino:
         """
         # Create a new world descriptor
         self._worlds.append(WorldDescriptor(name=name, uid=uid, wid=self._num_worlds))
+
+        # Extend lists of entities
+        self._bodies.append([])
+        self._joints.append([])
+        self._geoms.append([])
 
         # Set up axis
         if up_axis is None:
@@ -340,7 +370,7 @@ class ModelBuilderKamino:
 
         # Append body model data
         world.add_body(body)
-        self._insert_entity(self._bodies, body, world_index=world_index)
+        self._bodies[world_index].append(body)
 
         # Update model-wide counters
         self._num_bodies += 1
@@ -455,7 +485,7 @@ class ModelBuilderKamino:
 
         # Append joint model data
         world.add_joint(joint)
-        self._insert_entity(self._joints, joint, world_index=world_index)
+        self._joints[world_index].append(joint)
 
         # Update model-wide counters
         self._num_joints += 1
@@ -586,23 +616,30 @@ class ModelBuilderKamino:
         # Check if the descriptor is valid
         if not isinstance(geom, GeometryDescriptor):
             raise TypeError(f"Invalid geometry descriptor type: {type(geom)}. Must be `GeometryDescriptor`.")
+        assert geom.shape is not None
+
+        # Create a copy of the descriptor without the shape (stored separately)
+        _geom = GeometryDescriptor.copy_without_shape(geom)
 
         # Check if the world index is valid
         world = self._check_world_index(world_index)
 
         # If the geom material is not assigned, set it to the global default
-        if geom.mid is None:
-            geom.mid = self._materials.default.mid
+        if _geom.mid is None:
+            _geom.mid = self._materials.default.mid
 
         # Append body model data
-        world.add_geometry(geom)
-        self._insert_entity(self._geoms, geom, world_index=world_index)
+        world.add_geometry(_geom)
+        self._geoms[world_index].append(_geom)
 
         # Update model-wide counters
         self._num_geoms += 1
 
+        if _geom.uid not in self._shapes:
+            self._shapes[_geom.uid] = geom.shape
+
         # Return the new geometry index
-        return geom.gid
+        return _geom.gid
 
     def add_material(self, material: MaterialDescriptor, world_index: int = 0) -> int:
         """
@@ -647,37 +684,38 @@ class ModelBuilderKamino:
         if not isinstance(other, ModelBuilderKamino):
             raise TypeError(f"Invalid builder type: {type(other)}. Must be a ModelBuilderKamino instance.")
 
-        # Make a deep copy of the other builder to avoid modifying the original
-        # TODO: How can we avoid this deep copy to improve performance
-        # while avoiding copying expensive data like meshes?
-        _other = copy.deepcopy(other)
-
         # Append the other per-world descriptors
-        self._worlds.extend(_other._worlds)
-        self._gravity.extend(_other._gravity)
-        self._up_axes.extend(_other._up_axes)
+        self._worlds.extend(copy.deepcopy(other._worlds))
+        self._gravity.extend(copy.deepcopy(other._gravity))
+        self._up_axes.extend(copy.deepcopy(other._up_axes))
 
         # Append the other per-entity descriptors
-        self._bodies.extend(_other._bodies)
-        self._joints.extend(_other._joints)
-        self._geoms.extend(_other._geoms)
+        self._bodies.extend(copy.deepcopy(other._bodies))
+        self._joints.extend(copy.deepcopy(other._joints))
+        self._geoms.extend(copy.deepcopy(other._geoms))
+
+        # Append the other shapes as needed
+        for uid, shape in other._shapes.items():
+            if uid not in self._shapes:
+                self._shapes[uid] = shape
 
         # Append the other materials
-        self._materials.merge(_other._materials)
+        self._materials.merge(copy.deepcopy(other._materials))
 
         # Update the world index of the entities in the
         # other builder and update model-wide counters
-        for w, world in enumerate(_other._worlds):
-            # Offset world index of the other builder's world
-            world.wid = self._num_worlds + w
+        for w in range(self._num_worlds, len(self._worlds)):
+            # Update world index of the other builder's world
+            world = self._worlds[w]
+            world.wid = w
 
-            # Offset world indices of the other builders entities
-            for body in self._bodies[self._num_bodies : self._num_bodies + world.num_bodies]:
-                body.wid = self._num_worlds + w
-            for joint in self._joints[self._num_joints : self._num_joints + world.num_joints]:
-                joint.wid = self._num_worlds + w
-            for geom in self._geoms[self._num_geoms : self._num_geoms + world.num_geoms]:
-                geom.wid = self._num_worlds + w
+            # Update world indices of the other builders entities
+            for body in self._bodies[w]:
+                body.wid = w
+            for joint in self._joints[w]:
+                joint.wid = w
+            for geom in self._geoms[w]:
+                geom.wid = w
 
             # Update model-wide counters
             self._num_bodies += world.num_bodies
@@ -695,7 +733,7 @@ class ModelBuilderKamino:
             self._num_joint_kinematic_cts += world.num_kinematic_joint_cts
 
         # Update the number of worlds
-        self._num_worlds += _other._num_worlds
+        self._num_worlds += other._num_worlds
 
     ###
     # Configurations
@@ -808,8 +846,8 @@ class ModelBuilderKamino:
             world.set_base_body(body_key)
             return
         elif isinstance(body_key, str):
-            for body in self.bodies:
-                if body.wid == world_index and body.name == body_key:
+            for body in self.bodies[world_index]:
+                if body.name == body_key:
                     world.set_base_body(body.bid)
                     return
         raise ValueError(f"Failed to identify the base body in world `{world_index}` given key `{body_key}`.")
@@ -832,8 +870,8 @@ class ModelBuilderKamino:
             world.set_base_joint(joint_key)
             return
         elif isinstance(joint_key, str):
-            for joint in self.joints:
-                if joint.wid == world_index and joint.name == joint_key:
+            for joint in self.joints[world_index]:
+                if joint.name == joint_key:
                     world.set_base_joint(joint.jid)
                     return
         raise ValueError(f"Failed to identify the base joint in world `{world_index}` given key `{joint_key}`.")
@@ -885,8 +923,7 @@ class ModelBuilderKamino:
         # Validate base body/joint data for each world, and fill in missing data if possible
         for w, world in enumerate(self._worlds):
             if world.has_base_joint:
-                joint_idx = world.joints_idx_offset + world.base_joint_idx
-                follower_idx = self._joints[joint_idx].bid_F  # Note: index among world bodies
+                follower_idx = self._joints[w][world.base_joint_idx].bid_F  # Note: index among world bodies
                 if world.has_base_body:  # Ensure base joint & body are compatible if both were set
                     if world.base_body_idx != follower_idx:
                         raise ValueError(
@@ -896,9 +933,7 @@ class ModelBuilderKamino:
                     world.set_base_body(follower_idx)
             elif not world.has_base_body and base_auto:
                 world.set_base_body(0)  # Set the base body as the first body
-                for jt_idx, joint in enumerate(
-                    self._joints[world.joints_idx_offset : world.joints_idx_offset + world.num_joints]
-                ):
+                for jt_idx, joint in enumerate(self._joints[w]):
                     if joint.wid == w and joint.is_unary and joint.is_connected_to_body(world.base_body_idx):
                         # If we find a unary joint connecting the base body to the world, we set this as the base joint
                         world.set_base_joint(jt_idx)
@@ -1075,7 +1110,7 @@ class ModelBuilderKamino:
 
         # A helper function to collect model bodies data
         def collect_body_model_data():
-            for body in self._bodies:
+            for body in self.all_bodies:
                 bodies_label.append(body.name)
                 bodies_wid.append(body.wid)
                 bodies_bid.append(body.bid)
@@ -1089,8 +1124,9 @@ class ModelBuilderKamino:
 
         # A helper function to collect model joints data
         def collect_joint_model_data():
-            for joint in self._joints:
-                world_bio = self._worlds[joint.wid].bodies_idx_offset
+            for joint in self.all_joints:
+                world = self._worlds[joint.wid]
+                world_bio = world.bodies_idx_offset
                 joints_label.append(joint.name)
                 joints_wid.append(joint.wid)
                 joints_jid.append(joint.jid)
@@ -1114,52 +1150,56 @@ class ModelBuilderKamino:
                 joints_ncts_j.append(joint.num_cts)
                 joints_ndyncts_j.append(joint.num_dynamic_cts)
                 joints_nkincts_j.append(joint.num_kinematic_cts)
-                joints_q_start.append(joint.coords_offset)
-                joints_dq_start.append(joint.dofs_offset)
-                joints_pq_start.append(joint.passive_coords_offset)
-                joints_pdq_start.append(joint.passive_dofs_offset)
-                joints_aq_start.append(joint.actuated_coords_offset)
-                joints_adq_start.append(joint.actuated_dofs_offset)
-                joints_cts_start.append(joint.cts_offset)
-                joints_dcts_start.append(joint.dynamic_cts_offset)
-                joints_kcts_start.append(joint.kinematic_cts_offset)
+                joints_q_start.append(joint.coords_offset + world.joint_coords_idx_offset)
+                joints_dq_start.append(joint.dofs_offset + world.joint_dofs_idx_offset)
+                joints_pq_start.append(joint.passive_coords_offset + world.joint_passive_coords_idx_offset)
+                joints_pdq_start.append(joint.passive_dofs_offset + world.joint_passive_dofs_idx_offset)
+                joints_aq_start.append(joint.actuated_coords_offset + world.joint_actuated_coords_idx_offset)
+                joints_adq_start.append(joint.actuated_dofs_offset + world.joint_actuated_dofs_idx_offset)
+                joints_cts_start.append(joint.cts_offset + world.joint_cts_idx_offset)
+                joints_dcts_start.append(joint.dynamic_cts_offset + world.joint_dynamic_cts_idx_offset)
+                joints_kcts_start.append(joint.kinematic_cts_offset + world.joint_kinematic_cts_idx_offset)
                 joints_bid_B.append(joint.bid_B + world_bio if joint.bid_B >= 0 else -1)
                 joints_bid_F.append(joint.bid_F + world_bio if joint.bid_F >= 0 else -1)
 
-        # A helper function to create geometry pointers
-        # NOTE: This also finalizes the mesh/SDF/HField data on the device
-        def make_geometry_source_pointer(geom: GeometryDescriptor, mesh_geoms: dict, device) -> int:
-            # Append to data pointers array of the shape has a Mesh, SDF or HField source
-            if geom.shape.type.is_explicit:
-                geom_uid = geom.uid
-                # If the geometry has a Mesh, SDF or HField source,
-                # finalize it and retrieve the mesh pointer/index
-                if geom_uid not in mesh_geoms:
-                    mesh_geoms[geom_uid] = geom.shape.data.finalize(device=device)
-                # Return the mesh data pointer/index
-                return mesh_geoms[geom_uid]
-            # Otherwise, append a null (i.e. zero-valued) pointer
-            else:
-                return 0
+            # Append the N+1 entry (grand total) to each offset list
+            joints_q_start.append(self._num_joint_coords)
+            joints_dq_start.append(self._num_joint_dofs)
+            joints_pq_start.append(self._num_joint_passive_coords)
+            joints_pdq_start.append(self._num_joint_passive_dofs)
+            joints_aq_start.append(self._num_joint_actuated_coords)
+            joints_adq_start.append(self._num_joint_actuated_dofs)
+            joints_cts_start.append(self._num_joint_cts)
+            joints_dcts_start.append(self._num_joint_dynamic_cts)
+            joints_kcts_start.append(self._num_joint_kinematic_cts)
 
         # A helper function to collect model collision geometries data
         def collect_geometry_model_data():
-            cgeom_meshes = {}
-            for geom in self._geoms:
+            shape_ptrs = {}
+            for uid, shape in self._shapes.items():
+                # If the geometry has a Mesh, SDF or HField source,
+                # finalize it and retrieve the mesh pointer/index
+                if shape.type.is_explicit:
+                    shape_ptrs[uid] = shape.data.finalize(device=device)
+                # Otherwise, append a null (i.e. zero-valued) pointer
+                else:
+                    shape_ptrs[uid] = 0
+            for geom in self.all_geoms:
+                shape = self._shapes[geom.uid]
                 geoms_label.append(geom.name)
                 geoms_wid.append(geom.wid)
                 geoms_gid.append(geom.gid)
                 geoms_bid.append(geom.body + self._worlds[geom.wid].bodies_idx_offset if geom.body >= 0 else -1)
-                geoms_type.append(geom.shape.type.value)
+                geoms_type.append(shape.type.value)
                 geoms_flags.append(geom.flags)
-                geoms_params.append(geom.shape.paramsvec)
+                geoms_params.append(shape.paramsvec)
                 geoms_offset.append(geom.offset)
                 geoms_material.append(geom.mid)
                 geoms_group.append(geom.group)
                 geoms_collides.append(geom.collides)
                 geoms_gap.append(geom.gap)
                 geoms_margin.append(geom.margin)
-                geoms_ptr.append(make_geometry_source_pointer(geom, cgeom_meshes, device))
+                geoms_ptr.append(shape_ptrs[geom.uid])
 
         # A helper function to collect model material-pairs data
         def collect_material_pairs_model_data():
@@ -1177,13 +1217,6 @@ class ModelBuilderKamino:
         collect_joint_model_data()
         collect_geometry_model_data()
         collect_material_pairs_model_data()
-
-        # Post-processing of reference coords of FREE joints to match body frames
-        for joint in self._joints:
-            if joint.dof_type == JointDoFType.FREE:
-                body = self._bodies[joint.bid_F + self._worlds[joint.wid].bodies_idx_offset]
-                qj_start = joint.coords_offset + self._worlds[joint.wid].joint_coords_idx_offset
-                joints_q_j_0[qj_start : qj_start + joint.num_coords] = [*body.q_i_0]
 
         ###
         # Host-side model size meta-data
@@ -1241,22 +1274,28 @@ class ModelBuilderKamino:
             max_of_max_total_cts=max([world.num_joint_cts for world in self._worlds]),
         )
 
+        # Append total number of bodies to body offsets
+        info_bio.append(model_size.sum_of_num_bodies)
+
         ###
         # Collision detection and contact-allocation meta-data
         ###
 
         # Generate the lists of collidable and excluded geometry pairs for the entire model
-        model_collidable_pairs = self.make_collision_candidate_pairs()
-        model_excluded_pairs = self.make_collision_excluded_pairs()
+        model_collidable_pairs, collidable_pairs_offset = self.make_collision_candidate_pairs()
+        model_excluded_pairs, _ = self.make_collision_excluded_pairs()
 
         # Retrieve the number of collidable geoms for each world and
         # for the entire model based on the generated candidate pairs
-        _, model_num_collidables = self.compute_num_collidable_geoms(collidable_geom_pairs=model_collidable_pairs)
+        _, model_num_collidables = self.compute_num_collidable_geoms(
+            collidable_geom_pairs=model_collidable_pairs, collidable_pairs_offset=collidable_pairs_offset
+        )
 
         # Compute the maximum number of contacts required for the model and each world
         # NOTE: This is a conservative estimate based on the maximum per-world geom-pairs
         model_required_contacts, world_required_contacts = self.compute_required_contact_capacity(
             collidable_geom_pairs=model_collidable_pairs,
+            collidable_pairs_offset=collidable_pairs_offset,
             max_contacts_per_pair=self._max_contacts_per_pair,
         )
 
@@ -1384,7 +1423,7 @@ class ModelBuilderKamino:
                 type=wp.array(geoms_type, dtype=int32),
                 flags=wp.array(geoms_flags, dtype=int32),
                 ptr=wp.array(geoms_ptr, dtype=wp.uint64),
-                params=wp.array(geoms_params, dtype=vec4f),
+                params=wp.array(geoms_params, dtype=vec3f),
                 offset=wp.array(geoms_offset, dtype=transformf),
                 material=wp.array(geoms_material, dtype=int32),
                 group=wp.array(geoms_group, dtype=int32),
@@ -1429,7 +1468,7 @@ class ModelBuilderKamino:
     # Utilities
     ###
 
-    def make_collision_candidate_pairs(self, allow_neighbors: bool = False) -> list[tuple[int, int]]:
+    def make_collision_candidate_pairs(self, allow_neighbors: bool = False) -> tuple[list[tuple[int, int]], list[int]]:
         """
         Constructs the collision pair candidates.
 
@@ -1447,7 +1486,10 @@ class ModelBuilderKamino:
                 bodies that are neighbors via joints with DoF.
 
         Returns:
-            A sorted list of geom index pairs (gid1, gid2) that are candidates for collision detection.
+            model_collidable_pairs: A sorted list of geom index pairs (gid1, gid2) that are candidates for
+                collision detection
+            collidable_pairs_offset: A list of per-world offsets into model_collidable_pairs (with one
+                extra entry giving the total length of model_collidable_pairs)
         """
         # Retrieve the number of worlds
         nw = self.num_worlds
@@ -1457,18 +1499,27 @@ class ModelBuilderKamino:
 
         # Initialize the lists to store the collision candidate pairs and their properties of each world
         model_candidate_pairs = []
-
-        joint_idx_min = [len(self.joints)] * nw
-        joint_idx_max = [0] * nw
-        for i, joint in enumerate(self.joints):
-            joint_idx_min[joint.wid] = min(i, joint_idx_min[joint.wid])
-            joint_idx_max[joint.wid] = max(i, joint_idx_max[joint.wid])
+        candidate_pairs_offset = []
 
         # Iterate over each world and construct the collision geometry pairs info
         ncg_offset = 0
         for wid in range(nw):
+            # Precompute body adjacency matrix for this world.
+            # If we allow neighbor collisions, adjacent bodies are only bodies connected by a fixed joint.
+            # Otherwise, they are all bodies connected by a non-free joint.
+            # Note: for convenience we shift body indices by 1 to account for the -1 body of unary joints
+            num_bodies = self.worlds[wid].num_bodies
+            adjacent_bodies = np.zeros((num_bodies + 1, num_bodies + 1), dtype=np.int32)
+            for joint in self.joints[wid]:
+                if joint.dof_type == JointDoFType.FREE:
+                    continue
+                if not allow_neighbors or joint.dof_type == JointDoFType.FIXED:
+                    adjacent_bodies[joint.bid_B + 1, joint.bid_F + 1] = 1
+                    adjacent_bodies[joint.bid_F + 1, joint.bid_B + 1] = 1
+
             # Initialize the lists to store the collision candidate pairs and their properties
             world_candidate_pairs = []
+            candidate_pairs_offset.append(len(model_candidate_pairs))
 
             # Iterate over each gid pair and filtering out pairs not viable for collision detection
             # NOTE: k=1 skips diagonal entries to exclude self-collisions
@@ -1478,7 +1529,9 @@ class ModelBuilderKamino:
                 gid2 = int(gid2_) + ncg_offset
 
                 # Get references to the geometries
-                geom1, geom2 = self.geoms[gid1], self.geoms[gid2]
+                geom1, geom2 = self.geoms[wid][gid1_], self.geoms[wid][gid2_]
+                assert geom1.wid == wid
+                assert geom2.wid == wid
 
                 # Skip if either geometry is non-collidable
                 if not geom1.is_collidable or not geom2.is_collidable:
@@ -1487,42 +1540,27 @@ class ModelBuilderKamino:
                 # Get body indices of each geom
                 bid1, bid2 = geom1.body, geom2.body
 
-                # Get world indices of each geom
-                wid1, wid2 = geom1.wid, geom2.wid
-
                 # 2. Check for same-body collision
                 is_self_collision = bid1 == bid2
-
-                # 3. Check for different-world collision
-                in_same_world = wid1 == wid2
 
                 # 4. Check for collision according to the collision groupings
                 are_collidable = ((geom1.group & geom2.collides) != 0) and ((geom2.group & geom1.collides) != 0)
 
                 # Skip this pair if it does not pass the first round of filtering
-                if is_self_collision or not in_same_world or not are_collidable:
+                if is_self_collision or not are_collidable:
                     continue
 
-                # 5. Check for neighbor collision for fixed and DoF joints
-                are_fixed_neighbors = False
-                are_dof_neighbors = False
-                for joint in self.joints[joint_idx_min[wid1] : joint_idx_max[wid1] + 1]:
-                    if (joint.bid_B == bid1 and joint.bid_F == bid2) or (joint.bid_B == bid2 and joint.bid_F == bid1):
-                        if joint.dof_type == JointDoFType.FIXED:
-                            are_fixed_neighbors = True
-                        elif joint.bid_B < 0:
-                            pass
-                        else:
-                            are_dof_neighbors = True
-                        break
-
-                # Skip this pair if they are fixed-joint neighbors, or are DoF
-                # neighbor collisions and self-collisions are not allowed
-                if ((not allow_neighbors) and are_dof_neighbors) or are_fixed_neighbors:
+                # 5. and 6. Check for neighbor collision for fixed and DoF joints
+                if adjacent_bodies[bid1 + 1, bid2 + 1]:
                     continue
 
                 # Append the geometry pair to the list of world collision candidates
                 world_candidate_pairs.append((min(gid1, gid2), max(gid1, gid2)))
+
+            # Sort the candidate pairs list for efficient lookup
+            # on the device if there are any candidate pairs
+            if len(world_candidate_pairs) > 0:
+                world_candidate_pairs.sort()
 
             # Append the world collision pairs to the model lists
             model_candidate_pairs.extend(world_candidate_pairs)
@@ -1530,15 +1568,12 @@ class ModelBuilderKamino:
             # Update the geometry index offset for the next world
             ncg_offset += ncg[wid]
 
-        # Sort the excluded pairs list for efficient lookup
-        # on the device if there are any pairs to exclude
-        if len(model_candidate_pairs) > 0:
-            model_candidate_pairs.sort()
+        candidate_pairs_offset.append(len(model_candidate_pairs))
 
         # Return the model total candidate pairs
-        return model_candidate_pairs
+        return model_candidate_pairs, candidate_pairs_offset
 
-    def make_collision_excluded_pairs(self, allow_neighbors: bool = False) -> list[tuple[int, int]]:
+    def make_collision_excluded_pairs(self, allow_neighbors: bool = False) -> tuple[list[tuple[int, int]], list[int]]:
         """
         Builds a sorted array of shape pairs that the NXN/SAP broadphase should exclude.
 
@@ -1553,29 +1588,38 @@ class ModelBuilderKamino:
                 bodies that are neighbors via joints with DoF.
 
         Returns:
-            A sorted list of geom index pairs (gid1, gid2) that should be excluded from collision detection.
+            model_excluded_pairs: A sorted list of geom index pairs (gid1, gid2) that should be
+                excluded from collision detection.
+            excluded_pairs_offset: A list of per-world offsets into model_excluded_pairs (with one
+                extra entry giving the total length of model_excluded_pairs)
         """
-        # Pre-index joints per world for fast lookup
-        joint_ranges: list[tuple[int, int]] = []
-        for w in range(self.num_worlds):
-            lo = len(self.joints)
-            hi = 0
-            for i, j in enumerate(self.joints):
-                if j.wid == w:
-                    lo = min(lo, i)
-                    hi = max(hi, i)
-            joint_ranges.append((lo, hi))
 
         model_excluded_pairs: list[tuple[int, int]] = []
+        excluded_pairs_offset = []
         ncg_offset = 0
         for wid in range(self.num_worlds):
-            ncg = self._worlds[wid].num_geoms
+            # Precompute body adjacency matrix for this world.
+            # If we allow neighbor collisions, adjacent bodies are only bodies connected by a fixed joint.
+            # Otherwise, they are all bodies connected by a non-free joint.
+            # Note: for convenience we shift body indices by 1 to account for the -1 body of unary joints
+            num_bodies = self.worlds[wid].num_bodies
+            adjacent_bodies = np.zeros((num_bodies + 1, num_bodies + 1), dtype=np.int32)
+            for joint in self.joints[wid]:
+                if joint.dof_type == JointDoFType.FREE:
+                    continue
+                if not allow_neighbors or joint.dof_type == JointDoFType.FIXED:
+                    adjacent_bodies[joint.bid_B + 1, joint.bid_F + 1] = 1
+                    adjacent_bodies[joint.bid_F + 1, joint.bid_B + 1] = 1
+
+            world_excluded_pairs = []
+            excluded_pairs_offset.append(len(model_excluded_pairs))
+            ncg = self.worlds[wid].num_geoms
             for idx1 in range(ncg):
                 gid1 = idx1 + ncg_offset
-                geom1 = self.geoms[gid1]
+                geom1 = self.geoms[wid][idx1]
                 for idx2 in range(idx1 + 1, ncg):
                     gid2 = idx2 + ncg_offset
-                    geom2 = self.geoms[gid2]
+                    geom2 = self.geoms[wid][idx2]
 
                     # Skip if either geometry is non-collidable since they won't be considered in the broadphase anyway
                     if (geom1.flags & ShapeFlags.COLLIDE_SHAPES == 0) or (geom2.flags & ShapeFlags.COLLIDE_SHAPES == 0):
@@ -1586,42 +1630,38 @@ class ModelBuilderKamino:
 
                     # Same-body collision
                     if geom1.body == geom2.body:
-                        model_excluded_pairs.append(candidate_pair)
+                        world_excluded_pairs.append(candidate_pair)
                         continue
 
                     # Group/collides bitmask check
                     if not ((geom1.group & geom2.collides) != 0 and (geom2.group & geom1.collides) != 0):
-                        model_excluded_pairs.append(candidate_pair)
+                        world_excluded_pairs.append(candidate_pair)
                         continue
 
                     # Fixed-joint / DoF-joint neighbour check
-                    jlo, jhi = joint_ranges[wid]
-                    is_excluded_neighbour = False
-                    for joint in self.joints[jlo : jhi + 1]:
-                        is_pair = (joint.bid_B == geom1.body and joint.bid_F == geom2.body) or (
-                            joint.bid_B == geom2.body and joint.bid_F == geom1.body
-                        )
-                        if is_pair:
-                            if joint.dof_type == JointDoFType.FIXED:
-                                is_excluded_neighbour = True
-                            elif joint.bid_B >= 0:
-                                is_excluded_neighbour = True
-                            break
-                    if is_excluded_neighbour:
-                        model_excluded_pairs.append(candidate_pair)
+                    if adjacent_bodies[geom1.body + 1, geom2.body + 1]:
+                        world_excluded_pairs.append(candidate_pair)
+                        continue
+
+            # Sort the excluded pairs list for efficient lookup
+            # on the device if there are any excluded pairs
+            if len(world_excluded_pairs) > 0:
+                world_excluded_pairs.sort()
+
+            # Append the world excluded pairs to the model lists
+            model_excluded_pairs.extend(world_excluded_pairs)
 
             ncg_offset += ncg
 
-        # Sort the excluded pairs list for efficient lookup
-        # on the device if there are any pairs to exclude
-        if len(model_excluded_pairs) > 0:
-            model_excluded_pairs.sort()
+        excluded_pairs_offset.append(len(model_excluded_pairs))
 
         # Return the model total excluded pairs and their properties
-        return model_excluded_pairs
+        return model_excluded_pairs, excluded_pairs_offset
 
     def compute_num_collidable_geoms(
-        self, collidable_geom_pairs: list[tuple[int, int]] | None = None
+        self,
+        collidable_geom_pairs: list[tuple[int, int]] | None = None,
+        collidable_pairs_offset: list[int] | None = None,
     ) -> tuple[list[int], int]:
         """
         Computes the number of unique collidable geometries from the provided list of collidable geometry pairs.
@@ -1631,6 +1671,11 @@ class ModelBuilderKamino:
                 A list of geom-pair indices `(gid1, gid2)` (absolute w.r.t the model).\n
                 If `None`, the number of collidable geometries will
                 be extracted by exhaustively checking all geometries.
+            collidable_pairs_offset: (list[int], optional):
+                A list of per-world offsets into collidable_geom_pairs (with one
+                extra entry giving the total length of collidable_geom_pairs).
+                Cannot be `None` if collidable_geom_pairs is provided.
+
 
         Returns:
             (world_num_collidables, model_num_collidables):
@@ -1640,25 +1685,29 @@ class ModelBuilderKamino:
         # If an explicit list of collidable geometry pairs is provided,
         # compute the number of unique collidable geometries from the pairs
         if collidable_geom_pairs is not None:
-            collidable_geoms: set[int] = set()
+            assert collidable_pairs_offset is not None
             world_num_collidables = [0] * self.num_worlds
-            for pair in collidable_geom_pairs:
-                collidable_geoms.add(pair[0])
-                collidable_geoms.add(pair[1])
-            for gid in collidable_geoms:
-                world_num_collidables[self.geoms[gid].wid] += 1
-            return world_num_collidables, len(collidable_geoms)
+            for wid in range(self.num_worlds):
+                collidable_geoms: set[int] = set()
+                for pair_id in range(collidable_pairs_offset[wid], collidable_pairs_offset[wid + 1]):
+                    pair = collidable_geom_pairs[pair_id]
+                    collidable_geoms.add(pair[0])
+                    collidable_geoms.add(pair[1])
+                world_num_collidables[wid] = len(collidable_geoms)
+            return world_num_collidables, sum(world_num_collidables)
 
         # Otherwise, compute the number of collidable geometries by checking all geometries
         world_num_collidables = [0] * self.num_worlds
-        for geom in self.geoms:
-            if geom.is_collidable:
-                world_num_collidables[geom.wid] += 1
+        for wid in range(self.num_worlds):
+            for geom in self.geoms[wid]:
+                if geom.is_collidable:
+                    world_num_collidables[wid] += 1
         return world_num_collidables, sum(world_num_collidables)
 
     def compute_required_contact_capacity(
         self,
         collidable_geom_pairs: list[tuple[int, int]] | None = None,
+        collidable_pairs_offset: list[int] | None = None,
         max_contacts_per_pair: int | None = None,
         max_contacts_per_world: int | None = None,
     ) -> tuple[int, list[int]]:
@@ -1668,27 +1717,39 @@ class ModelBuilderKamino:
 
         # Generate the collision candidate pairs if not provided
         if collidable_geom_pairs is None:
-            collidable_geom_pairs = self.make_collision_candidate_pairs()
+            collidable_geom_pairs, collidable_pairs_offset = self.make_collision_candidate_pairs()
+        else:
+            assert collidable_pairs_offset is not None
+
+        # Generate the cumsum of geometries per world, to convert global to local geom indices
+        num_geoms = np.array([self.worlds[i].num_geoms for i in range(self.num_worlds)])
+        geom_offsets = np.concatenate(([0], num_geoms.cumsum()))
 
         # Compute the maximum possible number of geom pairs per world
         world_max_contacts = [0] * self.num_worlds
-        for geom_pair in collidable_geom_pairs:
-            g1 = int(geom_pair[0])
-            g2 = int(geom_pair[1])
-            geom1 = self._geoms[g1]
-            geom2 = self._geoms[g2]
-            if geom1.shape.type > geom2.shape.type:
-                g1, g2 = g2, g1
-                geom1, geom2 = geom2, geom1
-            num_contacts_a, num_contacts_b = max_contacts_for_shape_pair(
-                type_a=geom1.shape.type,
-                type_b=geom2.shape.type,
-            )
-            num_contacts = num_contacts_a + num_contacts_b
-            if max_contacts_per_pair is not None:
-                world_max_contacts[geom1.wid] += min(num_contacts, max_contacts_per_pair)
-            else:
-                world_max_contacts[geom1.wid] += num_contacts
+        for wid in range(self.num_worlds):
+            offset = geom_offsets[wid]
+            for pair_id in range(collidable_pairs_offset[wid], collidable_pairs_offset[wid + 1]):
+                geom_pair = collidable_geom_pairs[pair_id]
+                g1 = int(geom_pair[0]) - offset
+                g2 = int(geom_pair[1]) - offset
+                geom1 = self._geoms[wid][g1]
+                geom2 = self._geoms[wid][g2]
+                shape1 = self._shapes[geom1.uid]
+                shape2 = self._shapes[geom2.uid]
+                if shape1.type > shape2.type:
+                    g1, g2 = g2, g1
+                    geom1, geom2 = geom2, geom1
+                    shape1, shape2 = shape2, shape1
+                num_contacts_a, num_contacts_b = max_contacts_for_shape_pair(
+                    type_a=int(shape1.type),
+                    type_b=int(shape2.type),
+                )
+                num_contacts = num_contacts_a + num_contacts_b
+                if max_contacts_per_pair is not None:
+                    world_max_contacts[geom1.wid] += min(num_contacts, max_contacts_per_pair)
+                else:
+                    world_max_contacts[geom1.wid] += num_contacts
 
         # Override the per-world maximum contacts if specified in the settings
         if max_contacts_per_world is not None:
@@ -1784,30 +1845,6 @@ class ModelBuilderKamino:
 
     EntityDescriptorType = RigidBodyDescriptor | JointDescriptor | GeometryDescriptor
     """A type alias for model entity descriptors."""
-
-    @staticmethod
-    def _insert_entity(entity_list: list[EntityDescriptorType], entity: EntityDescriptorType, world_index: int = 0):
-        """
-        Inserts an entity descriptor into the provided entity list at
-        the end of the entities belonging to the specified world index.
-
-        Insertion preserves the order of entities per world.
-
-        Args:
-            entity_list (list[EntityDescriptorType]): The list of entity descriptors.
-            entity (EntityDescriptorType): The entity descriptor to be inserted.
-            world_index (int): The world index to insert the entity into.
-        """
-        # NOTE: We initialize the last entity index to the length of the list
-        # so that if no entities belong to the specified world, the new entity
-        # is simply appended to the end of the list.
-        last_entity_index = len(entity_list)
-        for i, e in enumerate(entity_list):
-            if e.wid == world_index:
-                last_entity_index = i
-        # NOTE: Insert the entity after the last entity of the specified
-        # world so that the order of entities per world is preserved.
-        entity_list.insert(last_entity_index + 1, entity)
 
     @staticmethod
     def _check_body_inertia(m_i: float, i_I_i: mat33f):

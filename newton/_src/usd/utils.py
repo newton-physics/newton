@@ -95,6 +95,34 @@ def has_attribute(prim: Usd.Prim, name: str) -> bool:
     return attr and attr.HasAuthoredValue()
 
 
+def _get_raw_api_schemas(prim: Usd.Prim) -> list[str]:
+    """Return API schema tokens from raw ``apiSchemas`` list-op metadata."""
+    listop = prim.GetMetadata("apiSchemas")
+    if listop is None:
+        return []
+    return (
+        list(getattr(listop, "prependedItems", []))
+        + list(getattr(listop, "appendedItems", []))
+        + list(getattr(listop, "explicitItems", []))
+    )
+
+
+def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
+    """Return the API schema tokens applied to *prim*.
+
+    Falls back to raw ``apiSchemas`` list-op metadata when the schema plugin
+    is not loaded and :meth:`pxr.Usd.Prim.GetAppliedSchemas` returns nothing.
+
+    Args:
+        prim: Prim to query.
+
+    Returns:
+        Applied API schema tokens (e.g. ``["NewtonPDControlAPI"]``).
+    """
+    schemas = list(prim.GetAppliedSchemas())
+    return schemas if schemas else _get_raw_api_schemas(prim)
+
+
 def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
     """
     Check if a USD prim has an applied API schema, even if the schema is not
@@ -113,19 +141,7 @@ def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
     Returns:
         True if the schema is applied to the prim, False otherwise.
     """
-    if prim.HasAPI(schema_name):
-        return True
-
-    schemas_listop = prim.GetMetadata("apiSchemas")
-    if schemas_listop:
-        all_schemas = (
-            list(schemas_listop.prependedItems)
-            + list(schemas_listop.appendedItems)
-            + list(schemas_listop.explicitItems)
-        )
-        return schema_name in all_schemas
-
-    return False
+    return prim.HasAPI(schema_name) or schema_name in _get_raw_api_schemas(prim)
 
 
 @overload
@@ -291,7 +307,54 @@ def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCach
     """
     mat = get_transform_matrix(prim, local=local, xform_cache=xform_cache)
     _pos, _rot, scale = wp.transform_decompose(mat)
+    scale = np.array(scale, dtype=np.float32)
+
+    authored_scale = _get_authored_scale(prim, local=local)
+    if authored_scale is not None:
+        sign = np.sign(authored_scale)
+        sign[sign == 0.0] = 1.0
+        scale = np.abs(scale) * sign
+
     return wp.vec3(*scale)
+
+
+def _get_authored_scale(prim: Usd.Prim, local: bool = True) -> np.ndarray | None:
+    """Return the product of authored scale ops, preserving negative signs."""
+    if UsdGeom is None:
+        return None
+
+    prims = [prim]
+    if not local:
+        prims = []
+        current = prim
+        while current and current.IsValid() and not current.IsPseudoRoot():
+            prims.append(current)
+            current = current.GetParent()
+        prims.reverse()
+
+    scale = np.ones(3, dtype=np.float32)
+    found = False
+    for p in prims:
+        xformable = UsdGeom.Xformable(p)
+        if not xformable:
+            continue
+        if not local and xformable.GetResetXformStack():
+            scale = np.ones(3, dtype=np.float32)
+            found = False
+        for op in xformable.GetOrderedXformOps():
+            if op.GetOpType() != UsdGeom.XformOp.TypeScale:
+                continue
+            value = op.Get()
+            if value is None:
+                continue
+            op_scale = np.array(value, dtype=np.float32)
+            if op.IsInverseOp():
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    op_scale = np.divide(1.0, op_scale, out=np.ones_like(op_scale), where=op_scale != 0.0)
+            scale *= op_scale
+            found = True
+
+    return scale if found else None
 
 
 def get_gprim_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") -> Axis:

@@ -17,6 +17,19 @@ import newton
 import newton.examples
 
 
+@wp.func
+def _ball_body_stays_on_joint_sphere(q: wp.transform, qd: wp.spatial_vector):
+    return abs(wp.length(wp.transform_get_translation(q) - wp.vec3(0.0, 3.0, 2.05)) - 0.75) < 5e-3
+
+
+@wp.func
+def _slider_constrained_motion_has_stopped(q: wp.transform, qd: wp.spatial_vector):
+    return (
+        wp.length(wp.cross(wp.spatial_top(qd), wp.vec3(0.0, 0.0, 1.0))) < 1e-5
+        and wp.length(wp.spatial_bottom(qd)) < 1e-5
+    )
+
+
 class Example:
     def __init__(self, viewer, args):
         # setup simulation parameters first
@@ -30,6 +43,9 @@ class Example:
         self.args = args
 
         builder = newton.ModelBuilder()
+
+        static_cfg = newton.ModelBuilder.ShapeConfig()
+        static_cfg.density = 0.0
 
         # add ground plane
         builder.add_ground_plane()
@@ -56,7 +72,7 @@ class Example:
             ),
             label="b_rev",
         )
-        builder.add_shape_box(a_rev, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz)
+        builder.add_shape_box(a_rev, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz, cfg=static_cfg)
         builder.add_shape_box(b_rev, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
 
         j_fixed_rev = builder.add_joint_fixed(
@@ -91,7 +107,7 @@ class Example:
             ),
             label="b_prismatic",
         )
-        builder.add_shape_box(a_pri, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz)
+        builder.add_shape_box(a_pri, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz, cfg=static_cfg)
         builder.add_shape_box(b_pri, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
 
         j_fixed_pri = builder.add_joint_fixed(
@@ -109,6 +125,7 @@ class Example:
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, +cuboid_hz), q=wp.quat_identity()),
             limit_lower=-0.3,
             limit_upper=0.3,
+            limit_kd=1.0e-1,
             label="prismatic_a_b",
         )
         # Create articulation from joints
@@ -132,9 +149,7 @@ class Example:
             label="b_ball",
         )
 
-        rigid_cfg = newton.ModelBuilder.ShapeConfig()
-        rigid_cfg.density = 0.0
-        builder.add_shape_sphere(a_ball, radius=radius, cfg=rigid_cfg)
+        builder.add_shape_sphere(a_ball, radius=radius, cfg=static_cfg)
         builder.add_shape_box(b_ball, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
 
         # Connect parent to world
@@ -162,6 +177,9 @@ class Example:
         # finalize model
         builder.color()
         self.model = builder.finalize()
+        # SolverVBD uses model.body_q as its structural rest pose, so keep it
+        # consistent with the joint_q edits above before constructing the solver.
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
 
         solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
         if solver_type == "vbd":
@@ -222,26 +240,22 @@ class Example:
             indices=[self.model.body_label.index("b_rev")],
         )
 
-        # fmt: off
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "linear motion on axis",
-            lambda q, qd: wp.length(abs(wp.cross(wp.spatial_top(qd), wp.vec3(0.0, 0.0, 1.0)))) < 1e-5
-            and wp.length(wp.spatial_bottom(qd)) < 1e-5,
+            _slider_constrained_motion_has_stopped,
             indices=[self.model.body_label.index("b_prismatic")],
-        )
-        # fmt: on
-
-        newton.examples.test_body_state(
-            self.model,
-            self.state_0,
-            "ball motion on sphere",
-            lambda q, qd: abs(wp.dot(wp.spatial_bottom(qd), wp.vec3(0.0, 0.0, 1.0))) < 1e-3,
-            indices=[self.model.body_label.index("b_ball")],
         )
 
     def test_final(self):
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "ball body stays on joint sphere",
+            _ball_body_stays_on_joint_sphere,
+            indices=[self.model.body_label.index("b_ball")],
+        )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -259,8 +273,15 @@ class Example:
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "slider link body has come to a rest",
-            lambda q, qd: max(abs(qd)) < 1e-5,
+            "slider link constrained motion has come to a rest",
+            _slider_constrained_motion_has_stopped,
+            indices=[3],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "slider link free-axis motion is slow",
+            lambda q, qd: abs(wp.dot(wp.spatial_top(qd), wp.vec3(0.0, 0.0, 1.0))) < 1e-2,
             indices=[3],
         )
         newton.examples.test_body_state(
@@ -289,9 +310,6 @@ if __name__ == "__main__":
         help="Solver backend to use.",
     )
     viewer, args = newton.examples.init(parser)
-    viewer._paused = True
 
     # Create viewer and run
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

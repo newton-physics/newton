@@ -84,7 +84,6 @@ def make_unilateral_constraints_info(
     data: DataKamino,
     limits: LimitsKamino | None = None,
     contacts: ContactsKamino | None = None,
-    device: wp.DeviceLike = None,
 ):
     """
     Constructs constraints entries in the ModelKaminoInfo member of a model.
@@ -94,8 +93,6 @@ def make_unilateral_constraints_info(
         data (DataKamino): The solver container holding time-varying data.
         limits (LimitsKamino, optional): The limits container holding the joint-limit data.
         contacts (ContactsKamino, optional): The contacts container holding the contact data.
-        device (wp.DeviceLike, optional): The device on which to allocate the constraint info arrays.\n
-            If None, the model's device will be used.
     """
 
     # Ensure the model is valid
@@ -106,9 +103,8 @@ def make_unilateral_constraints_info(
     if not isinstance(data, DataKamino):
         raise TypeError("`data` must be an instance of `DataKamino`")
 
-    # Device is not specified, use the model's device
-    if device is None:
-        device = model.device
+    # Use the model's device
+    device = model.device
 
     # Retrieve the number of worlds in the model
     num_worlds = model.size.num_worlds
@@ -228,6 +224,29 @@ def make_unilateral_constraints_info(
     world_lcio = [world_jkcio[i] + world_njkc[i] for i in range(num_worlds)]
     world_ccio = [world_lcio[i] for i in range(num_worlds)]
 
+    # Compute per-joint total constraint vector offsets
+    # These give each joint's dynamic/kinematic constraint position in the global joint constraints,
+    # and total constraints arrays, combining the per-world constraints offset, the within-world group
+    # offset, and the within-group joint offset.
+    world_jctsio = model.info.joint_cts_offset.numpy()
+    joints_dynamic_cts_offset = model.joints.dynamic_cts_offset.numpy()
+    joints_kinematic_cts_offset = model.joints.kinematic_cts_offset.numpy()
+    joint_dynamic_cts_world_prefix = model.info.joint_dynamic_cts_offset.numpy()
+    joint_kinematic_cts_world_prefix = model.info.joint_kinematic_cts_offset.numpy()
+    num_joints = model.size.sum_of_num_joints
+    dynamic_cts_offset_joint_cts = [0] * num_joints
+    kinematic_cts_offset_joint_cts = [0] * num_joints
+    dynamic_cts_offset_total_cts = [0] * num_joints
+    kinematic_cts_offset_total_cts = [0] * num_joints
+    for jid in range(num_joints):
+        wid_j = joints_world[jid]
+        local_dyn = int(joints_dynamic_cts_offset[jid]) - int(joint_dynamic_cts_world_prefix[wid_j])
+        local_kin = int(joints_kinematic_cts_offset[jid]) - int(joint_kinematic_cts_world_prefix[wid_j])
+        dynamic_cts_offset_joint_cts[jid] = world_jctsio[wid_j] + world_jdcio[wid_j] + local_dyn
+        kinematic_cts_offset_joint_cts[jid] = world_jctsio[wid_j] + world_jkcio[wid_j] + local_kin
+        dynamic_cts_offset_total_cts[jid] = world_ctsio[wid_j] + world_jdcio[wid_j] + local_dyn
+        kinematic_cts_offset_total_cts[jid] = world_ctsio[wid_j] + world_jkcio[wid_j] + local_kin
+
     # Allocate all constraint info arrays on the target device
     with wp.ScopedDevice(device):
         # Allocate the per-world max constraints count arrays
@@ -252,6 +271,12 @@ def make_unilateral_constraints_info(
         data.info.limit_cts_group_offset = wp.array(world_lcio[:num_worlds], dtype=int32)
         data.info.contact_cts_group_offset = wp.array(world_ccio[:num_worlds], dtype=int32)
 
+        # Allocate per-joint total constraint vector offsets
+        model.joints.dynamic_cts_offset_joint_cts = wp.array(dynamic_cts_offset_joint_cts, dtype=int32)
+        model.joints.kinematic_cts_offset_joint_cts = wp.array(kinematic_cts_offset_joint_cts, dtype=int32)
+        model.joints.dynamic_cts_offset_total_cts = wp.array(dynamic_cts_offset_total_cts, dtype=int32)
+        model.joints.kinematic_cts_offset_total_cts = wp.array(kinematic_cts_offset_total_cts, dtype=int32)
+
 
 ###
 # Kernels
@@ -261,15 +286,15 @@ def make_unilateral_constraints_info(
 @wp.kernel
 def _update_constraints_info(
     # Inputs:
-    model_info_num_joint_cts: wp.array(dtype=int32),
-    data_info_num_limits: wp.array(dtype=int32),
-    data_info_num_contacts: wp.array(dtype=int32),
+    model_info_num_joint_cts: wp.array[int32],
+    data_info_num_limits: wp.array[int32],
+    data_info_num_contacts: wp.array[int32],
     # Outputs:
-    data_info_num_total_cts: wp.array(dtype=int32),
-    data_info_num_limit_cts: wp.array(dtype=int32),
-    data_info_num_contact_cts: wp.array(dtype=int32),
-    data_info_limit_cts_group_offset: wp.array(dtype=int32),
-    data_info_contact_cts_group_offset: wp.array(dtype=int32),
+    data_info_num_total_cts: wp.array[int32],
+    data_info_num_limit_cts: wp.array[int32],
+    data_info_num_contact_cts: wp.array[int32],
+    data_info_limit_cts_group_offset: wp.array[int32],
+    data_info_contact_cts_group_offset: wp.array[int32],
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
@@ -302,19 +327,17 @@ def _update_constraints_info(
 @wp.kernel
 def _unpack_joint_constraint_solutions(
     # Inputs:
-    model_info_joint_cts_offset: wp.array(dtype=int32),
-    model_info_total_cts_offset: wp.array(dtype=int32),
-    model_info_joint_dynamic_cts_group_offset: wp.array(dtype=int32),
-    model_info_joint_kinematic_cts_group_offset: wp.array(dtype=int32),
-    model_time_inv_dt: wp.array(dtype=float32),
-    model_joint_wid: wp.array(dtype=int32),
-    model_joints_num_dynamic_cts: wp.array(dtype=int32),
-    model_joints_num_kinematic_cts: wp.array(dtype=int32),
-    model_joints_dynamic_cts_offset: wp.array(dtype=int32),
-    model_joints_kinematic_cts_offset: wp.array(dtype=int32),
-    lambdas: wp.array(dtype=float32),
+    model_time_inv_dt: wp.array[float32],
+    model_joint_wid: wp.array[int32],
+    model_joints_num_dynamic_cts: wp.array[int32],
+    model_joints_num_kinematic_cts: wp.array[int32],
+    model_joints_dynamic_cts_offset_joint_cts: wp.array[int32],
+    model_joints_kinematic_cts_offset_joint_cts: wp.array[int32],
+    model_joints_dynamic_cts_offset_total_cts: wp.array[int32],
+    model_joints_kinematic_cts_offset_total_cts: wp.array[int32],
+    lambdas: wp.array[float32],
     # Outputs:
-    joint_lambda_j: wp.array(dtype=float32),
+    joint_lambda_j: wp.array[float32],
 ):
     # Retrieve the thread index as the joint index
     jid = wp.tid()
@@ -323,22 +346,16 @@ def _unpack_joint_constraint_solutions(
     wid = model_joint_wid[jid]
     num_dyn_cts_j = model_joints_num_dynamic_cts[jid]
     num_kin_cts_j = model_joints_num_kinematic_cts[jid]
-    dyn_cts_start_j = model_joints_dynamic_cts_offset[jid]
-    kin_cts_start_j = model_joints_kinematic_cts_offset[jid]
+
+    # Retrieve block offsets of the joint's constraints within
+    # the joint-only constraints and total constraints arrays
+    joint_dyn_cts_start_j = model_joints_dynamic_cts_offset_joint_cts[jid]
+    joint_kin_cts_start_j = model_joints_kinematic_cts_offset_joint_cts[jid]
+    dyn_cts_row_start_j = model_joints_dynamic_cts_offset_total_cts[jid]
+    kin_cts_row_start_j = model_joints_kinematic_cts_offset_total_cts[jid]
 
     # Retrieve the world-specific info
     inv_dt = model_time_inv_dt[wid]
-    world_joint_cts_start = model_info_joint_cts_offset[wid]
-    world_total_cts_start = model_info_total_cts_offset[wid]
-    world_jdcgo = model_info_joint_dynamic_cts_group_offset[wid]
-    world_jkcgo = model_info_joint_kinematic_cts_group_offset[wid]
-
-    # Compute block offsets of the joint's constraints within
-    # the joint-only constraints and total constraints arrays
-    joint_dyn_cts_start_j = world_joint_cts_start + world_jdcgo + dyn_cts_start_j
-    joint_kin_cts_start_j = world_joint_cts_start + world_jkcgo + kin_cts_start_j
-    dyn_cts_row_start_j = world_total_cts_start + world_jdcgo + dyn_cts_start_j
-    kin_cts_row_start_j = world_total_cts_start + world_jkcgo + kin_cts_start_j
 
     # Compute and store the joint-constraint reaction forces
     for j in range(num_dyn_cts_j):
@@ -350,17 +367,17 @@ def _unpack_joint_constraint_solutions(
 @wp.kernel
 def _unpack_limit_constraint_solutions(
     # Inputs:
-    model_time_inv_dt: wp.array(dtype=float32),
-    model_info_total_cts_offset: wp.array(dtype=int32),
-    data_info_limit_cts_group_offset: wp.array(dtype=int32),
-    limit_model_num_limits: wp.array(dtype=int32),
-    limit_wid: wp.array(dtype=int32),
-    limit_lid: wp.array(dtype=int32),
-    lambdas: wp.array(dtype=float32),
-    v_plus: wp.array(dtype=float32),
+    model_time_inv_dt: wp.array[float32],
+    model_info_total_cts_offset: wp.array[int32],
+    data_info_limit_cts_group_offset: wp.array[int32],
+    limit_model_num_limits: wp.array[int32],
+    limit_wid: wp.array[int32],
+    limit_lid: wp.array[int32],
+    lambdas: wp.array[float32],
+    v_plus: wp.array[float32],
     # Outputs:
-    limit_reaction: wp.array(dtype=float32),
-    limit_velocity: wp.array(dtype=float32),
+    limit_reaction: wp.array[float32],
+    limit_velocity: wp.array[float32],
 ):
     # Retrieve the thread index as the contact index
     lid = wp.tid()
@@ -399,18 +416,18 @@ def _unpack_limit_constraint_solutions(
 @wp.kernel
 def _unpack_contact_constraint_solutions(
     # Inputs:
-    model_time_inv_dt: wp.array(dtype=float32),
-    model_info_total_cts_offset: wp.array(dtype=int32),
-    data_info_contact_cts_group_offset: wp.array(dtype=int32),
-    contact_model_num_contacts: wp.array(dtype=int32),
-    contact_wid: wp.array(dtype=int32),
-    contact_cid: wp.array(dtype=int32),
-    lambdas: wp.array(dtype=float32),
-    v_plus: wp.array(dtype=float32),
+    model_time_inv_dt: wp.array[float32],
+    model_info_total_cts_offset: wp.array[int32],
+    data_info_contact_cts_group_offset: wp.array[int32],
+    contact_model_num_contacts: wp.array[int32],
+    contact_wid: wp.array[int32],
+    contact_cid: wp.array[int32],
+    lambdas: wp.array[float32],
+    v_plus: wp.array[float32],
     # Outputs:
-    contact_mode: wp.array(dtype=int32),
-    contact_reaction: wp.array(dtype=vec3f),
-    contact_velocity: wp.array(dtype=vec3f),
+    contact_mode: wp.array[int32],
+    contact_reaction: wp.array[vec3f],
+    contact_velocity: wp.array[vec3f],
 ):
     # Retrieve the thread index as the contact index
     cid = wp.tid()
@@ -485,6 +502,7 @@ def update_constraints_info(
             data.info.limit_cts_group_offset,
             data.info.contact_cts_group_offset,
         ],
+        device=model.device,
     )
 
 
@@ -515,20 +533,19 @@ def unpack_constraint_solutions(
             dim=model.size.sum_of_num_joints,
             inputs=[
                 # Inputs:
-                model.info.joint_cts_offset,
-                model.info.total_cts_offset,
-                model.info.joint_dynamic_cts_group_offset,
-                model.info.joint_kinematic_cts_group_offset,
                 model.time.inv_dt,
                 model.joints.wid,
                 model.joints.num_dynamic_cts,
                 model.joints.num_kinematic_cts,
-                model.joints.dynamic_cts_offset,
-                model.joints.kinematic_cts_offset,
+                model.joints.dynamic_cts_offset_joint_cts,
+                model.joints.kinematic_cts_offset_joint_cts,
+                model.joints.dynamic_cts_offset_total_cts,
+                model.joints.kinematic_cts_offset_total_cts,
                 lambdas,
                 # Outputs:
                 data.joints.lambda_j,
             ],
+            device=model.device,
         )
 
     # Unpack limit constraint multipliers if a limits container is provided
@@ -550,6 +567,7 @@ def unpack_constraint_solutions(
                 limits.reaction,
                 limits.velocity,
             ],
+            device=model.device,
         )
 
     # Unpack contact constraint multipliers if a contacts container is provided
@@ -572,4 +590,5 @@ def unpack_constraint_solutions(
                 contacts.reaction,
                 contacts.velocity,
             ],
+            device=model.device,
         )

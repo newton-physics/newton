@@ -26,8 +26,8 @@ _Z_AXIS = wp.constant(wp.vec3(0.0, 0.0, 1.0))
 
 @wp.kernel
 def _quat_to_projected_yaw_kernel(
-    q: wp.array(dtype=wp.float32),
-    yaw: wp.array(dtype=wp.float32),
+    q: wp.array[wp.float32],
+    yaw: wp.array[wp.float32],
 ):
     i = wp.tid()
     base = i * 4
@@ -54,9 +54,9 @@ def quat_to_projected_yaw(q: torch.Tensor) -> torch.Tensor:
 
 @wp.kernel
 def _yaw_apply_2d_kernel(
-    yaw: wp.array(dtype=wp.float32),
-    v: wp.array(dtype=wp.float32),
-    out: wp.array(dtype=wp.float32),
+    yaw: wp.array[wp.float32],
+    v: wp.array[wp.float32],
+    out: wp.array[wp.float32],
 ):
     i = wp.tid()
     q = wp.quat_from_axis_angle(_Z_AXIS, yaw[i])

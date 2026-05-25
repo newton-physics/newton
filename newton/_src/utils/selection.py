@@ -12,7 +12,7 @@ from warp.types import is_array
 from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
 
 if TYPE_CHECKING:
-    from newton_actuators import Actuator
+    from ..actuators.actuator import Actuator
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -278,12 +278,12 @@ def build_actuator_dof_mapping_indices_kernel(
 
 
 @wp.kernel
-def gather_actuator_by_indices_kernel(
-    src: wp.array[float],
+def _gather_1d_kernel(
+    src: Any,
     indices: wp.array[int],
-    dst: wp.array[float],
+    dst: Any,
 ):
-    """Gather values from src at specified indices into dst. Index -1 means skip (leave dst unchanged)."""
+    """Gather ``dst[tid] = src[indices[tid]]``. Index -1 means skip (leave dst unchanged)."""
     tid = wp.tid()
     idx = indices[tid]
     if idx >= 0:
@@ -291,26 +291,22 @@ def gather_actuator_by_indices_kernel(
 
 
 @wp.kernel
-def scatter_actuator_with_mask_kernel(
-    values: wp.array2d[float],
+def _scatter_masked_2d_kernel(
+    values: Any,
     mapping: wp.array[int],
     mask: wp.array[bool],
-    dofs_per_world: int,
-    dst: wp.array[float],
+    cols: int,
+    dst: Any,
 ):
-    """Scatter actuator values with articulation mask support.
+    """Scatter ``dst[mapping[row * cols + col]] = values[row, col]`` where ``mask[row]`` is true.
 
-    values: shape (world_count, dofs_per_world)
-    mapping: flat array mapping DOF positions to actuator indices (-1 = not actuated)
-    mask: per-world mask, shape (world_count,)
-    dst: flat actuator parameter array
+    Mapping entries of -1 are skipped.
     """
-    world_idx, local_idx = wp.tid()
-    if mask[world_idx]:
-        flat_idx = world_idx * dofs_per_world + local_idx
-        actuator_idx = mapping[flat_idx]
-        if actuator_idx >= 0:
-            dst[actuator_idx] = values[world_idx, local_idx]
+    row, col = wp.tid()
+    if mask[row]:
+        dst_idx = mapping[row * cols + col]
+        if dst_idx >= 0:
+            dst[dst_idx] = values[row, col]
 
 
 # NOTE: Python slice objects are not hashable in Python < 3.12, so we use this instead.
@@ -519,7 +515,7 @@ class ArticulationView:
         self.device = model.device
 
         if verbose is None:
-            verbose = wp.config.verbose
+            verbose = wp.config.log_level <= wp.LOG_DEBUG
 
         # FIXME: avoid/reduce this readback?
         model_articulation_start = model.articulation_start.numpy()
@@ -572,8 +568,11 @@ class ArticulationView:
         arti_joint_types = []
         arti_link_ids = []
         arti_link_names = []
+        arti_link_template_labels = []
+        arti_joint_template_labels = []
         arti_shape_ids = []
         arti_shape_names = []
+        arti_shape_template_labels = []
 
         # gather joint info
         arti_joint_begin = int(model_articulation_start[arti_0])
@@ -588,6 +587,7 @@ class ArticulationView:
         for joint_id in range(arti_joint_begin, arti_joint_end):
             # joint_id = arti_joint_begin + idx
             arti_joint_ids.append(joint_id)
+            arti_joint_template_labels.append(model.joint_label[joint_id])
             arti_joint_names.append(get_name_from_label(model.joint_label[joint_id]))
             arti_joint_types.append(model_joint_type[joint_id])
             link_id = int(model_joint_child[joint_id])
@@ -597,6 +597,7 @@ class ArticulationView:
         arti_link_ids = sorted(arti_link_ids)
         arti_link_count = len(arti_link_ids)
         for link_id in arti_link_ids:
+            arti_link_template_labels.append(model.body_label[link_id])
             arti_link_names.append(get_name_from_label(model.body_label[link_id]))
             arti_shape_ids.extend(model.body_shapes[link_id])
 
@@ -604,6 +605,7 @@ class ArticulationView:
         arti_shape_ids = sorted(arti_shape_ids)
         arti_shape_count = len(arti_shape_ids)
         for shape_id in arti_shape_ids:
+            arti_shape_template_labels.append(model.shape_label[shape_id])
             arti_shape_names.append(get_name_from_label(model.shape_label[shape_id]))
 
         # compute counts and offsets of joints, links, etc.
@@ -801,13 +803,16 @@ class ArticulationView:
         selected_link_indices = sorted(link_include_indices - link_exclude_indices)
 
         self.joint_names = []
+        self.joint_template_labels = []
         self.joint_dof_names = []
         self.joint_dof_counts = []
         self.joint_coord_names = []
         self.joint_coord_counts = []
         self.link_names = []
+        self.link_template_labels = []
         self.link_shapes = []
         self.shape_names = []
+        self.shape_template_labels = []
 
         # populate info for selected joints and dofs
         selected_joint_dof_indices = []
@@ -816,6 +821,7 @@ class ArticulationView:
             joint_id = arti_joint_ids[joint_idx]
             joint_name = arti_joint_names[joint_idx]
             self.joint_names.append(joint_name)
+            self.joint_template_labels.append(arti_joint_template_labels[joint_idx])
             # joint dofs
             dof_begin = int(model_joint_qd_start[joint_id])
             dof_end = int(model_joint_qd_start[joint_id + 1])
@@ -847,6 +853,7 @@ class ArticulationView:
         for link_idx, arti_link_idx in enumerate(selected_link_indices):
             body_id = arti_link_ids[arti_link_idx]
             self.link_names.append(arti_link_names[arti_link_idx])
+            self.link_template_labels.append(arti_link_template_labels[arti_link_idx])
             shape_ids = model.body_shapes[body_id]
             for shape_id in shape_ids:
                 arti_shape_idx = arti_shape_ids.index(shape_id)
@@ -857,6 +864,7 @@ class ArticulationView:
         selected_shape_indices = sorted(selected_shape_indices)
         for shape_idx, arti_shape_idx in enumerate(selected_shape_indices):
             self.shape_names.append(arti_shape_names[arti_shape_idx])
+            self.shape_template_labels.append(arti_shape_template_labels[arti_shape_idx])
             link_idx = shape_link_idx[arti_shape_idx]
             self.link_shapes[link_idx].append(shape_idx)
 
@@ -1115,6 +1123,11 @@ class ArticulationView:
     def body_shapes(self):
         """Alias for `link_shapes`."""
         return self.link_shapes
+
+    @property
+    def body_template_labels(self):
+        """Alias for `link_template_labels`."""
+        return self.link_template_labels
 
     # ========================================================================================
     # Generic attribute API
@@ -1647,20 +1660,18 @@ class ArticulationView:
     # Actuator parameter access
 
     @functools.cache  # noqa: B019 - cache is tied to view lifetime
-    def _get_actuator_dof_mapping(self, actuator: "Actuator") -> wp.array:
+    def _get_actuator_dof_mapping(self, actuator: "Actuator"):
         """
         Build mapping from view DOF positions to actuator parameter indices.
 
         Note:
-            For selection we assume that input_indices is 1D (one input per actuator),
-            not the general 2D case (multiple inputs per actuator) which is supported
-            by the library.
+            Assumes SISO actuators (one DOF per actuator).
 
         Returns array of shape (world_count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
-        num_actuators = actuator.input_indices.shape[0]
+        num_actuators = actuator.indices.shape[0]
         actuators_per_world = num_actuators // self.world_count
 
         dof_layout = self.frequency_layouts[AttributeFrequency.JOINT_DOF]
@@ -1677,7 +1688,7 @@ class ArticulationView:
                 build_actuator_dof_mapping_slice_kernel,
                 dim=actuators_per_world,
                 inputs=[
-                    actuator.input_indices,
+                    actuator.indices,
                     actuators_per_world,
                     dof_layout.offset,
                     dof_layout.slice.start,
@@ -1696,7 +1707,7 @@ class ArticulationView:
                 build_actuator_dof_mapping_indices_kernel,
                 dim=actuators_per_world,
                 inputs=[
-                    actuator.input_indices,
+                    actuator.indices,
                     dof_layout.indices,
                     dof_layout.offset,
                     dof_layout.stride_within_worlds,
@@ -1712,57 +1723,78 @@ class ArticulationView:
 
         return mapping
 
-    def _get_actuator_attribute_array(self, actuator: "Actuator", name: str) -> wp.array:
-        """Get actuator parameter array shaped (world_count, dofs_per_world), zeros for non-actuated DOFs."""
+    def get_actuator_parameter(self, actuator: "Actuator", component: Any, name: str):
+        """Read an actuator-component parameter for every DOF in this view.
+
+        The returned array covers all DOFs selected by the view (one column
+        per DOF, one row per world).  DOFs that are not driven by
+        *actuator* are left at zero; driven DOFs contain the
+        corresponding value gathered from ``component.<name>``.
+
+        Args:
+            actuator: Actuator instance whose DOF indices determine which
+                view DOFs are considered actuated.
+            component: The component that owns the parameter — a
+                :class:`~newton.actuators.Controller`,
+                :class:`~newton.actuators.Clamping`, or
+                :class:`~newton.actuators.Delay` instance.
+            name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
+                ``"delay_steps"``).
+
+        Returns:
+            Parameter values shaped ``(world_count, dofs_per_world)`` where
+            ``dofs_per_world`` is the total number of DOFs in the view (not
+            just the actuated subset).
+        """
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
             return wp.empty((self.world_count, 0), dtype=float, device=self.device)
 
-        src = getattr(actuator, name)
+        src = getattr(component, name)
         dofs_per_world = len(mapping) // self.world_count
 
         dst = wp.zeros(len(mapping), dtype=src.dtype, device=self.device)
         wp.launch(
-            gather_actuator_by_indices_kernel,
+            _gather_1d_kernel,
             dim=len(mapping),
             inputs=[src, mapping],
             outputs=[dst],
             device=self.device,
         )
-
-        batched_shape = (self.world_count, dofs_per_world, *src.shape[1:])
-        return dst.reshape(batched_shape)
-
-    def get_actuator_parameter(self, actuator: "Actuator", name: str) -> wp.array:
-        """
-        Get actuator parameter values for actuators corresponding to this view's DOFs.
-
-        Args:
-            actuator: An actuator instance with input_indices and parameter arrays.
-            name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
-
-        Returns:
-            wp.array: Parameter values shaped (world_count, dofs_per_world).
-        """
-        return self._get_actuator_attribute_array(actuator, name)
+        return dst.reshape((self.world_count, dofs_per_world))
 
     def set_actuator_parameter(
-        self, actuator: "Actuator", name: str, values: wp.array, mask: wp.array | None = None
+        self,
+        actuator: "Actuator",
+        component: Any,
+        name: str,
+        values: wp.array,
+        mask=None,
     ) -> None:
-        """
-        Set actuator parameter values for actuators corresponding to this view's DOFs.
+        """Write an actuator-component parameter for every DOF in this view.
+
+        *values* must cover all DOFs in the view (one column per DOF, one row
+        per world).  Only entries whose DOFs are actually driven by *actuator*
+        are written back to ``component.<name>``; the rest are ignored.
 
         Args:
-            actuator: An actuator instance with input_indices and parameter arrays.
-            name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
-            values: New parameter values shaped (world_count, dofs_per_world). Non-actuated DOFs are ignored.
-            mask (array, optional): Per-world mask (world_count,). Only masked worlds are updated.
+            actuator: Actuator instance whose DOF indices determine which
+                view DOFs are considered actuated.
+            component: The component that owns the parameter — a
+                :class:`~newton.actuators.Controller`,
+                :class:`~newton.actuators.Clamping`, or
+                :class:`~newton.actuators.Delay` instance.
+            name: Attribute name on *component* (e.g. ``"kp"``, ``"max_effort"``,
+                ``"delay_steps"``).
+            values: New parameter values shaped ``(world_count, dofs_per_world)``
+                where ``dofs_per_world`` is the total number of DOFs in the view.
+            mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
             return
 
-        dst = getattr(actuator, name)
+        dst = getattr(component, name)
         dofs_per_world = len(mapping) // self.world_count
         expected_shape = (self.world_count, dofs_per_world, *dst.shape[1:])
 
@@ -1781,7 +1813,7 @@ class ArticulationView:
                 raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
 
         wp.launch(
-            scatter_actuator_with_mask_kernel,
+            _scatter_masked_2d_kernel,
             dim=(self.world_count, dofs_per_world),
             inputs=[values, mapping, mask, dofs_per_world],
             outputs=[dst],

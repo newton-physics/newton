@@ -3,6 +3,7 @@
 
 import math
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -12,6 +13,20 @@ from newton.sensors import SensorRaycast
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 EXPORT_IMAGES = False
+SENSOR_RAYCAST_DEPRECATION_MESSAGE = (
+    "SensorRaycast is deprecated; use SensorTiledCamera instead. "
+    "See the SensorRaycast class docstring for a migration example."
+)
+
+
+def create_sensor_raycast(*args, **kwargs):
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=SENSOR_RAYCAST_DEPRECATION_MESSAGE,
+            category=DeprecationWarning,
+        )
+        return SensorRaycast(*args, **kwargs)
 
 
 def save_depth_image_as_grayscale(depth_image: np.ndarray, filename: str):
@@ -135,7 +150,7 @@ def test_sensor_raycast_cubemap(test: unittest.TestCase, device, export_images: 
     ]
 
     # Create raycast sensor (we'll update camera parameters for each view)
-    sensor = SensorRaycast(
+    sensor = create_sensor_raycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),  # At origin
         camera_direction=(1.0, 0.0, 0.0),  # Initial direction (will be updated)
@@ -178,7 +193,7 @@ def test_sensor_raycast_particles_hit(test: unittest.TestCase, device: str):
 
     state = model.state()
 
-    sensor = SensorRaycast(
+    sensor = create_sensor_raycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),  # Camera looks toward +Z where the particle sits
@@ -207,7 +222,7 @@ def test_sensor_raycast_particles_requires_positive_step(test: unittest.TestCase
 
     state = model.state()
 
-    sensor = SensorRaycast(
+    sensor = create_sensor_raycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -231,7 +246,7 @@ def test_sensor_raycast_include_particles_without_particles(test: unittest.TestC
 
     state = model.state()
 
-    sensor = SensorRaycast(
+    sensor = create_sensor_raycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -263,7 +278,7 @@ def test_sensor_raycast_mixed_hits_prefers_closest_shape(test: unittest.TestCase
     # Update body transforms (important for raycast operations)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    sensor = SensorRaycast(
+    sensor = create_sensor_raycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -295,7 +310,7 @@ def test_sensor_raycast_mixed_hits_prefers_closest_particle(test: unittest.TestC
     # Update body transforms (important for raycast operations)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    sensor = SensorRaycast(
+    sensor = create_sensor_raycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -326,7 +341,7 @@ def test_sensor_raycast_particle_step_truncation_warns(test: unittest.TestCase, 
 
     state = model.state()
 
-    sensor = SensorRaycast(
+    sensor = create_sensor_raycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -363,7 +378,7 @@ def test_sensor_raycast_single_pixel_hit(test: unittest.TestCase, device):
     state = model.state()
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    sensor = SensorRaycast(
+    sensor = create_sensor_raycast(
         model=model,
         camera_position=camera_position,
         camera_direction=camera_direction,
@@ -404,7 +419,7 @@ def test_sensor_raycast_ground_plane(test: unittest.TestCase, device: str):
     state = model.state()
 
     # Camera at z=5 looking straight down -- should see ground at z=0
-    sensor = SensorRaycast(
+    sensor = create_sensor_raycast(
         model=model,
         camera_position=(0.0, 0.0, 5.0),
         camera_direction=(0.0, 0.0, -1.0),
@@ -436,7 +451,7 @@ def test_sensor_raycast_finite_plane_boundary(test: unittest.TestCase, device: s
     state = model.state()
 
     # Ray straight down at center (x=0) -> should hit
-    sensor_center = SensorRaycast(
+    sensor_center = create_sensor_raycast(
         model=model,
         camera_position=(0.0, 0.0, 5.0),
         camera_direction=(0.0, 0.0, -1.0),
@@ -451,7 +466,7 @@ def test_sensor_raycast_finite_plane_boundary(test: unittest.TestCase, device: s
     test.assertAlmostEqual(float(depth_center[0, 0]), 5.0, delta=0.1, msg="Center ray should hit finite plane")
 
     # Ray straight down at x=3 (outside half-extent 2) -> should miss
-    sensor_outside = SensorRaycast(
+    sensor_outside = create_sensor_raycast(
         model=model,
         camera_position=(3.0, 0.0, 5.0),
         camera_direction=(0.0, 0.0, -1.0),
@@ -479,7 +494,7 @@ def test_sensor_raycast_ellipsoid(test: unittest.TestCase, device: str):
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
     # Camera at origin looking +Z toward the ellipsoid
-    sensor = SensorRaycast(
+    sensor = create_sensor_raycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -499,7 +514,28 @@ def test_sensor_raycast_ellipsoid(test: unittest.TestCase, device: str):
 
 
 class TestSensorRaycast(unittest.TestCase):
-    pass
+    def test_sensor_raycast_warns_deprecated(self):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        with wp.ScopedDevice("cpu"):
+            model = builder.finalize()
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            SensorRaycast(
+                model=model,
+                camera_position=(0.0, 0.0, 0.0),
+                camera_direction=(0.0, 0.0, 1.0),
+                camera_up=(0.0, 1.0, 0.0),
+                fov_radians=0.1,
+                width=1,
+                height=1,
+                max_distance=1.0,
+            )
+
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertEqual(str(caught[0].message), SENSOR_RAYCAST_DEPRECATION_MESSAGE)
+        self.assertTrue(caught[0].filename.endswith("test_sensor_raycast.py"))
 
 
 # Register test for all available devices

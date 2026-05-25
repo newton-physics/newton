@@ -63,6 +63,13 @@ class PIDControllerData:
     decimation: wp.array | None = None
     """The control decimation for each world expressed as a multiple of simulation steps."""
 
+    @property
+    def device(self) -> wp.DeviceLike:
+        """The device used for allocations and execution."""
+        if self.q_j_ref is None:
+            raise RuntimeError("Controller data is not allocated. Call finalize() first.")
+        return self.q_j_ref.device
+
 
 ###
 # Kernels
@@ -72,18 +79,15 @@ class PIDControllerData:
 @wp.kernel
 def _reset_jointspace_pid_references(
     # Inputs
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_act_type: wp.array(dtype=int32),
-    model_joints_num_dofs: wp.array(dtype=int32),
-    model_joints_dofs_offset: wp.array(dtype=int32),
-    model_joints_actuated_dofs_offset: wp.array(dtype=int32),
-    state_joints_q_j: wp.array(dtype=float32),
-    state_joints_dq_j: wp.array(dtype=float32),
+    model_joints_wid: wp.array[int32],
+    model_joints_act_type: wp.array[int32],
+    model_joints_dofs_offset: wp.array[int32],
+    model_joints_actuated_dofs_offset: wp.array[int32],
+    state_joints_q_j: wp.array[float32],
+    state_joints_dq_j: wp.array[float32],
     # Outputs
-    controller_q_j_ref: wp.array(dtype=float32),
-    controller_dq_j_ref: wp.array(dtype=float32),
+    controller_q_j_ref: wp.array[float32],
+    controller_dq_j_ref: wp.array[float32],
 ):
     """
     A kernel to reset motion references of the joint-space controller.
@@ -94,26 +98,15 @@ def _reset_jointspace_pid_references(
     # Retrieve the joint actuation type
     act_type = model_joints_act_type[jid]
 
-    # Retrieve the world index from the thread indices
-    wid = model_joints_wid[jid]
-
     # Only proceed for force actuated joints and at
     # simulation steps matching the control decimation
     if act_type != JointActuationType.FORCE:
         return
 
-    # Retrieve the offset of the world's joints in the global DoF vector
-    world_dof_offset = model_info_joint_dofs_offset[wid]
-    world_actuated_dof_offset = model_info_joint_actuated_dofs_offset[wid]
-
-    # Retrieve the number of DoFs and offset of the joint
-    num_dofs = model_joints_num_dofs[jid]
+    # Retrieve the number of DoFs and offsets of the joint
     dofs_offset = model_joints_dofs_offset[jid]
+    num_dofs = model_joints_dofs_offset[jid + 1] - dofs_offset
     actuated_dofs_offset = model_joints_actuated_dofs_offset[jid]
-
-    # Compute the global DoF offset of the joint
-    dofs_offset += world_dof_offset
-    actuated_dofs_offset += world_actuated_dof_offset
 
     # Iterate over the DoFs of the joint
     for dof in range(num_dofs):
@@ -135,28 +128,25 @@ def _reset_jointspace_pid_references(
 @wp.kernel
 def _compute_jointspace_pid_control(
     # Inputs
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_act_type: wp.array(dtype=int32),
-    model_joints_num_dofs: wp.array(dtype=int32),
-    model_joints_dofs_offset: wp.array(dtype=int32),
-    model_joints_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joints_tau_j_max: wp.array(dtype=float32),
-    model_time_dt: wp.array(dtype=float32),
-    state_time_steps: wp.array(dtype=int32),
-    state_joints_q_j: wp.array(dtype=float32),
-    state_joints_dq_j: wp.array(dtype=float32),
-    controller_q_j_ref: wp.array(dtype=float32),
-    controller_dq_j_ref: wp.array(dtype=float32),
-    controller_tau_j_ref: wp.array(dtype=float32),
-    controller_K_p: wp.array(dtype=float32),
-    controller_K_i: wp.array(dtype=float32),
-    controller_K_d: wp.array(dtype=float32),
-    controller_integrator: wp.array(dtype=float32),
-    controller_decimation: wp.array(dtype=int32),
+    model_joints_wid: wp.array[int32],
+    model_joints_act_type: wp.array[int32],
+    model_joints_dofs_offset: wp.array[int32],
+    model_joints_actuated_dofs_offset: wp.array[int32],
+    model_joints_tau_j_max: wp.array[float32],
+    model_time_dt: wp.array[float32],
+    state_time_steps: wp.array[int32],
+    state_joints_q_j: wp.array[float32],
+    state_joints_dq_j: wp.array[float32],
+    controller_q_j_ref: wp.array[float32],
+    controller_dq_j_ref: wp.array[float32],
+    controller_tau_j_ref: wp.array[float32],
+    controller_K_p: wp.array[float32],
+    controller_K_i: wp.array[float32],
+    controller_K_d: wp.array[float32],
+    controller_integrator: wp.array[float32],
+    controller_decimation: wp.array[int32],
     # Outputs
-    control_tau_j: wp.array(dtype=float32),
+    control_tau_j: wp.array[float32],
 ):
     """
     A kernel to compute joint-space PID control outputs for force-actuated joints.
@@ -188,18 +178,10 @@ def _compute_jointspace_pid_control(
     # decimation to get the effective control time-step
     dt *= float32(decimation)
 
-    # Retrieve the offset of the world's joints in the global DoF vector
-    world_dof_offset = model_info_joint_dofs_offset[wid]
-    world_actuated_dof_offset = model_info_joint_actuated_dofs_offset[wid]
-
-    # Retrieve the number of DoFs and offset of the joint
-    num_dofs = model_joints_num_dofs[jid]
+    # Retrieve the number of DoFs and offsets of the joint
     dofs_offset = model_joints_dofs_offset[jid]
+    num_dofs = model_joints_dofs_offset[jid + 1] - dofs_offset
     actuated_dofs_offset = model_joints_actuated_dofs_offset[jid]
-
-    # Compute the global DoF offset of the joint
-    dofs_offset += world_dof_offset
-    actuated_dofs_offset += world_actuated_dof_offset
 
     # Iterate over the DoFs of the joint
     for dof in range(num_dofs):
@@ -270,11 +252,8 @@ def reset_jointspace_pid_references(
         dim=model.size.sum_of_num_joints,
         inputs=[
             # Inputs
-            model.info.joint_dofs_offset,
-            model.info.joint_actuated_dofs_offset,
             model.joints.wid,
             model.joints.act_type,
-            model.joints.num_dofs,
             model.joints.dofs_offset,
             model.joints.actuated_dofs_offset,
             state.q_j,
@@ -283,6 +262,7 @@ def reset_jointspace_pid_references(
             controller.q_j_ref,
             controller.dq_j_ref,
         ],
+        device=controller.device,
     )
 
 
@@ -303,11 +283,8 @@ def compute_jointspace_pid_control(
         dim=model.size.sum_of_num_joints,
         inputs=[
             # Inputs
-            model.info.joint_dofs_offset,
-            model.info.joint_actuated_dofs_offset,
             model.joints.wid,
             model.joints.act_type,
-            model.joints.num_dofs,
             model.joints.dofs_offset,
             model.joints.actuated_dofs_offset,
             model.joints.tau_j_max,
@@ -326,6 +303,7 @@ def compute_jointspace_pid_control(
             # Outputs
             control.tau_j,
         ],
+        device=control.device,
     )
 
 
@@ -348,7 +326,6 @@ class JointSpacePIDController:
         K_i: FloatArrayLike | None = None,
         K_d: FloatArrayLike | None = None,
         decimation: IntArrayLike | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         A simple PID controller in joint space.
@@ -361,18 +338,17 @@ class JointSpacePIDController:
             K_d (FloatArrayLike | None): Derivative gains per actuated joint DoF.
             decimation (IntArrayLike | None): Control decimation for each world
                 expressed as a multiple of simulation steps.
-            device (wp.DeviceLike | None): Device to use for allocations and execution.
         """
 
-        # Cache the device
-        self._device: wp.DeviceLike = device
+        # Declare the device cache
+        self._device: wp.DeviceLike = None
 
         # Declare the internal controller data
         self._data: PIDControllerData | None = None
 
         # If a model is provided, allocate the controller data
         if model is not None:
-            self.finalize(model, K_p, K_i, K_d, decimation, device)
+            self.finalize(model, K_p, K_i, K_d, decimation)
 
     ###
     # Properties
@@ -401,7 +377,6 @@ class JointSpacePIDController:
         K_i: FloatArrayLike,
         K_d: FloatArrayLike,
         decimation: IntArrayLike | None = None,
-        device: wp.DeviceLike = None,
     ) -> None:
         """
         Allocates all internal data arrays of the controller.
@@ -413,7 +388,6 @@ class JointSpacePIDController:
             K_d (FloatArrayLike): Derivative gains per actuated joint DoF.
             decimation (IntArrayLike | None): Control decimation for each world expressed
                 as a multiple of simulation steps. Defaults to 1 for all worlds if None.
-            device (wp.DeviceLike | None): Device to use for allocations and execution.
 
         Raises:
             ValueError: If the model has no actuated DoFs.
@@ -447,9 +421,8 @@ class JointSpacePIDController:
         if decimation is not None and len(decimation) != model.size.num_worlds:
             raise ValueError(f"decimation must have length {model.size.num_worlds}, but has length {len(decimation)}")
 
-        # Override the device if provided
-        if device is not None:
-            self._device = device
+        # Use the model's device
+        self._device = model.device
 
         # Set default decimation if not provided
         if decimation is None:

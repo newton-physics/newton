@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast, overload
+from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
@@ -409,6 +410,11 @@ def _extract_trimesh_texture(visual_or_material, base_dir: str) -> np.ndarray | 
         if base_color_texture is not None:
             image = getattr(base_color_texture, "image", None)
             image_path = image_path or getattr(base_color_texture, "image_path", None)
+            if image is None:
+                if isinstance(base_color_texture, (str, os.PathLike)):
+                    image_path = image_path or os.fspath(base_color_texture)
+                else:
+                    image = base_color_texture
 
     if image is not None:
         try:
@@ -497,7 +503,7 @@ def load_meshes_from_file(
 
     def _parse_dae_material_colors(
         path: str,
-    ) -> tuple[list[str], dict[str, dict[str, float | tuple[float, float, float] | None]]]:
+    ) -> tuple[list[str], dict[str, dict[str, float | str | tuple[float, float, float] | None]]]:
         try:
             tree = ET.parse(path)
             root = tree.getroot()
@@ -507,15 +513,64 @@ def load_meshes_from_file(
         def strip(tag: str) -> str:
             return tag.split("}", 1)[-1] if "}" in tag else tag
 
+        image_paths: dict[str, str] = {}
+        for image in root.iter():
+            if strip(image.tag) != "image":
+                continue
+            image_id = image.attrib.get("id")
+            image_name = image.attrib.get("name")
+            image_path = None
+            for child in image.iter():
+                if strip(child.tag) == "init_from" and child.text:
+                    image_path = child.text.strip()
+                    break
+            if image_path:
+                if image_id:
+                    image_paths[image_id] = image_path
+                if image_name:
+                    image_paths[image_name] = image_path
+
+        def resolve_dae_texture_path(texture_path: str | None) -> str | None:
+            if not texture_path:
+                return None
+            texture_path = image_paths.get(texture_path.lstrip("#"), texture_path)
+            parsed = urlparse(texture_path)
+            if parsed.scheme in {"file", "http", "https", "data"}:
+                return texture_path
+            if not os.path.isabs(texture_path):
+                texture_path = os.path.abspath(os.path.join(base_dir, texture_path))
+            return texture_path
+
         # Map effect id -> material properties
-        effect_props: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+        effect_props: dict[str, dict[str, float | str | tuple[float, float, float] | None]] = {}
         for effect in root.iter():
             if strip(effect.tag) != "effect":
                 continue
             effect_id = effect.attrib.get("id")
             if not effect_id:
                 continue
+            surface_images: dict[str, str] = {}
+            sampler_surfaces: dict[str, str] = {}
+            for newparam in effect.iter():
+                if strip(newparam.tag) != "newparam":
+                    continue
+                sid = newparam.attrib.get("sid")
+                if not sid:
+                    continue
+                for child in newparam:
+                    child_tag = strip(child.tag)
+                    if child_tag == "surface":
+                        for init in child.iter():
+                            if strip(init.tag) == "init_from" and init.text:
+                                surface_images[sid] = init.text.strip()
+                                break
+                    elif child_tag == "sampler2D":
+                        for source in child.iter():
+                            if strip(source.tag) == "source" and source.text:
+                                sampler_surfaces[sid] = source.text.strip()
+                                break
             diffuse_color = None
+            diffuse_texture = None
             specular_color = None
             specular_intensity = None
             shininess = None
@@ -530,9 +585,16 @@ def load_meshes_from_file(
                 for node in shader.iter():
                     tag = strip(node.tag)
                     if tag == "diffuse":
-                        for col in node.iter():
-                            if strip(col.tag) == "color" and col.text:
-                                values = [float(x) for x in col.text.strip().split()]
+                        for diffuse_node in node.iter():
+                            diffuse_tag = strip(diffuse_node.tag)
+                            if diffuse_tag == "texture":
+                                sampler_id = diffuse_node.attrib.get("texture")
+                                surface_id = sampler_surfaces.get(sampler_id, sampler_id)
+                                image_id = surface_images.get(surface_id, surface_id)
+                                diffuse_texture = resolve_dae_texture_path(image_id)
+                                break
+                            if diffuse_tag == "color" and diffuse_node.text:
+                                values = [float(x) for x in diffuse_node.text.strip().split()]
                                 if len(values) >= 3:
                                     # DAE diffuse colors are commonly authored in linear space.
                                     # Convert to sRGB for the viewer shader (which converts to linear).
@@ -567,7 +629,7 @@ def load_meshes_from_file(
                                     shininess = None
                                 break
                         continue
-                if diffuse_color is not None:
+                if diffuse_color is not None or diffuse_texture is not None:
                     break
             metallic = None
             if specular_color is not None:
@@ -579,15 +641,16 @@ def load_meshes_from_file(
                 if shininess > 1.0:
                     shininess = min(shininess / 128.0, 1.0)
                 roughness = float(np.clip(1.0 - shininess, 0.0, 1.0))
-            if diffuse_color is not None:
+            if diffuse_color is not None or diffuse_texture is not None:
                 effect_props[effect_id] = {
                     "color": diffuse_color,
+                    "texture": diffuse_texture,
                     "metallic": metallic,
                     "roughness": roughness,
                 }
 
         # Map material id/name -> material properties
-        material_colors: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+        material_colors: dict[str, dict[str, float | str | tuple[float, float, float] | None]] = {}
         for material in root.iter():
             if strip(material.tag) != "material":
                 continue
@@ -620,7 +683,7 @@ def load_meshes_from_file(
         return face_materials, material_colors
 
     dae_face_materials: list[str] = []
-    dae_material_colors: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+    dae_material_colors: dict[str, dict[str, float | str | tuple[float, float, float] | None]] = {}
     if filename.lower().endswith(".dae"):
         dae_face_materials, dae_material_colors = _parse_dae_material_colors(filename)
 
@@ -667,6 +730,8 @@ def load_meshes_from_file(
             if sub_normals is None or force_smooth:
                 sub_normals = smooth_vertex_normals_by_position(sub_vertices, remapped_faces)
             sub_uvs = mesh_uvs[used] if mesh_uvs is not None else None
+            if mesh_texture is not None and mat_color is None:
+                mat_color = (1.0, 1.0, 1.0)
 
             meshes.append(
                 Mesh(
@@ -728,6 +793,7 @@ def load_meshes_from_file(
                 mat_color = mat_props.get("color")
                 mat_roughness = mat_props.get("roughness")
                 mat_metallic = mat_props.get("metallic")
+                mat_texture = mat_props.get("texture", texture)
                 add_mesh_from_faces(
                     mat_faces,
                     mat_color=mat_color,
@@ -736,7 +802,7 @@ def load_meshes_from_file(
                     mesh_vertices=vertices,
                     mesh_normals=normals,
                     mesh_uvs=uvs,
-                    mesh_texture=texture,
+                    mesh_texture=mat_texture,
                 )
             continue
 
@@ -1398,3 +1464,239 @@ def solidify_mesh(
     faces = out_faces.numpy()
     vertices = out_vertices.numpy()
     return faces, vertices
+
+
+def validate_triangle_mesh(
+    vertices: np.ndarray,
+    indices: np.ndarray,
+    *,
+    min_area: float = 1e-6,
+    max_aspect_ratio: float = 20.0,
+    min_angle_deg: float = 5.0,
+    label: str | None = None,
+    stacklevel: int = 2,
+) -> None:
+    """Check a triangle mesh for quality issues and emit warnings.
+
+    Inspects the input triangle mesh for degenerate or sliver triangles
+    and extreme interior angles. Non-manifold-edge detection is *not*
+    performed here; :class:`MeshAdjacency` emits its own warning during
+    construction and is built by every builder path that accepts a
+    triangle mesh, so going through ``add_cloth_mesh`` /
+    ``add_soft_mesh`` already covers it. Standalone callers who need a
+    non-manifold check should construct ``MeshAdjacency(indices)``
+    themselves. Each detected problem is reported via
+    :func:`warnings.warn`.
+
+    Args:
+        vertices: Vertex positions [m], shape ``(N, 3)``.
+        indices: Triangle vertex indices, shape ``(F, 3)``.
+        min_area: Minimum triangle area [m²]. Default ``1e-6`` (1 mm²).
+        max_aspect_ratio: Maximum longest-edge / shortest-altitude ratio.
+            Default ``20.0`` — flags slivers whose worst interior angle
+            is below ~3° while staying quiet on rough-but-fine
+            production meshes.
+        min_angle_deg: Minimum interior angle [deg]. Default ``5.0``.
+        label: Optional name included in the warning message so callers
+            can identify which mesh tripped the warning when validating
+            many meshes.
+        stacklevel: Passed to :func:`warnings.warn` so the warning points at
+            the caller's frame.
+    """
+    vertices = np.asarray(vertices, dtype=float)
+    raw = np.asarray(indices, dtype=np.intp)
+    if raw.size > 0 and raw.ndim == 1 and raw.size % 3 != 0:
+        warnings.warn("Triangle index array length is not a multiple of 3.", stacklevel=stacklevel)
+        return
+    try:
+        indices = raw.reshape(-1, 3)
+    except ValueError:
+        warnings.warn("Triangle index array must be flat or have shape (N, 3).", stacklevel=stacklevel)
+        return
+    n_verts = len(vertices)
+    n_faces = len(indices)
+
+    if n_faces == 0:
+        warnings.warn("Cloth mesh has no triangles.", stacklevel=stacklevel)
+        return
+
+    if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
+        warnings.warn(f"Triangle indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        return
+
+    v0 = vertices[indices[:, 0]]
+    v1 = vertices[indices[:, 1]]
+    v2 = vertices[indices[:, 2]]
+
+    e01 = v1 - v0
+    e12 = v2 - v1
+    e20 = v0 - v2
+
+    len01 = np.linalg.norm(e01, axis=1)
+    len12 = np.linalg.norm(e12, axis=1)
+    len20 = np.linalg.norm(e20, axis=1)
+    longest = np.maximum(len01, np.maximum(len12, len20))
+
+    cross = np.cross(e01, -e20)
+    area = 0.5 * np.linalg.norm(cross, axis=1)
+
+    eps = 1e-20
+    shortest_alt = 2.0 * area / np.maximum(longest, eps)
+    aspect = longest / np.maximum(shortest_alt, eps)
+
+    def _ang(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        an = np.maximum(np.linalg.norm(a, axis=1), eps)
+        bn = np.maximum(np.linalg.norm(b, axis=1), eps)
+        cos = np.einsum("ij,ij->i", a, b) / (an * bn)
+        return np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+
+    min_angle_arr = np.minimum(_ang(e01, -e20), np.minimum(_ang(-e01, e12), _ang(-e12, e20)))
+
+    issues: list[str] = []
+
+    n_degen = int(np.sum(area < min_area))
+    if n_degen > 0:
+        issues.append(f"{n_degen} triangle(s) with area < {min_area} m\u00b2")
+
+    n_sliver = int(np.sum(aspect > max_aspect_ratio))
+    if n_sliver > 0:
+        issues.append(
+            f"{n_sliver} sliver triangle(s) with aspect ratio > {max_aspect_ratio} (worst: {float(aspect.max()):.1f})"
+        )
+
+    n_small_angle = int(np.sum(min_angle_arr < min_angle_deg))
+    if n_small_angle > 0:
+        issues.append(
+            f"{n_small_angle} triangle(s) with minimum angle < {min_angle_deg}\u00b0"
+            f" (smallest: {float(min_angle_arr.min()):.1f}\u00b0)"
+        )
+
+    if not issues:
+        return
+
+    prefix = "Mesh quality warning"
+    if label is not None:
+        prefix += f" [{label}]"
+    msg = (
+        f"{prefix} ({n_verts} vertices, {n_faces} triangles):\n"
+        + "\n".join(f"  - {issue}" for issue in issues)
+        + "\nConsider remeshing the input geometry."
+    )
+    warnings.warn(msg, stacklevel=stacklevel)
+
+
+def validate_tet_mesh(
+    vertices: np.ndarray,
+    indices: np.ndarray,
+    *,
+    min_volume: float = 1e-9,
+    min_eta: float = 0.01,
+    label: str | None = None,
+    stacklevel: int = 2,
+) -> None:
+    """Check a tetrahedral mesh for quality issues and emit warnings.
+
+    Inspects the input tet mesh for inverted elements, small volumes,
+    sliver tetrahedra, and non-manifold faces. Each detected problem is
+    reported via :func:`warnings.warn`.
+
+    The shape quality metric used is:
+
+    .. math::
+
+        \\eta = \\frac{12\\,(3\\,|V|)^{2/3}}{\\sum_i l_i^2}
+
+    where *V* is the signed volume and *l_i* are the six edge lengths.
+    For a regular tetrahedron :math:`\\eta = 1`; degenerate elements
+    approach zero.
+
+    Args:
+        vertices: Vertex positions [m], shape ``(N, 3)``.
+        indices: Tetrahedron vertex indices, shape ``(T, 4)``.
+        min_volume: Minimum absolute tet volume [m³]. Default ``1e-9``
+            (1 mm³).
+        min_eta: Minimum shape quality eta. Default ``0.01``.
+        label: Optional name included in the warning message so callers
+            can identify which mesh tripped the warning when validating
+            many meshes.
+        stacklevel: Passed to :func:`warnings.warn`.
+    """
+    vertices = np.asarray(vertices, dtype=float)
+    raw = np.asarray(indices, dtype=np.intp)
+    if raw.size > 0 and raw.ndim == 1 and raw.size % 4 != 0:
+        warnings.warn("Tet index array length is not a multiple of 4.", stacklevel=stacklevel)
+        return
+    try:
+        indices = raw.reshape(-1, 4)
+    except ValueError:
+        warnings.warn("Tet index array must be flat or have shape (N, 4).", stacklevel=stacklevel)
+        return
+    n_tets = len(indices)
+
+    if n_tets == 0:
+        warnings.warn("Soft mesh has no tetrahedra.", stacklevel=stacklevel)
+        return
+
+    n_verts = len(vertices)
+    if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
+        warnings.warn(f"Tet indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        return
+
+    v0 = vertices[indices[:, 0]]
+    v1 = vertices[indices[:, 1]]
+    v2 = vertices[indices[:, 2]]
+    v3 = vertices[indices[:, 3]]
+
+    d1 = v1 - v0
+    d2 = v2 - v0
+    d3 = v3 - v0
+    vol = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) / 6.0
+
+    issues: list[str] = []
+
+    n_inverted = int(np.sum(vol < 0))
+    if n_inverted > 0:
+        issues.append(f"{n_inverted}/{n_tets} inverted tetrahedron(s) (negative volume)")
+
+    n_degen = int(np.sum(np.abs(vol) < min_volume))
+    if n_degen > 0:
+        issues.append(f"{n_degen}/{n_tets} tetrahedron(s) with volume < {min_volume} m\u00b3")
+
+    e01 = v1 - v0
+    e02 = v2 - v0
+    e03 = v3 - v0
+    e12 = v2 - v1
+    e13 = v3 - v1
+    e23 = v3 - v2
+    l_sq_sum = (
+        np.sum(e01**2, axis=1)
+        + np.sum(e02**2, axis=1)
+        + np.sum(e03**2, axis=1)
+        + np.sum(e12**2, axis=1)
+        + np.sum(e13**2, axis=1)
+        + np.sum(e23**2, axis=1)
+    )
+    eps = 1e-30
+    abs_vol = np.abs(vol)
+    eta = 12.0 * np.cbrt(3.0 * abs_vol) ** 2 / np.maximum(l_sq_sum, eps)
+    n_sliver = int(np.sum(eta < min_eta))
+    if n_sliver > 0:
+        issues.append(
+            f"{n_sliver}/{n_tets} sliver tetrahedron(s) (shape quality eta < {min_eta}; worst: {float(eta.min()):.4f})"
+        )
+
+    face_combos = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]
+    all_faces = np.concatenate([np.sort(indices[:, combo], axis=1) for combo in face_combos])
+    _, counts = np.unique(all_faces, axis=0, return_counts=True)
+    n_nonmanifold = int(np.sum(counts > 2))
+    if n_nonmanifold > 0:
+        issues.append(f"{n_nonmanifold} non-manifold face(s) shared by more than 2 tetrahedra")
+
+    if not issues:
+        return
+
+    prefix = "Tet mesh quality warning"
+    if label is not None:
+        prefix += f" [{label}]"
+    msg = f"{prefix} ({len(vertices)} vertices, {n_tets} tetrahedra):\n" + "\n".join(f"  - {issue}" for issue in issues)
+    warnings.warn(msg, stacklevel=stacklevel)

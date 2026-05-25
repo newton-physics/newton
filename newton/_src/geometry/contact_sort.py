@@ -62,12 +62,15 @@ class _SimpleContactArrays:
     normal: wp.array[wp.vec3]
     penetration: wp.array[float]
     tangent: wp.array[wp.vec3]
+    match_index: wp.array[wp.int32]
     pair_buf: wp.array[wp.vec2i]
     position_buf: wp.array[wp.vec3]
     normal_buf: wp.array[wp.vec3]
     penetration_buf: wp.array[float]
     tangent_buf: wp.array[wp.vec3]
+    match_index_buf: wp.array[wp.int32]
     has_tangent: int
+    has_match_index: int
 
 
 @wp.kernel(enable_backward=False)
@@ -82,6 +85,8 @@ def _backup_simple_kernel(data: _SimpleContactArrays, count: wp.array[int]):
     data.penetration_buf[i] = data.penetration[i]
     if data.has_tangent != 0:
         data.tangent_buf[i] = data.tangent[i]
+    if data.has_match_index != 0:
+        data.match_index_buf[i] = data.match_index[i]
 
 
 @wp.kernel(enable_backward=False)
@@ -97,6 +102,8 @@ def _gather_simple_kernel(data: _SimpleContactArrays, perm: wp.array[wp.int32], 
     data.penetration[i] = data.penetration_buf[p]
     if data.has_tangent != 0:
         data.tangent[i] = data.tangent_buf[p]
+    if data.has_match_index != 0:
+        data.match_index[i] = data.match_index_buf[p]
 
 
 @wp.struct
@@ -116,6 +123,7 @@ class _FullContactArrays:
     stiffness: wp.array[float]
     damping: wp.array[float]
     friction: wp.array[float]
+    match_index: wp.array[wp.int32]
     shape0_buf: wp.array[wp.int32]
     shape1_buf: wp.array[wp.int32]
     point0_buf: wp.array[wp.vec3]
@@ -129,7 +137,9 @@ class _FullContactArrays:
     stiffness_buf: wp.array[float]
     damping_buf: wp.array[float]
     friction_buf: wp.array[float]
+    match_index_buf: wp.array[wp.int32]
     has_shape_props: int
+    has_match_index: int
 
 
 @wp.kernel(enable_backward=False)
@@ -152,6 +162,8 @@ def _backup_full_kernel(data: _FullContactArrays, count: wp.array[int]):
         data.stiffness_buf[i] = data.stiffness[i]
         data.damping_buf[i] = data.damping[i]
         data.friction_buf[i] = data.friction[i]
+    if data.has_match_index != 0:
+        data.match_index_buf[i] = data.match_index[i]
 
 
 @wp.kernel(enable_backward=False)
@@ -175,6 +187,8 @@ def _gather_full_kernel(data: _FullContactArrays, perm: wp.array[wp.int32], coun
         data.stiffness[i] = data.stiffness_buf[p]
         data.damping[i] = data.damping_buf[p]
         data.friction[i] = data.friction_buf[p]
+    if data.has_match_index != 0:
+        data.match_index[i] = data.match_index_buf[p]
 
 
 class ContactSorter:
@@ -205,6 +219,7 @@ class ContactSorter:
             self._simple_normal_buf = wp.zeros(capacity, dtype=wp.vec3)
             self._simple_penetration_buf = wp.zeros(capacity, dtype=float)
             self._simple_tangent_buf = wp.zeros(capacity, dtype=wp.vec3)
+            self._simple_match_index_buf = wp.zeros(1, dtype=wp.int32)
 
             # Scratch buffers for the full gather (CollisionPipeline.collide path).
             self._full_shape0_buf = wp.zeros(capacity, dtype=wp.int32)
@@ -225,6 +240,7 @@ class ContactSorter:
                 self._full_stiffness_buf = wp.zeros(0, dtype=float)
                 self._full_damping_buf = wp.zeros(0, dtype=float)
                 self._full_friction_buf = wp.zeros(0, dtype=float)
+            self._full_match_index_buf = wp.zeros(capacity, dtype=wp.int32)
 
     # ------------------------------------------------------------------
     # Public API
@@ -240,6 +256,7 @@ class ContactSorter:
         contact_normal: wp.array,
         contact_penetration: wp.array,
         contact_tangent: wp.array | None = None,
+        match_index: wp.array | None = None,
         device: Devicelike = None,
     ) -> None:
         """Sort contacts written through the simplified narrow-phase writer.
@@ -254,12 +271,16 @@ class ContactSorter:
             contact_normal: vec3 contact normals.
             contact_penetration: float penetration depths.
             contact_tangent: Optional vec3 tangent array.
+            match_index: Optional int32 array of per-contact match indices
+                from :class:`ContactMatcher`.  When provided, the array is
+                permuted alongside the other contact fields during sorting.
             device: Device to launch on.
         """
         n = self._capacity
         self._sort_and_permute(sort_keys, contact_count, device=device)
 
         has_tangent = contact_tangent is not None and contact_tangent.shape[0] > 0
+        has_match = match_index is not None and match_index.shape[0] > 0
 
         data = _SimpleContactArrays()
         data.pair = contact_pair
@@ -267,12 +288,15 @@ class ContactSorter:
         data.normal = contact_normal
         data.penetration = contact_penetration
         data.tangent = contact_tangent if has_tangent else self._simple_tangent_buf
+        data.match_index = match_index if has_match else self._simple_match_index_buf
         data.pair_buf = self._simple_pair_buf
         data.position_buf = self._simple_position_buf
         data.normal_buf = self._simple_normal_buf
         data.penetration_buf = self._simple_penetration_buf
         data.tangent_buf = self._simple_tangent_buf
+        data.match_index_buf = self._simple_match_index_buf
         data.has_tangent = 1 if has_tangent else 0
+        data.has_match_index = 1 if has_match else 0
 
         wp.launch(_backup_simple_kernel, dim=n, inputs=[data, contact_count], device=device)
         wp.launch(_gather_simple_kernel, dim=n, inputs=[data, self._sort_indices, contact_count], device=device)
@@ -295,6 +319,7 @@ class ContactSorter:
         stiffness: wp.array | None = None,
         damping: wp.array | None = None,
         friction: wp.array | None = None,
+        match_index: wp.array | None = None,
         device: Devicelike = None,
     ) -> None:
         """Sort contacts written through the full collide.py writer.
@@ -317,12 +342,16 @@ class ContactSorter:
             stiffness: Optional float per-contact stiffness.
             damping: Optional float per-contact damping.
             friction: Optional float per-contact friction.
+            match_index: Optional int32 array of per-contact match indices
+                from :class:`ContactMatcher`.  When provided, the array is
+                permuted alongside the other contact fields during sorting.
             device: Device to launch on.
         """
         n = self._capacity
         self._sort_and_permute(sort_keys, contact_count, device=device)
 
         has_props = self._has_shape_props
+        has_match = match_index is not None and match_index.shape[0] > 0
 
         data = _FullContactArrays()
         data.shape0 = shape0
@@ -342,6 +371,7 @@ class ContactSorter:
         data.friction = (
             friction if has_props and friction is not None and friction.shape[0] > 0 else self._full_friction_buf
         )
+        data.match_index = match_index if has_match else self._full_match_index_buf
         data.shape0_buf = self._full_shape0_buf
         data.shape1_buf = self._full_shape1_buf
         data.point0_buf = self._full_point0_buf
@@ -355,10 +385,49 @@ class ContactSorter:
         data.stiffness_buf = self._full_stiffness_buf
         data.damping_buf = self._full_damping_buf
         data.friction_buf = self._full_friction_buf
+        data.match_index_buf = self._full_match_index_buf
         data.has_shape_props = 1 if has_props else 0
+        data.has_match_index = 1 if has_match else 0
 
         wp.launch(_backup_full_kernel, dim=n, inputs=[data, contact_count], device=device)
         wp.launch(_gather_full_kernel, dim=n, inputs=[data, self._sort_indices, contact_count], device=device)
+
+    @property
+    def sorted_keys_view(self) -> wp.array:
+        """View of sorted keys (first half of internal buffer).
+
+        Valid only after :meth:`sort_simple` or :meth:`sort_full` returns.
+        The array has ``capacity`` elements; active entries are
+        ``sorted_keys_view[:contact_count]``.
+        """
+        return self._sort_keys_copy[: self._capacity]
+
+    @property
+    def scratch_pos_world(self) -> wp.array:
+        """Shared scratch buffer for external cross-frame world-space positions.
+
+        Sized ``capacity`` :class:`wp.vec3`.  Reserved for use by
+        :class:`~newton._src.geometry.contact_match.ContactMatcher`, which
+        repurposes the sorter's unused ``point0`` scratch between frames to
+        store the previous frame's world-space contact positions.
+
+        .. note::
+            The buffer is **only idle between frames** — i.e. between the end
+            of one :meth:`sort_full` call and the start of the next.  Writes
+            outside that window will corrupt the next sort.  Do not write to
+            this buffer unless you are implementing cross-frame state that
+            coordinates with the pipeline's per-frame call order.
+        """
+        return self._full_point0_buf
+
+    @property
+    def scratch_normal(self) -> wp.array:
+        """Shared scratch buffer for external cross-frame world-space normals.
+
+        Sized ``capacity`` :class:`wp.vec3`.  Companion to
+        :attr:`scratch_pos_world`; see that property for usage constraints.
+        """
+        return self._full_normal_buf
 
     # ------------------------------------------------------------------
     # Internal helpers

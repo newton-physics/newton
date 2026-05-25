@@ -168,11 +168,17 @@ class TestShapeDescriptors(unittest.TestCase):
         # Create a plane shape
         normal = (0.0, 1.0, 0.0)
         distance = 0.5
-        shape = PlaneShape(normal, distance)
+        width = 12.0
+        length = 15.0
+        shape = PlaneShape(normal, distance, width, length)
         # Check default values
         self.assertEqual(shape.name, "plane")
         self.assertEqual(shape.type, GeoType.PLANE)
-        self.assertEqual(shape.params, (*normal, distance))
+        self.assertEqual(shape.params, (width, length))
+        self.assertEqual(shape.normal, normal)
+        self.assertEqual(shape.distance, distance)
+        self.assertEqual(shape.width, width)
+        self.assertEqual(shape.length, length)
 
         # Check hash function
         shape_hash = hash(shape)

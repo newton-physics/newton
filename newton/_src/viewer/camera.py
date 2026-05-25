@@ -7,6 +7,9 @@ import numpy as np
 class Camera:
     """Camera class that encapsulates all camera settings and logic."""
 
+    DEFAULT_PIVOT_DISTANCE = 5.0
+    MIN_PIVOT_DISTANCE = 0.05
+
     def __init__(self, fov=45.0, near=0.01, far=1000.0, width=1280, height=720, pos=None, up_axis="Z"):
         """
         Initialize camera with given parameters.
@@ -50,12 +53,127 @@ class Camera:
         self.pitch = 0.0
         self.yaw = -180.0
 
+        self.pivot = self.pos + self.get_front() * self.DEFAULT_PIVOT_DISTANCE
+
+    @staticmethod
+    def _as_vec3(value):
+        """Convert a 3D sequence to pyglet's Vec3."""
+        from pyglet.math import Vec3 as PyVec3
+
+        return PyVec3(float(value[0]), float(value[1]), float(value[2]))
+
+    @staticmethod
+    def _length(value) -> float:
+        """Return the Euclidean length of a 3D vector."""
+        return float(np.linalg.norm((value[0], value[1], value[2])))
+
+    @staticmethod
+    def _clamp_pitch(pitch: float) -> float:
+        return max(min(float(pitch), 89.0), -89.0)
+
+    @staticmethod
+    def _wrap_yaw(yaw: float) -> float:
+        return (float(yaw) + 180.0) % 360.0 - 180.0
+
+    @property
+    def pivot_distance(self) -> float:
+        """Distance from the camera position to the orbit pivot [m]."""
+        distance = self._length(self.pivot - self.pos)
+        return max(distance, self.MIN_PIVOT_DISTANCE)
+
+    def _set_orientation_from_direction(self, direction):
+        """Set yaw and pitch from a normalized view direction."""
+        direction = self._as_vec3(direction).normalize()
+
+        if self.up_axis == 0:  # X up
+            pitch = np.rad2deg(np.arcsin(np.clip(direction.x, -1.0, 1.0)))
+            yaw = np.rad2deg(np.arctan2(direction.z, direction.y))
+        elif self.up_axis == 2:  # Z up
+            pitch = np.rad2deg(np.arcsin(np.clip(direction.z, -1.0, 1.0)))
+            yaw = np.rad2deg(np.arctan2(direction.y, direction.x))
+        else:  # Y up (default)
+            pitch = np.rad2deg(np.arcsin(np.clip(direction.y, -1.0, 1.0)))
+            yaw = np.rad2deg(np.arctan2(direction.z, direction.x))
+
+        self.pitch = self._clamp_pitch(pitch)
+        self.yaw = self._wrap_yaw(yaw)
+
+    def set_pivot(self, pivot):
+        """Set the orbit pivot without changing the current view direction."""
+        self.pivot = self._as_vec3(pivot)
+        if self._length(self.pivot - self.pos) <= self.MIN_PIVOT_DISTANCE:
+            self.sync_pivot_to_view(distance=self.MIN_PIVOT_DISTANCE)
+
+    def sync_pivot_to_view(self, distance: float | None = None):
+        """Place the orbit pivot along the current view direction.
+
+        Args:
+            distance: Optional distance from the camera to the pivot [m].
+        """
+        if distance is None:
+            distance = self.pivot_distance
+        distance = max(float(distance), self.MIN_PIVOT_DISTANCE)
+        self.pivot = self.pos + self.get_front() * distance
+
+    def look_at(self, target):
+        """Point the camera at a world-space target and set it as the pivot."""
+        target = self._as_vec3(target)
+        to_target = target - self.pos
+        distance = self._length(to_target)
+        if distance <= self.MIN_PIVOT_DISTANCE:
+            self.set_pivot(target)
+            return
+
+        self._set_orientation_from_direction(to_target)
+        self.pivot = target
+
+    def translate(self, delta):
+        """Translate the camera and pivot by the same world-space offset [m]."""
+        delta = self._as_vec3(delta)
+        self.pos += delta
+        self.pivot += delta
+
+    def orbit(self, delta_yaw: float, delta_pitch: float):
+        """Orbit the camera around the pivot.
+
+        Args:
+            delta_yaw: Yaw delta in degrees.
+            delta_pitch: Pitch delta in degrees.
+        """
+        distance = self.pivot_distance
+        self.yaw = self._wrap_yaw(self.yaw + delta_yaw)
+        self.pitch = self._clamp_pitch(self.pitch + delta_pitch)
+        self.pos = self.pivot - self.get_front() * distance
+
+    def pan(self, delta_right: float, delta_up: float):
+        """Pan the camera and pivot in the camera plane [m]."""
+        delta = self.get_right() * float(delta_right) + self.get_up() * float(delta_up)
+        self.translate(delta)
+
+    def dolly(self, amount: float):
+        """Move the camera toward or away from the pivot.
+
+        Positive values move the camera toward the pivot; negative values move it
+        away. The pivot remains fixed.
+        """
+        distance = self.pivot_distance
+        to_pivot = self.pivot - self.pos
+        if self._length(to_pivot) <= self.MIN_PIVOT_DISTANCE:
+            self.sync_pivot_to_view(distance=distance)
+            to_pivot = self.pivot - self.pos
+
+        direction_to_pivot = to_pivot.normalize()
+        self._set_orientation_from_direction(direction_to_pivot)
+
+        new_distance = max(distance * float(np.exp(-amount)), self.MIN_PIVOT_DISTANCE)
+        self.pos = self.pivot - direction_to_pivot * new_distance
+
     def get_front(self):
         """Get the camera front direction vector (read-only)."""
         from pyglet.math import Vec3 as PyVec3
 
         # Clamp pitch to avoid gimbal lock
-        pitch = max(min(self.pitch, 89.0), -89.0)
+        pitch = self._clamp_pitch(self.pitch)
 
         # Calculate front vector directly in the coordinate system based on up_axis
         # This ensures yaw/pitch work correctly for each coordinate system

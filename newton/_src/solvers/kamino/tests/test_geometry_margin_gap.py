@@ -67,7 +67,7 @@ def _run_primitive_pipeline(builder: ModelBuilderKamino, device, max_contacts_pe
     _, world_req = builder.compute_required_contact_capacity(max_contacts_per_pair=max_contacts_per_pair)
     contacts = ContactsKamino(capacity=world_req, device=device)
     contacts.clear()
-    pipeline = CollisionPipelinePrimitive(model=model, bvtype="aabb", default_gap=0.0, device=device)
+    pipeline = CollisionPipelinePrimitive(model=model, bvtype="aabb", default_gap=0.0)
     pipeline.collide(data, state, contacts)
     return contacts, model
 
