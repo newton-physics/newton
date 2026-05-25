@@ -5205,6 +5205,78 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.shape_gap.numpy()[shape2_idx], 0.01, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_contact_penalty_parsing(self):
+        """Test that NewtonCollisionAPI contact penalty attributes are parsed."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        # Body with all 4 contact penalty attrs authored
+        body_all = UsdGeom.Xform.Define(stage, "/Articulation/AllAuthored")
+        UsdPhysics.RigidBodyAPI.Apply(body_all.GetPrim())
+        UsdPhysics.MassAPI.Apply(body_all.GetPrim()).CreateMassAttr().Set(1.0)
+        col_all = UsdGeom.Cube.Define(stage, "/Articulation/AllAuthored/Collider")
+        col_all_prim = col_all.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_all_prim)
+        col_all_prim.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(5000.0)
+        col_all_prim.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(200.0)
+        col_all_prim.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(2000.0)
+        col_all_prim.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(0.5)
+
+        # Body with only ke authored
+        body_partial = UsdGeom.Xform.Define(stage, "/Articulation/PartialAuthored")
+        UsdPhysics.RigidBodyAPI.Apply(body_partial.GetPrim())
+        UsdPhysics.MassAPI.Apply(body_partial.GetPrim()).CreateMassAttr().Set(1.0)
+        col_partial = UsdGeom.Sphere.Define(stage, "/Articulation/PartialAuthored/Collider")
+        col_partial_prim = col_partial.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_partial_prim)
+        col_partial_prim.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(9999.0)
+
+        # Body with no contact penalty attrs
+        body_none = UsdGeom.Xform.Define(stage, "/Articulation/NoAuthored")
+        UsdPhysics.RigidBodyAPI.Apply(body_none.GetPrim())
+        UsdPhysics.MassAPI.Apply(body_none.GetPrim()).CreateMassAttr().Set(1.0)
+        col_none = UsdGeom.Capsule.Define(stage, "/Articulation/NoAuthored/Collider")
+        col_none_prim = col_none.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_none_prim)
+
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 2500.0
+        builder.default_shape_cfg.kd = 100.0
+        builder.default_shape_cfg.kf = 1000.0
+        builder.default_shape_cfg.ka = 0.0
+        result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        all_idx = result["path_shape_map"]["/Articulation/AllAuthored/Collider"]
+        partial_idx = result["path_shape_map"]["/Articulation/PartialAuthored/Collider"]
+        none_idx = result["path_shape_map"]["/Articulation/NoAuthored/Collider"]
+
+        # All authored — values come from USD
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[all_idx], 5000.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[all_idx], 200.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[all_idx], 2000.0, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[all_idx], 0.5, places=2)
+
+        # Partial — ke authored, rest fall back to builder defaults
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[partial_idx], 9999.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[partial_idx], 100.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[partial_idx], 1000.0, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[partial_idx], 0.0, places=2)
+
+        # No authored — all fall back to builder defaults
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[none_idx], 2500.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[none_idx], 100.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[none_idx], 1000.0, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[none_idx], 0.0, places=2)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):
         """Test that NewtonMimicAPI on a joint is parsed into a mimic constraint."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

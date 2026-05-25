@@ -1632,6 +1632,104 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(rolling, 0.1)
         self.assertAlmostEqual(torsional, 0.2)
 
+    @unittest.skipUnless(USD_AVAILABLE and Usd is not None, "USD not available")
+    def test_contact_penalty_attrs(self):
+        """Test ke/kd/kf/ka resolution from newton:contact* schema attributes."""
+        stage = Usd.Stage.CreateInMemory()
+        xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(xform)
+        collider = UsdGeom.Sphere.Define(stage, "/xform/collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider)
+
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+
+        # No authored values → None (builder default applies)
+        self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "ke"))
+        self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "kd"))
+        self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "kf"))
+        self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "ka"))
+
+        # Author newton:contactStiffness
+        collider.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(5000.0)
+        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ke"), 5000.0)
+
+        # Author newton:contactDamping
+        collider.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(200.0)
+        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kd"), 200.0)
+
+        # Author newton:contactFrictionStiffness
+        collider.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(2000.0)
+        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kf"), 2000.0)
+
+        # Author newton:contactAdhesion
+        collider.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(0.01)
+        self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ka"), 0.01)
+
+        # MuJoCo resolver: ke/kd from mjc:solref (standard mode), no kf/ka
+        # solref=(0.01, 1.0) → ke = 1/(0.01^2 * 1.0^2) = 10000, kd = 2/0.01 = 200
+        mjc_resolver = SchemaResolverManager([SchemaResolverMjc()])
+        mjc_collider = UsdGeom.Sphere.Define(stage, "/xform/mjc_collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(mjc_collider)
+        mjc_collider.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.Float2).Set((0.01, 1.0))
+        self.assertAlmostEqual(mjc_resolver.get_value(mjc_collider, PrimType.SHAPE, "ke"), 10000.0, places=1)
+        self.assertAlmostEqual(mjc_resolver.get_value(mjc_collider, PrimType.SHAPE, "kd"), 200.0, places=1)
+        self.assertIsNone(mjc_resolver.get_value(mjc_collider, PrimType.SHAPE, "kf"))
+        self.assertIsNone(mjc_resolver.get_value(mjc_collider, PrimType.SHAPE, "ka"))
+
+        # PhysX resolver: no ke/kd/kf/ka mapping
+        physx_resolver = SchemaResolverManager([SchemaResolverPhysx()])
+        self.assertIsNone(physx_resolver.get_value(collider, PrimType.SHAPE, "ke"))
+        self.assertIsNone(physx_resolver.get_value(collider, PrimType.SHAPE, "kd"))
+        self.assertIsNone(physx_resolver.get_value(collider, PrimType.SHAPE, "kf"))
+        self.assertIsNone(physx_resolver.get_value(collider, PrimType.SHAPE, "ka"))
+
+        # Priority: MuJoCo before Newton — mjc:solref wins for ke/kd
+        # mjc_collider has mjc:solref authored but no newton:contact* attrs
+        mjc_first = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        self.assertAlmostEqual(mjc_first.get_value(mjc_collider, PrimType.SHAPE, "ke"), 10000.0, places=1)
+        self.assertAlmostEqual(mjc_first.get_value(mjc_collider, PrimType.SHAPE, "kd"), 200.0, places=1)
+
+        # Priority: Newton before MuJoCo — newton:contact* wins for ke/kd
+        # collider has both newton:contactStiffness=5000 and no mjc:solref
+        newton_first = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
+        self.assertAlmostEqual(newton_first.get_value(collider, PrimType.SHAPE, "ke"), 5000.0)
+        self.assertAlmostEqual(newton_first.get_value(collider, PrimType.SHAPE, "kd"), 200.0)
+
+        # Both authored on same prim: priority order determines winner
+        both_collider = UsdGeom.Sphere.Define(stage, "/xform/both_collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(both_collider)
+        both_collider.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(3000.0)
+        both_collider.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(50.0)
+        both_collider.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(777.0)
+        both_collider.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(0.1)
+        both_collider.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.Float2).Set((0.01, 1.0))
+        newton_wins = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
+        mjc_wins = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        # ke: Newton=3000 vs MuJoCo=10000
+        self.assertAlmostEqual(newton_wins.get_value(both_collider, PrimType.SHAPE, "ke"), 3000.0)
+        self.assertAlmostEqual(mjc_wins.get_value(both_collider, PrimType.SHAPE, "ke"), 10000.0, places=1)
+        # kd: Newton=50 vs MuJoCo=200
+        self.assertAlmostEqual(newton_wins.get_value(both_collider, PrimType.SHAPE, "kd"), 50.0)
+        self.assertAlmostEqual(mjc_wins.get_value(both_collider, PrimType.SHAPE, "kd"), 200.0, places=1)
+        # kf/ka: Newton-only, so Newton value regardless of order
+        self.assertAlmostEqual(newton_wins.get_value(both_collider, PrimType.SHAPE, "kf"), 777.0)
+        self.assertAlmostEqual(mjc_wins.get_value(both_collider, PrimType.SHAPE, "kf"), 777.0)
+        self.assertAlmostEqual(newton_wins.get_value(both_collider, PrimType.SHAPE, "ka"), 0.1)
+        self.assertAlmostEqual(mjc_wins.get_value(both_collider, PrimType.SHAPE, "ka"), 0.1)
+
+        # Full import: authored values land on the built shapes
+        UsdPhysics.MassAPI.Apply(xform).CreateMassAttr().Set(10.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        builder = ModelBuilder()
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton()])
+
+        s_idx = builder.shape_label.index("/xform/collider")
+        self.assertAlmostEqual(builder.shape_material_ke[s_idx], 5000.0)
+        self.assertAlmostEqual(builder.shape_material_kd[s_idx], 200.0)
+        self.assertAlmostEqual(builder.shape_material_kf[s_idx], 2000.0)
+        self.assertAlmostEqual(builder.shape_material_ka[s_idx], 0.01)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

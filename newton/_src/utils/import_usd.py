@@ -2586,7 +2586,6 @@ def parse_usd(
                     shape_density = material.density
                 else:
                     shape_density = default_shape_density
-                prim_and_scene = (prim, physics_scene_prim)
                 local_xform = wp.transform(shape_spec.localPos, usd.value_to_warp(shape_spec.localRot))
                 if body_id == -1:
                     shape_xform = incoming_world_xform * local_xform
@@ -2649,6 +2648,22 @@ def parse_usd(
                 )
                 if shape_kd is None:
                     shape_kd = builder.default_shape_cfg.kd
+                shape_kf = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="kf",
+                    verbose=verbose,
+                )
+                if shape_kf is None:
+                    shape_kf = builder.default_shape_cfg.kf
+                shape_ka = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="ka",
+                    verbose=verbose,
+                )
+                if shape_ka is None:
+                    shape_ka = builder.default_shape_cfg.ka
 
                 shape_color = material_props.get("color")
                 shape_params = {
@@ -2657,12 +2672,8 @@ def parse_usd(
                     "cfg": ModelBuilder.ShapeConfig(
                         ke=shape_ke,
                         kd=shape_kd,
-                        kf=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf
-                        ),
-                        ka=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
-                        ),
+                        kf=shape_kf,
+                        ka=shape_ka,
                         margin=margin_val,
                         gap=gap_val,
                         mu=material.dynamicFriction,

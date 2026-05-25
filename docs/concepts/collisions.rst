@@ -1672,7 +1672,58 @@ Example:
 USD Integration
 ---------------
 
-Custom collision properties can be authored in USD:
+Per-shape collision properties can be authored in USD via the ``NewtonCollisionAPI``
+schema. Apply the API schema and set any combination of attributes — unset attributes
+fall back to the builder's :class:`~ModelBuilder.ShapeConfig` defaults.
+
+.. code-block:: usda
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI"]
+    ) {
+        float newton:contactStiffness = 5000.0
+        float newton:contactDamping = 200.0
+        float newton:contactFrictionStiffness = 2000.0
+        float newton:contactAdhesion = 0.5
+        float newton:contactMargin = 0.001
+        float newton:contactGap = 0.01
+    }
+
+.. list-table:: ``NewtonCollisionAPI`` attributes
+   :header-rows: 1
+   :widths: 30 15 55
+
+   * - USD Attribute
+     - Default
+     - Description
+   * - ``newton:contactStiffness``
+     - 2500
+     - Contact elastic stiffness (``ke``)
+   * - ``newton:contactDamping``
+     - 100
+     - Contact damping (``kd``)
+   * - ``newton:contactFrictionStiffness``
+     - 1000
+     - Friction damping coefficient (``kf``)
+   * - ``newton:contactAdhesion``
+     - 0
+     - Adhesion distance (``ka``)
+   * - ``newton:contactMargin``
+     - 0
+     - Contact margin [m]
+   * - ``newton:contactGap``
+     - −∞
+     - Contact gap [m]
+
+Meshes can additionally apply ``NewtonMeshCollisionAPI`` (which inherits
+``NewtonCollisionAPI``) to author ``newton:maxHullVertices`` controlling convex hull
+approximation.
+
+Custom Properties
+^^^^^^^^^^^^^^^^^
+
+Arbitrary custom attributes can also be authored on collision shapes using the
+``newton:`` namespace. See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
 
 .. code-block:: usda
 
@@ -1680,15 +1731,9 @@ Custom collision properties can be authored in USD:
         prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
     ) {
         custom int newton:collision_group = 1
-        custom int newton:world = 0
-        custom float newton:contact_ke = 100000.0
-        custom float newton:contact_kd = 1000.0
-        custom float newton:contact_kf = 1000.0
-        custom float newton:contact_ka = 0.0
-        custom float newton:margin = 0.00001
+        custom bool newton:is_sensor = false
+        custom float3 newton:color = (1.0, 0.0, 0.0)
     }
-
-See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
 
 .. _Deterministic Contacts:
 

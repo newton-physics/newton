@@ -84,9 +84,11 @@ class SchemaResolverNewton(SchemaResolver):
             # Collisions: newton margin == newton:contactMargin, newton gap == newton:contactGap
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
             "gap": SchemaAttribute("newton:contactGap", float("-inf")),
-            # Contact stiffness/damping
-            "ke": SchemaAttribute("newton:contact_ke", None),
-            "kd": SchemaAttribute("newton:contact_kd", None),
+            # Contact penalty model
+            "ke": SchemaAttribute("newton:contactStiffness", None),
+            "kd": SchemaAttribute("newton:contactDamping", None),
+            "kf": SchemaAttribute("newton:contactFrictionStiffness", None),
+            "ka": SchemaAttribute("newton:contactAdhesion", None),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
