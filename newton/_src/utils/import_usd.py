@@ -2638,7 +2638,7 @@ def parse_usd(
                     key="ke",
                     verbose=verbose,
                 )
-                if shape_ke is None:
+                if shape_ke is None or shape_ke == float("-inf"):
                     shape_ke = builder.default_shape_cfg.ke
                 shape_kd = R.get_value(
                     prim,
@@ -2646,7 +2646,7 @@ def parse_usd(
                     key="kd",
                     verbose=verbose,
                 )
-                if shape_kd is None:
+                if shape_kd is None or shape_kd == float("-inf"):
                     shape_kd = builder.default_shape_cfg.kd
                 shape_kf = R.get_value(
                     prim,
@@ -2654,7 +2654,7 @@ def parse_usd(
                     key="kf",
                     verbose=verbose,
                 )
-                if shape_kf is None:
+                if shape_kf is None or shape_kf == float("-inf"):
                     shape_kf = builder.default_shape_cfg.kf
                 shape_ka = R.get_value(
                     prim,
@@ -2662,7 +2662,7 @@ def parse_usd(
                     key="ka",
                     verbose=verbose,
                 )
-                if shape_ka is None:
+                if shape_ka is None or shape_ka == float("-inf"):
                     shape_ka = builder.default_shape_cfg.ka
 
                 shape_color = material_props.get("color")
