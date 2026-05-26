@@ -1778,8 +1778,6 @@ class TestSchemaResolver(unittest.TestCase):
         priority chain. The parser then substitutes builder.default_shape_cfg.* for
         the -inf downstream (covered end-to-end in test_import_usd.py).
         """
-        import math
-
         stage = Usd.Stage.CreateInMemory()
         xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(xform)

@@ -5287,8 +5287,6 @@ def Xform "Articulation" (
         to opt into builder.default_shape_cfg.* (matching the contactGap pattern).
         Verify the parser substitutes the builder defaults when it encounters -inf.
         """
-        import math
-
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
