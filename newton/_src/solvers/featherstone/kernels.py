@@ -1908,3 +1908,54 @@ def integrate_and_fk_articulation(
             body_q_out,
             body_qd_out,
         )
+
+
+@wp.kernel
+def compute_body_parent_f(
+    body_q: wp.array[wp.transform],
+    body_X_com: wp.array[wp.transform],
+    body_f_s: wp.array[wp.spatial_vector],
+    body_ft_s: wp.array[wp.spatial_vector],
+    body_f_ext_public: wp.array[wp.spatial_vector],
+    # output
+    body_parent_f: wp.array[wp.spatial_vector],
+):
+    """Populate ``State.body_parent_f`` from Featherstone's RNEA backward pass.
+
+    The Featherstone backward pass leaves the per-body spatial wrench
+    decomposed across three buffers:
+
+    * ``body_f_s = I*a + spatial_cross_dual(v, I*v) - f_g_s``  (inertial bias minus gravity)
+    * ``body_ft_s``                          (accumulated descendant wrenches)
+    * ``body_f_ext_public``                  (external + contact wrenches in
+      the public world-frame COM convention)
+
+    Their sum is the spatial wrench transmitted from the parent through the
+    inbound joint, expressed in spatial-1 frame anchored at the world
+    origin.  We translate it to the body's COM (matching :class:`SolverMuJoCo`
+    and the :attr:`State.body_parent_f` convention -- linear ``[N]`` first,
+    torque ``[N·m]`` referenced to the COM, both in world frame).
+
+    The kernel does not special-case roots: it writes the same
+    RNEA-backward-pass sum for every body.  For a FREE-jointed body that
+    has no kinematic parent the value is whatever wrench the recursion
+    produces -- e.g. the residual needed to balance gravity against
+    contacts/external forces in equilibrium, or the gyroscopic
+    ``v x* (I*v)`` term during tumbling.  Treat it as a diagnostic
+    rather than a true joint reaction in that case.
+    """
+    tid = wp.tid()
+
+    r_com = wp.transform_get_translation(body_q[tid] * body_X_com[tid])
+    f_ext_public = body_f_ext_public[tid]
+    force = wp.spatial_top(f_ext_public)
+    torque_com = wp.spatial_bottom(f_ext_public)
+    f_ext = -wp.spatial_vector(force, torque_com + wp.cross(r_com, force))
+
+    f_s = body_f_s[tid] + body_ft_s[tid] + f_ext
+    f_lin = wp.spatial_top(f_s)
+    f_ang_at_origin = wp.spatial_bottom(f_s)
+
+    f_ang_at_com = f_ang_at_origin - wp.cross(r_com, f_lin)
+
+    body_parent_f[tid] = wp.spatial_vector(f_lin, f_ang_at_com)
