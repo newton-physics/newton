@@ -58,6 +58,32 @@ def _step_compressed_tet(points, device, k_mu, k_lambda):
     return rest_volume, compressed_volume, final_volume
 
 
+def _step_activated_tet(points, device, activation):
+    model = _make_single_tet_model(points, device, k_mu=1.0e8, k_lambda=1.0e8)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+
+    control.tet_activations.assign(np.array([activation], dtype=np.float32))
+
+    rest_q = state_0.particle_q.numpy()
+    tet = model.tet_indices.numpy().reshape(-1, 4)[0]
+    rest_volume = abs(_tet_volume(rest_q, tet))
+
+    solver = newton.solvers.SolverXPBD(model, iterations=20)
+    dt = 1.0 / (60.0 * 32.0)
+    for _ in range(5):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, contacts, dt)
+        state_0, state_1 = state_1, state_0
+
+    final_q = state_0.particle_q.numpy()
+    final_volume = abs(_tet_volume(final_q, tet))
+
+    return rest_volume, final_volume
+
+
 def test_xpbd_tetrahedra_resist_compression(test, device):
     test_cases = (
         (
@@ -140,6 +166,32 @@ def test_xpbd_tetrahedra_use_material_stiffness(test, device):
     )
 
 
+def test_xpbd_tetrahedra_use_control_activation(test, device):
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    with wp.ScopedDevice(device):
+        rest_volume, inactive_volume = _step_activated_tet(points, device, activation=0.0)
+        _, activated_volume = _step_activated_tet(points, device, activation=0.25)
+
+    test.assertAlmostEqual(inactive_volume, rest_volume, delta=1.0e-5)
+    test.assertLess(
+        activated_volume,
+        inactive_volume - 0.01,
+        msg=(
+            "XPBD tet control activation did not change volume: "
+            f"rest={rest_volume:.6g}, inactive={inactive_volume:.6g}, activated={activated_volume:.6g}"
+        ),
+    )
+
+
 class TestSolverXPBDTetrahedra(unittest.TestCase):
     pass
 
@@ -154,6 +206,12 @@ add_function_test(
     TestSolverXPBDTetrahedra,
     "test_xpbd_tetrahedra_use_material_stiffness",
     test_xpbd_tetrahedra_use_material_stiffness,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestSolverXPBDTetrahedra,
+    "test_xpbd_tetrahedra_use_control_activation",
+    test_xpbd_tetrahedra_use_control_activation,
     devices=get_test_devices(),
 )
 
