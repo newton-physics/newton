@@ -60,11 +60,6 @@ class UI:
         self.impl.on_mouse_scroll = on_mouse_scroll
         self.impl._attach_callbacks(self.window)
 
-        # pyglet dispatches ``on_scale`` when the window moves between displays
-        # with different DPI scaling. Such transitions don't always fire
-        # ``on_resize``, so we'd otherwise miss the DPI change.
-        self.window.push_handlers(on_scale=self._on_window_scale)
-
         # Set up proper DPI scaling for high-DPI displays.
         #
         # We can't rely solely on the framebuffer/window-size ratio: on macOS
@@ -85,9 +80,9 @@ class UI:
         """Sync ``io.display_size`` and ``io.display_framebuffer_scale`` with
         the current pyglet window.
 
-        Called on initial setup, on ``on_resize``, and on ``on_scale`` so the
-        ImGui IO never lags behind pyglet's view of the window — including
-        scale-only display transitions where ``on_resize`` isn't fired.
+        Called on initial setup, resize, and DPI refreshes so the ImGui IO
+        never lags behind pyglet's view of the window, including scale-only
+        display transitions where ``on_resize`` isn't fired.
         """
         window_width, window_height = self.window.get_size()
         fb_width, fb_height = self.window.get_framebuffer_size()
@@ -95,33 +90,24 @@ class UI:
             self.io.display_framebuffer_scale = (fb_width / window_width, fb_height / window_height)
         self.io.display_size = (fb_width, fb_height)
 
-    def refresh_dpi(self) -> None:
-        """Re-detect DPI from the window and re-apply scaling if it changed.
+    def refresh_dpi(self, dpi_scale: float | None = None) -> float:
+        """Refresh DPI-dependent ImGui state and return the resolved scale.
 
-        Idempotent — safe to call multiple times in the same frame. Exposed
-        as a public method so callers (e.g. ``ViewerGL._refresh_dpi_state``)
-        can force the UI's cached ``dpi_scale`` to update before reading it,
-        irrespective of pyglet's LIFO event-handler ordering.
+        Args:
+            dpi_scale: Already-resolved DPI scale to apply. If omitted, the
+                scale is detected from the window.
         """
         if not self.is_available:
-            return
+            return self.dpi_scale
         # Keep ImGui IO metrics in sync even when ``on_resize`` is skipped —
         # ``display_framebuffer_scale`` in particular can change without a
         # framebuffer-size change when the backing scale factor flips.
         self._refresh_io_metrics()
-        new_scale = self._detect_dpi_scale()
+        new_scale = self._coerce_dpi_scale(dpi_scale) if dpi_scale is not None else self._detect_dpi_scale()
         if abs(new_scale - self.dpi_scale) > 1e-3:
             self.dpi_scale = new_scale
             self._apply_dpi_scaling()
-
-    def _on_window_scale(self, scale: float, dpi: int) -> None:
-        """pyglet ``on_scale`` event handler — delegates to ``refresh_dpi``.
-
-        Dispatched whenever the window moves to a display with a different
-        ``backingScaleFactor`` / DPI. Window dimensions need not change, so
-        this is the only signal we get for scale-only transitions.
-        """
-        self.refresh_dpi()
+        return self.dpi_scale
 
     def _detect_dpi_scale(self) -> float:
         """Return the current DPI factor for the window.
@@ -152,8 +138,12 @@ class UI:
         except AttributeError:
             return 1.0
 
+        return self._coerce_dpi_scale(window_scale)
+
+    @staticmethod
+    def _coerce_dpi_scale(value: float) -> float:
         try:
-            return max(1.0, float(window_scale))
+            return max(1.0, float(value))
         except (TypeError, ValueError):
             return 1.0
 

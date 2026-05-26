@@ -297,8 +297,8 @@ class ViewerGL(ViewerBase):
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
             self.ui = UI(self.renderer.window)
-            # pyglet fires ``on_scale`` when the window crosses to a display
-            # with a different DPI without necessarily firing ``on_resize``.
+            # ViewerGL owns DPI scale events so UI and ImageLogger receive the
+            # same resolved scale value.
             self.renderer.window.push_handlers(on_scale=self._on_window_scale)
         else:
             self.ui = None
@@ -2219,19 +2219,16 @@ class ViewerGL(ViewerBase):
     def _refresh_dpi_state(self, dpi_scale: float | None = None) -> None:
         """Propagate the current DPI to all DPI-dependent layout state.
 
-        ``dpi_scale`` comes directly from pyglet's ``on_scale`` event when
-        available, making viewer-side propagation independent of pyglet's
-        event-handler ordering.
+        ``dpi_scale`` is the raw pyglet ``on_scale`` value when available. We
+        resolve it against the current framebuffer/window ratio once here, then
+        feed that same value to both UI and ImageLogger.
         """
+        resolved_scale = self._resolve_dpi_scale(dpi_scale)
         if self.ui is not None and self.ui.is_available:
-            self.ui.refresh_dpi()
-        if dpi_scale is None:
-            dpi_scale = self._dpi_scale()
-        else:
-            dpi_scale = self._coerce_dpi_scale(dpi_scale)
+            resolved_scale = self.ui.refresh_dpi(resolved_scale)
         if self._image_logger is not None:
-            self._image_logger._sidebar_width_px = _SIDEBAR_WIDTH_PX * dpi_scale
-            self._image_logger.dpi_scale = dpi_scale
+            self._image_logger._sidebar_width_px = _SIDEBAR_WIDTH_PX * resolved_scale
+            self._image_logger.dpi_scale = resolved_scale
 
     def _dpi_scale(self) -> float:
         """Return the current DPI scale.
@@ -2250,11 +2247,15 @@ class ViewerGL(ViewerBase):
 
     def _detect_window_dpi_scale(self) -> float:
         """Return the current DPI scale from pyglet window APIs."""
-        scale = 1.0
+        return self._resolve_dpi_scale()
+
+    def _resolve_dpi_scale(self, dpi_scale: float | None = None) -> float:
+        """Return one DPI scale resolved from event and window signals."""
+        scale = self._coerce_dpi_scale(dpi_scale) if dpi_scale is not None else 1.0
         try:
-            scale = self._coerce_dpi_scale(self.renderer.window.scale)
+            scale = max(scale, self._coerce_dpi_scale(self.renderer.window.scale))
         except AttributeError:
-            scale = 1.0
+            pass
 
         try:
             get_size = self.renderer.window.get_size
