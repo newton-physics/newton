@@ -5280,6 +5280,54 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.shape_material_ka.numpy()[none_idx], 0.0, places=2)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_contact_penalty_inf_sentinel(self):
+        """Test that -inf sentinel values fall back to builder defaults.
+
+        The NewtonCollisionAPI schema defaults contactStiffness/Damping/FrictionStiffness/Adhesion
+        to -inf, signalling "use the engine's default." An author can also explicitly write -inf
+        on a single attribute to opt back into the builder default while authoring others.
+        Verify the parser substitutes builder.default_shape_cfg.* in both cases.
+        """
+        import math
+
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        # Body that explicitly authors -inf on all four contact penalty attrs
+        body = UsdGeom.Xform.Define(stage, "/Articulation/InfSentinel")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr().Set(1.0)
+        col = UsdGeom.Cube.Define(stage, "/Articulation/InfSentinel/Collider")
+        col_prim = col.GetPrim()
+        col_prim.ApplyAPI("NewtonCollisionAPI")
+        UsdPhysics.CollisionAPI.Apply(col_prim)
+        col_prim.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(-math.inf)
+        col_prim.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(-math.inf)
+        col_prim.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(-math.inf)
+        col_prim.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(-math.inf)
+
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 7777.0
+        builder.default_shape_cfg.kd = 333.0
+        builder.default_shape_cfg.kf = 4444.0
+        builder.default_shape_cfg.ka = 0.25
+        result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        idx = result["path_shape_map"]["/Articulation/InfSentinel/Collider"]
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx], 7777.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx], 333.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx], 4444.0, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx], 0.25, places=2)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):
         """Test that NewtonMimicAPI on a joint is parsed into a mimic constraint."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
