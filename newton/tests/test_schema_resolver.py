@@ -1769,6 +1769,70 @@ class TestSchemaResolver(unittest.TestCase):
             self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "ka"), 0.99)
         self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
 
+    @unittest.skipUnless(USD_AVAILABLE and Usd is not None, "USD not available")
+    def test_contact_penalty_inf_sentinel(self):
+        """Explicit -inf authoring on contact penalty attrs is treated as authored.
+
+        newton-usd-schemas#62 changes the schema-level defaults of
+        contactStiffness/contactDamping/contactFrictionStiffness/contactAdhesion
+        from concrete Newton ShapeConfig values to the -inf sentinel, signalling
+        "use the engine's default." The resolver returns the authored value
+        as-is (HasAuthoredValue() == True for -inf); the parser is responsible
+        for substituting builder.default_shape_cfg.* when it sees -inf, mirroring
+        the existing gap_val handling.
+
+        Resolver-level guarantee: an explicit -inf wins over upstream resolver
+        fallbacks (e.g. mjc:solref) in the priority chain because it is authored,
+        not unset.
+        """
+        import math
+
+        stage = Usd.Stage.CreateInMemory()
+        xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(xform)
+        collider = UsdGeom.Sphere.Define(stage, "/xform/collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider)
+
+        # Author -inf on all four contact penalty attrs.
+        collider.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(-math.inf)
+        collider.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(-math.inf)
+        collider.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(-math.inf)
+        collider.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(-math.inf)
+
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        # Resolver returns the authored sentinel; substitution is the parser's job.
+        self.assertEqual(resolver.get_value(collider, PrimType.SHAPE, "ke"), -math.inf)
+        self.assertEqual(resolver.get_value(collider, PrimType.SHAPE, "kd"), -math.inf)
+        self.assertEqual(resolver.get_value(collider, PrimType.SHAPE, "kf"), -math.inf)
+        self.assertEqual(resolver.get_value(collider, PrimType.SHAPE, "ka"), -math.inf)
+
+        # Cross-resolver: explicit Newton -inf wins over MuJoCo solref fallback.
+        # solref=(0.01, 1.0) would yield ke=10000, kd=200 if Newton were unauthored.
+        collider.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.Float2).Set((0.01, 1.0))
+        newton_first = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
+        self.assertEqual(newton_first.get_value(collider, PrimType.SHAPE, "ke"), -math.inf)
+        self.assertEqual(newton_first.get_value(collider, PrimType.SHAPE, "kd"), -math.inf)
+        # kf/ka have no MuJoCo mapping at all, so the result is just -inf either way.
+        self.assertEqual(newton_first.get_value(collider, PrimType.SHAPE, "kf"), -math.inf)
+        self.assertEqual(newton_first.get_value(collider, PrimType.SHAPE, "ka"), -math.inf)
+
+        # Full import: parser substitutes builder.default_shape_cfg.* for -inf.
+        UsdPhysics.MassAPI.Apply(xform).CreateMassAttr().Set(10.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        builder = ModelBuilder()
+        builder.default_shape_cfg.ke = 7777.0
+        builder.default_shape_cfg.kd = 333.0
+        builder.default_shape_cfg.kf = 4444.0
+        builder.default_shape_cfg.ka = 0.25
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton()])
+
+        s_idx = builder.shape_label.index("/xform/collider")
+        self.assertAlmostEqual(builder.shape_material_ke[s_idx], 7777.0)
+        self.assertAlmostEqual(builder.shape_material_kd[s_idx], 333.0)
+        self.assertAlmostEqual(builder.shape_material_kf[s_idx], 4444.0)
+        self.assertAlmostEqual(builder.shape_material_ka[s_idx], 0.25)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
