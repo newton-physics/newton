@@ -433,6 +433,10 @@ class SolverKamino(SolverBase):
             config=self._config,
         )
 
+        # Initialize the internal Kamino control wrapper
+        self._control_kamino = self._kamino.ControlKamino()
+        self._control_kamino.finalize(self._model_kamino)
+
     def reset(
         self,
         state_out: State,
@@ -512,7 +516,7 @@ class SolverKamino(SolverBase):
         """
         Simulate the model for a given time step using the given control input.
 
-        When ``contacts`` is not ``None`` (i.e. produced by :meth:`~newton.Model.collide`),
+        When ``contacts`` is not ``None`` (i.e. produced by :meth:`Model.collide`),
         those contacts are converted to Kamino's internal format and used directly,
         bypassing Kamino's own collision detector.  When ``contacts`` is ``None``,
         Kamino's internal collision pipeline runs as a fallback.
@@ -537,7 +541,7 @@ class SolverKamino(SolverBase):
         # internal control arrays if None is provided.
         if control is None:
             control = self.model.control(clone_variables=False)
-        control_kamino = self._kamino.ControlKamino.from_newton(control)
+        self._control_kamino.from_newton(control, self._model_kamino)
 
         # If contacts are provided, use them directly, bypassing Kamino's collision detector
         if contacts is not None:
@@ -559,7 +563,7 @@ class SolverKamino(SolverBase):
         self._solver_kamino.step(
             state_in=state_in_kamino,
             state_out=state_out_kamino,
-            control=control_kamino,
+            control=self._control_kamino,
             contacts=self._contacts_kamino,
             detector=_detector,
             dt=dt,
@@ -600,7 +604,8 @@ class SolverKamino(SolverBase):
             pass  # TODO: ???
 
         if flags & SolverNotifyFlags.JOINT_PROPERTIES:
-            self._update_joint_transforms()
+            # TODO: FIX THIS: self._update_joint_transforms()
+            pass
 
         if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
             # Joint limits (q_j_min, q_j_max, dq_j_max, tau_j_max) are direct

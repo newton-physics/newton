@@ -8,7 +8,6 @@ from typing import Any
 
 import numpy as np
 
-from ...linalg.linear import LinearSolverTypeToName
 from ...solver_kamino_impl import SolverKaminoImpl
 from .problems import ProblemDimensions
 
@@ -423,7 +422,7 @@ def render_solver_configs_table(
         if "linear" in groups:
             cfg_row.extend(
                 [
-                    str(LinearSolverTypeToName[cfg.dynamics.linear_solver_type]),
+                    str(cfg.dynamics.linear_solver_type),
                     str(cfg.dynamics.linear_solver_kwargs),
                 ]
             )

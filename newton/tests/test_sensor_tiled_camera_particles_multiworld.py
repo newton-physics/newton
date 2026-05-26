@@ -118,6 +118,8 @@ def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.Test
     )
 
     depth_image = sensor.utils.create_depth_image_output(width, height, camera_count=1)
+    newton.geometry.build_bvh_shape(model, state)
+    newton.geometry.build_bvh_particle(model, state)
     sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
 
     depth_np = depth_image.numpy()  # (num_worlds, num_cameras, H, W)

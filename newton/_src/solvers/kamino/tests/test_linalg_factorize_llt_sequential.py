@@ -99,7 +99,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -140,7 +139,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             b=problem.b_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -179,7 +177,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -258,7 +255,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -299,7 +295,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             b=problem.b_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -336,7 +331,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Convert the warp array to numpy for verification
@@ -412,7 +406,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
@@ -456,7 +449,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             b=problem.b_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
@@ -497,7 +489,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
@@ -583,7 +574,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             mio=operator.info.mio,
             A=problem.A_wp,
             L=L_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
@@ -627,7 +617,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             b=problem.b_wp,
             y=y_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification
@@ -668,7 +657,6 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             vio=operator.info.vio,
             L=L_wp,
             x=x_wp,
-            device=self.default_device,
         )
 
         # Iterate over all problems for verification

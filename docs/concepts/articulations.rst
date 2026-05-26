@@ -45,6 +45,22 @@ use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 use maximal coordinates.
 Note that collision detection, e.g., via :meth:`newton.Model.collide` requires the maximal coordinates to be current in the state.
 
+Cable joints
+^^^^^^^^^^^^
+
+:attr:`newton.JointType.CABLE` is represented in Newton's joint data model, but
+it is not a conventional generalized-coordinate joint. Its two entries are
+VBD constraint/material slots: one linear slot for stretch and one angular slot
+for bend/twist. These slots store per-cable stiffness and damping through
+:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`;
+they are not ``joint_q`` coordinates that uniquely reconstruct the child body
+pose.
+
+Cable body poses and velocities are maximal-coordinate state stored in
+:attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
+:class:`newton.solvers.SolverVBD`. Therefore :func:`newton.eval_fk` does not
+update cable child body transforms from ``joint_q`` / ``joint_qd``.
+
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
 
@@ -466,13 +482,13 @@ A robust pattern is:
 
     @wp.kernel
     def center_joint_q_from_limits(
-        joint_q_start: wp.array(dtype=wp.int32),
-        joint_qd_start: wp.array(dtype=wp.int32),
-        joint_dof_dim: wp.array2d(dtype=wp.int32),
-        joint_type: wp.array(dtype=wp.int32),
-        joint_limit_lower: wp.array(dtype=float),
-        joint_limit_upper: wp.array(dtype=float),
-        joint_q: wp.array(dtype=float),
+        joint_q_start: wp.array[wp.int32],
+        joint_qd_start: wp.array[wp.int32],
+        joint_dof_dim: wp.array2d[wp.int32],
+        joint_type: wp.array[wp.int32],
+        joint_limit_lower: wp.array[float],
+        joint_limit_upper: wp.array[float],
+        joint_q: wp.array[float],
     ):
         joint_id = wp.tid()
 

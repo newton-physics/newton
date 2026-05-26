@@ -415,10 +415,11 @@ class TestSchemaResolver(unittest.TestCase):
         """
         Test MuJoCo solref parameter conversion to stiffness and damping values.
 
-        Uses ant_mixed.usda to test MuJoCo's solref (solver reference) parameter conversion
-        to Newton's stiffness/damping representation. Compares results between Newton-priority
-        and MuJoCo-priority imports, validating that MuJoCo's solref values produce 2x the
-        stiffness/damping compared to PhysX/Newton when using specific solref parameters.
+        Uses ant_mixed.usda to test that schema resolver priority correctly selects between
+        PhysX-authored ``physxLimit:angular:stiffness`` (per-degree by UsdPhysics convention)
+        and MuJoCo-derived ``mjc:solreflimit`` (per-radian by mjModel convention). Each path's
+        stored ``joint_limit_ke`` / ``joint_limit_kd`` must end up in Newton's per-radian
+        internal units regardless of authored unit.
         """
 
         test_dir = Path(__file__).parent
@@ -442,13 +443,37 @@ class TestSchemaResolver(unittest.TestCase):
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
         )
-        # With mjc priority and solref chosen as (0.5, 0.05):
-        # Stiffness: k = 1/(timeconst^2 * dampratio^2) = 1/0.000625 = 1600.0 (800x physx/newton value of 2.0)
-        # Damping: b = 2/timeconst = 2/0.5 = 4.0
+
+        # PhysX authors `physxLimit:angular:stiffness = 2.0` per-degree; importer converts
+        # to per-radian: 2.0 / (pi/180).
+        # MJC `mjc:solreflimit = (0.5, 0.05)` -> per-radian k = 1/(0.5^2 * 0.05^2) = 1600,
+        # b = 2/0.5 = 4.0. The MJC angular schema entries pre-multiply by pi/180 to cancel
+        # the importer's later /= DegreesToRadian, so the per-radian value reaches Newton.
+        deg_to_rad = math.pi / 180.0
+        expected_physx_ke = 2.0 / deg_to_rad
+        expected_physx_kd = 0.1 / deg_to_rad
+        expected_mjc_ke = 1600.0
+        expected_mjc_kd = 4.0
+
         self.assertEqual(len(builder_newton.joint_limit_ke), len(builder_mjc.joint_limit_ke))
         self.assertEqual(len(builder_newton.joint_limit_kd), len(builder_mjc.joint_limit_kd))
+        # Skip entries with zero stiffness/damping (free-joint DOFs have no limits authored).
+        ke_count = 0
         for physx_ke, mjc_ke in zip(builder_newton.joint_limit_ke, builder_mjc.joint_limit_ke, strict=False):
-            self.assertAlmostEqual(mjc_ke / 800.0, physx_ke, places=5)
+            if physx_ke == 0.0 and mjc_ke == 0.0:
+                continue
+            ke_count += 1
+            self.assertAlmostEqual(physx_ke, expected_physx_ke, places=3)
+            self.assertAlmostEqual(mjc_ke, expected_mjc_ke, places=3)
+        kd_count = 0
+        for physx_kd, mjc_kd in zip(builder_newton.joint_limit_kd, builder_mjc.joint_limit_kd, strict=False):
+            if physx_kd == 0.0 and mjc_kd == 0.0:
+                continue
+            kd_count += 1
+            self.assertAlmostEqual(physx_kd, expected_physx_kd, places=3)
+            self.assertAlmostEqual(mjc_kd, expected_mjc_kd, places=3)
+        self.assertGreater(ke_count, 0, "Expected at least one revolute joint with authored limit_ke")
+        self.assertGreater(kd_count, 0, "Expected at least one revolute joint with authored limit_kd")
 
     def test_newton_custom_attributes(self):
         """

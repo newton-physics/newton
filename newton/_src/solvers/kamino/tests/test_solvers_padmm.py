@@ -53,7 +53,7 @@ class TestSetup:
         self.builder.gravity[0].enabled = gravity
         if perturb:
             u_0 = screw(vec3f(+10.0, 0.0, 0.0), vec3f(0.0, 0.0, 0.0))
-            for body in self.builder.bodies:
+            for body in self.builder.all_bodies:
                 body.u_i_0 = u_0
 
         # Create the model and containers from the builder
@@ -69,8 +69,8 @@ class TestSetup:
             data=self.data,
             limits=self.limits,
             contacts=self.contacts,
+            jacobians=self.jacobians,
             solver=ConjugateResidualSolver if sparse else LLTBlockedSolver,
-            device=device,
             sparse=sparse,
         )
 
@@ -656,6 +656,32 @@ class TestPADMMSolver(unittest.TestCase):
             msg.notif("Generating solver info plots...")
             path = self.output_path / "test_07_padmm_solve_with_acceleration_and_container_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
+
+    def test_10_padmm_solve_single_contact(self):
+        """
+        Tests the Proximal-ADMM (PADMM) solver with default config on the reference problem (no
+        constraints and limits) with a single contact.
+        """
+        # Create the test problem
+        test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=1, device=self.default_device)
+
+        # Create the PADMM solver
+        solver = PADMMSolver(model=test.model)
+
+        # Solve the test problem
+        test.build()
+        solver.reset()
+        solver.coldstart()
+        solver.solve(problem=test.problem)
+
+        # Extract solver info
+        if self.savefig:
+            msg.notif("Generating solver info plots...")
+            path = self.output_path / "test_10_padmm_solve.pdf"
+            save_solver_info(solver=solver, path=str(path))
+
+        # Check solution
+        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
 
 
 ###

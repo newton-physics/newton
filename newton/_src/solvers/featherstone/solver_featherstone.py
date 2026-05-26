@@ -325,6 +325,7 @@ class SolverFeatherstone(SolverBase):
             # derived rigid body data (maximal coordinates)
             target.body_q_fk = wp.empty_like(model.body_q, requires_grad=requires_grad)
             target.body_qd_fk = wp.empty_like(model.body_qd, requires_grad=requires_grad)
+            target.body_q_com = wp.empty_like(model.body_q, requires_grad=requires_grad)
             target.body_I_s = wp.empty(
                 (model.body_count,), dtype=wp.spatial_matrix, device=model.device, requires_grad=requires_grad
             )
@@ -445,6 +446,7 @@ class SolverFeatherstone(SolverBase):
                     outputs=[
                         state_aug.body_q_fk,
                         state_aug.body_qd_fk,
+                        state_aug.body_q_com,
                         state_aug.joint_S_s,
                         state_aug.body_I_s,
                         state_aug.body_v_s,
@@ -579,8 +581,7 @@ class SolverFeatherstone(SolverBase):
                             compute_body_parent_f,
                             dim=model.body_count,
                             inputs=[
-                                state_aug.body_q_fk,
-                                self.body_X_com,
+                                state_aug.body_q_com,
                                 state_aug.body_f_s,
                                 state_aug.body_ft_s,
                                 body_f,

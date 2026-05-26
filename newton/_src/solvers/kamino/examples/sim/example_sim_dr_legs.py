@@ -40,26 +40,22 @@ wp.set_module_options({"enable_backward": False})
 def _pd_control_callback(
     # Inputs:
     decimation: int32,
-    model_info_joint_coords_offset: wp.array(dtype=int32),
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_coords_offset: wp.array(dtype=int32),
-    model_info_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    model_joints_wid: wp.array(dtype=int32),
-    model_joints_act_type: wp.array(dtype=int32),
-    model_joint_num_coords: wp.array(dtype=int32),
-    model_joint_num_dofs: wp.array(dtype=int32),
-    model_joint_coords_offset: wp.array(dtype=int32),
-    model_joint_dofs_offset: wp.array(dtype=int32),
-    model_joint_actuated_coords_offset: wp.array(dtype=int32),
-    model_joint_actuated_dofs_offset: wp.array(dtype=int32),
-    data_time_steps: wp.array(dtype=int32),
-    animation_frame: wp.array(dtype=int32),
-    animation_q_j_ref: wp.array2d(dtype=float32),
-    animation_dq_j_ref: wp.array2d(dtype=float32),
+    model_info_joint_actuated_coords_offset: wp.array[int32],
+    model_info_joint_actuated_dofs_offset: wp.array[int32],
+    model_joints_wid: wp.array[int32],
+    model_joints_act_type: wp.array[int32],
+    model_joint_coords_offset: wp.array[int32],
+    model_joint_dofs_offset: wp.array[int32],
+    model_joint_actuated_coords_offset: wp.array[int32],
+    model_joint_actuated_dofs_offset: wp.array[int32],
+    data_time_steps: wp.array[int32],
+    animation_frame: wp.array[int32],
+    animation_q_j_ref: wp.array2d[float32],
+    animation_dq_j_ref: wp.array2d[float32],
     # Outputs:
-    control_q_j_ref: wp.array(dtype=float32),
-    control_dq_j_ref: wp.array(dtype=float32),
-    control_tau_j_ref: wp.array(dtype=float32),
+    control_q_j_ref: wp.array[float32],
+    control_dq_j_ref: wp.array[float32],
+    control_tau_j_ref: wp.array[float32],
 ):
     """
     A kernel to compute joint-space PID control outputs for force-actuated joints.
@@ -82,27 +78,15 @@ def _pd_control_callback(
         return
 
     # Retrieve joint-specific mode info
-    num_coords_j = model_joint_num_coords[jid]
-    num_dofs_j = model_joint_num_dofs[jid]
     coords_offset_j = model_joint_coords_offset[jid]
+    num_coords_j = model_joint_coords_offset[jid + 1] - coords_offset_j
     dofs_offset_j = model_joint_dofs_offset[jid]
-    actuated_coords_offset_j = model_joint_actuated_coords_offset[jid]
-    actuated_dofs_offset_j = model_joint_actuated_dofs_offset[jid]
-
-    # Retrieve the offset of the world's joints in the global DoF vector
-    world_coords_offset = model_info_joint_coords_offset[wid]
-    world_dofs_offset = model_info_joint_dofs_offset[wid]
-    world_actuated_coords_offset = model_info_joint_actuated_coords_offset[wid]
-    world_actuated_dofs_offset = model_info_joint_actuated_dofs_offset[wid]
+    num_dofs_j = model_joint_dofs_offset[jid + 1] - dofs_offset_j
+    actuated_coords_offset_j = model_joint_actuated_coords_offset[jid] - model_info_joint_actuated_coords_offset[wid]
+    actuated_dofs_offset_j = model_joint_actuated_dofs_offset[jid] - model_info_joint_actuated_dofs_offset[wid]
 
     # Retrieve the current frame of the animation reference for the world
     frame = animation_frame[wid]
-
-    # Compute the global DoF offset of the joint
-    coords_offset_j += world_coords_offset
-    dofs_offset_j += world_dofs_offset
-    actuated_coords_offset_j += world_actuated_coords_offset
-    actuated_dofs_offset_j += world_actuated_dofs_offset
 
     # Copy the joint reference coordinates and velocities
     # from the animation data to the controller data
@@ -114,7 +98,7 @@ def _pd_control_callback(
         joint_dof_index = dofs_offset_j + dof
         actuator_dof_index = actuated_dofs_offset_j + dof
         control_dq_j_ref[joint_dof_index] = animation_dq_j_ref[frame, actuator_dof_index]
-        control_tau_j_ref[joint_coord_index] = 0.0  # No feed-forward term in this example
+        control_tau_j_ref[joint_dof_index] = 0.0  # No feed-forward term in this example
 
 
 ###
@@ -129,14 +113,10 @@ def pd_control_callback(sim: Simulator, animation: AnimationJointReference, deci
         inputs=[
             # Inputs
             int32(decimation),
-            sim.model.info.joint_coords_offset,
-            sim.model.info.joint_dofs_offset,
             sim.model.info.joint_actuated_coords_offset,
             sim.model.info.joint_actuated_dofs_offset,
             sim.model.joints.wid,
             sim.model.joints.act_type,
-            sim.model.joints.num_coords,
-            sim.model.joints.num_dofs,
             sim.model.joints.coords_offset,
             sim.model.joints.dofs_offset,
             sim.model.joints.actuated_coords_offset,
@@ -150,6 +130,7 @@ def pd_control_callback(sim: Simulator, animation: AnimationJointReference, deci
             sim.control.dq_j_ref,
             sim.control.tau_j_ref,
         ],
+        device=sim._device,
     )
 
 
@@ -177,10 +158,12 @@ class Example:
         async_save: bool = False,
     ):
         # Initialize target frames per second and corresponding time-steps
-        self.fps = 60
-        self.sim_dt = 0.01 if implicit_pd else 0.001
+        self.fps = 50
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = max(1, round(self.frame_dt / self.sim_dt))
+        target_sim_dt = 0.01 if implicit_pd else 0.001
+        self.sim_substeps = max(1, round(self.frame_dt / target_sim_dt))
+        self.sim_dt = self.frame_dt / self.sim_substeps
+        msg.info(f"Using sim_dt = {self.sim_dt} ({self.sim_substeps} substeps per frame)")
         self.max_steps = max_steps
 
         # Cache the device and other internal flags
@@ -222,7 +205,7 @@ class Example:
             self.builder.gravity[w].enabled = gravity
 
         # Set joint armatures, and verify that correct gains were loaded from the USD file
-        for joint in self.builder.joints:
+        for joint in self.builder.all_joints:
             if joint.is_dynamic or joint.is_implicit_pd:
                 joint.a_j = [0.011]  # Set joint armature according to Dynamixel XH540-V150 specs
                 joint.b_j = [0.044]  # Set joint damping according to Dynamixel XH540-V150 specs
@@ -285,7 +268,6 @@ class Example:
             rate=1,
             loop=False,
             use_fd=True,
-            device=device,
         )
 
         # Create a joint-space PID controller
@@ -295,7 +277,7 @@ class Example:
         K_i = 0.01 * np.ones(njaq, dtype=np.float32)
         decimation = 1 * np.ones(self.sim.model.size.num_worlds, dtype=np.int32)
         self.controller = JointSpacePIDController(
-            model=self.sim.model, K_p=K_p, K_i=K_i, K_d=K_d, decimation=decimation, device=device
+            model=self.sim.model, K_p=K_p, K_i=K_i, K_d=K_d, decimation=decimation
         )
 
         # Define a callback function to reset the controller
@@ -357,14 +339,14 @@ class Example:
         self.step_graph = None
         self.simulate_graph = None
 
-        # Capture CUDA graph if requested and available
-        self.capture()
-
         # Warm-start the simulator before rendering
         # NOTE: This compiles and loads the warp kernels prior to execution
         msg.notif("Warming up simulator...")
         self.step_once()
         self.reset()
+
+        # Capture CUDA graph if requested and available
+        self.capture()
 
     def capture(self):
         """Capture CUDA graph if requested and available."""

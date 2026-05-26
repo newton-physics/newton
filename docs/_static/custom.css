@@ -4,6 +4,22 @@
     margin-bottom: 0.5em !important;
 }
 
+/* Mermaid diagrams emitted by nbsphinx notebook outputs. */
+pre.mermaid {
+    display: block;
+    width: 100%;
+}
+
+pre.mermaid > svg {
+    width: 100%;
+    max-width: 100% !important;
+}
+
+.mermaid-error {
+    margin-top: 1rem;
+    margin-bottom: 1rem;
+}
+
 /* Reduce spacing in docstring sections */
 .section > dl > dt {
     margin-top: 0.2em !important;

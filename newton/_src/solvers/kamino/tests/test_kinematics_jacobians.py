@@ -75,7 +75,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
 
         # Create the Jacobians container
-        jacobians = DenseSystemJacobians(model=model, device=self.default_device)
+        jacobians = DenseSystemJacobians(model=model)
         if self.verbose:
             print(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
             print(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
@@ -107,13 +107,13 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
 
         # Construct and allocate the limits container
-        limits = LimitsKamino(model=model, device=self.default_device)
+        limits = LimitsKamino(model=model)
         if self.verbose:
             print("limits.model_max_limits_host: ", limits.model_max_limits_host)
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
 
         # Create the Jacobians container
-        jacobians = DenseSystemJacobians(model=model, limits=limits, device=self.default_device)
+        jacobians = DenseSystemJacobians(model=model, limits=limits)
         if self.verbose:
             print(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
             print(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
@@ -160,7 +160,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print("contacts.world_max_contacts_host: ", contacts.world_max_contacts_host)
 
         # Create the Jacobians container
-        jacobians = DenseSystemJacobians(model=model, contacts=contacts, device=self.default_device)
+        jacobians = DenseSystemJacobians(model=model, contacts=contacts)
         if self.verbose:
             print(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
             print(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
@@ -195,7 +195,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
 
         # Construct and allocate the limits container
-        limits = LimitsKamino(model=model, device=self.default_device)
+        limits = LimitsKamino(model=model)
         if self.verbose:
             print("limits.model_max_limits_host: ", limits.model_max_limits_host)
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
@@ -213,7 +213,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print("contacts.world_max_contacts_host: ", contacts.world_max_contacts_host)
 
         # Create the Jacobians container
-        jacobians = DenseSystemJacobians(model=model, limits=limits, contacts=contacts, device=self.default_device)
+        jacobians = DenseSystemJacobians(model=model, limits=limits, contacts=contacts)
         if self.verbose:
             print(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
             print(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
@@ -251,7 +251,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
 
         # Construct and allocate the limits container
-        limits = LimitsKamino(model=model, device=self.default_device)
+        limits = LimitsKamino(model=model)
         if self.verbose:
             print("limits.model_max_limits_host: ", limits.model_max_limits_host)
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
@@ -273,7 +273,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         make_unilateral_constraints_info(model, model.data(), limits, contacts)
 
         # Create the Jacobians container
-        jacobians = DenseSystemJacobians(model=model, limits=limits, contacts=contacts, device=self.default_device)
+        jacobians = DenseSystemJacobians(model=model, limits=limits, contacts=contacts)
         if self.verbose:
             print(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
             print(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
@@ -329,7 +329,7 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             print(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
 
         # Construct and allocate the limits container
-        limits = LimitsKamino(model=model, device=self.default_device)
+        limits = LimitsKamino(model=model)
         if self.verbose:
             print("limits.model_max_limits_host: ", limits.model_max_limits_host)
             print("limits.world_max_limits_host: ", limits.world_max_limits_host)
@@ -755,7 +755,7 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
         )
 
         # Create the Jacobians container
-        jacobians = SparseSystemJacobians(model=model, limits=limits, contacts=contacts, device=self.default_device)
+        jacobians = SparseSystemJacobians(model=model, limits=limits, contacts=contacts)
         if self.verbose:
             print(f"J_cts max_dims (shape={jacobians._J_cts.bsm.max_dims.shape}): {jacobians._J_cts.bsm.max_dims}")
             print(f"J_cts dims (shape={jacobians._J_cts.bsm.dims.shape}): {jacobians._J_cts.bsm.dims}")
@@ -990,7 +990,7 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
         )
 
         # Create the Jacobians container
-        jacobians = SparseSystemJacobians(model=model, contacts=contacts, device=self.default_device)
+        jacobians = SparseSystemJacobians(model=model, contacts=contacts)
         wp.synchronize()
 
         # Build the system Jacobians
@@ -1016,7 +1016,7 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
         )
 
         # Create the Jacobians container
-        jacobians = SparseSystemJacobians(model=model, limits=limits, contacts=contacts, device=self.default_device)
+        jacobians = SparseSystemJacobians(model=model, limits=limits, contacts=contacts)
         wp.synchronize()
 
         # Build the system Jacobians

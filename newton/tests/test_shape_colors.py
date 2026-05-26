@@ -46,8 +46,8 @@ class TestShapeColors(unittest.TestCase):
         indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
         return newton.Mesh(vertices, indices, color=color)
 
-    def test_collision_shape_without_explicit_color_uses_default_palette(self):
-        """Verify collision shapes fall back to the default viewer palette."""
+    def test_collision_shape_without_explicit_color_uses_palette_by_default(self):
+        """Verify collision shapes use the per-shape palette sequence by default."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0)
         shape = builder.add_shape_box(body=body, hx=0.1, hy=0.2, hz=0.3)

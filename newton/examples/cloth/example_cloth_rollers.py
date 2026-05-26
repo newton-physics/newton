@@ -302,7 +302,7 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
         self.model.soft_contact_ke = 5.0e5
-        self.model.soft_contact_kd = 1.0e-5
+        self.model.soft_contact_kd = 1.0e-6
         self.model.soft_contact_mu = 0.1
 
         # Fix outer edge of cloth to cylinder 2 and set up cylinder rotation
@@ -527,7 +527,4 @@ if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
-    example = Example(viewer=viewer, args=args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer=viewer, args=args), args)

@@ -36,11 +36,15 @@ class Example:
 
         builder = newton.ModelBuilder()
 
+        builder.default_shape_cfg.mu = 0.5  # Friction coefficient
+
         if self.solver_type == "vbd":
             # VBD: Higher stiffness for stable rigid body contacts
             builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
             builder.default_shape_cfg.kd = 1.0e1  # Contact damping
-            builder.default_shape_cfg.mu = 0.5  # Friction coefficient
+        else:
+            builder.default_shape_cfg.mu_torsional = 0.01  # Contact stiffness
+            builder.default_shape_cfg.mu_rolling = 3e-3  # Contact stiffness
 
         # add ground plane
         builder.add_ground_plane()
@@ -240,6 +244,4 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

@@ -376,10 +376,10 @@ def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
     device,
     solver_fn,
 ):
-    """Root FREE joint with a rotated ``parent_xform`` must report Featherstone ``joint_qd`` in the parent frame.
-
-    This is scoped to Featherstone because MuJoCo's FREE-root bridge has its
-    own root-joint velocity convention.
+    """Root FREE joint with a rotated ``parent_xform`` must report ``joint_qd``
+    in the parent joint frame and ``body_qd`` in world frame at the COM
+    (regression for #2704 — the MuJoCo bridge previously wrote both in world
+    frame).
     """
     builder = newton.ModelBuilder(gravity=-10.0, up_axis=newton.Axis.Z)
     parent_xform = wp.transform(wp.vec3(0.5, 0.6, 0.7), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0))
@@ -897,13 +897,16 @@ for device in devices:
         test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent,
         devices=[device],
     )
-    add_function_test(
-        TestBodyVelocity,
-        "test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd_featherstone",
-        test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd,
-        devices=[device],
-        solver_fn=solvers["featherstone"][0],
-    )
+    for solver_name in ("featherstone", "mujoco_cpu", "mujoco_warp"):
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        add_function_test(
+            TestBodyVelocity,
+            f"test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd_{solver_name}",
+            test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd,
+            devices=[device],
+            solver_fn=solvers[solver_name][0],
+        )
     for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
         joint_name = _joint_type_name(joint_type)
         add_function_test(

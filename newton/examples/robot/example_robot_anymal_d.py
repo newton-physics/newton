@@ -52,7 +52,7 @@ class Example:
             hide_collision_shapes=True,
         )
 
-        articulation_builder.joint_q[:3] = [0.0, 0.0, 0.62]
+        articulation_builder.joint_q[:3] = [0.0, 0.0, 0.68]
         if len(articulation_builder.joint_q) > 6:
             articulation_builder.joint_q[3:7] = [0.0, 0.0, 0.0, 1.0]
 
@@ -171,6 +171,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

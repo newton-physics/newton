@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import warp as wp
@@ -43,6 +42,7 @@ from ..geometry.contact_reduction_global import (
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import (
+    MESH_SDF_BLOCK_DIM,
     compute_block_counts_from_weights,
     compute_mesh_mesh_block_offsets_scan,
     create_narrow_phase_process_mesh_mesh_contacts_kernel,
@@ -786,6 +786,8 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
     shape_gap: wp.array[float],  # Per-shape contact gaps
     shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
     shape_collision_radius: wp.array[float],
+    shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
+    shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
     shape_pairs_mesh: wp.array[wp.vec2i],
@@ -830,7 +832,9 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
                 shape_b,
                 hfd,
                 shape_transform,
-                shape_collision_radius,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
+                shape_data,
                 shape_gap,
                 triangle_pairs,
                 triangle_pairs_count,
@@ -864,12 +868,16 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
         # Get non-mesh shape world transform
         X_ws = shape_transform[non_mesh_shape]
 
-        # Use per-shape contact gaps for consistent pairwise thresholding.
+        # Use the same margin+gap shell for triangle candidates that the
+        # narrow phase uses when accepting contacts.
         gap_non_mesh = shape_gap[non_mesh_shape]
         gap_mesh = shape_gap[mesh_shape]
         gap_sum = gap_non_mesh + gap_mesh
+        margin_non_mesh = shape_data[non_mesh_shape][3]
+        margin_mesh = shape_data[mesh_shape][3]
+        contact_threshold = gap_sum + margin_non_mesh + margin_mesh
 
-        # Call mesh_vs_convex_midphase with the shape_data and pair gap sum.
+        # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
         mesh_vs_convex_midphase(
             j,
             mesh_shape,
@@ -880,7 +888,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
             shape_types,
             shape_data,
             shape_source,
-            gap_sum,
+            contact_threshold,
             triangle_pairs,
             triangle_pairs_count,
         )
@@ -1430,6 +1438,7 @@ class NarrowPhase:
         use_lean_gjk_mpr: bool = False,
         deterministic: bool = False,
         contact_max: int | None = None,
+        verify_buffers: bool = True,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -1461,6 +1470,20 @@ class NarrowPhase:
                 Defaults to ``max_candidate_pairs``.  Set this to a larger value when
                 a single candidate pair can emit multiple contacts (e.g. up to 4 for
                 primitive multi-contact paths).
+            verify_buffers: When True (the default), launch a ``dim=[1]``
+                diagnostic kernel (:func:`verify_narrow_phase_buffers`) at the
+                end of :meth:`launch` that compares each public counter on this
+                class (``gjk_candidate_pairs_count``, ``shape_pairs_mesh_count``,
+                ``triangle_pairs_count``, ``shape_pairs_mesh_plane_count``,
+                ``shape_pairs_mesh_mesh_count``, ``shape_pairs_sdf_sdf_count``)
+                and the output ``contact_count`` against the capacity of its
+                backing array, printing ``wp.printf`` warnings on overflow.
+                Users who want a programmatic overflow hook can disable this and
+                read those counters themselves.  Overhead is one extra kernel
+                launch per collision pass (roughly a few µs of launch latency on
+                CUDA; the kernel body is a handful of scalar comparisons on one
+                thread).  Disable in hot loops or CUDA graph capture once buffer
+                sizes are known to be adequate.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -1469,19 +1492,13 @@ class NarrowPhase:
         self.has_meshes = has_meshes
         self.has_heightfields = has_heightfields
         self.deterministic = deterministic
+        self.verify_buffers = verify_buffers
+        device_obj = wp.get_device(device)
 
-        # Warn when running on CPU with meshes: mesh-mesh SDF contacts require CUDA
-        is_gpu_device = wp.get_device(device).is_cuda
-        if has_meshes and not is_gpu_device:
-            warnings.warn(
-                "NarrowPhase running on CPU: mesh-mesh contacts will be skipped "
-                "(SDF-based mesh-mesh collision requires CUDA). "
-                "Use a CUDA device for full mesh-mesh contact support.",
-                stacklevel=2,
-            )
-
-        # Contact reduction requires GPU and meshes
-        if reduce_contacts and not (is_gpu_device and has_meshes):
+        # Contact reduction requires either meshes or heightfields (the
+        # mesh/heightfield-triangle path feeds the global reducer, so
+        # heightfield-only scenes still benefit from reduction).
+        if reduce_contacts and not (has_meshes or has_heightfields):
             self.reduce_contacts = False
 
         # Determine if we're using external AABBs
@@ -1504,10 +1521,30 @@ class NarrowPhase:
         else:
             writer_func = contact_writer_warp_func
 
-        self.tile_size_mesh_convex = 128
-        self.tile_size_mesh_mesh = 256
+        # CPU kernels currently observe ``wp.block_dim() == 1`` regardless
+        # of the plain ``wp.launch(..., block_dim=N)`` parameter (Warp
+        # GH-1413). Keep the mesh-convex midphase launch grid, tile shape,
+        # and kernel-side ``wp.block_dim()`` in sync on CPU.
+        self.tile_size_mesh_convex = 1 if device_obj.is_cpu else 128
+        # Must match ``MESH_SDF_BLOCK_DIM`` in sdf_contact.py: the mesh-SDF
+        # kernels assume ``wp.block_dim()`` equals that constant so the
+        # tile-stack overflow margin (``STACK_CAPACITY = 2 *
+        # MESH_SDF_BLOCK_DIM``) is correctly sized. Re-use the constant
+        # rather than duplicating the value so the two can't drift.
+        self.tile_size_mesh_mesh = MESH_SDF_BLOCK_DIM
+        assert self.tile_size_mesh_mesh == MESH_SDF_BLOCK_DIM, (
+            "mesh-SDF tile launches must use block_dim == MESH_SDF_BLOCK_DIM"
+        )
         self.tile_size_mesh_plane = 512
-        self.block_dim = 128
+        # Generic block dim for non-tile-stack kernels (primitive /
+        # GJK-MPR / export). Not used for the mesh-SDF tile launches,
+        # which use ``self.tile_size_mesh_mesh`` above.
+        #
+        # Plain ``wp.launch`` does not auto-clamp ``block_dim`` on CPU like
+        # ``wp.launch_tiled`` does. Match the kernel-observed value so
+        # strided-loop and tile-index calculations cannot run past the CPU
+        # launch geometry.
+        self.block_dim = 1 if device_obj.is_cpu else 128
 
         # Create the appropriate kernel variants
         # Primitive kernel handles lightweight primitives and routes remaining pairs
@@ -1544,27 +1581,25 @@ class NarrowPhase:
                 self.mesh_plane_contacts_kernel = create_narrow_phase_process_mesh_plane_contacts_kernel(
                     writer_func,
                 )
-            # Only create mesh-mesh SDF kernel on CUDA (uses __shared__ memory via func_native)
-            if is_gpu_device:
-                if self.reduce_contacts:
-                    self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                        write_contact_to_reducer,
-                        enable_heightfields=has_heightfields,
-                        reduce_contacts=True,
-                    )
-                else:
-                    self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                        writer_func,
-                        enable_heightfields=has_heightfields,
-                    )
+            if self.reduce_contacts:
+                self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                    write_contact_to_reducer,
+                    enable_heightfields=has_heightfields,
+                    reduce_contacts=True,
+                )
             else:
-                self.mesh_mesh_contacts_kernel = None
+                self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                    writer_func,
+                    enable_heightfields=has_heightfields,
+                )
         else:
             self.mesh_plane_contacts_kernel = None
             self.mesh_mesh_contacts_kernel = None
 
-        # Create global contact reduction kernels for mesh-triangle contacts (only if has_meshes and reduce_contacts)
-        if self.reduce_contacts and has_meshes:
+        # Create global contact reduction kernels for mesh/heightfield-triangle
+        # contacts (mirror the predicate used to gate ``self.reduce_contacts``
+        # above so heightfield-only scenes also get the reducer allocated).
+        if self.reduce_contacts and (has_meshes or has_heightfields):
             # Global contact reducer uses hardcoded BETA_THRESHOLD (0.1mm) same as shared-memory reduction
             # Slot layout: NUM_SPATIAL_DIRECTIONS spatial + 1 max-depth = VALUES_PER_KEY slots per key
             self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(writer_func)
@@ -1649,7 +1684,6 @@ class NarrowPhase:
         # 256 blocks provides good occupancy on most GPUs (2-4 blocks per SM).
 
         # Query GPU properties to compute appropriate thread limits
-        device_obj = wp.get_device(device)
         if device_obj.is_cuda:
             # Use 4 blocks per SM as a reasonable upper bound for occupancy
             # This balances parallelism with resource utilization
@@ -1664,9 +1698,13 @@ class NarrowPhase:
         self.total_num_threads = self.block_dim * num_blocks
         self.num_tile_blocks = num_blocks
 
-        # Dynamic block allocation for mesh-mesh and mesh-plane contacts
-        if device_obj.is_cuda and self.reduce_contacts:
-            target_blocks = device_obj.sm_count * 4
+        # Dynamic block allocation for mesh-mesh and mesh-plane contacts.
+        # On CUDA we target ~4 blocks per SM for good occupancy; on CPU
+        # there is no SM notion so we pick 64 as a modest parallelism
+        # target that splits pair work across OpenMP threads without
+        # over-subscribing on small scenes.
+        if self.reduce_contacts:
+            target_blocks = device_obj.sm_count * 4 if device_obj.is_cuda else 64
             n = max_candidate_pairs + 1
             # Mesh-mesh
             self.num_mesh_mesh_blocks = target_blocks
@@ -1848,6 +1886,8 @@ class NarrowPhase:
                     shape_gap,
                     shape_data,
                     shape_collision_radius,
+                    shape_collision_aabb_lower,
+                    shape_collision_aabb_upper,
                     shape_heightfield_index,
                     heightfield_data,
                     self.shape_pairs_mesh,
@@ -1970,7 +2010,7 @@ class NarrowPhase:
                     record_tape=False,
                 )
 
-            # Launch mesh-mesh contact processing kernel on CUDA.
+            # Launch mesh-mesh contact processing kernel.
             # The kernel uses texture SDF for fast sampling, with BVH fallback via shape_sdf_index,
             # as well as on-the-fly heightfield evaluation via heightfield_data.
             if texture_sdf_data is None:
@@ -1980,7 +2020,7 @@ class NarrowPhase:
             if shape_edge_range is None:
                 shape_edge_range = self._empty_edge_range
 
-            if wp.get_device(device).is_cuda and self.mesh_mesh_contacts_kernel is not None:
+            if self.mesh_mesh_contacts_kernel is not None:
                 if self.reduce_contacts and self.mesh_mesh_block_offsets is not None:
                     # Mesh-mesh contacts → buffer + inline hashtable registration
                     compute_mesh_mesh_block_offsets_scan(
@@ -2097,30 +2137,31 @@ class NarrowPhase:
             )
 
         # Verify no collision pipeline buffers overflowed
-        wp.launch(
-            kernel=verify_narrow_phase_buffers,
-            dim=[1],
-            inputs=[
-                candidate_pair_count,
-                candidate_pair.shape[0],
-                self.gjk_candidate_pairs_count,
-                self.gjk_candidate_pairs.shape[0],
-                self.shape_pairs_mesh_count,
-                self.shape_pairs_mesh.shape[0] if self.shape_pairs_mesh is not None else 0,
-                self.triangle_pairs_count,
-                self.triangle_pairs.shape[0] if self.triangle_pairs is not None else 0,
-                self.shape_pairs_mesh_plane_count,
-                self.shape_pairs_mesh_plane.shape[0] if self.shape_pairs_mesh_plane is not None else 0,
-                self.shape_pairs_mesh_mesh_count,
-                self.shape_pairs_mesh_mesh.shape[0] if self.shape_pairs_mesh_mesh is not None else 0,
-                self.shape_pairs_sdf_sdf_count,
-                self.shape_pairs_sdf_sdf.shape[0] if self.shape_pairs_sdf_sdf is not None else 0,
-                writer_data.contact_count,
-                writer_data.contact_max,
-            ],
-            device=device,
-            record_tape=False,
-        )
+        if self.verify_buffers:
+            wp.launch(
+                kernel=verify_narrow_phase_buffers,
+                dim=[1],
+                inputs=[
+                    candidate_pair_count,
+                    candidate_pair.shape[0],
+                    self.gjk_candidate_pairs_count,
+                    self.gjk_candidate_pairs.shape[0],
+                    self.shape_pairs_mesh_count,
+                    self.shape_pairs_mesh.shape[0] if self.shape_pairs_mesh is not None else 0,
+                    self.triangle_pairs_count,
+                    self.triangle_pairs.shape[0] if self.triangle_pairs is not None else 0,
+                    self.shape_pairs_mesh_plane_count,
+                    self.shape_pairs_mesh_plane.shape[0] if self.shape_pairs_mesh_plane is not None else 0,
+                    self.shape_pairs_mesh_mesh_count,
+                    self.shape_pairs_mesh_mesh.shape[0] if self.shape_pairs_mesh_mesh is not None else 0,
+                    self.shape_pairs_sdf_sdf_count,
+                    self.shape_pairs_sdf_sdf.shape[0] if self.shape_pairs_sdf_sdf is not None else 0,
+                    writer_data.contact_count,
+                    writer_data.contact_max,
+                ],
+                device=device,
+                record_tape=False,
+            )
 
     def launch(
         self,

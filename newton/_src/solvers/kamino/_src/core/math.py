@@ -818,6 +818,31 @@ def expand6d(X: mat33f) -> mat66f:
     return X_6d
 
 
+@wp.func
+def concat6d(X1: mat33f, X2: mat33f) -> mat66f:
+    """
+    Concatenates two 3x3 rotation matrix as diagonal blocks of a 6x6 matrix.
+
+    Args:
+        X1 (mat33f): The 3x3 top-left matrix.
+        X2 (mat33f): The 3x3 bottom-right matrix.
+
+    Returns:
+        mat66: The 6x6 matrix concatenating X1, X2 along the diagonal.
+    """
+    # Initialize the 6D matrix
+    X_6d = mat66f(0.0)
+
+    # Fill the upper left 3x3 block with the input matrix
+    for i in range(3):
+        for j in range(3):
+            X_6d[i, j] = X1[i, j]
+            X_6d[3 + i, 3 + j] = X2[i, j]
+
+    # Return the expanded matrix
+    return X_6d
+
+
 ###
 # Dynamics
 ###

@@ -154,7 +154,7 @@ class Example:
             joint_f = self.cartpoles.get_attribute("joint_f", self.control)
             wp.launch(
                 apply_forces_kernel,
-                dim=joint_f.shape,
+                dim=joint_f.shape[0],
                 inputs=[joint_q, joint_f],
             )
 
@@ -238,6 +238,4 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

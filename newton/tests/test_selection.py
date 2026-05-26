@@ -69,6 +69,50 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.get_dof_velocities(state).shape, (1, 1, 0))
         self.assertEqual(view.get_dof_forces(control).shape, (1, 1, 0))
 
+    def test_template_labels_preserve_full_paths(self):
+        """Two-finger gripper whose distal bodies, finger joints, and tip
+        shapes each share a colliding leaf name. ``*_names`` attributes
+        collapse to the leaf; ``*_template_labels`` attributes expose the
+        full slash-delimited labels from the template articulation so
+        callers can still distinguish entries and recover selection order.
+        """
+        builder = newton.ModelBuilder()
+        palm = builder.add_link(label="palm")
+        left = builder.add_link(label="palm/left/fingertip")
+        right = builder.add_link(label="palm/right/fingertip")
+        builder.add_shape_box(body=left, hx=0.01, hy=0.01, hz=0.02, label="palm/left/tip_collision")
+        builder.add_shape_box(body=right, hx=0.01, hy=0.01, hz=0.02, label="palm/right/tip_collision")
+        j_root = builder.add_joint_free(parent=-1, child=palm, label="root")
+        j_left = builder.add_joint_revolute(
+            parent=palm, child=left, axis=(0.0, 0.0, 1.0), label="palm/left/fingertip_joint"
+        )
+        j_right = builder.add_joint_revolute(
+            parent=palm, child=right, axis=(0.0, 0.0, 1.0), label="palm/right/fingertip_joint"
+        )
+        builder.add_articulation([j_root, j_left, j_right], label="gripper")
+        model = builder.finalize()
+
+        view = ArticulationView(model, "gripper", include_links="fingertip")
+
+        # Leaf collisions are visible on the *_names attributes...
+        self.assertEqual(view.link_count, 2)
+        self.assertEqual(view.link_names, ["fingertip", "fingertip"])
+        self.assertEqual(view.shape_names, ["tip_collision", "tip_collision"])
+
+        # ...and disambiguated on the *_template_labels attributes.
+        self.assertEqual(
+            view.link_template_labels,
+            ["palm/left/fingertip", "palm/right/fingertip"],
+        )
+        self.assertEqual(
+            view.shape_template_labels,
+            ["palm/left/tip_collision", "palm/right/tip_collision"],
+        )
+        self.assertIn("palm/left/fingertip_joint", view.joint_template_labels)
+        self.assertIn("palm/right/fingertip_joint", view.joint_template_labels)
+        self.assertEqual(len(view.joint_template_labels), view.joint_count)
+        self.assertEqual(view.body_template_labels, view.link_template_labels)
+
     def _test_selection_shapes(self, floating: bool):
         # load articulation
         ant = newton.ModelBuilder()

@@ -1093,7 +1093,7 @@ def build_boxes_fourbar(
             bid_B=-1,
             bid_F=bid1,
             B_r_Bj=vec3f(0.0),
-            F_r_Fj=vec3f(0.0),
+            F_r_Fj=-r_b1,
             X_j=I_3,
             world_index=world_index,
         )

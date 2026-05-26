@@ -91,7 +91,6 @@ class TestAnimationJointReference(unittest.TestCase):
             rate=rate,
             loop=loop,
             use_fd=use_fd,
-            device=self.default_device,
         )
         self.assertIsNotNone(animation)
         self.assertIsNotNone(animation.data)
@@ -195,7 +194,6 @@ class TestAnimationJointReference(unittest.TestCase):
             rate=rate,
             loop=loop,
             use_fd=use_fd,
-            device=self.default_device,
         )
         self.assertIsNotNone(animation)
         self.assertIsNotNone(animation.data)
@@ -337,7 +335,6 @@ class TestAnimationJointReference(unittest.TestCase):
             rate=rate,
             loop=loop,
             use_fd=use_fd,
-            device=self.default_device,
         )
         self.assertIsNotNone(animation)
         self.assertIsNotNone(animation.data)
@@ -479,7 +476,6 @@ class TestAnimationJointReference(unittest.TestCase):
             rate=rate,
             loop=loop,
             use_fd=use_fd,
-            device=self.default_device,
         )
         self.assertIsNotNone(animation)
         self.assertIsNotNone(animation.data)
