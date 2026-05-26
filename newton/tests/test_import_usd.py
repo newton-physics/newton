@@ -1937,6 +1937,93 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(limit_ke[dof2]), builder.default_joint_cfg.limit_ke, places=4)
         self.assertAlmostEqual(float(limit_kd[dof2]), builder.default_joint_cfg.limit_kd, places=4)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_solreflimit_parsing_revolute(self):
+        """Joint mjc:solreflimit on a revolute joint must produce per-radian limit_ke/_kd.
+
+        mjModel always stores stiffness per-radian for hinge joints regardless of
+        ``mjc:compiler:angle``. The USD importer divides revolute and D6-angular
+        ``limit_ke``/``limit_kd`` by ``DegreesToRadian`` on the assumption that
+        UsdPhysics-authored gains are per-degree. The MJC angular schema entries
+        compensate by pre-multiplying so the per-radian value survives. Regression
+        for #2536.
+        """
+        from pxr import Usd
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "X"
+        float physics:lowerLimit = -45
+        float physics:upperLimit = 45
+
+        uniform double[] mjc:solreflimit = [0.08, 1]
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        model = builder.finalize()
+
+        joint1_idx = model.joint_label.index("/Articulation/Joint1")
+        joint_qd_start = model.joint_qd_start.numpy()
+        dof1 = joint_qd_start[joint1_idx]
+
+        # solreflimit=[0.08, 1] -> per-radian ke = 1/0.08^2 = 156.25, kd = 2/0.08 = 25.0.
+        # Without the MJC angular compensation, the importer would over-scale by
+        # 1/(pi/180) ~= 57.3x giving ke ~= 8952 and kd ~= 1432.
+        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof1]), 156.25, places=3)
+        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof1]), 25.0, places=3)
+
     def test_limit_margin_parsing(self):
         """Test importing limit_margin from USD with mjc:margin on joint."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -3538,6 +3625,90 @@ def Xform "TestBody" (
         self.assertEqual(sites_in_visuals, 0, "load_sites=False should not load any sites")
         self.assertEqual(
             builder_visuals.shape_count, collision_count + visual_count, "Should have collision + visuals only"
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_granular_loading_with_newton_sites(self):
+        """Verify that prims with NewtonSiteAPI are recognized as sites, in parity with MjcSiteAPI."""
+        from pxr import Usd
+
+        # Same shape mix as test_granular_loading_with_sites, but the two Site* prims
+        # carry NewtonSiteAPI (from newton-usd-schemas) instead of MjcSiteAPI.
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "TestBody" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1.0
+    }
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Sphere "Site1" (
+        prepend apiSchemas = ["NewtonSiteAPI"]
+    )
+    {
+        double radius = 0.1
+        double3 xformOp:translate = (0, 1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "Site2" (
+        prepend apiSchemas = ["NewtonSiteAPI"]
+    )
+    {
+        double size = 0.2
+        double3 xformOp:translate = (0, -1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        # load_sites=True, load_visual_shapes=False -> collision + sites only
+        builder_sites = newton.ModelBuilder()
+        builder_sites.add_usd(stage, load_sites=True, load_visual_shapes=False)
+        site_flag = int(newton.ShapeFlags.SITE)
+        sites_in_result = sum(1 for i in range(builder_sites.shape_count) if builder_sites.shape_flags[i] & site_flag)
+        self.assertEqual(sites_in_result, 2, "NewtonSiteAPI prims should be loaded as sites")
+        self.assertEqual(
+            builder_sites.shape_count,
+            3,
+            "Should load 1 collision + 2 NewtonSiteAPI sites with load_visual_shapes=False",
+        )
+
+        # load_sites=False -> NewtonSiteAPI prims must be skipped entirely (not loaded as plain visual shapes)
+        builder_no_sites = newton.ModelBuilder()
+        builder_no_sites.add_usd(stage, load_sites=False)
+        sites_in_no_sites = sum(
+            1 for i in range(builder_no_sites.shape_count) if builder_no_sites.shape_flags[i] & site_flag
+        )
+        self.assertEqual(sites_in_no_sites, 0, "load_sites=False should skip NewtonSiteAPI prims")
+        self.assertEqual(
+            builder_no_sites.shape_count,
+            2,
+            "load_sites=False should leave 1 collision + 1 visual shape, with NewtonSiteAPI prims excluded entirely",
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

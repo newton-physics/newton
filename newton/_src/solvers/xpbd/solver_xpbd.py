@@ -51,18 +51,20 @@ class SolverXPBD(SolverBase):
         which is symmetric but not exact.
 
         **Reported parent-joint forces** (see :attr:`~newton.State.body_parent_f`,
-        populated when the extended state attribute is requested) are also
+        populated when the extended state attribute is requested) are
         approximate.  XPBD applies relaxation factors
         (``joint_linear_relaxation``, ``joint_angular_relaxation``) to each
         joint constraint correction, and with a finite ``iterations`` count
         residual constraint error remains at end-of-step, so the reported
         wrench is the *applied* constraint reaction rather than the exact
         wrench needed to enforce the joint perfectly.  The convention matches
+        :class:`~newton.solvers.SolverFeatherstone` and
         :class:`~newton.solvers.SolverMuJoCo`: it is the spatial wrench
         transmitted from the parent through the inbound joint, in world frame
-        at the child body's COM. In equilibrium this reaction counters all
-        applied forces (gravity, contacts, ``State.body_f``, and the net
-        effect of :attr:`~newton.Control.joint_f`) by Newton's third law.
+        at the child body's COM, **including** both the constraint reaction
+        and the body-frame contribution of :attr:`~newton.Control.joint_f`.
+        In equilibrium this wrench counters all applied forces (gravity,
+        contacts, ``State.body_f``) by Newton's third law.
 
     Joint limitations:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE, D6.
@@ -332,6 +334,13 @@ class SolverXPBD(SolverBase):
                 if model.joint_count:
                     # Avoid accumulating joint_f into the persistent state body_f buffer.
                     body_f_tmp = wp.clone(state_in.body_f)
+                    # ``joint_impulse`` (may be ``None`` when ``body_parent_f``
+                    # was not requested) accumulates both the joint_f wrench
+                    # contribution recorded here and the constraint-correction
+                    # contribution added by :func:`solve_body_joints` inside
+                    # the iteration loop.  Together they recover the total
+                    # wrench transmitted to the child body, matching the
+                    # :attr:`State.body_parent_f` convention.
                     wp.launch(
                         kernel=apply_joint_forces,
                         dim=model.joint_count,
@@ -348,8 +357,9 @@ class SolverXPBD(SolverBase):
                             model.joint_dof_dim,
                             model.joint_axis,
                             control.joint_f,
+                            dt,
                         ],
-                        outputs=[body_f_tmp],
+                        outputs=[body_f_tmp, joint_impulse],
                         device=model.device,
                     )
 
