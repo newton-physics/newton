@@ -3555,7 +3555,16 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model.body_mass[:] = self.mjw_model.body_mass.numpy()[0]
                 self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
                 self.mj_model.body_inertia[:] = self.mjw_model.body_inertia.numpy()[0]
-                self.mj_model.body_iquat[:] = self.mjw_model.body_iquat.numpy()[0]
+                # Do not overwrite ``mj_model.body_iquat``: MuJoCo's compiler
+                # picks a canonical principal-axes basis (including a stable
+                # choice in degenerate sub-spaces of repeated eigenvalues) and
+                # the C solver's internal state is consistent with it. Newton's
+                # ``wp.eig3()`` may return an arbitrary valid basis for
+                # repeated eigenvalues, and replacing the compiled basis at
+                # runtime can destabilise stiff constraints (e.g. WELD loops
+                # on thin rods). Mass/density randomization scales principal
+                # moments without rotating the principal-axes frame, so the
+                # compiled ``body_iquat`` remains correct.
             if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
                 self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
@@ -4440,12 +4449,9 @@ class SolverMuJoCo(SolverBase):
         def joint_has_raw_limit_solref(dof_idx: int) -> bool:
             if joint_solref_limit is None:
                 return False
-            raw_solref = joint_solref_limit[dof_idx]
-            raw_solref_is_set = bool(np.any(raw_solref != 0.0))
             if joint_solref_limit_mode is not None:
-                solref_mode = int(joint_solref_limit_mode[dof_idx])
-                return solref_mode == SOLREF_MODE_RAW or raw_solref_is_set
-            return raw_solref_is_set
+                return int(joint_solref_limit_mode[dof_idx]) == SOLREF_MODE_RAW
+            return bool(np.any(joint_solref_limit[dof_idx] != 0.0))
 
         def joint_uses_mjcf_default_limit_solref(dof_idx: int) -> bool:
             if joint_solref_limit_mode is None:
@@ -6887,19 +6893,22 @@ class SolverMuJoCo(SolverBase):
             jnt_to_newton_dof = self.mjc_jnt_to_newton_dof.numpy()[0]
             jnt_solref = np.array(self.mj_model.jnt_solref, dtype=np.float64, copy=True)
 
+            mode_present = joint_limit_solref_mode_np is not None
             for mjc_jnt, newton_dof in enumerate(jnt_to_newton_dof):
                 if newton_dof < 0:
                     continue
 
-                solref_mode = (
-                    int(joint_limit_solref_mode_np[newton_dof]) if joint_limit_solref_mode_np is not None else 0
-                )
+                solref_mode = int(joint_limit_solref_mode_np[newton_dof]) if mode_present else SOLREF_MODE_FORCE_SPACE
                 if joint_limit_solref_np is not None:
                     raw_solref = joint_limit_solref_np[newton_dof]
-                    raw_solref_is_set = np.any(raw_solref != 0.0)
-                    if solref_mode == SOLREF_MODE_RAW or raw_solref_is_set:
-                        jnt_solref[mjc_jnt] = raw_solref
-                        continue
+                    if mode_present:
+                        if solref_mode == SOLREF_MODE_RAW:
+                            jnt_solref[mjc_jnt] = raw_solref
+                            continue
+                    else:
+                        if np.any(raw_solref != 0.0):
+                            jnt_solref[mjc_jnt] = raw_solref
+                            continue
 
                 ke = float(joint_limit_ke[newton_dof])
                 kd = float(joint_limit_kd[newton_dof])

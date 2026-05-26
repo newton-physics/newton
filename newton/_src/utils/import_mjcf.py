@@ -525,8 +525,18 @@ def parse_mjcf(
             out = np.array(default, dtype=np.float32)
 
         length = len(out)
-        if length == 1:
-            return wp.types.vector(len(default), wp.float32)(out[0], out[0], out[0])
+        if length == 1 and len(default) != 1:
+            # MuJoCo accepts shorthand for several vector attributes. The
+            # ``save_to_mjcf`` round-trip relies on this for ``solreflimit``:
+            # ``spec.to_xml()`` serialises ``(0.02, 1.0)`` as ``solreflimit="0.02"``
+            # and the importer must reconstruct the full vector. Historically
+            # vec3 callers used the single value as a uniform replicate; vec2
+            # callers (solref) need the trailing component to come from the
+            # MuJoCo default, not from ``out[0]``.
+            if len(default) == 3:
+                return wp.types.vector(3, wp.float32)(out[0], out[0], out[0])
+            padded = (out[0], *(float(default[i]) for i in range(1, len(default))))
+            return wp.types.vector(len(default), wp.float32)(*padded)
 
         return wp.types.vector(length, wp.float32)(out)
 

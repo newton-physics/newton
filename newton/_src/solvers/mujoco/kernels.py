@@ -1767,17 +1767,8 @@ def update_body_inertia_kernel(
     if newton_body < 0:
         return
 
-    inertia = body_inertia[newton_body]
-    max_off_diag = wp.max(wp.max(wp.abs(inertia[0, 1]), wp.abs(inertia[0, 2])), wp.abs(inertia[1, 2]))
-    if max_off_diag <= 1.0e-12:
-        body_inertia_out[world, mjc_body] = wp.vec3(inertia[0, 0], inertia[1, 1], inertia[2, 2])
-        # MuJoCo stores quaternions as wxyz. Keep axis-aligned inertia in the
-        # body frame instead of choosing an arbitrary basis for repeated moments.
-        body_iquat_out[world, mjc_body] = wp.quat(1.0, 0.0, 0.0, 0.0)
-        return
-
     # Eigendecomposition of inertia tensor
-    eigenvectors, eigenvalues = wp.eig3(inertia)
+    eigenvectors, eigenvalues = wp.eig3(body_inertia[newton_body])
 
     # Sort descending (MuJoCo convention)
     eigenvalues, V = _sort_eigenpairs_descending(eigenvalues, eigenvectors)
@@ -2401,16 +2392,27 @@ def update_jnt_solref_from_invweight0_kernel(
     if newton_dof < 0:
         return
 
+    # When ``joint_limit_solref_mode`` is present it is authoritative: only
+    # ``SOLREF_MODE_RAW`` forwards the authored ``mujoco.solreflimit`` value
+    # unscaled. Otherwise (legacy back-compat without the mode field) we fall
+    # back to inferring intent from a non-zero ``solreflimit``.
     solref_mode = SOLREF_MODE_FORCE_SPACE
+    mode_present = False
     if joint_limit_solref_mode:
+        mode_present = True
         solref_mode = joint_limit_solref_mode[newton_dof]
 
     if joint_limit_solref:
         raw_solref = joint_limit_solref[newton_dof]
-        raw_solref_is_set = raw_solref[0] != 0.0 or raw_solref[1] != 0.0
-        if solref_mode == SOLREF_MODE_RAW or raw_solref_is_set:
-            jnt_solref[world, mjc_jnt] = raw_solref
-            return
+        if mode_present:
+            if solref_mode == SOLREF_MODE_RAW:
+                jnt_solref[world, mjc_jnt] = raw_solref
+                return
+        else:
+            raw_solref_is_set = raw_solref[0] != 0.0 or raw_solref[1] != 0.0
+            if raw_solref_is_set:
+                jnt_solref[world, mjc_jnt] = raw_solref
+                return
 
     ke = joint_limit_ke[newton_dof]
     kd = joint_limit_kd[newton_dof]

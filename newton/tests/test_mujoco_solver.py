@@ -9956,6 +9956,83 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         self.assertLess(qd_after, -0.2)
         self.assertGreater(qd_after, -0.8)
 
+    def test_saved_mjcf_default_solreflimit_round_trips(self):
+        """MJCF without ``solreflimit`` must round-trip through ``save_to_mjcf``.
+
+        ``spec.to_xml()`` serialises MuJoCo's default ``(0.02, 1.0)`` as a
+        one-value ``solreflimit="0.02"`` shorthand. Before the fix the MJCF
+        importer rejected single-value ``solreflimit`` with ``ValueError:
+        ... expected 2 elements, got 3``; now the parser pads the missing
+        ``dampratio`` from the MuJoCo default.
+        """
+        mjcf_source = """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_source, ignore_inertial_definitions=False)
+        model = builder.finalize()
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+            # Re-import must succeed (this is the round-trip failure repro).
+            roundtrip_builder = newton.ModelBuilder()
+            roundtrip_builder.add_mjcf(xml_path, ignore_inertial_definitions=False)
+            roundtrip_builder.finalize()
+        finally:
+            os.unlink(xml_path)
+
+    def test_solreflimit_mode_force_space_overrides_authored_raw_value(self):
+        """``SOLREF_MODE_FORCE_SPACE`` must scale gains even when ``solreflimit`` is non-zero.
+
+        The earlier ``raw_solref_is_set`` shortcut silently forwarded any
+        non-zero ``mujoco.solreflimit`` regardless of the configured mode, so a
+        user opting into Newton force-space scaling would still see the raw
+        value at the constraint level. With the fix the explicit mode is
+        authoritative.
+        """
+        for use_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_cpu):
+                ke = 10000.0
+                kd = 100.0
+                model = self._build_pendulum_model(
+                    mass=2.0,
+                    ke=ke,
+                    kd=kd,
+                    inertia=0.5,
+                    register_mujoco_attrs=True,
+                )
+                model.mujoco.solreflimit.assign(
+                    wp.array(np.array([[0.03, 0.7]], dtype=np.float32), dtype=wp.vec2, device=model.device)
+                )
+                model.mujoco.solreflimit_mode.assign(np.array([SOLREF_MODE_FORCE_SPACE], dtype=np.int32))
+
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_cpu)
+
+                if use_cpu:
+                    dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+                    dmax = float(solver.mj_model.jnt_solimp[0, 1])
+                    actual_solref = np.array(solver.mj_model.jnt_solref[0], dtype=np.float64)
+                else:
+                    dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+                    dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
+                    actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+                factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+                expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+
+                self.assertFalse(np.allclose(actual_solref, [0.03, 0.7]))
+                np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
