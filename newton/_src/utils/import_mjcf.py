@@ -24,6 +24,7 @@ from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
 from .import_utils import (
+    collapse_massless_fixed_root_joints,
     is_xml_content,
     parse_custom_attributes,
     sanitize_name,
@@ -169,6 +170,7 @@ def parse_mjcf(
     enable_self_collisions: bool = True,
     ignore_inertial_definitions: bool = False,
     collapse_fixed_joints: bool = False,
+    collapse_massless_fixed_root: bool = False,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
     convert_3d_hinge_to_ball_joints: bool = False,
@@ -275,6 +277,7 @@ def parse_mjcf(
         enable_self_collisions: If True, self-collisions are enabled.
         ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+        collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
         verbose: If True, print additional information about parsing the MJCF.
         skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
@@ -2797,3 +2800,11 @@ def parse_mjcf(
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
+    elif collapse_massless_fixed_root:
+        root_joint_indices = []
+        for i, (start_idx, _) in enumerate(root_body_boundaries):
+            end_idx = root_body_boundaries[i + 1][0] if i + 1 < len(root_body_boundaries) else len(joint_indices)
+            root_joints = joint_indices[start_idx:end_idx]
+            if root_joints:
+                root_joint_indices.append(root_joints[0])
+        collapse_massless_fixed_root_joints(builder, joint_indices, root_joint_indices)

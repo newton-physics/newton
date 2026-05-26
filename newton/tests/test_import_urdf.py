@@ -556,7 +556,21 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
         assert_np_equal(builder.joint_effort_limit[-1], np.array([6.78]))
 
-    def test_floating_massless_fixed_root_urdf_is_dynamic(self):
+    def test_floating_massless_fixed_root_default_preserves_topology(self):
+        builder = newton.ModelBuilder()
+        builder.add_urdf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF, floating=True, up_axis="Z")
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertIn("massless_fixed_root_internal_fixed/floating_base", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/base_to_chassis", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/chassis_to_sensor", builder.joint_label)
+
+        root_joint = builder.joint_label.index("massless_fixed_root_internal_fixed/floating_base")
+        root_body = builder.joint_child[root_joint]
+        self.assertEqual(builder.joint_type[root_joint], newton.JointType.FREE)
+        self.assertEqual(builder.body_mass[root_body], 0.0)
+
+    def test_floating_massless_fixed_root_urdf_opt_in_is_dynamic(self):
         dt = 1.0 / 60.0
         step_count = 5
         expected_drop = 0.5 * 9.81 * (step_count * dt) ** 2
@@ -565,7 +579,7 @@ class TestImportUrdfBasic(unittest.TestCase):
         for urdf in [MASSLESS_FIXED_ROOT_URDF, MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF]:
             with self.subTest(urdf=urdf.splitlines()[1].strip()):
                 builder = newton.ModelBuilder()
-                builder.add_urdf(urdf, floating=True, up_axis="Z")
+                builder.add_urdf(urdf, floating=True, up_axis="Z", collapse_massless_fixed_root=True)
 
                 self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
                 self.assertGreater(builder.body_mass[0], 0.0)
@@ -589,7 +603,7 @@ class TestImportUrdfBasic(unittest.TestCase):
                 end_z = float(state_0.body_q.numpy()[root_body][2])
                 self.assertGreaterEqual(start_z - end_z, min_drop)
 
-    def test_floating_massless_fixed_root_preserves_existing_fixed_joints(self):
+    def test_floating_massless_fixed_root_opt_in_preserves_existing_fixed_joints(self):
         builder = newton.ModelBuilder()
         root = builder.add_link(mass=1.0, label="pre_root")
         child = builder.add_link(mass=1.0, label="pre_child")
@@ -597,7 +611,7 @@ class TestImportUrdfBasic(unittest.TestCase):
         child_joint = builder.add_joint_fixed(parent=root, child=child, label="pre_child_fixed")
         builder.add_articulation([root_joint, child_joint], label="pre_articulation")
 
-        builder.add_urdf(MASSLESS_FIXED_ROOT_URDF, floating=True, up_axis="Z")
+        builder.add_urdf(MASSLESS_FIXED_ROOT_URDF, floating=True, up_axis="Z", collapse_massless_fixed_root=True)
 
         self.assertEqual(builder.joint_count, 3)
         self.assertIn("pre_world_fixed", builder.joint_label)
@@ -612,9 +626,14 @@ class TestImportUrdfBasic(unittest.TestCase):
             newton.JointType.FREE,
         )
 
-    def test_floating_massless_fixed_root_preserves_imported_internal_fixed_joints(self):
+    def test_floating_massless_fixed_root_opt_in_preserves_imported_internal_fixed_joints(self):
         builder = newton.ModelBuilder()
-        builder.add_urdf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF, floating=True, up_axis="Z")
+        builder.add_urdf(
+            MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF,
+            floating=True,
+            up_axis="Z",
+            collapse_massless_fixed_root=True,
+        )
 
         self.assertEqual(builder.joint_count, 2)
         self.assertIn("massless_fixed_root_internal_fixed/floating_base", builder.joint_label)
