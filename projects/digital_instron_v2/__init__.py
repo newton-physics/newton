@@ -18,6 +18,7 @@ from .foundation import (
     foundation_lengths_loss_gradient,
 )
 from .frame_qc import FrameConfig, FrameQCError, infer_frame_config, load_trial_frame
+from .cycle_windows import CycleWindowTrace, build_cycle_window_trace, infer_cycle_column, write_cycle_window_trace
 from .geometry import (
     CylinderGrid,
     MeshFrame,
@@ -34,10 +35,19 @@ from .geometry import (
     rearfoot_punch_center_uv,
 )
 from .manifest import Trial, TrialManifest, load_manifest, validate_frame_config
+from .validation import (
+    TraceValidationMetrics,
+    active_force_mask,
+    baseline_correct_force,
+    positive_hysteresis_work,
+    robust_peak,
+    validate_trace_metrics,
+)
 from .visualization import write_visualization_report
 
 __all__ = [
     "CylinderGrid",
+    "CycleWindowTrace",
     "FoundationFitResult",
     "FoundationFitSample",
     "FoundationGradientResult",
@@ -53,6 +63,10 @@ __all__ = [
     "SpringSurfaceGrid",
     "Trial",
     "TrialManifest",
+    "TraceValidationMetrics",
+    "active_force_mask",
+    "baseline_correct_force",
+    "build_cycle_window_trace",
     "build_raycast_spring_grid",
     "condition_midsole_mesh",
     "detect_mesh_frame",
@@ -65,6 +79,7 @@ __all__ = [
     "foundation_lengths_batch_loss_gradient",
     "foundation_lengths_loss_gradient",
     "infer_frame_config",
+    "infer_cycle_column",
     "load_manifest",
     "load_trial_frame",
     "make_cylinder_grid",
@@ -72,6 +87,10 @@ __all__ = [
     "place_rearfoot_punch_grid",
     "raycast_grid_thickness",
     "rearfoot_punch_center_uv",
+    "positive_hysteresis_work",
+    "robust_peak",
     "validate_frame_config",
+    "validate_trace_metrics",
+    "write_cycle_window_trace",
     "write_visualization_report",
 ]

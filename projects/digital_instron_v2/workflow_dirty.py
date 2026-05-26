@@ -78,66 +78,6 @@ def run_qc(args: argparse.Namespace) -> dict[str, object]:
         manifest.midsole_mesh,
         output_dir,
         source_units=str(manifest.qc.get("mesh_source_units", "mm")),
-        min_thickness_m=float(manifest.qc.get("min_midsole_thickness_m", 0.005)),
-        max_thickness_m=float(manifest.qc.get("max_midsole_thickness_m", 0.08)),
-    )
-
-    frame_reports = []
-    for trial in manifest.trials:
-        frame = infer_frame_config(
-            trial.csv_path,
-            min_force_span_n=float(manifest.qc.get("min_force_span_n", 50.0)),
-            min_position_span_mm=float(manifest.qc.get("min_position_span_mm", 1.0)),
-        )
-        frame_path = output_dir / f"{trial.name}.frame_config.json"
-        _write_json(frame_path, frame.as_dict())
-        frame_reports.append({"trial": trial.name, "frame_config": str(frame_path), **frame.as_dict()})
-
-    report = {"manifest": str(manifest.path), "mesh": mesh_report, "frames": frame_reports}
-    _write_json(output_dir / "digital_instron_v2_qc.json", report)
-    return report
-
-
-def run_fit_smoke(args: argparse.Namespace) -> dict[str, object]:
-    manifest = load_manifest(args.manifest)
-    output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
-    grid = make_cylinder_grid(
-        radius_m=float(manifest.grid.get("cylinder_radius_m", 0.0225)),
-        spacing_m=float(manifest.grid.get("coarse_spacing_m", 0.005)),
-    )
-    material = FoundationMaterial(
-        stiffness_pa=float(manifest.fit.get("initial_stiffness_pa", 2.0e6)),
-        ogden_alpha=float(manifest.fit.get("initial_ogden_alpha", 2.0)),
-        lock_strain=float(manifest.fit.get("initial_lock_strain", 0.65)),
-        damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
-        damping_power=float(manifest.fit.get("initial_damping_power", 1.0)),
-        pasternak_stiffness_n_per_m=float(
-            manifest.fit.get(
-                "initial_pasternak_stiffness_n_per_m",
-                manifest.fit.get("initial_shear_modulus_pa", 0.0),
-            )
-        ),
-        spatial_slope=float(manifest.fit.get("initial_spatial_slope", 0.0)),
-    )
-
-    summaries = []
-    for trial in manifest.trials:
-        if not trial.include_in_fit:
-            continue
-        frame_config = trial.frame
-        if frame_config is None:
-            frame_config_path = output_dir / f"{trial.name}.frame_config.json"
-            frame_config = json.loads(frame_config_path.read_text())
-        trace = load_trial_frame(trial.csv_path, frame_config)
-        index = int(np.argmax(trace["force_n"]))
-        compression = np.full(len(grid.xy_m), max(float(trace["displacement_m"][index]), 0.0), dtype=np.float64)
-        velocity = np.zeros_like(compression)
-        if trial.fixture == "rearfoot_punch":
-            radius_m = float(trial.indenter.get("radius_m", 0.0225))
-            analytical_area = np.pi * (radius_m ** 2)
-            active_count = len(grid.xy_m)
-            cell_area_val = analytical_area / active_count if active_count > 0 else grid.cell_area_m2
-        else:
             cell_area_val = grid.cell_area_m2
 
         result = evaluate_foundation(
@@ -194,7 +134,6 @@ def _initial_material(manifest, *, per_cylinder_area: bool = False) -> Foundatio
                 manifest.fit.get("initial_shear_modulus_pa", 0.0),
             )
         ),
-        spatial_slope=float(manifest.fit.get("initial_spatial_slope", 0.0)),
     )
 
 
@@ -1185,7 +1124,6 @@ def _material_from_history_row(row: dict[str, float]) -> FoundationMaterial:
         pasternak_stiffness_n_per_m=float(
             row.get("pasternak_stiffness_n_per_m", row.get("shear_modulus_pa", 0.0))
         ),
-        spatial_slope=float(row.get("spatial_slope", 0.0)),
     )
 
 

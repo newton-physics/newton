@@ -262,15 +262,17 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
                 material.prony_stiffness_pa,
                 material.prony_damping_pa_s,
                 material.pasternak_stiffness_n_per_m,
+                getattr(material, "spatial_slope", 0.0) + 1.0,
             ],
             dtype=wp.float32,
             device=device,
         )
         from projects.digital_instron_v2.geometry import compute_grid_neighbors
-        from projects.digital_instron_v2.foundation import infer_spacing
+        from projects.digital_instron_v2.foundation import infer_spacing, _infer_longitudinal_axis_and_x_max
         spacing_val = infer_spacing(xy)
         neighbors_val = compute_grid_neighbors(xy, spacing_val)
         wp_neighbors = wp.array(neighbors_val, dtype=wp.int32, device=device)
+        longitudinal_axis, x_min, x_max = _infer_longitudinal_axis_and_x_max(xy)
         wp.launch(
             _foundation_sdf_kernel,
             dim=len(xy),
@@ -298,6 +300,9 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
                 params,
                 wp_neighbors,
                 float(spacing_val),
+                int(longitudinal_axis),
+                float(x_min),
+                float(x_max),
                 force_out,
                 wrench_out,
             ],
