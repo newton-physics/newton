@@ -5283,10 +5283,9 @@ def Xform "Articulation" (
     def test_newton_contact_penalty_inf_sentinel(self):
         """Test that -inf sentinel values fall back to builder defaults.
 
-        The NewtonCollisionAPI schema defaults contactStiffness/Damping/FrictionStiffness/Adhesion
-        to -inf, signalling "use the engine's default." An author can also explicitly write -inf
-        on a single attribute to opt back into the builder default while authoring others.
-        Verify the parser substitutes builder.default_shape_cfg.* in both cases.
+        An author can write -inf on contactStiffness/Damping/FrictionStiffness/Adhesion
+        to opt into builder.default_shape_cfg.* (matching the contactGap pattern).
+        Verify the parser substitutes the builder defaults when it encounters -inf.
         """
         import math
 

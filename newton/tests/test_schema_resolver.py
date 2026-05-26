@@ -1771,14 +1771,12 @@ class TestSchemaResolver(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE and Usd is not None, "USD not available")
     def test_contact_penalty_inf_sentinel_cross_resolver(self):
-        """Explicit Newton -inf wins over MuJoCo solref fallback in priority order.
+        """Explicit -inf on a contact penalty attr wins over MuJoCo solref fallback.
 
-        newton-usd-schemas#62 makes -inf the schema default for the four contact
-        penalty attrs. An author who explicitly writes -inf is making an authored
-        statement (HasAuthoredValue() == True), so it ranks above unauthored
-        upstream-resolver fallbacks like mjc:solref. The parser substitutes
-        builder.default_shape_cfg.* for the -inf downstream (covered by the
-        end-to-end test in test_import_usd.py).
+        An explicit -inf is an authored value (HasAuthoredValue() == True), so it
+        ranks above unauthored upstream-resolver fallbacks like mjc:solref in the
+        priority chain. The parser then substitutes builder.default_shape_cfg.* for
+        the -inf downstream (covered end-to-end in test_import_usd.py).
         """
         import math
 
