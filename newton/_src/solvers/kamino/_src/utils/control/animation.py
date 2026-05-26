@@ -12,7 +12,12 @@ import warp as wp
 
 from ...core.model import ModelKamino
 from ...core.time import TimeData
-from ...core.types import float32, int32, to_warp_int32_array
+from ...core.types import (
+    assign_to_warp_int32_array,
+    float32,
+    int32,
+    to_warp_int32_array,
+)
 
 ###
 # Module interface
@@ -617,10 +622,12 @@ class AnimationJointReference:
         if isinstance(enabled, list):
             if len(enabled) != self._num_worlds:
                 raise ValueError("Length of 'enabled' list must match the number of worlds.")
-            enabled_array = np.array([1 if e else 0 for e in enabled], dtype=np.int32)
-            self._data.loop.assign(enabled_array)
+            enabled_list = [1 if e else 0 for e in enabled]
         else:
-            self._data.loop = to_warp_int32_array([1 if enabled else 0] * self._num_worlds)
+            enabled_list = [1 if enabled else 0] * self._num_worlds
+
+        # Assign the loop flags to the animation data container
+        assign_to_warp_int32_array(self._data.loop, enabled_list)
 
     def advance(self, time: TimeData) -> None:
         """
