@@ -124,3 +124,13 @@ __all__ += [
     "color_linear_to_srgb",
     "color_srgb_to_linear",
 ]
+
+# ==================================================================================
+# ONNX inference runtime
+# ==================================================================================
+
+from ._src.utils.onnx_runtime import OnnxRuntime  # noqa: E402
+
+__all__ += [
+    "OnnxRuntime",
+]
