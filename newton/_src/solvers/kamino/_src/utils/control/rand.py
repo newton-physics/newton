@@ -6,7 +6,7 @@ Provides utilities for generating random control
 inputs for testing and benchmarking purposes.
 
 See this link for relevant details:
-https://nvidia.github.io/warp/user_guide/runtime.html#random-number-generation
+https://nvidia.github.io/warp/stable/user_guide/runtime.html#random-number-generation
 """
 
 from __future__ import annotations

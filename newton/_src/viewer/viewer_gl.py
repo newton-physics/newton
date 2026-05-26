@@ -318,13 +318,15 @@ class ViewerGL(ViewerBase):
         self._pbo = None
         self._wp_pbo = None
 
-    def _hash_geometry(self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None) -> int:
+    def _hash_geometry(
+        self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
+    ) -> int:
         # For capsules, ignore (radius, half_height) in the geometry hash so varying-length capsules batch together.
         # Capsule dimensions are stored per-shape in model.shape_scale as (radius, half_height, _unused) and
         # are remapped in set_model() to per-instance render scales (radius, radius, half_height).
         if geo_type == nt.GeoType.CAPSULE:
             geo_scale = (1.0, 1.0)
-        return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src)
+        return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src, mirror)
 
     def _invalidate_pbo(self):
         """Invalidate PBO resources, forcing reallocation on next get_frame() call."""
@@ -399,6 +401,21 @@ class ViewerGL(ViewerBase):
         indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
 
         self._point_mesh.update(points, indices, normals, uvs)
+
+    @override
+    def _arrow_scale(self) -> float:
+        """Contact-arrow length multiplier, sourced from the GL renderer."""
+        return self.renderer.arrow_length_scale
+
+    @override
+    def _joint_scale(self) -> float:
+        """Joint-axis length multiplier, sourced from the GL renderer."""
+        return self.renderer.joint_scale
+
+    @override
+    def _com_scale(self) -> float:
+        """COM sphere radius multiplier, sourced from the GL renderer."""
+        return self.renderer.com_scale
 
     @override
     def log_gizmo(
@@ -1148,6 +1165,8 @@ class ViewerGL(ViewerBase):
 
         if radii is None:
             radii = wp.full(num_points, 0.1, dtype=wp.float32, device=self.device)
+        elif isinstance(radii, (int, float, np.integer, np.floating)):
+            radii = wp.full(num_points, float(radii), dtype=wp.float32, device=self.device)
 
         # If a point object is first created/recreated and no colors are provided,
         # initialize to white to avoid uninitialized instance color buffers.
@@ -2489,13 +2508,21 @@ class ViewerGL(ViewerBase):
                     show_joints = self.show_joints
                     changed, self.show_joints = imgui.checkbox("Show Joints", show_joints)
 
+                    if self.show_joints:
+                        _, self.renderer.joint_scale = imgui.slider_float(
+                            "Joint Scale", self.renderer.joint_scale, 0.25, 5.0
+                        )
+
                     # Contact visualization
                     show_contacts = self.show_contacts
                     changed, self.show_contacts = imgui.checkbox("Show Contacts", show_contacts)
 
                     if self.show_contacts:
+                        _, self.renderer.arrow_length_scale = imgui.slider_float(
+                            "Contact Length", self.renderer.arrow_length_scale, 0.25, 5.0
+                        )
                         _, self.renderer.arrow_scale = imgui.slider_float(
-                            "Arrow Scale", self.renderer.arrow_scale, 0.25, 5.0
+                            "Contact Width", self.renderer.arrow_scale, 0.25, 5.0
                         )
 
                     # Particle visualization
@@ -2509,6 +2536,9 @@ class ViewerGL(ViewerBase):
                     # Center of mass visualization
                     show_com = self.show_com
                     changed, self.show_com = imgui.checkbox("Show Center of Mass", show_com)
+
+                    if self.show_com:
+                        _, self.renderer.com_scale = imgui.slider_float("COM Scale", self.renderer.com_scale, 0.25, 5.0)
 
                     # Triangle mesh visualization
                     show_triangles = self.show_triangles

@@ -104,7 +104,7 @@ Supported Features
      - 🟨 :ref:`limited joint support <Joint feature support>`
      - ✅
      - ✅
-     - ❌
+     - ✅
      - ❌
    * - :class:`~newton.solvers.SolverXPBD`
      - Implicit
@@ -372,8 +372,8 @@ control, or model arrays. In practice, this starts by calling
     model = builder.finalize(requires_grad=True)
     solver = newton.solvers.SolverSemiImplicit(model)
 
-    state_in = model.state()
-    state_out = model.state()
+    state_in = model.state(requires_grad=True)
+    state_out = model.state(requires_grad=True)
     control = model.control()
     loss = wp.zeros(1, dtype=float, requires_grad=True)
     target = wp.vec3(0.25, 0.0, 0.0)
