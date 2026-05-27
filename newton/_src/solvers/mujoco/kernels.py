@@ -72,7 +72,6 @@ def write_contact(
     pos_in: wp.vec3,
     frame_in: wp.mat33,
     margin_in: float,
-    gap_in: float,
     condim_in: int,
     friction_in: vec5,
     solref_in: wp.vec2f,
@@ -103,7 +102,7 @@ def write_contact(
     contact_frame_out[cid] = frame_in
     contact_geom_out[cid] = geoms_in
     contact_worldid_out[cid] = worldid_in
-    contact_includemargin_out[cid] = margin_in - gap_in
+    contact_includemargin_out[cid] = margin_in
     contact_dim_out[cid] = condim_in
     contact_friction_out[cid] = friction_in
     contact_solref_out[cid] = solref_in
@@ -375,7 +374,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         if body_a < 0:
             worldid = body_b // bodies_per_world
 
-        margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+        margin, _gap, condim, friction, solref, solreffriction, solimp = contact_params(
             geom_condim,
             geom_priority,
             geom_solmix,
@@ -429,7 +428,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
             pos_in=pos,
             frame_in=frame,
             margin_in=margin,
-            gap_in=gap,
             condim_in=condim,
             friction_in=friction,
             solref_in=solref,

@@ -7497,6 +7497,52 @@ def Xform "R" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
         builder2.add_joint_fixed(parent=body, child=body2, custom_attributes={"mujoco:joint_dof_label": "ignored"})
         self.assertEqual(len(builder2.custom_attributes["mujoco:joint_dof_label"].values), 0)
 
+    def test_includemargin_uses_margin_only(self):
+        """Under MuJoCo 3.9 semantics, contact.includemargin equals the summed
+        shape_margin and is independent of shape_gap. Regression for the
+        write_contact kernel formula change."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        cfg_a = newton.ModelBuilder.ShapeConfig(density=1000.0, margin=0.01, gap=0.05)
+        cfg_b = newton.ModelBuilder.ShapeConfig(density=1000.0, margin=0.02, gap=0.07)
+        builder.add_shape_plane(cfg=cfg_a)
+        body = builder.add_body()
+        builder.add_shape_sphere(body=body, radius=0.05, cfg=cfg_b)
+        builder.add_joint_free(child=body)
+        model = builder.finalize()
+
+        try:
+            solver = SolverMuJoCo(
+                model,
+                iterations=1,
+                use_mujoco_contacts=False,
+            )
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        contacts = model.contacts()
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+
+        body_q = state_in.body_q.numpy()
+        body_q[0] = (0.0, 0.0, 0.05 + 0.001, 0.0, 0.0, 0.0, 1.0)
+        state_in.body_q.assign(wp.array(body_q, dtype=wp.transform, device=model.device))
+
+        model.collide(state_in, contacts)
+        solver.step(state_in, state_out, control, contacts, 0.0)
+
+        nacon = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertGreater(nacon, 0, "Expected at least one contact for sphere-plane pair")
+        includemargin = solver.mjw_data.contact.includemargin.numpy()[:nacon]
+        expected = 0.01 + 0.02  # sum of shape_margin; shape_gap must not contribute
+        np.testing.assert_allclose(
+            includemargin,
+            expected,
+            atol=1e-6,
+            err_msg="includemargin must equal sum of shape_margin (independent of shape_gap)",
+        )
+
 
 class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
     """Tests for mimic constraint support in SolverMuJoCo."""
