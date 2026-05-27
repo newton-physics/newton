@@ -3870,7 +3870,7 @@ def Xform "SolidMass" (
 
 # 4) Explicit mass + newton:inertia tensor + shell collider
 def Xform "ExplicitTensor" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
 )
 {
     double3 xformOp:translate = (6, 0, 1)
@@ -3966,7 +3966,7 @@ def Xform "NegativeThickness" (
 
 # 9) Singular PSD inertia tensor (valid but non-invertible)
 def Xform "SingularTensor" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
 )
 {
     double3 xformOp:translate = (16, 0, 1)
@@ -4096,7 +4096,7 @@ def PhysicsScene "physicsScene"
 }
 
 def Xform "NonFinite" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
 )
 {
     double3 xformOp:translate = (0, 0, 1)
@@ -4113,7 +4113,7 @@ def Xform "NonFinite" (
 }
 
 def Xform "NegativeDiag" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
 )
 {
     double3 xformOp:translate = (2, 0, 1)
@@ -4130,7 +4130,7 @@ def Xform "NegativeDiag" (
 }
 
 def Xform "WrongLength" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
 )
 {
     double3 xformOp:translate = (4, 0, 1)
@@ -4147,7 +4147,7 @@ def Xform "WrongLength" (
 }
 
 def Xform "NotPSD" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "NewtonMassAPI"]
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
 )
 {
     double3 xformOp:translate = (6, 0, 1)
