@@ -5030,7 +5030,10 @@ class ModelBuilder:
                         m, inertia, incoming_xform.p, incoming_xform.q
                     )
                     body_data[last_dynamic_body]["mass"] += m
-                    body_data[last_dynamic_body]["com"] = (m * com + source_m * source_com) / (m + source_m)
+                    total_mass = m + source_m
+                    if total_mass > 0.0:
+                        body_data[last_dynamic_body]["com"] = (m * com + source_m * source_com) / total_mass
+                    # else: both bodies massless; keep parent COM (avoids 0/0).
                     # indicate to recompute inverse mass, inertia for this body
                     body_data[last_dynamic_body]["inv_mass"] = None
             else:

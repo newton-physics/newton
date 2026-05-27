@@ -211,7 +211,7 @@ class SolverVBD(SolverBase):
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
         particle_external_edge_contact_filtering_map: dict | None = None,
-        # Rigid body parameters — AVBD hyperparameters
+        # Rigid body parameters - AVBD hyperparameters
         rigid_avbd_alpha: float = 0.95,  # C0 stabilization strength (C_stab = C - alpha * C0)
         rigid_avbd_joint_alpha: float | None = None,  # Joint alpha override; None uses rigid_avbd_alpha
         rigid_avbd_contact_alpha: float | None = None,  # Body-body contact alpha; None selects default
@@ -692,6 +692,8 @@ class SolverVBD(SolverBase):
             self._prev_contact_penalty_k = None
             self._prev_contact_point0 = None
             self._prev_contact_point1 = None
+            self._prev_contact_offset0 = None
+            self._prev_contact_offset1 = None
             self._prev_contact_normal = None
 
             # Joint augmented-Lagrangian state (vec3, per-joint, bilateral)
@@ -802,6 +804,8 @@ class SolverVBD(SolverBase):
         self._prev_contact_penalty_k = wp.zeros(cap, dtype=float, device=self.device)
         self._prev_contact_point0 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
         self._prev_contact_point1 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
+        self._prev_contact_offset0 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
+        self._prev_contact_offset1 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
         self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
 
     def _raise_if_capturing_resize(self, name: str, current: int, required: int) -> None:
@@ -1618,6 +1622,8 @@ class SolverVBD(SolverBase):
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
                 contacts.rigid_contact_normal,
                 self.body_body_contact_lambda,
                 self.body_body_contact_stick_flag,
@@ -1629,6 +1635,8 @@ class SolverVBD(SolverBase):
                 self._prev_contact_penalty_k,
                 self._prev_contact_point0,
                 self._prev_contact_point1,
+                self._prev_contact_offset0,
+                self._prev_contact_offset1,
                 self._prev_contact_normal,
             ],
             device=self.device,
@@ -1835,6 +1843,8 @@ class SolverVBD(SolverBase):
                         history.penalty_k = self._prev_contact_penalty_k
                         history.point0 = self._prev_contact_point0
                         history.point1 = self._prev_contact_point1
+                        history.offset0 = self._prev_contact_offset0
+                        history.offset1 = self._prev_contact_offset1
                         history.normal = self._prev_contact_normal
 
                         wp.launch(
@@ -1856,6 +1866,8 @@ class SolverVBD(SolverBase):
                             outputs=[
                                 contacts.rigid_contact_point0,
                                 contacts.rigid_contact_point1,
+                                contacts.rigid_contact_offset0,
+                                contacts.rigid_contact_offset1,
                                 self.body_body_contact_penalty_k,
                                 self.body_body_contact_lambda,
                                 self.body_body_contact_material_kd,
@@ -1904,6 +1916,8 @@ class SolverVBD(SolverBase):
                         contacts.rigid_contact_shape1,
                         contacts.rigid_contact_point0,
                         contacts.rigid_contact_point1,
+                        contacts.rigid_contact_offset0,
+                        contacts.rigid_contact_offset1,
                         contacts.rigid_contact_normal,
                         contacts.rigid_contact_margin0,
                         contacts.rigid_contact_margin1,
@@ -2414,6 +2428,8 @@ class SolverVBD(SolverBase):
                         contacts.rigid_contact_shape1,
                         contacts.rigid_contact_point0,
                         contacts.rigid_contact_point1,
+                        contacts.rigid_contact_offset0,
+                        contacts.rigid_contact_offset1,
                         contacts.rigid_contact_normal,
                         contacts.rigid_contact_margin0,
                         contacts.rigid_contact_margin1,
@@ -2499,6 +2515,8 @@ class SolverVBD(SolverBase):
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_point1,
+                    contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
                     contacts.rigid_contact_margin0,
                     contacts.rigid_contact_margin1,
@@ -2679,6 +2697,8 @@ class SolverVBD(SolverBase):
                 contacts.rigid_contact_shape1,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
                 contacts.rigid_contact_normal,
                 contacts.rigid_contact_margin0,
                 contacts.rigid_contact_margin1,
