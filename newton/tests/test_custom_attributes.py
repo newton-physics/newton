@@ -1242,8 +1242,11 @@ class TestCustomAttributes(unittest.TestCase):
                 assignment=AttributeAssignment.MODEL,
             )
         )
-        # Should still work
-        self.assertEqual(len(builder5.custom_attributes), 1)
+        # Should still work. ModelBuilder.__init__ also auto-registers the deprecated-window
+        # ``mujoco:equality_constraint_*`` CustomAttributes, so account for those alongside the
+        # single attribute declared by this test.
+        baseline = len(ModelBuilder().custom_attributes)
+        self.assertEqual(len(builder5.custom_attributes), baseline + 1)
 
         # Test 6: Same key with different frequency - SHOULD FAIL
         builder6 = ModelBuilder()

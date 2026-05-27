@@ -1006,7 +1006,7 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.shape_count, 0)
         self.assertEqual(builder.joint_count, 5)
         self.assertEqual(builder.articulation_count, 3)
-        self.assertEqual(len(builder.equality_constraint_world), 0)
+        self.assertEqual(builder._equality_constraint_count, 0)
         self.assertEqual(builder.joint_dof_count, 10)
         self.assertEqual(builder.joint_coord_count, 11)
         self.assertEqual(builder.joint_constraint_count, 20)
@@ -1015,7 +1015,7 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(shape_world_start[-1], builder.shape_count)
         self.assertEqual(joint_world_start[-1], builder.joint_count)
         self.assertEqual(articulation_world_start[-1], builder.articulation_count)
-        self.assertEqual(equality_constraint_world_start[-1], len(builder.equality_constraint_world))
+        self.assertEqual(equality_constraint_world_start[-1], builder._equality_constraint_count)
         self.assertEqual(joint_dof_world_start[-1], builder.joint_dof_count)
         self.assertEqual(joint_coord_world_start[-1], builder.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], builder.joint_constraint_count)
@@ -2096,7 +2096,7 @@ class TestModelValidation(unittest.TestCase):
         )
 
         # Manually set invalid body reference
-        builder.equality_constraint_body1[0] = 999
+        builder._eq_set_value("equality_constraint_body1", 0, 999)
 
         with self.assertRaises(ValueError) as context:
             builder.finalize()
@@ -2123,7 +2123,7 @@ class TestModelValidation(unittest.TestCase):
         )
 
         # Manually set invalid joint reference
-        builder.equality_constraint_joint1[0] = 999
+        builder._eq_set_value("equality_constraint_joint1", 0, 999)
 
         with self.assertRaises(ValueError) as context:
             builder.finalize()
