@@ -1505,6 +1505,168 @@ class ModelBuilder:
             return [attr.default] * count
         return [attr.values.get(i, attr.default) for i in range(count)]
 
+    @staticmethod
+    def _deprecated_builder_equality_constraint_field_message(name: str) -> str:
+        return (
+            f"ModelBuilder.{name} is deprecated in Newton 1.3 and is scheduled for removal "
+            f"in Newton 1.5. Per-equality-constraint values are now backed by the "
+            f"``mujoco:{name}`` CustomAttribute registered on the builder; add constraints "
+            f"through :meth:`add_equality_constraint_connect` / `_weld` / `_joint` and read "
+            f"finalized values from ``model.mujoco.{name}``. The deprecated property returns "
+            f"a dense list snapshot."
+        )
+
+    def _warn_deprecated_builder_equality_constraint_field(self, name: str) -> None:
+        warnings.warn(
+            self._deprecated_builder_equality_constraint_field_message(name),
+            DeprecationWarning,
+            stacklevel=3,
+        )
+
+    @property
+    def equality_constraint_type(self) -> list[int]:
+        """Equality-constraint types accumulated for ``model.mujoco.equality_constraint_type``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_type`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_type'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_type")
+        return self._eq_list("equality_constraint_type")
+
+    @property
+    def equality_constraint_body1(self) -> list[int]:
+        """First body indices accumulated for ``model.mujoco.equality_constraint_body1``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_body1`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_body1'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_body1")
+        return self._eq_list("equality_constraint_body1")
+
+    @property
+    def equality_constraint_body2(self) -> list[int]:
+        """Second body indices accumulated for ``model.mujoco.equality_constraint_body2``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_body2`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_body2'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_body2")
+        return self._eq_list("equality_constraint_body2")
+
+    @property
+    def equality_constraint_anchor(self) -> list[Vec3]:
+        """Anchor points accumulated for ``model.mujoco.equality_constraint_anchor``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_anchor`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_anchor'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_anchor")
+        return self._eq_list("equality_constraint_anchor")
+
+    @property
+    def equality_constraint_torquescale(self) -> list[float]:
+        """Torque scales accumulated for ``model.mujoco.equality_constraint_torquescale``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_torquescale`` after :meth:`finalize`, or
+            inspect ``self.custom_attributes['mujoco:equality_constraint_torquescale'].values``.
+            Scheduled for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_torquescale")
+        return self._eq_list("equality_constraint_torquescale")
+
+    @property
+    def equality_constraint_relpose(self) -> list[Transform]:
+        """Relative poses accumulated for ``model.mujoco.equality_constraint_relpose``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_relpose`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_relpose'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_relpose")
+        return self._eq_list("equality_constraint_relpose")
+
+    @property
+    def equality_constraint_joint1(self) -> list[int]:
+        """First joint indices accumulated for ``model.mujoco.equality_constraint_joint1``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_joint1`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_joint1'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_joint1")
+        return self._eq_list("equality_constraint_joint1")
+
+    @property
+    def equality_constraint_joint2(self) -> list[int]:
+        """Second joint indices accumulated for ``model.mujoco.equality_constraint_joint2``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_joint2`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_joint2'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_joint2")
+        return self._eq_list("equality_constraint_joint2")
+
+    @property
+    def equality_constraint_polycoef(self) -> list[list[float]]:
+        """Polynomial coefficient rows accumulated for ``model.mujoco.equality_constraint_polycoef``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_polycoef`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_polycoef'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_polycoef")
+        return self._eq_list("equality_constraint_polycoef")
+
+    @property
+    def equality_constraint_label(self) -> list[str]:
+        """Equality-constraint labels accumulated for ``model.mujoco.equality_constraint_label``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_label`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_label'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_label")
+        return self._eq_list("equality_constraint_label")
+
+    @property
+    def equality_constraint_enabled(self) -> list[bool]:
+        """Equality-constraint enabled flags accumulated for ``model.mujoco.equality_constraint_enabled``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_enabled`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_enabled'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_enabled")
+        return self._eq_list("equality_constraint_enabled")
+
+    @property
+    def equality_constraint_world(self) -> list[int]:
+        """World indices accumulated for ``model.mujoco.equality_constraint_world``.
+
+        .. deprecated:: 1.3
+            Use ``model.mujoco.equality_constraint_world`` after :meth:`finalize`, or inspect
+            ``self.custom_attributes['mujoco:equality_constraint_world'].values``. Scheduled
+            for removal in Newton 1.5.
+        """
+        self._warn_deprecated_builder_equality_constraint_field("equality_constraint_world")
+        return self._eq_list("equality_constraint_world")
+
     def add_custom_frequency(self, frequency: CustomFrequency) -> None:
         """
         Register a custom frequency for the builder.
