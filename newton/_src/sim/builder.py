@@ -8863,13 +8863,23 @@ class ModelBuilder:
 
             if parent_articulation is not None:
                 self._validate_kinematic_articulation_joints(joint_indices)
+                old_end = self.articulation_end[parent_articulation]
+                new_end = max(old_end, max(joint_indices) + 1)
+                imported_joints = set(joint_indices)
+                for joint_idx in range(old_end, new_end):
+                    if joint_idx not in imported_joints and self.joint_articulation[joint_idx] == -1:
+                        joint_name = (
+                            self.joint_label[joint_idx] if joint_idx < len(self.joint_label) else f"#{joint_idx}"
+                        )
+                        raise ValueError(
+                            f"Cannot attach imported joints to articulation #{parent_articulation}: "
+                            f"loop-closing joint '{joint_name}' at index {joint_idx} lies between the existing "
+                            "regular joints and the imported joints."
+                        )
                 # Mark all new joints as belonging to the parent's articulation
                 for joint_idx in joint_indices:
                     self.joint_articulation[joint_idx] = parent_articulation
-                self.articulation_end[parent_articulation] = max(
-                    self.articulation_end[parent_articulation],
-                    max(joint_indices) + 1,
-                )
+                self.articulation_end[parent_articulation] = new_end
             else:
                 # Parent body exists but is not in any articulation - this is an error
                 # because user explicitly specified parent_body but it can't be used

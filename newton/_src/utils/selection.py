@@ -950,6 +950,7 @@ class ArticulationView:
 
             if total_tendon_count > 0:
                 # Build a mapping from joint index to articulation index
+                # Loop-closing joints live after articulation_end and are deliberately excluded from tendon discovery.
                 joint_to_articulation = {}
                 for arti_idx in range(len(model_articulation_start) - 1):
                     joint_begin = int(model_articulation_start[arti_idx])
