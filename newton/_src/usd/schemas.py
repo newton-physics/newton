@@ -118,12 +118,12 @@ class SchemaResolverNewton(SchemaResolver):
                 attribute_names=("newton:contactDamping", "newton:contact_kd"),
             ),
             "kf": SchemaAttribute(
-                "newton:contactFrictionStiffness",
+                "newton:contactFrictionDamping",
                 None,
                 usd_value_getter=_newton_contact_attr_with_fallback(
-                    "newton:contactFrictionStiffness", "newton:contact_kf"
+                    "newton:contactFrictionDamping", "newton:contact_kf"
                 ),
-                attribute_names=("newton:contactFrictionStiffness", "newton:contact_kf"),
+                attribute_names=("newton:contactFrictionDamping", "newton:contact_kf"),
             ),
             "ka": SchemaAttribute(
                 "newton:contactAdhesion",

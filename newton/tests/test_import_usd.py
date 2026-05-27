@@ -5227,7 +5227,7 @@ def Xform "Articulation" (
         UsdPhysics.CollisionAPI.Apply(col_all_prim)
         col_all_prim.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(5000.0)
         col_all_prim.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(200.0)
-        col_all_prim.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(2000.0)
+        col_all_prim.CreateAttribute("newton:contactFrictionDamping", Sdf.ValueTypeNames.Float).Set(2000.0)
         col_all_prim.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(0.5)
 
         # Body with only ke authored
@@ -5283,7 +5283,7 @@ def Xform "Articulation" (
     def test_newton_contact_penalty_inf_sentinel(self):
         """Test that -inf sentinel values fall back to builder defaults.
 
-        An author can write -inf on contactStiffness/Damping/FrictionStiffness/Adhesion
+        An author can write -inf on contactStiffness/Damping/FrictionDamping/Adhesion
         to opt into builder.default_shape_cfg.* (matching the contactGap pattern).
         Verify the parser substitutes the builder defaults when it encounters -inf.
         """
@@ -5307,7 +5307,7 @@ def Xform "Articulation" (
         UsdPhysics.CollisionAPI.Apply(col_prim)
         col_prim.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(-math.inf)
         col_prim.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(-math.inf)
-        col_prim.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(-math.inf)
+        col_prim.CreateAttribute("newton:contactFrictionDamping", Sdf.ValueTypeNames.Float).Set(-math.inf)
         col_prim.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(-math.inf)
 
         builder = newton.ModelBuilder()

@@ -1658,8 +1658,8 @@ class TestSchemaResolver(unittest.TestCase):
         collider.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(200.0)
         self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kd"), 200.0)
 
-        # Author newton:contactFrictionStiffness
-        collider.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(2000.0)
+        # Author newton:contactFrictionDamping
+        collider.CreateAttribute("newton:contactFrictionDamping", Sdf.ValueTypeNames.Float).Set(2000.0)
         self.assertAlmostEqual(resolver.get_value(collider, PrimType.SHAPE, "kf"), 2000.0)
 
         # Author newton:contactAdhesion
@@ -1701,7 +1701,7 @@ class TestSchemaResolver(unittest.TestCase):
         UsdPhysics.CollisionAPI.Apply(both_collider)
         both_collider.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(3000.0)
         both_collider.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(50.0)
-        both_collider.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(777.0)
+        both_collider.CreateAttribute("newton:contactFrictionDamping", Sdf.ValueTypeNames.Float).Set(777.0)
         both_collider.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(0.1)
         both_collider.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.Float2).Set((0.01, 1.0))
         newton_wins = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
@@ -1759,7 +1759,7 @@ class TestSchemaResolver(unittest.TestCase):
         # New name takes priority over legacy when both are authored (no warning)
         collider.CreateAttribute("newton:contactStiffness", Sdf.ValueTypeNames.Float).Set(9999.0)
         collider.CreateAttribute("newton:contactDamping", Sdf.ValueTypeNames.Float).Set(999.0)
-        collider.CreateAttribute("newton:contactFrictionStiffness", Sdf.ValueTypeNames.Float).Set(888.0)
+        collider.CreateAttribute("newton:contactFrictionDamping", Sdf.ValueTypeNames.Float).Set(888.0)
         collider.CreateAttribute("newton:contactAdhesion", Sdf.ValueTypeNames.Float).Set(0.99)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", DeprecationWarning)

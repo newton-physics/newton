@@ -1683,7 +1683,7 @@ fall back to the builder's :class:`~ModelBuilder.ShapeConfig` defaults.
     ) {
         float newton:contactStiffness = 5000.0
         float newton:contactDamping = 200.0
-        float newton:contactFrictionStiffness = 2000.0
+        float newton:contactFrictionDamping = 2000.0
         float newton:contactAdhesion = 0.5
         float newton:contactMargin = 0.001
         float newton:contactGap = 0.01
@@ -1702,7 +1702,7 @@ fall back to the builder's :class:`~ModelBuilder.ShapeConfig` defaults.
    * - ``newton:contactDamping``
      - 100
      - Contact damping (``kd``)
-   * - ``newton:contactFrictionStiffness``
+   * - ``newton:contactFrictionDamping``
      - 1000
      - Friction damping coefficient (``kf``)
    * - ``newton:contactAdhesion``
