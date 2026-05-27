@@ -10783,8 +10783,18 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         # 3% tolerance to absorb residual ringing in the lightly damped stack.
         self.assertAlmostEqual(abs(base_force), expected, delta=expected * 0.03)
 
-    def test_mjcf_default_promotes_to_force_space_on_ke_edit(self):
-        """Editing ``shape_material_ke`` from MJCF default flips mode to FORCE_SPACE."""
+    def test_mjcf_default_mode_preserved(self):
+        """Unauthored MJCF geoms stay in ``SOLREF_MODE_MJCF_DEFAULT``.
+
+        Force-space scaling is opt-in for shapes: imported MuJoCo geoms
+        keep the compiled contact behavior until the user explicitly sets
+        ``model.mujoco.solref_mode[shape] = SOLREF_MODE_FORCE_SPACE``.
+        Unlike the joint-limit auto-promote (PR #2610), there is no
+        automatic flip when ``shape_material_ke``/``kd`` drift: per-example
+        overrides of ``ModelBuilder.default_shape_cfg.ke``/``kd`` are
+        common and would otherwise produce spurious promotions that
+        change contact dynamics for imported MuJoCo assets.
+        """
         builder = newton.ModelBuilder()
         builder.add_mjcf(
             """
@@ -10801,18 +10811,23 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
             ignore_inertial_definitions=False,
         )
         model = builder.finalize()
-        # Unauthored MJCF solref → MJCF_DEFAULT mode, sentinel solref.
         np.testing.assert_array_equal(model.mujoco.solref_mode.numpy(), [SOLREF_MODE_MJCF_DEFAULT])
         np.testing.assert_array_equal(model.mujoco.solref.numpy()[0], [0.0, 0.0])
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        # Mode is preserved through solver init.
         self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
 
-        # User edits ke away from the Newton default → mode flips to FORCE_SPACE.
+        # Editing ``shape_material_ke`` alone does not promote the mode.
         ke = model.shape_material_ke.numpy()
         ke[:] = 5000.0
         model.shape_material_ke.assign(ke)
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
+
+        # Force-space scaling is opt-in via an explicit mode write.
+        mode = model.mujoco.solref_mode.numpy()
+        mode[:] = SOLREF_MODE_FORCE_SPACE
+        model.mujoco.solref_mode.assign(mode)
         solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
         self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_FORCE_SPACE)
 

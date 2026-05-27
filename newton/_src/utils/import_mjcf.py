@@ -713,19 +713,27 @@ def parse_mjcf(
                 if len(friction_values) >= 3:
                     shape_cfg.mu_rolling = float(friction_values[2])
 
-            # MJCF ``solref`` no longer maps to Newton's force-space
-            # ``shape_material_ke`` / ``shape_material_kd`` (issue #2009): the
-            # legacy ``solref_to_stiffness_damping`` produced acceleration-space
-            # values that were stored in fields documented as force space.
-            # ``parse_custom_attributes`` below picks up the raw ``solref``
-            # attribute into ``mujoco.solref`` via the registered
-            # ``mjcf_attribute_name="solref"``; ``mujoco.solref_mode`` is set
-            # explicitly below to ``SOLREF_MODE_RAW`` when authored or
-            # ``SOLREF_MODE_MJCF_DEFAULT`` when unauthored. Newton
-            # ``shape_material_ke`` / ``shape_material_kd`` retain Newton's
-            # force-space defaults until the user edits them, at which point
-            # ``SOLREF_MODE_MJCF_DEFAULT`` is auto-promoted to
-            # ``SOLREF_MODE_FORCE_SPACE`` by ``SolverMuJoCo``.
+            # MJCF ``solref`` is stored two ways for back-compat with the
+            # joint-limit pattern (PR #2610):
+            #   * Raw ``(timeconst, dampratio)`` lands in ``mujoco.solref``
+            #     via the registered ``mjcf_attribute_name="solref"``;
+            #     ``mujoco.solref_mode`` is set explicitly below.
+            #   * The lossy ``solref_to_stiffness_damping`` conversion still
+            #     populates Newton's ``shape_material_ke`` / ``kd`` so that
+            #     ``SOLREF_MODE_MJCF_DEFAULT`` shapes start at
+            #     ``DEFAULT_SHAPE_KE`` / ``DEFAULT_SHAPE_KD`` (which the
+            #     ``SolverMuJoCo`` auto-promote check uses to decide whether
+            #     the user has edited the gains). Authored ``solref`` shapes
+            #     get ``SOLREF_MODE_RAW`` so the solver forwards the native
+            #     MuJoCo pair unchanged regardless of the converted ke/kd
+            #     value sitting in ``shape_material_ke``.
+            if "solref" in geom_attrib:
+                solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
+                geom_ke, geom_kd = solref_to_stiffness_damping(solref)
+                if geom_ke is not None:
+                    shape_cfg.ke = geom_ke
+                if geom_kd is not None:
+                    shape_cfg.kd = geom_kd
 
             # Parse MJCF margin and gap for collision.
             # MuJoCo -> Newton conversion: newton_margin = mj_margin - mj_gap.

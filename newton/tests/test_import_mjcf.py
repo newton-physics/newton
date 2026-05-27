@@ -44,14 +44,16 @@ class TestImportMjcfBasic(unittest.TestCase):
         # Filter out sites when checking shape material properties (sites don't have these attributes)
         non_site_indices = [i for i, flags in enumerate(builder.shape_flags) if not (flags & ShapeFlags.SITE)]
 
-        # Newton's force-space ``shape_material_ke`` / ``shape_material_kd``
-        # are no longer overwritten by MJCF ``solref`` (issue #2009); the
-        # builder-set defaults survive the import. MuJoCo-flavoured contact
-        # dynamics are preserved by routing the authored ``solref`` through
-        # the ``mujoco.solref`` custom attribute instead (see
-        # ``test_mjcf_geom_solref_parsing`` for the mode-aware path).
-        self.assertTrue(np.allclose(np.array(builder.shape_material_ke)[non_site_indices], 123.0))
-        self.assertTrue(np.allclose(np.array(builder.shape_material_kd)[non_site_indices], 456.0))
+        # Check ke/kd from nv_humanoid.xml: solref=".015 1"
+        # ke = 1/(0.015^2 * 1^2) ≈ 4444.4, kd = 2/0.015 ≈ 133.3
+        # MJCF-specified solref overrides user defaults (like friction does).
+        # The same authored ``solref`` is also stored verbatim in the
+        # ``mujoco.solref`` custom attribute (with ``solref_mode`` =
+        # ``SOLREF_MODE_RAW``); the MuJoCo solver consults that raw value
+        # for ``SOLREF_MODE_RAW`` shapes so the ``shape_material_ke`` value
+        # here remains the legacy back-compat fallback.
+        self.assertTrue(np.allclose(np.array(builder.shape_material_ke)[non_site_indices], 4444.4, rtol=0.01))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_kd)[non_site_indices], 133.3, rtol=0.01))
 
         # Check friction values from nv_humanoid.xml: friction="1.0 0.05 0.05"
         # mu = 1.0, torsional = 0.05, rolling = 0.05
@@ -3181,36 +3183,30 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
         self.assertEqual(builder.shape_count, 3)
 
-        # ``shape_material_ke`` / ``shape_material_kd`` retain Newton's
-        # ``ModelBuilder.ShapeConfig`` defaults for every shape — the
-        # importer no longer overwrites them with the acceleration-space
-        # ``convert_solref`` result.
+        # No solref specified -> Newton defaults: ke=2500 (ShapeConfig.ke), kd=100 (ShapeConfig.kd)
         self.assertAlmostEqual(builder.shape_material_ke[0], 2500.0, places=1)
         self.assertAlmostEqual(builder.shape_material_kd[0], 100.0, places=1)
-        self.assertAlmostEqual(builder.shape_material_ke[1], 2500.0, places=1)
-        self.assertAlmostEqual(builder.shape_material_kd[1], 100.0, places=1)
-        self.assertAlmostEqual(builder.shape_material_ke[2], 2500.0, places=1)
-        self.assertAlmostEqual(builder.shape_material_kd[2], 100.0, places=1)
+        # Custom solref [0.04, 1.0]: ke = 1/(0.04^2 * 1^2) = 625, kd = 2/0.04 = 50
+        self.assertAlmostEqual(builder.shape_material_ke[1], 625.0, places=1)
+        self.assertAlmostEqual(builder.shape_material_kd[1], 50.0, places=1)
+        # Direct mode solref [-1000, -50]: ke = 1000, kd = 50
+        self.assertAlmostEqual(builder.shape_material_ke[2], 1000.0, places=1)
+        self.assertAlmostEqual(builder.shape_material_kd[2], 50.0, places=1)
 
-        # ``mjc:solref`` is preserved in the per-shape custom attribute.
-        # ``mujoco:solref_mode`` distinguishes the unauthored default geom
-        # (MJCF_DEFAULT — value stays at the sentinel and is missing from
-        # the sparse values dict) from the two authored geoms (RAW).
+        # ``mjc:solref`` is *also* preserved verbatim in the per-shape
+        # ``mujoco.solref`` custom attribute. ``mujoco.solref_mode``
+        # distinguishes the unauthored default geom (MJCF_DEFAULT — value
+        # stays at the sentinel and is missing from the sparse values
+        # dict) from the two authored geoms (RAW). The MuJoCo solver
+        # uses ``mujoco.solref`` for ``SOLREF_MODE_RAW`` shapes,
+        # bypassing the legacy ``shape_material_ke`` round-trip.
         solref_values = builder.custom_attributes["mujoco:solref"].values
         solref_mode_values = builder.custom_attributes["mujoco:solref_mode"].values
-        # Unauthored geom is absent from the sparse values dict and reads
-        # back as the registered default ``(0, 0)`` sentinel via the
-        # finalized Model. Mode is MJCF_DEFAULT (explicitly written by the
-        # MJCF importer for unauthored geoms).
         self.assertNotIn(0, solref_values)
         self.assertEqual(int(solref_mode_values[0]), SOLREF_MODE_MJCF_DEFAULT)
-        # Standard-mode authored solref [0.04, 1.0] forwarded unchanged.
         self.assertAlmostEqual(float(solref_values[1][0]), 0.04)
         self.assertAlmostEqual(float(solref_values[1][1]), 1.0)
         self.assertEqual(int(solref_mode_values[1]), SOLREF_MODE_RAW)
-        # Direct-mode authored solref [-1000, -50] forwarded unchanged (the
-        # MuJoCo solver interprets negative solref as direct stiffness and
-        # damping, so the values must survive the import path).
         self.assertAlmostEqual(float(solref_values[2][0]), -1000.0, places=1)
         self.assertAlmostEqual(float(solref_values[2][1]), -50.0, places=1)
         self.assertEqual(int(solref_mode_values[2]), SOLREF_MODE_RAW)
