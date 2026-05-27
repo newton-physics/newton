@@ -1961,11 +1961,22 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-    # Dynamics disabled: qvel diverges ~5x at step 0 even with ctrl=0 (#2491)
-    num_steps = 0
+    # FR3v2's MJCF doesn't author <option integrator=...>, so native picks
+    # MuJoCo's default (Euler / integrator=0). Newton's SolverMuJoCo auto-
+    # selects IMPLICITFAST (integrator=3) for this model. Without pinning,
+    # the dynamics comparison steps the two sides with different integrators
+    # — identical forces produce ~5x different qvel updates at step 0 (#2491).
+    solver_integrator = "euler"
+    num_steps = 20
     fk_enabled = True
     fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
     backfill_model = True
+    # Float32 + GPU atomic-reduction non-determinism in mjwarp, amplified by
+    # FR3v2's position actuators (kp=4500). Measured via 15-trial native-vs-
+    # native comparison: qvel diff ranges 1.2e-5 to 1.9e-3, mean 7.9e-4.
+    # Newton-vs-native tracks the same range (max 2.0e-3). Tolerance set
+    # ~2.5x above the measured worst.
+    dynamics_tolerance = 5e-3
 
 
 class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
