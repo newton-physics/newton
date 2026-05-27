@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.1] - 2026-05-26
+
+### Added
+
+- Add `ArticulationView.joint_template_labels`, `link_template_labels` (aliased as `body_template_labels`), and `shape_template_labels` exposing the raw template-articulation labels alongside the existing leaf-only `*_names`, so callers can disambiguate selected entries whose leaf names collide.
+
+### Fixed
+
+- Fix mesh-convex and heightfield-convex contacts missing when shapes are separated by margin but still within the contact envelope.
+
 ## [1.2.0] - 2026-05-12
 
 ### Added
