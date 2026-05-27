@@ -10674,7 +10674,15 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         cfg.kd = kd
         cfg.density = density
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
-        return builder.finalize(), body
+        model = builder.finalize()
+        # Opt into force-space contact scaling for every shape. The
+        # registered ``mujoco.solref_mode`` default is
+        # ``SOLREF_MODE_MJCF_DEFAULT`` (preserve MuJoCo's compile-time
+        # default contact dynamics) so existing code keeps working; this
+        # test exercises the explicit force-space pathway.
+        mode = np.full(model.shape_count, SOLREF_MODE_FORCE_SPACE, dtype=np.int32)
+        model.mujoco.solref_mode.assign(mode)
+        return model, body
 
     def _average_contact_force(
         self,
@@ -10751,6 +10759,10 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         top = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.7), wp.quat_identity()), label="top")
         builder.add_shape_box(top, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)  # 8 kg (0.008 m³ * 1000 kg/m³)
         model = builder.finalize()
+        # Opt into force-space contact scaling for every shape (registered
+        # default is ``SOLREF_MODE_MJCF_DEFAULT``).
+        mode = np.full(model.shape_count, SOLREF_MODE_FORCE_SPACE, dtype=np.int32)
+        model.mujoco.solref_mode.assign(mode)
         solver = SolverMuJoCo(model, njmax=30, iterations=50)
 
         sensor_base = SensorContact(model, sensing_obj_shapes=["base"])

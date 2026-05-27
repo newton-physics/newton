@@ -731,11 +731,14 @@ class SolverMuJoCo(SolverBase):
                 # SOLREF_MODE_RAW = raw MuJoCo ``solref`` authored / imported
                 #   exactly; ``shape_material_ke``/``kd`` are ignored for this
                 #   shape at the MuJoCo solver level.
-                # SOLREF_MODE_MJCF_DEFAULT = imported MJCF/USD geom without an
-                #   explicit ``mjc:solref`` — preserve MuJoCo's compiled default
-                #   until the user edits ``shape_material_ke``/``kd``, then
-                #   auto-promote to FORCE_SPACE on the next notify.
-                default=SOLREF_MODE_FORCE_SPACE,
+                # SOLREF_MODE_MJCF_DEFAULT = use MuJoCo's compile-time default
+                #   contact dynamics. This is the registered default so that
+                #   builder-API code (with the historical Newton ke/kd
+                #   defaults tuned against the legacy ``convert_solref(ke,kd,
+                #   1,1)`` behaviour) keeps working without changes; opt into
+                #   force-space scaling explicitly by setting
+                #   ``model.mujoco.solref_mode[shape] = SOLREF_MODE_FORCE_SPACE``.
+                default=SOLREF_MODE_MJCF_DEFAULT,
                 namespace="mujoco",
                 usd_attribute_name="*",
                 usd_value_transformer=parse_solref_mode_usd,
