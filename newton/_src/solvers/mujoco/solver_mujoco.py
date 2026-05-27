@@ -667,6 +667,9 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="solmix",
             )
         )
+        # endregion geom attributes
+
+        # region body and joint attributes
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="limit_margin",
@@ -786,6 +789,10 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="actuatorgravcomp",
             )
         )
+        # endregion body and joint attributes
+
+        # region equality attributes
+        # Legacy equality_constraint arrays use these fields to preserve MuJoCo solver parameters.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="eq_solref",
@@ -810,6 +817,8 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="solimp",
             )
         )
+        # Converted CONNECT/WELD equalities are represented as loop joints in Newton.
+        # These fields preserve the original MuJoCo equality type, body refs, data, and solver parameters.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="joint_eq_type",
@@ -892,6 +901,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
             )
         )
+        # Converted JOINT equalities are represented as mimic constraints in Newton.
+        # These fields preserve the full MuJoCo polynomial and solver parameters for lossless export.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="mimic_eq_preserve",
@@ -932,7 +943,7 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
             )
         )
-        # endregion geom attributes
+        # endregion equality attributes
 
         # region solver options
         # Solver options (frequency WORLD for per-world values)
