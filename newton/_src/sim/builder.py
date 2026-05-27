@@ -1138,6 +1138,8 @@ class ModelBuilder:
 
         self.articulation_start: list[int] = []
         """Articulation start indices accumulated for :attr:`Model.articulation_start`."""
+        self.articulation_end: list[int] = []
+        """Exclusive end indices of regular tree joints accumulated for :attr:`Model.articulation_end`."""
         self.articulation_label: list[str] = []
         """Articulation labels accumulated for :attr:`Model.articulation_label`."""
         self.articulation_world: list[int] = []
@@ -2243,6 +2245,7 @@ class ModelBuilder:
         # Store the articulation using the first joint's index as the start
         articulation_idx = self.articulation_count
         self.articulation_start.append(sorted_joints[0])
+        self.articulation_end.append(sorted_joints[-1] + 1)
         self.articulation_label.append(label or f"articulation_{articulation_idx}")
         self.articulation_world.append(self.current_world)
 
@@ -2430,6 +2433,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
+        convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
@@ -2537,6 +2541,9 @@ class ModelBuilder:
                 ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
                 colliders on bodies with visual-only geometry. Default is False.
             parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+            convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
+                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
+                equality constraints are stored in the legacy equality constraint arrays.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -2626,6 +2633,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
             force_position_velocity_actuation=force_position_velocity_actuation,
+            convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
         )
 
@@ -2657,6 +2665,7 @@ class ModelBuilder:
         collapse_fixed_joints: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
+        convert_mjc_equality_constraints: bool = True,
         convert_3d_hinge_to_ball_joints: bool = False,
         mesh_maxhullvert: int | None = None,
         ctrl_direct: bool = False,
@@ -2762,6 +2771,9 @@ class ModelBuilder:
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
             verbose: If True, print additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+            convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
+                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
+                equality constraints are stored in the legacy equality constraint arrays.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
             ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
@@ -2802,6 +2814,7 @@ class ModelBuilder:
             collapse_fixed_joints=collapse_fixed_joints,
             verbose=verbose,
             skip_equality_constraints=skip_equality_constraints,
+            convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
             mesh_maxhullvert=mesh_maxhullvert,
             ctrl_direct=ctrl_direct,
@@ -3102,7 +3115,8 @@ class ModelBuilder:
                         self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
             # offset the indices
-            self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
+            self.articulation_start.extend([a + start_joint_idx for a in builder.articulation_start])
+            self.articulation_end.extend([a + start_joint_idx for a in builder.articulation_end])
 
             new_parents = [p + start_body_idx if p != -1 else -1 for p in builder.joint_parent]
             new_children = [c + start_body_idx for c in builder.joint_child]
@@ -5159,6 +5173,7 @@ class ModelBuilder:
 
         joint_remap = {}
         articulation_first_joint: dict[int, int] = {}
+        articulation_last_joint: dict[int, int] = {}
         for i, joint in enumerate(retained_joints):
             old_joint_idx = joint["original_id"]
             joint_remap[old_joint_idx] = i
@@ -5166,12 +5181,15 @@ class ModelBuilder:
                 old_articulation = original_joint_articulation[old_joint_idx]
                 if old_articulation >= 0 and old_articulation not in articulation_first_joint:
                     articulation_first_joint[old_articulation] = i
+                if old_articulation >= 0:
+                    articulation_last_joint[old_articulation] = i
 
         # Update articulation starts from retained joints' original articulation
         # ownership. This preserves articulation order while dropping empty
         # articulations whose joints were fully collapsed away.
         articulation_remap: dict[int, int] = {}
         new_articulation_start: list[int] = []
+        new_articulation_end: list[int] = []
         new_articulation_label: list[str] = []
         new_articulation_world: list[int] = []
         for articulation_idx in range(len(original_articulation_start)):
@@ -5180,6 +5198,7 @@ class ModelBuilder:
 
             articulation_remap[articulation_idx] = len(new_articulation_start)
             new_articulation_start.append(articulation_first_joint[articulation_idx])
+            new_articulation_end.append(articulation_last_joint[articulation_idx] + 1)
             if articulation_idx < len(original_articulation_label):
                 new_articulation_label.append(original_articulation_label[articulation_idx])
             else:
@@ -5190,6 +5209,7 @@ class ModelBuilder:
                 new_articulation_world.append(self.current_world)
 
         self.articulation_start = new_articulation_start
+        self.articulation_end = new_articulation_end
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
@@ -8846,6 +8866,10 @@ class ModelBuilder:
                 # Mark all new joints as belonging to the parent's articulation
                 for joint_idx in joint_indices:
                     self.joint_articulation[joint_idx] = parent_articulation
+                self.articulation_end[parent_articulation] = max(
+                    self.articulation_end[parent_articulation],
+                    max(joint_indices) + 1,
+                )
             else:
                 # Parent body exists but is not in any articulation - this is an error
                 # because user explicitly specified parent_body but it can't be used
@@ -9307,7 +9331,7 @@ class ModelBuilder:
         - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
         - Joint references: equality_constraint_joint1/2
         - Self-referential joints: joint_parent[i] != joint_child[i]
-        - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start
+        - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start, articulation_end
         - Array length consistency: per-DOF and per-coord arrays
 
         Raises:
@@ -9452,7 +9476,13 @@ class ModelBuilder:
 
         articulation_count = self.articulation_count
         if articulation_count > 0:
+            if len(self.articulation_end) != articulation_count:
+                raise ValueError(
+                    f"Invalid articulation_end length: expected {articulation_count} entries, "
+                    f"got {len(self.articulation_end)}."
+                )
             articulation_start = np.array(self.articulation_start, dtype=np.int32)
+            articulation_end = np.array(self.articulation_end, dtype=np.int32)
             if len(articulation_start) > 1:
                 diffs = np.diff(articulation_start)
                 if np.any(diffs < 0):
@@ -9461,6 +9491,24 @@ class ModelBuilder:
                         f"articulation_start is not monotonically increasing: "
                         f"articulation_start[{idx}]={articulation_start[idx]} > articulation_start[{idx + 1}]={articulation_start[idx + 1]}."
                     )
+            invalid_end_mask = (articulation_end < articulation_start) | (articulation_end > joint_count)
+            if np.any(invalid_end_mask):
+                idx = int(np.where(invalid_end_mask)[0][0])
+                raise ValueError(
+                    f"Invalid articulation_end[{idx}]={articulation_end[idx]} for "
+                    f"articulation_start[{idx}]={articulation_start[idx]} and joint_count={joint_count}."
+                )
+            next_start = np.empty_like(articulation_start)
+            if articulation_count > 1:
+                next_start[:-1] = articulation_start[1:]
+            next_start[-1] = joint_count
+            invalid_loop_boundary_mask = articulation_end > next_start
+            if np.any(invalid_loop_boundary_mask):
+                idx = int(np.where(invalid_loop_boundary_mask)[0][0])
+                raise ValueError(
+                    f"articulation_end[{idx}]={articulation_end[idx]} exceeds the next articulation start "
+                    f"{next_start[idx]}."
+                )
 
         # Validate array length consistency
         if joint_count > 0:
@@ -10616,13 +10664,14 @@ class ModelBuilder:
             joint_qd_start.append(self.joint_dof_count)
             articulation_start = copy.copy(self.articulation_start)
             articulation_start.append(self.joint_count)
+            articulation_end = copy.copy(self.articulation_end)
 
             # Compute max joints and dofs per articulation for IK/Jacobian kernel launches
             max_joints_per_articulation = 0
             max_dofs_per_articulation = 0
             for art_idx in range(len(self.articulation_start)):
                 joint_start = articulation_start[art_idx]
-                joint_end = articulation_start[art_idx + 1]
+                joint_end = articulation_end[art_idx]
                 num_joints = joint_end - joint_start
                 max_joints_per_articulation = max(max_joints_per_articulation, num_joints)
                 # Compute dofs for this articulation
@@ -10634,6 +10683,7 @@ class ModelBuilder:
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
+            m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
             m.articulation_label = self.articulation_label
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation

@@ -810,6 +810,128 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="solimp",
             )
         )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="joint_eq_type",
+                frequency=AttributeFrequency.JOINT,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="joint_eq_body1",
+                frequency=AttributeFrequency.JOINT,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="body",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="joint_eq_body2",
+                frequency=AttributeFrequency.JOINT,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="body",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="joint_eq_anchor",
+                frequency=AttributeFrequency.JOINT,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="joint_eq_relpose",
+                frequency=AttributeFrequency.JOINT,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.transform,
+                default=wp.transform_identity(),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="joint_eq_torquescale",
+                frequency=AttributeFrequency.JOINT,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=1.0,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="joint_eq_solref",
+                frequency=AttributeFrequency.JOINT,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.02, 1.0),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="joint_eq_solimp",
+                frequency=AttributeFrequency.JOINT,
+                assignment=AttributeAssignment.MODEL,
+                dtype=vec5,
+                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="mimic_eq_preserve",
+                frequency=AttributeFrequency.CONSTRAINT_MIMIC,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.bool,
+                default=False,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="mimic_eq_polycoef",
+                frequency=AttributeFrequency.CONSTRAINT_MIMIC,
+                assignment=AttributeAssignment.MODEL,
+                dtype=vec5,
+                default=vec5(0.0, 1.0, 0.0, 0.0, 0.0),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="mimic_eq_solref",
+                frequency=AttributeFrequency.CONSTRAINT_MIMIC,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.02, 1.0),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="mimic_eq_solimp",
+                frequency=AttributeFrequency.CONSTRAINT_MIMIC,
+                assignment=AttributeAssignment.MODEL,
+                dtype=vec5,
+                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+            )
+        )
         # endregion geom attributes
 
         # region solver options
@@ -3796,6 +3918,7 @@ class SolverMuJoCo(SolverBase):
             dim=model.articulation_count,
             inputs=[
                 model.articulation_start,
+                model.articulation_end,
                 model.joint_articulation,
                 state.joint_q,
                 state.joint_qd,
@@ -4299,6 +4422,7 @@ class SolverMuJoCo(SolverBase):
         joint_limit_ke = model.joint_limit_ke.numpy()
         joint_limit_kd = model.joint_limit_kd.numpy()
         joint_type = model.joint_type.numpy()
+        joint_enabled = model.joint_enabled.numpy()
         joint_axis = model.joint_axis.numpy()
         joint_dof_dim = model.joint_dof_dim.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
@@ -4370,6 +4494,14 @@ class SolverMuJoCo(SolverBase):
         eq_constraint_world = model.equality_constraint_world.numpy()
         eq_constraint_solref = get_custom_attribute("eq_solref")
         eq_constraint_solimp = get_custom_attribute("eq_solimp")
+        joint_eq_type = get_custom_attribute("joint_eq_type")
+        joint_eq_body1 = get_custom_attribute("joint_eq_body1")
+        joint_eq_body2 = get_custom_attribute("joint_eq_body2")
+        joint_eq_anchor = get_custom_attribute("joint_eq_anchor")
+        joint_eq_relpose = get_custom_attribute("joint_eq_relpose")
+        joint_eq_torquescale = get_custom_attribute("joint_eq_torquescale")
+        joint_eq_solref = get_custom_attribute("joint_eq_solref")
+        joint_eq_solimp = get_custom_attribute("joint_eq_solimp")
 
         # Read mimic constraint arrays
         mimic_joint0 = model.constraint_mimic_joint0.numpy()
@@ -4378,6 +4510,10 @@ class SolverMuJoCo(SolverBase):
         mimic_coef1 = model.constraint_mimic_coef1.numpy()
         mimic_enabled = model.constraint_mimic_enabled.numpy()
         mimic_world = model.constraint_mimic_world.numpy()
+        mimic_eq_preserve = get_custom_attribute("mimic_eq_preserve")
+        mimic_eq_polycoef = get_custom_attribute("mimic_eq_polycoef")
+        mimic_eq_solref = get_custom_attribute("mimic_eq_solref")
+        mimic_eq_solimp = get_custom_attribute("mimic_eq_solimp")
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
@@ -5275,6 +5411,41 @@ class SolverMuJoCo(SolverBase):
         jnt_eq_anchor1_dict = {}  # mjc_eq_id -> anchor1 as [x, y, z] for CONNECT constraints from joints
         jnt_eq_anchor1_has_axis_offset = {}  # mjc_eq_id -> bool, True for the second hinge CONNECT
         for j in joints_loop:
+            if joint_eq_type is not None and int(joint_eq_type[j]) >= 0:
+                eq_type = int(joint_eq_type[j])
+                if eq_type not in (int(EqType.CONNECT), int(EqType.WELD)):
+                    warnings.warn(
+                        f"Loop joint {j} preserves unsupported MuJoCo equality type {eq_type}. Skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+                body1 = int(joint_eq_body1[j]) if joint_eq_body1 is not None else int(joint_parent[j])
+                body2 = int(joint_eq_body2[j]) if joint_eq_body2 is not None else int(joint_child[j])
+                eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                eq.active = bool(joint_enabled[j])
+                eq.name1 = get_body_name(body1)
+                eq.name2 = get_body_name(body2)
+
+                if eq_type == int(EqType.CONNECT):
+                    eq.type = mujoco.mjtEq.mjEQ_CONNECT
+                    if joint_eq_anchor is not None:
+                        eq.data[0:3] = joint_eq_anchor[j]
+                elif eq_type == int(EqType.WELD):
+                    eq.type = mujoco.mjtEq.mjEQ_WELD
+                    if joint_eq_anchor is not None:
+                        eq.data[0:3] = joint_eq_anchor[j]
+                    if joint_eq_relpose is not None:
+                        cns_relpose = wp.transform(*joint_eq_relpose[j])
+                        eq.data[3:6] = wp.transform_get_translation(cns_relpose)
+                        eq.data[6:10] = quat_to_mjc(wp.transform_get_rotation(cns_relpose))
+                    if joint_eq_torquescale is not None:
+                        eq.data[10] = float(joint_eq_torquescale[j])
+                if joint_eq_solref is not None:
+                    eq.solref = joint_eq_solref[j]
+                if joint_eq_solimp is not None:
+                    eq.solimp = joint_eq_solimp[j]
+                continue
+
             j_type = joint_type[j]
             parent_name = get_body_name(joint_parent[j])
             child_name = get_body_name(joint_child[j])
@@ -5398,14 +5569,21 @@ class SolverMuJoCo(SolverBase):
             eq.active = bool(mimic_enabled[i])
             eq.name1 = j0_name  # follower (constrained joint)
             eq.name2 = j1_name  # leader (driving joint)
-            # polycoef: data[0] + data[1]*q2 + data[2]*q2^2 + ... - q1 = 0
-            # mimic: q1 = coef0 + coef1*q2
-            eq.data[0] = float(mimic_coef0[i])
-            eq.data[1] = float(mimic_coef1[i])
-            eq.data[2] = 0.0
-            eq.data[3] = 0.0
-            eq.data[4] = 0.0
-            mjc_eq_to_newton_mimic_dict[eq.id] = i
+            if mimic_eq_preserve is not None and bool(mimic_eq_preserve[i]):
+                eq.data[0:5] = mimic_eq_polycoef[i]
+                if mimic_eq_solref is not None:
+                    eq.solref = mimic_eq_solref[i]
+                if mimic_eq_solimp is not None:
+                    eq.solimp = mimic_eq_solimp[i]
+            else:
+                # polycoef: data[0] + data[1]*q2 + data[2]*q2^2 + ... - q1 = 0
+                # mimic: q1 = coef0 + coef1*q2
+                eq.data[0] = float(mimic_coef0[i])
+                eq.data[1] = float(mimic_coef1[i])
+                eq.data[2] = 0.0
+                eq.data[3] = 0.0
+                eq.data[4] = 0.0
+                mjc_eq_to_newton_mimic_dict[eq.id] = i
 
         # Count non-colliding geoms that were kept because they are required by spatial tendons
         tendon_extra_geoms = sum(
@@ -6337,6 +6515,7 @@ class SolverMuJoCo(SolverBase):
             dim=model.articulation_count,
             inputs=[
                 model.articulation_start,
+                model.articulation_end,
                 model.joint_articulation,
                 ref_q,
                 ref_qd,

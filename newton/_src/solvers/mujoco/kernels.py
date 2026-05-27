@@ -1596,6 +1596,7 @@ def eval_single_articulation_fk(
 @wp.kernel
 def eval_articulation_fk(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     joint_articulation: wp.array[int],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
@@ -1616,7 +1617,7 @@ def eval_articulation_fk(
     tid = wp.tid()
 
     joint_start = articulation_start[tid]
-    joint_end = articulation_start[tid + 1]
+    joint_end = articulation_end[tid]
 
     eval_single_articulation_fk(
         joint_start,

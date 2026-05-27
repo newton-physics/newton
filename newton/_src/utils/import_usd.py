@@ -29,10 +29,10 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
-from ..core.types import Axis, Transform
+from ..core.types import Axis, Transform, vec5
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.enums import JointTargetMode
+from ..sim.enums import EqType, JointTargetMode
 from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -88,6 +88,7 @@ def parse_usd(
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
     force_position_velocity_actuation: bool = False,
+    convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
@@ -196,6 +197,9 @@ def parse_usd(
             ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
             colliders on bodies with visual-only geometry. Default is False.
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
+            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
+            equality constraints are stored in the legacy equality constraint arrays.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -3167,6 +3171,115 @@ def parse_usd(
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
     # for any bodies that get merged.
     def _parse_mjc_equality_constraints():
+        local_builder_custom_attr_eq = builder_custom_attr_eq
+        if convert_mjc_equality_constraints and "mujoco:joint_eq_type" not in builder.custom_attributes:
+            from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+            SolverMuJoCo.register_custom_attributes(builder)
+            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(
+                [AttributeFrequency.EQUALITY_CONSTRAINT]
+            )
+
+        def eq_solref(custom_attrs: dict[str, Any]) -> wp.vec2:
+            return custom_attrs.get("mujoco:eq_solref", wp.vec2(0.02, 1.0))
+
+        def eq_solimp(custom_attrs: dict[str, Any]) -> vec5:
+            return custom_attrs.get("mujoco:eq_solimp", vec5(0.9, 0.95, 0.001, 0.5, 2.0))
+
+        def joint_eq_custom_attrs(
+            eq_type: EqType,
+            body1: int,
+            body2: int,
+            anchor: wp.vec3,
+            relpose: wp.transform | None,
+            torquescale: float,
+            custom_attrs: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {
+                "mujoco:joint_eq_type": int(eq_type),
+                "mujoco:joint_eq_body1": body1,
+                "mujoco:joint_eq_body2": body2,
+                "mujoco:joint_eq_anchor": anchor,
+                "mujoco:joint_eq_relpose": relpose or wp.transform_identity(),
+                "mujoco:joint_eq_torquescale": torquescale,
+                "mujoco:joint_eq_solref": eq_solref(custom_attrs),
+                "mujoco:joint_eq_solimp": eq_solimp(custom_attrs),
+            }
+
+        def loop_joint_xforms(body1: int, body2: int, anchor: wp.vec3) -> tuple[int, int, wp.transform, wp.transform]:
+            if body2 >= 0:
+                parent = body1
+                child = body2
+            elif body1 >= 0:
+                parent = -1
+                child = body1
+            else:
+                raise ValueError("At least one body is required for converted MuJoCo equality constraints.")
+
+            body1_xform = builder.body_q[body1] if body1 >= 0 else wp.transform_identity()
+            child_xform_world = builder.body_q[child]
+            world_anchor = wp.transform_point(body1_xform, anchor) if body1 >= 0 else anchor
+            if parent >= 0:
+                parent_anchor = wp.transform_point(wp.transform_inverse(builder.body_q[parent]), world_anchor)
+            else:
+                parent_anchor = world_anchor
+            child_anchor = wp.transform_point(wp.transform_inverse(child_xform_world), world_anchor)
+            return (
+                parent,
+                child,
+                wp.transform(parent_anchor, wp.quat_identity()),
+                wp.transform(child_anchor, wp.quat_identity()),
+            )
+
+        def add_converted_loop_joint(
+            eq_type: EqType,
+            body1: int,
+            body2: int,
+            anchor: wp.vec3,
+            relpose: wp.transform | None,
+            torquescale: float,
+            joint_path: str,
+            enabled: bool,
+            custom_attrs: dict[str, Any],
+        ) -> None:
+            try:
+                parent, child, parent_xform, child_xform = loop_joint_xforms(body1, body2, anchor)
+            except ValueError:
+                warnings.warn(
+                    f"MuJoCo equality '{joint_path}' has no valid body reference; skipping.",
+                    stacklevel=2,
+                )
+                return
+
+            converted_attrs = joint_eq_custom_attrs(
+                eq_type,
+                body1,
+                body2,
+                anchor,
+                relpose,
+                torquescale,
+                custom_attrs,
+            )
+            add_joint = builder.add_joint_ball if eq_type == EqType.CONNECT else builder.add_joint_fixed
+            joint_idx = add_joint(
+                parent=parent,
+                child=child,
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                label=joint_path,
+                enabled=enabled,
+                custom_attributes=converted_attrs,
+            )
+            path_joint_map[joint_path] = joint_idx
+
+        def mimic_eq_custom_attrs(polycoef: list[float], custom_attrs: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "mujoco:mimic_eq_preserve": True,
+                "mujoco:mimic_eq_polycoef": vec5(*polycoef),
+                "mujoco:mimic_eq_solref": eq_solref(custom_attrs),
+                "mujoco:mimic_eq_solimp": eq_solimp(custom_attrs),
+            }
+
         for joint_path, joint_desc in joint_descriptions.items():
             joint_prim = stage.GetPrimAtPath(joint_path)
             if not joint_prim or not joint_prim.IsValid():
@@ -3187,7 +3300,7 @@ def parse_usd(
                 R.collect_prim_attrs(joint_prim)
 
             eq_custom_attrs = usd.get_custom_attribute_values(
-                joint_prim, builder_custom_attr_eq, context={"builder": builder}
+                joint_prim, local_builder_custom_attr_eq, context={"builder": builder}
             )
             enabled = bool(joint_desc.jointEnabled)
 
@@ -3211,14 +3324,27 @@ def parse_usd(
                         if (target0 in ("", "/") or target0 in path_body_map)
                         else site0_local_pos
                     )
-                    builder.add_equality_constraint_connect(
-                        body1=body0_idx,
-                        body2=body1_idx,
-                        anchor=anchor,
-                        label=joint_path,
-                        enabled=enabled,
-                        custom_attributes=eq_custom_attrs,
-                    )
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.CONNECT,
+                            body0_idx,
+                            body1_idx,
+                            anchor,
+                            None,
+                            0.0,
+                            joint_path,
+                            enabled,
+                            eq_custom_attrs,
+                        )
+                    else:
+                        builder.add_equality_constraint_connect(
+                            body1=body0_idx,
+                            body2=body1_idx,
+                            anchor=anchor,
+                            label=joint_path,
+                            enabled=enabled,
+                            custom_attributes=eq_custom_attrs,
+                        )
                 else:
                     local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
                     local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
@@ -3237,16 +3363,30 @@ def parse_usd(
                     torquescale = (
                         float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
                     )
-                    builder.add_equality_constraint_weld(
-                        body1=body0_idx,
-                        body2=body1_idx,
-                        anchor=anchor,
-                        relpose=wp.transform(relpose_pos, relpose_rot),
-                        torquescale=torquescale,
-                        label=joint_path,
-                        enabled=enabled,
-                        custom_attributes=eq_custom_attrs,
-                    )
+                    relpose = wp.transform(relpose_pos, relpose_rot)
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.WELD,
+                            body0_idx,
+                            body1_idx,
+                            anchor,
+                            relpose,
+                            torquescale,
+                            joint_path,
+                            enabled,
+                            eq_custom_attrs,
+                        )
+                    else:
+                        builder.add_equality_constraint_weld(
+                            body1=body0_idx,
+                            body2=body1_idx,
+                            anchor=anchor,
+                            relpose=relpose,
+                            torquescale=torquescale,
+                            label=joint_path,
+                            enabled=enabled,
+                            custom_attributes=eq_custom_attrs,
+                        )
                 continue
 
             if is_eq_joint:
@@ -3287,14 +3427,25 @@ def parse_usd(
                     attr = joint_prim.GetAttribute(attr_name)
                     polycoef.append(float(attr.Get()) if attr and attr.HasValue() else default)
 
-                builder.add_equality_constraint_joint(
-                    joint1=joint1_idx,
-                    joint2=joint2_idx,
-                    polycoef=polycoef,
-                    label=joint_path,
-                    enabled=enabled,
-                    custom_attributes=eq_custom_attrs,
-                )
+                if convert_mjc_equality_constraints:
+                    builder.add_constraint_mimic(
+                        joint0=joint1_idx,
+                        joint1=joint2_idx,
+                        coef0=polycoef[0],
+                        coef1=polycoef[1],
+                        label=joint_path,
+                        enabled=enabled,
+                        custom_attributes=mimic_eq_custom_attrs(polycoef, eq_custom_attrs),
+                    )
+                else:
+                    builder.add_equality_constraint_joint(
+                        joint1=joint1_idx,
+                        joint2=joint2_idx,
+                        polycoef=polycoef,
+                        label=joint_path,
+                        enabled=enabled,
+                        custom_attributes=eq_custom_attrs,
+                    )
 
     _parse_mjc_equality_constraints()
 

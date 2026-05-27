@@ -8377,9 +8377,15 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
         state_1 = model.state()
         control = model.control()
         contacts = model.contacts()
+        joint_q_start = model.joint_q_start.numpy()
+        slide_joints = [
+            i for i, label in enumerate(model.joint_label) if label.endswith("/joint1") or label.endswith("/joint2")
+        ]
 
         # Set joint1 (all of them) to have a non-zero speed.
-        start_joint_q = [1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+        start_joint_q = state_0.joint_q.numpy()
+        for joint_idx in slide_joints:
+            start_joint_q[joint_q_start[joint_idx]] = 1.0 if model.joint_label[joint_idx].endswith("/joint1") else 0.0
         state_0.joint_q.assign(start_joint_q)
 
         # If the de-duplication is not working properly we will end up with the equality constraint
@@ -8395,8 +8401,8 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
             solver.step(state_0, state_1, control, contacts, 0.02)
             state_0, state_1 = state_1, state_0
         measured_joint_q = state_0.joint_q.numpy()
-        for i in range(0, 6):
-            measured = measured_joint_q[i]
+        for i, joint_idx in enumerate(slide_joints):
+            measured = measured_joint_q[joint_q_start[joint_idx]]
             expected = expected_joint_q[i]
             self.assertAlmostEqual(
                 expected,
@@ -8449,9 +8455,15 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
         state_1 = model.state()
         control = model.control()
         contacts = model.contacts()
+        joint_q_start = model.joint_q_start.numpy()
+        slide_joints = [
+            i for i, label in enumerate(model.joint_label) if label.endswith("/joint1") or label.endswith("/joint2")
+        ]
 
         # Set joint1 (all of them) to have a non-zero speed.
-        start_joint_q = [1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+        start_joint_q = state_0.joint_q.numpy()
+        for joint_idx in slide_joints:
+            start_joint_q[joint_q_start[joint_idx]] = 1.0 if model.joint_label[joint_idx].endswith("/joint1") else 0.0
         state_0.joint_q.assign(start_joint_q)
 
         # If the de-duplication is not working properly we will end up with the equality constraint
@@ -8467,8 +8479,8 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
             solver.step(state_0, state_1, control, contacts, 0.02)
             state_0, state_1 = state_1, state_0
         measured_joint_q = state_0.joint_q.numpy()
-        for i in range(0, 6):
-            measured = measured_joint_q[i]
+        for i, joint_idx in enumerate(slide_joints):
+            measured = measured_joint_q[joint_q_start[joint_idx]]
             expected = expected_joint_q[i]
             self.assertAlmostEqual(
                 expected,
@@ -9115,7 +9127,7 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False, convert_mjc_equality_constraints=False)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
 

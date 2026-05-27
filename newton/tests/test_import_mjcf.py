@@ -1735,7 +1735,7 @@ class TestImportMjcfGeometry(unittest.TestCase):
     </fixed>
   </tendon>
 </mujoco>
-"""
+        """
 
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf)
@@ -4036,7 +4036,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
+        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
@@ -4085,13 +4085,72 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
+        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
         self.assertEqual(model.equality_constraint_count, 1)
         eq_solref = model.mujoco.eq_solref.numpy()[0].tolist()
         self.assertAlmostEqual(eq_solref[0], 0.005, places=6)
         self.assertAlmostEqual(eq_solref[1], 1.0, places=6)
+
+    def test_mjc_equality_conversion_roundtrips_to_mujoco(self):
+        """Converted MJC equalities preserve enough metadata to recreate MuJoCo equalities."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco model="eq_lossless">
+    <worldbody>
+        <body name="base">
+            <joint name="root" type="hinge" axis="0 0 1"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="link1" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="1 0 0"/>
+                <geom type="sphere" size="0.05"/>
+                <body name="link2" pos="0 0 1">
+                    <joint name="j2" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.05"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+    <equality>
+        <connect name="pin" body1="link1" body2="link2" anchor="0.1 0.2 0.3"
+                 solref="0.04 0.7" solimp="0.8 0.9 0.002 0.6 3"/>
+        <weld name="lock_to_world" body1="link2" relpose="0.2 0.3 0.4 0.9238795 0 0 0.3826834"
+              torquescale="2.5" active="false"
+              solref="0.05 1.2" solimp="0.7 0.8 0.003 0.4 2"/>
+        <joint name="couple" joint1="j2" joint2="j1" polycoef="0.5 1.5 0.1 0.05 0.02"
+               solref="0.03 0.8" solimp="0.6 0.7 0.004 0.5 1.5"/>
+    </equality>
+</mujoco>
+"""
+
+        legacy_builder = newton.ModelBuilder()
+        legacy_builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
+        legacy_model = legacy_builder.finalize()
+        legacy_solver = SolverMuJoCo(legacy_model)
+
+        converted_builder = newton.ModelBuilder()
+        converted_builder.add_mjcf(mjcf)
+        converted_model = converted_builder.finalize()
+        converted_solver = SolverMuJoCo(converted_model)
+
+        self.assertEqual(converted_model.equality_constraint_count, 0)
+        self.assertEqual(converted_model.constraint_mimic_count, 1)
+        self.assertEqual(converted_model.mujoco.joint_eq_type.numpy().tolist().count(int(newton.EqType.CONNECT)), 1)
+        self.assertEqual(converted_model.mujoco.joint_eq_type.numpy().tolist().count(int(newton.EqType.WELD)), 1)
+        self.assertTrue(bool(converted_model.mujoco.mimic_eq_preserve.numpy()[0]))
+        np.testing.assert_allclose(
+            converted_model.mujoco.mimic_eq_polycoef.numpy()[0],
+            np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
+        )
+
+        self.assertEqual(converted_solver.mj_model.neq, legacy_solver.mj_model.neq)
+        np.testing.assert_array_equal(converted_solver.mj_model.eq_type, legacy_solver.mj_model.eq_type)
+        np.testing.assert_array_equal(converted_solver.mj_model.eq_active0, legacy_solver.mj_model.eq_active0)
+        np.testing.assert_array_equal(converted_solver.mj_model.eq_obj1id, legacy_solver.mj_model.eq_obj1id)
+        np.testing.assert_array_equal(converted_solver.mj_model.eq_obj2id, legacy_solver.mj_model.eq_obj2id)
+        np.testing.assert_allclose(converted_solver.mj_model.eq_data, legacy_solver.mj_model.eq_data, atol=1e-6)
+        np.testing.assert_allclose(converted_solver.mj_model.eq_solref, legacy_solver.mj_model.eq_solref, atol=1e-6)
+        np.testing.assert_allclose(converted_solver.mj_model.eq_solimp, legacy_solver.mj_model.eq_solimp, atol=1e-6)
 
     def test_parse_mujoco_options_disabled(self):
         """Test that solver options from <option> tag are not parsed when parse_mujoco_options=False."""

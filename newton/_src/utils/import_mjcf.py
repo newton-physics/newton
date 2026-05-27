@@ -14,11 +14,11 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
-from ..core.types import Axis, AxisType, Sequence, Transform, vec10
+from ..core.types import Axis, AxisType, Sequence, Transform, vec5, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
-from ..sim import JointTargetMode, JointType, ModelBuilder
+from ..sim import EqType, JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
@@ -171,6 +171,7 @@ def parse_mjcf(
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
+    convert_mjc_equality_constraints: bool = True,
     convert_3d_hinge_to_ball_joints: bool = False,
     mesh_maxhullvert: int | None = None,
     ctrl_direct: bool = False,
@@ -277,6 +278,9 @@ def parse_mjcf(
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
         verbose: If True, print additional information about parsing the MJCF.
         skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+        convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
+            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
+            equality constraints are stored in the legacy equality constraint arrays.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
         ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
@@ -1905,6 +1909,113 @@ def parse_mjcf(
             anchor = wp.vec3(site_xform[0], site_xform[1], site_xform[2])
             return (body_idx, anchor)
 
+        def equality_label(common: dict[str, Any]) -> str | None:
+            if articulation_label and common["name"]:
+                return f"{articulation_label}/{common['name']}"
+            return common["name"]
+
+        def eq_solref(custom_attrs: dict[str, Any]) -> wp.vec2:
+            return custom_attrs.get("mujoco:eq_solref", wp.vec2(0.02, 1.0))
+
+        def eq_solimp(custom_attrs: dict[str, Any]) -> vec5:
+            return custom_attrs.get("mujoco:eq_solimp", vec5(0.9, 0.95, 0.001, 0.5, 2.0))
+
+        def joint_eq_custom_attrs(
+            eq_type: EqType,
+            body1: int,
+            body2: int,
+            anchor: wp.vec3,
+            relpose: wp.transform | None,
+            torquescale: float,
+            custom_attrs: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {
+                "mujoco:joint_eq_type": int(eq_type),
+                "mujoco:joint_eq_body1": body1,
+                "mujoco:joint_eq_body2": body2,
+                "mujoco:joint_eq_anchor": anchor,
+                "mujoco:joint_eq_relpose": relpose or wp.transform_identity(),
+                "mujoco:joint_eq_torquescale": torquescale,
+                "mujoco:joint_eq_solref": eq_solref(custom_attrs),
+                "mujoco:joint_eq_solimp": eq_solimp(custom_attrs),
+            }
+
+        def loop_joint_xforms(body1: int, body2: int, anchor: wp.vec3) -> tuple[int, int, wp.transform, wp.transform]:
+            if body2 >= 0:
+                parent = body1
+                child = body2
+            elif body1 >= 0:
+                parent = -1
+                child = body1
+            else:
+                raise ValueError("At least one body is required for converted MuJoCo equality constraints.")
+
+            body1_xform = builder.body_q[body1] if body1 >= 0 else wp.transform_identity()
+            child_xform_world = builder.body_q[child]
+            world_anchor = wp.transform_point(body1_xform, anchor) if body1 >= 0 else anchor
+            if parent >= 0:
+                parent_anchor = wp.transform_point(wp.transform_inverse(builder.body_q[parent]), world_anchor)
+            else:
+                parent_anchor = world_anchor
+            child_anchor = wp.transform_point(wp.transform_inverse(child_xform_world), world_anchor)
+            return (
+                parent,
+                child,
+                wp.transform(parent_anchor, wp.quat_identity()),
+                wp.transform(child_anchor, wp.quat_identity()),
+            )
+
+        def add_converted_loop_joint(
+            eq_type: EqType,
+            body1: int,
+            body2: int,
+            anchor: wp.vec3,
+            relpose: wp.transform | None,
+            torquescale: float,
+            common: dict[str, Any],
+            custom_attrs: dict[str, Any],
+        ) -> None:
+            try:
+                parent, child, parent_xform, child_xform = loop_joint_xforms(body1, body2, anchor)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: Equality constraint '{common['name']}' has no valid body reference. Skipping.")
+                return
+
+            converted_attrs = joint_eq_custom_attrs(
+                eq_type,
+                body1,
+                body2,
+                anchor,
+                relpose,
+                torquescale,
+                custom_attrs,
+            )
+            add_joint = builder.add_joint_ball if eq_type == EqType.CONNECT else builder.add_joint_fixed
+            add_joint(
+                parent=parent,
+                child=child,
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                label=equality_label(common),
+                enabled=common["active"],
+                custom_attributes=converted_attrs,
+            )
+
+        def parse_polycoef(polycoef: str) -> list[float]:
+            values = [float(x) for x in polycoef.split()]
+            if len(values) < 5:
+                values.extend([0.0] * (5 - len(values)))
+            return values[:5]
+
+        def mimic_eq_custom_attrs(polycoef: list[float], custom_attrs: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "mujoco:mimic_eq_preserve": True,
+                "mujoco:mimic_eq_polycoef": vec5(*polycoef),
+                "mujoco:mimic_eq_solref": eq_solref(custom_attrs),
+                "mujoco:mimic_eq_solimp": eq_solimp(custom_attrs),
+            }
+
         for connect in equality.findall("connect"):
             attribs = merge_equality_defaults(connect)
             common = parse_common_attributes(attribs)
@@ -1924,16 +2035,26 @@ def parse_mjcf(
                 body1_idx = body_name_to_idx.get(body1_name, -1) if body1_name else -1
                 body2_idx = body_name_to_idx.get(body2_name, -1) if body2_name else -1
 
-                builder.add_equality_constraint_connect(
-                    body1=body1_idx,
-                    body2=body2_idx,
-                    anchor=anchor_vec,
-                    label=f"{articulation_label}/{common['name']}"
-                    if articulation_label and common["name"]
-                    else common["name"],
-                    enabled=common["active"],
-                    custom_attributes=custom_attrs,
-                )
+                if convert_mjc_equality_constraints:
+                    add_converted_loop_joint(
+                        EqType.CONNECT,
+                        body1_idx,
+                        body2_idx,
+                        anchor_vec,
+                        None,
+                        0.0,
+                        common,
+                        custom_attrs,
+                    )
+                else:
+                    builder.add_equality_constraint_connect(
+                        body1=body1_idx,
+                        body2=body2_idx,
+                        anchor=anchor_vec,
+                        label=equality_label(common),
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
             elif site1:
                 if site2:
                     # Site-based connect: both site1 and site2 must be specified
@@ -1949,16 +2070,26 @@ def parse_mjcf(
                         print(
                             f"Connect constraint (site-based): site '{site1}' on body {body1_idx} to body {body2_idx}"
                         )
-                    builder.add_equality_constraint_connect(
-                        body1=body1_idx,
-                        body2=body2_idx,
-                        anchor=anchor_vec,
-                        label=f"{articulation_label}/{common['name']}"
-                        if articulation_label and common["name"]
-                        else common["name"],
-                        enabled=common["active"],
-                        custom_attributes=custom_attrs,
-                    )
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.CONNECT,
+                            body1_idx,
+                            body2_idx,
+                            anchor_vec,
+                            None,
+                            0.0,
+                            common,
+                            custom_attrs,
+                        )
+                    else:
+                        builder.add_equality_constraint_connect(
+                            body1=body1_idx,
+                            body2=body2_idx,
+                            anchor=anchor_vec,
+                            label=equality_label(common),
+                            enabled=common["active"],
+                            custom_attributes=custom_attrs,
+                        )
                 else:
                     if verbose:
                         print(
@@ -1993,18 +2124,28 @@ def parse_mjcf(
                     wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
                 )
 
-                builder.add_equality_constraint_weld(
-                    body1=body1_idx,
-                    body2=body2_idx,
-                    anchor=anchor_vec,
-                    relpose=relpose_transform,
-                    torquescale=torquescale,
-                    label=f"{articulation_label}/{common['name']}"
-                    if articulation_label and common["name"]
-                    else common["name"],
-                    enabled=common["active"],
-                    custom_attributes=custom_attrs,
-                )
+                if convert_mjc_equality_constraints:
+                    add_converted_loop_joint(
+                        EqType.WELD,
+                        body1_idx,
+                        body2_idx,
+                        anchor_vec,
+                        relpose_transform,
+                        torquescale,
+                        common,
+                        custom_attrs,
+                    )
+                else:
+                    builder.add_equality_constraint_weld(
+                        body1=body1_idx,
+                        body2=body2_idx,
+                        anchor=anchor_vec,
+                        relpose=relpose_transform,
+                        torquescale=torquescale,
+                        label=equality_label(common),
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
             elif site1:
                 if site2:
                     # Site-based weld: both site1 and site2 must be specified
@@ -2023,18 +2164,28 @@ def parse_mjcf(
                     )
                     if verbose:
                         print(f"Weld constraint (site-based): body {body1_idx} to body {body2_idx}")
-                    builder.add_equality_constraint_weld(
-                        body1=body1_idx,
-                        body2=body2_idx,
-                        anchor=anchor_vec,
-                        relpose=relpose_transform,
-                        torquescale=torquescale,
-                        label=f"{articulation_label}/{common['name']}"
-                        if articulation_label and common["name"]
-                        else common["name"],
-                        enabled=common["active"],
-                        custom_attributes=custom_attrs,
-                    )
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.WELD,
+                            body1_idx,
+                            body2_idx,
+                            anchor_vec,
+                            relpose_transform,
+                            torquescale,
+                            common,
+                            custom_attrs,
+                        )
+                    else:
+                        builder.add_equality_constraint_weld(
+                            body1=body1_idx,
+                            body2=body2_idx,
+                            anchor=anchor_vec,
+                            relpose=relpose_transform,
+                            torquescale=torquescale,
+                            label=equality_label(common),
+                            enabled=common["active"],
+                            custom_attributes=custom_attrs,
+                        )
                 else:
                     if verbose:
                         print(
@@ -2056,17 +2207,27 @@ def parse_mjcf(
 
                 joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
                 joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
+                polycoef_values = parse_polycoef(polycoef)
 
-                builder.add_equality_constraint_joint(
-                    joint1=joint1_idx,
-                    joint2=joint2_idx,
-                    polycoef=[float(x) for x in polycoef.split()],
-                    label=f"{articulation_label}/{common['name']}"
-                    if articulation_label and common["name"]
-                    else common["name"],
-                    enabled=common["active"],
-                    custom_attributes=custom_attrs,
-                )
+                if convert_mjc_equality_constraints:
+                    builder.add_constraint_mimic(
+                        joint0=joint1_idx,
+                        joint1=joint2_idx,
+                        coef0=polycoef_values[0],
+                        coef1=polycoef_values[1],
+                        label=equality_label(common),
+                        enabled=common["active"],
+                        custom_attributes=mimic_eq_custom_attrs(polycoef_values, custom_attrs),
+                    )
+                else:
+                    builder.add_equality_constraint_joint(
+                        joint1=joint1_idx,
+                        joint2=joint2_idx,
+                        polycoef=polycoef_values,
+                        label=equality_label(common),
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
 
         # TODO: add support for equality constraint type "flex" once Newton supports it
 
