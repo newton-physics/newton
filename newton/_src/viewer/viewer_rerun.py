@@ -132,7 +132,7 @@ class ViewerRerun(ViewerBase):
         Args:
             app_id: Application ID for rerun (defaults to 'newton-viewer').
                                  Use different IDs to differentiate between parallel viewer instances.
-            rec_id (str | None): Recording ID for rerun. If provided, multiple processes using the
+            rec_id: Recording ID for rerun. If provided, multiple processes using the
                                  same recording ID will share a single recording, allowing their data
                                  to be visualized together. If None, a random ID is generated.
             address: Optional server address to connect to a remote rerun server via gRPC.
