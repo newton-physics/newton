@@ -123,16 +123,24 @@ class ControlKamino:
 
         More specifically, an internal buffer is allocated for models for which joint coordinates
         and DoFs differ (i.e. models with spherical or free joints); otherwise, no allocation
-        is performed.
+        is performed. When :attr:`newton.use_coord_layout_targets` is ``True``,
+        ``Control.joint_target_q`` is already coord-aligned and the side buffer
+        is skipped entirely.
 
         Args:
             model: The Kamino model describing the system.
             device: Optional device to create the state on. If not specified, the model's device is used.
         """
+        import newton  # noqa: PLC0415
+
         if device is None:
             device = model.device
 
-        if model.size.sum_of_num_joint_dofs != model.size.sum_of_num_joint_coords:
+        needs_conversion = (
+            not newton.use_coord_layout_targets
+            and model.size.sum_of_num_joint_dofs != model.size.sum_of_num_joint_coords
+        )
+        if needs_conversion:
             self._needs_coord_conversion = True
             self._q_j_ref_coords_space = wp.zeros(
                 shape=model.size.sum_of_num_joint_coords,
@@ -146,8 +154,8 @@ class ControlKamino:
     def from_newton(self, control: Control, model: ModelKamino) -> None:
         """
         Reads a source :class:`newton.Control` object into this :class:`ControlKamino` instance.
-        Arrays are simply aliased whenever possible, but in some cases a necessary conversion from joint
-        target DoFs to coords is performed.
+        Arrays are simply aliased whenever possible, but a Euler→quaternion conversion is
+        performed for spherical/free joints when ``newton.use_coord_layout_targets`` is ``False``.
 
         Args:
             control: The source :class:`newton.Control` object to be interfaced.
@@ -155,22 +163,22 @@ class ControlKamino:
         """
         self.tau_j = control.joint_f
         self.tau_j_ref = control.joint_act
-        self.dq_j_ref = control.joint_target_vel
+        self.dq_j_ref = control.joint_target_qd
         if self._needs_coord_conversion:
             self.q_j_ref = self._q_j_ref_coords_space
             convert_target_dofs_to_target_coords(
-                joint_target_dofs=control.joint_target_pos,
+                joint_target_dofs=control.joint_target_q,
                 joint_target_coords=self.q_j_ref,
                 model=model,
             )
         else:
-            self.q_j_ref = control.joint_target_pos
+            self.q_j_ref = control.joint_target_q
 
     def to_newton(self, control: Control, model: ModelKamino) -> None:
         """
         Writes this :class:`ControlKamino` instance into a destination :class:`newton.Control` object.
-        Arrays are simply aliased whenever possible, but in some cases a necessary conversion from joint
-        target coords to DoFs is performed.
+        Arrays are simply aliased whenever possible, but a quaternion→Euler conversion is
+        performed for spherical/free joints when ``newton.use_coord_layout_targets`` is ``False``.
 
         Args:
             control: The destination :class:`newton.Control` object to be interfaced.
@@ -178,12 +186,12 @@ class ControlKamino:
         """
         control.joint_f = self.tau_j
         control.joint_act = self.tau_j_ref
-        control.joint_target_vel = self.dq_j_ref
+        control.joint_target_qd = self.dq_j_ref
         if self._needs_coord_conversion:
             convert_target_coords_to_target_dofs(
                 joint_target_coords=self.q_j_ref,
-                joint_target_dofs=control.joint_target_pos,
+                joint_target_dofs=control.joint_target_q,
                 model=model,
             )
         else:
-            control.joint_target_pos = self.q_j_ref
+            control.joint_target_q = self.q_j_ref

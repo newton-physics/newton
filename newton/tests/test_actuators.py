@@ -1893,7 +1893,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 class TestTargetPosIndicesSeparation(unittest.TestCase):
     """Actuator must read joint_target_pos via target_pos_indices, not pos_indices."""
 
-    def test_target_pos_read_from_dof_index_not_coord_index(self):
+    def _run(self, use_coord_layout: bool):
         device = wp.get_device()
 
         def _a(vals, dtype=wp.float32):
@@ -1902,11 +1902,21 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
         kp = 100.0
         actual_pos = 0.5
         correct_target = 2.0
-        sentinel = 99.0  # placed at coord index 3 to catch wrong index usage
+        sentinel = 99.0  # placed at the wrong slot to catch incorrect index usage
 
         indices = _a([1], dtype=wp.uint32)  # DOF index 1
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
-        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
+
+        # Under the coord layout, target_pos_indices defaults to pos_indices (=[3]),
+        # so place correct_target at coord index 3 and the sentinel at DOF index 1.
+        # Under the legacy DOF layout the explicit target_pos_indices=[1] picks DOF
+        # index 1, so place correct_target there and the sentinel at coord index 3.
+        if use_coord_layout:
+            target_pos_indices = None  # exercise default = pos_indices
+            target_array = [0.0, sentinel, 0.0, correct_target]
+        else:
+            target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1
+            target_array = [0.0, correct_target, 0.0, sentinel]
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
         actuator = Actuator(
@@ -1919,9 +1929,9 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])
         joint_qd = _a([0.0, 0.0])
-        # joint_target_pos padded to size 4 so both index 1 (correct) and
-        # index 3 (sentinel) are reachable — lets us distinguish the two code paths
-        joint_target_pos = _a([0.0, correct_target, 0.0, sentinel])
+        # joint_target_pos padded to size 4 so both DOF index 1 and coord index 3
+        # are reachable — lets us distinguish the two code paths
+        joint_target_pos = _a(target_array)
         joint_target_vel = _a([0.0, 0.0, 0.0, 0.0])
         joint_f = wp.zeros(4, dtype=wp.float32, device=device)
 
@@ -1947,6 +1957,16 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
                 f"got {got}. If {wrong}, pos_indices was wrongly used for target lookup."
             ),
         )
+
+    def test_target_pos_read_from_dof_index_not_coord_index(self):
+        prev = newton.use_coord_layout_targets
+        try:
+            for use_coord_layout in (False, True):
+                newton.use_coord_layout_targets = use_coord_layout
+                with self.subTest(use_coord_layout_targets=use_coord_layout):
+                    self._run(use_coord_layout)
+        finally:
+            newton.use_coord_layout_targets = prev
 
 
 if __name__ == "__main__":

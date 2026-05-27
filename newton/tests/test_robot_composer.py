@@ -197,14 +197,14 @@ class RobotComposerSim:
         self.robotiq_gripper_dof_offset = ur5e_with_robotiq_gripper.joint_dof_count
 
         # Base joints
-        ur5e_with_robotiq_gripper.joint_target_pos[:3] = [0.0, 0.0, 0.0]
+        ur5e_with_robotiq_gripper.joint_target_q[:3] = [0.0, 0.0, 0.0]
         ur5e_with_robotiq_gripper.joint_target_ke[:3] = [500.0] * 3
         ur5e_with_robotiq_gripper.joint_target_kd[:3] = [50.0] * 3
         ur5e_with_robotiq_gripper.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur5e_with_robotiq_gripper.joint_q[-6:] = init_q[:6]
-        ur5e_with_robotiq_gripper.joint_target_pos[-6:] = init_q[:6]
+        ur5e_with_robotiq_gripper.joint_target_q[-6:] = init_q[:6]
         ur5e_with_robotiq_gripper.joint_target_ke[-6:] = [4500.0] * 6
         ur5e_with_robotiq_gripper.joint_target_kd[-6:] = [450.0] * 6
         ur5e_with_robotiq_gripper.joint_effort_limit[-6:] = [100.0] * 6
@@ -240,7 +240,7 @@ class RobotComposerSim:
             idx = self.robotiq_gripper_dof_offset + i
             ur5e_with_robotiq_gripper.joint_target_ke[idx] = 20.0
             ur5e_with_robotiq_gripper.joint_target_kd[idx] = 1.0
-            ur5e_with_robotiq_gripper.joint_target_pos[idx] = self.gripper_target_pos
+            ur5e_with_robotiq_gripper.joint_target_q[idx] = self.gripper_target_pos
             ur5e_with_robotiq_gripper.joint_target_mode[idx] = int(JointTargetMode.POSITION)
 
         builder.add_builder(ur5e_with_robotiq_gripper)
@@ -264,14 +264,14 @@ class RobotComposerSim:
         )
 
         # Base joints
-        ur5e_with_hand.joint_target_pos[:3] = [0.0, 0.0, 0.0]
+        ur5e_with_hand.joint_target_q[:3] = [0.0, 0.0, 0.0]
         ur5e_with_hand.joint_target_ke[:3] = [500.0] * 3
         ur5e_with_hand.joint_target_kd[:3] = [50.0] * 3
         ur5e_with_hand.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur5e_with_hand.joint_q[-6:] = init_q[:6]
-        ur5e_with_hand.joint_target_pos[-6:] = init_q[:6]
+        ur5e_with_hand.joint_target_q[-6:] = init_q[:6]
         ur5e_with_hand.joint_target_ke[-6:] = [4500.0] * 6
         ur5e_with_hand.joint_target_kd[-6:] = [450.0] * 6
         ur5e_with_hand.joint_effort_limit[-6:] = [100.0] * 6
@@ -317,7 +317,7 @@ class RobotComposerSim:
         )
 
         # Base joints
-        franka_with_hand.joint_target_pos[:3] = [0.0, 0.0, 0.0]
+        franka_with_hand.joint_target_q[:3] = [0.0, 0.0, 0.0]
         franka_with_hand.joint_target_ke[:3] = [500.0] * 3
         franka_with_hand.joint_target_kd[:3] = [50.0] * 3
         franka_with_hand.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
@@ -334,7 +334,7 @@ class RobotComposerSim:
         ]
 
         franka_with_hand.joint_q[-7:] = init_q[:7]
-        franka_with_hand.joint_target_pos[-7:] = init_q[:7]
+        franka_with_hand.joint_target_q[-7:] = init_q[:7]
         franka_with_hand.joint_target_ke[-7:] = [4500, 4500, 3500, 3500, 2000, 2000, 2000]
         franka_with_hand.joint_target_kd[-7:] = [450, 450, 350, 350, 200, 200, 200]
         franka_with_hand.joint_effort_limit[-7:] = [87, 87, 87, 87, 12, 12, 12]
@@ -357,7 +357,7 @@ class RobotComposerSim:
         )
 
         allegro_dof_count = franka_with_hand.joint_dof_count - 7 - 3
-        franka_with_hand.joint_target_pos[-allegro_dof_count:] = franka_with_hand.joint_q[-allegro_dof_count:]
+        franka_with_hand.joint_target_q[-allegro_dof_count:] = franka_with_hand.joint_q[-allegro_dof_count:]
 
         num_mujoco_actuators = len(franka_with_hand.custom_attributes["mujoco:ctrl_source"].values)
         ctrl_source = [SolverMuJoCo.CtrlSource.JOINT_TARGET] * num_mujoco_actuators
@@ -385,7 +385,7 @@ class RobotComposerSim:
         )
 
         # Set gains for base joint DOFs (first 3 DOFs)
-        ur10_builder.joint_target_pos[:3] = [0.0, 0.0, 0.0]
+        ur10_builder.joint_target_q[:3] = [0.0, 0.0, 0.0]
         ur10_builder.joint_target_ke[:3] = [500.0] * 3
         ur10_builder.joint_target_kd[:3] = [50.0] * 3
         ur10_builder.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
@@ -393,7 +393,7 @@ class RobotComposerSim:
         # Initialize arm joints to elbow down configuration (same as UR5e)
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur10_builder.joint_q[-6:] = init_q[:6]
-        ur10_builder.joint_target_pos[-6:] = init_q[:6]
+        ur10_builder.joint_target_q[-6:] = init_q[:6]
 
         # Set joint targets and gains for arm joints
         ur10_builder.joint_target_ke[-6:] = [4500.0] * 6

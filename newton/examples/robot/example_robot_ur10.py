@@ -21,6 +21,8 @@ import newton.utils
 from newton import JointTargetMode
 from newton.selection import ArticulationView
 
+newton.use_coord_layout_targets = True
+
 
 @wp.kernel
 def update_joint_target_trajectory_kernel(
@@ -140,7 +142,7 @@ class Example:
         self.joint_target_trajectory = wp.array(joint_target_trajectory, dtype=wp.float32, device=self.device)
         self.time_step = wp.zeros(self.world_count, dtype=wp.float32, device=self.device)
 
-        self.ctrl = self.articulation_view.get_attribute("joint_target_pos", self.control)
+        self.ctrl = self.articulation_view.get_attribute("joint_target_q", self.control)
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
@@ -172,7 +174,7 @@ class Example:
                 outputs=[self.ctrl],
                 device=self.device,
             )
-            self.articulation_view.set_attribute("joint_target_pos", self.control, self.ctrl)
+            self.articulation_view.set_attribute("joint_target_q", self.control, self.ctrl)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 

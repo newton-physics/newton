@@ -20,6 +20,8 @@ import warp as wp
 import newton
 import newton.examples
 
+newton.use_coord_layout_targets = True
+
 
 class Example:
     def __init__(self, viewer, args):
@@ -70,7 +72,7 @@ class Example:
 
         # set initial joint positions
         quadruped.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-        quadruped.joint_target_pos[-12:] = quadruped.joint_q[-12:]
+        quadruped.joint_target_q[-12:] = quadruped.joint_q[-12:]
 
         # use "scene" for the entire set of worlds
         scene = newton.ModelBuilder()

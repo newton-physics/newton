@@ -361,7 +361,7 @@ For scalar-coordinate joints (for example this D6 joint), the positional coordin
     joint_dof_dim = model.joint_dof_dim.numpy()
     joint_axis = model.joint_axis.numpy()
     joint_limit_lower = model.joint_limit_lower.numpy()
-    joint_target_pos = control.joint_target_pos.numpy()
+    joint_target_q = control.joint_target_q.numpy()
     joint_f = control.joint_f.numpy()
 
 .. testcode:: articulation-joint-layout
@@ -384,7 +384,15 @@ Several other arrays also use this same DOF-ordered layout, indexed from
 :attr:`newton.Model.joint_qd_start` rather than :attr:`newton.Model.joint_q_start`.
 This includes :attr:`newton.Model.joint_axis`, joint limits and other per-DOF
 properties defined via :class:`newton.ModelBuilder.JointDofConfig`, and the
-position targets at :attr:`newton.Control.joint_target_pos`.
+velocity targets at :attr:`newton.Control.joint_target_qd`.
+
+The position targets at :attr:`newton.Control.joint_target_q` instead match
+:attr:`newton.Model.joint_q` (coord layout) when
+:attr:`newton.use_coord_layout_targets` is ``True``; index those with
+:attr:`newton.Model.joint_q_start`. Under the legacy default
+(``use_coord_layout_targets = False``) the array is still DOF-shaped and
+indexed via :attr:`newton.Model.joint_qd_start` — see the
+:ref:`migration guide <joint-target-layout>` for details.
 
 For every joint, these per-DOF arrays are stored consecutively, with linear DOFs
 first and angular DOFs second. Use :attr:`newton.Model.joint_dof_dim` to query
@@ -413,16 +421,18 @@ The same start index can be used to query other per-DOF arrays for that joint:
     num_angular_dofs = joint_dof_dim[joint_id, 1]
     # all per-DOF arrays for this joint start at this index:
     dof_start = joint_qd_start[joint_id]
+    # position targets follow joint_q under newton.use_coord_layout_targets:
+    target_q_start = joint_q_start[joint_id]
     # the axis vector for the first linear DOF
     first_lin_axis = joint_axis[dof_start]
     # the position target for this linear DOF
-    first_lin_target = joint_target_pos[dof_start]
+    first_lin_target = joint_target_q[target_q_start]
     # the joint limit of this linear DOF
     first_lin_limit = joint_limit_lower[dof_start]
     # the axis vector for the first angular DOF comes after all linear DOFs
     first_ang_axis = joint_axis[dof_start + num_linear_dofs]
     # the position target for this angular DOF
-    first_ang_target = joint_target_pos[dof_start + num_linear_dofs]
+    first_ang_target = joint_target_q[target_q_start + num_linear_dofs]
     # the joint limit of this angular DOF
     first_ang_limit = joint_limit_lower[dof_start + num_linear_dofs]
 

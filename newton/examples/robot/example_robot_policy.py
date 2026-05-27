@@ -30,6 +30,8 @@ import newton.examples
 import newton.utils
 from newton import JointTargetMode
 
+newton.use_coord_layout_targets = True
+
 
 @dataclass
 class RobotConfig:
@@ -124,7 +126,7 @@ def _compute_obs_kernel(
 
 
 @wp.kernel
-def _build_joint_target_pos_kernel(
+def _build_joint_target_q_kernel(
     act: wp.array2d[float],  # (1, num_dofs) on device
     joint_pos_initial: wp.array[float],  # (num_dofs,) on device
     reorder: wp.array[int],  # (num_dofs,) mjc_to_physx mapping
@@ -136,11 +138,15 @@ def _build_joint_target_pos_kernel(
 
     Single kernel that replaces the NumPy reorder + concatenate + per-step
     ``wp.array(..., device=device)`` upload, keeping the control target on
-    device for the rest of the simulation step.
+    device for the rest of the simulation step. The quaternion w-component at
+    coord-index 6 is set to 1 (identity orientation).
     """
     i = wp.tid()
     if i < num_prefix_zeros:
-        out[i] = 0.0
+        if i == 6:
+            out[i] = 1.0
+        else:
+            out[i] = 0.0
     else:
         j = i - num_prefix_zeros
         idx = reorder[j]
@@ -351,7 +357,7 @@ class Example:
         if wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()):
             print("[INFO] Using CUDA graph")
             self.use_cuda_graph = True
-            self.control.joint_target_pos = wp.zeros(self.config["num_dofs"] + 6, dtype=wp.float32, device=self.device)
+            self.control.joint_target_q = wp.zeros(self.config["num_dofs"] + 7, dtype=wp.float32, device=self.device)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -419,17 +425,18 @@ class Example:
         out = self.policy({self.policy_input_name: self._obs_wp})
         act_wp = out[self.policy_output_name]
 
-        # Build joint_target_pos on device: reorder, scale, prepend zeros.
+        # Build joint_target_q on device: reorder, scale, prepend the
+        # free-joint coords (identity quaternion at index 6).
         wp.launch(
-            _build_joint_target_pos_kernel,
-            dim=6 + self._num_dofs,
+            _build_joint_target_q_kernel,
+            dim=7 + self._num_dofs,
             inputs=[
                 act_wp,
                 self._joint_pos_initial_wp,
                 self._mjc_to_physx_wp,
                 float(self.config["action_scale"]),
-                6,
-                self.control.joint_target_pos,
+                7,
+                self.control.joint_target_q,
             ],
             device=self.device,
         )

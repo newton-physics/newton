@@ -283,7 +283,7 @@ def parse_mjcf(
             where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
             See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
-            from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
+            from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
         path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
     # Early validation of base joint parameters

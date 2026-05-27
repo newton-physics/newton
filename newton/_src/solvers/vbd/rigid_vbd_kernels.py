@@ -1027,6 +1027,7 @@ def evaluate_joint_force_hessian(
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_qd_start: wp.array[int],
+    joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
     joint_penalty_k: wp.array[float],
     joint_penalty_kd: wp.array[float],
@@ -1035,8 +1036,8 @@ def evaluate_joint_force_hessian(
     # Drive parameters (DOF-indexed via joint_qd_start)
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
-    joint_target_pos: wp.array[float],
-    joint_target_vel: wp.array[float],
+    joint_target_q: wp.array[float],
+    joint_target_qd: wp.array[float],
     # Limit parameters (DOF-indexed via joint_qd_start)
     joint_limit_lower: wp.array[float],
     joint_limit_upper: wp.array[float],
@@ -1363,10 +1364,11 @@ def evaluate_joint_force_hessian(
 
         # Drive + limits on free angular DOF (AVBD slot c_start + 2)
         dof_idx = qd_start
+        target_q_idx = joint_target_q_start[joint_index]
         model_drive_ke = joint_target_ke[dof_idx]
         drive_kd = joint_target_kd[dof_idx]
-        target_pos = joint_target_pos[dof_idx]
-        target_vel = joint_target_vel[dof_idx]
+        target_pos = joint_target_q[target_q_idx]
+        target_vel = joint_target_qd[dof_idx]
         lim_lower = joint_limit_lower[dof_idx]
         lim_upper = joint_limit_upper[dof_idx]
         model_limit_ke = joint_limit_ke[dof_idx]
@@ -1475,10 +1477,11 @@ def evaluate_joint_force_hessian(
 
         # Drive + limits on free linear DOF (AVBD slot c_start + 2)
         dof_idx = qd_start
+        target_q_idx = joint_target_q_start[joint_index]
         model_drive_ke = joint_target_ke[dof_idx]
         drive_kd = joint_target_kd[dof_idx]
-        target_pos = joint_target_pos[dof_idx]
-        target_vel = joint_target_vel[dof_idx]
+        target_pos = joint_target_q[target_q_idx]
+        target_vel = joint_target_qd[dof_idx]
         lim_lower = joint_limit_lower[dof_idx]
         lim_upper = joint_limit_upper[dof_idx]
         model_limit_ke = joint_limit_ke[dof_idx]
@@ -1639,13 +1642,15 @@ def evaluate_joint_force_hessian(
                 com_w = wp.transform_point(child_pose, child_com)
                 r_drive = x_c - com_w
 
+            target_q_base = joint_target_q_start[joint_index]
             for li in range(3):
                 if li < lin_count:
                     dof_idx = qd_start + li
+                    target_q_idx = target_q_base + li
                     model_drive_ke = joint_target_ke[dof_idx]
                     drive_kd = joint_target_kd[dof_idx]
-                    target_pos = joint_target_pos[dof_idx]
-                    target_vel = joint_target_vel[dof_idx]
+                    target_pos = joint_target_q[target_q_idx]
+                    target_vel = joint_target_qd[dof_idx]
                     lim_lower = joint_limit_lower[dof_idx]
                     lim_upper = joint_limit_upper[dof_idx]
                     model_limit_ke = joint_limit_ke[dof_idx]
@@ -1703,13 +1708,15 @@ def evaluate_joint_force_hessian(
             omega_c = quat_velocity(q_wc, q_wc_prev, dt)
             dkappa_dt = compute_kappa_dot(J_world, omega_p, omega_c)
 
+            target_q_base = joint_target_q_start[joint_index]
             for ai in range(3):
                 if ai < ang_count:
                     dof_idx = qd_start + lin_count + ai
+                    target_q_idx = target_q_base + lin_count + ai
                     model_drive_ke = joint_target_ke[dof_idx]
                     drive_kd = joint_target_kd[dof_idx]
-                    target_pos = joint_target_pos[dof_idx]
-                    target_vel = joint_target_vel[dof_idx]
+                    target_pos = joint_target_q[target_q_idx]
+                    target_vel = joint_target_qd[dof_idx]
                     lim_lower = joint_limit_lower[dof_idx]
                     lim_upper = joint_limit_upper[dof_idx]
                     model_limit_ke = joint_limit_ke[dof_idx]
@@ -2914,6 +2921,7 @@ def solve_rigid_body(
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_qd_start: wp.array[int],
+    joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
     # AVBD per-constraint penalty state (scalar constraints indexed via joint_constraint_start)
     joint_penalty_k: wp.array[float],
@@ -2924,8 +2932,8 @@ def solve_rigid_body(
     # Drive parameters (DOF-indexed via joint_qd_start)
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
-    joint_target_pos: wp.array[float],
-    joint_target_vel: wp.array[float],
+    joint_target_q: wp.array[float],
+    joint_target_qd: wp.array[float],
     # Limit parameters (DOF-indexed via joint_qd_start)
     joint_limit_lower: wp.array[float],
     joint_limit_upper: wp.array[float],
@@ -3085,6 +3093,7 @@ def solve_rigid_body(
             joint_X_c,
             joint_axis,
             joint_qd_start,
+            joint_target_q_start,
             joint_constraint_start,
             joint_penalty_k,
             joint_penalty_kd,
@@ -3092,8 +3101,8 @@ def solve_rigid_body(
             joint_C_fric,
             joint_target_ke,
             joint_target_kd,
-            joint_target_pos,
-            joint_target_vel,
+            joint_target_q,
+            joint_target_qd,
             joint_limit_lower,
             joint_limit_upper,
             joint_limit_ke,
@@ -3163,6 +3172,7 @@ def update_duals_joint(
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_qd_start: wp.array[int],
+    joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
     body_q: wp.array[wp.transform],
     body_q_rest: wp.array[wp.transform],
@@ -3175,7 +3185,7 @@ def update_duals_joint(
     beta_lin: float,
     beta_ang: float,
     joint_target_ke: wp.array[float],
-    joint_target_pos: wp.array[float],
+    joint_target_q: wp.array[float],
     joint_limit_lower: wp.array[float],
     joint_limit_upper: wp.array[float],
     joint_limit_ke: wp.array[float],
@@ -3388,7 +3398,7 @@ def update_duals_joint(
             a = wp.normalize(joint_axis[qd_start])
             theta = wp.dot(kappa, a)
             theta_abs = theta + joint_rest_angle[dof_idx]
-            target_pos = joint_target_pos[dof_idx]
+            target_pos = joint_target_q[joint_target_q_start[j]]
             _mode, err_pos = resolve_drive_limit_mode(
                 theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
             )
@@ -3456,7 +3466,7 @@ def update_duals_joint(
             axis_local = joint_axis[qd_start]
             axis_w_dl = wp.normalize(wp.quat_rotate(q_wp, axis_local))
             d_along = wp.dot(C_vec, axis_w_dl)
-            target_pos = joint_target_pos[dof_idx]
+            target_pos = joint_target_q[joint_target_q_start[j]]
             _mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
             i_dl = c_start + 2
             C_dl = wp.abs(err_pos)
@@ -3515,9 +3525,11 @@ def update_duals_joint(
             )
 
         # Drive/limit dual update for D6 free DOFs
+        target_q_base = joint_target_q_start[j]
         for li in range(3):
             if li < lin_count:
                 dof_idx = qd_start + li
+                target_q_idx = target_q_base + li
                 model_drive_ke = joint_target_ke[dof_idx]
                 model_limit_ke = joint_limit_ke[dof_idx]
                 lim_lower = joint_limit_lower[dof_idx]
@@ -3528,7 +3540,7 @@ def update_duals_joint(
                 if has_drive or has_limits:
                     axis_w_dl = wp.normalize(wp.quat_rotate(q_wp_rot, joint_axis[dof_idx]))
                     d_along = wp.dot(C_vec, axis_w_dl)
-                    target_pos_dl = joint_target_pos[dof_idx]
+                    target_pos_dl = joint_target_q[target_q_idx]
                     _mode, err_pos = resolve_drive_limit_mode(
                         d_along, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
                     )
@@ -3539,6 +3551,7 @@ def update_duals_joint(
         for ai in range(3):
             if ai < ang_count:
                 dof_idx = qd_start + lin_count + ai
+                target_q_idx = target_q_base + lin_count + ai
                 model_drive_ke = joint_target_ke[dof_idx]
                 model_limit_ke = joint_limit_ke[dof_idx]
                 lim_lower = joint_limit_lower[dof_idx]
@@ -3550,7 +3563,7 @@ def update_duals_joint(
                     a_dl = wp.normalize(joint_axis[dof_idx])
                     theta = wp.dot(kappa, a_dl)
                     theta_abs = theta + joint_rest_angle[dof_idx]
-                    target_pos_dl = joint_target_pos[dof_idx]
+                    target_pos_dl = joint_target_q[target_q_idx]
                     _mode, err_pos = resolve_drive_limit_mode(
                         theta_abs, target_pos_dl, lim_lower, lim_upper, has_drive, has_limits
                     )

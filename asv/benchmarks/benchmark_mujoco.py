@@ -23,6 +23,8 @@ import newton.utils
 from newton.sensors import SensorContact
 from newton.utils import EventTracer
 
+newton.use_coord_layout_targets = True
+
 ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
@@ -241,7 +243,8 @@ def _setup_allegro(articulation_builder):
     for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 5
-        articulation_builder.joint_target_pos[i] = 0.0
+    for i in range(articulation_builder.joint_coord_count):
+        articulation_builder.joint_target_q[i] = 0.0
     root_dofs = 1
 
     return root_dofs
@@ -373,8 +376,9 @@ class Example:
 
     def step(self):
         if self.actuation == "random":
-            joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=wp.float32)
-            wp.copy(self.control.joint_target_pos, joint_target)
+            target_size = self.control.joint_target_q.shape[0]
+            joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=target_size), dtype=wp.float32)
+            wp.copy(self.control.joint_target_q, joint_target)
 
         wp.synchronize_device()
         start_time = time.time()

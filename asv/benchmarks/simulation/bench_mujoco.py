@@ -63,12 +63,13 @@ class _FastBenchmark:
             raise SkipNotImplemented
         else:
             state = wp.rand_init(self.example.seed)
+            target_q = self.example.control.joint_target_q
             with wp.ScopedCapture() as capture:
                 wp.launch(
                     apply_random_control,
-                    dim=(self.example.model.joint_dof_count,),
+                    dim=(target_q.shape[0],),
                     inputs=[state],
-                    outputs=[self.example.control.joint_target_pos],
+                    outputs=[target_q],
                 )
                 self.example.simulate()
             self.graph = capture.graph

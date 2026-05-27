@@ -107,9 +107,10 @@ class Actuator:
                 ``state.joint_q``). Defaults to *indices*. Differs from
                 *indices* when position and velocity arrays have different
                 layouts (e.g. floating-base or ball-joint articulations).
-            target_pos_indices: Indices into ``control.joint_target_pos``
-                (DOF-shaped). Defaults to *indices*. Typically equal to
-                *indices* since ``joint_target_pos`` uses DOF layout.
+            target_pos_indices: Indices into ``control.joint_target_pos`` /
+                ``joint_target_q``. Defaults to *pos_indices* when
+                :attr:`newton.use_coord_layout_targets` is ``True`` (coord
+                layout), otherwise to *indices* (legacy DOF layout).
             effort_indices: DOF indices into effort output arrays. Defaults to
                 *indices*. Differs from *indices* for coupled transmissions
                 or tendon-driven joints.
@@ -126,7 +127,12 @@ class Actuator:
         """
         self.indices = indices
         self.pos_indices = pos_indices if pos_indices is not None else indices
-        self.target_pos_indices = target_pos_indices if target_pos_indices is not None else indices
+        if target_pos_indices is not None:
+            self.target_pos_indices = target_pos_indices
+        else:
+            import newton  # noqa: PLC0415
+
+            self.target_pos_indices = self.pos_indices if newton.use_coord_layout_targets else indices
         self.effort_indices = effort_indices if effort_indices is not None else indices
         if self.pos_indices.shape != indices.shape:
             raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")

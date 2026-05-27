@@ -25,6 +25,8 @@ from newton import Contacts
 from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
 
+newton.use_coord_layout_targets = True
+
 
 class Example:
     def __init__(self, viewer, args):
@@ -133,7 +135,7 @@ class Example:
             self.reset()
 
         hinge_angle = min(self.sim_time / 3, 1.6)
-        self.control.joint_target_pos[self.hinge_joint_q_start : self.hinge_joint_q_start + 1].fill_(hinge_angle)
+        self.control.joint_target_q[self.hinge_joint_q_start : self.hinge_joint_q_start + 1].fill_(hinge_angle)
 
         with wp.ScopedTimer("step", active=False):
             if self.graph:

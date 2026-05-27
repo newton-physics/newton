@@ -89,6 +89,53 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             atol=1e-6,
         )
 
+    def test_joint_target_pos_vel_aliases_warn(self):
+        """Legacy ``joint_target_pos`` / ``joint_target_vel`` warn under the
+        default flag and raise under ``use_coord_layout_targets=True``;
+        ``joint_target_q`` / ``joint_target_qd`` are always silent."""
+        builder = ModelBuilder()
+        base = builder.add_link(mass=1.0)
+        j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
+        builder.add_articulation([j])
+        model = builder.finalize()
+        control = newton.Control()
+
+        prev_flag = newton.use_coord_layout_targets
+        try:
+            newton.use_coord_layout_targets = False
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                _ = control.joint_target_pos
+                _ = control.joint_target_vel
+                _ = model.joint_target_pos
+                _ = model.joint_target_vel
+            deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+            self.assertEqual(len(deprecations), 4)
+            self.assertTrue(any("Control.joint_target_pos" in str(w.message) for w in deprecations))
+            self.assertTrue(any("Control.joint_target_vel" in str(w.message) for w in deprecations))
+            self.assertTrue(any("Model.joint_target_pos" in str(w.message) for w in deprecations))
+            self.assertTrue(any("Model.joint_target_vel" in str(w.message) for w in deprecations))
+
+            newton.use_coord_layout_targets = True
+            with self.assertRaises(AttributeError):
+                _ = control.joint_target_pos
+            with self.assertRaises(AttributeError):
+                _ = control.joint_target_vel
+            with self.assertRaises(AttributeError):
+                _ = model.joint_target_pos
+            with self.assertRaises(AttributeError):
+                _ = model.joint_target_vel
+        finally:
+            newton.use_coord_layout_targets = prev_flag
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _ = control.joint_target_q
+            _ = control.joint_target_qd
+            _ = model.joint_target_q
+            _ = model.joint_target_qd
+        self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
+
 
 class TestModelMesh(unittest.TestCase):
     def test_add_triangles(self):
@@ -615,6 +662,55 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestModelJoints(unittest.TestCase):
+    def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
+        """``joint_target_q`` follows ``joint_q`` (coord) under
+        ``use_coord_layout_targets``; ``joint_target_qd`` always follows
+        ``joint_qd`` (DOF). Free and ball joints are where the two layouts
+        diverge. Multi-articulation builder also exercises the per-env start
+        arrays."""
+        for use_coord in (False, True):
+            prev = newton.use_coord_layout_targets
+            newton.use_coord_layout_targets = use_coord
+            try:
+                builder = ModelBuilder()
+                # env 0: free + revolute (7 coords / 6 DOFs from free)
+                b0 = builder.add_link(mass=1.0)
+                j0_free = builder.add_joint_free(child=b0)
+                b1 = builder.add_link(mass=1.0)
+                j0_rev = builder.add_joint_revolute(parent=b0, child=b1, axis=newton.Axis.Z)
+                builder.add_articulation([j0_free, j0_rev])
+                # env 1: ball + revolute (4 coords / 3 DOFs from ball)
+                b2 = builder.add_link(mass=1.0)
+                j1_ball = builder.add_joint_ball(parent=-1, child=b2)
+                b3 = builder.add_link(mass=1.0)
+                j1_rev = builder.add_joint_revolute(parent=b2, child=b3, axis=newton.Axis.Z)
+                builder.add_articulation([j1_ball, j1_rev])
+                model = builder.finalize()
+
+                self.assertEqual(model.joint_dof_count, 7 + 4)
+                self.assertEqual(model.joint_coord_count, 8 + 5)
+
+                target_q_size = model.joint_coord_count if use_coord else model.joint_dof_count
+                self.assertEqual(model.joint_target_q.shape[0], target_q_size)
+                self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
+
+                control = model.control()
+                self.assertEqual(control.joint_target_q.shape[0], target_q_size)
+                self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
+
+                expected_start = model.joint_q_start.numpy() if use_coord else model.joint_qd_start.numpy()
+                np.testing.assert_array_equal(model.joint_target_q_start.numpy(), expected_start)
+
+                if use_coord:
+                    target_q = model.joint_target_q.numpy()
+                    q_starts = model.joint_q_start.numpy()
+                    # env 0 free joint: w-component at offset 6 (3 lin + 3 quat-xyz)
+                    self.assertAlmostEqual(float(target_q[int(q_starts[0]) + 6]), 1.0)
+                    # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
+                    self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
+            finally:
+                newton.use_coord_layout_targets = prev
+
     def test_collapse_fixed_joints(self):
         shape_cfg = ModelBuilder.ShapeConfig(density=1.0)
 

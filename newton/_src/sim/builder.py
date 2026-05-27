@@ -1101,10 +1101,10 @@ class ModelBuilder:
         """Joint limit stiffness values accumulated for :attr:`Model.joint_limit_ke`."""
         self.joint_limit_kd: list[float] = []
         """Joint limit damping values accumulated for :attr:`Model.joint_limit_kd`."""
-        self.joint_target_pos: list[float] = []
-        """Joint position targets accumulated for :attr:`Model.joint_target_pos`."""
-        self.joint_target_vel: list[float] = []
-        """Joint velocity targets accumulated for :attr:`Model.joint_target_vel`."""
+        self.joint_target_q: list[float] = []
+        """Joint position targets in :attr:`joint_q` (coord) layout, accumulated for :attr:`Model.joint_target_q`."""
+        self.joint_target_qd: list[float] = []
+        """Joint velocity targets per DOF, accumulated for :attr:`Model.joint_target_qd`."""
         self.joint_effort_limit: list[float] = []
         """Joint effort limits accumulated for :attr:`Model.joint_effort_limit`."""
         self.joint_velocity_limit: list[float] = []
@@ -2111,6 +2111,56 @@ class ModelBuilder:
         """
         return len(self.articulation_start)
 
+    @property
+    def joint_target_pos(self) -> list[float]:
+        """Removed alias for :attr:`joint_target_q`.
+
+        .. deprecated::
+            Use :attr:`ModelBuilder.joint_target_q` (coord layout) or set the
+            per-axis ``target_pos`` on :class:`JointDofConfig`.
+        """
+        raise AttributeError(
+            "ModelBuilder.joint_target_pos was removed. Use ModelBuilder.joint_target_q "
+            "(coord layout, shape joint_coord_count); for per-axis configuration set "
+            "JointDofConfig.target_pos before calling add_joint*()."
+        )
+
+    @property
+    def joint_target_vel(self) -> list[float]:
+        """Removed alias for :attr:`joint_target_qd`.
+
+        .. deprecated::
+            Use :attr:`ModelBuilder.joint_target_qd` or set per-axis
+            ``target_vel`` on :class:`JointDofConfig`.
+        """
+        raise AttributeError(
+            "ModelBuilder.joint_target_vel was removed. Use ModelBuilder.joint_target_qd "
+            "(shape joint_dof_count); for per-axis configuration set "
+            "JointDofConfig.target_vel before calling add_joint*()."
+        )
+
+    def _project_target_q_to_dof(self) -> list[float]:
+        """Project the coord-shaped :attr:`joint_target_q` to a DOF-shaped list.
+
+        For FREE/BALL/DISTANCE the quaternion-w coord slot is skipped; for all
+        other joint types the per-joint coord and DOF slices are the same size
+        and copied verbatim. Used when :attr:`newton.use_coord_layout_targets`
+        is ``False`` to populate the legacy DOF-shaped ``Model.joint_target_q``.
+        """
+        result: list[float] = []
+        for j, jtype in enumerate(self.joint_type):
+            q_start = self.joint_q_start[j]
+            if jtype == JointType.BALL:
+                result.extend(self.joint_target_q[q_start : q_start + 3])
+            elif jtype == JointType.FREE or jtype == JointType.DISTANCE:
+                result.extend(self.joint_target_q[q_start : q_start + 6])
+            elif jtype == JointType.FIXED:
+                pass
+            else:
+                num_lin, num_ang = self.joint_dof_dim[j]
+                result.extend(self.joint_target_q[q_start : q_start + num_lin + num_ang])
+        return result
+
     # endregion
 
     def replicate(
@@ -2767,7 +2817,7 @@ class ModelBuilder:
                 where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
                 See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
-                from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
+                from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
@@ -3089,6 +3139,7 @@ class ModelBuilder:
             start_X_p = len(self.joint_X_p)
             self.joint_X_p.extend(builder.joint_X_p)
             self.joint_q.extend(builder.joint_q)
+            self.joint_target_q.extend(builder.joint_target_q)
             if xform is not None:
                 for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
@@ -3254,8 +3305,7 @@ class ModelBuilder:
             "joint_cts",
             "joint_f",
             "joint_act",
-            "joint_target_pos",
-            "joint_target_vel",
+            "joint_target_qd",
             "joint_limit_lower",
             "joint_limit_upper",
             "joint_limit_ke",
@@ -3815,8 +3865,7 @@ class ModelBuilder:
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
-            self.joint_target_pos.append(dim.target_pos)
-            self.joint_target_vel.append(dim.target_vel)
+            self.joint_target_qd.append(dim.target_vel)
 
             # Use actuator_mode if explicitly set, otherwise infer from gains
             if dim.actuator_mode is not None:
@@ -3856,6 +3905,9 @@ class ModelBuilder:
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)
+        target_q_offset = len(self.joint_target_q)
+        for _ in range(coord_count):
+            self.joint_target_q.append(0.0)
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
@@ -3866,6 +3918,20 @@ class ModelBuilder:
         if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
+
+        if joint_type == JointType.BALL:
+            # Identity quaternion (x,y,z,w) = (0,0,0,1); axis-aligned DOF targets
+            # do not map cleanly to a target quaternion.
+            self.joint_target_q[target_q_offset + 3] = 1.0
+        elif joint_type in (JointType.FREE, JointType.DISTANCE):
+            for i, dim in enumerate(linear_axes):
+                self.joint_target_q[target_q_offset + i] = dim.target_pos
+            self.joint_target_q[target_q_offset + 6] = 1.0
+        elif joint_type != JointType.FIXED:
+            for i, dim in enumerate(linear_axes):
+                self.joint_target_q[target_q_offset + i] = dim.target_pos
+            for i, dim in enumerate(angular_axes):
+                self.joint_target_q[target_q_offset + len(linear_axes) + i] = dim.target_pos
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -4883,7 +4949,9 @@ class ModelBuilder:
             data = {
                 "type": self.joint_type[i],
                 "q": self.joint_q[q_start : q_start + q_dim],
+                "target_q": self.joint_target_q[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
+                "target_qd": self.joint_target_qd[qd_start : qd_start + qd_dim],
                 "cts": self.joint_cts[cts_start : cts_start + cts_dim],
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
@@ -4912,8 +4980,6 @@ class ModelBuilder:
                         "limit_kd": self.joint_limit_kd[j],
                         "limit_lower": self.joint_limit_lower[j],
                         "limit_upper": self.joint_limit_upper[j],
-                        "target_pos": self.joint_target_pos[j],
-                        "target_vel": self.joint_target_vel[j],
                         "effort_limit": self.joint_effort_limit[j],
                     }
                 )
@@ -5251,8 +5317,8 @@ class ModelBuilder:
         self.joint_effort_limit.clear()
         self.joint_limit_kd.clear()
         self.joint_dof_dim.clear()
-        self.joint_target_pos.clear()
-        self.joint_target_vel.clear()
+        self.joint_target_q.clear()
+        self.joint_target_qd.clear()
         self.joint_world.clear()
         self.joint_articulation.clear()
         for joint in retained_joints:
@@ -5264,7 +5330,9 @@ class ModelBuilder:
             self.joint_qd_start.append(len(self.joint_qd))
             self.joint_cts_start.append(len(self.joint_cts))
             self.joint_q.extend(joint["q"])
+            self.joint_target_q.extend(joint["target_q"])
             self.joint_qd.extend(joint["qd"])
+            self.joint_target_qd.extend(joint["target_qd"])
             self.joint_cts.extend(joint["cts"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
@@ -5293,8 +5361,6 @@ class ModelBuilder:
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
-                self.joint_target_pos.append(axis["target_pos"])
-                self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
 
         # Update DOF and coordinate counts to match the rebuilt arrays
@@ -9470,8 +9536,7 @@ class ModelBuilder:
                 ("joint_limit_upper", self.joint_limit_upper),
                 ("joint_limit_ke", self.joint_limit_ke),
                 ("joint_limit_kd", self.joint_limit_kd),
-                ("joint_target_pos", self.joint_target_pos),
-                ("joint_target_vel", self.joint_target_vel),
+                ("joint_target_qd", self.joint_target_qd),
                 ("joint_effort_limit", self.joint_effort_limit),
                 ("joint_velocity_limit", self.joint_velocity_limit),
                 ("joint_friction", self.joint_friction),
@@ -9487,6 +9552,7 @@ class ModelBuilder:
             # Per-coord arrays should have length == joint_coord_count
             coord_arrays = [
                 ("joint_q", self.joint_q),
+                ("joint_target_q", self.joint_target_q),
             ]
             for name, arr in coord_arrays:
                 if len(arr) != self.joint_coord_count:
@@ -10585,8 +10651,14 @@ class ModelBuilder:
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
+            import newton  # noqa: PLC0415
+
+            if newton.use_coord_layout_targets:
+                target_q_values = self.joint_target_q
+            else:
+                target_q_values = self._project_target_q_to_dof()
+            m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target_qd = wp.array(self.joint_target_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)

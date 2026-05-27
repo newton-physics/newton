@@ -19,12 +19,14 @@ import newton
 import newton.examples
 import newton.utils
 
+newton.use_coord_layout_targets = True
+
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
 
 
 @wp.kernel
-def _build_joint_target_pos_kernel(
+def _build_joint_target_q_kernel(
     act: wp.array2d[float],  # (1, num_dofs) on device
     joint_pos_initial: wp.array[float],  # (num_dofs,) on device
     reorder: wp.array[int],  # (num_dofs,) mjc_to_physx mapping
@@ -35,11 +37,15 @@ def _build_joint_target_pos_kernel(
     """Reorder, scale, and prepend ``num_prefix_zeros`` zeros into ``out``.
 
     Avoids the device->host->device round-trip the NumPy version did each
-    policy step and keeps the value on-device for graph capture.
+    policy step and keeps the value on-device for graph capture. The
+    quaternion w-component at coord-index 6 is set to 1 (identity orientation).
     """
     i = wp.tid()
     if i < num_prefix_zeros:
-        out[i] = 0.0
+        if i == 6:
+            out[i] = 1.0
+        else:
+            out[i] = 0.0
     else:
         j = i - num_prefix_zeros
         idx = reorder[j]
@@ -226,7 +232,7 @@ class Example:
         # into the next obs without a host round-trip.
         self._prev_act_wp = wp.zeros((1, 12), dtype=wp.float32, device=self.device)
         self._action_scale = 0.5
-        self._num_prefix_zeros = 6
+        self._num_prefix_zeros = 7
         self._num_dofs = 12
 
         self.capture()
@@ -238,8 +244,10 @@ class Example:
         # works when both CUDA and the Warp memory pool are available.
         if self.device.is_cuda and wp.is_mempool_enabled(self.device):
             self.use_cuda_graph = True
-            self.control.joint_target_pos = wp.zeros(18, dtype=wp.float32, device=self.device)
-            # Capture the full step (obs build + policy + joint_target_pos +
+            self.control.joint_target_q = wp.zeros(
+                self._num_prefix_zeros + self._num_dofs, dtype=wp.float32, device=self.device
+            )
+            # Capture the full step (obs build + policy + joint_target_q +
             # substeps) so the host issues a single ``wp.capture_launch`` per
             # frame and the GPU never waits on Python.
             with wp.ScopedCapture() as capture:
@@ -271,7 +279,7 @@ class Example:
                 self.state_0, self.state_1 = self.state_1, self.state_0
 
     def _policy_step(self):
-        """Build obs -> run policy -> write joint_target_pos.  All on-device."""
+        """Build obs -> run policy -> write joint_target_q.  All on-device."""
         wp.launch(
             _compute_obs_kernel,
             dim=1,
@@ -290,10 +298,10 @@ class Example:
         out = self.policy({self._policy_input_name: self._obs_wp})
         act_wp = out[self._policy_output_name]
 
-        # Build joint_target_pos directly on device: reorder, scale,
-        # prepend the six zeros for the floating base in a single launch.
+        # Build joint_target_q directly on device: reorder, scale,
+        # prepend the free-joint coords in a single launch.
         wp.launch(
-            _build_joint_target_pos_kernel,
+            _build_joint_target_q_kernel,
             dim=self._num_prefix_zeros + self._num_dofs,
             inputs=[
                 act_wp,
@@ -301,7 +309,7 @@ class Example:
                 self._mujoco_to_lab_wp,
                 self._action_scale,
                 self._num_prefix_zeros,
-                self.control.joint_target_pos,
+                self.control.joint_target_q,
             ],
             device=self.device,
         )

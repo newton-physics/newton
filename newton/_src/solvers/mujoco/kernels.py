@@ -1305,9 +1305,11 @@ CTRL_SOURCE_CTRL_DIRECT = wp.constant(1)
 def apply_mjc_control_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
     mjc_actuator_to_newton_idx: wp.array[wp.int32],
-    joint_target_pos: wp.array[wp.float32],
-    joint_target_vel: wp.array[wp.float32],
+    mjc_actuator_to_newton_target_q_idx: wp.array[wp.int32],
+    joint_target_q: wp.array[wp.float32],
+    joint_target_qd: wp.array[wp.float32],
     mujoco_ctrl: wp.array[wp.float32],
+    target_q_per_world: wp.int32,
     dofs_per_world: wp.int32,
     ctrls_per_world: wp.int32,
     # outputs
@@ -1316,7 +1318,8 @@ def apply_mjc_control_kernel(
     """Apply Newton control inputs to MuJoCo control array.
 
     For JOINT_TARGET (source=0), uses sign encoding in mjc_actuator_to_newton_idx:
-    - Positive value (>=0): position actuator, newton_axis = value
+    - Positive value (>=0): position actuator; the coord-index into
+      ``joint_target_q`` is read from ``mjc_actuator_to_newton_target_q_idx``.
     - Value of -1: unmapped/skip
     - Negative value (<=-2): velocity actuator, newton_axis = -(value + 2)
 
@@ -1325,9 +1328,12 @@ def apply_mjc_control_kernel(
     Args:
         mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
         mjc_actuator_to_newton_idx: Index into Newton array (sign-encoded for JOINT_TARGET)
-        joint_target_pos: Per-DOF position targets
-        joint_target_vel: Per-DOF velocity targets
+        mjc_actuator_to_newton_target_q_idx: Coord-index into ``joint_target_q``
+            for position actuators (-1 otherwise).
+        joint_target_q: Joint position targets (coord or DOF layout)
+        joint_target_qd: Per-DOF velocity targets
         mujoco_ctrl: Direct control inputs (from control.mujoco.ctrl)
+        target_q_per_world: Per-world stride into ``joint_target_q``
         dofs_per_world: Number of DOFs per world
         ctrls_per_world: Number of ctrl inputs per world
         mj_ctrl: Output MuJoCo control array
@@ -1339,8 +1345,9 @@ def apply_mjc_control_kernel(
     if source == CTRL_SOURCE_JOINT_TARGET:
         if idx >= 0:
             # Position actuator
-            world_dof = world * dofs_per_world + idx
-            mj_ctrl[world, actuator] = joint_target_pos[world_dof]
+            target_q_idx = mjc_actuator_to_newton_target_q_idx[actuator]
+            world_target_q = world * target_q_per_world + target_q_idx
+            mj_ctrl[world, actuator] = joint_target_q[world_target_q]
         elif idx == -1:
             # Unmapped/skip
             return
@@ -1348,7 +1355,7 @@ def apply_mjc_control_kernel(
             # Velocity actuator: newton_axis = -(idx + 2)
             newton_axis = -(idx + 2)
             world_dof = world * dofs_per_world + newton_axis
-            mj_ctrl[world, actuator] = joint_target_vel[world_dof]
+            mj_ctrl[world, actuator] = joint_target_qd[world_dof]
     else:  # CTRL_SOURCE_CTRL_DIRECT
         world_ctrl_idx = world * ctrls_per_world + idx
         if world_ctrl_idx < mujoco_ctrl.shape[0]:
