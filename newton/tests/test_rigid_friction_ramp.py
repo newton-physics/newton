@@ -9,7 +9,8 @@ Two complementary tests share this file as the canonical friction benchmark:
     each. Each cell's expected behavior follows from its critical friction
     angle theta_crit = atan(mu):
 
-      * theta < crit - margin: box at rest (~zero velocity, no displacement).
+      * theta < crit - margin: box remains static on the ramp plane
+        (~zero tangential velocity, no tangential displacement).
       * theta > crit + margin: box slides at least ``min_slide`` metres.
 
   * ``test_friction_stopping_distance`` — sliding boxes on flat ground decelerate
@@ -163,6 +164,12 @@ def simulate(solver, model, state_0, state_1, control, contacts, num_frames):
     return state_0, state_1
 
 
+def project_to_ramp_plane(vec, theta_deg):
+    theta = math.radians(theta_deg)
+    ramp_normal = np.array((0.0, -math.sin(theta), math.cos(theta)))
+    return vec - np.dot(vec, ramp_normal) * ramp_normal
+
+
 def assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box_ids, thresholds):
     failures = []
 
@@ -170,18 +177,18 @@ def assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box
         crit_deg = math.degrees(math.atan(mu))
         for col, theta_deg in enumerate(angles_deg):
             bid = box_ids[row][col]
-            v_final = float(np.linalg.norm(final_qd[bid, :3]))
-            disp = float(np.linalg.norm(final_q[bid, :3] - settle_q[bid, :3]))
+            v_final = float(np.linalg.norm(project_to_ramp_plane(final_qd[bid, :3], theta_deg)))
+            disp = float(np.linalg.norm(project_to_ramp_plane(final_q[bid, :3] - settle_q[bid, :3], theta_deg)))
             tag = f"(mu={mu:.2f}, theta={theta_deg:.1f}deg, crit={crit_deg:.1f}deg)"
 
             if theta_deg < crit_deg - thresholds.margin_deg:
                 if v_final >= thresholds.v_rest:
-                    failures.append(f"{tag}: expected static but |v|={v_final:.4f} >= {thresholds.v_rest}")
+                    failures.append(f"{tag}: expected static but tangent |v|={v_final:.4f} >= {thresholds.v_rest}")
                 if disp >= thresholds.eps_pos:
-                    failures.append(f"{tag}: expected static but disp={disp:.4f} >= {thresholds.eps_pos}")
+                    failures.append(f"{tag}: expected static but tangent disp={disp:.4f} >= {thresholds.eps_pos}")
             elif theta_deg > crit_deg + thresholds.margin_deg:
                 if disp < thresholds.min_slide:
-                    failures.append(f"{tag}: expected sliding but disp={disp:.4f} < {thresholds.min_slide}")
+                    failures.append(f"{tag}: expected sliding but tangent disp={disp:.4f} < {thresholds.min_slide}")
 
     if failures:
         test.fail("\n  ".join([f"{len(failures)} friction-ramp cell(s) failed:", *failures]))
