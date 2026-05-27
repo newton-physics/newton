@@ -3863,9 +3863,11 @@ class SolverMuJoCo(SolverBase):
                 dim=(nworld, joints_per_world),
                 inputs=[
                     control.joint_f,
+                    state.joint_q,
                     model.joint_type,
                     model.joint_child,
                     model.body_flags,
+                    model.joint_q_start,
                     model.joint_qd_start,
                     model.joint_dof_dim,
                     model.joint_X_c,

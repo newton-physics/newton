@@ -7437,8 +7437,11 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         for a ball joint with non-identity child_xform rotation.
 
         Newton stores ball joint_qd in the parent anchor frame; MuJoCo stores
-        ball qvel in the rest-body frame (= body_quat). The two are related by
-        the same conjugation as qpos: omega_mj = X_cj.rot * w * X_cj.rot^{-1}.
+        ball qvel in the *current* (post-qpos) child body frame. The full bridge
+        is ``qvel = X_cj.rot * r^{-1} * w``; with ``joint_q = identity`` (as in
+        this test) it reduces to ``qvel = X_cj.rot * w``. See the companion
+        :py:meth:`test_ball_joint_qvel_rotated_child_anchor_with_joint_q` for
+        the non-identity-``joint_q`` case that exercises the full mapping.
         """
         import mujoco
 
@@ -7495,11 +7498,15 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world angular acceleration regardless of `child_xform` rotation.
 
         Newton stores ball joint_f in the parent anchor frame; MuJoCo's
-        qfrc_applied lives in the rest-body frame (= body_quat-frame). Forces
-        are dual to velocities, so the bridge must conjugate by X_cj.rot to
-        match. With parent_xform=identity, identity inertia, mass=1 and zero
-        initial velocity, a single Euler step under torque `tau` should give
-        world angular velocity ≈ tau * dt, independent of child_xform.
+        qfrc_applied lives in the *current* (post-qpos) child body frame.
+        Forces are dual to velocities, so the full map is
+        ``tau_mj = X_cj.rot * r^{-1} * tau``; starting at ``joint_q = identity``
+        (as in this test) it reduces to ``tau_mj = X_cj.rot * tau``. With
+        parent_xform=identity, identity inertia, mass=1 and zero initial
+        velocity, a single Euler step under torque `tau` should give world
+        angular velocity ≈ tau * dt, independent of child_xform. See
+        :py:meth:`test_ball_joint_applied_torque_rotated_child_anchor_with_joint_q`
+        for the non-identity-``joint_q`` case.
         """
         child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
         torques = {
@@ -7539,6 +7546,195 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 expected = np.array([tau[0] * dt, tau[1] * dt, tau[2] * dt])
                 err = float(np.max(np.abs(omega_world - expected)))
                 self.assertLess(err, 1e-6, f"omega_world={omega_world}, expected≈{expected}, err={err:.2e}")
+
+    def test_ball_joint_qvel_rotated_child_anchor_with_joint_q(self):
+        """Newton and MuJoCo agree on the child body's world angular velocity for a
+        ball joint when BOTH ``child_xform`` rotation AND ``joint_q`` are non-identity.
+
+        Empirically, MuJoCo's ball ``qvel`` lives in the *current* (post-qpos) child
+        body frame, not the rest body frame: ``mju_quatIntegrate`` does
+        ``qpos = qpos * exp(qvel * dt)``, which makes ``qvel`` the body-local angular
+        velocity after qpos has been applied. The full mapping between Newton's
+        parent-anchor angular velocity ``w`` and MuJoCo's ``qvel`` is therefore
+        ``qvel = X_cj.rot * r^{-1} * w``, where ``r`` is the ball ``joint_q``.
+
+        The companion test :py:meth:`test_ball_joint_qvel_rotated_child_anchor`
+        leaves ``joint_q`` at identity and so cannot detect a missing ``r^{-1}``
+        factor in the conversion. Cases here seed both ``joint_q`` and ``joint_qd``
+        with rotations whose axes do not commute, so the missing factor manifests
+        as a measurable discrepancy between Newton's ``eval_fk`` view and MuJoCo's
+        ``mj_objectVelocity`` view.
+        """
+        import mujoco
+
+        child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
+        # (joint_q, joint_qd) pairs chosen so that R(r) * w != w, ensuring the
+        # missing qpos factor produces a non-trivial mismatch.
+        cases = {
+            "rx90_wz": (
+                wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0),
+                wp.vec3(0.0, 0.0, 1.0),
+            ),
+            "ry45_wx": (
+                wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 4.0),
+                wp.vec3(1.0, 0.0, 0.0),
+            ),
+            "compound_r_w": (
+                wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 1.0, 1.0)), math.pi / 3.0),
+                wp.vec3(0.7, 0.0, -0.5),
+            ),
+        }
+
+        builder = newton.ModelBuilder()
+        child = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        ball_j = builder.add_joint_ball(
+            -1,
+            child,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(wp.vec3(0.1, 0.2, 0.0), child_rot),
+        )
+        builder.add_articulation([ball_j])
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        q_start = int(model.joint_q_start.numpy()[ball_j])
+        qd_start = int(model.joint_qd_start.numpy()[ball_j])
+        child_name = model.body_label[child].replace("/", "_")
+        mj_body_id = solver.mj_model.body(child_name).id
+
+        for name, (r, w) in cases.items():
+            with self.subTest(case=name):
+                state = model.state()
+                q_np = state.joint_q.numpy().copy()
+                q_np[q_start : q_start + 4] = [r[0], r[1], r[2], r[3]]
+                wp.copy(state.joint_q, wp.array(q_np, dtype=wp.float32))
+                qd_np = state.joint_qd.numpy().copy()
+                qd_np[qd_start : qd_start + 3] = [w[0], w[1], w[2]]
+                wp.copy(state.joint_qd, wp.array(qd_np, dtype=wp.float32))
+
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                w_world_newton = state.body_qd.numpy()[child][3:6].copy()
+
+                solver._update_mjc_data(solver.mj_data, model, state)
+                mujoco.mj_forward(solver.mj_model, solver.mj_data)
+                vel = np.zeros(6, dtype=np.float64)
+                mujoco.mj_objectVelocity(
+                    solver.mj_model, solver.mj_data, mujoco.mjtObj.mjOBJ_BODY, mj_body_id, vel, 0
+                )
+                w_world_mj = vel[:3]
+
+                err = float(np.max(np.abs(w_world_newton - w_world_mj)))
+                self.assertLess(
+                    err,
+                    1e-5,
+                    f"newton vs mj omega_world err={err:.2e}; newton={w_world_newton}, mj={w_world_mj}",
+                )
+
+    def test_ball_joint_applied_torque_rotated_child_anchor_with_joint_q(self):
+        """``control.joint_f`` on a ball joint that starts at non-identity ``joint_q``
+        produces a body angular velocity that Newton's and MuJoCo's views agree on.
+
+        Since MuJoCo's ball ``qfrc_applied`` is dual to its ``qvel``, it lives in
+        the current (post-qpos) child body frame too. The full mapping from
+        Newton's parent-anchor torque ``tau`` to MuJoCo's ``qfrc_applied`` is
+        therefore ``tau_mj = X_cj.rot * r^{-1} * tau``.
+
+        ``state_out.body_qd`` alone cannot detect a missing ``r^{-1}`` factor:
+        the Newton readback path (``convert_mj_coords_to_warp`` qvel branch) is
+        dual to the apply path with the *same* missing factor, so the apply
+        error cancels with the readback error and Newton's view appears
+        correct. This test breaks that illusion by pushing ``state_out`` back to
+        ``solver.mj_data`` via ``_update_mjc_data`` and reading MuJoCo's own
+        world angular velocity via ``mj_objectVelocity``. With all four ball
+        conversions consistent, Newton's and MuJoCo's views must match
+        ``tau * dt`` exactly.
+
+        With unit isotropic inertia and ``mass = 1``, MuJoCo's body-space mass
+        matrix for the ball DoFs is the identity, so a single small Euler step
+        from zero velocity under torque ``tau`` should give
+        ``omega_world ≈ tau * dt``, independent of the initial ``joint_q``.
+        """
+        import mujoco
+
+        child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
+        # (joint_q, torque) pairs chosen so that R(r) * tau != tau, so the missing
+        # r^{-1} factor in the conversion produces a measurable mismatch.
+        cases = {
+            "rx90_tz": (
+                wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0),
+                wp.vec3(0.0, 0.0, 1.0),
+            ),
+            "ry45_tx": (
+                wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 4.0),
+                wp.vec3(1.0, 0.0, 0.0),
+            ),
+            "compound_r_t": (
+                wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 1.0, 1.0)), math.pi / 3.0),
+                wp.vec3(0.7, 0.0, -0.5),
+            ),
+        }
+
+        for name, (r, tau) in cases.items():
+            with self.subTest(case=name):
+                builder = newton.ModelBuilder(gravity=0.0)
+                child = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+                ball_j = builder.add_joint_ball(
+                    -1,
+                    child,
+                    parent_xform=wp.transform_identity(),
+                    child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), child_rot),
+                )
+                builder.add_articulation([ball_j])
+                model = builder.finalize()
+                solver = SolverMuJoCo(model)
+
+                q_start = int(model.joint_q_start.numpy()[ball_j])
+                qd_start = int(model.joint_qd_start.numpy()[ball_j])
+                child_name = model.body_label[child].replace("/", "_")
+                mj_body_id = solver.mj_model.body(child_name).id
+
+                state_in = model.state()
+                state_out = model.state()
+                control = model.control()
+
+                q_np = state_in.joint_q.numpy().copy()
+                q_np[q_start : q_start + 4] = [r[0], r[1], r[2], r[3]]
+                wp.copy(state_in.joint_q, wp.array(q_np, dtype=wp.float32))
+
+                joint_f_np = control.joint_f.numpy().copy()
+                joint_f_np[qd_start : qd_start + 3] = [tau[0], tau[1], tau[2]]
+                wp.copy(control.joint_f, wp.array(joint_f_np, dtype=wp.float32))
+
+                dt = 1.0e-4
+                solver.step(state_in, state_out, control, None, dt)
+
+                # Newton's view of post-step world angular velocity.
+                omega_world_newton = state_out.body_qd.numpy()[child][3:6].copy()
+
+                # MuJoCo's view: re-push state_out through convert_warp_coords_to_mj
+                # and inspect MuJoCo's own world angular velocity. With the missing
+                # r^{-1} factor, this diverges from Newton's view by R(r).
+                solver._update_mjc_data(solver.mj_data, model, state_out)
+                mujoco.mj_forward(solver.mj_model, solver.mj_data)
+                vel = np.zeros(6, dtype=np.float64)
+                mujoco.mj_objectVelocity(
+                    solver.mj_model, solver.mj_data, mujoco.mjtObj.mjOBJ_BODY, mj_body_id, vel, 0
+                )
+                omega_world_mj = vel[:3]
+
+                expected = np.array([tau[0] * dt, tau[1] * dt, tau[2] * dt])
+                err_mj = float(np.max(np.abs(omega_world_mj - expected)))
+                err_consistency = float(np.max(np.abs(omega_world_newton - omega_world_mj)))
+                self.assertLess(
+                    err_mj,
+                    1e-6,
+                    f"mj omega_world={omega_world_mj}, expected≈{expected}, err={err_mj:.2e}",
+                )
+                self.assertLess(
+                    err_consistency,
+                    1e-6,
+                    f"newton vs mj omega_world disagree: newton={omega_world_newton}, mj={omega_world_mj}, err={err_consistency:.2e}",
+                )
 
 
 class TestMuJoCoSolverPairProperties(unittest.TestCase):

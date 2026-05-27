@@ -658,11 +658,10 @@ def convert_mj_coords_to_warp_kernel(
         joint_qd[wqd_i + 4] = w_parent[1]
         joint_qd[wqd_i + 5] = w_parent[2]
     elif type == JointType.BALL:
-        # MuJoCo qpos is the body-local rotation right-applied to body_quat;
-        # Newton's joint_q is the rotation in the parent joint anchor frame
-        # (see eval_articulation_fk). The two are related by conjugation with
-        # X_cj.rot, since body_quat = X_pj.rot * X_cj.rot^{-1} (see
-        # _convert_to_mjc): r = X_cj.rot^{-1} * qpos * X_cj.rot.
+        # MuJoCo's child world rotation is body_quat * qpos with
+        # body_quat = X_pj.rot * X_cj.rot^{-1} (see _convert_to_mjc); Newton's
+        # is X_wpj * r * X_cj.rot^{-1} (see eval_articulation_fk). Equating
+        # gives r = X_cj.rot^{-1} * qpos * X_cj.rot.
         q_mj = quat_wxyz_to_xyzw(
             wp.quat(
                 qpos[worldid, q_i],
@@ -677,10 +676,13 @@ def convert_mj_coords_to_warp_kernel(
         joint_q[wq_i + 1] = rot[1]
         joint_q[wq_i + 2] = rot[2]
         joint_q[wq_i + 3] = rot[3]
-        # qvel lives in the same body frame as qpos, so the same conjugation
-        # applies as a vector rotation: w = X_cj.rot^{-1} * qvel.
+        # MuJoCo integrates ball qpos via right-multiplication
+        # (mju_quatIntegrate does qpos *= exp(qvel * dt)), so qvel is the
+        # angular velocity in the *current* (post-qpos) child body frame.
+        # Equating world omegas gives w = X_cj.rot^{-1} * qpos * qvel, which
+        # simplifies to X_cj.rot^{-1} * q_mj since r = X_cj.rot^{-1} * q_mj * X_cj.rot.
         omega_mj = wp.vec3(qvel[worldid, qd_i + 0], qvel[worldid, qd_i + 1], qvel[worldid, qd_i + 2])
-        w = wp.quat_rotate_inv(q_cj, omega_mj)
+        w = wp.quat_rotate(wp.quat_inverse(q_cj) * q_mj, omega_mj)
         joint_qd[wqd_i + 0] = w[0]
         joint_qd[wqd_i + 1] = w[1]
         joint_qd[wqd_i + 2] = w[2]
@@ -774,7 +776,7 @@ def convert_warp_coords_to_mj_kernel(
         qvel[worldid, qd_i + 5] = w_body[2]
 
     elif jtype == JointType.BALL:
-        # Inverse of the mj->warp BALL conversion: qpos = X_cj.rot * r * X_cj.rot^{-1}.
+        # Inverse of the mj->warp BALL qpos conversion: qpos = X_cj.rot * r * X_cj.rot^{-1}.
         # See convert_mj_coords_to_warp_kernel for the derivation.
         r = wp.quat(joint_q[wq_i], joint_q[wq_i + 1], joint_q[wq_i + 2], joint_q[wq_i + 3])
         q_cj = wp.transform_get_rotation(joint_X_c[joint_id])
@@ -784,10 +786,12 @@ def convert_warp_coords_to_mj_kernel(
         qpos[worldid, q_i + 1] = ball_q_wxyz[1]
         qpos[worldid, q_i + 2] = ball_q_wxyz[2]
         qpos[worldid, q_i + 3] = ball_q_wxyz[3]
-        # qvel mirrors qpos: rotate Newton's parent-anchor-frame angular velocity
-        # into the rest-body frame.
+        # qvel lives in MuJoCo's *current* (post-qpos) child body frame
+        # (mj_integratePos: qpos *= exp(qvel * dt)). Inverting the mj->warp
+        # relation w = X_cj.rot^{-1} * qpos * qvel gives qvel = qpos^{-1} * X_cj.rot * w,
+        # which simplifies to X_cj.rot * r^{-1} * w via qpos = X_cj.rot * r * X_cj.rot^{-1}.
         w = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
-        omega_mj = wp.quat_rotate(q_cj, w)
+        omega_mj = wp.quat_rotate(q_cj * wp.quat_inverse(r), w)
         qvel[worldid, qd_i + 0] = omega_mj[0]
         qvel[worldid, qd_i + 1] = omega_mj[1]
         qvel[worldid, qd_i + 2] = omega_mj[2]
@@ -1483,9 +1487,11 @@ def apply_mjc_body_f_kernel(
 @wp.kernel
 def apply_mjc_qfrc_kernel(
     joint_f: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
     joint_type: wp.array[wp.int32],
     joint_child: wp.array[wp.int32],
     body_flags: wp.array[wp.int32],
+    joint_q_start: wp.array[wp.int32],
     joint_qd_start: wp.array[wp.int32],
     joint_dof_dim: wp.array2d[wp.int32],
     joint_X_c: wp.array[wp.transform],
@@ -1501,8 +1507,9 @@ def apply_mjc_qfrc_kernel(
     if qd_i < 0:
         return
 
-    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
     joint_id = joints_per_world * worldid + jntid
+    wq_i = joint_q_start[joint_id]
+    wqd_i = joint_qd_start[joint_id]
     jtype = joint_type[jntid]
     dof_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
 
@@ -1518,12 +1525,13 @@ def apply_mjc_qfrc_kernel(
         return
     elif jtype == JointType.BALL:
         # Newton's ball joint_f lives in the parent anchor frame; MuJoCo's qfrc
-        # lives in the rest-body frame (same as qvel). Forces are dual to
-        # velocities, so the same conjugation as in
-        # convert_warp_coords_to_mj_kernel applies as a vector rotation.
+        # lives in the *current* (post-qpos) child body frame (same as qvel).
+        # Forces are dual to velocities, so the same map as in
+        # convert_warp_coords_to_mj_kernel applies: tau_mj = X_cj.rot * r^{-1} * tau.
         tau = wp.vec3(joint_f[wqd_i + 0], joint_f[wqd_i + 1], joint_f[wqd_i + 2])
+        r = wp.quat(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2], joint_q[wq_i + 3])
         q_cj = wp.transform_get_rotation(joint_X_c[joint_id])
-        tau_mj = wp.quat_rotate(q_cj, tau)
+        tau_mj = wp.quat_rotate(q_cj * wp.quat_inverse(r), tau)
         qfrc_applied[worldid, qd_i + 0] = tau_mj[0]
         qfrc_applied[worldid, qd_i + 1] = tau_mj[1]
         qfrc_applied[worldid, qd_i + 2] = tau_mj[2]
@@ -2894,7 +2902,10 @@ def convert_qfrc_actuator_from_mj_kernel(
     Uses the same joint-based DOF mapping as the coordinate conversion
     kernels. For free joints the wrench is transformed from MuJoCo's
     (origin, body-frame) convention to the CoM/world convention used on the
-    MuJoCo side of Newton. Ball and other joints are copied directly.
+    MuJoCo side of Newton. For ball joints, the torque is rotated from
+    MuJoCo's current child body frame into Newton's parent anchor frame;
+    see :func:`apply_mjc_qfrc_kernel` for the inverse map. Other joints
+    are copied directly.
     """
     worldid, jntid = wp.tid()
 
@@ -2951,16 +2962,25 @@ def convert_qfrc_actuator_from_mj_kernel(
         qfrc_actuator[wqd_i + 4] = tau_world[1]
         qfrc_actuator[wqd_i + 5] = tau_world[2]
     elif jtype == JointType.BALL:
-        # Inverse of apply_mjc_qfrc_kernel BALL: MuJoCo qfrc lives in the
-        # rest-body frame, Newton joint_f in the parent anchor frame, so we
-        # rotate by X_cj.rot^{-1} to land back in Newton's frame.
+        # Inverse of apply_mjc_qfrc_kernel BALL. MuJoCo qfrc lives in the
+        # *current* (post-qpos) child body frame, Newton joint_f in the parent
+        # anchor frame. The Newton-side rotation is r * X_cj.rot^{-1}, which
+        # simplifies to X_cj.rot^{-1} * q_mj using r = X_cj.rot^{-1} * q_mj * X_cj.rot.
         tau_mj = wp.vec3(
             mjw_qfrc_actuator[worldid, qd_i + 0],
             mjw_qfrc_actuator[worldid, qd_i + 1],
             mjw_qfrc_actuator[worldid, qd_i + 2],
         )
         q_cj = wp.transform_get_rotation(joint_X_c[joint_id])
-        tau = wp.quat_rotate_inv(q_cj, tau_mj)
+        q_mj = quat_wxyz_to_xyzw(
+            wp.quat(
+                qpos[worldid, q_i + 0],
+                qpos[worldid, q_i + 1],
+                qpos[worldid, q_i + 2],
+                qpos[worldid, q_i + 3],
+            )
+        )
+        tau = wp.quat_rotate(wp.quat_inverse(q_cj) * q_mj, tau_mj)
         qfrc_actuator[wqd_i + 0] = tau[0]
         qfrc_actuator[wqd_i + 1] = tau[1]
         qfrc_actuator[wqd_i + 2] = tau[2]
