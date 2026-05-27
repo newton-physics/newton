@@ -76,6 +76,37 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
             err_msg="geom_margin should remain zero after notify_model_changed",
         )
 
+    def test_pair_gap_not_zeroed_under_nativeccd(self):
+        """MuJoCo 3.9 accepts non-zero gap under NATIVECCD/MULTICCD because
+        gap no longer affects force generation. Newton must forward
+        authored pair_gap rather than zeroing it."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        cfg = newton.ModelBuilder.ShapeConfig(margin=0.0)
+        builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.01, cfg=cfg)
+        b = builder.add_body(label="box")
+        builder.add_shape_box(body=b, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+        builder.add_custom_values(
+            **{
+                "mujoco:pair_world": 0,
+                "mujoco:pair_geom1": 0,
+                "mujoco:pair_geom2": 1,
+                "mujoco:pair_margin": 0.0,
+                "mujoco:pair_gap": 0.05,
+            }
+        )
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        np.testing.assert_array_equal(
+            solver.mjw_model.pair_margin.numpy(),
+            np.zeros_like(solver.mjw_model.pair_margin.numpy()),
+        )
+        self.assertGreater(
+            float(solver.mjw_model.pair_gap.numpy().max()),
+            0.0,
+            "pair_gap must be forwarded (not zeroed) under MuJoCo 3.9",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
