@@ -7062,8 +7062,7 @@ class SolverMuJoCo(SolverBase):
         body_world = model.body_world.numpy()
         joint_world = model.joint_world.numpy()
         shape_world = model.shape_world.numpy()
-        eq_world_arr = getattr(model.mujoco, "equality_constraint_world", None)
-        eq_constraint_world = eq_world_arr.numpy() if eq_world_arr is not None else np.zeros(0, dtype=np.int32)
+        eq_constraint_world = model.mujoco.equality_constraint_world.numpy()
 
         # --- Check global world restrictions (always, regardless of world_count) ---
         # No bodies in global world

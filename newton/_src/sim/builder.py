@@ -11046,6 +11046,38 @@ class ModelBuilder:
             m.mujoco.equality_constraint_count = self._equality_constraint_count
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
+            # When no equality constraints exist, the standard custom-attribute pipeline (below)
+            # skips materialization because the EQUALITY_CONSTRAINT count is 0. Allocate empty
+            # arrays explicitly so downstream code (e.g. ``model.mujoco.equality_constraint_world.numpy()``
+            # in :meth:`SolverMuJoCo._validate_model_for_separate_worlds`) can read these unconditionally.
+            # Other zero-count enum-frequency custom attributes intentionally remain absent from the
+            # model — only equality_constraint_* are surfaced because they used to be direct fields
+            # on :class:`Model` and the deprecated properties are expected to return ``None`` rather
+            # than raising ``AttributeError``.
+            if self._equality_constraint_count == 0:
+                for _eq_name in (
+                    "equality_constraint_type",
+                    "equality_constraint_body1",
+                    "equality_constraint_body2",
+                    "equality_constraint_anchor",
+                    "equality_constraint_torquescale",
+                    "equality_constraint_relpose",
+                    "equality_constraint_joint1",
+                    "equality_constraint_joint2",
+                    "equality_constraint_polycoef",
+                    "equality_constraint_label",
+                    "equality_constraint_enabled",
+                    "equality_constraint_world",
+                ):
+                    _eq_custom_attr = self.custom_attributes[f"mujoco:{_eq_name}"]
+                    m.add_attribute(
+                        _eq_name,
+                        _eq_custom_attr.build_array(0, device=device, requires_grad=requires_grad),
+                        Model.AttributeFrequency.EQUALITY_CONSTRAINT,
+                        Model.AttributeAssignment.MODEL,
+                        namespace="mujoco",
+                    )
+
             self.find_shape_contact_pairs(m)
 
             # enable ground plane
@@ -11199,10 +11231,8 @@ class ModelBuilder:
                 else:
                     continue
 
-                # Skip empty string-frequency custom attributes. Enum-frequency attributes are
-                # always materialized (potentially as empty arrays) so downstream consumers can
-                # read them unconditionally.
-                if count == 0 and isinstance(freq_key, str):
+                # Skip empty custom frequency attributes
+                if count == 0:
                     continue
 
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
