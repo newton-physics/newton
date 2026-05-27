@@ -346,11 +346,21 @@ class SchemaResolverMjc(SchemaResolver):
                 attribute_names=("mjc:margin", "mjc:gap"),
             ),
             "gap": SchemaAttribute("mjc:gap", 0.0),
-            # Contact stiffness/damping from per-geom solref
-            "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
-            "kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
             # Mass model: mjc:shellinertia (bool) → "shell" / "solid"
             "mass_model": SchemaAttribute("mjc:shellinertia", False, lambda v: "shell" if v else "solid"),
+            # ``mjc:solref`` no longer maps into Newton's force-space
+            # ``shape_material_ke`` / ``shape_material_kd``: the legacy
+            # ``solref_to_stiffness_damping`` produced acceleration-space
+            # values that were stored in fields documented as force space
+            # (issue #2009). Raw ``mjc:solref`` is now imported into the
+            # MuJoCo-namespaced ``mujoco.solref`` custom attribute (set
+            # alongside ``mujoco.solref_mode`` = ``SOLREF_MODE_RAW`` by the
+            # ``parse_solref_mode_usd`` transformer in
+            # ``SolverMuJoCo.register_custom_attributes``). Newton
+            # ``shape_material_ke`` / ``shape_material_kd`` retain their
+            # documented force-space semantics; the MuJoCo solver derives the
+            # per-contact ``solref`` from them when
+            # ``mujoco.solref_mode == SOLREF_MODE_FORCE_SPACE``.
         },
         PrimType.MATERIAL: {
             # Materials
@@ -359,8 +369,11 @@ class SchemaResolverMjc(SchemaResolver):
             # Contact models
             "priority": SchemaAttribute("mjc:priority", 0),
             "weight": SchemaAttribute("mjc:solmix", 1.0),
-            "stiffness": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
-            "damping": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            # See PrimType.SHAPE for the rationale: ``mjc:solref`` no longer
+            # populates Newton material ``stiffness`` / ``damping`` (which
+            # ultimately feed ``shape_material_ke`` / ``kd``). Materials with
+            # authored ``mjc:solref`` rely on the per-shape ``mujoco.solref``
+            # custom attribute instead.
         },
         PrimType.ACTUATOR: {
             # Actuators

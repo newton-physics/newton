@@ -604,6 +604,15 @@ class SolverMuJoCo(SolverBase):
                 return SOLREF_MODE_RAW
             return None
 
+        def parse_solref_mode_usd(_value: Any, context: dict[str, Any]) -> int | None:
+            prim = context.get("prim")
+            if prim is None:
+                return None
+            solref_attr = prim.GetAttribute("mjc:solref")
+            if solref_attr is not None and solref_attr.HasAuthoredValue():
+                return SOLREF_MODE_RAW
+            return None
+
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
         builder.add_custom_frequency(
@@ -687,6 +696,44 @@ class SolverMuJoCo(SolverBase):
         # endregion geom attributes
 
         # region body and joint attributes
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="solref",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                # Sentinel for "not authored". MJCF/USD import fills this only
+                # when a raw MuJoCo ``solref`` was explicitly authored.
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solref",
+                mjcf_attribute_name="solref",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="solref_mode",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                # See ``solreflimit_mode`` for the equivalent per-DOF mode flag.
+                # Same three states apply to shape-material contact stiffness:
+                # SOLREF_MODE_FORCE_SPACE = Newton ``shape_material_ke``/``kd``
+                #   (force space) — solver derives the per-contact
+                #   acceleration-space ``solref`` using ``body_invweight0``.
+                # SOLREF_MODE_RAW = raw MuJoCo ``solref`` authored / imported
+                #   exactly; ``shape_material_ke``/``kd`` are ignored for this
+                #   shape at the MuJoCo solver level.
+                # SOLREF_MODE_MJCF_DEFAULT = imported MJCF/USD geom without an
+                #   explicit ``mjc:solref`` — preserve MuJoCo's compiled default
+                #   until the user edits ``shape_material_ke``/``kd``, then
+                #   auto-promote to FORCE_SPACE on the next notify.
+                default=SOLREF_MODE_FORCE_SPACE,
+                namespace="mujoco",
+                usd_attribute_name="*",
+                usd_value_transformer=parse_solref_mode_usd,
+            )
+        )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="limit_margin",

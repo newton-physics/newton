@@ -358,6 +358,8 @@ def parse_mjcf(
     )
     solreflimit_mode_key = "mujoco:solreflimit_mode"
     has_solreflimit_mode = solreflimit_mode_key in builder.custom_attributes
+    solref_mode_key = "mujoco:solref_mode"
+    has_solref_mode = solref_mode_key in builder.custom_attributes
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.EQUALITY_CONSTRAINT]
     )
@@ -711,15 +713,19 @@ def parse_mjcf(
                 if len(friction_values) >= 3:
                     shape_cfg.mu_rolling = float(friction_values[2])
 
-            # Parse MJCF solref for contact stiffness/damping (only if explicitly specified)
-            # Like friction, only override Newton defaults if solref is authored in MJCF
-            if "solref" in geom_attrib:
-                solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
-                geom_ke, geom_kd = solref_to_stiffness_damping(solref)
-                if geom_ke is not None:
-                    shape_cfg.ke = geom_ke
-                if geom_kd is not None:
-                    shape_cfg.kd = geom_kd
+            # MJCF ``solref`` no longer maps to Newton's force-space
+            # ``shape_material_ke`` / ``shape_material_kd`` (issue #2009): the
+            # legacy ``solref_to_stiffness_damping`` produced acceleration-space
+            # values that were stored in fields documented as force space.
+            # ``parse_custom_attributes`` below picks up the raw ``solref``
+            # attribute into ``mujoco.solref`` via the registered
+            # ``mjcf_attribute_name="solref"``; ``mujoco.solref_mode`` is set
+            # explicitly below to ``SOLREF_MODE_RAW`` when authored or
+            # ``SOLREF_MODE_MJCF_DEFAULT`` when unauthored. Newton
+            # ``shape_material_ke`` / ``shape_material_kd`` retain Newton's
+            # force-space defaults until the user edits them, at which point
+            # ``SOLREF_MODE_MJCF_DEFAULT`` is auto-promoted to
+            # ``SOLREF_MODE_FORCE_SPACE`` by ``SolverMuJoCo``.
 
             # Parse MJCF margin and gap for collision.
             # MuJoCo -> Newton conversion: newton_margin = mj_margin - mj_gap.
@@ -743,6 +749,16 @@ def parse_mjcf(
                 shape_cfg.gap = mj_gap
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
+            if has_solref_mode:
+                # Mirror the joint-limit ``solreflimit_mode`` handling above:
+                # an authored MJCF ``solref`` keeps native MuJoCo semantics
+                # (``SOLREF_MODE_RAW``); otherwise the geom starts from
+                # MuJoCo's implicit default solref pair and only flips to
+                # Newton force-space scaling after ``shape_material_ke`` /
+                # ``shape_material_kd`` are edited away from their defaults.
+                custom_attributes[solref_mode_key] = (
+                    SOLREF_MODE_RAW if "solref" in geom_attrib else SOLREF_MODE_MJCF_DEFAULT
+                )
             shape_label = f"{label_prefix}/{geom_name}" if label_prefix else geom_name
             shape_kwargs = {
                 "label": shape_label,
