@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from docutils import nodes
-from docutils.parsers.rst import Directive
+from docutils.parsers.rst import Directive, directives
 
 DEFAULT_NOTICE = (
     "Experimental feature. API, behavior, defaults, and supported use cases may change without prior notice."
@@ -19,9 +19,15 @@ class ExperimentalDirective(Directive):
     """Render a standard admonition for experimental features."""
 
     has_content = True
+    option_spec: ClassVar[dict[str, Any]] = {
+        "name": directives.unchanged,
+        "class": directives.class_option,
+    }
 
     def run(self) -> list[nodes.Node]:
-        node = nodes.admonition(classes=["experimental"])
+        classes = ["experimental", *self.options.get("class", [])]
+        node = nodes.admonition(classes=classes)
+        self.add_name(node)
         node += nodes.title(text="Experimental")
 
         if self.content:

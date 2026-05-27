@@ -50,9 +50,9 @@ dl.py.attribute {
 
 /* Standard marker for APIs and behavior that may change without prior notice. */
 .admonition.experimental {
-    border-left-color: #b7791f;
+    border-left-color: var(--pst-color-warning);
 }
 
 .admonition.experimental > .admonition-title {
-    background-color: rgba(183, 121, 31, 0.14);
+    background-color: var(--pst-color-warning-bg);
 }
