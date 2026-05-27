@@ -445,9 +445,9 @@ class BlockSparseMatrices:
         Sets non-zero block data to zero, for all or a subset of the matrices.
 
         Args:
-            matrix_mask (optional): Per-matrix 0-1 flag indicating if it should be set to zero.
+            matrix_mask (optional): Per-matrix truth mask indicating if it should be set to zero.
                                     If not provided, all matrices are set to zero.
-                                    Shape of ``(num_matrices,)`` and type :class:`int`.
+                                    Shape of ``(num_matrices,)``.
         """
         self._assert_is_finalized()
         if matrix_mask is not None:
@@ -606,12 +606,12 @@ def _make_masked_zero_kernel(block_type: BlockDType, index_dtype: IntType):
         # Inputs
         nzb_start: wp.array[index_dtype],
         max_nzb: wp.array[index_dtype],
-        matrix_mask: wp.array[int32],
+        matrix_mask: wp.array[Any],
         # Outputs
         nzb_values: wp.array[block_type.warp_type],
     ):
         mat_id, nzb_id_loc = wp.tid()
-        if matrix_mask[mat_id] == 0 or nzb_id_loc >= max_nzb[mat_id]:
+        if not matrix_mask[mat_id] or nzb_id_loc >= max_nzb[mat_id]:
             return
         nzb_id = nzb_start[mat_id] + nzb_id_loc
         nzb_values[nzb_id] = block_type.warp_type(0.0)

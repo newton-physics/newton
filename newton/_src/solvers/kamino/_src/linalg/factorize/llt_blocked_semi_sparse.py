@@ -4,6 +4,7 @@
 """KAMINO: Linear Algebra: Blocked Semi-Sparse LLT (i.e. Cholesky) factorization using Warp's Tile API."""
 
 from functools import cache
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -75,12 +76,12 @@ def reorder_rows_kernel(
     ordering: wp.array2d[int],
     n_rows_arr: wp.array[int],
     n_cols_arr: wp.array[int],
-    batch_mask: wp.array[int],
+    batch_mask: wp.array[Any],
 ):
     batch_id, i, j = wp.tid()  # 2D launch: (n_rows, n_cols)
     n_rows = n_rows_arr[batch_id]
     n_cols = n_cols_arr[batch_id]
-    if i < n_rows and j < n_cols and batch_mask[batch_id] != 0:
+    if i < n_rows and j < n_cols and batch_mask[batch_id]:
         src_row = ordering[batch_id, i]
         src_col = ordering[batch_id, j]
         dst[batch_id, i, j] = src[batch_id, src_row, src_col]
@@ -92,11 +93,11 @@ def reorder_rows_kernel_col_vector(
     dst: wp.array3d[float],
     ordering: wp.array2d[int],
     n_rows_arr: wp.array[int],
-    batch_mask: wp.array[int],
+    batch_mask: wp.array[Any],
 ):
     batch_id, i = wp.tid()
     n_rows = n_rows_arr[batch_id]
-    if i < n_rows and batch_mask[batch_id] != 0:
+    if i < n_rows and batch_mask[batch_id]:
         src_row = ordering[batch_id, i]
         # For column vectors (2d arrays with shape (n, 1)), just copy columns directly
         dst[batch_id, i, 0] = src[batch_id, src_row, 0]
@@ -171,7 +172,7 @@ def create_blocked_cholesky_kernel(block_size: int):
         L_batched: wp.array3d[float],
         L_tile_pattern_batched: wp.array3d[int],
         active_matrix_size_arr: wp.array[int],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[Any],
     ):
         """
         Batched Cholesky factorization of symmetric positive definite matrices in blocks.
@@ -193,7 +194,7 @@ def create_blocked_cholesky_kernel(block_size: int):
         batch_id, tid_block = wp.tid()
         num_threads_per_block = wp.block_dim()
 
-        if batch_mask[batch_id] == 0:
+        if not batch_mask[batch_id]:
             return
 
         A = A_batched[batch_id]
@@ -300,7 +301,7 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
         x_batched: wp.array3d[float],
         y_batched: wp.array3d[float],
         active_matrix_size_arr: wp.array[int],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[Any],
     ):
         """
         Batched blocked Cholesky solver kernel. For each batch, solves A x = b using L L^T = A.
@@ -309,7 +310,7 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
 
         batch_id, _tid_block = wp.tid()
 
-        if batch_mask[batch_id] == 0:
+        if not batch_mask[batch_id]:
             return
 
         L = L_batched[batch_id]
@@ -509,7 +510,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         A: wp.array3d[float],
         num_active_equations: wp.array[int],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[Any],
     ):
         """
         Computes the Cholesky factorization of a symmetric positive definite matrix A in blocks.
@@ -552,7 +553,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         rhs: wp.array3d[float],
         result: wp.array3d[float],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[Any],
     ):
         """
         Solves A x = b given the Cholesky factor L (A = L L^T) using
