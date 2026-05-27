@@ -1366,10 +1366,11 @@ additional set of **differentiable** rigid-contact arrays that participate in
 distance and world-space contact points with respect to body poses
 (``state.body_q``).
 
-.. note::
-   Rigid-contact differentiability is **experimental**.  Accuracy and fitness for
-   real-world optimization or learning workflows should be validated case by case
-   before relying on these gradients.
+.. experimental::
+
+   Rigid-contact differentiability may change without prior notice. Accuracy
+   and fitness for real-world optimization or learning workflows should be
+   validated case by case before relying on these gradients.
 
 Making the full narrow-phase pipeline differentiable end-to-end would be
 prohibitively expensive and numerically fragile — iterative GJK/MPR solvers,
@@ -1718,7 +1719,7 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
   frame and populate :attr:`Contacts.rigid_contact_match_index`, but keep the
   current frame's freshly generated contact geometry in the returned
   :class:`Contacts` buffer.
-- ``"sticky"`` (experimental) — match like ``"latest"``, then overwrite
+- ``"sticky"`` — match like ``"latest"``, then overwrite
   each matched contact's body-frame contact points (``point0``/``point1``),
   offsets (``offset0``/``offset1``), and world-frame ``normal`` with the
   saved previous-frame values.  The remaining contact fields
@@ -1729,9 +1730,10 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
   scenarios where small frame-to-frame geometric jitter on persistent
   contacts degrades stability.
 
-  .. warning::
-     Sticky mode is experimental.  The way sticky contacts are updated
-     across frames may change in the future without warning.
+  .. experimental::
+
+     The way sticky contacts are updated across frames may change without prior
+     notice.
 
 Any non-disabled mode implies ``deterministic=True``.
 

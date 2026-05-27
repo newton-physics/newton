@@ -562,6 +562,54 @@ After running the script, rebuild the documentation to verify the result (see
     attributes) are included. If a new class or function in ``newton/_src/`` should
     be visible to users, re-export it through the appropriate public module first.
 
+.. _experimental-features:
+
+Experimental features
+^^^^^^^^^^^^^^^^^^^^^
+
+Mark user-facing experimental API with the ``.. experimental::`` directive in
+the public docstring or concept page where users encounter it. The directive is
+the user-facing compatibility marker; do not add a separate policy page or
+inline prose block for the same status.
+
+With no body, the directive renders Newton's standard notice:
+
+.. experimental::
+
+.. code-block:: rst
+
+    .. experimental::
+
+Use this form for an entire module, class, method, or function when the full
+feature is experimental.
+
+For experimental behavior inside an otherwise stable API, add custom content that
+names the exact scope:
+
+.. code-block:: rst
+
+    Args:
+        contact_matching: Frame-to-frame contact matching mode.
+
+            .. experimental::
+
+                The ``"sticky"`` mode may change without prior notice.
+
+When adding or changing experimental public API:
+
+- keep the marker in the public docs or docstring, not just in comments;
+- keep status tables and summaries concise; use plain text such as
+  ``experimental`` instead of linking every status label to the marker;
+- describe any relevant limitations in the concept docs;
+- run ``uv run python docs/generate_api.py`` when public API symbols change.
+
+Use a domain-local experimental namespace only for a cohesive new subsystem
+that can reasonably live behind an opt-in import path, for example
+``newton.solvers.experimental.<feature>``. Do not move existing public classes
+such as solver backends into an experimental namespace just to communicate
+implementation maturity. Mark the specific class, behavior, option, or concept
+instead.
+
 Testing documentation code snippets
 -----------------------------------
 
