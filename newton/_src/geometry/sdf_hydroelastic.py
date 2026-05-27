@@ -61,7 +61,12 @@ from .sdf_mc import (
     get_mc_tables,
     get_triangle_fraction,
 )
-from .sdf_texture import TextureSDFData, texture_sample_sdf, texture_sample_sdf_at_voxel
+from .sdf_texture import (
+    TextureSDFData,
+    texture_sample_sdf,
+    texture_sample_sdf_at_voxel,
+    texture_sample_sdf_no_extrap,
+)
 from .utils import scan_with_total
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
@@ -428,6 +433,15 @@ class HydroelasticSDF:
                 mc_edge_clamp_min=self.config.mc_edge_clamp_min,
             )
 
+            # Pre-specialized octree-refinement kernels: subblock_size/n_blocks
+            # become compile-time constants so the inner loop unrolls and the
+            # shape-B query for subblock_size > 1 uses the cheaper integer-voxel
+            # texture path (1 read vs 8 reads + trilinear blend).
+            self._count_iso_voxels_kernels = [
+                make_count_iso_voxels_block(sb, nb) for (sb, nb) in ((8, 1), (4, 2), (2, 2), (1, 2))
+            ]
+            self._scatter_iso_subblock_kernels = [make_scatter_iso_subblock(sb) for sb in (8, 4, 2, 1)]
+
             if self.config.reduce_contacts:
                 # Use HydroelasticContactReduction for efficient hashtable-based contact reduction
                 # The reducer uses spatial extremes + max-depth per normal bin + voxel-based slots
@@ -745,9 +759,9 @@ class HydroelasticSDF:
         # Find voxels which contain the isosurface between the shapes using octree-like pruning.
         # We do this by computing the difference between sdfs at the voxel/subblock center and comparing it to the voxel/subblock radius.
         # The check is first performed for subblocks of size (8 x 8 x 8), then (4 x 4 x 4), then (2 x 2 x 2), and finally for each voxel.
-        for i, (subblock_size, n_blocks) in enumerate([(8, 1), (4, 2), (2, 2), (1, 2)]):
+        for i in range(4):
             wp.launch(
-                kernel=count_iso_voxels_block,
+                kernel=self._count_iso_voxels_kernels[i],
                 dim=[self.grid_size],
                 inputs=[
                     self.grid_size,
@@ -758,8 +772,6 @@ class HydroelasticSDF:
                     self.iso_buffer_coords[i],
                     self.iso_buffer_shape_pairs[i],
                     shape_gap,
-                    subblock_size,
-                    n_blocks,
                     self.input_sizes[i],
                 ],
                 outputs=[
@@ -778,7 +790,7 @@ class HydroelasticSDF:
             )
 
             wp.launch(
-                kernel=scatter_iso_subblock,
+                kernel=self._scatter_iso_subblock_kernels[i],
                 dim=[self.grid_size],
                 inputs=[
                     self.grid_size,
@@ -787,7 +799,6 @@ class HydroelasticSDF:
                     self.iso_subblock_idx_scratch[i],
                     self.iso_buffer_shape_pairs[i],
                     self.iso_buffer_coords[i],
-                    subblock_size,
                     self.input_sizes[i],
                     self.iso_max_dims[i],
                 ],
@@ -1120,117 +1131,161 @@ def sdf_diff_sdf(
     return diff, valA, valB, is_valid
 
 
-@wp.kernel(enable_backward=False)
-def count_iso_voxels_block(
-    grid_size: int,
-    in_buffer_collide_count: wp.array[int],
-    shape_sdf_data: wp.array[TextureSDFData],
-    shape_transform: wp.array[wp.transform],
-    shape_material_kh: wp.array[float],
-    in_buffer_collide_coords: wp.array[wp.vec3us],
-    in_buffer_collide_shape_pair: wp.array[wp.vec2i],
-    shape_gap: wp.array[wp.float32],
-    subblock_size: int,
-    n_blocks: int,
-    max_input_buffer_size: int,
-    # outputs
-    iso_subblock_counts: wp.array[wp.int32],
-    iso_subblock_idx: wp.array[wp.uint8],
-):
-    # checks if the isosurface between shapes a and b lies inside the subblock (iterating over subblocks of b).
-    # if so, write the subblock coordinates to the output.
-    offset = wp.tid()
-    num_items = wp.min(in_buffer_collide_count[0], max_input_buffer_size)
-    for tid in range(offset, num_items, grid_size):
-        pair = in_buffer_collide_shape_pair[tid]
-        shape_a = pair[0]
-        shape_b = pair[1]
+def make_count_iso_voxels_block(subblock_size: int, n_blocks: int):
+    """Create a specialized ``count_iso_voxels_block`` kernel for one octree level.
 
-        sdf_data_a = shape_sdf_data[shape_a]
-        sdf_data_b = shape_sdf_data[shape_b]
+    Specializing on ``subblock_size``/``n_blocks`` lets Warp unroll the inner
+    loop and bake the subblock geometry into compile-time constants.  When
+    ``subblock_size > 1`` the shape-B query falls on integer voxel coordinates,
+    so :func:`texture_sample_sdf_at_voxel` (1 texel read) is used instead of
+    :func:`texture_sample_sdf` (8 reads + trilinear blend).
+    """
+    sb = int(subblock_size)
+    nb = int(n_blocks)
+    sb_half = sb // 2
+    sb_f = float(sb)
+    half_sb_f = 0.5 * sb_f
+    use_at_voxel = sb > 1 and (sb % 2 == 0)
 
-        X_ws_a = shape_transform[shape_a]
-        X_ws_b = shape_transform[shape_b]
+    @wp.kernel(enable_backward=False)
+    def kernel(
+        grid_size: int,
+        in_buffer_collide_count: wp.array[int],
+        shape_sdf_data: wp.array[TextureSDFData],
+        shape_transform: wp.array[wp.transform],
+        shape_material_kh: wp.array[float],
+        in_buffer_collide_coords: wp.array[wp.vec3us],
+        in_buffer_collide_shape_pair: wp.array[wp.vec2i],
+        shape_gap: wp.array[wp.float32],
+        max_input_buffer_size: int,
+        # outputs
+        iso_subblock_counts: wp.array[wp.int32],
+        iso_subblock_idx: wp.array[wp.uint8],
+    ):
+        # checks if the isosurface between shapes a and b lies inside the subblock (iterating over subblocks of b).
+        # if so, write the subblock coordinates to the output.
+        offset = wp.tid()
+        num_items = wp.min(in_buffer_collide_count[0], max_input_buffer_size)
+        for tid in range(offset, num_items, grid_size):
+            pair = in_buffer_collide_shape_pair[tid]
+            shape_a = pair[0]
+            shape_b = pair[1]
 
-        gap_a = shape_gap[shape_a]
-        gap_b = shape_gap[shape_b]
+            sdf_data_a = shape_sdf_data[shape_a]
+            sdf_data_b = shape_sdf_data[shape_b]
 
-        voxel_radius = sdf_data_b.voxel_radius
-        r = float(subblock_size) * voxel_radius
+            X_ws_a = shape_transform[shape_a]
+            X_ws_b = shape_transform[shape_b]
 
-        k_a = shape_material_kh[shape_a]
-        k_b = shape_material_kh[shape_b]
+            gap_a = shape_gap[shape_a]
+            gap_b = shape_gap[shape_b]
 
-        k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b)
-        r_eff = r * (k_eff_a + k_eff_b)
+            voxel_radius = sdf_data_b.voxel_radius
+            r = wp.static(sb_f) * voxel_radius
 
-        # get global voxel coordinates
-        bc = in_buffer_collide_coords[tid]
+            k_a = shape_material_kh[shape_a]
+            k_b = shape_material_kh[shape_b]
 
-        X_b_to_a = wp.transform_multiply(wp.transform_inverse(X_ws_a), X_ws_b)
+            k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b)
+            r_eff = r * (k_eff_a + k_eff_b)
 
-        num_iso_subblocks = wp.int32(0)
-        subblock_idx = wp.uint8(0)
-        for x_local in range(n_blocks):
-            for y_local in range(n_blocks):
-                for z_local in range(n_blocks):
-                    x_global = wp.vec3i(bc) + wp.vec3i(x_local, y_local, z_local) * subblock_size
+            # Loop-invariant rejection thresholds
+            r_plus_gap_a = r + gap_a
+            r_plus_gap_b = r + gap_b
 
-                    # lookup distances at subblock center
-                    x_center = wp.vec3f(x_global) + wp.vec3f(0.5 * float(subblock_size))
-                    local_pos_b = sdf_data_b.sdf_box_lower + wp.cw_mul(x_center, sdf_data_b.voxel_size)
-                    point_a = wp.transform_point(X_b_to_a, local_pos_b)
-                    vb = texture_sample_sdf(sdf_data_b, local_pos_b)
-                    va = texture_sample_sdf(sdf_data_a, point_a)
-                    is_valid = not (wp.isnan(vb) or wp.isnan(va))
+            # get global voxel coordinates
+            bc = in_buffer_collide_coords[tid]
+            bc_x = wp.int32(bc[0])
+            bc_y = wp.int32(bc[1])
+            bc_z = wp.int32(bc[2])
 
-                    if vb < 0.0 and va < 0.0:
-                        diff_val = k_eff_b * vb - k_eff_a * va
-                    else:
-                        diff_val = vb - va
+            X_b_to_a = wp.transform_multiply(wp.transform_inverse(X_ws_a), X_ws_b)
 
-                    # check if bounding sphere contains the isosurface and the distance is within contact gap
-                    if wp.abs(diff_val) > r_eff or va > r + gap_a or vb > r + gap_b or not is_valid:
-                        continue
-                    num_iso_subblocks += 1
-                    subblock_idx |= encode_coords_8(x_local, y_local, z_local)
+            num_iso_subblocks = wp.int32(0)
+            subblock_idx = wp.uint8(0)
+            for x_local in range(wp.static(nb)):
+                for y_local in range(wp.static(nb)):
+                    for z_local in range(wp.static(nb)):
+                        x_global_x = bc_x + x_local * wp.static(sb)
+                        x_global_y = bc_y + y_local * wp.static(sb)
+                        x_global_z = bc_z + z_local * wp.static(sb)
 
-        iso_subblock_counts[tid] = num_iso_subblocks
-        iso_subblock_idx[tid] = subblock_idx
+                        # lookup distances at subblock center
+                        if wp.static(use_at_voxel):
+                            cx = x_global_x + wp.static(sb_half)
+                            cy = x_global_y + wp.static(sb_half)
+                            cz = x_global_z + wp.static(sb_half)
+                            local_pos_b = sdf_data_b.sdf_box_lower + wp.cw_mul(
+                                wp.vec3(float(cx), float(cy), float(cz)), sdf_data_b.voxel_size
+                            )
+                            vb = texture_sample_sdf_at_voxel(sdf_data_b, cx, cy, cz)
+                        else:
+                            x_center = wp.vec3f(
+                                float(x_global_x) + wp.static(half_sb_f),
+                                float(x_global_y) + wp.static(half_sb_f),
+                                float(x_global_z) + wp.static(half_sb_f),
+                            )
+                            local_pos_b = sdf_data_b.sdf_box_lower + wp.cw_mul(x_center, sdf_data_b.voxel_size)
+                            vb = texture_sample_sdf(sdf_data_b, local_pos_b)
+
+                        point_a = wp.transform_point(X_b_to_a, local_pos_b)
+                        va = texture_sample_sdf(sdf_data_a, point_a)
+                        is_valid = not (wp.isnan(vb) or wp.isnan(va))
+
+                        if vb < 0.0 and va < 0.0:
+                            diff_val = k_eff_b * vb - k_eff_a * va
+                        else:
+                            diff_val = vb - va
+
+                        # check if bounding sphere contains the isosurface and the distance is within contact gap
+                        if wp.abs(diff_val) > r_eff or va > r_plus_gap_a or vb > r_plus_gap_b or not is_valid:
+                            continue
+                        num_iso_subblocks += 1
+                        subblock_idx |= encode_coords_8(x_local, y_local, z_local)
+
+            iso_subblock_counts[tid] = num_iso_subblocks
+            iso_subblock_idx[tid] = subblock_idx
+
+    return kernel
 
 
-@wp.kernel(enable_backward=False)
-def scatter_iso_subblock(
-    grid_size: int,
-    in_iso_subblock_count: wp.array[int],
-    in_iso_subblock_prefix: wp.array[int],
-    in_iso_subblock_idx: wp.array[wp.uint8],
-    in_iso_subblock_shape_pair: wp.array[wp.vec2i],
-    in_buffer_collide_coords: wp.array[wp.vec3us],
-    subblock_size: int,
-    max_input_buffer_size: int,
-    max_num_iso_subblocks: int,
-    # outputs
-    out_iso_subblock_coords: wp.array[wp.vec3us],
-    out_iso_subblock_shape_pair: wp.array[wp.vec2i],
-):
-    offset = wp.tid()
-    num_items = wp.min(in_iso_subblock_count[0], max_input_buffer_size)
-    for tid in range(offset, num_items, grid_size):
-        write_idx = in_iso_subblock_prefix[tid]
-        subblock_idx = in_iso_subblock_idx[tid]
-        pair = in_iso_subblock_shape_pair[tid]
-        bc = in_buffer_collide_coords[tid]
-        if write_idx >= max_num_iso_subblocks:
-            continue
-        for i in range(8):
-            bit_pos = wp.uint8(i)
-            if (subblock_idx >> bit_pos) & wp.uint8(1) and not write_idx >= max_num_iso_subblocks:
-                local_coords = wp.vec3us(decode_coords_8(bit_pos))
-                global_coords = bc + local_coords * wp.uint16(subblock_size)
-                out_iso_subblock_coords[write_idx] = global_coords
-                out_iso_subblock_shape_pair[write_idx] = pair
-                write_idx += 1
+def make_scatter_iso_subblock(subblock_size: int):
+    """Specialize the iso-subblock scatter kernel for one octree level."""
+    sb_u = int(subblock_size)
+
+    @wp.kernel(enable_backward=False)
+    def kernel(
+        grid_size: int,
+        in_iso_subblock_count: wp.array[int],
+        in_iso_subblock_prefix: wp.array[int],
+        in_iso_subblock_idx: wp.array[wp.uint8],
+        in_iso_subblock_shape_pair: wp.array[wp.vec2i],
+        in_buffer_collide_coords: wp.array[wp.vec3us],
+        max_input_buffer_size: int,
+        max_num_iso_subblocks: int,
+        # outputs
+        out_iso_subblock_coords: wp.array[wp.vec3us],
+        out_iso_subblock_shape_pair: wp.array[wp.vec2i],
+    ):
+        offset = wp.tid()
+        num_items = wp.min(in_iso_subblock_count[0], max_input_buffer_size)
+        for tid in range(offset, num_items, grid_size):
+            write_idx = in_iso_subblock_prefix[tid]
+            subblock_idx = in_iso_subblock_idx[tid]
+            pair = in_iso_subblock_shape_pair[tid]
+            bc = in_buffer_collide_coords[tid]
+            if write_idx >= max_num_iso_subblocks:
+                continue
+            for i in range(8):
+                bit_pos = wp.uint8(i)
+                if (subblock_idx >> bit_pos) & wp.uint8(1) and not write_idx >= max_num_iso_subblocks:
+                    local_coords = wp.vec3us(decode_coords_8(bit_pos))
+                    global_coords = bc + local_coords * wp.uint16(wp.static(sb_u))
+                    out_iso_subblock_coords[write_idx] = global_coords
+                    out_iso_subblock_shape_pair[write_idx] = pair
+                    write_idx += 1
+
+    return kernel
 
 
 @wp.func
@@ -1264,7 +1319,11 @@ def mc_iterate_voxel_vertices(
         local_pos_a = sdf_data.sdf_box_lower + wp.cw_mul(wp.vec3(float(x), float(y), float(z)), sdf_data.voxel_size)
         point_b = wp.transform_point(X_a_to_b, local_pos_a)
         valA = texture_sample_sdf_at_voxel(sdf_data, x, y, z)
-        valB = texture_sample_sdf(sdf_other_data, point_b)
+        # Iso-voxels reach this kernel only after octree confirmed both SDFs
+        # straddle the surface inside the voxel, so the transformed sample
+        # point is by construction inside the other SDF's box.  Skip the
+        # out-of-box extrapolation (clamp + sqrt) on the hot per-corner path.
+        valB = texture_sample_sdf_no_extrap(sdf_other_data, point_b)
 
         is_valid = not (wp.isnan(valA) or wp.isnan(valB))
         if not is_valid:

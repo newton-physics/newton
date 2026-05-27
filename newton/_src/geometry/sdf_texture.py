@@ -895,6 +895,116 @@ def texture_sample_sdf(
 
 
 @wp.func
+def texture_sample_sdf_no_extrap(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> float:
+    """Sample SDF without the out-of-box extrapolation term.
+
+    Matches :func:`texture_sample_sdf` exactly when ``local_pos`` is inside the
+    SDF box.  Outside the box the value is clamped to the box boundary rather
+    than extrapolated with a distance correction, saving 3x ``wp.clamp`` and
+    one ``wp.length`` (sqrt) per call.
+
+    Use only in contexts where the caller can guarantee in-box queries, e.g.
+    marching-cubes corner sampling on iso-voxels whose neighborhood the
+    octree has already confirmed to straddle both SDFs.
+    """
+    f = wp.cw_mul(local_pos - sdf.sdf_box_lower, sdf.inv_sdf_dx)
+
+    coarse_x = sdf.coarse_texture.width - 1
+    coarse_y = sdf.coarse_texture.height - 1
+    coarse_z = sdf.coarse_texture.depth - 1
+
+    fine_verts_x = float(coarse_x) * sdf.subgrid_size_f
+    fine_verts_y = float(coarse_y) * sdf.subgrid_size_f
+    fine_verts_z = float(coarse_z) * sdf.subgrid_size_f
+
+    fx = wp.clamp(f[0], 0.0, fine_verts_x)
+    fy = wp.clamp(f[1], 0.0, fine_verts_y)
+    fz = wp.clamp(f[2], 0.0, fine_verts_z)
+
+    num_fine_cells_x = int(fine_verts_x)
+    num_fine_cells_y = int(fine_verts_y)
+    num_fine_cells_z = int(fine_verts_z)
+    ix = wp.clamp(int(wp.floor(fx)), 0, num_fine_cells_x - 1)
+    iy = wp.clamp(int(wp.floor(fy)), 0, num_fine_cells_y - 1)
+    iz = wp.clamp(int(wp.floor(fz)), 0, num_fine_cells_z - 1)
+    tx = fx - float(ix)
+    ty = fy - float(iy)
+    tz = fz - float(iz)
+
+    x_base = wp.clamp(int(float(ix) * sdf.fine_to_coarse), 0, coarse_x - 1)
+    y_base = wp.clamp(int(float(iy) * sdf.fine_to_coarse), 0, coarse_y - 1)
+    z_base = wp.clamp(int(float(iz) * sdf.fine_to_coarse), 0, coarse_z - 1)
+
+    start_slot = sdf.subgrid_start_slots[x_base, y_base, z_base]
+
+    v000 = float(0.0)
+    v100 = float(0.0)
+    v010 = float(0.0)
+    v110 = float(0.0)
+    v001 = float(0.0)
+    v101 = float(0.0)
+    v011 = float(0.0)
+    v111 = float(0.0)
+
+    needs_scale = False
+
+    if start_slot >= wp.static(SLOT_LINEAR):
+        cx = float(x_base)
+        cy = float(y_base)
+        cz = float(z_base)
+        coarse_f = wp.vec3(fx, fy, fz) * sdf.fine_to_coarse
+        tx = coarse_f[0] - cx
+        ty = coarse_f[1] - cy
+        tz = coarse_f[2] - cz
+        v000 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 0.5), dtype=float)
+        v100 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 0.5, cz + 0.5), dtype=float)
+        v010 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 0.5), dtype=float)
+        v110 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 1.5, cz + 0.5), dtype=float)
+        v001 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 0.5, cz + 1.5), dtype=float)
+        v101 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 0.5, cz + 1.5), dtype=float)
+        v011 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 0.5, cy + 1.5, cz + 1.5), dtype=float)
+        v111 = wp.texture_sample(sdf.coarse_texture, wp.vec3f(cx + 1.5, cy + 1.5, cz + 1.5), dtype=float)
+    else:
+        needs_scale = True
+        block_x = float(start_slot & wp.uint32(0x3FF))
+        block_y = float((start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
+        block_z = float((start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
+        tex_ox = block_x * sdf.subgrid_samples_f
+        tex_oy = block_y * sdf.subgrid_samples_f
+        tex_oz = block_z * sdf.subgrid_samples_f
+        lx = float(ix) - float(x_base) * sdf.subgrid_size_f
+        ly = float(iy) - float(y_base) * sdf.subgrid_size_f
+        lz = float(iz) - float(z_base) * sdf.subgrid_size_f
+        ox = tex_ox + lx + 0.5
+        oy = tex_oy + ly + 0.5
+        oz = tex_oz + lz + 0.5
+        v000 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz), dtype=float)
+        v100 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy, oz), dtype=float)
+        v010 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz), dtype=float)
+        v110 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy + 1.0, oz), dtype=float)
+        v001 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy, oz + 1.0), dtype=float)
+        v101 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy, oz + 1.0), dtype=float)
+        v011 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox, oy + 1.0, oz + 1.0), dtype=float)
+        v111 = wp.texture_sample(sdf.subgrid_texture, wp.vec3f(ox + 1.0, oy + 1.0, oz + 1.0), dtype=float)
+
+    c00 = v000 + (v100 - v000) * tx
+    c10 = v010 + (v110 - v010) * tx
+    c01 = v001 + (v101 - v001) * tx
+    c11 = v011 + (v111 - v011) * tx
+    c0 = c00 + (c10 - c00) * ty
+    c1 = c01 + (c11 - c01) * ty
+    sdf_val = c0 + (c1 - c0) * tz
+
+    if needs_scale:
+        sdf_val = sdf_val * sdf.subgrids_sdf_value_range + sdf.subgrids_min_sdf_value
+
+    return sdf_val
+
+
+@wp.func
 def texture_sample_sdf_grad(
     sdf: TextureSDFData,
     local_pos: wp.vec3,

@@ -198,6 +198,10 @@ def get_reduce_hydroelastic_contacts_kernel():
 
             ht_capacity = reducer_data.ht_capacity
 
+            # Compute once per contact — used by both the normal-bin and the
+            # voxel-bin hashtable entries below.
+            k_eff_pair = _effective_stiffness(shape_material_k_hydro[shape_a], shape_material_k_hydro[shape_b])
+
             # === Part 1: Normal-binned reduction ===
             bin_id = get_slot(normal)
             key = make_contact_key(shape_a, shape_b, bin_id)
@@ -210,9 +214,7 @@ def get_reduce_hydroelastic_contacts_kernel():
 
             if entry_idx >= 0:
                 # k_eff is constant for a shape pair, so redundant writes are safe.
-                reducer_data.entry_k_eff[entry_idx] = _effective_stiffness(
-                    shape_material_k_hydro[shape_a], shape_material_k_hydro[shape_b]
-                )
+                reducer_data.entry_k_eff[entry_idx] = k_eff_pair
                 aabb_size = wp.length(aabb_upper - aabb_lower)
                 use_beta = depth < wp.static(BETA_THRESHOLD) * aabb_size
                 if use_beta:
@@ -260,9 +262,7 @@ def get_reduce_hydroelastic_contacts_kernel():
 
             voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
             if voxel_entry_idx >= 0:
-                reducer_data.entry_k_eff[voxel_entry_idx] = _effective_stiffness(
-                    shape_material_k_hydro[shape_a], shape_material_k_hydro[shape_b]
-                )
+                reducer_data.entry_k_eff[voxel_entry_idx] = k_eff_pair
                 voxel_value = _make_contact_value_fast(-depth, 0, i)
                 reduction_update_slot(
                     voxel_entry_idx,
