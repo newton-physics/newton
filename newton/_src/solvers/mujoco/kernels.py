@@ -185,7 +185,7 @@ def contact_params(
 
     solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
 
-    return margin, gap, condim, friction, solref, solreffriction, solimp
+    return margin, gap, condim, friction, solref, solreffriction, solimp, mix
 
 
 @wp.func
@@ -231,6 +231,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     # Model:
     geom_bodyid: wp.array[int],
     body_weldid: wp.array[int],
+    body_invweight0: wp.array2d[wp.vec2],
     geom_condim: wp.array[int],
     geom_priority: wp.array[int],
     geom_solmix: wp.array2d[float],
@@ -239,6 +240,10 @@ def convert_newton_contacts_to_mjwarp_kernel(
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    # Newton shape-material force-space inputs (issue #2009)
+    shape_material_ke: wp.array[float],
+    shape_material_kd: wp.array[float],
+    shape_mjc_solref_mode: wp.array[wp.int32],
     # Newton contacts
     rigid_contact_count: wp.array[wp.int32],
     rigid_contact_shape0: wp.array[wp.int32],
@@ -382,7 +387,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         if body_a < 0:
             worldid = body_b // bodies_per_world
 
-        margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+        margin, gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
             geom_condim,
             geom_priority,
             geom_solmix,
@@ -394,6 +399,48 @@ def convert_newton_contacts_to_mjwarp_kernel(
             geoms,
             worldid,
         )
+
+        # Force-space override (issue #2009): when *both* contacting shapes
+        # are in ``SOLREF_MODE_FORCE_SPACE`` the per-geom ``geom_solref``
+        # mixing above does not produce the physically correct result for a
+        # two-body contact. MuJoCo's solver uses an effective inverse mass
+        # ``M_inv = body_invweight0[A] + body_invweight0[B]`` along the
+        # constraint, but ``contact_params``' averaging cannot reproduce that
+        # sum from per-geom values. Compute ``solref`` directly from Newton's
+        # force-space ``shape_material_ke`` / ``shape_material_kd`` using
+        # MuJoCo's negative-direct-mode convention so the per-contact
+        # ``stiffness * x = ke * x`` holds independent of the partner body's
+        # mass. Mixed-mode contacts (RAW or MJCF_DEFAULT on either side) fall
+        # through to the existing ``geom_solref`` mixing path.
+        if shape_mjc_solref_mode:
+            mode_a = shape_mjc_solref_mode[shape_a]
+            mode_b = shape_mjc_solref_mode[shape_b]
+            if mode_a == SOLREF_MODE_FORCE_SPACE and mode_b == SOLREF_MODE_FORCE_SPACE:
+                ke_a = shape_material_ke[shape_a]
+                kd_a = shape_material_kd[shape_a]
+                ke_b = shape_material_ke[shape_b]
+                kd_b = shape_material_kd[shape_b]
+                # ``mix`` reproduces MuJoCo's solmix/priority weighting from
+                # ``contact_params``; reuse it here so heterogeneous materials
+                # combine consistently with how friction/solimp do.
+                ke = mix * ke_a + (1.0 - mix) * ke_b
+                kd = mix * kd_a + (1.0 - mix) * kd_b
+                # Translation-component invweight0 sums to give the
+                # operational-space inverse mass at this contact. Static or
+                # kinematic bodies contribute zero invweight0 — the
+                # immovable-pair guard above already discarded contacts where
+                # both sides are static.
+                invw_a = float(0.0)
+                invw_b = float(0.0)
+                if body_a >= 0:
+                    invw_a = body_invweight0[worldid, mj_body_a][0]
+                if body_b >= 0:
+                    invw_b = body_invweight0[worldid, mj_body_b][0]
+                m_inv = invw_a + invw_b
+                dmax = solimp[1]
+                if m_inv > 0.0 and dmax < 1.0:
+                    factor = m_inv * (1.0 - dmax)
+                    solref = wp.vec2(-ke * factor, -kd * factor)
 
         # Convert Newton per-contact stiffness/damping to MuJoCo solref
         # (timeconst, dampratio).  solimp is set to approximate a linear
@@ -2272,6 +2319,8 @@ def update_geom_properties_kernel(
     shape_mu_rolling: wp.array[float],
     shape_geom_solimp: wp.array[vec5],
     shape_geom_solmix: wp.array[float],
+    shape_mjc_solref: wp.array[wp.vec2f],
+    shape_mjc_solref_mode: wp.array[wp.int32],
     shape_margin: wp.array[float],
     zero_margin: int,
     # outputs
@@ -2313,10 +2362,39 @@ def update_geom_properties_kernel(
     rolling = shape_mu_rolling[shape_idx]
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
-    # update geom_solref (timeconst, dampratio) using stiffness and damping
-    # we don't use the negative convention to support controlling the mixing of shapes' stiffnesses via solmix
-    # use approximation of d(0) = d(width) = 1
-    geom_solref[world, geom_idx] = convert_solref(shape_ke[shape_idx], shape_kd[shape_idx], 1.0, 1.0)
+    # Update ``geom_solref`` based on the per-shape ``mujoco.solref_mode``
+    # custom attribute (issue #2009):
+    #   * ``SOLREF_MODE_RAW``: forward the authored ``mujoco.solref`` (e.g.
+    #     from MJCF/USD imports) unchanged into MuJoCo's geom-level
+    #     ``solref``. Newton ``shape_material_ke``/``kd`` are ignored.
+    #   * ``SOLREF_MODE_FORCE_SPACE``: derive ``geom_solref`` from Newton's
+    #     force-space ``shape_material_ke``/``kd`` via the lossy
+    #     ``convert_solref(..., d_width=1, d_r=1)`` approximation. For the
+    #     ``use_mujoco_contacts=False`` path this is just a fallback — the
+    #     true per-contact ``solref`` is computed in
+    #     ``convert_newton_contacts_to_mjwarp_kernel`` using both bodies'
+    #     ``body_invweight0``. For ``use_mujoco_contacts=True`` and the
+    #     MuJoCo CPU backend the per-contact override does not fire, so the
+    #     conversion remains as an (imperfect) approximation that ignores
+    #     ``dmax`` and the two-body inverse-mass sum.
+    #   * ``SOLREF_MODE_MJCF_DEFAULT``: leave ``geom_solref`` untouched so
+    #     MuJoCo's compile-time default (``[0.02, 1.0]``) survives. Editing
+    #     ``shape_material_ke``/``kd`` away from their defaults causes
+    #     ``SolverMuJoCo`` to auto-promote the mode to ``FORCE_SPACE`` on
+    #     the next notify, at which point this branch overwrites
+    #     ``geom_solref`` via the force-space conversion above.
+    if shape_mjc_solref_mode and shape_mjc_solref:
+        mode = shape_mjc_solref_mode[shape_idx]
+        if mode == SOLREF_MODE_RAW:
+            geom_solref[world, geom_idx] = shape_mjc_solref[shape_idx]
+        elif mode == SOLREF_MODE_FORCE_SPACE:
+            geom_solref[world, geom_idx] = convert_solref(shape_ke[shape_idx], shape_kd[shape_idx], 1.0, 1.0)
+        # SOLREF_MODE_MJCF_DEFAULT: keep the compile-time default already in
+        # ``geom_solref``.
+    else:
+        # No ``solref_mode`` attribute registered: fall back to legacy
+        # behaviour so older models continue to work.
+        geom_solref[world, geom_idx] = convert_solref(shape_ke[shape_idx], shape_kd[shape_idx], 1.0, 1.0)
 
     # update geom_solimp from custom attribute
     if shape_geom_solimp:

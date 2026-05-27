@@ -3502,6 +3502,8 @@ class SolverMuJoCo(SolverBase):
         self.mjw_data.nacon.zero_()
 
         bodies_per_world = self.model.body_count // self.model.world_count
+        mujoco_attrs = getattr(model, "mujoco", None)
+        shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
         wp.launch(
             convert_newton_contacts_to_mjwarp_kernel,
             dim=(launch_dim,),
@@ -3511,6 +3513,7 @@ class SolverMuJoCo(SolverBase):
                 model.body_flags,
                 self.mjw_model.geom_bodyid,
                 self.mjw_model.body_weldid,
+                self.mjw_model.body_invweight0,
                 self.mjw_model.geom_condim,
                 self.mjw_model.geom_priority,
                 self.mjw_model.geom_solmix,
@@ -3519,6 +3522,10 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_friction,
                 self.mjw_model.geom_margin,
                 self.mjw_model.geom_gap,
+                # Newton shape-material force-space inputs (issue #2009)
+                model.shape_material_ke,
+                model.shape_material_kd,
+                shape_mjc_solref_mode,
                 # Newton contacts
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_shape0,
@@ -4539,6 +4546,8 @@ class SolverMuJoCo(SolverBase):
         shape_priority = get_custom_attribute("geom_priority")
         shape_geom_solimp = get_custom_attribute("geom_solimp")
         shape_geom_solmix = get_custom_attribute("geom_solmix")
+        shape_mjc_solref = get_custom_attribute("solref")
+        shape_mjc_solref_mode = get_custom_attribute("solref_mode")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
         joint_solref_limit = get_custom_attribute("solreflimit")
@@ -4985,8 +4994,28 @@ class SolverMuJoCo(SolverBase):
                     rolling,
                 ]
 
-                # set solref from shape stiffness and damping
-                geom_params["solref"] = convert_solref(float(shape_ke[shape]), float(shape_kd[shape]), 1.0, 1.0)
+                # Set ``solref`` based on ``mujoco.solref_mode`` (issue #2009):
+                #   * RAW: use the authored ``mujoco.solref`` directly so
+                #     imported MuJoCo assets keep their native contact dynamics.
+                #   * FORCE_SPACE: derive from Newton ``shape_material_ke/kd``
+                #     via the d_width=d_r=1 approximation. The Newton-contacts
+                #     pipeline (``use_mujoco_contacts=False``) overrides this
+                #     per contact using ``body_invweight0``; for MuJoCo-CPU and
+                #     ``use_mujoco_contacts=True`` paths the approximation is
+                #     what MuJoCo's internal mixing actually consumes.
+                #   * MJCF_DEFAULT: leave ``solref`` out of ``geom_params`` so
+                #     MuJoCo's compile-time default ``[0.02, 1.0]`` survives.
+                #     Editing ``shape_material_ke/kd`` later auto-promotes the
+                #     mode to FORCE_SPACE and overwrites at notify time.
+                solref_mode_for_shape = (
+                    int(shape_mjc_solref_mode[shape]) if shape_mjc_solref_mode is not None else SOLREF_MODE_FORCE_SPACE
+                )
+                if solref_mode_for_shape == SOLREF_MODE_RAW and shape_mjc_solref is not None:
+                    raw_solref = shape_mjc_solref[shape]
+                    geom_params["solref"] = (float(raw_solref[0]), float(raw_solref[1]))
+                elif solref_mode_for_shape == SOLREF_MODE_FORCE_SPACE:
+                    geom_params["solref"] = convert_solref(float(shape_ke[shape]), float(shape_kd[shape]), 1.0, 1.0)
+                # SOLREF_MODE_MJCF_DEFAULT: no entry — MuJoCo keeps its default.
 
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
@@ -6972,6 +7001,8 @@ class SolverMuJoCo(SolverBase):
         mujoco_attrs = getattr(self.model, "mujoco", None)
         shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
         shape_geom_solmix = getattr(mujoco_attrs, "geom_solmix", None) if mujoco_attrs is not None else None
+        shape_mjc_solref = getattr(mujoco_attrs, "solref", None) if mujoco_attrs is not None else None
+        shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
         wp.launch(
             update_geom_properties_kernel,
             dim=(world_count, num_geoms),
@@ -6991,6 +7022,8 @@ class SolverMuJoCo(SolverBase):
                 self.model.shape_material_mu_rolling,
                 shape_geom_solimp,
                 shape_geom_solmix,
+                shape_mjc_solref,
+                shape_mjc_solref_mode,
                 self.model.shape_margin,
                 int(self._use_mujoco_contacts and self._zero_margins_for_native_ccd),
             ],
