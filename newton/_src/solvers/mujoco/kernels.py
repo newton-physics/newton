@@ -2377,20 +2377,26 @@ def update_geom_properties_kernel(
     #     MuJoCo CPU backend the per-contact override does not fire, so the
     #     conversion remains as an (imperfect) approximation that ignores
     #     ``dmax`` and the two-body inverse-mass sum.
-    #   * ``SOLREF_MODE_MJCF_DEFAULT``: leave ``geom_solref`` untouched so
-    #     MuJoCo's compile-time default (``[0.02, 1.0]``) survives. Editing
-    #     ``shape_material_ke``/``kd`` away from their defaults causes
-    #     ``SolverMuJoCo`` to auto-promote the mode to ``FORCE_SPACE`` on
-    #     the next notify, at which point this branch overwrites
-    #     ``geom_solref`` via the force-space conversion above.
+    #   * ``SOLREF_MODE_MJCF_DEFAULT``: same legacy ``convert_solref(ke,
+    #     kd, 1, 1)`` write as ``FORCE_SPACE`` so example/tuning code that
+    #     relies on the historical ``shape_material_ke``/``kd`` →
+    #     ``geom_solref`` round-trip (e.g. ``example_brick_stacking``'s
+    #     ``BRICK_KE = mg/penetration``) keeps working out of the box.
+    #     The per-contact ``body_invweight0`` override in
+    #     ``convert_newton_contacts_to_mjwarp_kernel`` only fires for
+    #     ``FORCE_SPACE`` shapes; ``MJCF_DEFAULT`` shapes therefore land
+    #     at the pre-PR contact dynamics (acceleration-space ``solref``
+    #     averaged across the contact pair).
     if shape_mjc_solref_mode and shape_mjc_solref:
         mode = shape_mjc_solref_mode[shape_idx]
         if mode == SOLREF_MODE_RAW:
             geom_solref[world, geom_idx] = shape_mjc_solref[shape_idx]
-        elif mode == SOLREF_MODE_FORCE_SPACE:
+        else:
+            # FORCE_SPACE and MJCF_DEFAULT both fall back to the legacy
+            # convert_solref round-trip; FORCE_SPACE additionally triggers
+            # the per-contact override in
+            # ``convert_newton_contacts_to_mjwarp_kernel``.
             geom_solref[world, geom_idx] = convert_solref(shape_ke[shape_idx], shape_kd[shape_idx], 1.0, 1.0)
-        # SOLREF_MODE_MJCF_DEFAULT: keep the compile-time default already in
-        # ``geom_solref``.
     else:
         # No ``solref_mode`` attribute registered: fall back to legacy
         # behaviour so older models continue to work.

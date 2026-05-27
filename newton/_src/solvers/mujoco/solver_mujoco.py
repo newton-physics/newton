@@ -5007,25 +5007,27 @@ class SolverMuJoCo(SolverBase):
                 # Set ``solref`` based on ``mujoco.solref_mode`` (issue #2009):
                 #   * RAW: use the authored ``mujoco.solref`` directly so
                 #     imported MuJoCo assets keep their native contact dynamics.
-                #   * FORCE_SPACE: derive from Newton ``shape_material_ke/kd``
-                #     via the d_width=d_r=1 approximation. The Newton-contacts
-                #     pipeline (``use_mujoco_contacts=False``) overrides this
-                #     per contact using ``body_invweight0``; for MuJoCo-CPU and
-                #     ``use_mujoco_contacts=True`` paths the approximation is
-                #     what MuJoCo's internal mixing actually consumes.
-                #   * MJCF_DEFAULT: leave ``solref`` out of ``geom_params`` so
-                #     MuJoCo's compile-time default ``[0.02, 1.0]`` survives.
-                #     Editing ``shape_material_ke/kd`` later auto-promotes the
-                #     mode to FORCE_SPACE and overwrites at notify time.
+                #   * FORCE_SPACE / MJCF_DEFAULT: derive ``solref`` from
+                #     Newton ``shape_material_ke``/``kd`` via the legacy
+                #     ``convert_solref(ke, kd, 1, 1)`` round-trip. This
+                #     preserves the pre-PR behavior for examples and tests
+                #     that tune ``shape_material_ke``/``kd`` (e.g.
+                #     ``example_brick_stacking``'s ``BRICK_KE =
+                #     mg/penetration``). On the Newton-contacts path
+                #     (``use_mujoco_contacts=False``) the per-contact
+                #     ``body_invweight0`` override in
+                #     ``convert_newton_contacts_to_mjwarp_kernel`` only
+                #     fires for ``FORCE_SPACE`` shapes; ``MJCF_DEFAULT``
+                #     shapes fall through to the MuJoCo solver with the
+                #     acceleration-space approximation in ``geom_solref``.
                 solref_mode_for_shape = (
-                    int(shape_mjc_solref_mode[shape]) if shape_mjc_solref_mode is not None else SOLREF_MODE_FORCE_SPACE
+                    int(shape_mjc_solref_mode[shape]) if shape_mjc_solref_mode is not None else SOLREF_MODE_MJCF_DEFAULT
                 )
                 if solref_mode_for_shape == SOLREF_MODE_RAW and shape_mjc_solref is not None:
                     raw_solref = shape_mjc_solref[shape]
                     geom_params["solref"] = (float(raw_solref[0]), float(raw_solref[1]))
-                elif solref_mode_for_shape == SOLREF_MODE_FORCE_SPACE:
+                else:
                     geom_params["solref"] = convert_solref(float(shape_ke[shape]), float(shape_kd[shape]), 1.0, 1.0)
-                # SOLREF_MODE_MJCF_DEFAULT: no entry — MuJoCo keeps its default.
 
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
