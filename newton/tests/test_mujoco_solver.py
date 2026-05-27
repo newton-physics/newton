@@ -7490,6 +7490,56 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                     err, 1e-5, f"newton vs mj omega_world err={err:.2e}; newton={w_world_newton}, mj={w_world_mj}"
                 )
 
+    def test_ball_joint_applied_torque_rotated_child_anchor(self):
+        """Newton's `control.joint_f` on a ball joint produces the expected
+        world angular acceleration regardless of `child_xform` rotation.
+
+        Newton stores ball joint_f in the parent anchor frame; MuJoCo's
+        qfrc_applied lives in the rest-body frame (= body_quat-frame). Forces
+        are dual to velocities, so the bridge must conjugate by X_cj.rot to
+        match. With parent_xform=identity, identity inertia, mass=1 and zero
+        initial velocity, a single Euler step under torque `tau` should give
+        world angular velocity ≈ tau * dt, independent of child_xform.
+        """
+        child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
+        torques = {
+            "tx": wp.vec3(1.0, 0.0, 0.0),
+            "tz": wp.vec3(0.0, 0.0, 1.0),
+            "compound": wp.vec3(0.7, 0.3, -0.5),
+        }
+
+        for name, tau in torques.items():
+            with self.subTest(torque=name):
+                builder = newton.ModelBuilder(gravity=0.0)
+                child = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+                ball_j = builder.add_joint_ball(
+                    -1,
+                    child,
+                    parent_xform=wp.transform_identity(),
+                    child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), child_rot),
+                )
+                builder.add_articulation([ball_j])
+                model = builder.finalize()
+                solver = SolverMuJoCo(model)
+
+                qd_start = int(model.joint_qd_start.numpy()[ball_j])
+
+                state_in = model.state()
+                state_out = model.state()
+                control = model.control()
+                joint_f_np = control.joint_f.numpy().copy()
+                joint_f_np[qd_start : qd_start + 3] = [tau[0], tau[1], tau[2]]
+                wp.copy(control.joint_f, wp.array(joint_f_np, dtype=wp.float32))
+
+                dt = 1.0e-4
+                solver.step(state_in, state_out, control, None, dt)
+
+                # body_qd convention: (v_com_world, omega_world).
+                omega_world = state_out.body_qd.numpy()[child][3:6]
+                expected = np.array([tau[0] * dt, tau[1] * dt, tau[2] * dt])
+                err = float(np.max(np.abs(omega_world - expected)))
+                self.assertLess(err, 1e-6, f"omega_world={omega_world}, expected≈{expected}, err={err:.2e}")
+
 
 class TestMuJoCoSolverPairProperties(unittest.TestCase):
     """Test contact pair property conversion and runtime updates across multiple worlds."""

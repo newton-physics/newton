@@ -1488,6 +1488,7 @@ def apply_mjc_qfrc_kernel(
     body_flags: wp.array[wp.int32],
     joint_qd_start: wp.array[wp.int32],
     joint_dof_dim: wp.array2d[wp.int32],
+    joint_X_c: wp.array[wp.transform],
     joints_per_world: int,
     mj_qd_start: wp.array[wp.int32],
     # outputs
@@ -1516,9 +1517,16 @@ def apply_mjc_qfrc_kernel(
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
         return
     elif jtype == JointType.BALL:
-        qfrc_applied[worldid, qd_i + 0] = joint_f[wqd_i + 0]
-        qfrc_applied[worldid, qd_i + 1] = joint_f[wqd_i + 1]
-        qfrc_applied[worldid, qd_i + 2] = joint_f[wqd_i + 2]
+        # Newton's ball joint_f lives in the parent anchor frame; MuJoCo's qfrc
+        # lives in the rest-body frame (same as qvel). Forces are dual to
+        # velocities, so the same conjugation as in
+        # convert_warp_coords_to_mj_kernel applies as a vector rotation.
+        tau = wp.vec3(joint_f[wqd_i + 0], joint_f[wqd_i + 1], joint_f[wqd_i + 2])
+        q_cj = wp.transform_get_rotation(joint_X_c[joint_id])
+        tau_mj = wp.quat_rotate(q_cj, tau)
+        qfrc_applied[worldid, qd_i + 0] = tau_mj[0]
+        qfrc_applied[worldid, qd_i + 1] = tau_mj[1]
+        qfrc_applied[worldid, qd_i + 2] = tau_mj[2]
     else:
         for i in range(dof_count):
             qfrc_applied[worldid, qd_i + i] = joint_f[wqd_i + i]
@@ -2874,6 +2882,7 @@ def convert_qfrc_actuator_from_mj_kernel(
     joint_qd_start: wp.array[wp.int32],
     joint_dof_dim: wp.array2d[wp.int32],
     joint_child: wp.array[wp.int32],
+    joint_X_c: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     mj_q_start: wp.array[wp.int32],
     mj_qd_start: wp.array[wp.int32],
@@ -2942,8 +2951,19 @@ def convert_qfrc_actuator_from_mj_kernel(
         qfrc_actuator[wqd_i + 4] = tau_world[1]
         qfrc_actuator[wqd_i + 5] = tau_world[2]
     elif jtype == JointType.BALL:
-        for i in range(3):
-            qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
+        # Inverse of apply_mjc_qfrc_kernel BALL: MuJoCo qfrc lives in the
+        # rest-body frame, Newton joint_f in the parent anchor frame, so we
+        # rotate by X_cj.rot^{-1} to land back in Newton's frame.
+        tau_mj = wp.vec3(
+            mjw_qfrc_actuator[worldid, qd_i + 0],
+            mjw_qfrc_actuator[worldid, qd_i + 1],
+            mjw_qfrc_actuator[worldid, qd_i + 2],
+        )
+        q_cj = wp.transform_get_rotation(joint_X_c[joint_id])
+        tau = wp.quat_rotate_inv(q_cj, tau_mj)
+        qfrc_actuator[wqd_i + 0] = tau[0]
+        qfrc_actuator[wqd_i + 1] = tau[1]
+        qfrc_actuator[wqd_i + 2] = tau[2]
     else:
         axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
         for i in range(axis_count):
