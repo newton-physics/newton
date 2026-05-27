@@ -25,11 +25,10 @@ from newton import Contacts
 from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
 
-newton.use_coord_layout_targets = True
-
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 120
         self.frame_dt = 1.0 / self.fps

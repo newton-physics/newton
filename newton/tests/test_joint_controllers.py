@@ -182,6 +182,76 @@ def test_ball_controller(
         newton.use_coord_layout_targets = prev_flag
 
 
+def test_ball_controller_coord_layout(
+    test: TestJointController,
+    device,
+    solver_fn,
+    target_axis_angle,
+    expected_quat,
+    target_ke,
+    target_kd,
+):
+    """Ball-joint position target under the coord layout: the user writes a
+    target quaternion and the MuJoCo solver must convert it to the matching
+    axis-angle component before feeding it to per-axis position actuators.
+    Without the conversion the equilibrium for a 90° setpoint sits at ~40.5°.
+    """
+    prev_flag = newton.use_coord_layout_targets
+    newton.use_coord_layout_targets = True
+    try:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+        box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        b = builder.add_link(armature=0.0, inertia=box_inertia, mass=1.0)
+        builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
+        j = builder.add_joint_ball(
+            parent=-1,
+            child=b,
+            parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
+            armature=0.0,
+            actuator_mode=newton.JointTargetMode.POSITION,
+        )
+        builder.add_articulation([j])
+        qd_start = builder.joint_qd_start[j]
+        for i in range(3):
+            builder.joint_target_ke[qd_start + i] = target_ke
+            builder.joint_target_kd[qd_start + i] = target_kd
+
+        model = builder.finalize(device=device)
+        solver = solver_fn(model)
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        # Convert axis-angle target to a quaternion and write to joint_target_q.
+        ax = np.asarray(target_axis_angle, dtype=np.float32)
+        angle = float(np.linalg.norm(ax))
+        if angle > 0.0:
+            n = ax / angle
+            s = float(np.sin(angle / 2.0))
+            target_quat = [n[0] * s, n[1] * s, n[2] * s, float(np.cos(angle / 2.0))]
+        else:
+            target_quat = [0.0, 0.0, 0.0, 1.0]
+        control = model.control()
+        control.joint_target_q = wp.array(target_quat, dtype=wp.float32, device=device)
+
+        sim_dt = 1.0 / 60.0
+        for _ in range(100):
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, None, sim_dt)
+            state_0, state_1 = state_1, state_0
+
+        joint_q = state_0.joint_q.numpy()
+        dot = abs(
+            joint_q[0] * expected_quat[0]
+            + joint_q[1] * expected_quat[1]
+            + joint_q[2] * expected_quat[2]
+            + joint_q[3] * expected_quat[3]
+        )
+        test.assertAlmostEqual(dot, 1.0, delta=1e-2)
+    finally:
+        newton.use_coord_layout_targets = prev_flag
+
+
 def test_free_plus_revolute_position_target(
     test: TestJointController,
     device,
@@ -687,6 +757,25 @@ for device in devices:
                 target_ke=0.0,
                 target_kd=500.0,
             )
+
+            # Coord layout: target quaternion must be converted to axis-angle
+            # before being fed to MuJoCo position actuators on a ball joint.
+            for axis_name, axis_angle, quat in (
+                ("z", [0.0, 0.0, wp.pi / 2.0], [0.0, 0.0, 0.7071068, 0.7071068]),
+                ("x", [wp.pi / 2.0, 0.0, 0.0], [0.7071068, 0.0, 0.0, 0.7071068]),
+                ("y", [0.0, wp.pi / 2.0, 0.0], [0.0, 0.7071068, 0.0, 0.7071068]),
+            ):
+                add_function_test(
+                    TestJointController,
+                    f"test_ball_joint_controller_coord_layout_{axis_name}_{solver_name}",
+                    test_ball_controller_coord_layout,
+                    devices=[device],
+                    solver_fn=solver_fn,
+                    target_axis_angle=axis_angle,
+                    expected_quat=quat,
+                    target_ke=2000.0,
+                    target_kd=500.0,
+                )
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -22,8 +22,6 @@ import newton
 import newton.examples
 import newton.ik as ik
 
-newton.use_coord_layout_targets = True
-
 # Brick dimensions [m]
 PITCH = 0.008
 BRICK_HEIGHT = 0.0096
@@ -392,6 +390,7 @@ def advance_task_kernel(
 
 class Example:
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60

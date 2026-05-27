@@ -454,12 +454,14 @@ class Model:
         """Default generalized joint forces [N or N·m, depending on joint type] used to initialize :attr:`newton.Control.joint_f`, shape [joint_dof_count], float.
         For FREE and DISTANCE joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
         self.joint_target_q: wp.array[wp.float32] | None = None
-        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape [joint_coord_count], float.
+        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]`` or ``[joint_dof_count]``, float.
 
-        Shape matches :attr:`joint_q` when
+        Shape matches :attr:`joint_q` (``joint_coord_count``) when
         :attr:`newton.use_coord_layout_targets` is ``True``; otherwise the array
         is shaped ``(joint_dof_count,)`` for backward compatibility with the
-        deprecated :attr:`joint_target_pos` alias.
+        deprecated :attr:`joint_target_pos` alias. Index via
+        :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
+        :attr:`joint_qd_start` to match the active layout.
         """
         self.joint_target_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type] used to initialize :attr:`newton.Control.joint_target_qd`, shape [joint_dof_count], float.

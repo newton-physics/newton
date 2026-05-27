@@ -23,8 +23,6 @@ import newton.utils
 from newton.sensors import SensorContact
 from newton.utils import EventTracer
 
-newton.use_coord_layout_targets = True
-
 ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
@@ -292,6 +290,7 @@ class Example:
         ls_parallel=None,
         cone=None,
     ):
+        newton.use_coord_layout_targets = True
         fps = 600
         self.sim_time = 0.0
         self.benchmark_time = 0.0

@@ -19,8 +19,6 @@ import newton
 import newton.examples
 import newton.utils
 
-newton.use_coord_layout_targets = True
-
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
 
@@ -109,6 +107,7 @@ def _compute_obs_kernel(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.device = wp.get_device()
 

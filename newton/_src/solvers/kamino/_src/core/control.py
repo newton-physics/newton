@@ -154,8 +154,10 @@ class ControlKamino:
     def from_newton(self, control: Control, model: ModelKamino) -> None:
         """
         Reads a source :class:`newton.Control` object into this :class:`ControlKamino` instance.
-        Arrays are simply aliased whenever possible, but a Euler→quaternion conversion is
-        performed for spherical/free joints when ``newton.use_coord_layout_targets`` is ``False``.
+        Arrays are simply aliased whenever possible. A Euler→quaternion conversion is
+        only performed when ``newton.use_coord_layout_targets`` is ``False`` *and*
+        the model contains spherical or free joints; otherwise (flag is ``True``,
+        or the model has no spherical/free joint) the source array is aliased directly.
 
         Args:
             control: The source :class:`newton.Control` object to be interfaced.
@@ -177,8 +179,9 @@ class ControlKamino:
     def to_newton(self, control: Control, model: ModelKamino) -> None:
         """
         Writes this :class:`ControlKamino` instance into a destination :class:`newton.Control` object.
-        Arrays are simply aliased whenever possible, but a quaternion→Euler conversion is
-        performed for spherical/free joints when ``newton.use_coord_layout_targets`` is ``False``.
+        Arrays are simply aliased whenever possible. A quaternion→Euler conversion is
+        only performed when ``newton.use_coord_layout_targets`` is ``False`` *and*
+        the model contains spherical or free joints; otherwise the array is aliased directly.
 
         Args:
             control: The destination :class:`newton.Control` object to be interfaced.

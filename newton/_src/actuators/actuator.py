@@ -110,7 +110,9 @@ class Actuator:
             target_pos_indices: Indices into ``control.joint_target_pos`` /
                 ``joint_target_q``. Defaults to *pos_indices* when
                 :attr:`newton.use_coord_layout_targets` is ``True`` (coord
-                layout), otherwise to *indices* (legacy DOF layout).
+                layout), otherwise to *indices* (legacy DOF layout). The flag is
+                read once here, so toggling ``newton.use_coord_layout_targets``
+                after construction does not change ``target_pos_indices``.
             effort_indices: DOF indices into effort output arrays. Defaults to
                 *indices*. Differs from *indices* for coupled transmissions
                 or tendon-driven joints.

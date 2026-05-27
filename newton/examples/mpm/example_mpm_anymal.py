@@ -26,11 +26,10 @@ from newton.examples.robot.example_robot_anymal_c_walk import (
 )
 from newton.solvers import SolverImplicitMPM
 
-newton.use_coord_layout_targets = True
-
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         voxel_size = args.voxel_size
         particles_per_cell = args.particles_per_cell
         tolerance = args.tolerance

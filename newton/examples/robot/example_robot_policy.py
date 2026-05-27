@@ -30,8 +30,6 @@ import newton.examples
 import newton.utils
 from newton import JointTargetMode
 
-newton.use_coord_layout_targets = True
-
 
 @dataclass
 class RobotConfig:
@@ -217,6 +215,7 @@ def find_physx_mjwarp_mapping(mjwarp_joint_names, physx_joint_names):
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # Resolve robot configuration, asset paths, and joint mapping from args.
         # Done in __init__ (rather than at module level) so the example can be
         # rebuilt by _ExampleBrowser.reset() with the same (viewer, args) call

@@ -2688,6 +2688,7 @@ class SolverMuJoCo(SolverBase):
         mjc_actuator_ctrl_source_list: list[int],
         mjc_actuator_to_newton_idx_list: list[int],
         mjc_actuator_to_target_q_idx_list: list[int],
+        mjc_actuator_to_target_q_axis_idx_list: list[int],
         dof_to_mjc_joint: np.ndarray,
         mjc_joint_names: list[str],
         selected_tendons: list[int],
@@ -2992,6 +2993,7 @@ class SolverMuJoCo(SolverBase):
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
             mjc_actuator_to_newton_idx_list.append(mujoco_act_idx)
             mjc_actuator_to_target_q_idx_list.append(-1)
+            mjc_actuator_to_target_q_axis_idx_list.append(-1)
             actuator_count += 1
 
         return actuator_count
@@ -3615,6 +3617,7 @@ class SolverMuJoCo(SolverBase):
                         self.mjc_actuator_ctrl_source,
                         self.mjc_actuator_to_newton_idx,
                         self.mjc_actuator_to_newton_target_q_idx,
+                        self.mjc_actuator_to_target_q_axis_idx,
                         control.joint_target_q,
                         control.joint_target_qd,
                         mujoco_ctrl,
@@ -4316,6 +4319,11 @@ class SolverMuJoCo(SolverBase):
         joint_dof_dim = model.joint_dof_dim.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
         joint_target_q_start = model.joint_target_q_start.numpy()
+        # When True, ball-joint position targets are quaternions (coord layout) and
+        # must be converted to axis-angle components before being fed to MuJoCo.
+        import newton as _newton  # noqa: PLC0415
+
+        use_coord_layout_targets = _newton.use_coord_layout_targets
         joint_armature = model.joint_armature.numpy()
         joint_effort_limit = model.joint_effort_limit.numpy()
         # Per-DOF actuator arrays
@@ -4409,6 +4417,10 @@ class SolverMuJoCo(SolverBase):
         mjc_actuator_ctrl_source_list: list[int] = []
         mjc_actuator_to_newton_idx_list: list[int] = []
         mjc_actuator_to_target_q_idx_list: list[int] = []
+        # For ball-joint position actuators under the coord layout, the target slot
+        # holds a quaternion; this list selects which axis-angle component (0/1/2)
+        # to feed MuJoCo. -1 means "scalar passthrough" (all other actuators).
+        mjc_actuator_to_target_q_axis_idx_list: list[int] = []
 
         # supported non-fixed joint types in MuJoCo (fixed joints are handled by nesting bodies)
         supported_joint_types = {
@@ -4990,8 +5002,16 @@ class SolverMuJoCo(SolverBase):
                         args["forcerange"] = [-effort_limit, effort_limit]
 
                         template_dof = ai
-                        template_target_q = tq_start + i
-                        # Add position actuator if mode includes position
+                        # Under coord layout, the target is a quaternion stored at
+                        # [tq_start..tq_start+3]; the kernel reads all 4 and picks
+                        # axis-angle component `i`. Under DOF layout we keep legacy
+                        # behavior (per-axis scalar at tq_start+i, no conversion).
+                        if use_coord_layout_targets:
+                            template_target_q = tq_start
+                            template_target_q_axis = i
+                        else:
+                            template_target_q = tq_start + i
+                            template_target_q_axis = -1
                         if mode == JointTargetMode.POSITION:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
@@ -5000,6 +5020,7 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             mjc_actuator_to_target_q_idx_list.append(template_target_q)
+                            mjc_actuator_to_target_q_axis_idx_list.append(template_target_q_axis)
                             actuator_count += 1
                         elif mode == JointTargetMode.POSITION_VELOCITY:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -5009,9 +5030,9 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             mjc_actuator_to_target_q_idx_list.append(template_target_q)
+                            mjc_actuator_to_target_q_axis_idx_list.append(template_target_q_axis)
                             actuator_count += 1
 
-                        # Add velocity actuator if mode includes velocity
                         if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
@@ -5020,6 +5041,7 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity
                             mjc_actuator_to_target_q_idx_list.append(-1)
+                            mjc_actuator_to_target_q_axis_idx_list.append(-1)
                             actuator_count += 1
             elif j_type in supported_joint_types:
                 lin_axis_count, ang_axis_count = joint_dof_dim[j]
@@ -5100,7 +5122,7 @@ class SolverMuJoCo(SolverBase):
 
                         template_dof = ai
                         template_target_q = tq_start + i
-                        # Add position actuator if mode includes position
+                        # Scalar slot (PRISMATIC/REVOLUTE/D6 axis) — no quaternion conversion.
                         if mode == JointTargetMode.POSITION:
                             actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             actuator_args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
@@ -5109,6 +5131,7 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             mjc_actuator_to_target_q_idx_list.append(template_target_q)
+                            mjc_actuator_to_target_q_axis_idx_list.append(-1)
                             actuator_count += 1
                         elif mode == JointTargetMode.POSITION_VELOCITY:
                             actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -5118,9 +5141,9 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             mjc_actuator_to_target_q_idx_list.append(template_target_q)
+                            mjc_actuator_to_target_q_axis_idx_list.append(-1)
                             actuator_count += 1
 
-                        # Add velocity actuator if mode includes velocity
                         if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             actuator_args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             actuator_args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
@@ -5129,6 +5152,7 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity
                             mjc_actuator_to_target_q_idx_list.append(-1)
+                            mjc_actuator_to_target_q_axis_idx_list.append(-1)
                             actuator_count += 1
 
                 # angular dofs
@@ -5202,7 +5226,7 @@ class SolverMuJoCo(SolverBase):
 
                         template_dof = ai
                         template_target_q = tq_start + i
-                        # Add position actuator if mode includes position
+                        # Scalar slot (REVOLUTE/D6 angular axis) — no quaternion conversion.
                         if mode == JointTargetMode.POSITION:
                             actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             actuator_args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
@@ -5211,6 +5235,7 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             mjc_actuator_to_target_q_idx_list.append(template_target_q)
+                            mjc_actuator_to_target_q_axis_idx_list.append(-1)
                             actuator_count += 1
                         elif mode == JointTargetMode.POSITION_VELOCITY:
                             actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -5220,9 +5245,9 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             mjc_actuator_to_target_q_idx_list.append(template_target_q)
+                            mjc_actuator_to_target_q_axis_idx_list.append(-1)
                             actuator_count += 1
 
-                        # Add velocity actuator if mode includes velocity
                         if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             actuator_args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             actuator_args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
@@ -5231,6 +5256,7 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity
                             mjc_actuator_to_target_q_idx_list.append(-1)
+                            mjc_actuator_to_target_q_axis_idx_list.append(-1)
                             actuator_count += 1
 
                         # Note: MuJoCo general actuators are handled separately via custom attributes
@@ -5478,6 +5504,7 @@ class SolverMuJoCo(SolverBase):
             mjc_actuator_ctrl_source_list,
             mjc_actuator_to_newton_idx_list,
             mjc_actuator_to_target_q_idx_list,
+            mjc_actuator_to_target_q_axis_idx_list,
             dof_to_mjc_joint,
             mjc_joint_names,
             selected_tendons,
@@ -5503,10 +5530,16 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.int32,
                 device=model.device,
             )
+            self.mjc_actuator_to_target_q_axis_idx = wp.array(
+                np.array(mjc_actuator_to_target_q_axis_idx_list, dtype=np.int32),
+                dtype=wp.int32,
+                device=model.device,
+            )
         else:
             self.mjc_actuator_ctrl_source = None
             self.mjc_actuator_to_newton_idx = None
             self.mjc_actuator_to_newton_target_q_idx = None
+            self.mjc_actuator_to_target_q_axis_idx = None
 
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)

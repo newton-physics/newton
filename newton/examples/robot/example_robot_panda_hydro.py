@@ -27,8 +27,6 @@ import newton.usd
 import newton.utils
 from newton.geometry import HydroelasticSDF
 
-newton.use_coord_layout_targets = True
-
 
 class SceneType(Enum):
     PEN = "pen"
@@ -55,6 +53,7 @@ def broadcast_ik_solution_kernel(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.scene = SceneType(args.scene)
         self.test_mode = args.test
         self.show_isosurface = False  # Disabled by default for performance

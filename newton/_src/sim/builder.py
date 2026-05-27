@@ -2146,6 +2146,10 @@ class ModelBuilder:
         other joint types the per-joint coord and DOF slices are the same size
         and copied verbatim. Used when :attr:`newton.use_coord_layout_targets`
         is ``False`` to populate the legacy DOF-shaped ``Model.joint_target_q``.
+
+        :attr:`joint_target_q` stores BALL/FREE/DISTANCE angular target_pos as
+        raw per-axis scalars (extrinsic ZYX Euler angles) in slots 0..2 (BALL)
+        or 3..5 (FREE/DISTANCE); projecting them to DOF is a verbatim copy.
         """
         result: list[float] = []
         for j, jtype in enumerate(self.joint_type):
@@ -2160,6 +2164,41 @@ class ModelBuilder:
                 num_lin, num_ang = self.joint_dof_dim[j]
                 result.extend(self.joint_target_q[q_start : q_start + num_lin + num_ang])
         return result
+
+    @staticmethod
+    def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
+        """Build a unit quaternion from per-axis angular targets.
+
+        Treats ``t_x``, ``t_y``, ``t_z`` as rotation angles (radians) around
+        the X, Y, Z axes respectively, composed in extrinsic ZYX order: rotate
+        by ``t_z`` around world Z first, then ``t_y`` around world Y, then
+        ``t_x`` around world X. Matches
+        ``wp.quat_from_euler(wp.vec3(t_x, t_y, t_z), 2, 1, 0)`` — the same
+        convention used by kamino's ``target_dofs_to_coords_conversion_kernel``.
+
+        Args:
+            t_x: Per-axis target around the X axis (radians).
+            t_y: Per-axis target around the Y axis (radians).
+            t_z: Per-axis target around the Z axis (radians).
+
+        Returns:
+            Unit quaternion ``(qx, qy, qz, qw)`` in the storage order used by
+            ``joint_q`` for FREE/BALL/DISTANCE joints.
+        """
+        import math  # noqa: PLC0415
+
+        cx = math.cos(t_x * 0.5)
+        sx = math.sin(t_x * 0.5)
+        cy = math.cos(t_y * 0.5)
+        sy = math.sin(t_y * 0.5)
+        cz = math.cos(t_z * 0.5)
+        sz = math.sin(t_z * 0.5)
+        return (
+            sx * cy * cz + cx * sy * sz,  # qx
+            cx * sy * cz - sx * cy * sz,  # qy
+            cx * cy * sz + sx * sy * cz,  # qz
+            cx * cy * cz - sx * sy * sz,  # qw
+        )
 
     # endregion
 
@@ -3919,14 +3958,38 @@ class ModelBuilder:
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
 
-        if joint_type == JointType.BALL:
-            # Identity quaternion (x,y,z,w) = (0,0,0,1); axis-aligned DOF targets
-            # do not map cleanly to a target quaternion.
-            self.joint_target_q[target_q_offset + 3] = 1.0
-        elif joint_type in (JointType.FREE, JointType.DISTANCE):
-            for i, dim in enumerate(linear_axes):
-                self.joint_target_q[target_q_offset + i] = dim.target_pos
-            self.joint_target_q[target_q_offset + 6] = 1.0
+        if joint_type == JointType.BALL or joint_type == JointType.FREE or joint_type == JointType.DISTANCE:
+            # BALL: quat occupies slots 0..3.  FREE/DISTANCE: linear at 0..2, quat at 3..6.
+            if joint_type == JointType.BALL:
+                quat_offset = target_q_offset
+            else:
+                for i, dim in enumerate(linear_axes):
+                    self.joint_target_q[target_q_offset + i] = dim.target_pos
+                quat_offset = target_q_offset + 3
+
+            import newton  # noqa: PLC0415
+
+            if newton.use_coord_layout_targets:
+                # Convert the 3 per-axis angular targets into a unit quaternion
+                # via extrinsic ZYX composition — matches kamino's
+                # ``target_dofs_to_coords_conversion_kernel`` (which uses
+                # ``wp.quat_from_euler(angles, 2, 1, 0)``).
+                qx, qy, qz, qw = self._quat_from_axis_targets(
+                    angular_axes[0].target_pos,
+                    angular_axes[1].target_pos,
+                    angular_axes[2].target_pos,
+                )
+                self.joint_target_q[quat_offset + 0] = qx
+                self.joint_target_q[quat_offset + 1] = qy
+                self.joint_target_q[quat_offset + 2] = qz
+                self.joint_target_q[quat_offset + 3] = qw
+            else:
+                # Legacy DOF layout: keep the 3 raw per-axis targets in slots
+                # 0..2; ``_project_target_q_to_dof`` extracts them verbatim.
+                # The trailing w slot is unused (and dropped by the projection).
+                for i, dim in enumerate(angular_axes):
+                    self.joint_target_q[quat_offset + i] = dim.target_pos
+                self.joint_target_q[quat_offset + 3] = 1.0
         elif joint_type != JointType.FIXED:
             for i, dim in enumerate(linear_axes):
                 self.joint_target_q[target_q_offset + i] = dim.target_pos
