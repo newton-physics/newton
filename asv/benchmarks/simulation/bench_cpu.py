@@ -30,8 +30,8 @@ from benchmark_ik import build_ik_solver, create_franka_model, fk_targets, rando
 from benchmark_mujoco import Example as MuJoCoExample
 
 
-class CpuMuJoCoCartpole:
-    """MuJoCo (Warp CPU) cartpole — exercises mujoco_warp + Newton glue."""
+class CpuMuJoCoAnt:
+    """MuJoCo (Warp CPU) ant — exercises mujoco_warp + Newton glue with contacts and constraints."""
 
     repeat = 3
     number = 1
@@ -41,7 +41,7 @@ class CpuMuJoCoCartpole:
         with wp.ScopedDevice("cpu"):
             self.example = MuJoCoExample(
                 stage_path=None,
-                robot="cartpole",
+                robot="ant",
                 randomize=False,
                 headless=True,
                 actuation="None",
@@ -112,7 +112,7 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "CpuMuJoCoCartpole": CpuMuJoCoCartpole,
+        "CpuMuJoCoAnt": CpuMuJoCoAnt,
         "CpuXPBDQuadruped": CpuXPBDQuadruped,
         "CpuIKFranka": CpuIKFranka,
     }
