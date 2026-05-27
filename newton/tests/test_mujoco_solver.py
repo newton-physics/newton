@@ -14,6 +14,7 @@ import warp as wp
 import newton
 from newton import BodyFlags, JointType, Mesh
 from newton._src.core.types import vec5
+from newton._src.sensors.sensor_contact import SensorContact
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_KD,
     DEFAULT_LIMIT_KE,
@@ -10637,6 +10638,242 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             any("provided a single value" in str(w.message) and "range" in str(w.message) for w in caught),
             f"Non-whitelisted multi-component shorthand must warn; got: {[str(w.message) for w in caught]}",
         )
+
+
+class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
+    """Force-space ``shape_material_ke``/``shape_material_kd`` for the MuJoCo solver.
+
+    Issue #2009: MJCF/USD importers used to convert ``mjc:solref``
+    (acceleration space) directly into Newton ``shape_material_ke`` /
+    ``shape_material_kd`` (force space), corrupting the documented
+    semantics. The fix stores raw ``mjc:solref`` in the
+    ``mujoco.solref`` custom attribute and derives the per-contact
+    ``solref`` from Newton ke/kd plus ``body_invweight0[A] +
+    body_invweight0[B]`` in ``convert_newton_contacts_to_mjwarp_kernel``.
+
+    These tests cover the Newton-contacts pipeline
+    (``use_mujoco_contacts=False``, the default). ``use_mujoco_contacts=
+    True`` and the MuJoCo CPU backend remain unsupported for the
+    ``FORCE_SPACE`` mode because MuJoCo's internal contact_params
+    operates on per-geom ``solref`` and cannot reproduce a per-pair
+    inverse-mass sum from averaged values.
+    """
+
+    def _build_box_on_plane(self, *, mass: float, ke: float, kd: float):
+        builder = newton.ModelBuilder(gravity=-9.81)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_shape_cfg.ke = ke
+        builder.default_shape_cfg.kd = kd
+        builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, label="base")
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.6), wp.quat_identity()), label="dyn")
+        # Box half-extents 0.1 → volume 0.008 m³. Pick density so that the box
+        # mass matches the requested ``mass`` parameter.
+        density = mass / 0.008
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.ke = ke
+        cfg.kd = kd
+        cfg.density = density
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+        return builder.finalize(), body
+
+    def _average_contact_force(
+        self,
+        model,
+        solver,
+        body_label: str,
+        *,
+        sim_dt: float = 1.0 / 240.0,
+        warmup_steps: int = 470,
+        average_steps: int = 10,
+    ) -> float:
+        sensor = SensorContact(model, sensing_obj_bodies=[body_label])
+        contacts = newton.Contacts(
+            solver.get_max_contact_count(),
+            0,
+            device=model.device,
+            requested_attributes=model.get_requested_contact_attributes(),
+        )
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        for _ in range(warmup_steps):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+        force_z_acc = 0.0
+        for _ in range(average_steps):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+            solver.update_contacts(contacts, state_in)
+            sensor.update(state_in, contacts)
+            force_z_acc += float(sensor.total_force.numpy()[0, 2])
+        return force_z_acc / average_steps
+
+    def test_force_space_contact_normal_force_matches_mg(self):
+        """``shape_material_ke`` in force space: resting contact force equals ``m * g``.
+
+        Only the Newton-contacts (Warp) pipeline is exercised — the CPU
+        backend uses the legacy ``convert_solref(ke, kd, 1, 1)``
+        approximation that ignores both ``body_invweight0`` and ``dmax``.
+        """
+        mass = 5.0
+        model, _ = self._build_box_on_plane(mass=mass, ke=1.0e4, kd=100.0)
+        solver = SolverMuJoCo(model, njmax=20, iterations=10)
+        actual = self._average_contact_force(model, solver, "dyn")
+        expected = mass * 9.81
+        self.assertAlmostEqual(actual, expected, delta=expected * 0.01)
+
+    def test_force_space_contact_mass_independent(self):
+        """Same ``shape_material_ke`` → contact force tracks the body's mass."""
+        ke = 1.0e4
+        results = {}
+        for mass in (2.0, 5.0, 20.0):
+            model, _ = self._build_box_on_plane(mass=mass, ke=ke, kd=100.0)
+            solver = SolverMuJoCo(model, njmax=20, iterations=10)
+            actual = self._average_contact_force(model, solver, "dyn")
+            results[mass] = actual
+            self.assertAlmostEqual(actual, mass * 9.81, delta=mass * 9.81 * 0.01)
+        # Ratios match mass ratios because Newton's force-space contract is
+        # ``F_contact = ke * x`` and at rest ``x = m·g / ke``, so the resting
+        # force exactly equals ``m·g`` independently of ``ke``.
+        self.assertAlmostEqual(results[5.0] / results[2.0], 2.5, delta=0.05)
+
+    def test_force_space_contact_two_dynamic_bodies(self):
+        """Stacked dynamic bodies: bottom-body contact carries combined weight."""
+        builder = newton.ModelBuilder(gravity=-9.81)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_shape_cfg.ke = 1.0e4
+        builder.default_shape_cfg.kd = 100.0
+        builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, label="base")
+        bottom = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.4), wp.quat_identity()), label="bottom")
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.ke = 1.0e4
+        cfg.kd = 100.0
+        cfg.density = 1000.0
+        builder.add_shape_box(bottom, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)  # 8 kg (0.008 m³ * 1000 kg/m³)
+        top = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.7), wp.quat_identity()), label="top")
+        builder.add_shape_box(top, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)  # 8 kg (0.008 m³ * 1000 kg/m³)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, njmax=30, iterations=50)
+
+        sensor_base = SensorContact(model, sensing_obj_shapes=["base"])
+        contacts = newton.Contacts(
+            solver.get_max_contact_count(),
+            0,
+            device=model.device,
+            requested_attributes=model.get_requested_contact_attributes(),
+        )
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        sim_dt = 1.0 / 240.0
+        # Longer warmup than the single-body case: a stack of bodies with low
+        # damping ratio (kd=100 against m=16 effective mass gives ζ≈0.125)
+        # rings for ~1.6 s before settling.
+        for _ in range(950):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+        base_force_acc = 0.0
+        average_steps = 50
+        for _ in range(average_steps):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+            solver.update_contacts(contacts, state_in)
+            sensor_base.update(state_in, contacts)
+            base_force_acc += float(sensor_base.total_force.numpy()[0, 2])
+        base_force = base_force_acc / average_steps
+        # Base supports both bodies' weights; sensor reports force on base
+        # (downward, hence negative). Use absolute value for the comparison.
+        expected = (8.0 + 8.0) * 9.81
+        # 3% tolerance to absorb residual ringing in the lightly damped stack.
+        self.assertAlmostEqual(abs(base_force), expected, delta=expected * 0.03)
+
+    def test_mjcf_default_promotes_to_force_space_on_ke_edit(self):
+        """Editing ``shape_material_ke`` from MJCF default flips mode to FORCE_SPACE."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+        # Unauthored MJCF solref → MJCF_DEFAULT mode, sentinel solref.
+        np.testing.assert_array_equal(model.mujoco.solref_mode.numpy(), [SOLREF_MODE_MJCF_DEFAULT])
+        np.testing.assert_array_equal(model.mujoco.solref.numpy()[0], [0.0, 0.0])
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        # Mode is preserved through solver init.
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
+
+        # User edits ke away from the Newton default → mode flips to FORCE_SPACE.
+        ke = model.shape_material_ke.numpy()
+        ke[:] = 5000.0
+        model.shape_material_ke.assign(ke)
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_FORCE_SPACE)
+
+    def test_mjcf_authored_solref_preserved_as_raw(self):
+        """Authored MJCF ``solref`` stays as ``SOLREF_MODE_RAW`` and forwards unscaled."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <geom type="sphere" size="0.05" solref="0.05 0.5"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+        # ``mujoco.solref`` is stored as float32; allow a tight tolerance.
+        np.testing.assert_allclose(model.mujoco.solref.numpy()[0], [0.05, 0.5], rtol=1e-6, atol=1e-6)
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_RAW)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(
+            solver.mjw_model.geom_solref.numpy()[0, 0],
+            [0.05, 0.5],
+            rtol=1e-6,
+            atol=1e-6,
+            err_msg="RAW mode shapes must forward the authored mjc:solref into geom_solref unscaled",
+        )
+
+    def test_mjcf_authored_solref_does_not_promote_on_ke_edit(self):
+        """RAW mode is sticky: editing Newton ke/kd does not flip it to FORCE_SPACE."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <geom type="sphere" size="0.05" solref="0.05 0.5"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_RAW)
+
+        ke = model.shape_material_ke.numpy()
+        ke[:] = 5000.0
+        model.shape_material_ke.assign(ke)
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        # Authored MuJoCo data should not silently switch to Newton scaling.
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_RAW)
 
 
 if __name__ == "__main__":

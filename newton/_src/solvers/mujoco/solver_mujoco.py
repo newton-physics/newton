@@ -39,6 +39,9 @@ from .constants import (
     DEFAULT_LIMIT_KD,
     DEFAULT_LIMIT_KE,
     DEFAULT_LIMIT_SOLREF,
+    DEFAULT_SHAPE_GAIN_ATOL,
+    DEFAULT_SHAPE_KD,
+    DEFAULT_SHAPE_KE,
     HINGE_CONNECT_AXIS_OFFSET,
     KINEMATIC_ARMATURE,
     SOLREF_MODE_FORCE_SPACE,
@@ -7003,6 +7006,31 @@ class SolverMuJoCo(SolverBase):
         shape_geom_solmix = getattr(mujoco_attrs, "geom_solmix", None) if mujoco_attrs is not None else None
         shape_mjc_solref = getattr(mujoco_attrs, "solref", None) if mujoco_attrs is not None else None
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
+
+        # Auto-promote ``SOLREF_MODE_MJCF_DEFAULT`` shapes to
+        # ``SOLREF_MODE_FORCE_SPACE`` when the user has edited
+        # ``shape_material_ke``/``shape_material_kd`` away from Newton's
+        # defaults. Mirrors the per-DOF auto-promotion in
+        # ``_update_solref_from_invweight0`` for joint limits (PR #2610).
+        # Once promoted, ``update_geom_properties_kernel`` below derives
+        # ``geom_solref`` from the new ke/kd and
+        # ``convert_newton_contacts_to_mjwarp_kernel`` applies the per-contact
+        # ``body_invweight0`` scaling.
+        if shape_mjc_solref_mode is not None:
+            solref_mode_np = shape_mjc_solref_mode.numpy()
+            mjcf_default = solref_mode_np == SOLREF_MODE_MJCF_DEFAULT
+            if np.any(mjcf_default):
+                shape_ke_np = self.model.shape_material_ke.numpy()
+                shape_kd_np = self.model.shape_material_kd.numpy()
+                edited = mjcf_default & (
+                    ~np.isclose(shape_ke_np, DEFAULT_SHAPE_KE, rtol=0.0, atol=DEFAULT_SHAPE_GAIN_ATOL)
+                    | ~np.isclose(shape_kd_np, DEFAULT_SHAPE_KD, rtol=0.0, atol=DEFAULT_SHAPE_GAIN_ATOL)
+                )
+                if np.any(edited):
+                    solref_mode_np = np.array(solref_mode_np, copy=True)
+                    solref_mode_np[edited] = SOLREF_MODE_FORCE_SPACE
+                    shape_mjc_solref_mode.assign(solref_mode_np.astype(np.int32, copy=False))
+
         wp.launch(
             update_geom_properties_kernel,
             dim=(world_count, num_geoms),
