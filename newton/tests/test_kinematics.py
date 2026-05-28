@@ -1084,6 +1084,18 @@ def test_fk_ik_d6_left_handed_angular_axes(test, device):
     )
     assert_np_equal(np.array(rot), np.array(expected), tol=1e-6)
 
+    # Independent FK angular-velocity check so a matching regression in compute_3d_rotational_dofs
+    # and invert_3d_rotational_dofs cannot mask itself via the FK->IK round-trip below.
+    q_0 = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(q_vals[0]))
+    axis_1_w = wp.quat_rotate(q_0, wp.vec3(0.0, 0.0, 1.0))
+    q_1 = wp.quat_from_axis_angle(axis_1_w, float(q_vals[1]))
+    axis_2_w = wp.quat_rotate(q_1 * q_0, wp.vec3(0.0, 1.0, 0.0))
+    expected_w = np.array(
+        wp.vec3(1.0, 0.0, 0.0) * float(qd_vals[0]) + axis_1_w * float(qd_vals[1]) + axis_2_w * float(qd_vals[2]),
+        dtype=np.float32,
+    )
+    assert_np_equal(state.body_qd.numpy()[child][3:6], expected_w, tol=1e-6)
+
     q_ik = wp.zeros_like(model.joint_q, device=device)
     qd_ik = wp.zeros_like(model.joint_qd, device=device)
     newton.eval_ik(model, state, q_ik, qd_ik)
