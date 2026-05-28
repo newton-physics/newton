@@ -591,8 +591,8 @@ def _initialize_jacobian_update_masks(
         newton_mask: Flag indicating whether Gauss-Newton is still running per world.
         min_iterations: Minimal number of Newton iterations per world.
     Outputs:
-        jacobian_early_update_mask: Flag set to 1 in worlds needing an early Jacobian update.
-        jacobian_late_update_mask: Flag set to 1 in worlds needing a late Jacobian update.
+        jacobian_early_update_mask: Flag set to True in worlds needing an early Jacobian update.
+        jacobian_late_update_mask: Flag set to True in worlds needing a late Jacobian update.
 
     """
     wd_id = wp.tid()  # Get thread id (= world index)
@@ -1800,7 +1800,7 @@ def _line_search_check(
         max_iterations: Max iterations (size 1 array)
     Outputs:
         line_search_success: Convergence per world
-        line_search_mask: Per-world flag to continue line search (0 = skip)
+        line_search_mask: Per-world flag to continue line search (True = continue, False = skip)
         line_search_loop_condition: Loop condition; must be zero-initialized (size 1 array)
     """
     wd_id = wp.tid()  # Thread index (= world index)
@@ -1851,8 +1851,8 @@ def _newton_check(
         newton_success: Convergence per world
         newton_mask: Flag to keep iterating per world
         newton_loop_condition: Loop condition; must be zero-initialized (size 1 array)
-        jacobian_early_update_mask: Optional mask, set to 1 in worlds needing an early Jacobian update
-        jacobian_late_update_mask: Optional mask, set to 1 in worlds needing a late Jacobian update
+        jacobian_early_update_mask: Optional mask, set to True in worlds needing an early Jacobian update
+        jacobian_late_update_mask: Optional mask, set to True in worlds needing a late Jacobian update
     """
     wd_id = wp.tid()  # Thread index (= world index)
     if wd_id < max_residual.shape[0] and newton_mask[wd_id]:

@@ -54,7 +54,7 @@ def _reset_time_of_select_worlds(
     wid = wp.tid()
 
     # Skip resetting time if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Reset both the physical time and step count to zero
@@ -82,7 +82,7 @@ def _reset_body_state_of_select_worlds(
     wid = model_body_wid[bid]
 
     # Skip resetting this body if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Retrieve the target state for this body
@@ -117,7 +117,7 @@ def _reset_body_state_from_base(
     wid = model_body_wid[bid]
 
     # Skip resetting this body if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Retrieve the index of the base body for this world
@@ -184,7 +184,7 @@ def _reset_joint_state_of_select_worlds(
     wid = model_joint_wid[jid]
 
     # Skip resetting this joint if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Retrieve the joint model data
@@ -232,7 +232,7 @@ def _set_joint_state_of_select_worlds(
     wid = model_joint_wid[jid]
 
     # Skip writing this joint's state if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Write the joint's coordinate block to both `q` and `q_p` (TWOPI reference)
@@ -329,7 +329,7 @@ def _reset_body_net_wrenches(
     wid = body_wid[bid]
 
     # Skip resetting this body if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Zero-out wrenches
@@ -355,7 +355,7 @@ def _reset_joint_constraint_reactions(
     wid = model_joint_wid[jid]
 
     # Early exit the operation if the joint's world is flagged as skipped or if the joint is not actuated
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Retrieve the joint model data

@@ -93,7 +93,7 @@ def _reset_solver_data(
     maxncts = problem_maxdim[wid]
 
     # Skip operation if the world is masked out
-    if world_mask[wid] == 0 or tid >= maxncts:
+    if not world_mask[wid] or tid >= maxncts:
         return
 
     # Retrieve the index offset of the vector block of the world

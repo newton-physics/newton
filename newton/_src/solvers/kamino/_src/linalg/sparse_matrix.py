@@ -445,7 +445,8 @@ class BlockSparseMatrices:
         Sets non-zero block data to zero, for all or a subset of the matrices.
 
         Args:
-            matrix_mask (optional): Per-matrix truth mask indicating if it should be set to zero.
+            matrix_mask (optional): Per-matrix mask selecting which matrices to zero;
+                                    matrices with a truthy entry are zeroed, falsy / zero entries are left unchanged.
                                     If not provided, all matrices are set to zero.
                                     Shape of ``(num_matrices,)``.
         """

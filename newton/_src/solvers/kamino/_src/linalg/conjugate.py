@@ -520,7 +520,7 @@ class ConjugateSolver:
     Args:
         A: Linear operator representing the system matrix.
         active_dims: Active dimension per world. If None, uses A.active_dims.
-        world_active: Truth mask indicating which worlds are active or inactive.
+        world_active: Per-world mask indicating which worlds are active (truthy) or inactive (falsy / zero).
         atol: Absolute tolerance for convergence. Scalar or per-world array.
         rtol: Relative tolerance for convergence. Scalar or per-world array.
         maxiter: Maximum iterations per world. If None, defaults to 1.5 * maxdims.

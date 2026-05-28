@@ -917,7 +917,7 @@ def _extract_actuators_state_from_joints(
     act_type = model_joint_act_type[jid]
 
     # Early exit the operation if the joint's world is flagged as skipped or if the joint is not actuated
-    if world_mask[wid] == 0 or act_type == JointActuationType.PASSIVE:
+    if not world_mask[wid] or act_type == JointActuationType.PASSIVE:
         return
 
     # Retrieve the joint model data
@@ -964,7 +964,7 @@ def _extract_joints_state_from_actuators(
     act_type = model_joint_act_type[jid]
 
     # Early exit the operation if the joint's world is flagged as skipped or if the joint is not actuated
-    if world_mask[wid] == 0 or act_type == JointActuationType.PASSIVE:
+    if not world_mask[wid] or act_type == JointActuationType.PASSIVE:
         return
 
     # Retrieve the joint model data

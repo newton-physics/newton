@@ -626,7 +626,7 @@ def _add_matrix_diag_product(
     world_id, ct_id = wp.tid()
 
     # Terminate early if world or constraint is inactive
-    if world_mask[world_id] == 0 or ct_id >= model_data_num_total_cts[world_id]:
+    if not world_mask[world_id] or ct_id >= model_data_num_total_cts[world_id]:
         return
 
     idx = row_start[world_id] + ct_id
