@@ -21,13 +21,13 @@ from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
 from ..sim import EqType, JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
-from ..usd.schemas import solref_to_stiffness_damping
-from ._mjc_equality import (
+from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
     mjc_mimic_eq_custom_attrs,
     mjc_parse_polycoef,
     mjc_polycoef_has_higher_order,
 )
+from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
 from .import_utils import (
     is_xml_content,

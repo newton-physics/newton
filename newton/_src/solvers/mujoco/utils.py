@@ -8,8 +8,8 @@ from typing import Any
 
 import warp as wp
 
-from ..core.types import vec5
-from ..sim.enums import EqType
+from ...core.types import vec5
+from ...sim.enums import EqType
 
 
 def mjc_eq_solref(custom_attrs: dict[str, Any]) -> wp.vec2:
