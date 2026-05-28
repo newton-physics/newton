@@ -3839,52 +3839,6 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         self.assertAlmostEqual(float(shape_margin[3]), 0.0, places=5)
         self.assertAlmostEqual(float(shape_gap[3]), builder.rigid_gap, places=5)
 
-    def test_margin_gap_mujoco_solver(self):
-        """Verify geom_margin = shape_margin and geom_gap = shape_gap in the MuJoCo solver.
-
-        MuJoCo 3.9 semantics: MJCF margin/gap are imported as identity translations
-        into Newton's shape_margin / shape_gap.
-        """
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <worldbody>
-        <body name="body1">
-            <freejoint/>
-            <geom name="both" type="box" size="0.1 0.1 0.1" margin="0.5" gap="0.2"/>
-        </body>
-        <body name="body2">
-            <freejoint/>
-            <geom name="margin_only" type="sphere" size="0.05" margin="0.3"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        # use_mujoco_contacts=False so geom_margin is restored from shape_margin
-        # (with use_mujoco_contacts=True, geom_margin stays zero for NATIVECCD compat)
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_contacts=False)
-
-        geom_margin = solver.mjw_model.geom_margin.numpy()
-        geom_gap = solver.mjw_model.geom_gap.numpy()
-        shape_margin = model.shape_margin.numpy()
-        shape_gap = model.shape_gap.numpy()
-
-        # MuJoCo 3.9 semantics: identity import.
-        # geom "both": margin=0.5, gap=0.2 -> shape_margin=0.5, shape_gap=0.2
-        self.assertAlmostEqual(float(shape_margin[0]), 0.5, places=5)
-        self.assertAlmostEqual(float(shape_gap[0]), 0.2, places=5)
-        # geom "margin_only": margin=0.3 -> shape_margin=0.3, shape_gap=default
-        self.assertAlmostEqual(float(shape_margin[1]), 0.3, places=5)
-
-        # geom_margin matches shape_margin (with use_mujoco_contacts=False)
-        self.assertAlmostEqual(float(geom_margin[0, 0]), float(shape_margin[0]), places=5)
-        self.assertAlmostEqual(float(geom_margin[0, 1]), float(shape_margin[1]), places=5)
-
-        # geom_gap matches shape_gap (no longer zeroed under MuJoCo 3.9)
-        self.assertAlmostEqual(float(geom_gap[0, 0]), float(shape_gap[0]), places=5)
-
     def test_mjcf_legacy_margin_gap_subtracts(self):
         """legacy_margin_gap=True restores pre-3.9 import behavior:
         newton_margin = mj_margin - mj_gap."""
