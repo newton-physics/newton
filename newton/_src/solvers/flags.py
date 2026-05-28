@@ -4,7 +4,7 @@
 """Solver flags."""
 
 import warnings
-from enum import EnumType, IntFlag
+from enum import EnumMeta, IntFlag
 
 
 class SolverModelFlags(IntFlag):
@@ -86,7 +86,7 @@ class SolverStateFlags(IntFlag):
     """Indicates all state attributes should be reset."""
 
 
-class _DeprecatedSolverNotifyFlagsMeta(EnumType):
+class _DeprecatedSolverNotifyFlagsMeta(EnumMeta):
     def __getattribute__(cls, name: str):
         value = super().__getattribute__(name)
         if not name.startswith("_"):
