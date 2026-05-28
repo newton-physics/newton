@@ -78,6 +78,8 @@ For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves each inert
    is used.
 3. When ``physics:mass`` is authored but inertia is not, the inertia
    accumulated from collision shapes is scaled by ``authored_mass / accumulated_mass``.
+   Shell colliders (``newton:massModel = "shell"``) contribute shell-derived inertia to the
+   accumulation before this scaling is applied.
 4. For any remaining unresolved properties, Newton falls back to
    ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)``.
    In this fallback path, collider contributions use a two-level precedence:

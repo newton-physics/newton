@@ -89,7 +89,7 @@ class SchemaResolverNewton(SchemaResolver):
             "kd": SchemaAttribute("newton:contact_kd", None),
             # Mass model
             "mass_model": SchemaAttribute("newton:massModel", "solid"),
-            "shell_thickness": SchemaAttribute("newton:shellThickness"),
+            "shell_thickness": SchemaAttribute("newton:shellThickness", float("-inf")),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {

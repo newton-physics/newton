@@ -3982,6 +3982,25 @@ def Xform "SingularTensor" (
         double radius = 0.5
     }
 }
+
+# 10) newton:inertia without physics:diagonalInertia
+def Xform "TensorOnly" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (18, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 4.0
+    double[] newton:inertia = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
 """
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
@@ -3991,8 +4010,8 @@ def Xform "SingularTensor" (
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
 
-        self.assertEqual(builder.body_count, 9)
-        self.assertEqual(builder.shape_count, 9)
+        self.assertEqual(builder.body_count, 10)
+        self.assertEqual(builder.shape_count, 10)
 
         # --- 1) Shell + thickness + authored mass: inertia from shell geometry, scaled ---
         body_id = builder.body_label.index("/ShellThicknessMass")
@@ -4080,6 +4099,13 @@ def Xform "SingularTensor" (
         np.testing.assert_allclose(inertia, expected, atol=1e-5)
         inv_inertia = np.array(builder.body_inv_inertia[body_id]).reshape(3, 3)
         np.testing.assert_allclose(inv_inertia, np.zeros((3, 3)), atol=1e-7)
+
+        # --- 10) newton:inertia without physics:diagonalInertia ---
+        body_id = builder.body_label.index("/TensorOnly")
+        self.assertAlmostEqual(builder.body_mass[body_id], 4.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
+        np.testing.assert_allclose(inertia, expected, atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_inertia_tensor_validation(self):
