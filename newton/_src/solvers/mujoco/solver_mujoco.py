@@ -462,6 +462,41 @@ class SolverMuJoCo(SolverBase):
         # This is required as custom frequencies must be registered before use
 
         # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
+        deprecated_dof_passive_damping_message = (
+            "Model.mujoco.dof_passive_damping is deprecated and will be removed in a future release. "
+            "Use Model.joint_damping instead."
+        )
+
+        def finalize_deprecated_dof_passive_damping(
+            _builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute
+        ) -> None:
+            if custom_attr.values:
+                joint_damping = model.joint_damping.numpy()
+                if isinstance(custom_attr.values, dict):
+                    damping_items = custom_attr.values.items()
+                else:
+                    damping_items = enumerate(custom_attr.values)
+
+                for index, value in damping_items:
+                    if value is None:
+                        continue
+                    joint_damping[int(index)] = float(value)
+                model.joint_damping.assign(joint_damping)
+
+            if custom_attr.namespace is None:
+                raise ValueError(f"Deprecated attribute alias '{custom_attr.name}' requires a namespace")
+
+            if not hasattr(model, custom_attr.namespace):
+                setattr(model, custom_attr.namespace, Model.AttributeNamespace(custom_attr.namespace))
+
+            ns_obj = getattr(model, custom_attr.namespace)
+            ns_obj.add_deprecated_alias(
+                custom_attr.name,
+                lambda model=model: model.joint_damping,
+                deprecated_dof_passive_damping_message,
+            )
+            model.attribute_frequency[custom_attr.key] = custom_attr.frequency
+            model.attribute_assignment[custom_attr.key] = custom_attr.assignment
 
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
@@ -614,6 +649,8 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                # Deprecated alias for Model.joint_damping. Kept registered so
+                # legacy MJCF/USD parsing and model access continue to work.
                 name="dof_passive_damping",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
@@ -623,6 +660,10 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:damping",
                 mjcf_attribute_name="damping",
             )
+        )
+        builder._add_custom_attribute_model_finalizer(
+            "mujoco:dof_passive_damping",
+            finalize_deprecated_dof_passive_damping,
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -4180,7 +4221,7 @@ class SolverMuJoCo(SolverBase):
         joint_dof_solref = get_custom_attribute("solreffriction")
         joint_dof_solimp = get_custom_attribute("solimpfriction")
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
-        joint_damping = get_custom_attribute("dof_passive_damping")
+        joint_damping = model.joint_damping.numpy() if model.joint_damping is not None else None
         joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
         body_gravcomp = get_custom_attribute("gravcomp")
         joint_springref = get_custom_attribute("dof_springref")
@@ -5909,7 +5950,6 @@ class SolverMuJoCo(SolverBase):
 
         # Update DOF properties (armature, friction, damping, solimp, solref) - iterate over MuJoCo DOFs
         mujoco_attrs = getattr(self.model, "mujoco", None)
-        joint_damping = getattr(mujoco_attrs, "dof_passive_damping", None) if mujoco_attrs is not None else None
         dof_solimp = getattr(mujoco_attrs, "solimpfriction", None) if mujoco_attrs is not None else None
         dof_solref = getattr(mujoco_attrs, "solreffriction", None) if mujoco_attrs is not None else None
 
@@ -5924,7 +5964,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.body_flags,
                 self.model.joint_armature,
                 self.model.joint_friction,
-                joint_damping,
+                self.model.joint_damping,
                 dof_solimp,
                 dof_solref,
             ],

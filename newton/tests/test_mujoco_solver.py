@@ -1301,7 +1301,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
     def test_dof_passive_stiffness_damping_multiworld(self):
         """
-        Verify that dof_passive_stiffness and dof_passive_damping propagate correctly:
+        Verify that dof_passive_stiffness and joint_damping propagate correctly:
         1. Different per-world values survive conversion to MuJoCo.
         2. notify_model_changed updates all worlds consistently.
         """
@@ -1348,7 +1348,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 initial_damping[global_idx] = 0.4 + 0.02 * dof_idx + 0.3 * world_idx
 
         model.mujoco.dof_passive_stiffness.assign(initial_stiffness)
-        model.mujoco.dof_passive_damping.assign(initial_damping)
+        model.joint_damping.assign(initial_damping)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
@@ -1395,7 +1395,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         updated_damping = initial_damping + 0.3 + 0.03 * np.arange(model.joint_dof_count, dtype=np.float32)
 
         model.mujoco.dof_passive_stiffness.assign(updated_stiffness)
-        model.mujoco.dof_passive_damping.assign(updated_damping)
+        model.joint_damping.assign(updated_damping)
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         assert_passive_values(updated_stiffness, updated_damping)
@@ -5927,8 +5927,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         model = builder.finalize()
 
         assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "dof_passive_damping")
-        damping_values = model.mujoco.dof_passive_damping.numpy()
+        damping_values = model.joint_damping.numpy()
         # 6 DOFs from floating base (all 0.0) + 1 DOF from revolute joint (5.0)
         assert damping_values[-1] == 5.0, f"Expected last DOF damping to be 5.0, got {damping_values}"
 
