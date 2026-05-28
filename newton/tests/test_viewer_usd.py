@@ -119,6 +119,31 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(interpolation, UsdGeom.Tokens.constant)
         np.testing.assert_allclose(widths, np.array([0.2], dtype=np.float32), atol=1e-6)
 
+    def test_log_points_renders_as_point_instancer_when_points_as_spheres_set(self):
+        temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
+        temp_file.close()
+        self.addCleanup(lambda: os.path.exists(temp_file.name) and os.remove(temp_file.name))
+        viewer = ViewerUSD(output_path=temp_file.name, num_frames=1, points_as_spheres=True)
+        self.addCleanup(viewer.close)
+        self.addCleanup(lambda: setattr(viewer, "output_path", ""))
+
+        viewer.begin_frame(0.0)
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.2, 0.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        path = viewer.log_points("/spheres", points, radii=0.05)
+
+        # Should be a PointInstancer with a sphere prototype, not a flat Points prim.
+        instancer = UsdGeom.PointInstancer.Get(viewer.stage, path)
+        self.assertTrue(instancer)
+        self.assertFalse(UsdGeom.Points.Get(viewer.stage, path))
+        self.assertTrue(UsdGeom.Sphere.Get(viewer.stage, path.AppendChild("sphere")))
+
+        # Scalar radii broadcast to per-point (3,) scales.
+        scales = np.asarray(instancer.GetScalesAttr().Get(viewer._frame_index), dtype=np.float32)
+        np.testing.assert_allclose(scales, np.full((3, 3), 0.05, dtype=np.float32), atol=1e-6)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
