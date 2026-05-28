@@ -691,57 +691,6 @@ def ray_intersect_mesh_no_transform(
 
 
 @wp.func
-def ray_for_pixel(
-    camera_position: wp.vec3,
-    camera_direction: wp.vec3,
-    camera_up: wp.vec3,
-    camera_right: wp.vec3,
-    fov_scale: float,
-    camera_aspect_ratio: float,
-    resolution: wp.vec2,
-    pixel_x: int,
-    pixel_y: int,
-):
-    """Generate a ray for a given pixel in a perspective camera.
-
-    Args:
-        camera_position: Camera position in world space
-        camera_direction: Camera forward direction (normalized)
-        camera_up: Camera up direction (normalized)
-        camera_right: Camera right direction (normalized)
-        fov_scale: Scale factor for field of view, ``tan(fov_radians/2)``
-        camera_aspect_ratio: Width/height aspect ratio
-        resolution: Image resolution as (width, height)
-        pixel_x: Pixel x coordinate (0 to width-1)
-        pixel_y: Pixel y coordinate (0 to height-1)
-
-    Returns:
-        Tuple of (ray_origin, ray_direction) in world space, direction normalized.
-    """
-    width = resolution[0]
-    height = resolution[1]
-
-    # Convert to normalized coordinates [-1, 1] with (0,0) at center
-    ndc_x = (2.0 * float(pixel_x) + 1.0) / width - 1.0
-    ndc_y = 1.0 - (2.0 * float(pixel_y) + 1.0) / height  # Flip Y axis
-
-    # Apply field of view and aspect ratio
-    cam_x = ndc_x * fov_scale * camera_aspect_ratio
-    cam_y = ndc_y * fov_scale
-    cam_z = 1.0  # Forward is negative Z in camera space (camera_direction already looks at -Z)
-
-    ray_dir_camera = wp.vec3(cam_x, cam_y, cam_z)
-
-    # Transform ray direction from camera to world space
-    ray_direction_world = (
-        camera_right * ray_dir_camera[0] + camera_up * ray_dir_camera[1] + camera_direction * ray_dir_camera[2]
-    )
-    ray_direction_world = wp.normalize(ray_direction_world)
-
-    return camera_position, ray_direction_world
-
-
-@wp.func
 def ray_intersect_geom(
     geom_to_world: wp.transform,
     size: wp.vec3,
