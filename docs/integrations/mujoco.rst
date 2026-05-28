@@ -201,10 +201,9 @@ array; slot layout depends on the constraint type.
        :attr:`~newton.JointType.REVOLUTE` and
        :attr:`~newton.JointType.PRISMATIC` joints are supported.
 
-**Loop closures.** Newton joints with no associated articulation
-(``joint_articulation == -1``) are treated as loop closures rather than
-tree joints. They are not emitted as MuJoCo joints; instead, the solver
-synthesises equality constraints:
+**Loop closures.** Loop-closing joints (see :ref:`Loop closure` for the
+general authoring pattern) are not emitted as MuJoCo joints; instead the
+solver synthesises MuJoCo equality constraints from them:
 
 - :attr:`~newton.JointType.FIXED` → ``mjEQ_WELD`` (constrains all 6 DOFs).
 - :attr:`~newton.JointType.REVOLUTE` → two ``mjEQ_CONNECT`` constraints,
@@ -213,9 +212,7 @@ synthesises equality constraints:
 - :attr:`~newton.JointType.BALL` → one ``mjEQ_CONNECT`` (3 translational
   DOFs constrained, all 3 rotational DOFs free).
 
-Other joint types in this configuration are not supported and produce a
-warning. Loop-joint DOFs and coordinates are excluded from MuJoCo's
-``nq`` / ``nv``.
+Loop-joint DOFs and coordinates are excluded from MuJoCo's ``nq`` / ``nv``.
 
 
 Tendons
