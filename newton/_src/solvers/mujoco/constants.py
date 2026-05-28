@@ -5,8 +5,17 @@
 
 from __future__ import annotations
 
-DEFAULT_LIMIT_GAIN_ATOL = 1.0e-4
-"""Absolute tolerance for detecting imported MuJoCo default joint-limit gains."""
+DEFAULT_LIMIT_GAIN_RTOL = 1.0e-5
+"""Relative tolerance for detecting imported MuJoCo default joint-limit gains.
+
+Used to recognise the ``shape_material_ke`` / ``shape_material_kd`` values
+that result from importing MuJoCo's implicit default ``solreflimit``
+(``(0.02, 1.0)``), so that ``SOLREF_MODE_MJCF_DEFAULT`` joints stay in
+the "preserve compile-time default" state until the user actually
+edits the gains. A relative tolerance lets the threshold scale with the
+default magnitudes ``DEFAULT_LIMIT_KE = 2500`` and
+``DEFAULT_LIMIT_KD = 100`` instead of being invisible at ``ke≈2500``.
+"""
 
 DEFAULT_LIMIT_KD = 100.0
 """Newton damping gain equivalent to MuJoCo's implicit default joint-limit solref."""

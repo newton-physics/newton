@@ -9770,7 +9770,15 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         np.testing.assert_allclose(solver.mjw_model.jnt_solref.numpy()[0, 0], expected_solref, rtol=0.0, atol=0.0)
 
     def test_saved_mjcf_and_mj_model_use_scaled_joint_limit_solref(self):
-        """The host ``MjModel`` and exported MJCF must match the scaled warp ``jnt_solref``."""
+        """Force-space joints get the scaled ``jnt_solref`` in ``MjModel`` but no ``solreflimit`` in MJCF.
+
+        ``save_to_mjcf`` writes ``solreflimit`` only for ``SOLREF_MODE_RAW``
+        joints (issue #2009 review item I6): re-importing a scaled
+        ``solreflimit`` would silently freeze the Newton force-space gains
+        because the MJCF parser sets ``SOLREF_MODE_RAW`` on every authored
+        ``solreflimit`` and the runtime ``jnt_solref`` would no longer
+        follow ``joint_limit_ke``/``kd``.
+        """
         ke = 10000.0
         kd = 100.0
         model = self._build_pendulum_model(mass=2.0, ke=ke, kd=kd, inertia=0.5)
@@ -9785,18 +9793,32 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             factor = dof_invweight0 * (1.0 - dmax)
             expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
 
+            # Runtime ``MjModel`` still carries the scaled solref so MuJoCo
+            # produces the right force at this instant.
             np.testing.assert_allclose(solver.mj_model.jnt_solref[0], expected_solref, rtol=1e-6, atol=1e-6)
 
+            # Exported MJCF must NOT author ``solreflimit`` for this
+            # ``SOLREF_MODE_FORCE_SPACE`` joint (builder-API default).
             tree = ET.parse(xml_path)
             joint = next(tree.iter("joint"))
-            solref = np.array([float(x) for x in joint.get("solreflimit").split()], dtype=np.float64)
-            np.testing.assert_allclose(solref, expected_solref, rtol=1e-6, atol=1e-6)
+            self.assertIsNone(
+                joint.get("solreflimit"),
+                "FORCE_SPACE joints must not persist a scaled solreflimit into the saved MJCF",
+            )
         finally:
             os.unlink(xml_path)
 
     def test_saved_mjcf_does_not_write_limit_solref_to_unlimited_joints(self):
-        """Runtime-scaled limit ``solref`` should only be authored for joints with active limits."""
+        """``solreflimit`` is exported only for RAW joints with active limits.
+
+        After the I6 fix (issue #2009): ``SOLREF_MODE_FORCE_SPACE`` and
+        ``SOLREF_MODE_MJCF_DEFAULT`` joints intentionally skip the
+        ``solreflimit`` write to preserve round-trip semantics; unlimited
+        joints are also skipped (they have no limit to author). Authored
+        RAW solreflimit values still survive the export.
+        """
         builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(builder)
         inertia = wp.mat33(np.eye(3) * 0.5)
         link_a = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia, label="link_a")
         link_b = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia, label="link_b")
@@ -9821,6 +9843,15 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         builder.add_articulation([limited, unlimited])
         model = builder.finalize()
 
+        # Promote the limited joint to RAW with an authored solreflimit so
+        # the export path has something to persist.
+        mode = model.mujoco.solreflimit_mode.numpy()
+        solref = model.mujoco.solreflimit.numpy()
+        mode[0] = SOLREF_MODE_RAW
+        solref[0] = np.array([0.03, 0.7], dtype=np.float32)
+        model.mujoco.solreflimit_mode.assign(mode)
+        model.mujoco.solreflimit.assign(wp.array(solref, dtype=wp.vec2, device=model.device))
+
         with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
             xml_path = f.name
         try:
@@ -9830,8 +9861,14 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             joints = {joint.get("name"): joint for joint in tree.iter("joint")}
             self.assertIn("limited", joints)
             self.assertIn("unlimited", joints)
-            self.assertIsNotNone(joints["limited"].get("solreflimit"))
-            self.assertIsNone(joints["unlimited"].get("solreflimit"))
+            self.assertIsNotNone(
+                joints["limited"].get("solreflimit"),
+                "RAW joint with authored solreflimit must be exported",
+            )
+            self.assertIsNone(
+                joints["unlimited"].get("solreflimit"),
+                "Unlimited joint must not author solreflimit",
+            )
         finally:
             os.unlink(xml_path)
 
@@ -10032,6 +10069,88 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
 
                 self.assertFalse(np.allclose(actual_solref, [0.03, 0.7]))
                 np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
+
+    def test_joint_limit_solref_scales_per_dof_on_multi_dof_joint(self):
+        """Multi-DOF joints scale ``jnt_solref`` independently per DOF.
+
+        Exercises the ``jnt_dofadr`` lookup and the per-``mjc_jnt`` →
+        ``newton_dof`` mapping in ``update_jnt_solref_from_invweight0_kernel``
+        for a D6 joint with three angular DOFs. Each DOF gets a distinct
+        ``joint_limit_ke``/``kd`` pair so the per-DOF scaling can be observed
+        in the resulting ``jnt_solref`` rows.
+        """
+        builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(builder)
+        inertia = wp.mat33(np.eye(3) * 0.3)
+        link = builder.add_link(
+            mass=1.5,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=inertia,
+            label="link",
+        )
+        # Three angular DOFs with distinct gains so per-DOF scaling is
+        # observable in the output. Limits must be finite so MuJoCo emits a
+        # ``jnt_limited`` slot per DOF.
+        ke_x, kd_x = 5000.0, 50.0
+        ke_y, kd_y = 12000.0, 120.0
+        ke_z, kd_z = 8000.0, 80.0
+        cfg_x = newton.ModelBuilder.JointDofConfig(
+            axis=wp.vec3(1.0, 0.0, 0.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=ke_x,
+            limit_kd=kd_x,
+        )
+        cfg_y = newton.ModelBuilder.JointDofConfig(
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=ke_y,
+            limit_kd=kd_y,
+        )
+        cfg_z = newton.ModelBuilder.JointDofConfig(
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=ke_z,
+            limit_kd=kd_z,
+        )
+        j = builder.add_joint_d6(parent=-1, child=link, angular_axes=[cfg_x, cfg_y, cfg_z])
+        builder.add_articulation([j])
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # MuJoCo expands the D6 into three single-DOF joints. ``jnt_solref``
+        # rows must reflect each DOF's own ke/kd, scaled by that DOF's
+        # ``dof_invweight0`` and the per-joint ``solimp[1]``.
+        jnt_solref = solver.mjw_model.jnt_solref.numpy()[0]
+        dof_invweight0 = solver.mjw_model.dof_invweight0.numpy()[0]
+        jnt_solimp = solver.mjw_model.jnt_solimp.numpy()[0]
+        jnt_dofadr = solver.mjw_model.jnt_dofadr.numpy()
+
+        expected_gains = [(ke_x, kd_x), (ke_y, kd_y), (ke_z, kd_z)]
+        self.assertGreaterEqual(jnt_solref.shape[0], 3)
+        for mjc_jnt, (ke, kd) in enumerate(expected_gains):
+            dof_idx = int(jnt_dofadr[mjc_jnt])
+            invw = float(dof_invweight0[dof_idx])
+            dmax = float(jnt_solimp[mjc_jnt][1])
+            factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
+            expected = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+            np.testing.assert_allclose(
+                jnt_solref[mjc_jnt],
+                expected,
+                rtol=1e-5,
+                atol=1e-6,
+                err_msg=f"D6 DOF {mjc_jnt}: expected scaled solref {expected.tolist()}, "
+                f"got {jnt_solref[mjc_jnt].tolist()}",
+            )
+
+        # Each DOF's solref is distinct (the three ke/kd pairs differ), which
+        # implicitly verifies that the kernel uses ``jnt_dofadr`` rather than
+        # broadcasting a single DOF's gain across the joint.
+        self.assertFalse(np.allclose(jnt_solref[0], jnt_solref[1]))
+        self.assertFalse(np.allclose(jnt_solref[1], jnt_solref[2]))
 
 
 if __name__ == "__main__":
