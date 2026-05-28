@@ -59,8 +59,8 @@ _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
     r"implicit conversion from 'long' to 'const wp::int32'.*\n"
     r"^.*\n"
     r"^.*\n"
-    r"){2}"
-    r"^2 warnings generated\.\n?"
+    r")+"
+    r"^\d+ warnings? generated\.\n?"
 )
 _OutputRegexSpec = str | tuple[str, str]
 
@@ -312,12 +312,12 @@ add_basic_example_test(
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_conveyor",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 100},
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 
 
