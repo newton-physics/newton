@@ -1107,6 +1107,7 @@ class Example:
                 limit_kd=self.shoe_joint_limit_kd,
                 friction=self.shoe_joint_friction,
                 label="foot_to_midsole_vertical_slide",
+                collision_filter_parent=False,
             )
 
             builder.add_articulation(

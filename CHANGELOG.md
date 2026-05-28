@@ -4,6 +4,7 @@
 
 ### Added
 - Add interactive foot alignment GUI setup to `example_hydro_shoe.py` when using the standard OpenGL/imgui viewer (`ViewerGL`) or Viser viewer, supporting real-time roll, pitch, yaw, and translation offset sliders, configuration loading/saving next to the midsole OBJ file, and CLI arguments for default alignment.
+- Enable narrowphase foot-midsole collisions and contact rendering in `example_hydro_shoe.py` by disabling parent-child joint filtering.
 - Add opt-in `validate_mesh` parameter to `ModelBuilder.add_cloth_mesh()`, `ModelBuilder.add_soft_mesh()`, and `style3d.add_cloth_mesh()` that warns on degenerate geometry; add public `newton.utils.validate_triangle_mesh()` and `newton.utils.validate_tet_mesh()` utilities
 - Add `ViewerGL.show_loading_splash()` / `ViewerGL.hide_loading_splash()` displaying a stylized Newton's-cradle overlay while the GL viewer waits on Warp kernel compilation; raised automatically by `newton.examples.init()` for visible GL viewers
 
