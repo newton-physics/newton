@@ -5580,6 +5580,7 @@ class SolverMuJoCo(SolverBase):
             eq.active = bool(mimic_enabled[i])
             eq.name1 = j0_name  # follower (constrained joint)
             eq.name2 = j1_name  # leader (driving joint)
+            mjc_eq_to_newton_mimic_dict[eq.id] = i
             if mimic_eq_preserve is not None and bool(mimic_eq_preserve[i]):
                 eq.data[0:5] = mimic_eq_polycoef[i]
                 if mimic_eq_solref is not None:
@@ -5594,7 +5595,6 @@ class SolverMuJoCo(SolverBase):
                 eq.data[2] = 0.0
                 eq.data[3] = 0.0
                 eq.data[4] = 0.0
-                mjc_eq_to_newton_mimic_dict[eq.id] = i
 
         # Count non-colliding geoms that were kept because they are required by spatial tendons
         tendon_extra_geoms = sum(
@@ -7064,6 +7064,11 @@ class SolverMuJoCo(SolverBase):
             return
 
         world_count = self.mjc_eq_to_newton_mimic.shape[0]
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        mimic_eq_preserve = getattr(mujoco_attrs, "mimic_eq_preserve", None) if mujoco_attrs is not None else None
+        mimic_eq_polycoef = getattr(mujoco_attrs, "mimic_eq_polycoef", None) if mujoco_attrs is not None else None
+        mimic_eq_solref = getattr(mujoco_attrs, "mimic_eq_solref", None) if mujoco_attrs is not None else None
+        mimic_eq_solimp = getattr(mujoco_attrs, "mimic_eq_solimp", None) if mujoco_attrs is not None else None
 
         wp.launch(
             update_mimic_eq_data_and_active_kernel,
@@ -7073,9 +7078,15 @@ class SolverMuJoCo(SolverBase):
                 self.model.constraint_mimic_coef0,
                 self.model.constraint_mimic_coef1,
                 self.model.constraint_mimic_enabled,
+                mimic_eq_preserve,
+                mimic_eq_polycoef,
+                mimic_eq_solref,
+                mimic_eq_solimp,
             ],
             outputs=[
                 self.mjw_model.eq_data,
+                self.mjw_model.eq_solref,
+                self.mjw_model.eq_solimp,
                 self.mjw_data.eq_active,
             ],
             device=self.model.device,

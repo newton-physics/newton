@@ -7561,6 +7561,72 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         eq_active = solver.mjw_data.eq_active.numpy()
         self.assertFalse(eq_active[0, 0])
 
+    def test_preserved_mimic_runtime_update_keeps_mujoco_data(self):
+        """Preserved MuJoCo mimic equalities sync active state without flattening polycoef."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        polycoef = np.array(
+            [
+                [0.25, 1.5, -0.2, 0.05, 0.01],
+                [-0.5, 0.75, 0.3, -0.1, 0.02],
+            ],
+            dtype=np.float32,
+        )
+        solref = np.array([[0.04, 1.2], [0.08, 0.9]], dtype=np.float32)
+        solimp = np.array(
+            [
+                [0.82, 0.91, 0.002, 0.45, 1.8],
+                [0.75, 0.88, 0.004, 0.55, 1.6],
+            ],
+            dtype=np.float32,
+        )
+
+        for world in range(2):
+            builder.begin_world()
+            b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            b2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+            j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+            builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_articulation([j1, j2])
+            builder.add_constraint_mimic(
+                joint0=j2,
+                joint1=j1,
+                coef0=10.0 + world,
+                coef1=20.0 + world,
+                enabled=world == 0,
+                custom_attributes={
+                    "mujoco:mimic_eq_preserve": True,
+                    "mujoco:mimic_eq_polycoef": vec5(*polycoef[world]),
+                    "mujoco:mimic_eq_solref": wp.vec2(*solref[world]),
+                    "mujoco:mimic_eq_solimp": vec5(*solimp[world]),
+                },
+            )
+            builder.end_world()
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.neq, 1)
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_mimic.numpy()[:, 0], [0, 1])
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :5], polycoef, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[:, 0], solref, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solimp.numpy()[:, 0], solimp, rtol=1e-5)
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], [True, False])
+
+        # Normal Newton mimic coefficients must not overwrite preserved MuJoCo polycoef data.
+        model.constraint_mimic_coef0.assign(np.array([100.0, 200.0], dtype=np.float32))
+        model.constraint_mimic_coef1.assign(np.array([300.0, 400.0], dtype=np.float32))
+        model.constraint_mimic_enabled.assign(np.array([False, True], dtype=bool))
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :5], polycoef, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[:, 0], solref, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solimp.numpy()[:, 0], solimp, rtol=1e-5)
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], [False, True])
+
     def test_mimic_no_constraints(self):
         """Test solver works with zero mimic constraints."""
         builder = newton.ModelBuilder()

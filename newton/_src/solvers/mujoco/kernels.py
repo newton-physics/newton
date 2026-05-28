@@ -2538,15 +2538,22 @@ def update_mimic_eq_data_and_active_kernel(
     constraint_mimic_coef0: wp.array[wp.float32],
     constraint_mimic_coef1: wp.array[wp.float32],
     constraint_mimic_enabled: wp.array[wp.bool],
+    mimic_eq_preserve: wp.array[wp.bool],
+    mimic_eq_polycoef: wp.array[vec5],
+    mimic_eq_solref: wp.array[wp.vec2],
+    mimic_eq_solimp: wp.array[vec5],
     # outputs
     eq_data_out: wp.array2d[vec11],
+    eq_solref_out: wp.array2d[wp.vec2],
+    eq_solimp_out: wp.array2d[vec5],
     eq_active_out: wp.array2d[wp.bool],
 ):
     """Update MuJoCo equality constraint data and active status from Newton mimic constraint properties.
 
     Iterates over MuJoCo equality constraints [world, eq], looks up Newton mimic constraint,
     and copies:
-    - eq_data: polycoef = [coef0, coef1, 0, 0, 0] (linear mimic relationship)
+    - eq_data: polycoef = [coef0, coef1, 0, 0, 0] for normal Newton mimic constraints
+    - preserved MuJoCo eq_data/solref/solimp for imported MJC JOINT equalities
     - eq_active from constraint_mimic_enabled
     """
     world, mjc_eq = wp.tid()
@@ -2556,12 +2563,26 @@ def update_mimic_eq_data_and_active_kernel(
 
     data = eq_data_out[world, mjc_eq]
 
-    # polycoef: data[0] + data[1]*q2 - q1 = 0  =>  q1 = coef0 + coef1*q2
-    data[0] = constraint_mimic_coef0[newton_mimic]
-    data[1] = constraint_mimic_coef1[newton_mimic]
-    data[2] = 0.0
-    data[3] = 0.0
-    data[4] = 0.0
+    preserve_mjc_eq = False
+    if mimic_eq_preserve:
+        preserve_mjc_eq = mimic_eq_preserve[newton_mimic]
+
+    if preserve_mjc_eq:
+        if mimic_eq_polycoef:
+            polycoef = mimic_eq_polycoef[newton_mimic]
+            for i in range(5):
+                data[i] = polycoef[i]
+        if mimic_eq_solref:
+            eq_solref_out[world, mjc_eq] = mimic_eq_solref[newton_mimic]
+        if mimic_eq_solimp:
+            eq_solimp_out[world, mjc_eq] = mimic_eq_solimp[newton_mimic]
+    else:
+        # polycoef: data[0] + data[1]*q2 - q1 = 0  =>  q1 = coef0 + coef1*q2
+        data[0] = constraint_mimic_coef0[newton_mimic]
+        data[1] = constraint_mimic_coef1[newton_mimic]
+        data[2] = 0.0
+        data[3] = 0.0
+        data[4] = 0.0
 
     eq_data_out[world, mjc_eq] = data
     eq_active_out[world, mjc_eq] = constraint_mimic_enabled[newton_mimic]
