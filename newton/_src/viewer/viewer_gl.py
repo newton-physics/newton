@@ -2911,14 +2911,16 @@ class ViewerGL(ViewerBase):
         )
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
-    def _render_array_heatmap(self, name: str, array: np.ndarray, width: float):
+    def _render_array_heatmap(self, name: str, array: np.ndarray, width: float, dpi_scale: float = 1.0):
         imgui = self.ui.imgui
+        s = max(1.0, float(dpi_scale))
 
         rows, cols = array.shape
-        heatmap_width = max(120.0, width)
-        heatmap_height = np.clip(heatmap_width * rows / max(cols, 1), 80.0, 220.0)
-        target_cols = max(1, min(cols, int(heatmap_width / self._heatmap_min_cell_pixels)))
-        target_rows = max(1, min(rows, int(heatmap_height / self._heatmap_min_cell_pixels)))
+        heatmap_width = max(120.0 * s, width)
+        heatmap_height = float(np.clip(heatmap_width * rows / max(cols, 1), 80.0 * s, 220.0 * s))
+        min_cell_px = max(1.0, self._heatmap_min_cell_pixels * s)
+        target_cols = max(1, min(cols, int(heatmap_width / min_cell_px)))
+        target_rows = max(1, min(rows, int(heatmap_height / min_cell_px)))
         display_array = self._downsample_heatmap(array, target_rows, target_cols)
         display_rows, display_cols = display_array.shape
         texture_state = self._ensure_array_texture(name, display_cols, display_rows)
@@ -3007,7 +3009,7 @@ class ViewerGL(ViewerBase):
                     name,
                     imgui.TreeNodeFlags_.default_open.value,
                 ):
-                    self._render_array_heatmap(name, array, window_width - 40.0)
+                    self._render_array_heatmap(name, array, window_width - 40.0 * s, dpi_scale=s)
         imgui.end()
 
     def _render_stats_overlay(self):
