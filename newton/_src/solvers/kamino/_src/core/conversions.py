@@ -26,7 +26,7 @@ from .joints import (
 )
 from .materials import MaterialDescriptor, MaterialManager
 from .shapes import max_contacts_for_shape_pair
-from .types import float32, int32, mat33f, mat63f, quatf, to_warp_int32_array, transformf, vec2i, vec3f, vec6f
+from .types import float32, int32, mat33f, mat63f, to_warp_int32_array, transformf, vec2i, vec3f, vec6f
 
 if TYPE_CHECKING:
     from ..core.model import ModelKamino, ModelKaminoInfo
