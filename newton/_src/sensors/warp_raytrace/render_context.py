@@ -148,6 +148,7 @@ class RenderContext:
         albedo_image: wp.array4d[wp.uint32] | None = None,
         clear_data: RenderContext.ClearData | None = DEFAULT_CLEAR_DATA,
         hdr_color_image: wp.array4d[wp.vec3f] | None = None,
+        kernel_block_dim: int = 64,
     ):
         """Raytrace the scene into the provided output images.
 
@@ -178,6 +179,8 @@ class RenderContext:
             clear_data: Values used to clear output images before
                 rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
             hdr_color_image: Output linear HDR color buffer.
+            kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
+                for the render megakernel.
         """
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
             raise RuntimeError("build_bvh_shape() must be called before rendering shapes.")
@@ -335,6 +338,7 @@ class RenderContext:
                     hdr_color_image,
                 ],
                 device=self.device,
+                block_dim=kernel_block_dim,
             )
 
     @property

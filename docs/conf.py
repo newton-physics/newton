@@ -91,6 +91,7 @@ extensions = [
     "sphinx_tabs.tabs",
     "autodoc_filter",
     "autodoc_wpfunc",
+    "experimental",
 ]
 
 # -- nbsphinx configuration ---------------------------------------------------
@@ -114,6 +115,8 @@ exclude_patterns = [
     "sphinx-env",
     "**/site-packages/**",
     "**/lib/**",
+    # Included from index.rst via ``.. include::`` — not a standalone document.
+    "api/_toctree.rst",
 ]
 
 
@@ -205,7 +208,7 @@ import newton
 
 warnings.filterwarnings("ignore")
 
-wp.config.quiet = True
+wp.config.log_level = wp.LOG_WARNING
 wp.init()
 """
 

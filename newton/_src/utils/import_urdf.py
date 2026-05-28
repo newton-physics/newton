@@ -424,9 +424,7 @@ def parse_urdf(
             if incoming_xform is not None:
                 tf = incoming_xform * tf
 
-            material_info = {"color": None, "texture": None}
-            if just_visual:
-                material_info = resolve_material(geom_group.find("material"))
+            material_info = resolve_material(geom_group.find("material"))
 
             for box in geo.findall("box"):
                 size = box.get("size") or "1 1 1"
@@ -436,6 +434,7 @@ def parse_urdf(
                     hx=size[0] * 0.5 * scale,
                     hy=size[1] * 0.5 * scale,
                     hz=size[2] * 0.5 * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -444,6 +443,7 @@ def parse_urdf(
                 s = builder.add_shape_sphere(
                     xform=tf,
                     radius=float(sphere.get("radius") or "1") * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -455,6 +455,7 @@ def parse_urdf(
                     xform=xform,
                     radius=float(cylinder.get("radius") or "1") * scale,
                     half_height=float(cylinder.get("length") or "1") * 0.5 * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -466,6 +467,7 @@ def parse_urdf(
                     xform=xform,
                     radius=float(capsule.get("radius") or "1") * scale,
                     half_height=float(capsule.get("height") or "1") * 0.5 * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)

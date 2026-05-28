@@ -184,7 +184,7 @@ def parse_usd(
         joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-        load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+        load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes: If True, collision shapes on bodies that already
             have visual-only geometry are hidden unconditionally, regardless of
@@ -205,8 +205,9 @@ def parse_usd(
             inspection, experimentation, or custom pipelines that read these values via
             ``result["schema_attrs"]`` returned from ``parse_usd()``.
 
-            .. note::
-                Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
+            .. experimental::
+
+                The ``schema_resolvers`` argument may change without prior notice.
         force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -517,7 +518,7 @@ def parse_usd(
             mesh.has_inertia = physics_mesh.has_inertia
         else:
             mesh = physics_mesh.copy(recompute_inertia=False)
-        if texture:
+        if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
             warnings.warn(
@@ -629,7 +630,7 @@ def parse_usd(
 
         shape_id = -1
 
-        is_site = usd.has_applied_api_schema(prim, "MjcSiteAPI")
+        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
 
         # Skip based on granular loading flags
         if is_site and not load_sites:

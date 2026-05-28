@@ -48,8 +48,10 @@ class Contacts:
     for both rigid-rigid and soft-rigid contacts. The buffers are allocated on the specified device and can
     optionally require gradients for differentiable simulation.
 
-    .. note::
-        This class is a temporary solution and its interface may change in the future.
+    .. experimental::
+
+        This class is a temporary solution and its interface may change without
+        prior notice.
     """
 
     EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(("force",))
@@ -127,9 +129,11 @@ class Contacts:
                 :attr:`rigid_contact_broken_count`) populated each frame by
                 the collision pipeline.  Requires ``contact_matching=True``.
 
-        .. note::
-            The ``rigid_contact_diff_*`` arrays allocated when ``requires_grad=True`` are
-            **experimental**; see :meth:`newton.CollisionPipeline.collide`.
+        .. experimental::
+
+            The ``rigid_contact_diff_*`` arrays allocated when
+            ``requires_grad=True`` may change without prior notice; see
+            :meth:`newton.CollisionPipeline.collide`.
         """
         if contact_report and not contact_matching:
             raise ValueError("contact_report=True requires contact_matching=True")

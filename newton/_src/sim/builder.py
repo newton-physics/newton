@@ -2525,7 +2525,7 @@ class ModelBuilder:
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-            load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+            load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes: If True, collision shapes on bodies that already
                 have visual-only geometry are hidden unconditionally, regardless of
@@ -2546,8 +2546,9 @@ class ModelBuilder:
                 inspection, experimentation, or custom pipelines that read these values via
                 ``result["schema_attrs"]`` returned from ``parse_usd()``.
 
-                .. note::
-                    Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
+                .. experimental::
+
+                    The ``schema_resolvers`` argument may change without prior notice.
             force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
                 If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -4388,10 +4389,11 @@ class ModelBuilder:
 
         .. note::
 
-            Cable joints are supported by :class:`newton.solvers.SolverVBD`, which uses an
-            AVBD backend for rigid bodies. For cable joints, the stretch and bend behavior
-            is defined by the parent/child attachment transforms; the joint axis stored in
-            :class:`JointDofConfig` is not currently used directly.
+            Cable joints are represented in the joint data model, but their two entries
+            are VBD stretch and bend/twist constraint slots rather than
+            ``joint_q`` coordinates. Cable body transforms are integrated directly by
+            :class:`newton.solvers.SolverVBD`; they are not reconstructed by
+            :func:`newton.eval_fk`.
 
         Args:
             parent: The index of the parent body.
@@ -4828,13 +4830,11 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
-    def collapse_fixed_joints(
-        self, verbose: bool = wp.config.verbose, joints_to_keep: list[str] | None = None
-    ) -> dict[str, Any]:
+    def collapse_fixed_joints(self, verbose: bool = False, joints_to_keep: list[str] | None = None) -> dict[str, Any]:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
-            verbose: If True, print additional information about the collapsed joints. Defaults to the value of `wp.config.verbose`.
+            verbose: If True, print additional information about the collapsed joints.
             joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
         """
 
@@ -5031,7 +5031,10 @@ class ModelBuilder:
                         m, inertia, incoming_xform.p, incoming_xform.q
                     )
                     body_data[last_dynamic_body]["mass"] += m
-                    body_data[last_dynamic_body]["com"] = (m * com + source_m * source_com) / (m + source_m)
+                    total_mass = m + source_m
+                    if total_mass > 0.0:
+                        body_data[last_dynamic_body]["com"] = (m * com + source_m * source_com) / total_mass
+                    # else: both bodies massless; keep parent COM (avoids 0/0).
                     # indicate to recompute inverse mass, inertia for this body
                     body_data[last_dynamic_body]["inv_mass"] = None
             else:
@@ -5470,6 +5473,11 @@ class ModelBuilder:
             xform: The transform of the shape in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             cfg: The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             scale: The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
+                Negative components are accepted and silently absorbed via ``abs()`` for symmetric primitives
+                (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian) since these shapes are point-symmetric.
+                Mesh-class shapes (``MESH``, ``CONVEX_MESH``, SDF, hydroelastic) preserve the sign and treat
+                ``det(scale) < 0`` as a mirror; the same :class:`Mesh` instance can be shared across shapes with
+                different signed scales. Cone and heightfield shapes raise :class:`ValueError` on negative components.
             src: The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH`. Defaults to `None`.
             is_static: If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If `None`, mesh-backed shapes fall back to :attr:`~newton.Mesh.color`; otherwise the per-shape palette sequence is used.
@@ -5504,6 +5512,40 @@ class ModelBuilder:
                 )
         if scale is None:
             scale = (1.0, 1.0, 1.0)
+
+        # Normalize / validate negative scale components by shape type. Symmetric
+        # primitives (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian)
+        # are point-symmetric and produce identical geometry under sign flip of any
+        # scale component, so we silently absorb the sign. Cones are rotationally
+        # symmetric around their height axis (+Z, with apex at +half_height), so
+        # the radial sign on scale[0] is silently absorbed (scale[2] is unused);
+        # a negative half-height (scale[1]) would swap the apex and base and is
+        # rejected. Heightfields are not yet supported with mirroring (row/col
+        # ordering semantics). Mesh-class shapes carry signed scale natively
+        # through the collision pipeline.
+        if type in (
+            GeoType.SPHERE,
+            GeoType.BOX,
+            GeoType.CAPSULE,
+            GeoType.CYLINDER,
+            GeoType.ELLIPSOID,
+            GeoType.PLANE,
+            GeoType.GAUSSIAN,
+        ):
+            scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
+        elif type == GeoType.CONE:
+            if float(scale[1]) < 0.0:
+                raise ValueError(
+                    f"Cone shape requires non-negative height scale (scale[1]); got {tuple(float(s) for s in scale)}. "
+                    "A negative height would swap the apex and base."
+                )
+            scale = (abs(float(scale[0])), float(scale[1]), abs(float(scale[2])))
+        elif type == GeoType.HFIELD:
+            if any(float(s) < 0.0 for s in scale):
+                raise ValueError(
+                    f"Heightfield shape requires non-negative scale; got {tuple(float(s) for s in scale)}. "
+                    "Mirroring of heightfields is not yet supported."
+                )
 
         # Validate site invariants
         if cfg.is_site:
@@ -10332,7 +10374,13 @@ class ModelBuilder:
                     if mesh_key in edge_cache:
                         shape_edge_ranges.append(edge_cache[mesh_key])
                     else:
-                        edges = mesh.edges  # lazily computed and cached on the Mesh
+                        # ``Mesh.build_sdf()`` caches a simplified edge set on
+                        # the mesh for SDF-mesh contact generation; fall back
+                        # to the full edge list otherwise.
+                        if mesh._collision_edges is not None:
+                            edges = mesh._collision_edges
+                        else:
+                            edges = mesh.edges  # lazily computed and cached on the Mesh
                         start = edge_offset
                         count = len(edges)
                         edge_chunks.append(edges)
