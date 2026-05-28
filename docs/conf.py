@@ -205,7 +205,7 @@ import newton
 
 warnings.filterwarnings("ignore")
 
-wp.config.quiet = True
+wp.config.log_level = wp.LOG_WARNING
 wp.init()
 """
 
