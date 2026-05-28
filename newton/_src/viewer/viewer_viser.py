@@ -158,6 +158,7 @@ class ViewerViser(ViewerBase):
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
+        self._reset_callback = None
 
         # Store configuration before any URL generation.
         self._port = port
@@ -444,6 +445,10 @@ class ViewerViser(ViewerBase):
             client.camera.position = tuple(position.tolist())
             client.camera.look_at = tuple(look_at.tolist())
             client.camera.up_direction = tuple(up_direction.tolist())
+
+    def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
+        """Set a callback to trigger when a reset is requested by the user or example."""
+        self._reset_callback = callback
 
     @override
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):

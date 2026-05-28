@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
@@ -11,17 +12,79 @@ from newton.examples.contacts.example_hydro_shoe import (
     CONTACT_LAW_KIM_HYPERFOAM,
     CONTACT_LAW_KIM_LAYERED,
     KIM_HYPERFOAM_MATERIALS,
+    Example,
     accumulate_plate_bending_kernel,
     apply_shoe_body_force_kernel,
-    evaluate_pressure_maps_kernel,
+    evaluate_hydroelastic_ogden_kernel,
     finalize_plate_bending_kernel,
-    integrate_shoe_foundation_kernel,
     set_kinematic_foot_state_kernel,
     update_shoe_stats_kernel,
     _kim_layered_pressure_pa,
     _kim_pressure_pa,
     _rotate_vec_by_quat,
+    evaluate_contact_stress,
+    PARAM_STIFFNESS_OR_BULK,
+    PARAM_ALPHA,
+    PARAM_LOCK_STRAIN,
+    PARAM_DAMPING,
+    PARAM_DAMPING_POWER,
+    PARAM_CONTACT_LAW,
+    PARAM_LOWER_BULK,
+    PARAM_LOWER_ALPHA,
+    PARAM_UPPER_FRACTION,
 )
+
+
+@wp.kernel
+def integrate_shoe_foundation_kernel(
+    grid_xy: wp.array[wp.vec2],
+    top_m: wp.array[float],
+    foot_sole_z_m: wp.array[float],
+    foot_contact_valid: wp.array[wp.int32],
+    slack_length_m: wp.array[float],
+    spring_count: int,
+    body_z: float,
+    start_z: float,
+    spacing_m: float,
+    params: wp.array[float],
+    foot_vel: wp.vec3,
+    foot_omega: wp.vec3,
+    foot_com: wp.vec3,
+    wrench_out: wp.array[float],
+):
+    spring = wp.tid()
+    if spring >= spring_count:
+        return
+    if foot_contact_valid[spring] == 0:
+        return
+
+    slack = wp.max(slack_length_m[spring], 1.0e-6)
+    top_rest_world = start_z + top_m[spring]
+    foot_sole_world = body_z + foot_sole_z_m[spring]
+    displacement = wp.clamp(top_rest_world - foot_sole_world, 0.0, slack)
+    if displacement <= 0.0:
+        return
+
+    strain = wp.clamp(displacement / slack, 0.0, 0.99)
+
+    xy = grid_xy[spring]
+    point = wp.vec3(xy[0], xy[1], top_rest_world)
+    normal = wp.vec3(0.0, 0.0, 1.0)
+    r = point - foot_com
+    v_contact = foot_vel + wp.cross(foot_omega, r)
+    comp_vel = -wp.dot(v_contact, normal)
+
+    stress = evaluate_contact_stress(strain, comp_vel, params)
+    area = spacing_m * spacing_m
+    force_vec = normal * (stress * area)
+    torque = wp.cross(r, force_vec)
+
+    wp.atomic_add(wrench_out, 0, force_vec[0])
+    wp.atomic_add(wrench_out, 1, force_vec[1])
+    wp.atomic_add(wrench_out, 2, force_vec[2])
+    wp.atomic_add(wrench_out, 3, torque[0])
+    wp.atomic_add(wrench_out, 4, torque[1])
+    wp.atomic_add(wrench_out, 5, torque[2])
 
 
 class TestHydroShoeMaterial(unittest.TestCase):
@@ -158,71 +221,7 @@ class TestHydroShoeMaterial(unittest.TestCase):
         expected_stress = _kim_layered_pressure_pa(strain, upper, lower, 0.35)[0]
         self.assertAlmostEqual(wrench.numpy()[2], expected_stress * 0.01 * 0.01, delta=1.0e-5)
 
-    def test_pressure_map_kernel_matches_kim_pressure_law(self):
-        material = KIM_HYPERFOAM_MATERIALS["peba"]
-        device = "cpu"
-        top_m = wp.array([0.0, 0.0], dtype=float, device=device)
-        bottom_m = wp.array([-0.02, -0.02], dtype=float, device=device)
-        foot_sole_z_m = wp.array([0.0, 0.0], dtype=float, device=device)
-        valid = wp.array([1, 0], dtype=wp.int32, device=device)
-        slack = wp.array([0.02, 0.02], dtype=float, device=device)
-        params = wp.array(
-            [material.bulk_modulus_pa, material.alpha1, 0.99, 0.0, 1.0, float(CONTACT_LAW_KIM_HYPERFOAM)],
-            dtype=float,
-            device=device,
-        )
-        foot_disp = wp.zeros(2, dtype=float, device=device)
-        foot_pressure = wp.zeros(2, dtype=float, device=device)
-        ground_disp = wp.zeros(2, dtype=float, device=device)
-        ground_pressure = wp.zeros(2, dtype=float, device=device)
-        peak_foot_disp = wp.zeros(2, dtype=float, device=device)
-        peak_foot_pressure = wp.zeros(2, dtype=float, device=device)
-        peak_ground_disp = wp.zeros(2, dtype=float, device=device)
-        peak_ground_pressure = wp.zeros(2, dtype=float, device=device)
 
-        wp.launch(
-            evaluate_pressure_maps_kernel,
-            dim=2,
-            inputs=[
-                top_m,
-                bottom_m,
-                foot_sole_z_m,
-                valid,
-                slack,
-                2,
-                -0.005,
-                0.0,
-                0.0,
-                params,
-                foot_disp,
-                foot_pressure,
-                ground_disp,
-                ground_pressure,
-                peak_foot_disp,
-                peak_foot_pressure,
-                peak_ground_disp,
-                peak_ground_pressure,
-                1,
-            ],
-            device=device,
-        )
-
-        expected_foot_pressure_kpa = _kim_pressure_pa(np.array([0.25], dtype=np.float32), material)[0] * 0.001
-        expected_ground_pressure_kpa = _kim_pressure_pa(np.array([0.99], dtype=np.float32), material)[0] * 0.001
-        np.testing.assert_allclose(foot_disp.numpy(), [0.005, 0.0], rtol=0.0, atol=1.0e-7)
-        np.testing.assert_allclose(ground_disp.numpy(), [0.02, 0.02], rtol=0.0, atol=1.0e-7)
-        self.assertAlmostEqual(foot_pressure.numpy()[0], expected_foot_pressure_kpa, delta=1.0e-6)
-        self.assertAlmostEqual(foot_pressure.numpy()[1], 0.0, delta=1.0e-7)
-        np.testing.assert_allclose(
-            ground_pressure.numpy(),
-            [expected_ground_pressure_kpa, expected_ground_pressure_kpa],
-            rtol=1.0e-6,
-            atol=1.0e-7,
-        )
-        np.testing.assert_allclose(peak_foot_disp.numpy(), foot_disp.numpy(), rtol=0.0, atol=1.0e-7)
-        np.testing.assert_allclose(peak_foot_pressure.numpy(), foot_pressure.numpy(), rtol=0.0, atol=1.0e-7)
-        np.testing.assert_allclose(peak_ground_disp.numpy(), ground_disp.numpy(), rtol=0.0, atol=1.0e-7)
-        np.testing.assert_allclose(peak_ground_pressure.numpy(), ground_pressure.numpy(), rtol=0.0, atol=1.0e-7)
 
     def test_apply_shoe_body_force_kernel_writes_spatial_wrench(self):
         device = "cpu"
@@ -239,6 +238,115 @@ class TestHydroShoeMaterial(unittest.TestCase):
 
         np.testing.assert_allclose(body_f.numpy()[0], np.zeros(6), atol=1.0e-7)
         np.testing.assert_allclose(body_f.numpy()[1], [1.0, 2.0, -6.0, 0.11, 0.22, 0.33], atol=1.0e-7)
+
+    def test_evaluate_hydroelastic_ogden_kernel(self):
+        device = "cpu"
+        points = wp.array(
+            [
+                wp.vec3(-0.005, -0.005, 0.0),
+                wp.vec3(0.005, -0.005, 0.0),
+                wp.vec3(0.0, 0.005, 0.0),
+            ],
+            dtype=wp.vec3,
+            device=device,
+        )
+        depths = wp.array([-0.0025], dtype=wp.float32, device=device) # displacement = -2 * depth = 0.005
+        shape_pairs = wp.array([wp.vec2i(0, 1)], dtype=wp.vec2i, device=device)
+        face_count_ptr = wp.array([1], dtype=wp.int32, device=device)
+
+        foot_shape_idx = 0
+        midsole_shape_idx = 1
+        ground_shape_idx = 2
+        foot_body_idx = 0
+        midsole_body_idx = 1
+
+        body_com = wp.zeros(2, dtype=wp.vec3, device=device)
+        body_q = wp.array(
+            [
+                wp.transform(wp.vec3(0.0, 0.0, -0.005), wp.quat_identity()),
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+        body_qd = wp.zeros(2, dtype=wp.spatial_vector, device=device)
+        spring_xy = wp.array([(0.0, 0.0)], dtype=wp.vec2, device=device)
+        spring_slack = wp.array([0.02], dtype=float, device=device)
+        num_springs = 1
+
+        material = KIM_HYPERFOAM_MATERIALS["peba"]
+        params = wp.array(
+            [
+                material.bulk_modulus_pa,
+                material.alpha1,
+                0.99,
+                0.0,
+                1.0,
+                float(CONTACT_LAW_KIM_HYPERFOAM),
+                0.0,
+                0.0,
+                0.0,
+                1.0, # PARAM_HYDRO_FORCE_SCALE
+            ],
+            dtype=float,
+            device=device,
+        )
+        body_f = wp.zeros(2, dtype=wp.spatial_vector, device=device)
+        wrench = wp.zeros(6, dtype=float, device=device)
+        energy = wp.zeros(4, dtype=float, device=device)
+        dissipated_total = wp.zeros(1, dtype=float, device=device)
+        foot_disp = wp.zeros(1, dtype=float, device=device)
+        foot_pressure = wp.zeros(1, dtype=float, device=device)
+        ground_disp = wp.zeros(1, dtype=float, device=device)
+        ground_pressure = wp.zeros(1, dtype=float, device=device)
+
+        wp.launch(
+            evaluate_hydroelastic_ogden_kernel,
+            dim=1,
+            inputs=[
+                points,
+                depths,
+                shape_pairs,
+                face_count_ptr,
+                foot_shape_idx,
+                midsole_shape_idx,
+                ground_shape_idx,
+                foot_body_idx,
+                midsole_body_idx,
+                body_com,
+                body_q,
+                body_qd,
+                spring_xy,
+                spring_slack,
+                num_springs,
+                params,
+                body_f,
+                wrench,
+                energy,
+                dissipated_total,
+                0.001,
+                foot_disp,
+                foot_pressure,
+                ground_disp,
+                ground_pressure,
+            ],
+            device=device,
+        )
+
+        expected_area = 0.00005
+        displacement = 0.005
+        slack = 0.02
+        strain = displacement / slack
+        expected_stress = material.bulk_modulus_pa * strain ** (material.alpha1 - 1.0)
+        expected_force = expected_stress * expected_area * 1.0
+
+        forces = body_f.numpy()
+        self.assertAlmostEqual(forces[0][2], expected_force, delta=max(abs(expected_force) * 1.0e-5, 1.0e-6))
+        self.assertAlmostEqual(forces[1][2], -expected_force, delta=max(abs(expected_force) * 1.0e-5, 1.0e-6))
+        self.assertGreater(energy.numpy()[0], 0.0)
+        self.assertAlmostEqual(energy.numpy()[1], 0.0, delta=1.0e-12)
+        self.assertAlmostEqual(dissipated_total.numpy()[0], 0.0, delta=1.0e-12)
+        self.assertAlmostEqual(foot_disp.numpy()[0], displacement, delta=1.0e-7)
 
     def test_kinematic_foot_state_kernel_writes_pose_and_velocity(self):
         device = "cpu"
@@ -267,59 +375,36 @@ class TestHydroShoeMaterial(unittest.TestCase):
         np.testing.assert_allclose(joint_q.numpy()[7:14], [0.0, 0.0, 0.123, 0.0, 0.0, 0.0, 1.0], atol=1.0e-7)
         np.testing.assert_allclose(joint_qd.numpy()[6:12], [0.0, 0.0, -0.456, 0.0, 0.0, 0.0], atol=1.0e-7)
 
+
+
     def test_update_shoe_stats_kernel_tracks_peak_force(self):
         device = "cpu"
         wrench = wp.array([0.0, 0.0, 12.0, 0.0, 0.0, 0.0], dtype=float, device=device)
         plate_torque = wp.array([0.0, 1.5, 0.0], dtype=float, device=device)
-        stats = wp.zeros(3, dtype=float, device=device)
-
-        wp.launch(update_shoe_stats_kernel, dim=1, inputs=[wrench, plate_torque, stats], device=device)
-        wrench.assign(wp.array([0.0, 0.0, 8.0, 0.0, 0.0, 0.0], dtype=float, device=device))
-        plate_torque.assign(wp.array([0.0, -2.0, 0.0], dtype=float, device=device))
-        wp.launch(update_shoe_stats_kernel, dim=1, inputs=[wrench, plate_torque, stats], device=device)
-
-        np.testing.assert_allclose(stats.numpy(), [8.0, 12.0, -2.0], atol=1.0e-7)
-
-    def test_foundation_kernel_preserves_calibrated_ogden_law(self):
-        device = "cpu"
-        grid_xy = wp.array([(0.0, 0.0)], dtype=wp.vec2, device=device)
-        top_m = wp.array([0.0], dtype=float, device=device)
-        foot_sole_z_m = wp.array([0.0], dtype=float, device=device)
-        valid = wp.array([1], dtype=wp.int32, device=device)
-        slack = wp.array([0.02], dtype=float, device=device)
-        params = wp.array(
-            [1.0e6, 2.0, 0.65, 0.0, 1.0, float(CONTACT_LAW_CALIBRATED_OGDEN)],
-            dtype=float,
-            device=device,
-        )
-        wrench = wp.zeros(6, dtype=float, device=device)
+        energy = wp.array([0.25, 0.75], dtype=float, device=device)
+        dissipated_total = wp.array([0.125], dtype=float, device=device)
+        stats = wp.zeros(6, dtype=float, device=device)
 
         wp.launch(
-            integrate_shoe_foundation_kernel,
+            update_shoe_stats_kernel,
             dim=1,
-            inputs=[
-                grid_xy,
-                top_m,
-                foot_sole_z_m,
-                valid,
-                slack,
-                1,
-                -0.005,
-                0.0,
-                0.01,
-                params,
-                wp.vec3(0.0, 0.0, 0.0),
-                wp.vec3(0.0, 0.0, 0.0),
-                wp.vec3(0.0, 0.0, 0.0),
-                wrench,
-            ],
+            inputs=[wrench, plate_torque, energy, dissipated_total, stats],
+            device=device,
+        )
+        wrench.assign(wp.array([0.0, 0.0, 8.0, 0.0, 0.0, 0.0], dtype=float, device=device))
+        plate_torque.assign(wp.array([0.0, -2.0, 0.0], dtype=float, device=device))
+        energy.assign(wp.array([0.10, 0.40], dtype=float, device=device))
+        dissipated_total.assign(wp.array([0.25], dtype=float, device=device))
+        wp.launch(
+            update_shoe_stats_kernel,
+            dim=1,
+            inputs=[wrench, plate_torque, energy, dissipated_total, stats],
             device=device,
         )
 
-        strain = 0.005 / 0.02
-        normalized = min(strain / 0.65, 0.999)
-        expected_stress = 1.0e6 * ((1.0 - normalized) ** -2.0 - 1.0) / 2.0
-        self.assertAlmostEqual(wrench.numpy()[2], expected_stress * 0.01 * 0.01, delta=1.0e-4)
+        np.testing.assert_allclose(stats.numpy(), [8.0, 12.0, -2.0, 0.5, 1.0, 0.25], atol=1.0e-7)
+
+
 
     def test_quaternion_rotation_helper_for_com_offset(self):
         angle = np.pi / 2.0
