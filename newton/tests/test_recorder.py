@@ -715,9 +715,7 @@ def test_real_model_recording_roundtrip(test: TestRecorder, device):
                 for attr_name in ["geom_solimp", "solimplimit", "solimpfriction"]:
                     original = getattr(model.mujoco, attr_name)
                     restored = getattr(restored_model.mujoco, attr_name, None)
-                    test.assertIsNotNone(
-                        restored, f"MuJoCo attribute {attr_name} not restored in {format_name}"
-                    )
+                    test.assertIsNotNone(restored, f"MuJoCo attribute {attr_name} not restored in {format_name}")
                     np.testing.assert_allclose(
                         restored.numpy(),
                         original.numpy(),
