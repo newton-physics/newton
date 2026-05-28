@@ -22,6 +22,7 @@
 ### Changed
 
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
+- Require keyword arguments for optional `ModelBuilder` builder-method parameters on cloth/soft grids and meshes, joints, selected shape helpers, rods, and FEM primitive helpers; keep core identifiers such as `body`, `parent`/`child`, and topology indices positional. Migrate calls such as `add_shape_box(body, xform, hx=...)` to `add_shape_box(body, xform=xform, hx=...)`.
 - Switch the SDF-mesh narrow phase to hardware-filtered SDF texture sampling with centred-difference gradients. Hydroelastic SDF sampling is unchanged. Resulting contact distances and normals shift well below typical `contact_threshold` and `shape_margin` settings, so no user action is required; pass a negative `edge_lower_angle_threshold_rad` (e.g. `-1.0`) to `Mesh.build_sdf()` to disable the new edge-simplification pass and reproduce the pre-optimisation behaviour with the full edge set
 - Require Warp 1.14 and configure Warp logging through `warp.config.log_level`; use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy `verbose` or `quiet` config keys
 - Auto-scale `ViewerGL` contact arrows, joint axes, and COM markers by `Viewer.scene_scale`; to approximate the previous fixed sizes after `set_model()`, set `viewer.renderer.arrow_length_scale = 0.1 / viewer.scene_scale`, `viewer.renderer.joint_scale = 0.1 / viewer.scene_scale`, and `viewer.renderer.com_scale = 0.1 / viewer.scene_scale`.

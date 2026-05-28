@@ -1343,7 +1343,7 @@ def test_brick_pyramid_stability(test, device):
     builder.rigid_gap = 0.005
 
     # Add ground plane
-    builder.add_shape_plane(-1, wp.transform_identity(), width=0.0, length=0.0)
+    builder.add_shape_plane(xform=wp.transform_identity(), width=0.0, length=0.0)
 
     # Create unit cube mesh (will be scaled non-uniformly)
     cube_mesh = create_box_mesh((0.5, 0.5, 0.5))
