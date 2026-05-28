@@ -1135,6 +1135,19 @@ class TestMenagerieUSD(TestMenagerieBase):
         "jnt_",
         # Sparse mass matrix structure: DOF-indexed, compared via _compare_mass_matrix_structure
         "M_",
+        # Sparse D-structure raw CSR arrays (mujoco_warp >= 3.9 promoted these from
+        # internal MjModel-only to top-level mjw_model fields). DOF-indexed; the
+        # same (row, col) sparsity is already verified via _compare_qD_structure
+        # using qD_fullm_i/j.
+        "D_rownnz",
+        "D_rowadr",
+        "D_diag",
+        "D_colind",
+        # Mappings between M (nC) and D (nD) sparse layouts (added in mujoco_warp
+        # >= 3.9). Both arrays are indexed by DOF-derived sparse positions, so
+        # USD body reordering permutes their contents without changing semantics.
+        "mapM2D",
+        "mapD2M",
         # Sparse RNE derivative D-structure: DOF-indexed, compared via _compare_qD_structure
         "qD_fullm_",
         # Sparse tendon Jacobian structure: DOF-indexed, compared via _compare_tendon_jacobian_structure
