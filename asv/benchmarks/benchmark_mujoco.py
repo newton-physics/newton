@@ -241,8 +241,7 @@ def _setup_allegro(articulation_builder):
     for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 5
-    for i in range(articulation_builder.joint_coord_count):
-        articulation_builder.joint_target_q[i] = 0.0
+    articulation_builder.joint_target_q[:] = articulation_builder.joint_q
     root_dofs = 1
 
     return root_dofs
@@ -342,6 +341,19 @@ class Example:
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
+        self._quat_target_q_offsets: list[int] = []
+        if (
+            self.model.joint_target_q is not None
+            and self.model.joint_target_q.shape[0] == self.model.joint_coord_count
+        ):
+            joint_types = self.model.joint_type.numpy()
+            q_starts = self.model.joint_q_start.numpy()
+            for j, jt in enumerate(joint_types):
+                if jt == int(newton.JointType.BALL):
+                    self._quat_target_q_offsets.append(int(q_starts[j]))
+                elif jt in (int(newton.JointType.FREE), int(newton.JointType.DISTANCE)):
+                    self._quat_target_q_offsets.append(int(q_starts[j]) + 3)
+
         self.sensor_contact = None
         sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies", None)
         if sensing_bodies is not None:
@@ -376,7 +388,10 @@ class Example:
     def step(self):
         if self.actuation == "random":
             target_size = self.control.joint_target_q.shape[0]
-            joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=target_size), dtype=wp.float32)
+            samples = self.rng.uniform(-1.0, 1.0, size=target_size).astype(np.float32)
+            for offset in self._quat_target_q_offsets:
+                samples[offset : offset + 4] = (0.0, 0.0, 0.0, 1.0)
+            joint_target = wp.array(samples, dtype=wp.float32)
             wp.copy(self.control.joint_target_q, joint_target)
 
         wp.synchronize_device()
