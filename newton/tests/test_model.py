@@ -123,6 +123,7 @@ class TestModelBuilderDeprecations(unittest.TestCase):
 
             newton.use_coord_layout_targets = True
             model = _build_revolute_model()
+            control = newton.Control()
             with self.assertRaises(AttributeError):
                 _ = control.joint_target_pos
             with self.assertRaises(AttributeError):

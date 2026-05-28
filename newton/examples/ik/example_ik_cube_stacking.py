@@ -240,7 +240,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.joint_target_shape = self.control.joint_target_q.reshape((self.world_count, -1)).shape
-        wp.copy(self.control.joint_target_q[:9], self.model.joint_q[:9])
+        wp.copy(self.control.joint_target_q, self.model.joint_q)
 
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)

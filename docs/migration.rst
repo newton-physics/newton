@@ -144,7 +144,7 @@ corresponds to :attr:`newton.JointTargetMode.EFFORT` together with
 .. _joint-target-layout:
 
 Joint-target layout (``newton.use_coord_layout_targets``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Historically ``Control.joint_target_pos`` was shaped ``(joint_dof_count,)`` — the same layout as
 :attr:`~newton.State.joint_qd` — even though position targets semantically match

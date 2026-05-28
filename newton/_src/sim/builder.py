@@ -10878,12 +10878,6 @@ class ModelBuilder:
                 target_pos_indices_arg = (
                     pos_indices_arg if (pos_indices_arg is not None and m.use_coord_layout_targets) else indices
                 )
-                if m.use_coord_layout_targets:
-                    control_target_pos_attr = "joint_target_q"
-                    control_target_vel_attr = "joint_target_qd"
-                else:
-                    control_target_pos_attr = "joint_target_pos"
-                    control_target_vel_attr = "joint_target_vel"
                 actuator = Actuator(
                     indices=indices,
                     controller=controller,
@@ -10891,8 +10885,8 @@ class ModelBuilder:
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
                     target_pos_indices=target_pos_indices_arg,
-                    control_target_pos_attr=control_target_pos_attr,
-                    control_target_vel_attr=control_target_vel_attr,
+                    control_target_pos_attr=None,
+                    control_target_vel_attr=None,
                     requires_grad=requires_grad,
                 )
 

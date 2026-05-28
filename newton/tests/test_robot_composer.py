@@ -21,7 +21,7 @@ class RobotComposerSim:
     composition across URDF, MJCF, and USD importers:
 
     1. UR5e (MJCF) + Robotiq 2F-85 gripper (MJCF) with a planar D6 base joint.
-       The gripper is actuated via ``joint_target_pos`` on the driver joints
+       The gripper is actuated via ``joint_target_q`` on the driver joints
        (``right_driver_joint``, ``left_driver_joint``) instead of the default
        MuJoCo actuator, which is disabled to avoid instability in MJWarp.
     2. UR5e (MJCF) + LEAP hand left (MJCF) with a planar D6 base joint.
@@ -84,8 +84,8 @@ class RobotComposerSim:
             self.viewer.set_world_offsets(wp.vec3(4.0, 4.0, 0.0))
 
         # Initialize joint target positions
-        self.joint_target_pos = wp.zeros_like(self.control.joint_target_pos)
-        wp.copy(self.joint_target_pos, self.control.joint_target_pos)
+        self.joint_target_q = wp.zeros_like(self.control.joint_target_q)
+        wp.copy(self.joint_target_q, self.control.joint_target_q)
 
         self.capture()
 
@@ -421,7 +421,7 @@ class RobotComposerSim:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        wp.copy(self.control.joint_target_pos, self.joint_target_pos)
+        wp.copy(self.control.joint_target_q, self.joint_target_q)
 
         if self.graph:
             wp.capture_launch(self.graph)
@@ -443,11 +443,11 @@ class RobotComposerSim:
             self.gripper_target_pos = value
             # The actuated joints are right_driver_joint and left_driver_joint (dof indexes 0 and 4 within gripper).
             # robotiq_gripper_dof_offset accounts for base_joint(3) + arm(6) DOFs.
-            joint_target_pos = self.joint_target_pos.reshape((self.world_count, -1)).numpy()
+            joint_target_q = self.joint_target_q.reshape((self.world_count, -1)).numpy()
             for i in self.robotiq_gripper_dofs:
-                joint_target_pos[:, self.robotiq_gripper_dof_offset + i] = value
-            joint_target_pos_wp = wp.array(joint_target_pos.flatten(), dtype=wp.float32, device=self.device)
-            wp.copy(self.joint_target_pos, joint_target_pos_wp)
+                joint_target_q[:, self.robotiq_gripper_dof_offset + i] = value
+            joint_target_q_wp = wp.array(joint_target_q.flatten(), dtype=wp.float32, device=self.device)
+            wp.copy(self.joint_target_q, joint_target_q_wp)
 
         changed, value = imgui.slider_float(
             "gripper_target_pos_slider", self.gripper_target_pos, 0.0, 0.8, format="%.3f"

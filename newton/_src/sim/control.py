@@ -44,6 +44,10 @@ class Control:
     """
 
     def __init__(self):
+        import newton  # noqa: PLC0415
+
+        self._use_coord_layout_targets: bool = newton.use_coord_layout_targets
+
         self.joint_f: wp.array | None = None
         """
         Array of generalized joint forces [N or N·m, depending on joint type] with shape ``(joint_dof_count,)``
@@ -97,24 +101,20 @@ class Control:
     def joint_target_pos(self) -> wp.array | None:
         """Deprecated alias for :attr:`joint_target_q` (legacy DOF-shape only).
 
-        Raises :class:`AttributeError` when
-        :attr:`newton.use_coord_layout_targets` is ``True``.
+        Raises :class:`AttributeError` when this Control was constructed under
+        :data:`newton.use_coord_layout_targets` ``True``.
 
         .. deprecated::
             Use :attr:`joint_target_q`.
         """
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
+        if self._use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG)
         warnings.warn(_JOINT_TARGET_POS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         return self.joint_target_q
 
     @joint_target_pos.setter
     def joint_target_pos(self, value: wp.array | None) -> None:
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
+        if self._use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG)
         warnings.warn(_JOINT_TARGET_POS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         self.joint_target_q = value
@@ -123,24 +123,20 @@ class Control:
     def joint_target_vel(self) -> wp.array | None:
         """Deprecated alias for :attr:`joint_target_qd`.
 
-        Raises :class:`AttributeError` when
-        :attr:`newton.use_coord_layout_targets` is ``True``.
+        Raises :class:`AttributeError` when this Control was constructed under
+        :data:`newton.use_coord_layout_targets` ``True``.
 
         .. deprecated::
             Use :attr:`joint_target_qd`.
         """
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
+        if self._use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG)
         warnings.warn(_JOINT_TARGET_VEL_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         return self.joint_target_qd
 
     @joint_target_vel.setter
     def joint_target_vel(self, value: wp.array | None) -> None:
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
+        if self._use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG)
         warnings.warn(_JOINT_TARGET_VEL_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         self.joint_target_qd = value
