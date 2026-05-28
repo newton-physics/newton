@@ -8,6 +8,7 @@ import copy
 import datetime
 import inspect
 import itertools
+import logging
 import math
 import os
 import posixpath
@@ -44,6 +45,8 @@ from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .import_utils import should_show_collider
+
+logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -531,10 +534,16 @@ def parse_usd(
         if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            warnings.warn(
-                f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
-                stacklevel=2,
-            )
+            # See usd.utils.has_orphan_subset_primvars: when the asset was authored with per-subset
+            # UV primvars but had its GeomSubsets stripped, UVs are unrecoverable and the matching
+            # length-mismatch notice was already logged. Avoid emitting a second, redundant warning.
+            if usd.has_orphan_subset_primvars(prim):
+                logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
+            else:
+                warnings.warn(
+                    f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
+                    stacklevel=2,
+                )
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
             mesh.color = material_props["color"]
