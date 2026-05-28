@@ -1961,22 +1961,26 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-    # FR3v2's MJCF doesn't author <option integrator=...>, so native picks
-    # MuJoCo's default (Euler / integrator=0). Newton's SolverMuJoCo auto-
-    # selects IMPLICITFAST (integrator=3) for this model. Without pinning,
-    # the dynamics comparison steps the two sides with different integrators
-    # — identical forces produce ~5x different qvel updates at step 0 (#2491).
-    solver_integrator = "euler"
     num_steps = 20
     fk_enabled = True
     fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
     backfill_model = True
-    # Float32 + GPU atomic-reduction non-determinism in mjwarp, amplified by
-    # FR3v2's position actuators (kp=4500). Measured via 15-trial native-vs-
-    # native comparison: qvel diff ranges 1.2e-5 to 1.9e-3, mean 7.9e-4.
-    # Newton-vs-native tracks the same range (max 2.0e-3). Tolerance set
-    # ~2.5x above the measured worst.
-    dynamics_tolerance = 5e-3
+    # FR3v2's MJCF doesn't author <option integrator=...>, so native picks
+    # MuJoCo's default (Euler / integrator=0) while Newton's SolverMuJoCo
+    # auto-selects IMPLICITFAST (integrator=3). Without alignment, the two
+    # sides step with different integrators and identical forces produce
+    # ~5x different qvel updates at step 0 (#2491). Pin native to Newton's
+    # choice in _align_models so we test Newton's actual default behavior.
+    # Float32 + GPU atomic-reduction non-determinism floor under IMPLICITFAST,
+    # measured via 15-trial native-vs-native: qvel diff peaks at 1.98e-4
+    # (mean 1.25e-4). Newton-vs-native max 1.98e-4. Tolerance ~2.5x above.
+    dynamics_tolerance = 5e-4
+
+    def _align_models(self, newton_solver, native_mjw_model, mj_model):
+        # Sync native's integrator to whichever one Newton's SolverMuJoCo
+        # picked (so the dynamics comparison runs both engines on the
+        # integrator Newton would use in production).
+        native_mjw_model.opt.integrator = newton_solver.mjw_model.opt.integrator
 
 
 class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
@@ -2368,9 +2372,6 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     # the observed native-vs-native variance with safety margin.
     dynamics_tolerance = 1e-4
     backfill_model = True
-    # Cassie's MJCF doesn't specify <option integrator=...>, so native uses
-    # MuJoCo's default (Euler). Pin Newton's integrator to match.
-    solver_integrator = "euler"
     # eq_data: compilation-dependent for CONNECT constraints; body2 anchor is
     # derived from body_quat, which differs due to inertia re-diagonalization.
     # jnt_actfrclimited: Newton unconditionally sets True with effort_limit=1e6,
@@ -2382,6 +2383,13 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
         "jnt_actfrclimited",
     ]
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_data"}
+
+    def _align_models(self, newton_solver, native_mjw_model, mj_model):
+        # Cassie's MJCF doesn't specify <option integrator=...>, so native picks
+        # MuJoCo's default (Euler) while Newton's SolverMuJoCo auto-selects
+        # IMPLICITFAST. Sync native to Newton's choice so we test Newton's
+        # actual default behavior (rather than forcing both to Euler).
+        native_mjw_model.opt.integrator = newton_solver.mjw_model.opt.integrator
 
 
 # -----------------------------------------------------------------------------
