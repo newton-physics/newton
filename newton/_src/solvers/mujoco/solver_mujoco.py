@@ -4319,11 +4319,7 @@ class SolverMuJoCo(SolverBase):
         joint_dof_dim = model.joint_dof_dim.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
         joint_target_q_start = model.joint_target_q_start.numpy()
-        # When True, ball-joint position targets are quaternions (coord layout) and
-        # must be converted to axis-angle components before being fed to MuJoCo.
-        import newton as _newton  # noqa: PLC0415
-
-        use_coord_layout_targets = _newton.use_coord_layout_targets
+        use_coord_layout_targets = model.use_coord_layout_targets
         joint_armature = model.joint_armature.numpy()
         joint_effort_limit = model.joint_effort_limit.numpy()
         # Per-DOF actuator arrays

@@ -92,9 +92,7 @@ class _FastBenchmark:
             state = wp.rand_init(self.example.seed)
             target_q = self.example.control.joint_target_q
             quat_offsets = _free_ball_quat_offsets(self.example.model)
-            quat_offsets_wp = (
-                wp.array(quat_offsets, dtype=int, device=target_q.device) if quat_offsets else None
-            )
+            quat_offsets_wp = wp.array(quat_offsets, dtype=int, device=target_q.device) if quat_offsets else None
             with wp.ScopedCapture() as capture:
                 wp.launch(
                     apply_random_control,

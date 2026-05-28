@@ -342,10 +342,7 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self._quat_target_q_offsets: list[int] = []
-        if (
-            self.model.joint_target_q is not None
-            and self.model.joint_target_q.shape[0] == self.model.joint_coord_count
-        ):
+        if self.model.joint_target_q is not None and self.model.joint_target_q.shape[0] == self.model.joint_coord_count:
             joint_types = self.model.joint_type.numpy()
             q_starts = self.model.joint_q_start.numpy()
             for j, jt in enumerate(joint_types):
