@@ -108,9 +108,7 @@ def test_mujoco_fk_kernel_matches_mujoco_warp_d6_three_angular(test, device):
     state_in_initial = model.state()
     state_in_initial.joint_q.assign(state_in.joint_q)
     state_in_initial.joint_qd.assign(state_in.joint_qd)
-    newton.eval_fk(
-        model, state_in_initial.joint_q, state_in_initial.joint_qd, state_in_initial
-    )
+    newton.eval_fk(model, state_in_initial.joint_q, state_in_initial.joint_qd, state_in_initial)
     quat_initial = state_in_initial.body_q.numpy()[child, 3:].copy()
 
     for step_idx in range(steps):
@@ -126,38 +124,31 @@ def test_mujoco_fk_kernel_matches_mujoco_warp_d6_three_angular(test, device):
 
         xpos = solver.mjw_data.xpos.numpy()[0, mjc_body]
         xquat_wxyz = solver.mjw_data.xquat.numpy()[0, mjc_body]
-        xquat_xyzw = np.array(
-            [xquat_wxyz[1], xquat_wxyz[2], xquat_wxyz[3], xquat_wxyz[0]], dtype=np.float32
-        )
+        xquat_xyzw = np.array([xquat_wxyz[1], xquat_wxyz[2], xquat_wxyz[3], xquat_wxyz[0]], dtype=np.float32)
         body_qd_mjw = _body_qd_from_mjw_cvel(solver.mjw_model, solver.mjw_data, mjc_body)
 
-        np.testing.assert_allclose(
-            body_q_solver[:3], xpos, atol=1e-5, err_msg=f"position mismatch at step {step_idx}"
-        )
+        np.testing.assert_allclose(body_q_solver[:3], xpos, atol=1e-5, err_msg=f"position mismatch at step {step_idx}")
 
         quat_dot = float(abs(np.dot(body_q_solver[3:], xquat_xyzw)))
         test.assertAlmostEqual(
             quat_dot,
             1.0,
             places=4,
-            msg=f"orientation mismatch at step {step_idx}: "
-            f"newton={body_q_solver[3:]} mjw={xquat_xyzw}",
+            msg=f"orientation mismatch at step {step_idx}: newton={body_q_solver[3:]} mjw={xquat_xyzw}",
         )
 
         np.testing.assert_allclose(
             body_qd_solver[:3],
             body_qd_mjw[:3],
             atol=1e-5,
-            err_msg=f"linear velocity mismatch at step {step_idx}: "
-            f"newton={body_qd_solver[:3]} mjw={body_qd_mjw[:3]}",
+            err_msg=f"linear velocity mismatch at step {step_idx}: newton={body_qd_solver[:3]} mjw={body_qd_mjw[:3]}",
         )
 
         np.testing.assert_allclose(
             body_qd_solver[3:],
             body_qd_mjw[3:],
             atol=1e-5,
-            err_msg=f"angular velocity mismatch at step {step_idx}: "
-            f"newton={body_qd_solver[3:]} mjw={body_qd_mjw[3:]}",
+            err_msg=f"angular velocity mismatch at step {step_idx}: newton={body_qd_solver[3:]} mjw={body_qd_mjw[3:]}",
         )
 
         state_in, state_out = state_out, state_in
@@ -170,8 +161,7 @@ def test_mujoco_fk_kernel_matches_mujoco_warp_d6_three_angular(test, device):
     test.assertGreater(
         rotation_angle,
         0.01,
-        msg=f"body barely rotated over {steps} steps at dt={sim_dt}: "
-        f"angle={rotation_angle:.4f} rad",
+        msg=f"body barely rotated over {steps} steps at dt={sim_dt}: angle={rotation_angle:.4f} rad",
     )
 
 
