@@ -19,8 +19,10 @@ from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
 from ..sim import JointTargetMode, JointType, ModelBuilder
+from ..sim.enums import EqType
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
+from ..solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
 from .import_utils import (
@@ -1924,7 +1926,9 @@ def parse_mjcf(
                 body1_idx = body_name_to_idx.get(body1_name, -1) if body1_name else -1
                 body2_idx = body_name_to_idx.get(body2_name, -1) if body2_name else -1
 
-                builder.add_equality_constraint_connect(
+                _add_equality_constraint(
+                    builder,
+                    constraint_type=EqType.CONNECT,
                     body1=body1_idx,
                     body2=body2_idx,
                     anchor=anchor_vec,
@@ -1949,7 +1953,9 @@ def parse_mjcf(
                         print(
                             f"Connect constraint (site-based): site '{site1}' on body {body1_idx} to body {body2_idx}"
                         )
-                    builder.add_equality_constraint_connect(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.CONNECT,
                         body1=body1_idx,
                         body2=body2_idx,
                         anchor=anchor_vec,
@@ -1993,7 +1999,9 @@ def parse_mjcf(
                     wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
                 )
 
-                builder.add_equality_constraint_weld(
+                _add_equality_constraint(
+                    builder,
+                    constraint_type=EqType.WELD,
                     body1=body1_idx,
                     body2=body2_idx,
                     anchor=anchor_vec,
@@ -2023,7 +2031,9 @@ def parse_mjcf(
                     )
                     if verbose:
                         print(f"Weld constraint (site-based): body {body1_idx} to body {body2_idx}")
-                    builder.add_equality_constraint_weld(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.WELD,
                         body1=body1_idx,
                         body2=body2_idx,
                         anchor=anchor_vec,
@@ -2057,7 +2067,9 @@ def parse_mjcf(
                 joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
                 joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
 
-                builder.add_equality_constraint_joint(
+                _add_equality_constraint(
+                    builder,
+                    constraint_type=EqType.JOINT,
                     joint1=joint1_idx,
                     joint2=joint2_idx,
                     polycoef=[float(x) for x in polycoef.split()],

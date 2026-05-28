@@ -32,8 +32,9 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.enums import JointTargetMode
+from ..sim.enums import EqType, JointTargetMode
 from ..sim.model import Model
+from ..solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
@@ -3210,7 +3211,9 @@ def parse_usd(
                         if (target0 in ("", "/") or target0 in path_body_map)
                         else site0_local_pos
                     )
-                    builder.add_equality_constraint_connect(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.CONNECT,
                         body1=body0_idx,
                         body2=body1_idx,
                         anchor=anchor,
@@ -3236,7 +3239,9 @@ def parse_usd(
                     torquescale = (
                         float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
                     )
-                    builder.add_equality_constraint_weld(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.WELD,
                         body1=body0_idx,
                         body2=body1_idx,
                         anchor=anchor,
@@ -3286,7 +3291,9 @@ def parse_usd(
                     attr = joint_prim.GetAttribute(attr_name)
                     polycoef.append(float(attr.Get()) if attr and attr.HasValue() else default)
 
-                builder.add_equality_constraint_joint(
+                _add_equality_constraint(
+                    builder,
+                    constraint_type=EqType.JOINT,
                     joint1=joint1_idx,
                     joint2=joint2_idx,
                     polycoef=polycoef,

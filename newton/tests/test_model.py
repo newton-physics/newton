@@ -14,6 +14,7 @@ import warp as wp
 import newton
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
+from newton._src.solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
 from newton.tests.unittest_utils import assert_np_equal
 
 
@@ -22,7 +23,13 @@ class TestModelBuilderDeprecations(unittest.TestCase):
         builder = ModelBuilder()
         body1 = builder.add_body()
         body2 = builder.add_body()
-        builder.add_equality_constraint_connect(body1=body1, body2=body2, anchor=wp.vec3(1.0, 2.0, 3.0))
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.CONNECT,
+            body1=body1,
+            body2=body2,
+            anchor=wp.vec3(1.0, 2.0, 3.0),
+        )
 
         model = builder.finalize(skip_all_validations=True)
 
@@ -2089,7 +2096,9 @@ class TestModelValidation(unittest.TestCase):
         builder = ModelBuilder()
         body1 = builder.add_body(mass=1.0)
         body2 = builder.add_body(mass=1.0)
-        builder.add_equality_constraint_weld(
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.WELD,
             body1=body1,
             body2=body2,
             label="test_constraint",
@@ -2116,7 +2125,9 @@ class TestModelValidation(unittest.TestCase):
         builder.add_articulation([joint1, joint2])
 
         # Add a joint equality constraint
-        builder.add_equality_constraint_joint(
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.JOINT,
             joint1=joint1,
             joint2=joint2,
             label="joint_constraint",

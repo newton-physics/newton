@@ -8,6 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
 
 
 class TestEqualityConstraints(unittest.TestCase):
@@ -126,10 +127,17 @@ class TestEqualityConstraints(unittest.TestCase):
         robot.add_articulation([joint1, joint2, joint3], label="articulation")
 
         # Add 2 equality constraints
-        robot.add_equality_constraint_connect(
-            body1=base, body2=link2, anchor=wp.vec3(0.5, 0, 0), label="connect_constraint"
+        _add_equality_constraint(
+            robot,
+            constraint_type=newton.EqType.CONNECT,
+            body1=base,
+            body2=link2,
+            anchor=wp.vec3(0.5, 0, 0),
+            label="connect_constraint",
         )
-        robot.add_equality_constraint_joint(
+        _add_equality_constraint(
+            robot,
+            constraint_type=newton.EqType.JOINT,
             joint1=1,  # joint1 (base to link1)
             joint2=2,  # joint2 (link1 to link2)
             polycoef=[1.0, -1.0, 0, 0, 0],
@@ -219,9 +227,11 @@ class TestEqualityConstraints(unittest.TestCase):
         joint2 = builder.add_joint_revolute(parent=link1, child=link2, axis=(0, 0, 1))
         builder.add_articulation([joint0, joint1, joint2])
 
-        builder.add_equality_constraint_connect(body1=base, body2=link1, anchor=wp.vec3(0.0, 0.0, 0.0))
-        builder.add_equality_constraint_joint(joint1=joint1, joint2=joint2)
-        builder.add_equality_constraint_weld(body1=link1, body2=link2)
+        _add_equality_constraint(
+            builder, constraint_type=newton.EqType.CONNECT, body1=base, body2=link1, anchor=wp.vec3(0.0, 0.0, 0.0)
+        )
+        _add_equality_constraint(builder, constraint_type=newton.EqType.JOINT, joint1=joint1, joint2=joint2)
+        _add_equality_constraint(builder, constraint_type=newton.EqType.WELD, body1=link1, body2=link2)
 
         model = builder.finalize()
         np.testing.assert_allclose(
@@ -288,13 +298,25 @@ class TestEqualityConstraints(unittest.TestCase):
         original_anchor = wp.vec3(0.1, 0.2, 0.3)
         original_relpose = wp.transform((0.5, 0.1, -0.2), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.3))
 
-        eq_connect = builder.add_equality_constraint_connect(
-            body1=base, body2=link3, anchor=wp.vec3(0.5, 0, 0), label="connect_base_link3"
+        eq_connect = _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.CONNECT,
+            body1=base,
+            body2=link3,
+            anchor=wp.vec3(0.5, 0, 0),
+            label="connect_base_link3",
         )
-        eq_joint = builder.add_equality_constraint_joint(
-            joint1=joint1, joint2=joint3, polycoef=[1.0, -1.0, 0, 0, 0], label="couple_j1_j3"
+        eq_joint = _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.JOINT,
+            joint1=joint1,
+            joint2=joint3,
+            polycoef=[1.0, -1.0, 0, 0, 0],
+            label="couple_j1_j3",
         )
-        eq_weld = builder.add_equality_constraint_weld(
+        eq_weld = _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.WELD,
             body1=link2,
             body2=link3,
             anchor=original_anchor,

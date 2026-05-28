@@ -132,9 +132,9 @@
 
 ### Deprecated
 
-- Deprecate top-level `Model.equality_constraint_*` arrays and `Model.equality_constraint_count` in favor of `model.mujoco.equality_constraint_*`.
-  `ModelBuilder.add_equality_constraint_*()` and importer-created equality constraints keep the same behavior; the namespaced fields are
-  now declared as `CustomAttribute` rows under the `"mujoco:equality_constraint"` custom string frequency (parallel to how
+- Deprecate top-level `Model.equality_constraint_*` arrays and `Model.equality_constraint_count`, along with `ModelBuilder.add_equality_constraint{,_connect,_weld,_joint}()`,
+  in favor of `model.mujoco.equality_constraint_*` and constructing rows directly through `ModelBuilder.add_custom_values(**{"mujoco:equality_constraint_*": ...})`. The
+  namespaced fields are now declared as `CustomAttribute` rows under the `"mujoco:equality_constraint"` custom string frequency (parallel to how
   `"mujoco:tendon"`, `"mujoco:pair"`, etc. are handled), registered at the canonical site in `SolverMuJoCo.register_custom_attributes`,
   and populated through the standard custom-attribute pipeline at `ModelBuilder.finalize()`. The corresponding builder-side accumulator
   attributes (`ModelBuilder.equality_constraint_type`, `_body1`, `_body2`, `_anchor`, `_torquescale`, `_relpose`, `_joint1`, `_joint2`,
