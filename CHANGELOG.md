@@ -52,6 +52,7 @@
 - Fix `SolverMuJoCo` generated MuJoCo joint names for multi-axis D6 joints to avoid duplicate names
 - Fix USD import of revolute and D6-angular joint `limit_ke` / `limit_kd` from `mjc:solreflimit` being over-scaled by ~57x
 - Fix USD import losing authored negative scales on shape and parent xforms, so mirrored primitives and meshes are now imported with the correct signed scale
+- Fix `SolverMuJoCo` reporting incorrect `State.body_qd` angular velocity for `JointType.D6` with two or three angular DOFs at non-identity configurations; the duplicated MuJoCo-side FK kernel summed raw joint axes without transporting through prior rotations, while `mujoco_warp` and `newton.eval_fk` use the standard intrinsic-Euler chain. `SolverMuJoCo` now uses `newton.eval_fk` directly.
 
 ## [1.2.0] - 2026-05-12
 

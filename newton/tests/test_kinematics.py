@@ -14,7 +14,6 @@ from newton._src.solvers.featherstone.kernels import (
     convert_free_distance_joint_qd_public_to_internal,
     eval_fk_with_velocity_conversion,
 )
-from newton._src.solvers.mujoco import kernels as mujoco_kernels
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
@@ -32,32 +31,6 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
         dtype=np.float32,
     )
     return body_qd[body_idx, :3] - np.cross(body_qd[body_idx, 3:6], com_world)
-
-
-def eval_fk_mujoco_kernel(model, joint_q, joint_qd, state):
-    """Evaluate the duplicated MuJoCo FK kernel directly."""
-    wp.launch(
-        kernel=mujoco_kernels.eval_articulation_fk,
-        dim=model.articulation_count,
-        inputs=[
-            model.articulation_start,
-            model.joint_articulation,
-            joint_q,
-            joint_qd,
-            model.joint_q_start,
-            model.joint_qd_start,
-            model.joint_type,
-            model.joint_parent,
-            model.joint_child,
-            model.joint_X_p,
-            model.joint_X_c,
-            model.joint_axis,
-            model.joint_dof_dim,
-            model.body_com,
-        ],
-        outputs=[state.body_q, state.body_qd],
-        device=model.device,
-    )
 
 
 def _add_free_distance_joint(builder, joint_type, parent, child, parent_xform, child_xform):
@@ -566,7 +539,7 @@ def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_differenc
     q_next[q_start[0]] += qd[qd_start[0]] * dt
     q_next[q_start[1]] += qd[qd_start[1]] * dt
 
-    for eval_fk_fn in (eval_fk_with_velocity_conversion, eval_fk_mujoco_kernel):
+    for eval_fk_fn in (eval_fk_with_velocity_conversion, newton.eval_fk):
         state = model.state()
         state.joint_q.assign(q)
         state.joint_qd.assign(qd)
