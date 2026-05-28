@@ -1938,7 +1938,10 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
         # target-position array padded to size 4 so both DOF index 1 and coord index 3
         # are reachable — lets us distinguish the two code paths
         target_pos_array = _a(target_array)
-        target_vel_array = _a([0.0, 0.0, 0.0, 0.0])
+        # joint_target_qd / joint_target_vel are always DOF-shaped (matches joint_qd)
+        # regardless of the flag — only joint_target_q's shape varies by layout.
+        target_vel_array = wp.zeros_like(joint_qd)
+        self.assertEqual(target_vel_array.shape, joint_qd.shape)
         joint_f = wp.zeros(4, dtype=wp.float32, device=device)
 
         sim_state = types.SimpleNamespace(joint_q=joint_q, joint_qd=joint_qd)
