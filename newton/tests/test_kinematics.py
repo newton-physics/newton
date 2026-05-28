@@ -1051,6 +1051,46 @@ def test_ik_body_flag_filter_dynamic_only(test, device):
     test.assertAlmostEqual(float(recovered_qd_np[1]), 3.0, places=6)
 
 
+def test_fk_ik_d6_left_handed_angular_axes(test, device):
+    """Regression for FK/IK on a D6 joint whose three angular axes form a left-handed orthonormal triple
+    (e.g. X, Z, Y as used by the nv_humanoid hip). The intrinsic-Euler product
+    ``qfa(axis_0, q0) * qfa(axis_1, q1) * qfa(axis_2, q2)`` must hold for the resulting body rotation,
+    and ``eval_ik`` must recover the original joint coordinates."""
+    cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
+    builder = newton.ModelBuilder(gravity=0.0)
+    child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+    j = builder.add_joint_d6(
+        parent=-1,
+        child=child,
+        angular_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Z), cfg(axis=newton.Axis.Y)],
+    )
+    builder.add_articulation([j])
+    model = builder.finalize(device=device)
+
+    q_vals = np.array([0.5, -0.4, 0.7], dtype=np.float32)
+    qd_vals = np.array([0.9, -0.6, 0.3], dtype=np.float32)
+    state = model.state()
+    state.joint_q.assign(q_vals)
+    state.joint_qd.assign(qd_vals)
+
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    body_q = state.body_q.numpy()[child]
+    rot = wp.quat(float(body_q[3]), float(body_q[4]), float(body_q[5]), float(body_q[6]))
+    expected = (
+        wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(q_vals[0]))
+        * wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(q_vals[1]))
+        * wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(q_vals[2]))
+    )
+    assert_np_equal(np.array(rot), np.array(expected), tol=1e-6)
+
+    q_ik = wp.zeros_like(model.joint_q, device=device)
+    qd_ik = wp.zeros_like(model.joint_qd, device=device)
+    newton.eval_ik(model, state, q_ik, qd_ik)
+    assert_np_equal(q_ik.numpy(), q_vals, tol=1e-6)
+    assert_np_equal(qd_ik.numpy(), qd_vals, tol=1e-6)
+
+
 devices = get_test_devices()
 
 
@@ -1137,6 +1177,12 @@ add_function_test(
     TestSimKinematics,
     "test_ik_body_flag_filter_dynamic_only",
     test_ik_body_flag_filter_dynamic_only,
+    devices=devices,
+)
+add_function_test(
+    TestSimKinematics,
+    "test_fk_ik_d6_left_handed_angular_axes",
+    test_fk_ik_d6_left_handed_angular_axes,
     devices=devices,
 )
 

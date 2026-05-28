@@ -120,26 +120,22 @@ def compute_3d_rotational_dofs(
 ):
     """
     Computes the rotation quaternion and 3D angular velocity given the joint axes, coordinates and velocities.
+
+    Treats the three axes as an intrinsic-Euler chain: ``rot = R(axis_0, q0) * R(axis_1, q1) * R(axis_2, q2)``.
+    Each axis after the first is transported through the rotations applied before it, so the result is
+    correct for any orthogonal axis triple — including left-handed bases such as the (X, Z, Y) hip
+    convention used by ``nv_humanoid.xml``.
     """
-    q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, axis_2))
-
-    # body local axes
-    local_0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
-    local_1 = wp.quat_rotate(q_off, wp.vec3(0.0, 1.0, 0.0))
-    local_2 = wp.quat_rotate(q_off, wp.vec3(0.0, 0.0, 1.0))
-
-    # reconstruct rotation axes
-    axis_0 = local_0
     q_0 = wp.quat_from_axis_angle(axis_0, q0)
 
-    axis_1 = wp.quat_rotate(q_0, local_1)
-    q_1 = wp.quat_from_axis_angle(axis_1, q1)
+    axis_1_w = wp.quat_rotate(q_0, axis_1)
+    q_1 = wp.quat_from_axis_angle(axis_1_w, q1)
 
-    axis_2 = wp.quat_rotate(q_1 * q_0, local_2)
-    q_2 = wp.quat_from_axis_angle(axis_2, q2)
+    axis_2_w = wp.quat_rotate(q_1 * q_0, axis_2)
+    q_2 = wp.quat_from_axis_angle(axis_2_w, q2)
 
     rot = q_2 * q_1 * q_0
-    vel = axis_0 * qd0 + axis_1 * qd1 + axis_2 * qd2
+    vel = axis_0 * qd0 + axis_1_w * qd1 + axis_2_w * qd2
 
     return rot, vel
 
@@ -150,41 +146,53 @@ def invert_3d_rotational_dofs(
 ):
     """
     Computes generalized joint position and velocity coordinates for a 3D rotational joint given the joint axes, relative orientations and angular velocity differences between the two bodies the joint connects.
+
+    Builds ``q_off`` from a canonical right-handed basis ``(axis_0, axis_1, cross(axis_0, axis_1))``
+    so that the XYZ Euler decomposition is always well-defined. If the user's ``axis_2`` points opposite
+    that canonical third column (left-handed triple), the third angle and velocity component are
+    negated to express the result in the user's axes — the inverse of :func:`compute_3d_rotational_dofs`.
     """
-    q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, axis_2))
+    axis_2_rh = wp.cross(axis_0, axis_1)
+    s = float(1.0)
+    if wp.dot(axis_2_rh, axis_2) < 0.0:
+        s = float(-1.0)
+
+    q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, axis_2_rh))
     q_pc = wp.quat_inverse(q_off) * wp.quat_inverse(q_p) * q_c * q_off
 
-    # decompose to a compound rotation each axis
+    # decompose to a compound rotation each axis in the canonical right-handed basis
     angles = quat_decompose(q_pc)
 
-    # find rotation axes
+    # find rotation axes (canonical right-handed basis)
     local_0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
     local_1 = wp.quat_rotate(q_off, wp.vec3(0.0, 1.0, 0.0))
     local_2 = wp.quat_rotate(q_off, wp.vec3(0.0, 0.0, 1.0))
 
-    axis_0 = local_0
-    q_0 = wp.quat_from_axis_angle(axis_0, angles[0])
+    a0 = local_0
+    q_0 = wp.quat_from_axis_angle(a0, angles[0])
 
-    axis_1 = wp.quat_rotate(q_0, local_1)
-    q_1 = wp.quat_from_axis_angle(axis_1, angles[1])
+    a1 = wp.quat_rotate(q_0, local_1)
+    q_1 = wp.quat_from_axis_angle(a1, angles[1])
 
-    axis_2 = wp.quat_rotate(q_1 * q_0, local_2)
+    a2 = wp.quat_rotate(q_1 * q_0, local_2)
 
     # convert angular velocity to local space
     w_err_p = wp.quat_rotate_inv(q_p, w_err)
 
-    # given joint axes and angular velocity error, solve for joint velocities
-    c12 = wp.cross(axis_1, axis_2)
-    c02 = wp.cross(axis_0, axis_2)
-    c01 = wp.cross(axis_0, axis_1)
+    # given joint axes and angular velocity error, solve for joint velocities in the canonical basis
+    c12 = wp.cross(a1, a2)
+    c02 = wp.cross(a0, a2)
+    c01 = wp.cross(a0, a1)
 
     velocities = wp.vec3(
-        wp.dot(w_err_p, c12) / wp.dot(axis_0, c12),
-        wp.dot(w_err_p, c02) / wp.dot(axis_1, c02),
-        wp.dot(w_err_p, c01) / wp.dot(axis_2, c01),
+        wp.dot(w_err_p, c12) / wp.dot(a0, c12),
+        wp.dot(w_err_p, c02) / wp.dot(a1, c02),
+        wp.dot(w_err_p, c01) / wp.dot(a2, c01),
     )
 
-    return angles, velocities
+    # Map canonical-basis result back to the user's axes: rotation/velocity around axis_2 equals
+    # ``s`` times the same quantity around axis_2_rh (s = -1 iff the user's triple is left-handed).
+    return wp.vec3(angles[0], angles[1], s * angles[2]), wp.vec3(velocities[0], velocities[1], s * velocities[2])
 
 
 @wp.func
