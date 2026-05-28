@@ -338,6 +338,44 @@ def Xform "Root" (
         self.assertEqual(model.body_count, 3)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_orphan_world_fixed_joint_respects_env_offset_and_xform(self):
+        """Orphan body-to-world fixed joints must FK to env-origin + spawn xform."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        env = UsdGeom.Xform.Define(stage, "/World/env")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        link = UsdGeom.Xform.Define(stage, "/World/env/PinnedLink")
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/env/PinnedLink/FixedJoint")
+        fixed.CreateBody1Rel().SetTargets([link.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()))
+
+        link_idx = builder.body_label.index("/World/env/PinnedLink")
+        joint_idx = builder.joint_label.index("/World/env/PinnedLink/FixedJoint")
+        self.assertEqual(builder.joint_type[joint_idx], newton.JointType.FIXED)
+        self.assertEqual(builder.joint_parent[joint_idx], -1)
+
+        expected_pos = np.array([105.0, 200.0, 0.0])
+        assert_np_equal(np.array(builder.joint_X_p[joint_idx].p), expected_pos, tol=1e-4)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        np.testing.assert_allclose(state.body_q.numpy()[link_idx, :3], expected_pos, atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collapse_fixed_joints_preserves_orphan_joints(self):
         """collapse_fixed_joints must not drop orphan joints or their bodies."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
