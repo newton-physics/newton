@@ -1698,7 +1698,7 @@ def parse_usd(
         [AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD]
     )
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [AttributeFrequency.EQUALITY_CONSTRAINT]
+        ["mujoco:equality_constraint"]
     )
     builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.ARTICULATION]

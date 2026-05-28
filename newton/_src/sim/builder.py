@@ -1172,9 +1172,9 @@ class ModelBuilder:
 
         # equality constraints
         # Backed by per-equality-constraint CustomAttributes under the ``mujoco`` namespace —
-        # declared below and populated by :meth:`add_equality_constraint`.
-        self._equality_constraint_count: int = 0
-        """Number of equality constraints added to this builder."""
+        # declared below and populated by :meth:`add_equality_constraint`. The count is owned
+        # by ``self._custom_frequency_counts["mujoco:equality_constraint"]`` and exposed
+        # through the :meth:`_equality_constraint_count` property.
 
         # mimic constraints
         self.constraint_mimic_joint0: list[int] = []
@@ -1291,6 +1291,20 @@ class ModelBuilder:
                 # with the default value 20.0
                 assert np.allclose(model.my_namespace.my_attribute.numpy(), [30.0, 20.0])
         """
+        # Translate the deprecated EQUALITY_CONSTRAINT enum frequency to the equivalent
+        # ``mujoco:equality_constraint`` string frequency. The enum is on the path to removal
+        # in Newton 1.5; emitting the warning here surfaces it at the user's declaration site.
+        if attribute.frequency == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
+            warnings.warn(
+                "Model.AttributeFrequency.EQUALITY_CONSTRAINT is deprecated in Newton 1.3 "
+                "and is scheduled for removal in Newton 1.5. Declare custom attributes with "
+                'frequency="mujoco:equality_constraint" instead; the frequency itself is '
+                "registered automatically by ModelBuilder during the deprecation window.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            attribute = replace(attribute, frequency="mujoco:equality_constraint")
+
         key = attribute.key
 
         existing = self.custom_attributes.get(key)
@@ -1340,8 +1354,11 @@ class ModelBuilder:
         attributes.
         """
         ca = ModelBuilder.CustomAttribute
-        eq_freq = Model.AttributeFrequency.EQUALITY_CONSTRAINT
+        eq_freq = "mujoco:equality_constraint"
         model_assignment = Model.AttributeAssignment.MODEL
+
+        # Register the custom frequency before any custom attributes that use it.
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="equality_constraint", namespace="mujoco"))
 
         builder.add_custom_attribute(
             ca(
@@ -1479,31 +1496,46 @@ class ModelBuilder:
         """
         return self.custom_attributes[f"mujoco:{name}"]
 
+    @property
+    def _equality_constraint_count(self) -> int:
+        """Number of equality constraints added to this builder.
+
+        Sources the value from the ``mujoco:equality_constraint`` custom-frequency counter
+        maintained by :meth:`add_custom_values`.
+        """
+        return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
+
     def _eq_value(self, name: str, idx: int) -> Any:
         """Read the equality-constraint value stored at ``idx`` for attribute ``name``."""
         attr = self._eq_attr(name)
-        if attr.values is None:
+        if not attr.values or idx >= len(attr.values):
             return attr.default
-        return attr.values.get(idx, attr.default)
+        value = attr.values[idx]
+        return attr.default if value is None else value
 
     def _eq_set_value(self, name: str, idx: int, value: Any) -> None:
         """Write ``value`` at ``idx`` for the equality-constraint attribute ``name``."""
         attr = self._eq_attr(name)
         if attr.values is None:
-            attr.values = {}
+            attr.values = []
+        while len(attr.values) <= idx:
+            attr.values.append(None)
         attr.values[idx] = value
 
     def _eq_list(self, name: str) -> list[Any]:
         """Return a dense Python list of equality-constraint ``name`` values.
 
-        Missing entries are filled with the attribute's default, matching the array
-        materialized by :meth:`finalize`.
+        Missing entries (``None`` or beyond the stored length) are filled with the
+        attribute's default, matching the array materialized by :meth:`finalize`.
         """
         attr = self._eq_attr(name)
         count = self._equality_constraint_count
-        if attr.values is None:
+        if not attr.values:
             return [attr.default] * count
-        return [attr.values.get(i, attr.default) for i in range(count)]
+        return [
+            (attr.values[i] if i < len(attr.values) and attr.values[i] is not None else attr.default)
+            for i in range(count)
+        ]
 
     @staticmethod
     def _deprecated_builder_equality_constraint_field_message(name: str) -> str:
@@ -1729,7 +1761,23 @@ class ModelBuilder:
         Returns:
             Custom attributes matching the requested frequencies.
         """
-        return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
+        # Backward-compat: callers that still pass the deprecated
+        # ``Model.AttributeFrequency.EQUALITY_CONSTRAINT`` get translated to the new string
+        # frequency. The warning fires at the lookup site so the migration target is obvious.
+        normalized: list[Model.AttributeFrequency | str] = []
+        for freq in frequencies:
+            if freq == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
+                warnings.warn(
+                    "Model.AttributeFrequency.EQUALITY_CONSTRAINT is deprecated in Newton 1.3 "
+                    "and is scheduled for removal in Newton 1.5. Look up by "
+                    '"mujoco:equality_constraint" instead.',
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                normalized.append("mujoco:equality_constraint")
+            else:
+                normalized.append(freq)
+        return [attr for attr in self.custom_attributes.values() if attr.frequency in normalized]
 
     def get_custom_frequency_keys(self) -> set[str]:
         """Return set of custom frequency keys (string frequencies) defined in this builder."""
@@ -1866,9 +1914,19 @@ class ModelBuilder:
                     f"but expected {expected_frequency} for this entity type"
                 )
 
-            # Set the value for this specific entity
+            # Set the value for this specific entity. The values container shape depends on
+            # the attribute's frequency: string-frequency attributes use a dense ``list``
+            # (sequential indices, ``None``-padded), enum-frequency attributes use a sparse
+            # ``dict``.
+            is_string_freq = custom_attr.is_custom_frequency
             if custom_attr.values is None:
-                custom_attr.values = {}
+                custom_attr.values = [] if is_string_freq else {}
+
+            def _assign_one(idx: int, val: Any, _attr=custom_attr, _list=is_string_freq) -> None:
+                if _list:
+                    while len(_attr.values) <= idx:
+                        _attr.values.append(None)
+                _attr.values[idx] = val
 
             # Fill in the value(s)
             if isinstance(entity_index, list):
@@ -1878,11 +1936,13 @@ class ModelBuilder:
                 if value_is_sequence:
                     if len(value) != len(entity_index):
                         raise ValueError(f"Expected {len(entity_index)} values, got {len(value)}")
-                    custom_attr.values.update(zip(entity_index, value, strict=False))
+                    for idx, val in zip(entity_index, value, strict=False):
+                        _assign_one(idx, val)
                 else:
-                    custom_attr.values.update((idx, value) for idx in entity_index)
+                    for idx in entity_index:
+                        _assign_one(idx, value)
             else:
-                custom_attr.values[entity_index] = value
+                _assign_one(entity_index, value)
 
     def _process_joint_custom_attributes(
         self,
@@ -3502,12 +3562,9 @@ class ModelBuilder:
             articulation_groups = [self.current_world] * builder.articulation_count
             self.articulation_world.extend(articulation_groups)
 
-        # For equality constraints
-        # Index offsets (body/joint), world replacement, and value carry-over are handled by
-        # the custom-attribute merge below (each ``mujoco:equality_constraint_*`` attribute
-        # is declared with ``references`` set to ``body``/``joint``/``world`` as appropriate).
-        # The bare count is tracked on the builder so subsequent inserts allocate fresh indices.
-        self._equality_constraint_count += builder._equality_constraint_count
+        # Equality-constraint state lives in the ``mujoco:equality_constraint`` string
+        # frequency: index offsets (body/joint), world replacement, value carry-over, and
+        # the per-frequency counter are all handled by the custom-attribute merge below.
 
         # For mimic constraints
         if len(builder.constraint_mimic_joint0) > 0:
@@ -3758,9 +3815,10 @@ class ModelBuilder:
                     start_equality_constraint_idx,
                     start_equality_constraint_idx + builder._equality_constraint_count,
                 ):
-                    lbl = label_attr.values.get(i)
-                    if lbl:
-                        label_attr.values[i] = f"{label_prefix}/{lbl}"
+                    if i < len(label_attr.values):
+                        lbl = label_attr.values[i]
+                        if lbl:
+                            label_attr.values[i] = f"{label_prefix}/{lbl}"
 
         # Carry over custom frequency registrations (including usd_prim_filter) from the source builder.
         # This must happen before updating counts so that the destination builder has the full
@@ -4821,12 +4879,12 @@ class ModelBuilder:
         else:
             torquescale_value = float(torquescale)
 
-        constraint_idx = self._equality_constraint_count
-        self._equality_constraint_count = constraint_idx + 1
-
-        self._process_custom_attributes(
-            entity_index=constraint_idx,
-            custom_attrs={
+        # Allocate the per-equality-constraint row through the standard
+        # ``add_custom_values`` path. This bumps the
+        # ``mujoco:equality_constraint`` frequency counter and writes the 12 backing
+        # CustomAttribute values at the new index.
+        indices = self.add_custom_values(
+            **{
                 "mujoco:equality_constraint_type": int(constraint_type),
                 "mujoco:equality_constraint_body1": body1,
                 "mujoco:equality_constraint_body2": body2,
@@ -4839,15 +4897,19 @@ class ModelBuilder:
                 "mujoco:equality_constraint_label": label or "",
                 "mujoco:equality_constraint_enabled": enabled,
                 "mujoco:equality_constraint_world": self.current_world,
-            },
-            expected_frequency=Model.AttributeFrequency.EQUALITY_CONSTRAINT,
+            }
         )
+        constraint_idx = indices["mujoco:equality_constraint_type"]
 
+        # User-supplied per-constraint custom attribute values (e.g. ``mujoco:eq_solref``).
+        # ``_process_custom_attributes`` natively supports both dict (enum-frequency) and list
+        # (string-frequency) storage; for our string-frequency case it pads the values list
+        # up to ``constraint_idx`` with ``None`` and writes the value at that index.
         if custom_attributes:
             self._process_custom_attributes(
                 entity_index=constraint_idx,
                 custom_attrs=custom_attributes,
-                expected_frequency=Model.AttributeFrequency.EQUALITY_CONSTRAINT,
+                expected_frequency="mujoco:equality_constraint",
             )
 
         return constraint_idx
@@ -5273,15 +5335,11 @@ class ModelBuilder:
 
         # Find bodies referenced in equality constraints that shouldn't be merged into world
         bodies_in_constraints = set()
-        body1_attr = self._eq_attr("equality_constraint_body1")
-        body2_attr = self._eq_attr("equality_constraint_body2")
-        body1_default = body1_attr.default
-        body2_default = body2_attr.default
-        body1_values = body1_attr.values or {}
-        body2_values = body2_attr.values or {}
-        for i in range(self._equality_constraint_count):
-            body1 = body1_values.get(i, body1_default)
-            body2 = body2_values.get(i, body2_default)
+        for body1, body2 in zip(
+            self._eq_list("equality_constraint_body1"),
+            self._eq_list("equality_constraint_body2"),
+            strict=False,
+        ):
             if body1 >= 0:
                 bodies_in_constraints.add(body1)
             if body2 >= 0:
@@ -5666,7 +5724,10 @@ class ModelBuilder:
         # Reset the constraint count based on the retained joints
         self.joint_constraint_count = len(self.joint_cts)
 
-        # Remap equality constraint body/joint indices and transform anchors for merged bodies
+        # Remap equality constraint body/joint indices and transform anchors for merged bodies.
+        # Each ``*_values`` is the dense ``list`` backing the string-frequency CustomAttribute;
+        # ``add_equality_constraint`` populates all twelve in lockstep so indexed access is safe
+        # for every ``i`` in ``range(self._equality_constraint_count)``.
         body1_attr = self._eq_attr("equality_constraint_body1")
         body2_attr = self._eq_attr("equality_constraint_body2")
         type_attr = self._eq_attr("equality_constraint_type")
@@ -5675,20 +5736,25 @@ class ModelBuilder:
         joint1_attr = self._eq_attr("equality_constraint_joint1")
         joint2_attr = self._eq_attr("equality_constraint_joint2")
         enabled_attr = self._eq_attr("equality_constraint_enabled")
-        body1_values = body1_attr.values if body1_attr.values is not None else {}
-        body2_values = body2_attr.values if body2_attr.values is not None else {}
-        type_values = type_attr.values if type_attr.values is not None else {}
-        anchor_values = anchor_attr.values if anchor_attr.values is not None else {}
-        relpose_values = relpose_attr.values if relpose_attr.values is not None else {}
-        joint1_values = joint1_attr.values if joint1_attr.values is not None else {}
-        joint2_values = joint2_attr.values if joint2_attr.values is not None else {}
+        body1_values = body1_attr.values or []
+        body2_values = body2_attr.values or []
+        type_values = type_attr.values or []
+        anchor_values = anchor_attr.values or []
+        relpose_values = relpose_attr.values or []
+        joint1_values = joint1_attr.values or []
+        joint2_values = joint2_attr.values or []
         if enabled_attr.values is None:
-            enabled_attr.values = {}
+            enabled_attr.values = []
         enabled_values = enabled_attr.values
 
+        def _at(values: list, idx: int, default: Any) -> Any:
+            if idx >= len(values):
+                return default
+            return default if values[idx] is None else values[idx]
+
         for i in range(self._equality_constraint_count):
-            old_body1 = body1_values.get(i, body1_attr.default)
-            old_body2 = body2_values.get(i, body2_attr.default)
+            old_body1 = _at(body1_values, i, body1_attr.default)
+            old_body2 = _at(body2_values, i, body2_attr.default)
             body1_was_merged = False
             body2_was_merged = False
 
@@ -5704,33 +5770,35 @@ class ModelBuilder:
                 body2_values[i] = body_remap[body_merged_parent[old_body2]]
                 body2_was_merged = True
 
-            constraint_type = type_values.get(i, type_attr.default)
+            constraint_type = _at(type_values, i, type_attr.default)
 
             # Transform anchor/relpose from merged body's frame to parent body's frame
             if body1_was_merged:
                 merge_xform = body_merged_transform[old_body1]
                 if constraint_type == EqType.CONNECT:
-                    anchor = axis_to_vec3(anchor_values.get(i, anchor_attr.default))
+                    anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                     anchor_values[i] = wp.transform_point(merge_xform, anchor)
                 if constraint_type == EqType.WELD:
-                    relpose = relpose_values.get(i, relpose_attr.default)
+                    relpose = _at(relpose_values, i, relpose_attr.default)
                     relpose_values[i] = merge_xform * relpose
 
             if body2_was_merged and constraint_type == EqType.WELD:
                 merge_xform = body_merged_transform[old_body2]
-                anchor = axis_to_vec3(anchor_values.get(i, anchor_attr.default))
-                relpose = relpose_values.get(i, relpose_attr.default)
+                anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
+                relpose = _at(relpose_values, i, relpose_attr.default)
                 anchor_values[i] = wp.transform_point(merge_xform, anchor)
                 relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
 
-            old_joint1 = joint1_values.get(i, joint1_attr.default)
-            old_joint2 = joint2_values.get(i, joint2_attr.default)
+            old_joint1 = _at(joint1_values, i, joint1_attr.default)
+            old_joint2 = _at(joint2_values, i, joint2_attr.default)
 
             if old_joint1 in joint_remap:
                 joint1_values[i] = joint_remap[old_joint1]
             elif old_joint1 != -1:
                 if verbose:
                     print(f"Warning: Equality constraint references removed joint {old_joint1}, disabling constraint")
+                while len(enabled_values) <= i:
+                    enabled_values.append(None)
                 enabled_values[i] = False
 
             if old_joint2 in joint_remap:
@@ -5738,6 +5806,8 @@ class ModelBuilder:
             elif old_joint2 != -1:
                 if verbose:
                     print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
+                while len(enabled_values) <= i:
+                    enabled_values.append(None)
                 enabled_values[i] = False
 
         # Remap mimic constraint joint indices
@@ -11047,13 +11117,14 @@ class ModelBuilder:
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
             # When no equality constraints exist, the standard custom-attribute pipeline (below)
-            # skips materialization because the EQUALITY_CONSTRAINT count is 0. Allocate empty
-            # arrays explicitly so downstream code (e.g. ``model.mujoco.equality_constraint_world.numpy()``
-            # in :meth:`SolverMuJoCo._validate_model_for_separate_worlds`) can read these unconditionally.
-            # Other zero-count enum-frequency custom attributes intentionally remain absent from the
-            # model — only equality_constraint_* are surfaced because they used to be direct fields
-            # on :class:`Model` and the deprecated properties are expected to return ``None`` rather
-            # than raising ``AttributeError``.
+            # skips materialization because the ``mujoco:equality_constraint`` frequency count
+            # is 0. Allocate empty arrays explicitly so downstream code (e.g.
+            # ``model.mujoco.equality_constraint_world.numpy()`` in
+            # :meth:`SolverMuJoCo._validate_model_for_separate_worlds`) can read these
+            # unconditionally. Other zero-count custom-frequency attributes intentionally remain
+            # absent from the model — only equality_constraint_* are surfaced because they used
+            # to be direct fields on :class:`Model` and the deprecated properties are expected
+            # to return an empty array rather than raising ``AttributeError``.
             if self._equality_constraint_count == 0:
                 for _eq_name in (
                     "equality_constraint_type",
@@ -11073,7 +11144,7 @@ class ModelBuilder:
                     m.add_attribute(
                         _eq_name,
                         _eq_custom_attr.build_array(0, device=device, requires_grad=requires_grad),
-                        Model.AttributeFrequency.EQUALITY_CONSTRAINT,
+                        "mujoco:equality_constraint",
                         Model.AttributeAssignment.MODEL,
                         namespace="mujoco",
                     )
@@ -11172,12 +11243,16 @@ class ModelBuilder:
 
             # Warn about MODEL attributes with fewer values than expected (non-MODEL
             # attributes are filled at runtime via _add_custom_attributes).
+            # Warn only when the user *partially* populated an attribute (some values present
+            # but fewer than the frequency expects) — that pattern usually signals a missed
+            # row and is worth surfacing. A fully-empty values list is treated as the user
+            # opting in to defaults across the board and stays silent.
             for full_key, custom_attr in self.custom_attributes.items():
                 freq_key = custom_attr.frequency
                 if isinstance(freq_key, str) and custom_attr.assignment == Model.AttributeAssignment.MODEL:
                     attr_count = len(custom_attr.values) if custom_attr.values else 0
                     expected_count = custom_frequency_counts[freq_key]
-                    if attr_count < expected_count:
+                    if 0 < attr_count < expected_count:
                         warnings.warn(
                             f"Custom attribute '{full_key}' has {attr_count} values but frequency '{freq_key}' "
                             f"expects {expected_count}. Missing values will be filled with defaults.",

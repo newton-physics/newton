@@ -796,7 +796,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="eq_solref",
-                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
+                frequency="mujoco:equality_constraint",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
@@ -808,7 +808,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="eq_solimp",
-                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
+                frequency="mujoco:equality_constraint",
                 assignment=AttributeAssignment.MODEL,
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),

@@ -1639,8 +1639,11 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertIn("global_freq", builder.custom_frequencies)
 
         # Test 4: Duplicate registration should be silently ignored (idempotent)
+        # ModelBuilder.__init__ auto-registers the deprecated-window ``mujoco:equality_constraint``
+        # custom frequency, so take a baseline from a freshly-constructed builder.
+        baseline = len(ModelBuilder().custom_frequencies)
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="freq1", namespace="ns"))  # Should not raise
-        self.assertEqual(len(builder.custom_frequencies), 3)  # Still 3 frequencies
+        self.assertEqual(len(builder.custom_frequencies), baseline + 3)
 
     def test_custom_frequency_validation_inconsistent_counts(self):
         """Test that inconsistent counts for same custom frequency are handled gracefully with warnings."""

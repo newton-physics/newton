@@ -120,7 +120,15 @@ class Model:
         ARTICULATION = 7
         """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
         EQUALITY_CONSTRAINT = 8
-        """Attribute frequency follows the number of equality constraints (see ``model.mujoco.equality_constraint_count``)."""
+        """Attribute frequency follows the number of equality constraints
+        (see ``model.mujoco.equality_constraint_count``).
+
+        .. deprecated:: 1.3
+            Use the string frequency ``"mujoco:equality_constraint"`` instead.
+            :meth:`ModelBuilder.add_custom_attribute` translates this enum value to the
+            string form for the duration of the deprecation window. Scheduled for removal
+            in Newton 1.5.
+        """
         PARTICLE = 9
         """Attribute frequency follows the number of particles (see :attr:`~newton.Model.particle_count`)."""
         EDGE = 10

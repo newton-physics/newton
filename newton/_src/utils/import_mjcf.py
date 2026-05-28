@@ -337,7 +337,7 @@ def parse_mjcf(
         [AttributeFrequency.JOINT_DOF]
     )
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [AttributeFrequency.EQUALITY_CONSTRAINT]
+        ["mujoco:equality_constraint"]
     )
     # MuJoCo actuator custom attributes (from "mujoco:actuator" frequency)
     builder_custom_attr_actuator: list[ModelBuilder.CustomAttribute] = [
