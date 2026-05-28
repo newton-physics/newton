@@ -2661,6 +2661,7 @@ class ModelBuilder:
         ctrl_direct: bool = False,
         path_resolver: Callable[[str | None, str], str] | None = None,
         override_root_xform: bool = False,
+        legacy_margin_gap: bool = False,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -2769,6 +2770,10 @@ class ModelBuilder:
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
                 from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+            legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+                where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
+                Use for MJCF files authored against MuJoCo <= 3.8. Defaults
+                to False (identity translation matching MuJoCo 3.9 semantics).
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
@@ -2806,6 +2811,7 @@ class ModelBuilder:
             ctrl_direct=ctrl_direct,
             path_resolver=path_resolver,
             override_root_xform=override_root_xform,
+            legacy_margin_gap=legacy_margin_gap,
         )
 
     # endregion
